@@ -10,6 +10,8 @@ node_modules/
 dist/
 .next/
 .turbo/
+next-env.d.ts
+*.tsbuildinfo
 
 # macOS
 .DS_Store
