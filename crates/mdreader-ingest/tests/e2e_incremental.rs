@@ -8,8 +8,27 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
+use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, SearchOptions};
+
+/// An injectable embedder that reports the same model info as
+/// [`HashEmbedder`] (so a retry with the real one matches the stored index
+/// version) but fails every embed call — simulating an import that dies
+/// after its rows are committed but before its vectors are.
+struct FailingEmbedder {
+    inner: HashEmbedder,
+}
+
+#[async_trait::async_trait]
+impl Embedder for FailingEmbedder {
+    fn info(&self) -> ModelInfo {
+        self.inner.info()
+    }
+
+    async fn embed(&self, _texts: &[String]) -> EmbedResult<Vec<Vec<f32>>> {
+        Err(EmbedError::Embed("injected embedding failure".to_string()))
+    }
+}
 
 fn write(root: &Path, rel: &str, content: &str) {
     let path = root.join(rel);
@@ -162,6 +181,198 @@ async fn import_edit_rename_delete_lifecycle() {
     assert_eq!(status.documents, 2);
     assert_eq!(status.sources.len(), 1);
     assert!(status.active_index.is_some());
+}
+
+#[tokio::test]
+async fn failed_embedding_leaves_files_reprocessable() {
+    // The failure-atomicity invariant: a file's stored content_hash may only
+    // advance once its sections, chunks, AND embeddings are durably
+    // committed. An embedder that fails mid-import must leave a Failed job
+    // and fully re-processable files — never a poisoned "unchanged" state.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    corpus(&root);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("catdb.db");
+
+    {
+        let failing = EmbeddedCatDb::open(
+            EngineConfig::new(
+                &db,
+                Arc::new(FailingEmbedder {
+                    inner: HashEmbedder::new(),
+                }),
+            )
+            .with_domain(mdreader_ingest::registration())
+            .with_actor("e2e-test"),
+        )
+        .unwrap();
+        let err = failing
+            .import(&root, ImportOptions::default())
+            .await
+            .expect_err("import must fail when embedding fails");
+        assert!(
+            err.to_string().contains("injected embedding failure"),
+            "unexpected error: {err}"
+        );
+        // The failure is recorded as a Failed ingest job.
+        use catdb_storage::CatalogStorage;
+        let jobs = failing.store().list_jobs().await.unwrap();
+        let ingest_jobs: Vec<_> = jobs.iter().filter(|j| j.kind == "ingest").collect();
+        assert_eq!(ingest_jobs.len(), 1);
+        assert_eq!(ingest_jobs[0].status, catdb_catalog::JobStatus::Failed);
+    }
+
+    // Retry with a working embedder: every file re-processes (nothing
+    // short-circuits on the poisoned state) and the repair is complete.
+    let engine = open(&db);
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.files_skipped_unchanged, 0,
+        "failed files must not be skipped as unchanged"
+    );
+    assert_eq!(
+        report.sections_upserted, 6,
+        "the retry re-processes all sections"
+    );
+    assert_eq!(report.chunks_embedded, 6, "the retry re-embeds all chunks");
+
+    // Correct chunks (no duplicates from the repair) and correct vectors
+    // (the semantic modality ranks the repaired chunks).
+    let status = engine.status().await.unwrap();
+    assert_eq!(status.documents, 3);
+    assert_eq!(status.chunks, 6);
+    let hits = engine
+        .search("wikilink graph", SearchOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(hits[0].file_path, "notes/graph.md");
+    assert!(
+        hits[0].sem_rank.is_some(),
+        "vectors must exist after repair"
+    );
+
+    // The corpus is now stable: a further import short-circuits everything.
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.files_skipped_unchanged, 3);
+    assert_eq!(report.chunks_embedded, 0);
+
+    let check = engine.check_equations().await.unwrap();
+    assert_eq!(check.violations, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn deleting_a_nested_repo_directory_cleans_up_its_documents() {
+    // Deletion is scoped against stored state under the source root, so a
+    // fully deleted nested git repo (its repo identity absent from the new
+    // scan) must still have its documents, chunks, and links cleaned up.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    corpus(&root);
+    std::fs::create_dir_all(root.join("nested/proj/.git")).unwrap();
+    write(
+        &root,
+        "nested/proj/readme.md",
+        "# Nested\n\nSee the [guide](../../guide.md).\n",
+    );
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("catdb.db");
+    let engine = open(&db);
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.files_scanned, 4);
+    assert_eq!(report.links_resolved, 3);
+    let status = engine.status().await.unwrap();
+    assert_eq!(status.documents, 4);
+
+    // Delete the whole nested repo directory (its last markdown file goes
+    // with it, and so does its repo identity).
+    std::fs::remove_dir_all(root.join("nested")).unwrap();
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.files_deleted, 1);
+
+    let status = engine.status().await.unwrap();
+    assert_eq!(status.documents, 3, "the nested document is gone");
+    let hits = engine
+        .search("nested", SearchOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        hits.iter().all(|h| h.file_path != "nested/proj/readme.md"),
+        "deleted nested-repo document must not be searchable"
+    );
+    let check = engine.check_equations().await.unwrap();
+    assert_eq!(check.violations, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn chunker_version_bump_reprocesses_unchanged_files() {
+    // A chunker-version change must rotate to a new index version AND bypass
+    // the file-hash short-circuit: every file re-chunks and re-embeds even
+    // though its content hash is unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    corpus(&root);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("catdb.db");
+
+    {
+        let engine = open(&db);
+        let report = engine
+            .import(&root, ImportOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(report.chunks_embedded, 6);
+    }
+
+    // Re-open with a bumped chunker version (same embedder model).
+    let mut registration = mdreader_ingest::registration();
+    let bumped = format!("{}+test-bump", mdreader_ingest::CHUNKER_VERSION);
+    registration.chunker_version = bumped.clone();
+    let engine = EmbeddedCatDb::open(
+        EngineConfig::new(&db, Arc::new(HashEmbedder::new()))
+            .with_domain(registration)
+            .with_actor("e2e-test"),
+    )
+    .unwrap();
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.files_skipped_unchanged, 0,
+        "unchanged files must not short-circuit on a chunker bump"
+    );
+    assert_eq!(report.sections_upserted, 6);
+    assert_eq!(report.chunks_embedded, 6, "everything re-embeds");
+
+    // The old index version is retired; the new active one carries the
+    // bumped chunker version and serves search.
+    use catdb_storage::CatalogStorage;
+    let versions = engine.store().list_index_versions().await.unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions.iter().filter(|v| v.active).count(), 1);
+    let status = engine.status().await.unwrap();
+    assert_eq!(status.active_index.unwrap().chunker_version, bumped);
+    assert_eq!(status.chunks, 6, "no duplicate chunks from the rebuild");
+    let hits = engine
+        .search("wikilink graph", SearchOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(hits[0].file_path, "notes/graph.md");
+    assert!(hits[0].sem_rank.is_some(), "new index version has vectors");
 }
 
 #[tokio::test]

@@ -11,12 +11,27 @@
 //! * deleted file → document, sections, chunks, links, and vectors gone, with
 //!   matching retraction operations in the log.
 //!
+//! ## Failure atomicity
+//!
+//! A document's stored `content_hash` may only advance once its sections,
+//! chunks, AND embeddings are durably committed. The mechanism is a per-file
+//! finalize step: [`sync_document`] writes the interim document row with a
+//! `pending:`-prefixed hash (which can never equal a file's real blake3) and
+//! stages the final row via [`IngestContext::stage_document_finalize`]; the
+//! engine commits staged rows only after the embedding flush succeeds. Any
+//! failure leaves the pending marker in place, so the next import detects it
+//! and re-processes the file in *force* mode (every section's chunks are
+//! rebuilt and re-scheduled, repairing missing vectors). Chunk ids are
+//! deterministic (`(section, part, content hash)`), so a repair pass
+//! overwrites rows instead of duplicating them.
+//!
 //! Every semantic mutation is mirrored into the operation log as a
 //! [`CatOperation`] with real provenance (source path, line range, content
 //! hash), using the engine's qualified-name contract (`md.Document`,
-//! `md.Section`, `md.Link`; arrows `md.document`, `md.sourceSection`,
-//! `md.sourceDocument`) so the engine's instance-level equation check can
-//! verify the md schema's path equations over the imported corpus.
+//! `md.Section`, `md.Link`, `rx.Chunk`; arrows `md.document`,
+//! `md.sourceSection`, `md.sourceDocument`) so the engine's instance-level
+//! equation check can verify the md schema's path equations over the
+//! imported corpus.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -42,6 +57,18 @@ impl MarkdownIngestor {
 
 fn blake3_file(bytes: &[u8]) -> String {
     format!("blake3:{}", blake3::hash(bytes).to_hex())
+}
+
+/// Marker prefix for a document row whose import has not finished (sections/
+/// chunks may be committed but embeddings are not). A pending hash can never
+/// equal a file's real `blake3:` hash, so the file is always re-processed —
+/// and the prefix tells [`sync_document`] to run in force mode (rebuild every
+/// section's chunks and re-schedule their embeddings) rather than trust the
+/// per-section short-circuits.
+const PENDING_PREFIX: &str = "pending:";
+
+fn pending_hash(content_hash: &str) -> String {
+    format!("{PENDING_PREFIX}{content_hash}")
 }
 
 /// Deterministic UUID from labelled parts (blake3-derived). Used for link
@@ -156,14 +183,18 @@ impl Ingestor for MarkdownIngestor {
             let bytes = std::fs::read(&file.abs)?;
             let content_hash = blake3_file(&bytes);
             match stored_by_path.get(&file.rel) {
-                Some(doc) if doc.content_hash == content_hash => {
+                Some(doc) if doc.content_hash == content_hash && !req.rebuild => {
                     seen.insert(doc.id);
                     stats.files_skipped_unchanged += 1;
                 }
                 Some(doc) => {
                     seen.insert(doc.id);
+                    // A pending hash means a previous import died before its
+                    // embeddings were committed: force-rebuild the file.
+                    let force = req.rebuild || doc.content_hash.starts_with(PENDING_PREFIX);
                     let text = String::from_utf8_lossy(&bytes);
-                    sync_document(ctx, doc.id, file, &text, &content_hash, &mut stats).await?;
+                    sync_document(ctx, doc.id, file, &text, &content_hash, force, &mut stats)
+                        .await?;
                 }
                 None => {
                     let renamed = rename_candidates
@@ -171,36 +202,45 @@ impl Ingestor for MarkdownIngestor {
                         .and_then(|q| q.pop_front());
                     if let Some(old) = renamed {
                         seen.insert(old.id);
-                        rename_document(ctx, &old, file, &content_hash).await?;
-                        stats.files_renamed += 1;
+                        if req.rebuild {
+                            // A rebuild import must re-chunk/re-embed even
+                            // renamed-but-unchanged content: run the full
+                            // sync (which also updates the stored path)
+                            // under the surviving document id.
+                            let text = String::from_utf8_lossy(&bytes);
+                            sync_document(
+                                ctx,
+                                old.id,
+                                file,
+                                &text,
+                                &content_hash,
+                                true,
+                                &mut stats,
+                            )
+                            .await?;
+                        } else {
+                            rename_document(ctx, &old, file, &content_hash).await?;
+                            stats.files_renamed += 1;
+                        }
                     } else {
                         let doc_id = Uuid::new_v4();
                         seen.insert(doc_id);
                         let text = String::from_utf8_lossy(&bytes);
-                        sync_document(ctx, doc_id, file, &text, &content_hash, &mut stats).await?;
+                        sync_document(ctx, doc_id, file, &text, &content_hash, false, &mut stats)
+                            .await?;
                     }
                 }
             }
         }
 
-        // Deletions: stored documents that no scanned file claimed, scoped to
-        // repo identities this root can produce (a guard for shared
-        // databases; see the crate docs for the v1 single-source caveat).
-        let synthetic = req
-            .root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "root".to_string());
-        let repos_seen: HashSet<&str> = files.iter().map(|f| f.repo.as_str()).collect();
+        // Deletions are scoped against STORED state under this source root:
+        // stored paths are relative to the scanned root (v1's single-source
+        // model, see the crate docs), so every stored document this scan did
+        // not claim — including the contents of a fully deleted nested repo
+        // directory — is gone from disk and must be cleaned up. Multi-source
+        // scoping arrives when documents carry a source id.
         for doc in &stored_before {
             if seen.contains(&doc.id) || scan_set.contains(doc.file_path.as_str()) {
-                continue;
-            }
-            let in_scope = match &doc.repo {
-                None => true,
-                Some(repo) => repo == &synthetic || repos_seen.contains(repo.as_str()),
-            };
-            if !in_scope {
                 continue;
             }
             delete_document(ctx, doc).await?;
@@ -212,17 +252,32 @@ impl Ingestor for MarkdownIngestor {
     }
 }
 
-/// Synchronize one parsed file into storage, incrementally.
+/// Synchronize one parsed file into storage, incrementally. With `force`
+/// (a rebuild import, or a document left `pending:` by a failed import)
+/// every section is processed even when its content hash is unchanged, so
+/// chunks are rebuilt (idempotently, via deterministic ids) and their
+/// embeddings re-scheduled.
 async fn sync_document(
     ctx: &dyn IngestContext,
     doc_id: Uuid,
     file: &ScannedFile,
     source_text: &str,
     content_hash: &str,
+    force: bool,
     stats: &mut IngestStats,
 ) -> EngineResult<()> {
     let parsed: ParsedDocument = parse_markdown(source_text, file_stem(&file.rel));
     let stored_sections = ctx.sections_for_document(doc_id)?;
+    // Prior chunks (read before any write can clear them), grouped by
+    // section, so replaced or vanished chunks get retraction operations.
+    let mut prior_chunks: HashMap<Uuid, Vec<ChunkRow>> = HashMap::new();
+    for chunk in ctx.chunks_for_document(doc_id)? {
+        prior_chunks
+            .entry(chunk.section_id)
+            .or_default()
+            .push(chunk);
+    }
+    let source_lines: Vec<&str> = source_text.lines().collect();
 
     // Pass 1 — claim stored sections by content hash (unchanged content;
     // possibly shifted lines). Pass 2 — claim by heading path (edited in
@@ -275,14 +330,23 @@ async fn sync_document(
         .filter(|row| !taken.contains(&row.id))
         .collect();
 
-    // Document row + operation first (sections reference it).
+    // Document row + operation first (sections reference it). The interim
+    // row carries a pending hash; the real hash is staged and committed by
+    // the engine only after every scheduled embedding is durably stored, so
+    // a failed import leaves this file re-processable (see the module docs).
     ctx.upsert_documents(vec![DocumentRow {
         id: doc_id,
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
-        content_hash: content_hash.to_string(),
+        content_hash: pending_hash(content_hash),
     }])
     .await?;
+    ctx.stage_document_finalize(DocumentRow {
+        id: doc_id,
+        file_path: file.rel.clone(),
+        repo: Some(file.repo.clone()),
+        content_hash: content_hash.to_string(),
+    });
     ctx.emit(CatOperation::AssertObject {
         entity: qualify("md", "Document"),
         object_id: doc_id,
@@ -317,21 +381,31 @@ async fn sync_document(
         ctx.upsert_sections(section_rows.clone()).await?;
     }
 
-    // Stale sections: retract their facts, then cascade-delete. Deletion runs
-    // AFTER the upsert so claimed children have already been re-parented and
-    // cannot be swept by the cascade.
+    // Stale sections: retract their facts (chunks included), then
+    // cascade-delete. Deletion runs AFTER the upsert so claimed children
+    // have already been re-parented and cannot be swept by the cascade.
     if !stale.is_empty() {
         let stale_ids: Vec<Uuid> = stale.iter().map(|row| row.id).collect();
+        for stale_id in &stale_ids {
+            if let Some(chunks) = prior_chunks.get(stale_id) {
+                for chunk in chunks {
+                    ctx.emit(CatOperation::RetractObject {
+                        object_id: chunk.id,
+                    })
+                    .await?;
+                }
+            }
+        }
         retract_sections(ctx, &file.rel, &stale_ids).await?;
         ctx.delete_stale_sections(stale_ids).await?;
     }
 
     // Changed (or new) sections: rebuild chunks, links, and facts. Unchanged
     // sections keep their chunks and links (storage keeps chunks when the
-    // upserted hash is unchanged).
+    // upserted hash is unchanged) — unless `force` demands a full rebuild.
     for (i, section) in parsed.sections.iter().enumerate() {
         let (section_id, changed) = claimed[i].expect("claimed above");
-        if !changed {
+        if !changed && !force {
             continue;
         }
         stats.sections_upserted += 1;
@@ -357,11 +431,19 @@ async fn sync_document(
         })
         .await?;
 
+        // Chunk ids are deterministic — (section, part, content hash) — so a
+        // repair or rebuild pass overwrites the same rows instead of
+        // duplicating them.
         let chunk_rows: Vec<ChunkRow> = section
             .chunks
             .iter()
             .map(|chunk| ChunkRow {
-                id: Uuid::new_v4(),
+                id: stable_uuid(&[
+                    "chunk",
+                    &section_id.to_string(),
+                    &chunk.part.to_string(),
+                    &chunk.content_hash,
+                ]),
                 section_id,
                 document_id: doc_id,
                 file_path: file.rel.clone(),
@@ -373,15 +455,42 @@ async fn sync_document(
                 token_count: chunk.token_count,
             })
             .collect();
+        // Chunk facts flow as operations like everything else: retract the
+        // replaced chunks, assert the new ones (rx-side entities).
+        let new_chunk_ids: HashSet<Uuid> = chunk_rows.iter().map(|c| c.id).collect();
+        if let Some(old_chunks) = prior_chunks.get(&section_id) {
+            for old in old_chunks {
+                if !new_chunk_ids.contains(&old.id) {
+                    ctx.emit(CatOperation::RetractObject { object_id: old.id })
+                        .await?;
+                }
+            }
+        }
         for chunk in &chunk_rows {
             ctx.schedule_embedding(chunk.id, chunk.embedding_text.clone());
+            ctx.emit(CatOperation::AssertObject {
+                entity: qualify("rx", "Chunk"),
+                object_id: chunk.id,
+                value: serde_json::json!({
+                    "file_path": file.rel,
+                    "section_ref": section_id,
+                    "part": chunk.part,
+                    "heading_path": section.heading_path,
+                    "token_count": chunk.token_count,
+                }),
+                provenance: provenance(&file.rel, range, &chunk.content_hash),
+            })
+            .await?;
         }
         if !chunk_rows.is_empty() {
             ctx.upsert_chunks(chunk_rows).await?;
         }
 
         // Links: deterministic ids keyed by (section, ordinal, target), so
-        // re-ingest is idempotent and vanished links are diffed away.
+        // re-ingest is idempotent and vanished links are diffed away. Each
+        // link fact carries real provenance: the line it sits on and the
+        // blake3 of that line's text (falling back to the section hash if
+        // the reported line is out of range).
         let mut new_links = Vec::new();
         for (ordinal, link) in section.links.iter().enumerate() {
             let link_id = stable_uuid(&[
@@ -391,6 +500,11 @@ async fn sync_document(
                 &link.kind,
                 &link.raw_target,
             ]);
+            let link_hash = source_lines
+                .get(link.line.saturating_sub(1) as usize)
+                .map(|line| blake3_file(line.as_bytes()))
+                .unwrap_or_else(|| section.content_hash.clone());
+            let link_provenance = provenance(&file.rel, Some([link.line, link.line]), &link_hash);
             new_links.push(LinkRow {
                 id: link_id,
                 source_section: section_id,
@@ -405,7 +519,7 @@ async fn sync_document(
                     "raw_target": link.raw_target,
                     "kind": link.kind,
                 }),
-                provenance: provenance(&file.rel, Some([link.line, link.line]), ""),
+                provenance: link_provenance.clone(),
             })
             .await?;
             ctx.emit(CatOperation::AssertMorphism {
@@ -413,7 +527,7 @@ async fn sync_document(
                 morphism_id: stable_uuid(&["m", "md.sourceSection", &link_id.to_string()]),
                 source: link_id,
                 target: section_id,
-                provenance: provenance(&file.rel, Some([link.line, link.line]), ""),
+                provenance: link_provenance.clone(),
             })
             .await?;
             ctx.emit(CatOperation::AssertMorphism {
@@ -421,7 +535,7 @@ async fn sync_document(
                 morphism_id: stable_uuid(&["m", "md.sourceDocument", &link_id.to_string()]),
                 source: link_id,
                 target: doc_id,
-                provenance: provenance(&file.rel, Some([link.line, link.line]), ""),
+                provenance: link_provenance,
             })
             .await?;
         }
@@ -454,6 +568,9 @@ async fn sync_document(
 }
 
 /// Rename: same content, new path — a path-only update, zero re-embeds.
+/// Writing the final content hash directly is safe here: the surviving
+/// document's chunks and vectors are already durably committed (its hash
+/// matched the file's), so the failure-atomicity invariant holds.
 async fn rename_document(
     ctx: &dyn IngestContext,
     old: &DocumentRow,
@@ -468,12 +585,38 @@ async fn rename_document(
     }])
     .await?;
     // Chunks denormalize the path for display/filtering: rewrite in place.
-    // Ids are unchanged, so stored vectors stay valid — no re-embeds.
+    // Ids are unchanged, so stored vectors stay valid — no re-embeds. The
+    // path change is a mutation, so each chunk fact is re-asserted with its
+    // new path (section line ranges provide the provenance ranges).
+    let sections = ctx.sections_for_document(old.id)?;
+    let section_ranges: HashMap<Uuid, [u32; 2]> = sections
+        .iter()
+        .map(|s| (s.id, [s.start_line, s.end_line]))
+        .collect();
     let mut chunks = ctx.chunks_for_document(old.id)?;
     for chunk in &mut chunks {
         chunk.file_path = file.rel.clone();
     }
     if !chunks.is_empty() {
+        for chunk in &chunks {
+            ctx.emit(CatOperation::AssertObject {
+                entity: qualify("rx", "Chunk"),
+                object_id: chunk.id,
+                value: serde_json::json!({
+                    "file_path": chunk.file_path,
+                    "section_ref": chunk.section_id,
+                    "part": chunk.part,
+                    "heading_path": chunk.heading_path,
+                    "token_count": chunk.token_count,
+                }),
+                provenance: provenance(
+                    &file.rel,
+                    section_ranges.get(&chunk.section_id).copied(),
+                    &chunk.content_hash,
+                ),
+            })
+            .await?;
+        }
         ctx.upsert_chunks(chunks).await?;
     }
     ctx.emit(CatOperation::AssertObject {
@@ -490,8 +633,15 @@ async fn rename_document(
     Ok(())
 }
 
-/// Delete a vanished document: retract every fact, then cascade-delete.
+/// Delete a vanished document: retract every fact (chunks included), then
+/// cascade-delete.
 async fn delete_document(ctx: &dyn IngestContext, doc: &DocumentRow) -> EngineResult<()> {
+    for chunk in ctx.chunks_for_document(doc.id)? {
+        ctx.emit(CatOperation::RetractObject {
+            object_id: chunk.id,
+        })
+        .await?;
+    }
     let sections = ctx.sections_for_document(doc.id)?;
     let section_ids: Vec<Uuid> = sections.iter().map(|s| s.id).collect();
     retract_sections(ctx, &doc.file_path, &section_ids).await?;
@@ -574,6 +724,8 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
         let mut link = entry.link.clone();
         link.resolved_document = Some(target_id);
         ctx.upsert_links(vec![link]).await?;
+        // Resolution provenance is real too: the source section's line range
+        // and content hash (the span the link was written in).
         ctx.emit(CatOperation::AssertObject {
             entity: qualify("md", "Link"),
             object_id: entry.link.id,
@@ -582,7 +734,11 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
                 "kind": entry.link.kind,
                 "target_ref": target_id,
             }),
-            provenance: provenance(&entry.source_path, None, ""),
+            provenance: provenance(
+                &entry.source_path,
+                Some(entry.section_range),
+                &entry.section_content_hash,
+            ),
         })
         .await?;
         resolved_count += 1;
