@@ -19,9 +19,10 @@ import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
 
-import { readDoc } from '../platform/fs.js';
+import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
+import { navigateWikiLink } from './wikilink.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
 import type { ReadingFont } from '../stores/settings.js';
@@ -48,6 +49,8 @@ export interface ReaderPaneProps {
   onDocMeta: (meta: { words: number } | null) => void;
   onPickFolder: () => void;
   onMissingWikiLink: (target: string) => void;
+  /** A wikilink matched several notes — surface the candidate set. */
+  onAmbiguousWikiLink?: (target: string, candidates: DocRef[]) => void;
 }
 
 function dirname(path: string): string {
@@ -102,12 +105,17 @@ export function ReaderPane({
   onDocMeta,
   onPickFolder,
   onMissingWikiLink,
+  onAmbiguousWikiLink,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   const [state, setState] = useState<LoadState>({ status: 'idle' });
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
 
   const path = tab?.docRef.path ?? null;
+  // A heading a wikilink is aiming at, keyed by the TARGET doc path: recorded at
+  // resolve time and consumed once that doc finishes loading (cross-doc heading
+  // jumps can't scroll until their document has rendered).
+  const pendingLineByPath = useRef<Map<string, number>>(new Map());
   // The scroll position to restore for the freshly-loaded doc — captured in a
   // ref so scroll writes (which happen after restore) never retrigger a restore.
   const scrollToRestore = useRef<ScrollPos>({ block: 0, offset: 0 });
@@ -154,6 +162,17 @@ export function ReaderPane({
     // must not retrigger a restore).
   }, [state.doc]);
 
+  // Once a wikilink-target document has rendered, jump to the heading line the
+  // link asked for (recorded at resolve time, keyed by the target path).
+  useEffect(() => {
+    if (state.status !== 'ready' || !path) return;
+    const line = pendingLineByPath.current.get(path);
+    if (line === undefined) return;
+    pendingLineByPath.current.delete(path);
+    const frame = requestAnimationFrame(() => readerRef.current?.scrollToLine(line));
+    return () => cancelAnimationFrame(frame);
+  }, [state.doc, path]);
+
   // Persist the scroll anchor, debounced, so store churn (and its re-renders)
   // stays off the scroll's hot path while still capturing the resting position.
   const persistTimer = useRef<number | undefined>(undefined);
@@ -176,17 +195,48 @@ export function ReaderPane({
     readerRef.current?.scrollToLine(item.lineStart);
   }, []);
 
+  // The reader's cheap, synchronous "does this target exist?" predicate, used
+  // only to keep unresolved wikilinks styled muted. The AUTHORITATIVE resolution
+  // (the one navigation follows) goes through the index on click.
   const resolveWikiLink = useCallback(
     (target: string) => findByWikiTarget(files, target) !== null,
     [files],
   );
 
+  // Resolve a clicked wikilink through the index (filename then title match):
+  // one match opens a tab (and scrolls to the heading line when one was given),
+  // several surface as candidates, none falls back to the local file list before
+  // finally toasting "no note named …".
+  const handleWikiLink = useCallback(
+    (target: string, heading: string | null) => {
+      const fromPath = path;
+      void navigateWikiLink({
+        resolve: () => resolveWikilink(fromPath ?? '', target, heading),
+        onResolved: (ref, line) => {
+          if (line !== null) {
+            if (ref.path === fromPath) readerRef.current?.scrollToLine(line);
+            else pendingLineByPath.current.set(ref.path, line);
+          }
+          onNavigate(ref);
+        },
+        onAmbiguous: (candidates) => {
+          if (onAmbiguousWikiLink) onAmbiguousWikiLink(target, candidates);
+          else onMissingWikiLink(target);
+        },
+        onUnresolved: () => {
+          const match = findByWikiTarget(files, target);
+          if (match) onNavigate({ path: match.path, name: match.name });
+          else onMissingWikiLink(target);
+        },
+      });
+    },
+    [path, files, onNavigate, onMissingWikiLink, onAmbiguousWikiLink],
+  );
+
   const onReaderNavigate = useCallback(
     (event: { kind: string; target?: string; heading?: string | null; slug?: string; href?: string }) => {
       if (event.kind === 'wikilink' && event.target) {
-        const match = findByWikiTarget(files, event.target);
-        if (match) onNavigate({ path: match.path, name: match.name });
-        else onMissingWikiLink(event.target);
+        handleWikiLink(event.target, event.heading ?? null);
       } else if (event.kind === 'anchor' && event.slug) {
         const item = outline.find((entry) => entry.slug === event.slug);
         if (item) readerRef.current?.scrollToLine(item.lineStart);
@@ -195,7 +245,7 @@ export function ReaderPane({
         if (match) onNavigate({ path: match.path, name: match.name });
       }
     },
-    [files, outline, onNavigate, onMissingWikiLink, state.dir],
+    [files, outline, onNavigate, state.dir, handleWikiLink],
   );
 
   const platform = useMemo(() => createReaderPlatform(state.dir ?? null), [state.dir]);

@@ -14,6 +14,7 @@ import {
   onWatchError,
   pickWorkspaceFolder,
   setWorkspace,
+  startImport,
   watchWorkspace,
   type WorkspaceFile,
 } from '../platform/fs.js';
@@ -66,6 +67,8 @@ export function AppShell() {
   const recent = useSourcesStore((state) => state.recent);
   const watcher = useSourcesStore((state) => state.watcher);
   const loading = useSourcesStore((state) => state.loading);
+  const importState = useSourcesStore((state) => state.importState);
+  const fromIndex = useSourcesStore((state) => state.fromIndex);
 
   const theme = useSettingsStore((state) => state.theme);
   const readingFont = useSettingsStore((state) => state.readingFont);
@@ -87,25 +90,64 @@ export function AppShell() {
   // --- workspace loading ------------------------------------------------
   const refreshFiles = useCallback(async (folder: string) => {
     try {
-      const list = await listWorkspaceFiles(folder);
-      useSourcesStore.getState().setFiles(list);
+      const listing = await listWorkspaceFiles(folder);
+      const sources = useSourcesStore.getState();
+      sources.setFiles(listing.files);
+      sources.setFromIndex(listing.fromIndex);
     } catch {
       /* non-Tauri or unreadable — leave the list as-is */
     }
   }, []);
 
-  // List the workspace's markdown files into the store, toggling `loading`.
+  // List the workspace's markdown files into the store, toggling `loading`. The
+  // listing carries whether it came from the engine index or the live fs scan.
   const listInto = useCallback(async (folder: string) => {
     const sources = useSourcesStore.getState();
     sources.setLoading(true);
     try {
-      sources.setFiles(await listWorkspaceFiles(folder));
+      const listing = await listWorkspaceFiles(folder);
+      sources.setFiles(listing.files);
+      sources.setFromIndex(listing.fromIndex);
     } catch {
       sources.setFiles([]);
+      sources.setFromIndex(false);
     } finally {
       sources.setLoading(false);
     }
   }, []);
+
+  // Kick off the engine import for `folder` in the background: open (or reuse)
+  // the workspace index and stream coarse progress into the store, then re-list
+  // from the index once it finishes. Fire-and-forget — the tree stays populated
+  // from the fs fallback while the index builds. Tauri-only (no backend engine on
+  // the website or in unit tests).
+  const startIndexing = useCallback(
+    (folder: string) => {
+      if (!isTauri()) return;
+      const sources = useSourcesStore.getState();
+      sources.setImport({ phase: 'importing', filesDone: 0, filesTotal: 0, chunks: 0, error: null });
+      void startImport(folder, (progress) => {
+        // Ignore stale progress once the user has switched workspaces.
+        if (useSourcesStore.getState().root === folder) sources.setImport(progress);
+      })
+        .then((final) => {
+          if (useSourcesStore.getState().root !== folder) return;
+          sources.setImport(final);
+          if (final.phase === 'done') void refreshFiles(folder);
+        })
+        .catch((cause) => {
+          if (useSourcesStore.getState().root !== folder) return;
+          sources.setImport({
+            phase: 'error',
+            filesDone: 0,
+            filesTotal: 0,
+            chunks: 0,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        });
+    },
+    [refreshFiles],
+  );
 
   // Open `folder` as the active workspace; resolves to `true` once the store
   // reflects it as the active root. In a Tauri shell the watcher is armed FIRST:
@@ -156,11 +198,12 @@ export function AppShell() {
         sources.setRoot(granted);
         sources.setWatcher('error');
         await listInto(granted);
+        startIndexing(granted);
         return true;
       }
 
       // Watch armed + grant committed. Read back the canonical root (idempotent
-      // re-grant) for display, then list within it.
+      // re-grant) for display, then list within it and build the index.
       let granted = folder;
       try {
         granted = await setWorkspace(folder);
@@ -170,9 +213,10 @@ export function AppShell() {
       sources.setRoot(granted);
       sources.setWatcher('watching');
       await listInto(granted);
+      startIndexing(granted);
       return true;
     },
-    [listInto],
+    [listInto, startIndexing],
   );
 
   // Switch the active workspace to `folder`, retiring the previous workspace's
@@ -245,6 +289,14 @@ export function AppShell() {
 
   const onMissingWikiLink = useCallback((target: string) => {
     toast(`No note named "${target}"`);
+  }, []);
+
+  const onAmbiguousWikiLink = useCallback((target: string, candidates: DocRef[]) => {
+    toast(`${candidates.length} notes match "${target}" — opening the first`);
+    if (candidates[0]) {
+      useTabsStore.getState().openTab(candidates[0]);
+      useSourcesStore.getState().addRecent(candidates[0], useSourcesStore.getState().root);
+    }
   }, []);
 
   const focusOutline = useCallback(() => {
@@ -608,6 +660,15 @@ export function AppShell() {
     [recent, root],
   );
 
+  // Gitignored files carry an `ignored` flag from the fs-fallback listing; the
+  // tree dims them. (Index-listed files are never ignored — the scan drops them.)
+  const ignoredPaths = useMemo(() => {
+    const set = new Set<string>();
+    for (const file of files) if (file.ignored) set.add(file.path);
+    return set;
+  }, [files]);
+  const isIgnored = useCallback((path: string) => ignoredPaths.has(path), [ignoredPaths]);
+
   const textScale = textScaleFactor({ textScaleIndex });
 
   return (
@@ -637,6 +698,7 @@ export function AppShell() {
           onPickFolder={onPickFolder}
           onOpenFile={openFile}
           onOpenRecent={openRef}
+          isIgnored={isIgnored}
         />
 
         <main className="shell__main">
@@ -655,11 +717,18 @@ export function AppShell() {
             onDocMeta={onDocMeta}
             onPickFolder={onPickFolder}
             onMissingWikiLink={onMissingWikiLink}
+            onAmbiguousWikiLink={onAmbiguousWikiLink}
           />
         </main>
       </div>
 
-      <StatusBar words={docWords} watcher={watcher} fileCount={files.length} />
+      <StatusBar
+        words={docWords}
+        watcher={watcher}
+        fileCount={files.length}
+        importState={importState}
+        fromIndex={fromIndex}
+      />
 
       {paletteOpen ? (
         <FileJumpPalette
