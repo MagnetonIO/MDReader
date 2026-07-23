@@ -1312,79 +1312,76 @@ mod tests {
     }
 
     #[test]
-    fn two_cooperating_saves_of_the_same_file_serialize_with_no_lost_update() {
+    fn two_saves_to_different_files_in_the_same_directory_serialize() {
         use std::sync::mpsc;
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
 
-        // The stable sidecar lock must SERIALIZE cooperating saves across the rename
-        // (which swaps the document's inode). We prove it: thread 1 saves A→B and
-        // PARKS in `before_finish` — after its atomic rename, still holding the lock.
-        // A second save of the SAME file must not be able to proceed while that lock
-        // is held. (Reverting to a lock on the target inode lets the second save
-        // acquire the NEW inode's lock and run concurrently → this goes RED.)
+        // Proves the lock is per-DIRECTORY, not per-file: two saves to DIFFERENT
+        // files in the same directory must serialize. Thread 1 saves a.md and PARKS
+        // holding the lock (in `before_finish`, after its rename); a save of b.md
+        // (a different file, same directory) must block on the shared lock.
+        //
+        // Revert-genuine: a per-FILE or per-inode lock gives a.md and b.md different
+        // locks, so the second save runs concurrently and completes → RED. (The
+        // old same-file test could not distinguish this — a per-doc lock also
+        // serialized same-file saves.)
         let (_dir, root) = workspace();
-        let note = root.join("note.md");
-        fs::write(&note, "A").unwrap();
+        let a = root.join("a.md");
+        let b = root.join("b.md");
+        fs::write(&a, "A").unwrap();
+        fs::write(&b, "B").unwrap();
         let ws = Arc::new(WorkspaceState::granted(root));
-        let hash_a = hash_of(b"A");
-        let note_path = note.to_str().unwrap().to_string();
 
         let (held_tx, held_rx) = mpsc::channel::<()>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let ws1 = Arc::clone(&ws);
-        let (p1, h1) = (note_path.clone(), hash_a.clone());
+        let (pa, ha) = (a.to_str().unwrap().to_string(), hash_of(b"A"));
         let t1 = thread::spawn(move || {
             save_doc_guarded(
                 &ws1,
-                &p1,
-                "B",
-                &h1,
+                &pa,
+                "A2",
+                &ha,
                 false,
                 commit_rename,
                 || {},
                 move || {
-                    held_tx.send(()).unwrap(); // renamed; lock still held
-                    release_rx.recv().unwrap(); // park while holding the lock
+                    held_tx.send(()).unwrap(); // renamed a.md; lock still held
+                    release_rx.recv().unwrap(); // park while holding the directory lock
                 },
             )
         });
 
-        held_rx.recv().unwrap(); // thread 1 has renamed and holds the save lock
+        held_rx.recv().unwrap(); // thread 1 holds the directory lock
 
-        // Thread 2 saves the same file; it must BLOCK on the shared directory lock.
+        // Thread 2 saves a DIFFERENT file in the SAME directory.
         let (done_tx, done_rx) = mpsc::channel::<()>();
         let ws2 = Arc::clone(&ws);
-        let (p2, h2) = (note_path.clone(), hash_a.clone());
+        let (pb, hb) = (b.to_str().unwrap().to_string(), hash_of(b"B"));
         let t2 = thread::spawn(move || {
-            let out = save_doc_guarded(&ws2, &p2, "C", &h2, false, commit_rename, || {}, || {});
+            let out = save_doc_guarded(&ws2, &pb, "B2", &hb, false, commit_rename, || {}, || {});
             done_tx.send(()).unwrap();
             out
         });
 
-        // A generous window: with serialization thread 2 stays BLOCKED (no
-        // completion); a per-inode lock would let it complete on the new inode.
+        // With a per-directory lock the second save stays BLOCKED; a per-file/inode
+        // lock (different lock per file) would let it complete concurrently.
         let still_blocked = done_rx.recv_timeout(Duration::from_millis(500)).is_err();
         assert!(
             still_blocked,
-            "a second cooperating save must serialize behind the first while the lock is held"
+            "saves to different files in the same directory must serialize on the shared lock"
         );
 
-        // Release thread 1; thread 2 now proceeds and observes the post-swap state.
+        // Release thread 1; both saves succeed (different files, no conflict).
         release_tx.send(()).unwrap();
         let out1 = t1.join().unwrap().expect("thread 1 save");
         let out2 = t2.join().unwrap().expect("thread 2 save");
-
         assert_eq!(out1.status, "saved");
-        // The serialized second save sees the first's write (hash moved off A) →
-        // conflict, NOT a silent lost update.
-        assert_eq!(
-            out2.status, "conflict",
-            "the serialized second save must observe the first's committed write"
-        );
-        // The file is exactly ONE whole version — no interleaving / lost update.
-        assert_eq!(fs::read(&note).unwrap(), b"B");
+        assert_eq!(out2.status, "saved");
+        assert_eq!(fs::read(&a).unwrap(), b"A2");
+        assert_eq!(fs::read(&b).unwrap(), b"B2");
     }
 
     #[test]
@@ -1614,6 +1611,43 @@ mod tests {
             callee.as_deref(),
             Some("save_doc_guarded"),
             "save_doc must delegate directly to save_doc_guarded"
+        );
+
+        // Inspecting the callee alone is not enough: a truncating or side-effecting
+        // publisher passed AS THE ARGUMENT would still pass. Assert the argument
+        // wiring — all 8 args, the publisher (index 5) being the real atomic
+        // `commit_rename` path (not a substitute closure), and the two test hooks
+        // (6, 7) being EMPTY closures (no injected side-effects) in production.
+        let args: Vec<&syn::Expr> = call.args.iter().collect();
+        assert_eq!(
+            args.len(),
+            8,
+            "save_doc_guarded must be called with its full 8-arg wiring"
+        );
+
+        let publisher = match args[5] {
+            syn::Expr::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            publisher.as_deref(),
+            Some("commit_rename"),
+            "the publisher argument must be the atomic commit_rename — not a substitute closure"
+        );
+
+        let is_empty_closure = |expr: &syn::Expr| match expr {
+            syn::Expr::Closure(closure) => {
+                matches!(&*closure.body, syn::Expr::Block(block) if block.block.stmts.is_empty())
+            }
+            _ => false,
+        };
+        assert!(
+            is_empty_closure(args[6]),
+            "the before_rename hook must be an empty closure in production (no injected work)"
+        );
+        assert!(
+            is_empty_closure(args[7]),
+            "the before_finish hook must be an empty closure in production (no injected work)"
         );
     }
 }
