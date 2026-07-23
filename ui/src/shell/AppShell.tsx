@@ -33,7 +33,6 @@ import {
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
 import type { DocRef, ScrollPos } from '../stores/types.js';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
 import { reindexOnChange } from './reindex.js';
