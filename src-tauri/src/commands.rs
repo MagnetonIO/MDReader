@@ -36,8 +36,7 @@
 //! notes it at the use site.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
@@ -75,57 +74,64 @@ pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
 // Workspace containment
 // --------------------------------------------------------------------------
 
-/// The single granted workspace root (canonicalized), or `None` before a folder
-/// has been picked/restored, plus a monotonic **root generation**. Every
-/// path-taking command validates its argument against this root; the generation
-/// advances on every grant change so a switch can invalidate any import still
-/// running for the *previous* workspace (an old pass's late status never
-/// overwrites the new workspace's progress — see the engine module's per-
-/// generation status slot).
+/// The active workspace, held as a single immutable [`Epoch`](crate::engine::Epoch)
+/// (`None` before a folder has been picked/restored). A switch **creates a new
+/// epoch and swaps it in** — that swap is the one revocation barrier: root,
+/// generation, engine, and import status all move together, never sampled at
+/// different instants. Commands capture the current `Arc<Epoch>` once and compare
+/// identity via [`is_current`](Self::is_current) at their commit points.
 #[derive(Default)]
 pub struct WorkspaceState {
-    root: Mutex<Option<PathBuf>>,
-    generation: AtomicU64,
+    current: Mutex<Option<Arc<crate::engine::Epoch>>>,
 }
 
 impl WorkspaceState {
+    /// The current epoch, or `None` before any workspace has been granted.
+    pub(crate) fn current(&self) -> Option<Arc<crate::engine::Epoch>> {
+        self.current.lock().ok().and_then(|slot| slot.clone())
+    }
+
     /// The current granted root, or an error when no workspace has been granted.
     pub(crate) fn root(&self) -> Result<PathBuf, String> {
-        self.root
-            .lock()
-            .map_err(|_| "workspace state poisoned".to_string())?
-            .clone()
+        self.current()
+            .map(|epoch| epoch.root.clone())
             .ok_or_else(|| "no workspace has been opened".to_string())
     }
 
-    /// The current root generation (advances on every grant change).
+    /// Whether `epoch` is the currently-active era — the `Arc::ptr_eq` identity
+    /// check every command uses at its commit points to discard stale work.
+    pub(crate) fn is_current(&self, epoch: &Arc<crate::engine::Epoch>) -> bool {
+        self.current()
+            .is_some_and(|current| Arc::ptr_eq(&current, epoch))
+    }
+
+    /// The current epoch's generation (0 when no workspace is open).
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
+        self.current().map_or(0, |epoch| epoch.generation)
     }
 
-    /// Replace the granted root with `root` (already canonicalized) and advance
-    /// the root generation, invalidating any import scoped to the previous grant.
-    fn set(&self, root: PathBuf) -> Result<(), String> {
-        *self
-            .root
+    /// Create a fresh epoch for `root` (already canonicalized) and swap it in,
+    /// advancing the generation. THE revocation barrier: the returned `Arc` is the
+    /// new current era; any epoch captured before this call is now stale. Returns
+    /// the new epoch.
+    pub(crate) fn switch(&self, root: PathBuf) -> Result<Arc<crate::engine::Epoch>, String> {
+        let mut slot = self
+            .current
             .lock()
-            .map_err(|_| "workspace state poisoned".to_string())? = Some(root);
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+            .map_err(|_| "workspace state poisoned".to_string())?;
+        let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+        let epoch = crate::engine::Epoch::new(root, generation);
+        *slot = Some(Arc::clone(&epoch));
+        Ok(epoch)
     }
 
-    /// Test helper: a state already granting `root` (generation advanced to 1).
+    /// Test helper: a state already granting `root` (generation 1).
     #[cfg(test)]
     pub(crate) fn granted(root: PathBuf) -> Self {
         let state = Self::default();
-        state.set(root).expect("grant test root");
+        state.switch(root).expect("grant test root");
         state
-    }
-
-    /// Test helper: simulate a workspace switch to `root` (advances generation).
-    #[cfg(test)]
-    pub(crate) fn advance_for_test(&self, root: PathBuf) {
-        self.set(root).expect("advance grant");
     }
 }
 
@@ -222,7 +228,9 @@ pub fn set_workspace(
 ) -> Result<String, String> {
     let real = canonical_dir(&root)?;
     let granted = real.to_string_lossy().into_owned();
-    state.set(real)?;
+    // A grant change is a new epoch (the revocation barrier), even on the
+    // degraded/no-watcher path.
+    state.switch(real)?;
     Ok(granted)
 }
 
@@ -439,14 +447,16 @@ fn watch_and_commit<F: DebounceEventHandler>(
     Ok(new_root)
 }
 
-/// Adopt `new_root` as the grant and `debouncer` as the live watcher, dropping
-/// (and thereby stopping) the previous watcher. Reached only after the new watch
-/// is armed. Acquires BOTH state locks up front and only then performs the two
-/// (now-infallible) writes, so there is no window in which the grant is advanced
-/// while the watcher swap is still pending: a poisoned lock aborts before ANY
-/// state is touched (grant + watcher stay intact), and once both locks are held
-/// the two roots move as one and can never diverge. Lock order is watcher→grant
-/// everywhere both are held (this is the only such site), so no deadlock.
+/// Swap in a fresh [`Epoch`](crate::engine::Epoch) for `new_root` and `debouncer`
+/// as the live watcher, dropping (and thereby stopping) the previous watcher.
+/// Reached only after the new watch is armed. Acquires BOTH state locks up front
+/// and only then performs the two (now-infallible) writes, so there is no window
+/// in which the new epoch is installed while the watcher swap is still pending: a
+/// poisoned lock aborts before ANY state is touched (epoch + watcher stay
+/// intact), and once both locks are held the new epoch and the watcher move as
+/// one and can never diverge. Lock order is watcher→epoch everywhere both are
+/// held (this is the only such site), so no deadlock. The epoch swap IS the
+/// revocation barrier for any import still running on the old root.
 fn commit_workspace(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
@@ -457,15 +467,13 @@ fn commit_workspace(
         .0
         .lock()
         .map_err(|_| "watcher state poisoned".to_string())?;
-    let mut grant_slot = workspace
-        .root
+    let mut epoch_slot = workspace
+        .current
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
-    // Both locks held — neither write below can fail, so the swap is atomic. The
-    // generation advances with the grant so any import still running for the old
-    // root is invalidated (its late status is discarded, not published).
-    *grant_slot = Some(new_root);
-    workspace.generation.fetch_add(1, Ordering::AcqRel);
+    // Both locks held — neither write below can fail, so the swap is atomic.
+    let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    *epoch_slot = Some(crate::engine::Epoch::new(new_root, generation));
     *watcher_slot = Some(debouncer);
     Ok(())
 }

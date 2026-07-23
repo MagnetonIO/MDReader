@@ -10,7 +10,6 @@ mod commands;
 mod engine;
 
 use commands::{WatcherState, WorkspaceState};
-use engine::EngineState;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
@@ -105,7 +104,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
-        .manage(EngineState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

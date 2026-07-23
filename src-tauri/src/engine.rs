@@ -44,18 +44,29 @@
 //! `done` (or the message on `error`). Finer streaming would need engine
 //! changes, which are out of this lane's scope.
 //!
-//! ## Grant discipline
+//! ## Workspace epoch (the revocation barrier)
 //!
-//! Every engine command validates its target against the current canonical
-//! [`WorkspaceState`] grant, exactly like the fs commands: an import root must be
-//! the granted workspace (or contained in it), a wikilink's origin document must
-//! live inside it, and the cached engine is **keyed to and re-verified against**
-//! the active grant so a stale engine from a previous workspace can never answer.
-//! Foreign roots are a hard error.
+//! Switching workspaces is a *revocation barrier*, not a set of independent
+//! field updates. A workspace is one immutable [`Epoch`] — its canonical root,
+//! generation, engine, per-epoch import status, and coalescing flag — held as an
+//! `Arc<Epoch>` behind a single lock in [`WorkspaceState`]. A switch **creates a
+//! new epoch and swaps it in**; that swap is the barrier.
+//!
+//! Every command captures the current `Arc<Epoch>` **once** at entry, so root,
+//! generation, engine, and status always travel together — never sampled at
+//! different instants (the race this design closes). At each commit point
+//! (publishing status, installing the engine after the async model load,
+//! returning a listing/resolution) it re-checks [`WorkspaceState::is_current`]
+//! (`Arc::ptr_eq`); a stale epoch discards its work silently-clean. An old
+//! import's progress lands only in its **own** epoch's status slot, which
+//! nobody reads once superseded — [`import_status`] reads the *current* epoch's
+//! slot only. Foreign roots (outside the epoch's grant) are a hard error.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -76,73 +87,112 @@ use crate::commands::{
 /// bound so the two views agree on what counts as a document.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
+/// Deadline for the one-time embedding-model construction (download + ONNX
+/// graph deserialize). A never-finishing download must surface a timeout error
+/// the user can retry, not hang the import forever.
+const MODEL_LOAD_DEADLINE: Duration = Duration::from_secs(120);
+
 // --------------------------------------------------------------------------
-// State
+// State — the workspace epoch
 // --------------------------------------------------------------------------
 
-/// The engine for the currently granted workspace, plus the last import status
-/// and the in-flight-import handle. One workspace is active at a time (mirroring
-/// [`WorkspaceState`]'s single grant); switching folders replaces the cached
-/// engine and advances the root generation.
-#[derive(Default)]
-pub struct EngineState {
-    inner: Mutex<EngineInner>,
-    /// The last import status, tagged with the root generation it belongs to, so
-    /// an old import's late status can never overwrite the new workspace's.
-    status: Mutex<GenStatus>,
-    /// The currently-running import (root + generation) for coalescing: a second
-    /// `start_import` for the same root+generation returns the live status
-    /// instead of spawning a duplicate pass.
-    active: Mutex<ActiveImport>,
+/// One immutable workspace era. Everything scoped to a granted workspace lives
+/// here so a command that captures an `Arc<Epoch>` at entry holds a *consistent*
+/// snapshot (root + generation + engine + status), and a switch — which swaps in
+/// a fresh epoch — is a single atomic revocation barrier. Held as `Arc<Epoch>`
+/// so identity comparison (`Arc::ptr_eq`) is the "still current?" test.
+pub struct Epoch {
+    /// Canonical granted root (the workspace the engine keys and imports on).
+    pub(crate) root: PathBuf,
+    /// Monotonic era number (advances on every switch); for logs/observability —
+    /// `Arc::ptr_eq` is the authoritative identity.
+    pub(crate) generation: u64,
+    /// The opened engine, installed once (after the async model load). Per-epoch,
+    /// so a stale epoch installing its engine can never leak into the current one.
+    engine: OnceLock<Arc<EmbeddedCatDb>>,
+    /// This epoch's import status. A superseded import writes only here — nobody
+    /// reads a stale epoch's slot ([`import_status`] reads the current epoch's).
+    status: Mutex<ImportProgress>,
+    /// Coalescing flag: whether an import for THIS epoch is already in flight.
+    active: Mutex<bool>,
 }
 
-#[derive(Default)]
-struct EngineInner {
-    /// The opened engine, or `None` before the first `start_import`.
-    engine: Option<Arc<EmbeddedCatDb>>,
-    /// Canonical source root the cached engine imports from (always the grant).
-    root: Option<PathBuf>,
-}
+impl Epoch {
+    /// A fresh epoch for `root` at `generation`, with no engine yet and an idle
+    /// status.
+    pub(crate) fn new(root: PathBuf, generation: u64) -> Arc<Self> {
+        Arc::new(Self {
+            root,
+            generation,
+            engine: OnceLock::new(),
+            status: Mutex::new(ImportProgress::default()),
+            active: Mutex::new(false),
+        })
+    }
 
-/// The last import status plus the root generation it was published under.
-struct GenStatus {
-    generation: u64,
-    progress: ImportProgress,
-}
+    /// This epoch's current import status.
+    fn status(&self) -> ImportProgress {
+        self.status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_default()
+    }
 
-impl Default for GenStatus {
-    fn default() -> Self {
-        Self {
-            generation: 0,
-            progress: ImportProgress::default(),
-        }
+    /// The installed engine, if the model has finished loading for this epoch.
+    #[cfg(test)]
+    fn has_engine(&self) -> bool {
+        self.engine.get().is_some()
+    }
+
+    /// Test helper: install `db` as this epoch's engine (simulates the post-load
+    /// engine install).
+    #[cfg(test)]
+    fn install_engine_for_test(&self, db: Arc<EmbeddedCatDb>) {
+        let _ = self.engine.set(db);
     }
 }
 
-/// The root + generation of the import currently in flight (if any).
-#[derive(Default)]
-struct ActiveImport {
-    root: Option<PathBuf>,
-    generation: u64,
+/// Records `progress` into `epoch`'s OWN status slot (always — it is per-epoch,
+/// so a stale epoch's write is invisible to [`import_status`]).
+fn record_status(epoch: &Epoch, progress: &ImportProgress) {
+    if let Ok(mut slot) = epoch.status.lock() {
+        *slot = progress.clone();
+    }
 }
 
-/// Releases the active-import claim on drop — but only if the slot still names
-/// this pass's root+generation (a newer switch may have re-claimed it, and that
-/// claim must survive this pass unwinding).
-struct ActiveGuard<'a> {
-    engine: &'a EngineState,
-    root: PathBuf,
-    generation: u64,
+/// The current epoch's import status, or `idle` when no workspace is open.
+fn current_status(workspace: &WorkspaceState) -> ImportProgress {
+    workspace
+        .current()
+        .map(|epoch| epoch.status())
+        .unwrap_or_default()
 }
 
-impl Drop for ActiveGuard<'_> {
+/// Try to claim `epoch`'s in-flight-import slot. `true` → the caller owns the
+/// import; `false` → an import for this epoch is already running (coalesce onto
+/// it and return the live status).
+fn claim_active(epoch: &Epoch) -> Result<bool, String> {
+    let mut active = epoch
+        .active
+        .lock()
+        .map_err(|_| "engine state poisoned".to_string())?;
+    if *active {
+        return Ok(false);
+    }
+    *active = true;
+    Ok(true)
+}
+
+/// Releases `epoch`'s active-import claim on drop. Per-epoch, so no cross-epoch
+/// bookkeeping is needed — a superseded epoch's flag is simply never read again.
+struct ActiveGuard {
+    epoch: Arc<Epoch>,
+}
+
+impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        if let Ok(mut active) = self.engine.active.lock() {
-            if active.generation == self.generation
-                && active.root.as_deref() == Some(self.root.as_path())
-            {
-                active.root = None;
-            }
+        if let Ok(mut active) = self.epoch.active.lock() {
+            *active = false;
         }
     }
 }
@@ -346,141 +396,95 @@ fn open_engine(db_path: &Path, embedder: Arc<dyn Embedder>) -> Result<Arc<Embedd
         .map_err(|err| format!("open index: {err}"))
 }
 
-/// Validate an import `root` against the active grant and return the canonical
-/// grant the engine keys and imports on. The target must be the granted
-/// workspace root (or contained within it); a foreign path — or no grant at all
-/// — is a hard error. The engine is always keyed to the *grant*, never to an
-/// arbitrary caller-supplied path, so one workspace maps to exactly one index.
-fn import_root_for(workspace: &WorkspaceState, root: &str) -> Result<PathBuf, String> {
-    let granted = workspace.root()?;
-    let candidate = canonical_dir(root)?;
-    if !candidate.starts_with(&granted) {
-        return Err(format!("path escapes the workspace: {root}"));
-    }
-    Ok(granted)
-}
-
-/// Return the cached engine, opening (and caching) it for `granted` if the grant
-/// changed. On a fresh open the embedder is constructed off the command thread,
-/// with a `"loading"` phase published first so the first-run model download is
-/// visible. `granted` must already be the validated canonical grant.
-async fn ensure_engine(
-    engine: &EngineState,
-    workspace: &WorkspaceState,
-    app: &AppHandle,
-    granted: &Path,
-    channel: &Channel<ImportProgress>,
-    generation: u64,
-) -> Result<Arc<EmbeddedCatDb>, String> {
-    // Fast path: the engine is already open for this exact grant.
-    {
-        let inner = engine
-            .inner
-            .lock()
-            .map_err(|_| "engine state poisoned".to_string())?;
-        if let (Some(db), Some(cached)) = (&inner.engine, &inner.root) {
-            if cached == granted {
-                return Ok(Arc::clone(db));
-            }
+/// Run the (blocking, possibly downloading) embedder construction under a
+/// deadline. A build that never finishes — e.g. a stalled first-run download —
+/// resolves to a distinct, user-retryable timeout error instead of hanging the
+/// import forever. Generic over the loader so it is testable with an injected
+/// never-resolving future.
+async fn load_embedder_with_deadline<F, Fut>(
+    deadline: Duration,
+    load: F,
+) -> Result<Arc<dyn Embedder>, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Arc<dyn Embedder>, String>>,
+{
+    match tokio::time::timeout(deadline, load()).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            Err("model download timed out — check your connection; retry from the status bar"
+                .to_string())
         }
     }
+}
 
-    // Slow path: build the model (visible as "loading") and open the index. No
-    // state lock is held across the (blocking, possibly network) construction.
+/// Ensure `epoch`'s engine is installed, opening it (after the async, deadlined
+/// model load — visible as `"loading"`) if this is the first import. Re-checks
+/// the epoch is still current across the slow load: `Ok(Some(db))` to proceed,
+/// `Ok(None)` when a switch superseded this epoch mid-load (abandon clean),
+/// `Err` on a model/open failure.
+async fn ensure_engine(
+    epoch: &Arc<Epoch>,
+    workspace: &WorkspaceState,
+    app: &AppHandle,
+    channel: &Channel<ImportProgress>,
+) -> Result<Option<Arc<EmbeddedCatDb>>, String> {
+    // Fast path: this epoch's engine is already installed.
+    if let Some(db) = epoch.engine.get() {
+        return Ok(Some(Arc::clone(db)));
+    }
+
     let base = app
         .path()
         .app_data_dir()
         .map_err(|err| format!("no app data dir: {err}"))?;
-    let db_path = db_path_under(&base, granted);
-    publish(engine, workspace, channel, generation, ImportProgress::loading());
-    let embedder = build_embedder().await?;
+    let db_path = db_path_under(&base, &epoch.root);
+
+    // Publish "loading" and build the model off the command thread, deadlined.
+    publish(epoch, workspace, channel, ImportProgress::loading());
+    let embedder = load_embedder_with_deadline(MODEL_LOAD_DEADLINE, build_embedder).await?;
+
+    // Commit point: a switch during the (slow) load supersedes this epoch — drop
+    // the freshly-built model and abandon rather than install into a dead era.
+    if !workspace.is_current(epoch) {
+        return Ok(None);
+    }
+
     let db = open_engine(&db_path, embedder)?;
-
-    let mut inner = engine
-        .inner
-        .lock()
-        .map_err(|_| "engine state poisoned".to_string())?;
-    inner.engine = Some(Arc::clone(&db));
-    inner.root = Some(granted.to_path_buf());
-    Ok(db)
-}
-
-/// Try to claim the active-import slot for `granted`+`generation`. Returns
-/// `true` when the caller now owns the slot (it should run the import) or
-/// `false` when an import for the same root+generation is already in flight (the
-/// caller coalesces onto it — returning the live status — instead of spawning a
-/// duplicate pass). A *different* root/generation supersedes the previous claim.
-fn claim_active(engine: &EngineState, granted: &Path, generation: u64) -> Result<bool, String> {
-    let mut active = engine
-        .active
-        .lock()
-        .map_err(|_| "engine state poisoned".to_string())?;
-    if active.generation == generation && active.root.as_deref() == Some(granted) {
-        return Ok(false);
+    // Install into THIS epoch's slot (idempotent; a coalesced racer that beat us
+    // wins and we adopt its engine).
+    match epoch.engine.set(Arc::clone(&db)) {
+        Ok(()) => Ok(Some(db)),
+        Err(_) => Ok(epoch.engine.get().map(Arc::clone)),
     }
-    active.generation = generation;
-    active.root = Some(granted.to_path_buf());
-    Ok(true)
 }
 
-/// The current import status (for coalescing returns and polling).
-fn current_status(engine: &EngineState) -> Result<ImportProgress, String> {
-    engine
-        .status
-        .lock()
-        .map(|status| status.progress.clone())
-        .map_err(|_| "engine state poisoned".to_string())
-}
-
-/// The status for the *current* generation: the stored progress when it belongs
-/// to the active grant, else `idle` (a switch has moved on and the stored status
-/// is a previous workspace's).
-fn status_for(engine: &EngineState, workspace: &WorkspaceState) -> Result<ImportProgress, String> {
-    let current = workspace.generation();
-    let status = engine
-        .status
-        .lock()
-        .map_err(|_| "engine state poisoned".to_string())?;
-    Ok(if status.generation == current {
-        status.progress.clone()
-    } else {
-        ImportProgress::default()
-    })
-}
-
-/// Record `progress` as the status for `generation` — UNLESS a switch has
-/// advanced the grant past it, in which case this is a stale pass and its status
-/// is discarded (never overwriting the new workspace's). Returns whether the
-/// write landed.
-fn record_status(
-    engine: &EngineState,
-    workspace: &WorkspaceState,
-    generation: u64,
-    progress: &ImportProgress,
-) -> bool {
-    if workspace.generation() != generation {
-        return false;
-    }
-    if let Ok(mut status) = engine.status.lock() {
-        status.generation = generation;
-        status.progress = progress.clone();
-    }
-    true
-}
-
-/// Record `progress` for `generation` and, when it is not stale, stream it on
-/// the import channel (a closed channel is ignored — the frontend also gets the
-/// final value from `start_import`'s return).
+/// Record `progress` into `epoch`'s own status slot and, while the epoch is
+/// still current, stream it on the import channel (a closed channel is ignored —
+/// the frontend also gets the final value from `start_import`'s return). A stale
+/// epoch's status is written but never surfaced ([`import_status`] reads the
+/// current epoch's slot only).
 fn publish(
-    engine: &EngineState,
+    epoch: &Arc<Epoch>,
     workspace: &WorkspaceState,
     channel: &Channel<ImportProgress>,
-    generation: u64,
     progress: ImportProgress,
 ) {
-    if record_status(engine, workspace, generation, &progress) {
+    record_status(epoch, &progress);
+    if workspace.is_current(epoch) {
         let _ = channel.send(progress);
     }
+}
+
+/// Validate an import `root` against `epoch`'s grant (containment). A foreign
+/// path is a hard error; the engine always imports the epoch's own grant, never
+/// an arbitrary caller-supplied path, so one workspace maps to exactly one index.
+fn validate_import_root(epoch: &Epoch, root: &str) -> Result<(), String> {
+    let candidate = canonical_dir(root)?;
+    if !candidate.starts_with(&epoch.root) {
+        return Err(format!("path escapes the workspace: {root}"));
+    }
+    Ok(())
 }
 
 /// Best-effort pre-scan for the file total shown while importing. A scan failure
@@ -503,17 +507,19 @@ fn scan_options(respect_gitignore: bool) -> ScanOptions {
 // start_import / import_status
 // --------------------------------------------------------------------------
 
-/// Open (or reuse) the workspace index for the granted root and run an
-/// incremental import — streaming coarse progress on `on_event` (`loading` →
-/// `importing` → `done`/`error`) and returning the final status. `root` is
-/// validated against the active grant (a foreign path is a hard error); the
-/// index is keyed to the grant. Coalesced (#4): a second call for the same
-/// root+generation returns the live status instead of spawning a duplicate pass.
-/// Generation-scoped (#3): if a workspace switch supersedes this import, its
-/// status is discarded rather than published over the new workspace's. The
-/// frontend fires this without awaiting (progress flows on the channel) but the
-/// resolved value is authoritative, so a mocked IPC (which need not drive the
-/// channel) still lands the StatusBar on `done`.
+/// Open (or reuse) the workspace index and run an incremental import, streaming
+/// coarse progress on `on_event` (`loading` → `importing` → `done`/`error`) and
+/// returning the final status.
+/// Captures the current [`Epoch`] once at entry — root, generation, engine, and
+/// status travel together. `root` is validated against the epoch's grant (a
+/// foreign path is a hard error). Coalesced (#4): a second import for the same
+/// epoch returns the live status instead of spawning a duplicate pass. At each
+/// commit point (model install, every publish) it re-checks the epoch is still
+/// current; a switch mid-import abandons silently-clean, its late status landing
+/// only in its own (superseded, unread) slot. The frontend fires this without
+/// awaiting (progress flows on the channel) but the resolved value is
+/// authoritative, so a mocked IPC (which need not drive the channel) still lands
+/// the StatusBar on `done`.
 #[tauri::command]
 #[specta::specta]
 pub async fn start_import(
@@ -521,56 +527,55 @@ pub async fn start_import(
     root: String,
     on_event: Channel<ImportProgress>,
     workspace: State<'_, WorkspaceState>,
-    engine: State<'_, EngineState>,
 ) -> Result<ImportProgress, String> {
-    let granted = import_root_for(&workspace, &root)?;
-    let generation = workspace.generation();
+    // Capture the epoch ONCE; validate the target against its grant.
+    let epoch = workspace
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    validate_import_root(&epoch, &root)?;
 
-    // Coalesce onto an in-flight import for the same root+generation (#4).
-    if !claim_active(&engine, &granted, generation)? {
-        return current_status(&engine);
+    // Coalesce onto an in-flight import for this epoch (#4).
+    if !claim_active(&epoch)? {
+        return Ok(epoch.status());
     }
     let _guard = ActiveGuard {
-        engine: &engine,
-        root: granted.clone(),
-        generation,
+        epoch: Arc::clone(&epoch),
     };
 
-    let db = match ensure_engine(&engine, &workspace, &app, &granted, &on_event, generation).await {
-        Ok(db) => db,
+    let db = match ensure_engine(&epoch, &workspace, &app, &on_event).await {
+        Ok(Some(db)) => db,
+        // A switch superseded this epoch during the model load — abandon clean.
+        Ok(None) => return Ok(epoch.status()),
         Err(err) => {
-            // A model-load / open failure is reported as an `error` status (not a
-            // hard command error — the StatusBar surfaces the message).
+            // A model-load / open failure (incl. the load deadline) surfaces as an
+            // `error` status the StatusBar shows (not a hard command error).
             let failed = ImportProgress::failed(0, err);
-            publish(&engine, &workspace, &on_event, generation, failed.clone());
+            publish(&epoch, &workspace, &on_event, failed.clone());
             return Ok(failed);
         }
     };
 
-    let total = scan_count(&granted);
-    publish(&engine, &workspace, &on_event, generation, ImportProgress::importing(total));
+    let total = scan_count(&epoch.root);
+    publish(&epoch, &workspace, &on_event, ImportProgress::importing(total));
 
     // The engine serializes imports internally (single-writer); a concurrent
     // call simply queues, so re-firing on a rapid re-grant is safe.
-    let outcome = db.import(&granted, ImportOptions::default()).await;
+    let outcome = db.import(&epoch.root, ImportOptions::default()).await;
     let final_status = match outcome {
         Ok(report) => ImportProgress::done(&report),
         Err(err) => ImportProgress::failed(total, err.to_string()),
     };
-    publish(&engine, &workspace, &on_event, generation, final_status.clone());
+    publish(&epoch, &workspace, &on_event, final_status.clone());
     Ok(final_status)
 }
 
-/// The latest import status for the current workspace generation — for the
-/// StatusBar's initial render and any poll. A status left over from a previous
-/// workspace (superseded by a switch) reads as `idle`.
+/// The latest import status for the CURRENT workspace epoch — for the StatusBar's
+/// initial render and any poll. A superseded epoch's status is never read, so a
+/// switch leaves this reading `idle` until the new epoch's import publishes.
 #[tauri::command]
 #[specta::specta]
-pub fn import_status(
-    workspace: State<'_, WorkspaceState>,
-    engine: State<'_, EngineState>,
-) -> Result<ImportProgress, String> {
-    status_for(&engine, &workspace)
+pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgress, String> {
+    Ok(current_status(&workspace))
 }
 
 // --------------------------------------------------------------------------
@@ -587,47 +592,33 @@ pub fn import_status(
 pub fn list_workspace_files(
     root: String,
     workspace: State<'_, WorkspaceState>,
-    engine: State<'_, EngineState>,
 ) -> Result<WorkspaceListing, String> {
-    let granted = workspace.root()?;
+    // Capture the epoch ONCE — root + engine + status are one consistent snapshot.
+    let epoch = workspace
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
     // TOCTOU: the reads below run after this containment check (accepted — see
     // the commands module's "TOCTOU" note; local single-user reader).
-    let root_path = resolve_dir(&granted, Path::new(&root))?;
+    let root_path = resolve_dir(&epoch.root, Path::new(&root))?;
 
-    // Serve from the index only when the CURRENT generation's import has finished
-    // (a status left from a previous workspace does not count).
-    let index_done = {
-        let current = workspace.generation();
-        engine
-            .status
-            .lock()
-            .map(|status| status.generation == current && status.progress.is_done())
-            .unwrap_or(false)
-    };
-    if index_done {
-        // The cached engine may only answer when it is keyed to the ACTIVE grant
-        // (never a stale engine carried over from a previous workspace).
-        let cached = {
-            let inner = engine
-                .inner
-                .lock()
-                .map_err(|_| "engine state poisoned".to_string())?;
-            match (&inner.engine, &inner.root) {
-                (Some(engine), Some(src_root)) if *src_root == granted => {
-                    Some((Arc::clone(engine), src_root.clone()))
-                }
-                _ => None,
-            }
-        };
-        if let Some((db, src_root)) = cached {
+    // Serve from the index once THIS epoch's import has finished and its engine
+    // is installed. Both come from the captured epoch, so there is no stale-engine
+    // window (the engine and its "done" status are the same era).
+    if epoch.status().is_done() {
+        if let Some(db) = epoch.engine.get() {
             // Once the index is built it is authoritative: report its provenance
             // (`from_index`) even when it legitimately holds no documents (an
             // empty workspace), rather than masquerading as the fs fallback (#7).
-            let entries = index_listing(&db, &src_root, &root_path)?;
-            return Ok(WorkspaceListing {
-                entries,
-                from_index: true,
-            });
+            let entries = index_listing(db, &epoch.root, &root_path)?;
+            // Commit point: a switch during the read supersedes this listing —
+            // discard it (the fs fallback below serves the still-valid old root
+            // harmlessly; the frontend's request-generation guard drops it too).
+            if workspace.is_current(&epoch) {
+                return Ok(WorkspaceListing {
+                    entries,
+                    from_index: true,
+                });
+            }
         }
     }
 
@@ -707,17 +698,15 @@ fn file_entry(abs: &Path, ignored: bool) -> FileEntry {
 // resolve_wikilink
 // --------------------------------------------------------------------------
 
-/// Validate a wikilink resolution request against the active grant: the origin
+/// Validate a wikilink resolution request against `epoch`'s grant: the origin
 /// document `from_doc` (when given) must live inside the granted workspace — a
-/// foreign origin (or no grant at all) is a hard error. Returns the canonical
-/// grant on success. `from_doc` is otherwise reserved for future same-directory
-/// disambiguation.
-fn wikilink_guard(workspace: &WorkspaceState, from_doc: &str) -> Result<PathBuf, String> {
-    let granted = workspace.root()?;
+/// foreign origin is a hard error. `from_doc` is otherwise reserved for future
+/// same-directory disambiguation.
+fn wikilink_guard(epoch: &Epoch, from_doc: &str) -> Result<(), String> {
     if !from_doc.is_empty() {
-        resolve_within(&granted, Path::new(from_doc))?;
+        resolve_within(&epoch.root, Path::new(from_doc))?;
     }
-    Ok(granted)
+    Ok(())
 }
 
 /// Resolve a `[[wikilink]]` against the index. `from_doc` is the absolute path of
@@ -725,8 +714,9 @@ fn wikilink_guard(workspace: &WorkspaceState, from_doc: &str) -> Result<PathBuf,
 /// `target` is the raw link text; `heading` (optional) is the `#heading` suffix,
 /// resolved to a source line in the target document. Matching is filename-first
 /// (stem, case-insensitive), then document title; several matches yield
-/// `ambiguous` with the candidate set. Only the CURRENT grant's engine may
-/// answer (a stale engine from a previous workspace never resolves).
+/// `ambiguous` with the candidate set. Captures the epoch once (engine + root
+/// consistent) and re-checks it is current before returning a match, so a switch
+/// mid-resolution can never surface a previous workspace's document.
 #[tauri::command]
 #[specta::specta]
 pub fn resolve_wikilink(
@@ -734,24 +724,15 @@ pub fn resolve_wikilink(
     target: String,
     heading: Option<String>,
     workspace: State<'_, WorkspaceState>,
-    engine: State<'_, EngineState>,
 ) -> Result<WikiResolution, String> {
-    let granted = wikilink_guard(&workspace, &from_doc)?;
-    let cached = {
-        let inner = engine
-            .inner
-            .lock()
-            .map_err(|_| "engine state poisoned".to_string())?;
-        match (&inner.engine, &inner.root) {
-            (Some(engine), Some(src_root)) if *src_root == granted => {
-                Some((Arc::clone(engine), src_root.clone()))
-            }
-            _ => None,
-        }
-    };
-    let Some((db, src_root)) = cached else {
+    let epoch = workspace
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    wikilink_guard(&epoch, &from_doc)?;
+    let Some(db) = epoch.engine.get() else {
         return Ok(WikiResolution::unresolved());
     };
+    let src_root = &epoch.root;
 
     let normalized = normalize_wiki_target(&target);
     if normalized.is_empty() {
@@ -766,7 +747,13 @@ pub fn resolve_wikilink(
     // Filename match first; only on a miss pay for per-document title lookups.
     let mut matches = filename_matches(&docs, &normalized);
     if matches.is_empty() {
-        matches = title_matches(&db, &docs, &normalized)?;
+        matches = title_matches(db, &docs, &normalized)?;
+    }
+
+    // Commit point: a switch during resolution supersedes this epoch — return
+    // unresolved (silently-clean) rather than a foreign workspace's document.
+    if !workspace.is_current(&epoch) {
+        return Ok(WikiResolution::unresolved());
     }
 
     match matches.as_slice() {
@@ -775,7 +762,7 @@ pub fn resolve_wikilink(
             let doc = &docs[*only];
             let abs = src_root.join(&doc.file_path);
             let line = match &heading {
-                Some(heading) => heading_line(&db, doc.id, heading)?,
+                Some(heading) => heading_line(db, doc.id, heading)?,
                 None => None,
             };
             Ok(WikiResolution::resolved(
@@ -1051,93 +1038,138 @@ mod tests {
         (dir, root)
     }
 
+    /// A real in-memory engine over a hash embedder (no model download).
+    fn in_memory_engine() -> Arc<EmbeddedCatDb> {
+        let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
+        let mut config = EngineConfig::in_memory(embedder).with_actor("test");
+        config.domains = vec![registration()];
+        Arc::new(EmbeddedCatDb::open(config).expect("open in-memory engine"))
+    }
+
     #[test]
     fn import_root_rejects_a_foreign_path_and_accepts_the_grant() {
         let (_g, granted) = workspace_dir();
         let (_f, foreign) = workspace_dir();
-        let ws = WorkspaceState::granted(granted.clone());
+        let epoch = Epoch::new(granted.clone(), 1);
 
-        // The granted root is accepted and keys the engine to the grant itself.
-        assert_eq!(
-            import_root_for(&ws, granted.to_str().unwrap()).unwrap(),
-            granted
-        );
-        // A nested subdirectory is contained, so it is accepted — still keyed to
-        // the grant (one workspace → one index).
+        // The granted root is accepted, as is a contained subdirectory.
+        assert!(validate_import_root(&epoch, granted.to_str().unwrap()).is_ok());
         let sub = granted.join("sub");
         fs::create_dir_all(&sub).unwrap();
-        assert_eq!(import_root_for(&ws, sub.to_str().unwrap()).unwrap(), granted);
+        assert!(validate_import_root(&epoch, sub.to_str().unwrap()).is_ok());
 
-        // A foreign root is a hard error, as is having no grant at all.
-        assert!(import_root_for(&ws, foreign.to_str().unwrap()).is_err());
-        assert!(import_root_for(&WorkspaceState::default(), granted.to_str().unwrap()).is_err());
+        // A foreign root is a hard error.
+        assert!(validate_import_root(&epoch, foreign.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn wikilink_guard_rejects_a_foreign_origin_document() {
         let (_g, granted) = workspace_dir();
         let (_f, foreign) = workspace_dir();
-        let ws = WorkspaceState::granted(granted.clone());
+        let epoch = Epoch::new(granted.clone(), 1);
 
         // An origin document inside the grant (and the empty origin) are accepted.
         let inside = granted.join("note.md");
         fs::write(&inside, "# Note").unwrap();
-        assert!(wikilink_guard(&ws, inside.to_str().unwrap()).is_ok());
-        assert!(wikilink_guard(&ws, "").is_ok());
+        assert!(wikilink_guard(&epoch, inside.to_str().unwrap()).is_ok());
+        assert!(wikilink_guard(&epoch, "").is_ok());
 
-        // An origin document outside the grant is rejected, as is no grant.
+        // An origin document outside the grant is rejected.
         let outside = foreign.join("secret.md");
         fs::write(&outside, "# Secret").unwrap();
-        assert!(wikilink_guard(&ws, outside.to_str().unwrap()).is_err());
-        assert!(wikilink_guard(&WorkspaceState::default(), inside.to_str().unwrap()).is_err());
+        assert!(wikilink_guard(&epoch, outside.to_str().unwrap()).is_err());
     }
 
     #[test]
-    fn a_superseded_imports_late_status_is_discarded() {
-        let (_g, granted) = workspace_dir();
-        let ws = WorkspaceState::granted(granted);
-        let engine = EngineState::default();
-        let gen = ws.generation();
+    fn a_switch_is_a_revocation_barrier_isolating_per_epoch_status() {
+        let (_a, root_a) = workspace_dir();
+        let (_b, root_b) = workspace_dir();
+        let ws = WorkspaceState::default();
 
-        // A current-generation publish lands and is what the status reports.
-        assert!(record_status(&engine, &ws, gen, &ImportProgress::importing(3)));
-        assert_eq!(status_for(&engine, &ws).unwrap().phase, "importing");
+        // Grant A: capture epoch E1 exactly as an in-flight import would at entry.
+        let e1 = ws.switch(root_a.clone()).unwrap();
+        assert!(ws.is_current(&e1));
+        assert_eq!(e1.root, root_a);
 
-        // A switch advances the generation. The OLD import's late status is now
-        // stale: record_status refuses it, and the leftover reads as idle for the
-        // NEW workspace (never the previous workspace's progress).
-        let (_g2, granted2) = workspace_dir();
-        ws.advance_for_test(granted2);
-        assert!(!record_status(&engine, &ws, gen, &ImportProgress::importing(9)));
-        assert_eq!(status_for(&engine, &ws).unwrap().phase, "idle");
+        // The import publishes into E1's OWN slot; import_status surfaces it.
+        record_status(&e1, &ImportProgress::importing(3));
+        assert_eq!(current_status(&ws).phase, "importing");
 
-        // A fresh publish under the CURRENT generation lands normally.
-        assert!(record_status(&engine, &ws, ws.generation(), &ImportProgress::importing(2)));
-        assert_eq!(status_for(&engine, &ws).unwrap().phase, "importing");
+        // A concurrent switch to B swaps in E2 — the revocation barrier. Root,
+        // generation, engine, and status move together; E1 is instantly stale.
+        let e2 = ws.switch(root_b.clone()).unwrap();
+        assert!(ws.is_current(&e2) && !ws.is_current(&e1));
+        assert_eq!(e2.root, root_b);
+        assert_eq!(e2.generation, e1.generation + 1);
+
+        // The window "between status publishes": E1's late error lands ONLY in
+        // its own (now unread) slot; the user-visible status is E2's (idle).
+        record_status(&e1, &ImportProgress::failed(0, "late".to_string()));
+        assert_eq!(e1.status().phase, "error");
+        assert_eq!(current_status(&ws).phase, "idle");
     }
 
     #[test]
-    fn active_import_is_coalesced_per_root_and_generation() {
+    fn a_stale_epochs_engine_install_does_not_leak_into_the_current_one() {
+        let (_a, root_a) = workspace_dir();
+        let (_b, root_b) = workspace_dir();
+        let ws = WorkspaceState::default();
+        let e1 = ws.switch(root_a).unwrap(); // captured at import entry
+        let e2 = ws.switch(root_b).unwrap(); // switch lands → E1 superseded
+
+        // The window "between model-load and engine-install": E1 finished loading
+        // but a switch preceded the install. is_current(E1) is false, so the
+        // import abandons; even an install would touch only E1's OWN field.
+        assert!(!ws.is_current(&e1));
+        e1.install_engine_for_test(in_memory_engine());
+        assert!(e1.has_engine());
+        assert!(
+            !e2.has_engine(),
+            "the current epoch has no engine from the stale install"
+        );
+    }
+
+    #[test]
+    fn active_import_is_coalesced_per_epoch() {
         let (_g, granted) = workspace_dir();
-        let engine = EngineState::default();
+        let epoch = Epoch::new(granted, 1);
 
-        // The first claim for (root, generation) wins; a second for the SAME
-        // root+generation coalesces (returns false → caller reuses the live pass).
-        assert!(claim_active(&engine, &granted, 1).unwrap());
-        assert!(!claim_active(&engine, &granted, 1).unwrap());
-
-        // A newer generation supersedes the previous claim.
-        assert!(claim_active(&engine, &granted, 2).unwrap());
+        // The first claim wins; a second for the SAME epoch coalesces (false →
+        // the caller returns the live status instead of spawning a duplicate).
+        assert!(claim_active(&epoch).unwrap());
+        assert!(!claim_active(&epoch).unwrap());
 
         // Dropping the pass's guard frees the slot so a later run can re-claim.
         {
             let _guard = ActiveGuard {
-                engine: &engine,
-                root: granted.clone(),
-                generation: 2,
+                epoch: Arc::clone(&epoch),
             };
         }
-        assert!(claim_active(&engine, &granted, 2).unwrap());
+        assert!(claim_active(&epoch).unwrap());
+    }
+
+    #[test]
+    fn model_load_hits_its_deadline_and_reports_a_retryable_timeout() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // A loader that never resolves trips the deadline into a retryable error.
+        // (`Arc<dyn Embedder>` is not `Debug`, so match rather than `unwrap_err`.)
+        let timed_out = rt.block_on(load_embedder_with_deadline(Duration::from_millis(20), || {
+            std::future::pending::<Result<Arc<dyn Embedder>, String>>()
+        }));
+        match timed_out {
+            Err(err) => assert!(err.contains("timed out"), "got: {err}"),
+            Ok(_) => panic!("expected a model-load timeout"),
+        }
+
+        // A loader that resolves in time passes its result through unchanged.
+        let ok = rt.block_on(load_embedder_with_deadline(Duration::from_secs(5), || async {
+            Ok(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>)
+        }));
+        assert!(ok.is_ok());
     }
 
     #[test]
@@ -1153,10 +1185,7 @@ mod tests {
         )
         .unwrap();
 
-        let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
-        let mut config = EngineConfig::in_memory(embedder).with_actor("test");
-        config.domains = vec![registration()];
-        let db = EmbeddedCatDb::open(config).expect("open in-memory engine");
+        let db = in_memory_engine();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

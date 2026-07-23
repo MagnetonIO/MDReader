@@ -54,23 +54,25 @@ export const commands = {
 	 */
 	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, string>(__TAURI_INVOKE("list_workspace_files", { root })),
 	/**
-	 *  Open (or reuse) the workspace index for the granted root and run an
-	 *  incremental import — streaming coarse progress on `on_event` (`loading` →
-	 *  `importing` → `done`/`error`) and returning the final status. `root` is
-	 *  validated against the active grant (a foreign path is a hard error); the
-	 *  index is keyed to the grant. Coalesced (#4): a second call for the same
-	 *  root+generation returns the live status instead of spawning a duplicate pass.
-	 *  Generation-scoped (#3): if a workspace switch supersedes this import, its
-	 *  status is discarded rather than published over the new workspace's. The
-	 *  frontend fires this without awaiting (progress flows on the channel) but the
-	 *  resolved value is authoritative, so a mocked IPC (which need not drive the
-	 *  channel) still lands the StatusBar on `done`.
+	 *  Open (or reuse) the workspace index and run an incremental import, streaming
+	 *  coarse progress on `on_event` (`loading` → `importing` → `done`/`error`) and
+	 *  returning the final status.
+	 *  Captures the current [`Epoch`] once at entry — root, generation, engine, and
+	 *  status travel together. `root` is validated against the epoch's grant (a
+	 *  foreign path is a hard error). Coalesced (#4): a second import for the same
+	 *  epoch returns the live status instead of spawning a duplicate pass. At each
+	 *  commit point (model install, every publish) it re-checks the epoch is still
+	 *  current; a switch mid-import abandons silently-clean, its late status landing
+	 *  only in its own (superseded, unread) slot. The frontend fires this without
+	 *  awaiting (progress flows on the channel) but the resolved value is
+	 *  authoritative, so a mocked IPC (which need not drive the channel) still lands
+	 *  the StatusBar on `done`.
 	 */
 	startImport: (root: string, onEvent: Channel<ImportProgress>) => typedError<ImportProgress, string>(__TAURI_INVOKE("start_import", { root, onEvent })),
 	/**
-	 *  The latest import status for the current workspace generation — for the
-	 *  StatusBar's initial render and any poll. A status left over from a previous
-	 *  workspace (superseded by a switch) reads as `idle`.
+	 *  The latest import status for the CURRENT workspace epoch — for the StatusBar's
+	 *  initial render and any poll. A superseded epoch's status is never read, so a
+	 *  switch leaves this reading `idle` until the new epoch's import publishes.
 	 */
 	importStatus: () => typedError<ImportProgress, string>(__TAURI_INVOKE("import_status")),
 	/**
@@ -79,8 +81,9 @@ export const commands = {
 	 *  `target` is the raw link text; `heading` (optional) is the `#heading` suffix,
 	 *  resolved to a source line in the target document. Matching is filename-first
 	 *  (stem, case-insensitive), then document title; several matches yield
-	 *  `ambiguous` with the candidate set. Only the CURRENT grant's engine may
-	 *  answer (a stale engine from a previous workspace never resolves).
+	 *  `ambiguous` with the candidate set. Captures the epoch once (engine + root
+	 *  consistent) and re-checks it is current before returning a match, so a switch
+	 *  mid-resolution can never surface a previous workspace's document.
 	 */
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
 };

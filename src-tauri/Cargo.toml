@@ -45,9 +45,12 @@ catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = f
 catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }
+# `time` for the model-load deadline (a never-finishing download must surface a
+# timeout, not hang the import forever).
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
-# The engine-module test opens an in-memory engine and drives a real import,
-# which needs an async runtime to block on.
-tokio = { workspace = true, features = ["rt", "macros"] }
+# The engine-module tests open an in-memory engine and drive a real import (an
+# async runtime to block on), and exercise the model-load deadline (`time`).
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
