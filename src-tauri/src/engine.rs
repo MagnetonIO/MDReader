@@ -1011,6 +1011,7 @@ mod tests {
     fn doc(path: &str) -> DocumentRow {
         DocumentRow {
             id: Uuid::new_v4(),
+            source_id: Some(Uuid::new_v4()),
             file_path: path.to_string(),
             repo: None,
             content_hash: "h".to_string(),
