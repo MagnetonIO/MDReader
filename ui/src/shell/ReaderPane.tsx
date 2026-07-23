@@ -25,7 +25,7 @@ import { createReaderPlatform } from '../platform/reader-platform.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
 import type { ReadingFont } from '../stores/settings.js';
-import type { DocRef, TabState } from '../stores/types.js';
+import type { DocRef, ScrollPos, TabState } from '../stores/types.js';
 
 interface LoadState {
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -44,7 +44,7 @@ export interface ReaderPaneProps {
   reloadNonce: number;
   onToggleOutline: () => void;
   onNavigate: (ref: DocRef) => void;
-  onPersistAnchor: (line: number) => void;
+  onPersistScroll: (scroll: ScrollPos) => void;
   onDocMeta: (meta: { words: number } | null) => void;
   onPickFolder: () => void;
   onMissingWikiLink: (target: string) => void;
@@ -98,7 +98,7 @@ export function ReaderPane({
   reloadNonce,
   onToggleOutline,
   onNavigate,
-  onPersistAnchor,
+  onPersistScroll,
   onDocMeta,
   onPickFolder,
   onMissingWikiLink,
@@ -108,8 +108,10 @@ export function ReaderPane({
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
 
   const path = tab?.docRef.path ?? null;
-  const anchorToRestore = useRef<number>(0);
-  anchorToRestore.current = tab?.scroll.block ?? 0;
+  // The scroll position to restore for the freshly-loaded doc — captured in a
+  // ref so scroll writes (which happen after restore) never retrigger a restore.
+  const scrollToRestore = useRef<ScrollPos>({ block: 0, offset: 0 });
+  scrollToRestore.current = tab?.scroll ?? { block: 0, offset: 0 };
 
   // Load + parse whenever the active document or a live-reload nonce changes.
   useEffect(() => {
@@ -139,27 +141,36 @@ export function ReaderPane({
     // onDocMeta is stable (memoized by the caller); path + nonce drive reloads.
   }, [path, reloadNonce]);
 
-  // Restore the scroll anchor once, after a fresh document renders.
+  // Restore the block+offset scroll position once, after a fresh document
+  // renders. Works for headingless docs and mid-block offsets alike (the
+  // anchor is a block index + pixel offset, not a heading line).
   useEffect(() => {
     if (state.status !== 'ready') return;
-    const line = anchorToRestore.current;
-    if (line <= 0) return;
-    const frame = requestAnimationFrame(() => readerRef.current?.scrollToLine(line));
+    const { block, offset } = scrollToRestore.current;
+    if (block <= 0 && offset <= 0) return;
+    const frame = requestAnimationFrame(() => readerRef.current?.scrollToBlock(block, offset));
     return () => cancelAnimationFrame(frame);
     // Intentionally keyed on the loaded doc only, not the tab (scroll writes
     // must not retrigger a restore).
   }, [state.doc]);
 
+  // Persist the scroll anchor, debounced, so store churn (and its re-renders)
+  // stays off the scroll's hot path while still capturing the resting position.
+  const persistTimer = useRef<number | undefined>(undefined);
+  const persistScroll = useCallback(
+    (anchor: ScrollPos) => {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = window.setTimeout(() => onPersistScroll(anchor), 200);
+    },
+    [onPersistScroll],
+  );
+  useEffect(() => () => window.clearTimeout(persistTimer.current), []);
+
   const outline = state.doc?.outline ?? [];
 
-  const handleActiveHeading = useCallback(
-    (slug: string | undefined) => {
-      setActiveSlug(slug);
-      const item = outline.find((entry) => entry.slug === slug);
-      if (item) onPersistAnchor(item.lineStart);
-    },
-    [outline, onPersistAnchor],
-  );
+  const handleActiveHeading = useCallback((slug: string | undefined) => {
+    setActiveSlug(slug);
+  }, []);
 
   const onOutlineSelect = useCallback((item: OutlineItem) => {
     readerRef.current?.scrollToLine(item.lineStart);
@@ -238,6 +249,7 @@ export function ReaderPane({
                 onActiveHeadingChange={handleActiveHeading}
                 onNavigate={onReaderNavigate}
                 resolveWikiLink={resolveWikiLink}
+                onScrollAnchorChange={persistScroll}
               />
             </PlatformProvider>
           ) : null}

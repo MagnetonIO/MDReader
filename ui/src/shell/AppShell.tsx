@@ -11,7 +11,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   listWorkspaceFiles,
   onFsChanged,
+  onWatchError,
   pickWorkspaceFolder,
+  setWorkspace,
   watchWorkspace,
   type WorkspaceFile,
 } from '../platform/fs.js';
@@ -25,7 +27,7 @@ import {
   useSettingsStore,
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
-import type { DocRef } from '../stores/types.js';
+import type { DocRef, ScrollPos } from '../stores/types.js';
 import { loadPersisted, saveSession, saveSettings } from './persistence.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
@@ -90,36 +92,57 @@ export function AppShell() {
     }
   }, []);
 
-  const openRoot = useCallback(
-    async (folder: string) => {
-      const sources = useSourcesStore.getState();
-      sources.setRoot(folder);
-      sources.setLoading(true);
-      try {
-        const list = await listWorkspaceFiles(folder);
-        sources.setFiles(list);
-      } catch {
-        sources.setFiles([]);
-      } finally {
-        sources.setLoading(false);
-      }
-      try {
-        await watchWorkspace(folder);
-        sources.setWatcher('watching');
-      } catch {
-        sources.setWatcher('idle');
-      }
-    },
-    [],
-  );
+  // Load a workspace: establish the backend grant (which confines every read to
+  // this root), then list files and arm the watcher. Adopts the canonical path
+  // the grant returns so file paths and the watched root agree. Never closes
+  // tabs — that is the caller's concern (a workspace *switch*), so restore can
+  // reuse this without disturbing the session it just hydrated.
+  const openRoot = useCallback(async (folder: string) => {
+    const sources = useSourcesStore.getState();
+    let granted = folder;
+    try {
+      granted = await setWorkspace(folder);
+    } catch {
+      /* non-Tauri (website/tests) — no grant to establish; keep the raw path */
+    }
+    sources.setRoot(granted);
+    sources.setLoading(true);
+    try {
+      const list = await listWorkspaceFiles(granted);
+      sources.setFiles(list);
+    } catch {
+      sources.setFiles([]);
+    } finally {
+      sources.setLoading(false);
+    }
+    try {
+      await watchWorkspace(granted);
+      sources.setWatcher('watching');
+    } catch {
+      // We committed to the new root but could not arm its watcher: a degraded
+      // (but honest) state the StatusBar surfaces rather than a silent "idle".
+      sources.setWatcher('error');
+    }
+  }, []);
 
   const onPickFolder = useCallback(async () => {
+    let picked: string | null;
     try {
-      const picked = await pickWorkspaceFolder();
-      if (picked) await openRoot(picked);
+      picked = await pickWorkspaceFolder();
     } catch {
       toast('Could not open the folder picker');
+      return;
     }
+    if (!picked) return;
+
+    // Switching to a different workspace: retire the previous workspace's tabs
+    // into Recent so no stale tab survives to refresh against the new root.
+    const sources = useSourcesStore.getState();
+    if (sources.root && sources.root !== picked) {
+      const retired = useTabsStore.getState().closeAll();
+      for (const ref of retired) sources.addRecent(ref);
+    }
+    await openRoot(picked);
   }, [openRoot]);
 
   // --- open / navigate helpers -----------------------------------------
@@ -146,9 +169,9 @@ export function AppShell() {
     useSourcesStore.getState().addRecent(ref);
   }, []);
 
-  const onPersistAnchor = useCallback((line: number) => {
+  const onPersistScroll = useCallback((scroll: ScrollPos) => {
     const active = useTabsStore.getState().activeTabId;
-    if (active) useTabsStore.getState().setScroll(active, { block: line, offset: 0 });
+    if (active) useTabsStore.getState().setScroll(active, scroll);
   }, []);
 
   const onDocMeta = useCallback((meta: { words: number } | null) => {
@@ -382,14 +405,40 @@ export function AppShell() {
   }, [hydrated, theme, readingFont, textScaleIndex, sidebarCollapsed, outlineVisible]);
 
   // --- live reload from the workspace watcher ---------------------------
+  // A "continuous" write burst (a long save) can fire many events for one path.
+  // We debounce per-path on the trailing edge (~300ms quiet window) so a single
+  // logical edit yields one reload + one toast, never a flurry of partial
+  // renders. A settled ("any") change flushes immediately.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let refreshTimer: number | undefined;
-    onFsChanged((change) => {
-      if (change.path === activePathRef.current) {
+    const reloadTimers = new Map<string, number>();
+
+    const reloadActive = (path: string) => {
+      if (path === activePathRef.current) {
         setReloadNonce((nonce) => nonce + 1);
         toast('Updated');
       }
+    };
+
+    onFsChanged((change) => {
+      const existing = reloadTimers.get(change.path);
+      if (existing !== undefined) window.clearTimeout(existing);
+      if (change.kind === 'continuous') {
+        // Still being written — wait for the quiet window before reloading.
+        reloadTimers.set(
+          change.path,
+          window.setTimeout(() => {
+            reloadTimers.delete(change.path);
+            reloadActive(change.path);
+          }, 300),
+        );
+      } else {
+        // Settled: drop any pending trailing reload and apply now.
+        reloadTimers.delete(change.path);
+        reloadActive(change.path);
+      }
+
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
         const folder = useSourcesStore.getState().root;
@@ -405,8 +454,26 @@ export function AppShell() {
     return () => {
       unlisten?.();
       window.clearTimeout(refreshTimer);
+      for (const timer of reloadTimers.values()) window.clearTimeout(timer);
     };
   }, [refreshFiles]);
+
+  // --- watcher runtime errors → degraded status -------------------------
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onWatchError(() => {
+      useSourcesStore.getState().setWatcher('error');
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        /* not in a Tauri webview — no watcher */
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const textScale = textScaleFactor({ textScaleIndex });
 
@@ -451,7 +518,7 @@ export function AppShell() {
             reloadNonce={reloadNonce}
             onToggleOutline={() => useSettingsStore.getState().toggleOutline()}
             onNavigate={onNavigate}
-            onPersistAnchor={onPersistAnchor}
+            onPersistScroll={onPersistScroll}
             onDocMeta={onDocMeta}
             onPickFolder={onPickFolder}
             onMissingWikiLink={onMissingWikiLink}
