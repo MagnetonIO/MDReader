@@ -94,3 +94,9 @@ export const SplitIcon = (props: IconProps) => (
     <path d="M12 4v16" />
   </Icon>
 );
+
+export const CodeIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+  </Icon>
+);

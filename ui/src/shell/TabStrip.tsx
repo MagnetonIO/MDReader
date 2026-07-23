@@ -24,12 +24,16 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { CloseIcon, PinIcon } from './icons.js';
 import { useTabsStore } from '../stores/tabs.js';
+import { useEditorStore } from '../stores/editor.js';
 import type { TabState } from '../stores/types.js';
 
 function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
   const setActiveTab = useTabsStore((state) => state.setActiveTab);
   const closeTab = useTabsStore((state) => state.closeTab);
   const togglePin = useTabsStore((state) => state.togglePin);
+  // Unsaved-edit marker: a dot on the tab while its editor buffer diverges from
+  // disk. Sourced from the editor store (the single source of truth for dirty).
+  const dirty = useEditorStore((state) => state.isDirty(tab.id));
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
@@ -63,6 +67,9 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
     >
       {tab.pinned ? <PinIcon className="tab__pin" /> : null}
       <span className="tab__label">{tab.docRef.name}</span>
+      {dirty ? (
+        <span className="tab__dirty" role="img" aria-label="Unsaved changes" title="Unsaved changes" />
+      ) : null}
       <button
         type="button"
         className="tab__close"

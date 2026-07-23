@@ -966,3 +966,104 @@ body {
     transform: translateY(0);
   }
 }
+
+/* --- light editing: source pane, split, conflict banner --------------- */
+
+/* Source + split layout: in split each pane owns half the row and scrolls
+ * itself; in source the editor takes the whole reading column. */
+.source-region {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.reader-body--split .source-region,
+.reader-body--split .reader-host {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.reader-body--split .source-region {
+  border-right: 1px solid var(--color-border);
+}
+
+.source-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* CodeMirror fills its host and scrolls internally; no focus ring (the caret
+ * and active line carry focus instead). */
+.source-pane .cm-editor {
+  height: 100%;
+}
+
+.source-pane .cm-editor.cm-focused {
+  outline: none;
+}
+
+.source-pane .cm-scroller {
+  overflow: auto;
+}
+
+/* Unsaved-changes marker on a tab. */
+.tab__dirty {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+/* Conflict banner: a quiet, non-blocking bar under the toolbar — the visible
+ * face of "never silently rewrite files". */
+.conflict-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-accent-soft);
+  color: var(--color-fg);
+  font-size: var(--text--1);
+}
+
+.conflict-banner__msg {
+  flex: 1;
+  min-width: 0;
+}
+
+.conflict-banner__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.conflict-banner__btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  font-size: var(--text--1);
+  cursor: default;
+}
+
+.conflict-banner__btn:hover {
+  border-color: var(--color-accent);
+}
+
+.conflict-banner__btn--primary {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.conflict-banner__btn--danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}

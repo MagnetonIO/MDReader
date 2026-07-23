@@ -15,6 +15,8 @@ import {
   onWatchError,
   makeSearchAdapter,
   pickWorkspaceFolder,
+  readDoc,
+  saveDoc,
   setWorkspace,
   startImport,
   watchWorkspace,
@@ -25,6 +27,9 @@ import type { HitTarget, PaletteFile } from '@mdreader/ui';
 import { KeymapRegistry, detectMac } from '../keymap/registry.js';
 import type { Binding } from '../keymap/registry.js';
 import { selectActiveTab, useTabsStore } from '../stores/tabs.js';
+import { useEditorStore } from '../stores/editor.js';
+import type { EditorMode } from '../stores/editor.js';
+import { classifyExternalChange, runSave } from './edit-save.js';
 import { useSourcesStore } from '../stores/sources.js';
 import {
   applyTheme,
@@ -101,6 +106,8 @@ export function AppShell() {
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
+  const activeTabIdRef = useRef<string | null>(null);
+  activeTabIdRef.current = activeTabId;
 
   // --- workspace loading ------------------------------------------------
   // Frontend request generation, the UI-side mirror of the backend epoch: every
@@ -421,6 +428,109 @@ export function AppShell() {
     });
   }, []);
 
+  // --- light editing (source/split, hash-guarded save, conflicts) --------
+  // Switch the active tab's view mode. Entering source/split for the first time
+  // seeds the editor buffer from a fresh disk read (content + hash) so the save
+  // guard is anchored to exactly what was on disk when editing began.
+  const setEditorMode = useCallback(async (mode: EditorMode) => {
+    const tabsState = useTabsStore.getState();
+    const tabId = tabsState.activeTabId;
+    const tab = selectActiveTab(tabsState);
+    if (!tabId || !tab) return;
+    const editor = useEditorStore.getState();
+    if (mode === 'read') {
+      if (editor.entry(tabId)) editor.setMode(tabId, 'read');
+      return;
+    }
+    if (editor.entry(tabId)) {
+      editor.setMode(tabId, mode);
+      return;
+    }
+    try {
+      const doc = await readDoc(tab.docRef.path);
+      // The active tab may have changed during the read — seed only if it stands.
+      if (useTabsStore.getState().activeTabId !== tabId) return;
+      useEditorStore.getState().seed(tabId, doc.content, doc.hash, mode);
+    } catch (cause) {
+      toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }, []);
+
+  // Cmd+E: toggle read ↔ source for the active tab (from within the editor the
+  // SourcePane handles its own Cmd+E, since the editable target hides it from the
+  // global handler).
+  const toggleSourceMode = useCallback(() => {
+    const tabId = useTabsStore.getState().activeTabId;
+    if (!tabId) return;
+    const current = useEditorStore.getState().mode(tabId);
+    void setEditorMode(current === 'read' ? 'source' : 'read');
+  }, [setEditorMode]);
+
+  // Save the active document under the hash guard (or forced, from the conflict
+  // banner's explicit overwrite). A `saved` outcome re-anchors the buffer to the
+  // fresh hash — which the watcher then recognises as our own write — and drives
+  // an incremental reindex so search stays fresh. A `conflict` raises the banner
+  // rather than clobbering the on-disk change.
+  const saveActiveDoc = useCallback(
+    async (force: boolean) => {
+      const tabsState = useTabsStore.getState();
+      const tabId = tabsState.activeTabId;
+      const tab = selectActiveTab(tabsState);
+      if (!tabId || !tab) return;
+      const entry = useEditorStore.getState().entry(tabId);
+      if (!entry) return;
+      if (!force && !entry.dirty) return; // a clean guarded save is a no-op
+      const result = await runSave({
+        path: tab.docRef.path,
+        buffer: entry.buffer,
+        baseHash: entry.baseHash,
+        force,
+        save: saveDoc,
+      });
+      const editor = useEditorStore.getState();
+      // Transitions are keyed by tab id, so they land on the right tab even if the
+      // active tab changed during the await.
+      if (result.kind === 'saved') {
+        editor.markSaved(tabId, result.newHash);
+        const folder = useSourcesStore.getState().root;
+        if (folder) void triggerReindex(folder, openEpochRef.current);
+      } else if (result.kind === 'conflict') {
+        editor.raiseConflict(tabId, result.currentHash, 'save');
+      } else {
+        toast(`Could not save — ${result.message}`);
+      }
+    },
+    [triggerReindex],
+  );
+
+  // Conflict banner "Reload": discard the local buffer and adopt the on-disk
+  // version (re-seeding the anchor), and refresh the reader view too.
+  const reloadActiveDoc = useCallback(async () => {
+    const tabsState = useTabsStore.getState();
+    const tabId = tabsState.activeTabId;
+    const tab = selectActiveTab(tabsState);
+    if (!tabId || !tab) return;
+    try {
+      const doc = await readDoc(tab.docRef.path);
+      const editor = useEditorStore.getState();
+      const mode = editor.mode(tabId);
+      editor.seed(tabId, doc.content, doc.hash, mode === 'read' ? 'source' : mode);
+      setReloadNonce((nonce) => nonce + 1);
+    } catch (cause) {
+      toast(`Could not reload — ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }, []);
+
+  // Prune editor entries for tabs that have closed (memory hygiene; the dirty dot
+  // and buffers belong to a live tab only).
+  useEffect(() => {
+    const live = new Set(tabs.map((tab) => tab.id));
+    const editor = useEditorStore.getState();
+    for (const id of Object.keys(editor.entries)) {
+      if (!live.has(id)) editor.remove(id);
+    }
+  }, [tabs]);
+
   // --- the one keymap registry (dispatch + sheet) -----------------------
   const registry = useMemo(() => {
     const map = new KeymapRegistry(isMac);
@@ -479,6 +589,20 @@ export function AppShell() {
         description: 'Reopen closed tab',
         group: 'Tabs',
         run: () => tabsApi().reopenClosedTab(),
+      },
+      {
+        id: 'edit-source',
+        keys: 'Mod+E',
+        description: 'Toggle source view',
+        group: 'Editing',
+        run: toggleSourceMode,
+      },
+      {
+        id: 'save',
+        keys: 'Mod+S',
+        description: 'Save document',
+        group: 'Editing',
+        run: () => void saveActiveDoc(false),
       },
       {
         id: 'mru-next',
@@ -545,7 +669,7 @@ export function AppShell() {
     ];
     map.registerAll(bindings);
     return map;
-  }, [isMac, focusOutline]);
+  }, [isMac, focusOutline, toggleSourceMode, saveActiveDoc]);
 
   const shortcutGroups = useMemo<ShortcutGroup[]>(
     () =>
@@ -723,14 +847,46 @@ export function AppShell() {
     // The live open + watcher generations, for re-validating a timer at fire.
     const nowStamp = () => ({ openGen: openEpochRef.current, watcherGen: watcherGenRef.current });
 
-    const reloadActive = (path: string, stamp: { openGen: number; watcherGen: number }) => {
+    const reloadActive = async (path: string, stamp: { openGen: number; watcherGen: number }) => {
       // A switch between event arrival and this (debounced) fire discards it —
       // BOTH the open generation and the watcher generation must still match.
       if (!watcherStampCurrent(stamp, nowStamp())) return;
-      if (path === activePathRef.current) {
+      if (path !== activePathRef.current) return;
+
+      const tabId = activeTabIdRef.current;
+      const entry = tabId ? useEditorStore.getState().entry(tabId) : undefined;
+      // Read mode / not editing this doc: the existing live-refresh behavior.
+      if (!tabId || !entry) {
         setReloadNonce((nonce) => nonce + 1);
         toast('Updated');
+        return;
       }
+
+      // Editing this doc: classify the disk change against our anchor. Reading the
+      // hash tells our OWN just-saved write (baseHash) apart from a real external
+      // change — the self-write suppression the plan calls for.
+      let disk: { content: string; hash: string };
+      try {
+        disk = await readDoc(path);
+      } catch {
+        return;
+      }
+      // Re-validate after the await: a switch (or a doc change) may have landed.
+      if (!watcherStampCurrent(stamp, nowStamp()) || path !== activePathRef.current) return;
+      const editor = useEditorStore.getState();
+      const live = editor.entry(tabId);
+      if (!live) return;
+      const decision = classifyExternalChange(disk.hash, live.baseHash, live.dirty);
+      if (decision === 'self') return; // our own write echoing back — stay silent
+      if (decision === 'conflict') {
+        // Unsaved edits + a divergent disk: never clobber — raise the banner.
+        editor.raiseConflict(tabId, disk.hash, 'external');
+        return;
+      }
+      // Clean buffer: safe to adopt disk. Re-seed the anchor and refresh the view.
+      editor.seed(tabId, disk.content, disk.hash, live.mode);
+      setReloadNonce((nonce) => nonce + 1);
+      toast('Updated');
     };
 
     onFsChanged((change) => {
@@ -749,13 +905,13 @@ export function AppShell() {
           change.path,
           window.setTimeout(() => {
             reloadTimers.delete(change.path);
-            reloadActive(change.path, stamp);
+            void reloadActive(change.path, stamp);
           }, 300),
         );
       } else {
         // Settled: drop any pending trailing reload and apply now.
         reloadTimers.delete(change.path);
-        reloadActive(change.path, stamp);
+        void reloadActive(change.path, stamp);
       }
 
       window.clearTimeout(refreshTimer);
@@ -892,6 +1048,10 @@ export function AppShell() {
               onPickFolder={onPickFolder}
               onMissingWikiLink={onMissingWikiLink}
               onAmbiguousWikiLink={onAmbiguousWikiLink}
+              onSetMode={(mode) => void setEditorMode(mode)}
+              onSaveActive={() => void saveActiveDoc(false)}
+              onReloadActive={() => void reloadActiveDoc()}
+              onOverwriteActive={() => void saveActiveDoc(true)}
             />
             {activeTab ? (
               <RelatedRail

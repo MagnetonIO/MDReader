@@ -10,6 +10,12 @@
  *   - resolves wikilinks/relative links against the workspace file list;
  *   - restyles per the reading-font / text-size settings without touching
  *     `@mdreader/ui` (it overrides the reader's CSS custom properties on a wrapper).
+ *
+ * Light editing (P4) layers on top without disturbing the read path: a per-tab
+ * view mode (read / source / split) drawn from the editor store swaps the reading
+ * pane for a CodeMirror `SourcePane`, or shows both side-by-side in split with an
+ * approximate line-based scroll sync. The `ConflictBanner` renders above the body
+ * whenever the open document has a pending conflict.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -17,7 +23,7 @@ import type { CSSProperties } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
-import type { OutlineItem } from '@mdreader/markdown';
+import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
 
 import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
@@ -27,6 +33,10 @@ import { useWikiDimming } from './wiki-dimming.js';
 import { useDocLoader } from './doc-loader.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
+import { SourcePane } from './SourcePane.js';
+import { ConflictBanner } from './ConflictBanner.js';
+import { useEditorStore } from '../stores/editor.js';
+import type { EditorMode } from '../stores/editor.js';
 import type { ReadingFont } from '../stores/settings.js';
 import type { DocRef, ScrollPos, TabState } from '../stores/types.js';
 
@@ -52,6 +62,14 @@ export interface ReaderPaneProps {
    * the same line re-fires. The reader consumes it once the target renders.
    */
   jump?: { path: string; line: number; nonce: number } | null;
+  /** Switch the active tab's view mode (seeds the editor buffer on first entry). */
+  onSetMode: (mode: EditorMode) => void;
+  /** Guarded save of the active document (Cmd+S / editor Cmd+S). */
+  onSaveActive: () => void;
+  /** Conflict banner: discard local edits and adopt the on-disk version. */
+  onReloadActive: () => void;
+  /** Conflict banner: force-overwrite the on-disk version with the buffer. */
+  onOverwriteActive: () => void;
 }
 
 function dirname(path: string): string {
@@ -94,8 +112,15 @@ export function ReaderPane({
   onMissingWikiLink,
   onAmbiguousWikiLink,
   jump,
+  onSetMode,
+  onSaveActive,
+  onReloadActive,
+  onOverwriteActive,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
+  // A separate reader for the split-mode preview, so its scroll-sync never
+  // entangles with the full-featured read-mode reader's scroll/jump effects.
+  const splitPreviewRef = useRef<MarkdownReaderHandle | null>(null);
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
   // A brief highlight range for the provenance-jump pulse (cleared on a timer).
   const [pulse, setPulse] = useState<{ start: number; end: number } | null>(null);
@@ -103,6 +128,31 @@ export function ReaderPane({
   const consumedJump = useRef(0);
 
   const path = tab?.docRef.path ?? null;
+  const tabId = tab?.id ?? null;
+  // The active tab's editing state (undefined ⇒ plain read mode). Subscribed so a
+  // keystroke or a conflict transition re-renders this pane (and only for edits
+  // to THIS tab — the selector keys on the tab's own entry).
+  const editEntry = useEditorStore((store) => (tabId ? store.entries[tabId] : undefined));
+  const mode: EditorMode = editEntry?.mode ?? 'read';
+  const buffer = editEntry?.buffer;
+
+  // Live preview for split mode: re-parse the buffer (debounced) so the rendered
+  // side tracks what is being typed, independent of what is on disk.
+  const [previewDoc, setPreviewDoc] = useState<ParsedDoc | undefined>(undefined);
+  useEffect(() => {
+    if (mode !== 'split' || buffer === undefined) return;
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      void parseMarkdownAuto(buffer).then((doc) => {
+        if (!cancelled) setPreviewDoc(doc);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [mode, buffer]);
+
   // Live mirrors of the active document + workspace, so an in-flight wikilink
   // resolution can tell at navigation time whether its click context still holds
   // (the user may have switched docs or workspaces while it resolved).
@@ -298,6 +348,18 @@ export function ReaderPane({
     return style as CSSProperties;
   }, [textScale, readingFont]);
 
+  // Editor callbacks (stable): a keystroke updates the store's buffer; the split
+  // editor scroll drives the preview via an approximate line map.
+  const onEditBuffer = useCallback(
+    (value: string) => {
+      if (tabId) useEditorStore.getState().edit(tabId, value);
+    },
+    [tabId],
+  );
+  const syncPreviewToLine = useCallback((line: number) => {
+    splitPreviewRef.current?.scrollToLine(line);
+  }, []);
+
   if (!tab) {
     return (
       <div className="reader-region">
@@ -317,6 +379,11 @@ export function ReaderPane({
     );
   }
 
+  const conflict = editEntry?.conflict ?? null;
+  const showEditor = mode !== 'read' && buffer !== undefined;
+  const showReader = mode !== 'source';
+  const splitDoc = mode === 'split' ? (previewDoc ?? state.doc) : state.doc;
+
   return (
     <div className="reader-region">
       <ReaderToolbar
@@ -324,30 +391,71 @@ export function ReaderPane({
         root={root}
         outlineVisible={outlineVisible}
         onToggleOutline={onToggleOutline}
-        hasOutline={outline.length > 0}
+        hasOutline={mode !== 'source' && outline.length > 0}
+        mode={mode}
+        onSetMode={onSetMode}
+        canEdit
       />
-      <div className="reader-body">
-        <div className="reader-host" style={hostStyle}>
-          {state.status === 'error' ? (
-            <div className="reader-empty">
-              <p className="reader-empty__hint">Could not open this document: {state.error}</p>
-            </div>
-          ) : state.doc ? (
-            <PlatformProvider platform={platform}>
-              <MarkdownReader
-                ref={readerRef}
-                doc={state.doc}
-                activeSlug={activeSlug}
-                highlightRange={pulse ?? undefined}
-                onActiveHeadingChange={handleActiveHeading}
-                onNavigate={onReaderNavigate}
-                resolveWikiLink={resolveWikiLink}
-                onScrollAnchorChange={persistScroll}
-              />
-            </PlatformProvider>
-          ) : null}
-        </div>
-        {outlineVisible && state.doc ? (
+      {conflict ? (
+        <ConflictBanner
+          source={conflict.source}
+          phase={conflict.phase}
+          onReload={onReloadActive}
+          onKeepMine={() => {
+            if (tabId) useEditorStore.getState().toConfirmOverwrite(tabId);
+          }}
+          onOverwrite={onOverwriteActive}
+          onCancel={() => {
+            if (tabId) useEditorStore.getState().clearConflict(tabId);
+          }}
+        />
+      ) : null}
+      <div className={`reader-body reader-body--${mode}`}>
+        {showEditor ? (
+          <div className="source-region">
+            <SourcePane
+              value={buffer!}
+              onChange={onEditBuffer}
+              onSave={onSaveActive}
+              onToggleMode={() => onSetMode('read')}
+              onScrollLine={mode === 'split' ? syncPreviewToLine : undefined}
+            />
+          </div>
+        ) : null}
+        {showReader ? (
+          <div className="reader-host" style={hostStyle}>
+            {mode === 'split' ? (
+              splitDoc ? (
+                <PlatformProvider platform={platform}>
+                  <MarkdownReader
+                    ref={splitPreviewRef}
+                    doc={splitDoc}
+                    onNavigate={onReaderNavigate}
+                    resolveWikiLink={resolveWikiLink}
+                  />
+                </PlatformProvider>
+              ) : null
+            ) : state.status === 'error' ? (
+              <div className="reader-empty">
+                <p className="reader-empty__hint">Could not open this document: {state.error}</p>
+              </div>
+            ) : state.doc ? (
+              <PlatformProvider platform={platform}>
+                <MarkdownReader
+                  ref={readerRef}
+                  doc={state.doc}
+                  activeSlug={activeSlug}
+                  highlightRange={pulse ?? undefined}
+                  onActiveHeadingChange={handleActiveHeading}
+                  onNavigate={onReaderNavigate}
+                  resolveWikiLink={resolveWikiLink}
+                  onScrollAnchorChange={persistScroll}
+                />
+              </PlatformProvider>
+            ) : null}
+          </div>
+        ) : null}
+        {mode === 'read' && outlineVisible && state.doc ? (
           <OutlineRail items={outline} activeSlug={activeSlug} onSelect={onOutlineSelect} />
         ) : null}
       </div>

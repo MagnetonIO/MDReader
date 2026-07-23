@@ -1,9 +1,11 @@
 /** The slim toolbar above the reading column: a breadcrumb of the document's
- * path, plus view affordances. Source/split toggles are present but disabled —
- * honest affordances for capabilities that land in later phases. */
+ * path, plus view affordances. The Read / Source / Split toggles switch the pane
+ * between the rendered reader, the CodeMirror source editor, and a side-by-side
+ * split (light editing — a toggleable source pane, not an editor product). */
 
-import { ListIcon, SplitIcon } from './icons.js';
+import { ListIcon, SplitIcon, CodeIcon } from './icons.js';
 import type { DocRef } from '../stores/types.js';
+import type { EditorMode } from '../stores/editor.js';
 
 export interface ReaderToolbarProps {
   docRef: DocRef | null;
@@ -11,6 +13,12 @@ export interface ReaderToolbarProps {
   outlineVisible: boolean;
   onToggleOutline: () => void;
   hasOutline: boolean;
+  /** The active tab's current view mode. */
+  mode: EditorMode;
+  /** Switch view mode (seeds the editor buffer on first source/split entry). */
+  onSetMode: (mode: EditorMode) => void;
+  /** Whether a document is open (the toggles are inert otherwise). */
+  canEdit: boolean;
 }
 
 function crumbs(path: string, root: string | null): string[] {
@@ -28,6 +36,9 @@ export function ReaderToolbar({
   outlineVisible,
   onToggleOutline,
   hasOutline,
+  mode,
+  onSetMode,
+  canEdit,
 }: ReaderToolbarProps) {
   const parts = docRef ? crumbs(docRef.path, root) : [];
   const leaf = parts.length > 0 ? parts[parts.length - 1] : '';
@@ -45,15 +56,35 @@ export function ReaderToolbar({
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
 
-      <button type="button" className="icon-btn" disabled title="Reading mode (edit arrives later)">
+      <button
+        type="button"
+        className={`icon-btn${mode === 'read' ? ' icon-btn--active' : ''}`}
+        aria-pressed={mode === 'read'}
+        onClick={() => onSetMode('read')}
+        disabled={!canEdit}
+        title="Reading view"
+      >
         Read
       </button>
       <button
         type="button"
-        className="icon-btn"
-        disabled
-        title="Split view arrives in a later phase"
-        aria-label="Split view (unavailable)"
+        className={`icon-btn${mode === 'source' ? ' icon-btn--active' : ''}`}
+        aria-pressed={mode === 'source'}
+        onClick={() => onSetMode('source')}
+        disabled={!canEdit}
+        title="Source view (⌘E)"
+        aria-label="Source view"
+      >
+        <CodeIcon width="15" height="15" />
+      </button>
+      <button
+        type="button"
+        className={`icon-btn${mode === 'split' ? ' icon-btn--active' : ''}`}
+        aria-pressed={mode === 'split'}
+        onClick={() => onSetMode('split')}
+        disabled={!canEdit}
+        title="Split view (source + preview)"
+        aria-label="Split view"
       >
         <SplitIcon width="15" height="15" />
       </button>
