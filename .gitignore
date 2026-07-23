@@ -1,4 +1,15 @@
-.DS_Store
+# Superpowers workspace metadata
 .superpowers/
-node_modules/
+
+# Rust
 target/
+**/*.rs.bk
+
+# Node / frontend (Tauri + Next side, scaffolded by later tasks)
+node_modules/
+dist/
+.next/
+.turbo/
+
+# macOS
+.DS_Store
