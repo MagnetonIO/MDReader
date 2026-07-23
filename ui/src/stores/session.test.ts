@@ -19,6 +19,7 @@ function tab(id: string, name: string, extra: Partial<TabState> = {}): TabState 
     historyIndex: 0,
     scroll: { block: 0, offset: 0 },
     pinned: false,
+    originRoot: '/ws',
     ...extra,
   };
 }
@@ -52,6 +53,53 @@ describe('session round-trip', () => {
     expect(restored!.tabs[0]!.scroll).toEqual({ block: 3, offset: 12 });
     expect(restored!.tabs[1]!.docRef.name).toBe('c.md');
     expect(restored!.tabs[1]!.historyIndex).toBe(1);
+    // Each tab's origin workspace round-trips (drives per-origin retirement).
+    expect(restored!.tabs[0]!.originRoot).toBe('/ws');
+  });
+
+  test('a legacy tab (no origin) migrates to adopt the session root on load', () => {
+    // Simulate a pre-originRoot blob: a tab lacking the field the writer now
+    // emits, under a real workspace root.
+    const legacy = {
+      version: SESSION_VERSION,
+      root: '/ws',
+      activeTabId: 'tab-1',
+      recent: [],
+      tabs: [
+        {
+          id: 'tab-1',
+          docRef: { path: '/ws/a.md', name: 'a.md' },
+          history: [{ path: '/ws/a.md', name: 'a.md' }],
+          historyIndex: 0,
+          scroll: { block: 0, offset: 0 },
+          pinned: false,
+        },
+      ],
+    };
+    const restored = deserializeSession(legacy);
+    // Migration: the restored tab adopts the session root as its origin, so a
+    // same-root reopen keeps it (retireForeign('/ws') sees origin '/ws').
+    expect(restored!.tabs[0]!.originRoot).toBe('/ws');
+  });
+
+  test('a legacy tab under no workspace stays null (nothing to adopt)', () => {
+    const legacy = {
+      version: SESSION_VERSION,
+      root: null,
+      activeTabId: 'tab-1',
+      recent: [],
+      tabs: [
+        {
+          id: 'tab-1',
+          docRef: { path: '/a.md', name: 'a.md' },
+          history: [{ path: '/a.md', name: 'a.md' }],
+          historyIndex: 0,
+          scroll: { block: 0, offset: 0 },
+          pinned: false,
+        },
+      ],
+    };
+    expect(deserializeSession(legacy)!.tabs[0]!.originRoot).toBeNull();
   });
 
   test('serialized blob carries the schema version', () => {

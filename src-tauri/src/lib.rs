@@ -8,6 +8,7 @@
 
 mod commands;
 mod engine;
+mod search;
 
 use commands::{WatcherState, WorkspaceState};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -35,6 +36,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             engine::start_import,
             engine::import_status,
             engine::resolve_wikilink,
+            search::search,
+            search::related,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }
@@ -131,10 +134,24 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Writes the TypeScript bindings for the current command surface.
+/// Writes the TypeScript bindings for the current command surface, then strips
+/// trailing whitespace from every line. specta emits blank doc-comment
+/// continuation lines as `\t * ` (a trailing space), which would trip
+/// `git diff --check`; trimming keeps the committed bindings pristine. The pass
+/// is deterministic, so drift detection is unaffected — a real command change
+/// still surfaces as a diff.
 #[cfg(any(debug_assertions, test))]
 fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescript::Error> {
-    builder.export(specta_typescript::Typescript::default(), BINDINGS_PATH)
+    builder.export(specta_typescript::Typescript::default(), BINDINGS_PATH)?;
+    if let Ok(contents) = std::fs::read_to_string(BINDINGS_PATH) {
+        let body = contents
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = std::fs::write(BINDINGS_PATH, format!("{}\n", body.trim_end()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

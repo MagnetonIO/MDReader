@@ -852,7 +852,11 @@ mod tests {
         // Built at runtime so this literal never appears in the scanned source
         // (which would self-match); the test module is excluded regardless.
         let marker = format!("#[tauri::{}]", "command");
-        for source in [include_str!("commands.rs"), include_str!("engine.rs")] {
+        for source in [
+            include_str!("commands.rs"),
+            include_str!("engine.rs"),
+            include_str!("search.rs"),
+        ] {
             // Scan only the non-test code (exclude the test module's string
             // literals, which would confuse the crude split).
             let code = source.split("\nmod tests").next().unwrap_or(source);

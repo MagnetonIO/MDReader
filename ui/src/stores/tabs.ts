@@ -54,8 +54,10 @@ export interface TabsState {
   cycleOrder: string[];
   cyclePos: number;
 
-  /** Open (or focus, if already open) a document in its own tab. */
-  openTab: (docRef: DocRef, opts?: { activate?: boolean }) => string;
+  /** Open (or focus, if already open) a document in its own tab. `originRoot`
+   *  tags a NEW tab with the workspace it was opened under (ignored when the tab
+   *  already exists — its origin is fixed at first open). */
+  openTab: (docRef: DocRef, opts?: { activate?: boolean; originRoot?: string | null }) => string;
   /** Replace the active document of `tabId`, pushing a history entry. */
   navigateInTab: (tabId: string, docRef: DocRef) => void;
   back: (tabId: string) => void;
@@ -72,6 +74,15 @@ export interface TabsState {
    * stack too — those tabs belong to the previous workspace.
    */
   closeAll: () => DocRef[];
+  /**
+   * Retire (close) every tab whose `originRoot` differs from `currentRoot` —
+   * the tabs that belong to a workspace we are switching away from — returning
+   * each with its own origin so the caller records it under the RIGHT Recent.
+   * Selection is by each tab's captured origin, never a snapshot of the current
+   * root, so overlapping switches attribute tabs correctly. Same-origin tabs
+   * (originRoot === currentRoot) are kept, so a same-root re-open retires none.
+   */
+  retireForeign: (currentRoot: string | null) => { docRef: DocRef; originRoot: string | null }[];
   setScroll: (tabId: string, scroll: ScrollPos) => void;
   /** Advance the Ctrl+Tab MRU cycle by `step` (typically +1 / -1). */
   cycleMru: (step: number) => void;
@@ -121,6 +132,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       history: [docRef],
       historyIndex: 0,
       pinned: false,
+      originRoot: opts?.originRoot ?? null,
     };
 
     const activeIndex = state.tabs.findIndex((candidate) => candidate.id === state.activeTabId);
@@ -190,6 +202,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       scroll: tab.scroll,
       pinned: tab.pinned,
       index,
+      originRoot: tab.originRoot,
     };
 
     const tabs = state.tabs.filter((candidate) => candidate.id !== tabId);
@@ -219,6 +232,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       history: entry.history,
       historyIndex: entry.historyIndex,
       pinned: entry.pinned,
+      originRoot: entry.originRoot,
     };
 
     const insertAt = Math.min(Math.max(entry.index, 0), state.tabs.length);
@@ -292,6 +306,31 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       cyclePos: 0,
     });
     return refs;
+  },
+
+  retireForeign(currentRoot) {
+    const state = get();
+    const foreign = state.tabs.filter((tab) => tab.originRoot !== currentRoot);
+    if (foreign.length === 0) return [];
+    const foreignIds = new Set(foreign.map((tab) => tab.id));
+    const kept = state.tabs.filter((tab) => !foreignIds.has(tab.id));
+    const mru = state.mru.filter((id) => !foreignIds.has(id));
+    const activeTabId =
+      state.activeTabId && foreignIds.has(state.activeTabId)
+        ? (mru[0] ?? null)
+        : state.activeTabId;
+    set({
+      tabs: kept,
+      mru,
+      activeTabId,
+      // Retired tabs belong to another workspace; drop the reopen stack too so
+      // they can't be resurrected here.
+      closed: [],
+      cycling: false,
+      cycleOrder: [],
+      cyclePos: 0,
+    });
+    return foreign.map((tab) => ({ docRef: tab.docRef, originRoot: tab.originRoot }));
   },
 
   setScroll(tabId, scroll) {

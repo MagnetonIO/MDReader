@@ -1,0 +1,5 @@
+{
+  "doc": "guide.md",
+  "fixture": "# Guide\n\nIntro.\n\n## Storage engine\n\nThe storage engine persists chunks.\n",
+  "startLine": 5
+}

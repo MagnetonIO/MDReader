@@ -51,6 +51,9 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Serializes the provenance golden fixture the reader's TS golden test reads
+# (one line value crossing the Rust→TS boundary via a committed JSON file).
+serde_json = "1"
 # The engine-module tests open an in-memory engine and drive a real import (an
 # async runtime to block on), and exercise the model-load deadline (`time`).
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

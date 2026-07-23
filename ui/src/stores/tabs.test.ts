@@ -226,3 +226,41 @@ describe('closeAll (workspace switch)', () => {
     expect(store.getState().reopenClosedTab()).toBeNull();
   });
 });
+
+describe('retireForeign (origin-based workspace switch)', () => {
+  test('retires only tabs whose origin differs from the new root, each with its origin', () => {
+    // Tabs opened under workspace A, then a tab under B (mixed origins).
+    store.getState().openTab(ref('a'), { originRoot: '/wsA' });
+    store.getState().openTab(ref('b'), { originRoot: '/wsA' });
+    store.getState().openTab(ref('c'), { originRoot: '/wsB' });
+
+    // Switching to B keeps the B-origin tab and retires the A-origin ones,
+    // each carrying its true origin (never a snapshot of a transient root).
+    const retired = store.getState().retireForeign('/wsB');
+    expect(retired).toEqual([
+      { docRef: ref('a'), originRoot: '/wsA' },
+      { docRef: ref('b'), originRoot: '/wsA' },
+    ]);
+    expect(store.getState().tabs.map((t) => t.docRef.name)).toEqual(['c.md']);
+  });
+
+  test('the B-then-C overlap attributes A-origin tabs to A under their true origin', () => {
+    // A-origin tabs are open; the current root is A.
+    store.getState().openTab(ref('a'), { originRoot: '/wsA' });
+    store.getState().openTab(ref('doc'), { originRoot: '/wsA' });
+
+    // Switch B then C land back-to-back. Whichever commits, the A-origin tabs
+    // are foreign to BOTH B and C, so they retire under /wsA — never misattributed
+    // to the transient current root of an interleaving switch.
+    const retiredUnderC = store.getState().retireForeign('/wsC');
+    expect(retiredUnderC.every((r) => r.originRoot === '/wsA')).toBe(true);
+    expect(store.getState().tabs).toHaveLength(0);
+  });
+
+  test('a same-root re-open retires nothing (origin equals the target)', () => {
+    store.getState().openTab(ref('a'), { originRoot: '/wsA' });
+    const retired = store.getState().retireForeign('/wsA');
+    expect(retired).toEqual([]);
+    expect(store.getState().tabs).toHaveLength(1);
+  });
+});

@@ -36,6 +36,63 @@ function fileEntries() {
   });
 }
 
+/** A section-bearing search hit for `path`, aimed at the query's section. */
+function searchHit(path: string, query: string) {
+  const content = CORPUS[path]!;
+  const name = path.split('/').pop()!;
+  const lines = content.split('\n');
+  const needle = query.toLowerCase();
+  let matchIdx = lines.findIndex((line) => line.toLowerCase().includes(needle));
+  if (matchIdx < 0) matchIdx = 0;
+  // Walk back to the nearest heading — the section the match sits in.
+  let headIdx = matchIdx;
+  while (headIdx >= 0 && !/^#{1,6}\s/.test(lines[headIdx]!)) headIdx -= 1;
+  const startLine = (headIdx >= 0 ? headIdx : 0) + 1;
+  const heading = headIdx >= 0 ? lines[headIdx]!.replace(/^#+\s*/, '') : name;
+  return {
+    chunk_id: `chunk:${path}`,
+    document_id: `doc:${path}`,
+    file_path: path.replace('/mock/ws/', ''),
+    abs_path: path,
+    name,
+    heading_path: [heading],
+    start_line: startLine,
+    end_line: startLine + 1,
+    score: 1,
+    rrf_score: 0.9,
+    boosts: { title: 0, path: 0, recency: 0, graph: 0 },
+    lex_rank: 1,
+    sem_rank: null,
+    snippet: `…[${query}]…`,
+    mtime: 1_700_000_000_000,
+    explain: null,
+  };
+}
+
+/** The engine's hybrid search, mocked as substring matches over the corpus.
+ *  The channel feed is best-effort, so the returned array is authoritative. */
+function search(query: string) {
+  const q = query.trim().toLowerCase();
+  if (q.length === 0) return [];
+  return Object.keys(CORPUS)
+    .filter((path) => CORPUS[path]!.toLowerCase().includes(q))
+    .map((path) => searchHit(path, query));
+}
+
+/** related() of a document, mocked with a decomposed unified score. */
+function related(docPath: string) {
+  return Object.keys(CORPUS)
+    .filter((path) => path !== docPath)
+    .map((path, index) => ({
+      document_id: `doc:${path}`,
+      file_path: path.replace('/mock/ws/', ''),
+      abs_path: path,
+      name: path.split('/').pop()!,
+      score: 0.9 - index * 0.2,
+      components: { graph: 0.5 - index * 0.1, concept: 0.2, vector: 0.2 - index * 0.1 },
+    }));
+}
+
 /** The engine's wikilink resolution, mocked from a fixed link table. */
 function resolveWikilink(target: string, heading: string | null) {
   if (/^guide$/i.test(target.trim())) {
@@ -87,6 +144,10 @@ export function installTauriMocks(): void {
         const { target, heading } = args as { target: string; heading: string | null };
         return resolveWikilink(target, heading);
       }
+      case 'search':
+        return search((args as { query: string }).query);
+      case 'related':
+        return related((args as { docPath: string }).docPath);
       case 'read_doc': {
         const path = (args as { path: string }).path;
         return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: `mock-${path}` };

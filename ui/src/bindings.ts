@@ -89,6 +89,33 @@ export const commands = {
 	 *  a previous workspace's document.
 	 */
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
+	/**
+	 *  Hybrid search over the workspace index, streamed in two honest phases on
+	 *  `on_event` and returned as the final (hybrid) hit list.
+	 *
+	 *  The typed filter language is honored as-is (`tag:` `path:` `linked-to:`
+	 *  `after:` bare terms, RRF-fused): a parse/validation failure returns the
+	 *  schema-derived error text as the command error (the palette shows it inline
+	 *  under the input). Phase one is `lexical_only` (streamed as `"lexical"`);
+	 *  phase two is the full hybrid pass (streamed as `"final"` and returned).
+	 *  `options.lexical_only` (the `Exact` intent) skips the second pass. Before
+	 *  the engine is installed (no import yet) both phases are empty.
+	 *
+	 *  Epoch-guarded: a workspace switch mid-search supersedes the captured epoch,
+	 *  discarding its hits rather than surfacing a previous workspace's documents.
+	 */
+	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("search", { query, options, onEvent })),
+	/**
+	 *  Documents related to `doc_path` (an absolute path in the granted
+	 *  workspace), unified graph + concept + vector scoring with each component
+	 *  recorded for the rail's decomposition tooltips.
+	 *
+	 *  The absolute path is mapped back to its source-relative stored form and
+	 *  resolved against the index; an unknown document (or an index not yet built)
+	 *  yields an empty list rather than an error, so the rail simply shows nothing
+	 *  until the import lands. Epoch-guarded like [`search`].
+	 */
+	related: (docPath: string, limit: number) => typedError<RelatedDocDto[], string>(__TAURI_INVOKE("related", { docPath, limit })),
 };
 
 /** Events */
@@ -98,6 +125,18 @@ export const events = {
 };
 
 /* Types */
+/**  The recorded contribution of each ranking boost to a hit's score. */
+export type BoostsDto = {
+	/**  Title match (query terms in the heading breadcrumb's head). */
+	title: number | null,
+	/**  Path match (query terms in the stored path). */
+	path: number | null,
+	/**  Recency (modification-time decay). */
+	recency: number | null,
+	/**  Graph proximity to a `linked-to:` document. */
+	graph: number | null,
+};
+
 /**  The bytes of a document plus the provenance a conflict guard needs. */
 export type DocPayload = {
 	/**  UTF-8 file contents (lossily decoded; invalid bytes become U+FFFD). */
@@ -109,6 +148,26 @@ export type DocPayload = {
 	 *  external-edit conflict guard (P3).
 	 */
 	hash: string,
+};
+
+/**  The full per-hit score breakdown (see [`SearchQuery::explain`]). */
+export type ExplainDto = {
+	/**  1-based lexical rank, when the chunk appeared in the FTS results. */
+	lex_rank: number | null,
+	/**  1-based semantic rank, when the chunk appeared in the vector results. */
+	sem_rank: number | null,
+	/**  The fused reciprocal-rank score before boosts. */
+	rrf_score: number | null,
+	/**  Each boost's recorded contribution. */
+	boosts: BoostsDto,
+	/**  `rrf_score + boosts.total()` — the ordering key. */
+	final_score: number | null,
+	/**  The index version the semantic modality searched, if it ran. */
+	index_version: string | null,
+	/**  That version's embedding model. */
+	embedding_model: string | null,
+	/**  The provenance chain. */
+	provenance: ProvenanceDto,
 };
 
 /**
@@ -188,6 +247,123 @@ export type PingResponse = {
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
+};
+
+/**
+ *  The chunk → section → document → file → source provenance ids (uuids as
+ *  strings), present when `explain` was requested.
+ */
+export type ProvenanceDto = {
+	/**  The matched chunk id. */
+	chunk_id: string,
+	/**  The chunk's section id. */
+	section_id: string,
+	/**  The section's document id. */
+	document_id: string,
+	/**  Source-relative stored path. */
+	file_path: string,
+	/**  The attributing source's id, if any. */
+	source_id: string | null,
+	/**  That source's root directory, if any. */
+	source_root: string | null,
+};
+
+/**  Per-component contributions behind a related score. */
+export type RelatedComponentsDto = {
+	/**  Link/span-graph walk (depth-decayed, ≤ 2 hops). */
+	graph: number | null,
+	/**  Shared concepts (Jaccard over the two concept sets). */
+	concept: number | null,
+	/**  Document-centroid vector similarity. */
+	vector: number | null,
+};
+
+/**
+ *  A related document on the wire: its path (relative + absolute), name, the
+ *  unified score, and the per-component decomposition the rail tooltips show.
+ */
+export type RelatedDocDto = {
+	/**  The related document's id (uuid string). */
+	document_id: string,
+	/**  Source-relative stored path. */
+	file_path: string,
+	/**  Absolute path the reader opens. */
+	abs_path: string,
+	/**  The document's file name (basename). */
+	name: string,
+	/**  Combined score (graph + concept + vector). */
+	score: number | null,
+	/**  Per-component contributions. */
+	components: RelatedComponentsDto,
+};
+
+/**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
+export type SearchBatch = {
+	/**  `"lexical"` (FTS-only first pass) or `"final"` (hybrid). */
+	phase: string,
+	/**  The hits for this phase, best-first. */
+	hits: SearchHitDto[],
+	/**
+	 *  The workspace epoch generation this batch was produced under. `finish`
+	 *  releases the state lock before the send below, so a switch could still
+	 *  interleave one batch onto the channel — the frontend discards any batch
+	 *  whose generation is not the current one (belt+suspenders over the lock).
+	 */
+	generation: number,
+};
+
+/**
+ *  One hybrid-search hit on the wire: provenance (path, heading breadcrumb,
+ *  line range), per-modality ranks, boost contributions, an optional explain
+ *  breakdown, plus the absolute path the reader opens and the file mtime the
+ *  `Recent` intent sorts on.
+ */
+export type SearchHitDto = {
+	/**  The matched chunk id (uuid string). */
+	chunk_id: string,
+	/**  The chunk's document id (uuid string). */
+	document_id: string,
+	/**  Source-relative stored path of the document. */
+	file_path: string,
+	/**  Absolute path the reader opens (source root + stored path). */
+	abs_path: string,
+	/**  The document's file name (basename). */
+	name: string,
+	/**  Heading breadcrumb of the chunk's section. */
+	heading_path: string[],
+	/**  First source line of the section (1-based, inclusive) — the jump target. */
+	start_line: number,
+	/**  Last source line of the section (1-based, inclusive). */
+	end_line: number,
+	/**  Final score: fused RRF plus boosts (higher is better). */
+	score: number | null,
+	/**  The fused RRF score before boosts. */
+	rrf_score: number | null,
+	/**  Recorded boost contributions. */
+	boosts: BoostsDto,
+	/**  1-based rank in the lexical result list, if the chunk appeared there. */
+	lex_rank: number | null,
+	/**  1-based rank in the semantic result list, if the chunk appeared there. */
+	sem_rank: number | null,
+	/**  Preview snippet (FTS-highlighted when the hit is lexical). */
+	snippet: string,
+	/**  Modification time of the document file, ms since the Unix epoch. */
+	mtime: number | null,
+	/**  The full breakdown, present when `explain` was requested. */
+	explain: ExplainDto | null,
+};
+
+/**
+ *  Options for [`search`], mirrored from the engine's [`SearchOptions`] with
+ *  the fields the palette drives.
+ */
+export type SearchQuery = {
+	/**  Maximum hits per phase. */
+	limit: number,
+	/**  Skip the vector arm entirely (the `Exact` intent) — one phase only. */
+	lexical_only: boolean,
+	/**  Attach the full [`HitExplain`] breakdown to every hit. */
+	explain: boolean,
 };
 
 /**
@@ -289,4 +465,3 @@ function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deseria
 
     return Object.assign(fn, base);
 }
-

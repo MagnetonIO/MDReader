@@ -20,6 +20,7 @@ export interface SerializedTab {
   historyIndex: number;
   scroll: ScrollPos;
   pinned: boolean;
+  originRoot: string | null;
 }
 
 export interface SessionData {
@@ -58,6 +59,7 @@ export function serializeSession(input: SessionInput): SessionData {
       historyIndex: tab.historyIndex,
       scroll: { block: tab.scroll.block, offset: tab.scroll.offset },
       pinned: tab.pinned,
+      originRoot: tab.originRoot,
     })),
   };
 }
@@ -80,6 +82,16 @@ export function deserializeSession(raw: unknown): RestoredSession | null {
       : (tabs[0]?.id ?? null);
 
   const root = typeof raw.root === 'string' ? raw.root : null;
+
+  // Migration-on-load: a legacy session (pre-`originRoot`) restores its tabs with
+  // a null origin. Left null, `retireForeign` would treat them as foreign to the
+  // very workspace they belong to, so a same-root reopen would wrongly retire the
+  // restored tabs. Adopt the session's own root as their origin here.
+  if (root !== null) {
+    for (const tab of tabs) {
+      if (tab.originRoot === null) tab.originRoot = root;
+    }
+  }
 
   return {
     root,
@@ -109,6 +121,9 @@ function parseTab(candidate: unknown): TabState | null {
     historyIndex,
     scroll: parseScroll(candidate.scroll),
     pinned: candidate.pinned === true,
+    // Legacy blobs predate per-tab origin; a null origin makes the tab foreign
+    // to any real root, so it retires (attributed to session root by the caller).
+    originRoot: typeof candidate.originRoot === 'string' ? candidate.originRoot : null,
   };
 }
 
