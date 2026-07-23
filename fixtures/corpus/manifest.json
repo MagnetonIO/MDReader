@@ -1,0 +1,59 @@
+[
+  { "path": "index.md", "features": ["hub", "cross-links", "relative-link", "anchor-link", "image", "wikilink", "broken-wikilink", "frontmatter"] },
+
+  { "path": "notes/daily/2026-07-19.md", "features": ["frontmatter", "task-list", "relative-link", "wikilink", "cross-links"] },
+  { "path": "notes/daily/2026-07-20.md", "features": ["frontmatter", "task-list", "strikethrough", "autolink", "relative-link", "cross-links"] },
+
+  { "path": "notes/projects/catdb-overview.md", "features": ["frontmatter", "gfm-table", "footnote", "wikilink", "relative-link", "cross-links"] },
+  { "path": "notes/projects/mdreader-architecture.md", "features": ["frontmatter", "relative-link", "image", "wikilink", "cross-links"] },
+
+  { "path": "notes/zettel/graph-hub.md", "features": ["frontmatter", "wikilink", "hub", "cross-links", "relative-link"] },
+  { "path": "notes/zettel/node-embeddings.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-storage.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-ingest.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-query-engine.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-provenance.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-graph-view.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-search.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/node-planner.md", "features": ["frontmatter", "wikilink", "cross-links"] },
+  { "path": "notes/zettel/wikilinks.md", "features": ["frontmatter", "wikilink", "wikilink-heading", "wikilink-label", "cross-links"] },
+  { "path": "notes/zettel/broken-links.md", "features": ["frontmatter", "broken-wikilink", "broken-relative-link", "anchor-link", "wikilink", "cross-links"] },
+
+  { "path": "docs/guides/gfm-tables.md", "features": ["frontmatter", "gfm-table", "relative-link", "anchor-link"] },
+  { "path": "docs/guides/task-lists.md", "features": ["frontmatter", "task-list", "relative-link"] },
+  { "path": "docs/guides/footnotes.md", "features": ["frontmatter", "footnote", "relative-link"] },
+  { "path": "docs/guides/strikethrough-autolinks.md", "features": ["frontmatter", "strikethrough", "autolink", "relative-link"] },
+  { "path": "docs/guides/code-fences.md", "features": ["frontmatter", "code-fence", "indented-code"] },
+  { "path": "docs/guides/katex-inline.md", "features": ["frontmatter", "katex-inline", "relative-link"] },
+  { "path": "docs/guides/katex-block.md", "features": ["frontmatter", "katex-block", "katex-inline", "relative-link"] },
+  { "path": "docs/guides/mermaid-flowchart.md", "features": ["frontmatter", "mermaid", "relative-link"] },
+  { "path": "docs/guides/mermaid-sequence.md", "features": ["frontmatter", "mermaid", "relative-link"] },
+
+  { "path": "docs/reference/headings-deep.md", "features": ["frontmatter", "deep-headings"] },
+  { "path": "docs/reference/headings-duplicate.md", "features": ["frontmatter", "duplicate-headings"] },
+  { "path": "docs/reference/headings-start-h3.md", "features": ["frontmatter", "start-h3"] },
+  { "path": "docs/reference/headings-with-inline.md", "features": ["frontmatter", "heading-inline-markup", "relative-link"] },
+  { "path": "docs/reference/no-headings.md", "features": ["frontmatter", "no-headings", "relative-link"] },
+
+  { "path": "frontmatter/typical.md", "features": ["frontmatter", "relative-link"] },
+  { "path": "frontmatter/empty-frontmatter.md", "features": ["empty-frontmatter", "relative-link"] },
+  { "path": "frontmatter/malformed-frontmatter.md", "features": ["malformed-frontmatter", "relative-link"] },
+  { "path": "frontmatter/frontmatter-only.md", "features": ["frontmatter-only"] },
+
+  { "path": "edge-cases/empty.md", "features": ["empty-file"] },
+  { "path": "edge-cases/whitespace-only.md", "features": ["whitespace-only"] },
+  { "path": "edge-cases/huge-paragraph.md", "features": ["frontmatter", "huge-paragraph", "relative-link"] },
+  { "path": "edge-cases/crlf-endings.md", "features": ["frontmatter", "crlf", "relative-link"] },
+  { "path": "edge-cases/unicode-emoji-cjk.md", "features": ["frontmatter", "unicode", "emoji", "cjk", "relative-link"] },
+  { "path": "edge-cases/unclosed-fence.md", "features": ["frontmatter", "code-fence-unclosed"] },
+  { "path": "edge-cases/notes.markdown", "features": ["frontmatter", "alt-extension", "wikilink", "relative-link"] },
+  { "path": "edge-cases/big-file.md", "features": ["frontmatter", "large-file"] },
+
+  { "path": "sample-project/overview.md", "features": ["frontmatter", "relative-link"] },
+  { "path": "sample-project/src/lib/parser.md", "features": ["frontmatter", "code-fence", "relative-link"] },
+  { "path": "sample-project/docs/api.md", "features": ["frontmatter", "gfm-table", "relative-link"] },
+  { "path": "sample-project/generated/build-report.md", "features": ["frontmatter", "gitignored"] },
+
+  { "path": "assets/logo.png", "features": ["image-asset"] },
+  { "path": "assets/diagram.png", "features": ["image-asset"] }
+]

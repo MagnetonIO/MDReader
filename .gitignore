@@ -13,5 +13,9 @@ dist/
 next-env.d.ts
 *.tsbuildinfo
 
+# Synthetic corpus generator output (scripts/gen-corpus.mjs default outdir).
+# Hand-authored fixtures live in fixtures/corpus/ and ARE committed.
+fixtures/generated/
+
 # macOS
 .DS_Store
