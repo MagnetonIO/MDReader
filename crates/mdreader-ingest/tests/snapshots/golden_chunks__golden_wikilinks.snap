@@ -1,0 +1,26 @@
+---
+source: apps/mdreader/crates/mdreader-ingest/tests/golden_chunks.rs
+expression: "golden(\"notes/zettel/wikilinks.md\")"
+---
+title: Wiki-link Syntax
+frontmatter:
+  title: Wiki-link Syntax
+  tags: [zettel, reference]
+section[0] depth=1 lines=6..24 own_end=24 parent=- hash=08cffe42d959 path=[Wiki-link Syntax]
+  block paragraph 8..8
+  block paragraph 10..10
+  block paragraph 12..12
+  block paragraph 14..15
+  block paragraph 17..18
+  block list 20..22
+  block paragraph 24..24
+  link wikilink -> node-storage @8
+  link wikilink -> node-query-engine @10
+  link wikilink -> node-search#Search @12
+  link wikilink -> node-embeddings#Embeddings @15
+  link wikilink -> graph-hub @17
+  link wikilink -> node-ingest @20
+  link wikilink -> node-provenance @21
+  link wikilink -> node-graph-view @22
+  link wikilink -> broken-links @24
+  chunk part=0 tokens=132 hash=9ccfa7ca3dae text="Wiki-link Syntax\\n\\n# Wiki-link Syntax\\n\\nA plain link to anothe"

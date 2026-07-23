@@ -1,0 +1,20 @@
+---
+source: apps/mdreader/crates/mdreader-ingest/tests/golden_chunks.rs
+expression: "golden(\"frontmatter/typical.md\")"
+---
+title: Typical Frontmatter
+frontmatter:
+  title: Typical Frontmatter
+  author: M. Long
+  date: 2026-07-21
+  tags: 
+  published: true
+  aliases: 
+  rating: 4.5
+section[0] depth=1 lines=15..22 own_end=22 parent=- hash=c819aaa2dd10 path=[Typical Frontmatter]
+  block paragraph 17..18
+  block paragraph 20..22
+  link markdown -> empty-frontmatter.md @21
+  link markdown -> malformed-frontmatter.md @21
+  link markdown -> frontmatter-only.md @22
+  chunk part=0 tokens=94 hash=287c69dffe3b text="Typical Frontmatter\\n\\n# Typical Frontmatter\\n\\nA normal note wi"

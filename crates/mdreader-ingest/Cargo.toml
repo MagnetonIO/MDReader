@@ -10,3 +10,19 @@ workspace = true
 
 [dependencies]
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
+catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
+catdb-storage = { path = "../../../../catdb/crates/catdb-storage" }
+mdreader-domain = { path = "../mdreader-domain" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+blake3 = "1"
+comrak = "0.54"
+ignore = "0.4"
+
+[dev-dependencies]
+catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
+insta = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile = { workspace = true }

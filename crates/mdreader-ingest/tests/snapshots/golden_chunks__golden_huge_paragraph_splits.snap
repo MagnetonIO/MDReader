@@ -1,0 +1,12 @@
+---
+source: apps/mdreader/crates/mdreader-ingest/tests/golden_chunks.rs
+expression: "golden(\"edge-cases/huge-paragraph.md\")"
+---
+title: One Enormous Paragraph
+frontmatter:
+  title: Huge Paragraph
+  tags: [edge-case, layout]
+section[0] depth=1 lines=6..8 own_end=8 parent=- hash=ac60d4dc4581 path=[One Enormous Paragraph]
+  block paragraph 8..8
+  link markdown -> ../index.md @8
+  chunk part=0 tokens=267 hash=d5e355ffeccd text="One Enormous Paragraph\\n\\n# One Enormous Paragraph\\n\\nThe follow"
