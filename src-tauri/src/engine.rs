@@ -593,39 +593,48 @@ pub fn list_workspace_files(
     root: String,
     workspace: State<'_, WorkspaceState>,
 ) -> Result<WorkspaceListing, String> {
+    list_workspace_files_guarded(&workspace, &root, || {})
+}
+
+/// The listing core, with a `gate` hook invoked between building the listing and
+/// the identity re-check (no-op in production; tests inject a switch there). Both
+/// return paths — index-backed and fs-fallback — pass through the SAME re-check,
+/// so neither can hand a previous workspace's listing to the new one.
+fn list_workspace_files_guarded(
+    workspace: &WorkspaceState,
+    root: &str,
+    gate: impl FnOnce(),
+) -> Result<WorkspaceListing, String> {
     // Capture the epoch ONCE — root + engine + status are one consistent snapshot.
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     // TOCTOU: the reads below run after this containment check (accepted — see
     // the commands module's "TOCTOU" note; local single-user reader).
-    let root_path = resolve_dir(&epoch.root, Path::new(&root))?;
+    let root_path = resolve_dir(&epoch.root, Path::new(root))?;
 
-    // Serve from the index once THIS epoch's import has finished and its engine
-    // is installed. Both come from the captured epoch, so there is no stale-engine
-    // window (the engine and its "done" status are the same era).
-    if epoch.status().is_done() {
-        if let Some(db) = epoch.engine.get() {
-            // Once the index is built it is authoritative: report its provenance
-            // (`from_index`) even when it legitimately holds no documents (an
-            // empty workspace), rather than masquerading as the fs fallback (#7).
-            let entries = index_listing(db, &epoch.root, &root_path)?;
-            // Commit point: a switch during the read supersedes this listing —
-            // discard it (the fs fallback below serves the still-valid old root
-            // harmlessly; the frontend's request-generation guard drops it too).
-            if workspace.is_current(&epoch) {
-                return Ok(WorkspaceListing {
-                    entries,
-                    from_index: true,
-                });
-            }
-        }
+    // Serve from the index once THIS epoch's import has finished and its engine is
+    // installed (both from the captured epoch, so no stale-engine window). Once
+    // built the index is authoritative: report `from_index` even with zero docs
+    // (an empty workspace), rather than masquerading as the fs fallback (#7).
+    let listing = match (epoch.status().is_done(), epoch.engine.get()) {
+        (true, Some(db)) => WorkspaceListing {
+            entries: index_listing(db, &epoch.root, &root_path)?,
+            from_index: true,
+        },
+        _ => WorkspaceListing {
+            entries: fs_listing(&root_path)?,
+            from_index: false,
+        },
+    };
+
+    gate();
+    // Commit point (both paths): a switch during the read supersedes this epoch —
+    // discard rather than surface a previous workspace's listing.
+    if !workspace.is_current(&epoch) {
+        return Err("workspace changed during listing".to_string());
     }
-
-    Ok(WorkspaceListing {
-        entries: fs_listing(&root_path)?,
-        from_index: false,
-    })
+    Ok(listing)
 }
 
 /// Build sidebar rows from the index's documents, filtered to those under
@@ -715,8 +724,9 @@ fn wikilink_guard(epoch: &Epoch, from_doc: &str) -> Result<(), String> {
 /// resolved to a source line in the target document. Matching is filename-first
 /// (stem, case-insensitive), then document title; several matches yield
 /// `ambiguous` with the candidate set. Captures the epoch once (engine + root
-/// consistent) and re-checks it is current before returning a match, so a switch
-/// mid-resolution can never surface a previous workspace's document.
+/// consistent) and re-checks it is current AT THE RETURN — after the heading
+/// lookup and result construction — so a switch mid-resolution can never surface
+/// a previous workspace's document.
 #[tauri::command]
 #[specta::specta]
 pub fn resolve_wikilink(
@@ -725,16 +735,30 @@ pub fn resolve_wikilink(
     heading: Option<String>,
     workspace: State<'_, WorkspaceState>,
 ) -> Result<WikiResolution, String> {
+    resolve_wikilink_guarded(&workspace, &from_doc, &target, heading.as_deref(), || {})
+}
+
+/// The resolution core, with a `gate` hook invoked between constructing the
+/// result and the identity re-check (no-op in production; tests inject a switch
+/// there). The re-check sits at the RETURN, after the (DB-touching) heading
+/// lookup and result construction — the true commit point.
+fn resolve_wikilink_guarded(
+    workspace: &WorkspaceState,
+    from_doc: &str,
+    target: &str,
+    heading: Option<&str>,
+    gate: impl FnOnce(),
+) -> Result<WikiResolution, String> {
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
-    wikilink_guard(&epoch, &from_doc)?;
+    wikilink_guard(&epoch, from_doc)?;
     let Some(db) = epoch.engine.get() else {
         return Ok(WikiResolution::unresolved());
     };
     let src_root = &epoch.root;
 
-    let normalized = normalize_wiki_target(&target);
+    let normalized = normalize_wiki_target(target);
     if normalized.is_empty() {
         return Ok(WikiResolution::unresolved());
     }
@@ -750,26 +774,20 @@ pub fn resolve_wikilink(
         matches = title_matches(db, &docs, &normalized)?;
     }
 
-    // Commit point: a switch during resolution supersedes this epoch — return
-    // unresolved (silently-clean) rather than a foreign workspace's document.
-    if !workspace.is_current(&epoch) {
-        return Ok(WikiResolution::unresolved());
-    }
-
-    match matches.as_slice() {
-        [] => Ok(WikiResolution::unresolved()),
+    let resolution = match matches.as_slice() {
+        [] => WikiResolution::unresolved(),
         [only] => {
             let doc = &docs[*only];
             let abs = src_root.join(&doc.file_path);
-            let line = match &heading {
+            let line = match heading {
                 Some(heading) => heading_line(db, doc.id, heading)?,
                 None => None,
             };
-            Ok(WikiResolution::resolved(
+            WikiResolution::resolved(
                 abs.to_string_lossy().into_owned(),
                 basename(&doc.file_path),
                 line,
-            ))
+            )
         }
         many => {
             let candidates = many
@@ -783,9 +801,17 @@ pub fn resolve_wikilink(
                     }
                 })
                 .collect();
-            Ok(WikiResolution::ambiguous(candidates))
+            WikiResolution::ambiguous(candidates)
         }
+    };
+
+    gate();
+    // Commit point: a switch during resolution supersedes this epoch — return
+    // unresolved (silently-clean) rather than a foreign workspace's document.
+    if !workspace.is_current(&epoch) {
+        return Ok(WikiResolution::unresolved());
     }
+    Ok(resolution)
 }
 
 /// Strip a `#heading`/`?query` suffix, decode `%20`, and trim — the target key
@@ -1198,5 +1224,56 @@ mod tests {
         assert_eq!(title_of(&db, id).unwrap().as_deref(), Some("Real Title"));
         // The title-based wikilink match finds it too (filename stem is `note`).
         assert_eq!(title_matches(&db, &docs, "real title").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn listing_discards_when_a_switch_lands_in_the_window() {
+        let (_a, root_a) = workspace_dir();
+        let (_b, root_b) = workspace_dir();
+        fs::write(root_a.join("keep.md"), "# Keep").unwrap();
+        let ws = WorkspaceState::granted(root_a.clone());
+
+        // No switch → the fs-fallback listing returns normally.
+        let listing = list_workspace_files_guarded(&ws, root_a.to_str().unwrap(), || {}).unwrap();
+        assert!(!listing.from_index);
+        assert!(listing.entries.iter().any(|entry| entry.name == "keep.md"));
+
+        // A switch injected between building the listing and the re-check
+        // supersedes the captured epoch → the listing is discarded, never surfaced
+        // under the new workspace.
+        let stale = list_workspace_files_guarded(&ws, root_a.to_str().unwrap(), || {
+            let _ = ws.switch(root_b.clone());
+        });
+        assert!(stale.is_err(), "stale listing discarded");
+    }
+
+    #[test]
+    fn resolve_discards_when_a_switch_lands_in_the_window() {
+        let corpus = TempDir::new().unwrap();
+        let root_a = fs::canonicalize(corpus.path()).unwrap();
+        fs::write(root_a.join("guide.md"), "# Guide\n").unwrap();
+        let (_b, root_b) = workspace_dir();
+
+        let ws = WorkspaceState::granted(root_a.clone());
+        let db = in_memory_engine();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(db.import(&root_a, ImportOptions::default()))
+            .expect("import corpus");
+        ws.current().unwrap().install_engine_for_test(db);
+
+        // No switch → the resolution (built after the DB heading lookup) returns.
+        let ok = resolve_wikilink_guarded(&ws, "", "guide", None, || {}).unwrap();
+        assert_eq!(ok.status, "resolved");
+
+        // A switch injected after result construction, before the return re-check,
+        // supersedes the captured epoch → unresolved, never a foreign document.
+        let stale = resolve_wikilink_guarded(&ws, "", "guide", None, || {
+            let _ = ws.switch(root_b.clone());
+        })
+        .unwrap();
+        assert_eq!(stale.status, "unresolved");
     }
 }

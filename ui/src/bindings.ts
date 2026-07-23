@@ -19,6 +19,8 @@ export const commands = {
 	 *  Read a single markdown document from within the granted workspace. Thin:
 	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
 	 *  Rejects paths outside the workspace, non-files, and non-markdown extensions.
+	 *  Captures the epoch once and re-checks it is current before returning, so a
+	 *  switch during the read never hands back a previous workspace's bytes.
 	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
 	/**
@@ -44,7 +46,7 @@ export const commands = {
 	 *  names another). Runtime failures *during* watching are surfaced separately
 	 *  via `mdreader://watch-error`.
 	 */
-	watchWorkspace: (root: string) => typedError<string, string>(__TAURI_INVOKE("watch_workspace", { root })),
+	watchWorkspace: (root: string) => typedError<WorkspaceGrant, string>(__TAURI_INVOKE("watch_workspace", { root })),
 	/**
 	 *  List the workspace's markdown files. Once an import has finished the rows come
 	 *  from the engine's index (gitignored files already dropped, so none are dimmed);
@@ -82,8 +84,9 @@ export const commands = {
 	 *  resolved to a source line in the target document. Matching is filename-first
 	 *  (stem, case-insensitive), then document title; several matches yield
 	 *  `ambiguous` with the candidate set. Captures the epoch once (engine + root
-	 *  consistent) and re-checks it is current before returning a match, so a switch
-	 *  mid-resolution can never surface a previous workspace's document.
+	 *  consistent) and re-checks it is current AT THE RETURN — after the heading
+	 *  lookup and result construction — so a switch mid-resolution can never surface
+	 *  a previous workspace's document.
 	 */
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
 };
@@ -147,6 +150,12 @@ export type FsChanged = {
 	 *  path is still being written (the debouncer timed out mid-write).
 	 */
 	kind: string,
+	/**
+	 *  The workspace generation this watcher was armed under. The frontend
+	 *  discards events whose generation is not the current one, so a *previous*
+	 *  watcher's still-draining events can never drive the new workspace.
+	 */
+	generation: number,
 };
 
 /**
@@ -190,6 +199,12 @@ export type PingResponse = {
 export type WatchError = {
 	/**  Human-readable description of the watcher failure. */
 	message: string,
+	/**
+	 *  The workspace generation this watcher was armed under (see
+	 *  [`FsChanged::generation`]). An *old* watcher's error must not mark the new
+	 *  watcher failed, so the frontend discards generation mismatches.
+	 */
+	generation: number,
 };
 
 /**  One candidate when a wikilink target is ambiguous. */
@@ -218,6 +233,18 @@ export type WikiResolution = {
 	line: number | null,
 	/**  The matches when `status == "ambiguous"`. */
 	candidates: WikiCandidate[],
+};
+
+/**
+ *  The canonical grant plus the generation the watcher was armed under, returned
+ *  by [`watch_workspace`]. The frontend adopts `generation` as the reference it
+ *  filters `mdreader://fs-changed` / `mdreader://watch-error` events against.
+ */
+export type WorkspaceGrant = {
+	/**  Canonical granted root. */
+	root: string,
+	/**  The epoch generation this grant + watcher belong to. */
+	generation: number,
 };
 
 /**

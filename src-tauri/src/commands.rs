@@ -36,6 +36,7 @@
 //! notes it at the use site.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -92,6 +93,9 @@ impl WorkspaceState {
     }
 
     /// The current granted root, or an error when no workspace has been granted.
+    /// (Commands read `epoch.root` off their captured epoch; this is a test
+    /// convenience for asserting the active grant.)
+    #[cfg(test)]
     pub(crate) fn root(&self) -> Result<PathBuf, String> {
         self.current()
             .map(|epoch| epoch.root.clone())
@@ -279,16 +283,31 @@ pub struct DocPayload {
 /// Read a single markdown document from within the granted workspace. Thin:
 /// resolves + validates the path, reads the bytes, hashes them, decodes to text.
 /// Rejects paths outside the workspace, non-files, and non-markdown extensions.
+/// Captures the epoch once and re-checks it is current before returning, so a
+/// switch during the read never hands back a previous workspace's bytes.
 #[tauri::command]
 #[specta::specta]
 pub fn read_doc(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<DocPayload, String> {
-    let granted = state.root()?;
+    read_doc_guarded(&state, &path, || {})
+}
+
+/// The read core, with a `gate` hook invoked between the read and the identity
+/// re-check (a no-op in production; tests inject a switch into that window).
+fn read_doc_guarded(
+    state: &WorkspaceState,
+    path: &str,
+    gate: impl FnOnce(),
+) -> Result<DocPayload, String> {
+    // Capture the epoch ONCE; validate + read against its grant.
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
     // TOCTOU: the read below runs after this containment check (accepted — see the
     // module-level "TOCTOU" note; local single-user reader).
-    let real = resolve_doc(&granted, Path::new(&path))?;
+    let real = resolve_doc(&epoch.root, Path::new(path))?;
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -297,6 +316,13 @@ pub fn read_doc(
             .ok()
             .and_then(|m| m.modified().ok()),
     );
+
+    gate();
+    // Commit point: a switch during the read supersedes this epoch — discard the
+    // (old-root) bytes rather than surfacing them under the new workspace.
+    if !state.is_current(&epoch) {
+        return Err("workspace changed during read".to_string());
+    }
     Ok(DocPayload {
         content: String::from_utf8_lossy(&bytes).into_owned(),
         mtime,
@@ -345,6 +371,10 @@ pub struct FsChanged {
     /// Coarse change kind: `"any"` for a settled change, `"continuous"` while a
     /// path is still being written (the debouncer timed out mid-write).
     pub kind: String,
+    /// The workspace generation this watcher was armed under. The frontend
+    /// discards events whose generation is not the current one, so a *previous*
+    /// watcher's still-draining events can never drive the new workspace.
+    pub generation: u32,
 }
 
 /// Payload for the `mdreader://watch-error` event — a *runtime* watcher failure
@@ -356,6 +386,21 @@ pub struct FsChanged {
 pub struct WatchError {
     /// Human-readable description of the watcher failure.
     pub message: String,
+    /// The workspace generation this watcher was armed under (see
+    /// [`FsChanged::generation`]). An *old* watcher's error must not mark the new
+    /// watcher failed, so the frontend discards generation mismatches.
+    pub generation: u32,
+}
+
+/// The canonical grant plus the generation the watcher was armed under, returned
+/// by [`watch_workspace`]. The frontend adopts `generation` as the reference it
+/// filters `mdreader://fs-changed` / `mdreader://watch-error` events against.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct WorkspaceGrant {
+    /// Canonical granted root.
+    pub root: String,
+    /// The epoch generation this grant + watcher belong to.
+    pub generation: u32,
 }
 
 /// Holds the live workspace watcher. Parking the debouncer here keeps it alive;
@@ -382,51 +427,68 @@ pub fn watch_workspace(
     root: String,
     workspace: tauri::State<'_, WorkspaceState>,
     state: tauri::State<'_, WatcherState>,
-) -> Result<String, String> {
+) -> Result<WorkspaceGrant, String> {
     let emit_app = app.clone();
-    let granted = watch_and_commit(
+    // The generation the watcher is armed under — filled by `commit_workspace`
+    // (under the lock, matching the new epoch exactly) and read by the emit
+    // closure so every event is tagged with the era it belongs to.
+    let armed_gen = Arc::new(AtomicU64::new(0));
+    let gen_for_closure = Arc::clone(&armed_gen);
+    let (granted, generation) = watch_and_commit(
         &root,
         &workspace,
         &state,
-        move |result: DebounceEventResult| match result {
-            Ok(events) => {
-                for event in events {
-                    if !is_markdown(&event.path) {
-                        continue;
+        &armed_gen,
+        move |result: DebounceEventResult| {
+            let generation = gen_for_closure.load(Ordering::Acquire) as u32;
+            match result {
+                Ok(events) => {
+                    for event in events {
+                        if !is_markdown(&event.path) {
+                            continue;
+                        }
+                        let kind = match event.kind {
+                            DebouncedEventKind::AnyContinuous => "continuous",
+                            _ => "any",
+                        };
+                        let _ = FsChanged {
+                            path: event.path.to_string_lossy().into_owned(),
+                            kind: kind.to_string(),
+                            generation,
+                        }
+                        .emit(&emit_app);
                     }
-                    let kind = match event.kind {
-                        DebouncedEventKind::AnyContinuous => "continuous",
-                        _ => "any",
-                    };
-                    let _ = FsChanged {
-                        path: event.path.to_string_lossy().into_owned(),
-                        kind: kind.to_string(),
+                }
+                Err(error) => {
+                    let _ = WatchError {
+                        message: error.to_string(),
+                        generation,
                     }
                     .emit(&emit_app);
                 }
             }
-            Err(error) => {
-                let _ = WatchError {
-                    message: error.to_string(),
-                }
-                .emit(&emit_app);
-            }
         },
     )?;
-    Ok(granted.to_string_lossy().into_owned())
+    Ok(WorkspaceGrant {
+        root: granted.to_string_lossy().into_owned(),
+        generation,
+    })
 }
 
 /// The workspace-switch core, factored out of [`watch_workspace`] so it is
 /// exercisable without an `AppHandle` (the handle is only needed to build the
 /// production `on_event` sink; tests pass a no-op). Resolves `root`, arms a fresh
 /// watcher into a *local*, and — only on success — commits the new grant + new
-/// watcher together. Any earlier failure returns with nothing mutated.
+/// watcher together, filling `armed_gen` with the new epoch's generation. Any
+/// earlier failure returns with nothing mutated. Returns the canonical root and
+/// its generation.
 fn watch_and_commit<F: DebounceEventHandler>(
     root: &str,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
+    armed_gen: &AtomicU64,
     on_event: F,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, u32), String> {
     // A workspace SWITCH targets a NEW root that is not inside the old grant, so
     // resolve it independently: this command is the one that ESTABLISHES the grant.
     // TOCTOU: the watch below arms after this check (accepted — see the
@@ -443,8 +505,8 @@ fn watch_and_commit<F: DebounceEventHandler>(
         .watch(&new_root, RecursiveMode::Recursive)
         .map_err(|err| format!("watch {root} failed: {err}"))?;
 
-    commit_workspace(workspace, watcher, new_root.clone(), debouncer)?;
-    Ok(new_root)
+    let generation = commit_workspace(workspace, watcher, new_root.clone(), debouncer, armed_gen)?;
+    Ok((new_root, generation))
 }
 
 /// Swap in a fresh [`Epoch`](crate::engine::Epoch) for `new_root` and `debouncer`
@@ -462,7 +524,8 @@ fn commit_workspace(
     watcher: &WatcherState,
     new_root: PathBuf,
     debouncer: Debouncer<RecommendedWatcher>,
-) -> Result<(), String> {
+    armed_gen: &AtomicU64,
+) -> Result<u32, String> {
     let mut watcher_slot = watcher
         .0
         .lock()
@@ -471,21 +534,25 @@ fn commit_workspace(
         .current
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
-    // Both locks held — neither write below can fail, so the swap is atomic.
+    // Both locks held — neither write below can fail, so the swap is atomic. The
+    // watcher's armed generation is published to match the new epoch exactly, so
+    // its events are tagged with the era they belong to.
     let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    armed_gen.store(generation, Ordering::Release);
     *epoch_slot = Some(crate::engine::Epoch::new(new_root, generation));
     *watcher_slot = Some(debouncer);
-    Ok(())
+    Ok(generation as u32)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit,
-        DebounceEventResult, WatcherState, WorkspaceState,
+        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -606,12 +673,14 @@ mod tests {
         let sink = || |_result: DebounceEventResult| {};
 
         // Arm the initial watch on A.
-        watch_and_commit(root_a.to_str().unwrap(), &workspace, &watcher, sink()).expect("arm A");
+        watch_and_commit(root_a.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink())
+            .expect("arm A");
         assert_eq!(workspace.root().unwrap(), root_a);
         assert!(watcher.0.lock().unwrap().is_some());
 
         // A valid switch to B swaps BOTH the grant and the watcher together.
-        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch B");
+        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink())
+            .expect("switch B");
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
 
@@ -619,7 +688,10 @@ mod tests {
         // pre-commit `?`-return path an arm failure would take), leaving the OLD
         // root + watcher fully intact — no half-applied switch, no divergence.
         let bogus = root_b.join("does-not-exist");
-        assert!(watch_and_commit(bogus.to_str().unwrap(), &workspace, &watcher, sink()).is_err());
+        assert!(
+            watch_and_commit(bogus.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink())
+                .is_err()
+        );
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
     }
@@ -646,7 +718,10 @@ mod tests {
         // failure is the poisoned commit lock. The grant must stay on A, not
         // advance to B while the watcher swap never happened (no split commit).
         let sink = |_result: DebounceEventResult| {};
-        assert!(watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink).is_err());
+        assert!(
+            watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink)
+                .is_err()
+        );
         assert_eq!(workspace.root().unwrap(), root_a);
     }
 
@@ -663,9 +738,11 @@ mod tests {
         // Two switches back-to-back (B then C) converge on C, and EACH advances
         // the root generation — the hook an import uses to notice it is stale and
         // discard its late status rather than clobber the new workspace's.
-        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch B");
+        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink())
+            .expect("switch B");
         let g_b = workspace.generation();
-        watch_and_commit(root_c.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch C");
+        watch_and_commit(root_c.to_str().unwrap(), &workspace, &watcher, &AtomicU64::new(0), sink())
+            .expect("switch C");
         let g_c = workspace.generation();
 
         assert_eq!(workspace.root().unwrap(), root_c, "converged on the last root");
@@ -674,5 +751,48 @@ mod tests {
             g_b > g_start && g_c > g_b,
             "each switch advances the generation ({g_start} -> {g_b} -> {g_c})"
         );
+    }
+
+    #[test]
+    fn the_watcher_is_armed_with_its_epochs_generation() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let ws = WorkspaceState::granted(root_a);
+        let watcher = WatcherState(Mutex::new(None));
+        let armed_gen = AtomicU64::new(0);
+        let sink = |_result: DebounceEventResult| {};
+
+        let (_root, generation) =
+            watch_and_commit(root_b.to_str().unwrap(), &ws, &watcher, &armed_gen, sink)
+                .expect("switch B");
+
+        // The returned generation, the armed cell (read by the emit closure), and
+        // the live epoch's generation all agree — so events are tagged with the
+        // era they belong to.
+        assert_eq!(generation as u64, ws.generation());
+        assert_eq!(armed_gen.load(Ordering::Acquire), ws.generation());
+        assert!(generation >= 2, "advanced past the initial grant");
+    }
+
+    #[test]
+    fn read_doc_discards_bytes_when_a_switch_lands_in_the_read_window() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let note = root_a.join("note.md");
+        fs::write(&note, "# Note\n").unwrap();
+        let ws = WorkspaceState::granted(root_a);
+
+        // No switch → the read of the current workspace's file succeeds.
+        let ok = read_doc_guarded(&ws, note.to_str().unwrap(), || {}).expect("read");
+        assert!(ok.content.contains("Note"));
+
+        // A switch INSIDE the window (injected between the read and the re-check)
+        // supersedes the captured epoch → the old-root bytes are discarded, never
+        // surfaced under the new workspace.
+        let stale = read_doc_guarded(&ws, note.to_str().unwrap(), || {
+            let _ = ws.switch(root_b.clone());
+        });
+        assert!(stale.is_err(), "stale read discarded");
+        assert_eq!(ws.root().unwrap(), root_b);
     }
 }
