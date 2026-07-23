@@ -17,6 +17,11 @@ next-env.d.ts
 build/
 .ladle/build/
 
+# Playwright e2e output (MDReader shell)
+test-results/
+playwright-report/
+.playwright/
+
 # Synthetic corpus generator output (scripts/gen-corpus.mjs default outdir).
 # Hand-authored fixtures live in fixtures/corpus/ and ARE committed.
 fixtures/generated/
