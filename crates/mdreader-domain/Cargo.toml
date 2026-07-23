@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 catdb-core = { path = "../../../../catdb/crates/catdb-core" }
+catdb-validation = { path = "../../../../catdb/crates/catdb-validation" }
