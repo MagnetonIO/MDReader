@@ -388,17 +388,12 @@ async fn fixtures_corpus_imports_cleanly() {
         .import(&corpus, ImportOptions::default())
         .await
         .unwrap();
-    assert!(
-        report.files_scanned >= 40,
-        "scanned {}",
-        report.files_scanned
-    );
-    assert!(report.chunks_embedded > 0);
-    assert!(
-        report.links_resolved >= 20,
-        "resolved {}",
-        report.links_resolved
-    );
+    // Exact values for the committed fixture corpus: any change to the
+    // corpus or the chunker shows up here deliberately (and the latter
+    // requires a CHUNKER_VERSION bump).
+    assert_eq!(report.files_scanned, 45);
+    assert_eq!(report.chunks_embedded, 3117);
+    assert_eq!(report.links_resolved, 107);
 
     let check = engine.check_equations().await.unwrap();
     assert_eq!(check.violations, Vec::<String>::new());
@@ -410,6 +405,19 @@ async fn fixtures_corpus_imports_cleanly() {
     assert!(!hits.is_empty());
     assert!(hits[0].start_line >= 1);
     assert!(!hits[0].heading_path.is_empty() || hits[0].file_path.ends_with(".md"));
+
+    // A lexical exact-phrase query lands on the exact file that contains the
+    // phrase (deterministic under the HashEmbedder: the quote is verbatim
+    // from index.md's "Also see" section).
+    let hits = engine
+        .search(
+            "\"deliberately small but shaped like a real vault\"",
+            SearchOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hits[0].file_path, "index.md");
+    assert_eq!(hits[0].lex_rank, Some(1));
 
     // Incremental over the fixtures: nothing changed, nothing re-embedded.
     let report = engine
