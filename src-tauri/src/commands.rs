@@ -787,9 +787,8 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, commit_rename, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
-        save_doc_guarded, stage_temp, watch_and_commit, DebounceEventResult, WatcherState,
-        WorkspaceState,
+        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        save_doc_guarded, watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1209,26 +1208,55 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_leaves_the_original_intact_when_the_rename_never_happens() {
-        // Crash simulation: a save stages its bytes into a sibling temp and only
-        // THEN renames. If the process dies before the rename, the original must be
-        // whole and the temp must be the only artifact — never a half-written doc.
+    fn a_crash_before_the_rename_leaves_the_original_intact_and_only_orphans_a_temp() {
+        // Crash simulation driving the REAL save path: the save stages its bytes
+        // into a sibling temp and only THEN renames. We panic in `before_rename`
+        // (fires after the temp is staged, before the swap) to model a crash at
+        // exactly that point, and assert the destination is untouched. This is
+        // revert-breaking: a truncating in-place write would (a) leave no temp and
+        // (b) have already corrupted the destination here.
         let (_dir, root) = workspace();
         let note = root.join("note.md");
         fs::write(&note, "# Original\n").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+        let expected = hash_of(b"# Original\n");
+        let note_path = note.to_str().unwrap().to_string();
 
-        let staged = stage_temp(&root, b"# Half-written interruption\n").expect("stage temp");
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = save_doc_guarded(
+                &ws,
+                &note_path,
+                "# New bytes that must never replace the original\n",
+                &expected,
+                false,
+                || panic!("crash between temp-write and rename"),
+                || {},
+            );
+        }));
+        std::panic::set_hook(prev);
+        assert!(
+            result.is_err(),
+            "the injected crash unwound out of the save"
+        );
 
-        // Original untouched; the temp exists beside it (the rename has not run).
+        // The destination is byte-for-byte the ORIGINAL — the rename never ran.
         assert_eq!(fs::read(&note).unwrap(), b"# Original\n");
-        assert!(staged.exists(), "the staged temp is present");
-        assert_ne!(staged, note, "the temp is a sibling, not the destination");
-        assert_eq!(fs::read(&staged).unwrap(), b"# Half-written interruption\n");
 
-        // And the completing rename publishes the whole new file atomically.
-        let committed = stage_temp(&root, b"# Committed\n").expect("stage");
-        commit_rename(&committed, &note).expect("commit rename");
-        assert_eq!(fs::read(&note).unwrap(), b"# Committed\n");
+        // Exactly one staged temp is orphaned beside it — proof the write went to a
+        // SIBLING (temp + rename), not in-place.
+        let temps = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".mdreader-save-")
+            })
+            .count();
+        assert_eq!(temps, 1, "the crash orphaned exactly the staged temp");
     }
 
     #[test]
@@ -1357,6 +1385,43 @@ mod tests {
                      Epoch::finish choke-point — route its result through it (// EPOCH-GUARDED)"
                 );
             }
+        }
+    }
+
+    /// Tighter than the choke-point scan above (which is satisfied merely by the
+    /// guarded core sitting in the same block): the PUBLIC `save_doc` command must
+    /// do none of the guard/write itself — it may only delegate to
+    /// `save_doc_guarded`, where the flock, the hash guard, and the atomic write
+    /// live. This closes the "add a bypass path to the thin wrapper" hole: inlining
+    /// any of the destructive work into the command trips this test.
+    #[test]
+    fn save_doc_command_only_delegates_to_its_guarded_core() {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("pub fn save_doc(")
+            .expect("the save_doc command exists");
+        let rest = &src[start..];
+        // The wrapper body is everything up to the first `\n}` that closes it (its
+        // one-line delegation has only balanced inline `|| {}` braces before that).
+        let end = rest.find("\n}\n").map(|i| i + 2).expect("wrapper closes");
+        let wrapper = &rest[..end];
+
+        assert!(
+            wrapper.contains("save_doc_guarded("),
+            "save_doc must route through save_doc_guarded"
+        );
+        for forbidden in [
+            "SaveLock",
+            "stage_temp",
+            "commit_rename",
+            "std::fs::",
+            "blake3::hash",
+        ] {
+            assert!(
+                !wrapper.contains(forbidden),
+                "the save_doc command must not perform `{forbidden}` itself — the flock + \
+                 guard + write belong ONLY in save_doc_guarded"
+            );
         }
     }
 }
