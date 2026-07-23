@@ -33,6 +33,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
 import { reindexOnChange } from './reindex.js';
+import { LoadingGate } from './loading-gate.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -99,6 +100,13 @@ export function AppShell() {
   // under; we discard mismatches so a previous watcher's still-draining events
   // can't drive — or fail — the new workspace. `-1` = no watcher yet.
   const watcherGenRef = useRef(-1);
+  // Generation-aware guard for the `loading` flag: a stale listing can't clear a
+  // newer open's loading, and the newest open's failure always clears it.
+  const loadingGateRef = useRef(new LoadingGate());
+  const loadingSink = useMemo(
+    () => ({ setLoading: (value: boolean) => useSourcesStore.getState().setLoading(value) }),
+    [],
+  );
 
   const refreshFiles = useCallback(async (folder: string, epoch: number) => {
     try {
@@ -114,25 +122,29 @@ export function AppShell() {
 
   // List the workspace's markdown files into the store, toggling `loading`. The
   // listing carries whether it came from the engine index or the live fs scan.
-  const listInto = useCallback(async (folder: string, epoch: number) => {
-    const sources = useSourcesStore.getState();
-    sources.setLoading(true);
-    try {
-      const listing = await listWorkspaceFiles(folder);
-      if (openEpochRef.current === epoch) {
-        sources.setFiles(listing.files);
-        sources.setFromIndex(listing.fromIndex);
+  const listInto = useCallback(
+    async (folder: string, epoch: number) => {
+      const sources = useSourcesStore.getState();
+      loadingGateRef.current.begin(epoch, loadingSink);
+      try {
+        const listing = await listWorkspaceFiles(folder);
+        if (openEpochRef.current === epoch) {
+          sources.setFiles(listing.files);
+          sources.setFromIndex(listing.fromIndex);
+        }
+      } catch {
+        if (openEpochRef.current === epoch) {
+          sources.setFiles([]);
+          sources.setFromIndex(false);
+        }
+      } finally {
+        // Generation-aware clear: a stale listing can't clear a newer open's
+        // loading, but a newer-or-equal completion always does.
+        loadingGateRef.current.complete(epoch, loadingSink);
       }
-    } catch {
-      if (openEpochRef.current === epoch) {
-        sources.setFiles([]);
-        sources.setFromIndex(false);
-      }
-    } finally {
-      // A stale listing must not clear the NEWER open's loading flag.
-      if (openEpochRef.current === epoch) sources.setLoading(false);
-    }
-  }, []);
+    },
+    [loadingSink],
+  );
 
   // Run an incremental import for `folder`, streaming coarse progress into the
   // store and resolving when it settles. Continuations write only while their
@@ -219,7 +231,9 @@ export function AppShell() {
           // The backend kept the OLD watcher live, so its status is unchanged and
           // still accurate — do NOT flip it to 'error' (that would slander a
           // workspace that is in fact healthily watched). Surface the switch
-          // failure transiently instead.
+          // failure transiently instead. As the NEWEST open, its failure must
+          // clear any loading an older open left spinning.
+          loadingGateRef.current.fail(loadingSink);
           toast('Could not switch workspace — staying on the current folder');
           return false;
         }
@@ -253,7 +267,7 @@ export function AppShell() {
       void triggerReindex(grant.root, epoch);
       return true;
     },
-    [listInto, triggerReindex],
+    [listInto, triggerReindex, loadingSink],
   );
 
   // Switch the active workspace to `folder`, retiring the previous workspace's
@@ -634,7 +648,9 @@ export function AppShell() {
     let refreshTimer: number | undefined;
     const reloadTimers = new Map<string, number>();
 
-    const reloadActive = (path: string) => {
+    const reloadActive = (path: string, arrivalGen: number) => {
+      // A switch between event arrival and this (debounced) fire discards it.
+      if (openEpochRef.current !== arrivalGen) return;
       if (path === activePathRef.current) {
         setReloadNonce((nonce) => nonce + 1);
         toast('Updated');
@@ -645,6 +661,9 @@ export function AppShell() {
       // Discard events from a PREVIOUS watcher (still draining after a switch) —
       // they belong to a workspace we have moved off.
       if (change.generation !== watcherGenRef.current) return;
+      // Capture the open generation at event ARRIVAL; the debounce timers below
+      // fire later and re-check it, so a switch mid-debounce discards them.
+      const arrivalGen = openEpochRef.current;
       const existing = reloadTimers.get(change.path);
       if (existing !== undefined) window.clearTimeout(existing);
       if (change.kind === 'continuous') {
@@ -653,23 +672,25 @@ export function AppShell() {
           change.path,
           window.setTimeout(() => {
             reloadTimers.delete(change.path);
-            reloadActive(change.path);
+            reloadActive(change.path, arrivalGen);
           }, 300),
         );
       } else {
         // Settled: drop any pending trailing reload and apply now.
         reloadTimers.delete(change.path);
-        reloadActive(change.path);
+        reloadActive(change.path, arrivalGen);
       }
 
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
+        // Re-check the captured generation at fire: a switch during the debounce
+        // window means this event belongs to a workspace we have left → discard.
+        if (openEpochRef.current !== arrivalGen) return;
         const folder = useSourcesStore.getState().root;
         // A settled change drives an incremental import THEN a re-list (or just a
         // re-list when an import is already running) so the index — and thus
-        // wikilink/title resolution — stays in step with disk. It rides the
-        // CURRENT open generation, so a switch mid-flight discards it.
-        if (folder) void triggerReindex(folder, openEpochRef.current);
+        // wikilink/title resolution — stays in step with disk.
+        if (folder) void triggerReindex(folder, arrivalGen);
       }, 400);
     })
       .then((fn) => {

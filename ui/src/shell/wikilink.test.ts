@@ -114,4 +114,26 @@ describe('navigateWikiLink', () => {
     expect(h.onUnresolved).toHaveBeenCalledTimes(1);
     expect(h.onAmbiguous).not.toHaveBeenCalled();
   });
+
+  test('a resolution whose click context changed (stillValid=false) is discarded', async () => {
+    const h = handlers();
+    await navigateWikiLink({
+      resolve: async () => ({ status: 'resolved', path: '/ws/guide.md', name: 'guide.md', line: null }),
+      stillValid: () => false, // the originating doc/workspace moved on
+      ...h,
+    });
+    expect(h.onResolved).not.toHaveBeenCalled();
+    expect(h.onAmbiguous).not.toHaveBeenCalled();
+    expect(h.onUnresolved).not.toHaveBeenCalled();
+  });
+
+  test('a resolution whose context is still current (stillValid=true) navigates', async () => {
+    const h = handlers();
+    await navigateWikiLink({
+      resolve: async () => ({ status: 'resolved', path: '/ws/guide.md', name: 'guide.md', line: 5 }),
+      stillValid: () => true,
+      ...h,
+    });
+    expect(h.onResolved).toHaveBeenCalledWith({ path: '/ws/guide.md', name: 'guide.md' }, 5);
+  });
 });

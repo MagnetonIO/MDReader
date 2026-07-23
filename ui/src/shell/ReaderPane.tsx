@@ -23,7 +23,7 @@ import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
-import { LruBoolCache } from './wiki-cache.js';
+import { useWikiDimming } from './wiki-dimming.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
 import type { ReadingFont } from '../stores/settings.js';
@@ -53,9 +53,6 @@ export interface ReaderPaneProps {
   /** A wikilink matched several notes — surface the candidate set. */
   onAmbiguousWikiLink?: (target: string, candidates: DocRef[]) => void;
 }
-
-/** Cap on the per-document wikilink dimming-resolution cache (bounded LRU). */
-const WIKI_CACHE_CAP = 512;
 
 function dirname(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
@@ -100,19 +97,15 @@ export function ReaderPane({
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   const [state, setState] = useState<LoadState>({ status: 'idle' });
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
-  // Authoritative dimming for wikilinks: the reader's `resolveWikiLink` predicate
-  // is synchronous and can only see filenames, so a link that resolves by TITLE
-  // would wrongly dim. We resolve each unique target through the index once,
-  // cache the boolean in a bounded LRU, and bump `wikiVersion` so title-resolved
-  // links re-render un-dimmed. Every resolution captures the cache epoch and
-  // discards its result if the cache was reset meanwhile (doc/file-set change).
-  const wikiCacheRef = useRef<LruBoolCache | null>(null);
-  if (wikiCacheRef.current === null) wikiCacheRef.current = new LruBoolCache(WIKI_CACHE_CAP);
-  const wikiInFlight = useRef<Set<string>>(new Set());
-  const wikiEpochRef = useRef(0);
-  const [wikiVersion, setWikiVersion] = useState(0);
 
   const path = tab?.docRef.path ?? null;
+  // Live mirrors of the active document + workspace, so an in-flight wikilink
+  // resolution can tell at navigation time whether its click context still holds
+  // (the user may have switched docs or workspaces while it resolved).
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const rootRef = useRef(root);
+  rootRef.current = root;
   // A heading a wikilink is aiming at, keyed by the TARGET doc path: recorded at
   // resolve time and consumed once that doc finishes loading (cross-doc heading
   // jumps can't scroll until their document has rendered).
@@ -191,16 +184,6 @@ export function ReaderPane({
     return () => cancelAnimationFrame(frame);
   }, [state.doc, path]);
 
-  // Forget cached wikilink resolutions when the document or file set changes, so
-  // dimming re-derives against the current index. Bumping the cache epoch makes
-  // any in-flight resolution from the previous state discard its late result.
-  useEffect(() => {
-    wikiCacheRef.current = new LruBoolCache(WIKI_CACHE_CAP);
-    wikiInFlight.current = new Set();
-    wikiEpochRef.current += 1;
-    setWikiVersion((version) => version + 1);
-  }, [path, files]);
-
   // Persist the scroll anchor, debounced, so store churn (and its re-renders)
   // stays off the scroll's hot path while still capturing the resting position.
   const persistTimer = useRef<number | undefined>(undefined);
@@ -223,40 +206,27 @@ export function ReaderPane({
     readerRef.current?.scrollToLine(item.lineStart);
   }, []);
 
-  // The reader's synchronous "does this target resolve?" predicate, used to keep
-  // unresolved wikilinks styled muted. It reflects ACTUAL index resolution
-  // (filename OR title): each unique target is resolved through the index once
-  // and cached, so a link that resolves by title does not dim. Until the
-  // authoritative answer lands it falls back to an exact-basename check.
-  const resolveWikiLink = useCallback(
-    (target: string): boolean => {
-      const key = target.trim().toLowerCase();
-      if (key === '') return false;
-      const cache = wikiCacheRef.current!;
-      const known = cache.get(key); // a hit refreshes LRU recency
-      if (known !== undefined) return known;
-      if (!wikiInFlight.current.has(key)) {
-        wikiInFlight.current.add(key);
-        // Capture the cache epoch; a reset (doc/file-set change) before this
-        // resolution lands makes it discard rather than write a stale result.
-        const epoch = wikiEpochRef.current;
-        const record = (value: boolean) => {
-          if (wikiEpochRef.current !== epoch) return;
-          const evicted = wikiCacheRef.current!.set(key, value);
-          // Drop evicted keys from in-flight so they can re-resolve if seen again.
-          for (const gone of evicted) wikiInFlight.current.delete(gone);
-          setWikiVersion((version) => version + 1);
-        };
-        void resolveWikilink(path ?? '', target, null)
-          .then((res) => record(res.status === 'resolved' || res.status === 'ambiguous'))
-          .catch(() => record(findByWikiTarget(files, target) !== null));
-      }
-      return findByWikiTarget(files, target) !== null;
-    },
-    // `wikiVersion` re-derives the predicate when a resolution lands so the
-    // reader re-renders with corrected dimming.
-    [path, files, wikiVersion],
+  // The reader's synchronous "does this target resolve?" predicate — reflects
+  // ACTUAL index resolution (filename OR title), cached in a bounded LRU that
+  // re-renders on new resolutions and re-resolves evicted keys. See
+  // `useWikiDimming`.
+  const resolveWiki = useCallback(
+    (target: string) =>
+      resolveWikilink(path ?? '', target, null).then(
+        (res) => res.status === 'resolved' || res.status === 'ambiguous',
+      ),
+    [path],
   );
+  const wikiFallback = useCallback(
+    (target: string) => findByWikiTarget(files, target) !== null,
+    [files],
+  );
+  const resolveWikiLink = useWikiDimming({
+    path,
+    files,
+    resolve: resolveWiki,
+    fallback: wikiFallback,
+  });
 
   // Resolve a clicked wikilink through the index (filename then title match):
   // one match opens a tab (and scrolls to the heading line when one was given),
@@ -265,8 +235,12 @@ export function ReaderPane({
   const handleWikiLink = useCallback(
     (target: string, heading: string | null) => {
       const fromPath = path;
+      const fromRoot = root;
       void navigateWikiLink({
         resolve: () => resolveWikilink(fromPath ?? '', target, heading),
+        // Discard the navigation if the click's document or workspace changed
+        // while the index resolved (thread the epoch/document ref → re-check).
+        stillValid: () => pathRef.current === fromPath && rootRef.current === fromRoot,
         onResolved: (ref, line) => {
           if (line !== null) {
             if (ref.path === fromPath) readerRef.current?.scrollToLine(line);
@@ -289,7 +263,7 @@ export function ReaderPane({
         },
       });
     },
-    [path, files, onNavigate, onMissingWikiLink, onAmbiguousWikiLink],
+    [path, root, files, onNavigate, onMissingWikiLink, onAmbiguousWikiLink],
   );
 
   const onReaderNavigate = useCallback(

@@ -60,6 +60,13 @@ export interface NavigateWikiLinkOptions {
   onAmbiguous: (candidates: WikiTarget[]) => void;
   /** No index match (or the resolver failed) — the caller falls back / toasts. */
   onUnresolved: () => void;
+  /**
+   * Checked AFTER the (async) resolution, before any handler runs: return
+   * `false` to discard the navigation because the originating document or
+   * workspace changed while resolving (a click whose context has moved on must
+   * not navigate). Absent → always valid.
+   */
+  stillValid?: () => boolean;
 }
 
 /** Route a wikilink click to the correct handler based on index resolution. */
@@ -68,9 +75,13 @@ export async function navigateWikiLink(options: NavigateWikiLinkOptions): Promis
   try {
     resolution = await options.resolve();
   } catch {
-    options.onUnresolved();
-    return;
+    // A resolver failure (no backend / engine not ready) is a miss the caller
+    // can fall back on — but only if the click context is still current.
+    resolution = { status: 'unresolved' };
   }
+
+  // The document/workspace the click came from changed while resolving → discard.
+  if (options.stillValid && !options.stillValid()) return;
 
   if (resolution.status === 'resolved') {
     options.onResolved({ path: resolution.path, name: resolution.name }, resolution.line);
