@@ -581,6 +581,26 @@ mod tests {
         assert!(hit.end_line >= hit.start_line);
         assert_eq!(hit.abs_path, root.join("guide.md").to_string_lossy());
         assert!(hit.explain.is_some(), "explain requested");
+
+        // Generate the committed golden the reader's TS golden test reads: ONE
+        // fixture and ONE real `start_line` cross the Rust→TS boundary here. If
+        // the chunker changes the section's start line, THIS test rewrites the
+        // JSON and the TS side follows (drift caught by check-bindings' git
+        // diff). Writing (rather than asserting) makes the Rust side the single
+        // source of truth for the value.
+        let golden = serde_json::json!({
+            "doc": "guide.md",
+            "fixture": FIXTURE,
+            "startLine": hit.start_line,
+        });
+        let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../ui/src/goldens/provenance.json");
+        std::fs::create_dir_all(golden_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &golden_path,
+            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+        )
+        .unwrap();
     }
 
     /// A typed-filter parse error surfaces as the command error (the schema-
