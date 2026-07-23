@@ -57,11 +57,14 @@ describe('session round-trip', () => {
     expect(restored!.tabs[0]!.originRoot).toBe('/ws');
   });
 
-  test('a legacy tab with no origin restores as null', () => {
-    const data = serializeSession({ root: '/ws', activeTabId: null, tabs: [], recent: [] });
-    // Simulate a pre-originRoot blob: strip the field the writer now emits.
+  test('a legacy tab (no origin) migrates to adopt the session root on load', () => {
+    // Simulate a pre-originRoot blob: a tab lacking the field the writer now
+    // emits, under a real workspace root.
     const legacy = {
-      ...data,
+      version: SESSION_VERSION,
+      root: '/ws',
+      activeTabId: 'tab-1',
+      recent: [],
       tabs: [
         {
           id: 'tab-1',
@@ -74,7 +77,29 @@ describe('session round-trip', () => {
       ],
     };
     const restored = deserializeSession(legacy);
-    expect(restored!.tabs[0]!.originRoot).toBeNull();
+    // Migration: the restored tab adopts the session root as its origin, so a
+    // same-root reopen keeps it (retireForeign('/ws') sees origin '/ws').
+    expect(restored!.tabs[0]!.originRoot).toBe('/ws');
+  });
+
+  test('a legacy tab under no workspace stays null (nothing to adopt)', () => {
+    const legacy = {
+      version: SESSION_VERSION,
+      root: null,
+      activeTabId: 'tab-1',
+      recent: [],
+      tabs: [
+        {
+          id: 'tab-1',
+          docRef: { path: '/a.md', name: 'a.md' },
+          history: [{ path: '/a.md', name: 'a.md' }],
+          historyIndex: 0,
+          scroll: { block: 0, offset: 0 },
+          pinned: false,
+        },
+      ],
+    };
+    expect(deserializeSession(legacy)!.tabs[0]!.originRoot).toBeNull();
   });
 
   test('serialized blob carries the schema version', () => {

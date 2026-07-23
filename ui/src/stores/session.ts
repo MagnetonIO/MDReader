@@ -83,6 +83,16 @@ export function deserializeSession(raw: unknown): RestoredSession | null {
 
   const root = typeof raw.root === 'string' ? raw.root : null;
 
+  // Migration-on-load: a legacy session (pre-`originRoot`) restores its tabs with
+  // a null origin. Left null, `retireForeign` would treat them as foreign to the
+  // very workspace they belong to, so a same-root reopen would wrongly retire the
+  // restored tabs. Adopt the session's own root as their origin here.
+  if (root !== null) {
+    for (const tab of tabs) {
+      if (tab.originRoot === null) tab.originRoot = root;
+    }
+  }
+
   return {
     root,
     activeTabId,
