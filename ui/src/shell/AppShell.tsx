@@ -34,6 +34,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
 import { reindexOnChange } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
+import { watcherStampCurrent } from './watcher-guard.js';
+import { retireTabsAfterSwitch } from './switch-retire.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -231,9 +233,10 @@ export function AppShell() {
           // The backend kept the OLD watcher live, so its status is unchanged and
           // still accurate — do NOT flip it to 'error' (that would slander a
           // workspace that is in fact healthily watched). Surface the switch
-          // failure transiently instead. As the NEWEST open, its failure must
-          // clear any loading an older open left spinning.
-          loadingGateRef.current.fail(loadingSink);
+          // failure transiently instead. Its failure clears a stuck loading only
+          // if this open is the newest (generation >= the one that set loading);
+          // an older straggler cannot clear a newer open's loading.
+          loadingGateRef.current.fail(epoch, loadingSink);
           toast('Could not switch workspace — staying on the current folder');
           return false;
         }
@@ -251,6 +254,9 @@ export function AppShell() {
         sources.setWatcher('error');
         sources.setImport(null); // fresh workspace: no import belongs to it yet
         await listInto(g, epoch);
+        // A newer open superseded this one during listInto → report NOT-current
+        // so the caller does not retire the newer workspace's tabs.
+        if (openEpochRef.current !== epoch) return false;
         void triggerReindex(g, epoch);
         return true;
       }
@@ -264,6 +270,9 @@ export function AppShell() {
       sources.setWatcher('watching');
       sources.setImport(null); // fresh workspace: no import belongs to it yet
       await listInto(grant.root, epoch);
+      // A newer open superseded this one during listInto → report NOT-current so
+      // its (stale) success cannot authorize closeAll on the newer workspace.
+      if (openEpochRef.current !== epoch) return false;
       void triggerReindex(grant.root, epoch);
       return true;
     },
@@ -282,11 +291,16 @@ export function AppShell() {
       const previousRoot = sources.root;
       if (previousRoot === folder) return true;
 
+      // `openRoot` reports `false` when its epoch was superseded (a stale
+      // success): retire tabs ONLY for a switch that committed as the CURRENT
+      // workspace, so a stale success never closes the newer workspace's tabs.
       const committed = await openRoot(folder);
-      if (committed && previousRoot) {
-        const retired = useTabsStore.getState().closeAll();
-        for (const ref of retired) sources.addRecent(ref, previousRoot);
-      }
+      retireTabsAfterSwitch({
+        committed,
+        previousRoot,
+        closeAll: () => useTabsStore.getState().closeAll(),
+        addRecent: (ref, root) => sources.addRecent(ref, root),
+      });
       return committed;
     },
     [openRoot],
@@ -648,9 +662,13 @@ export function AppShell() {
     let refreshTimer: number | undefined;
     const reloadTimers = new Map<string, number>();
 
-    const reloadActive = (path: string, arrivalGen: number) => {
-      // A switch between event arrival and this (debounced) fire discards it.
-      if (openEpochRef.current !== arrivalGen) return;
+    // The live open + watcher generations, for re-validating a timer at fire.
+    const nowStamp = () => ({ openGen: openEpochRef.current, watcherGen: watcherGenRef.current });
+
+    const reloadActive = (path: string, stamp: { openGen: number; watcherGen: number }) => {
+      // A switch between event arrival and this (debounced) fire discards it —
+      // BOTH the open generation and the watcher generation must still match.
+      if (!watcherStampCurrent(stamp, nowStamp())) return;
       if (path === activePathRef.current) {
         setReloadNonce((nonce) => nonce + 1);
         toast('Updated');
@@ -661,9 +679,10 @@ export function AppShell() {
       // Discard events from a PREVIOUS watcher (still draining after a switch) —
       // they belong to a workspace we have moved off.
       if (change.generation !== watcherGenRef.current) return;
-      // Capture the open generation at event ARRIVAL; the debounce timers below
-      // fire later and re-check it, so a switch mid-debounce discards them.
-      const arrivalGen = openEpochRef.current;
+      // Stamp the timer at event ARRIVAL with BOTH generations; the debounce
+      // timers below re-validate BOTH at fire, so a switch mid-debounce (either
+      // counter advancing) discards them rather than re-tagging old work.
+      const stamp = { openGen: openEpochRef.current, watcherGen: change.generation };
       const existing = reloadTimers.get(change.path);
       if (existing !== undefined) window.clearTimeout(existing);
       if (change.kind === 'continuous') {
@@ -672,25 +691,25 @@ export function AppShell() {
           change.path,
           window.setTimeout(() => {
             reloadTimers.delete(change.path);
-            reloadActive(change.path, arrivalGen);
+            reloadActive(change.path, stamp);
           }, 300),
         );
       } else {
         // Settled: drop any pending trailing reload and apply now.
         reloadTimers.delete(change.path);
-        reloadActive(change.path, arrivalGen);
+        reloadActive(change.path, stamp);
       }
 
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
-        // Re-check the captured generation at fire: a switch during the debounce
+        // Re-validate BOTH generations at fire: a switch during the debounce
         // window means this event belongs to a workspace we have left → discard.
-        if (openEpochRef.current !== arrivalGen) return;
+        if (!watcherStampCurrent(stamp, nowStamp())) return;
         const folder = useSourcesStore.getState().root;
         // A settled change drives an incremental import THEN a re-list (or just a
         // re-list when an import is already running) so the index — and thus
         // wikilink/title resolution — stays in step with disk.
-        if (folder) void triggerReindex(folder, arrivalGen);
+        if (folder) void triggerReindex(folder, stamp.openGen);
       }, 400);
     })
       .then((fn) => {

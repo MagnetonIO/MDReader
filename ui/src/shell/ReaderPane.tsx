@@ -17,24 +17,18 @@ import type { CSSProperties } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
-import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
+import type { OutlineItem } from '@mdreader/markdown';
 
 import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
 import { useWikiDimming } from './wiki-dimming.js';
+import { useDocLoader } from './doc-loader.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
 import type { ReadingFont } from '../stores/settings.js';
 import type { DocRef, ScrollPos, TabState } from '../stores/types.js';
-
-interface LoadState {
-  status: 'idle' | 'loading' | 'ready' | 'error';
-  doc?: ParsedDoc;
-  dir?: string;
-  error?: string;
-}
 
 export interface ReaderPaneProps {
   tab: TabState | null;
@@ -95,7 +89,6 @@ export function ReaderPane({
   onAmbiguousWikiLink,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
-  const [state, setState] = useState<LoadState>({ status: 'idle' });
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
 
   const path = tab?.docRef.path ?? null;
@@ -119,33 +112,20 @@ export function ReaderPane({
   const scrollToRestore = useRef<ScrollPos>({ block: 0, offset: 0 });
   scrollToRestore.current = tab?.scroll ?? { block: 0, offset: 0 };
 
-  // Load + parse whenever the active document or a live-reload nonce changes.
-  useEffect(() => {
-    if (!path) {
-      setState({ status: 'idle' });
-      onDocMeta(null);
-      return;
-    }
-    let cancelled = false;
-    setState((prev) => ({ ...prev, status: 'loading' }));
-    void (async () => {
-      try {
-        const { content } = await readDoc(path);
-        const doc = await parseMarkdownAuto(content);
-        if (cancelled) return;
-        setState({ status: 'ready', doc, dir: dirname(path) });
-        onDocMeta({ words: countWords(content) });
-      } catch (cause) {
-        if (cancelled) return;
-        setState({ status: 'error', error: cause instanceof Error ? cause.message : String(cause) });
-        onDocMeta(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // onDocMeta is stable (memoized by the caller); path + nonce drive reloads.
-  }, [path, reloadNonce]);
+  // Load + parse the active document. Workspace-aware: `root` is a dependency, so
+  // a switch (root change) with the same tab mounted reruns cleanup — an in-flight
+  // parse for the OLD workspace is cancelled rather than landing under the new one.
+  const readContent = useCallback(async (docPath: string) => (await readDoc(docPath)).content, []);
+  const state = useDocLoader({
+    path,
+    root,
+    reloadNonce,
+    read: readContent,
+    parse: parseMarkdownAuto,
+    dirOf: dirname,
+    wordsOf: countWords,
+    onMeta: onDocMeta,
+  });
 
   // Restore the block+offset scroll position once, after a fresh document
   // renders. Works for headingless docs and mid-block offsets alike (the

@@ -28,9 +28,11 @@ export class LoadingGate {
     if (generation >= this.setterGen) sink.setLoading(false);
   }
 
-  /** The newest open failed before it could list — force-clear (no continuation
-   *  will otherwise). */
-  fail(sink: LoadingSink): void {
-    sink.setLoading(false);
+  /** An open under `generation` failed before it could list. Clears loading only
+   *  when it is the setter's generation or newer — an OLDER open's failure must
+   *  not clear/fail a newer open's loading, while the newest open's failure
+   *  (generation >= the setter) always force-clears. */
+  fail(generation: number, sink: LoadingSink): void {
+    if (generation >= this.setterGen) sink.setLoading(false);
   }
 }
