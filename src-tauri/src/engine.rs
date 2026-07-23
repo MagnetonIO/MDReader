@@ -150,6 +150,38 @@ impl Epoch {
     fn install_engine_for_test(&self, db: Arc<EmbeddedCatDb>) {
         let _ = self.engine.set(db);
     }
+
+    /// THE choke-point. The single identity re-check every command / engine
+    /// method funnels its workspace-derived result through as its final step:
+    /// returns `value` while this epoch is still the current era, else
+    /// `Err(StaleEpoch)` — a switch superseded it, so `value` belongs to a
+    /// previous workspace and MUST be discarded. Making the barrier structural
+    /// (one function, called at every return) is what closes the "forgot a
+    /// return path" class of bug by construction; the `// EPOCH-GUARDED`
+    /// convention marks each call site.
+    pub(crate) fn finish<T>(
+        self: &Arc<Self>,
+        registry: &WorkspaceState,
+        value: T,
+    ) -> Result<T, StaleEpoch> {
+        if registry.is_current(self) {
+            Ok(value)
+        } else {
+            Err(StaleEpoch)
+        }
+    }
+}
+
+/// The stale-epoch error returned by [`Epoch::finish`] — a switch superseded the
+/// epoch mid-command, so the value it guarded is a previous workspace's.
+pub(crate) struct StaleEpoch;
+
+impl StaleEpoch {
+    /// The message a command surfaces when it discards a stale read/listing
+    /// (commands that instead fall back to a benign value ignore this).
+    pub(crate) fn message() -> String {
+        "workspace changed during the operation".to_string()
+    }
 }
 
 /// Records `progress` into `epoch`'s OWN status slot (always — it is per-epoch,
@@ -161,6 +193,8 @@ fn record_status(epoch: &Epoch, progress: &ImportProgress) {
 }
 
 /// The current epoch's import status, or `idle` when no workspace is open.
+/// (`import_status` inlines this through the choke-point; kept for tests.)
+#[cfg(test)]
 fn current_status(workspace: &WorkspaceState) -> ImportProgress {
     workspace
         .current()
@@ -444,9 +478,10 @@ async fn ensure_engine(
     publish(epoch, workspace, channel, ImportProgress::loading());
     let embedder = load_embedder_with_deadline(MODEL_LOAD_DEADLINE, build_embedder).await?;
 
-    // Commit point: a switch during the (slow) load supersedes this epoch — drop
-    // the freshly-built model and abandon rather than install into a dead era.
-    if !workspace.is_current(epoch) {
+    // EPOCH-GUARDED commit point: a switch during the (slow) load supersedes this
+    // epoch — drop the freshly-built model and abandon rather than install into a
+    // dead era.
+    if epoch.finish(workspace, ()).is_err() {
         return Ok(None);
     }
 
@@ -471,7 +506,8 @@ fn publish(
     progress: ImportProgress,
 ) {
     record_status(epoch, &progress);
-    if workspace.is_current(epoch) {
+    // EPOCH-GUARDED: stream to the UI only while this epoch is current.
+    if epoch.finish(workspace, ()).is_ok() {
         let _ = channel.send(progress);
     }
 }
@@ -534,9 +570,11 @@ pub async fn start_import(
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     validate_import_root(&epoch, &root)?;
 
-    // Coalesce onto an in-flight import for this epoch (#4).
+    // Coalesce onto an in-flight import for this epoch (#4). Its return, like
+    // every other, funnels through the choke-point.
     if !claim_active(&epoch)? {
-        return Ok(epoch.status());
+        // EPOCH-GUARDED
+        return Ok(epoch.finish(&workspace, epoch.status()).unwrap_or_else(|_| epoch.status()));
     }
     let _guard = ActiveGuard {
         epoch: Arc::clone(&epoch),
@@ -545,13 +583,17 @@ pub async fn start_import(
     let db = match ensure_engine(&epoch, &workspace, &app, &on_event).await {
         Ok(Some(db)) => db,
         // A switch superseded this epoch during the model load — abandon clean.
-        Ok(None) => return Ok(epoch.status()),
+        // EPOCH-GUARDED
+        Ok(None) => {
+            return Ok(epoch.finish(&workspace, epoch.status()).unwrap_or_else(|_| epoch.status()))
+        }
         Err(err) => {
             // A model-load / open failure (incl. the load deadline) surfaces as an
             // `error` status the StatusBar shows (not a hard command error).
             let failed = ImportProgress::failed(0, err);
             publish(&epoch, &workspace, &on_event, failed.clone());
-            return Ok(failed);
+            // EPOCH-GUARDED
+            return Ok(epoch.finish(&workspace, failed).unwrap_or_else(|_| epoch.status()));
         }
     };
 
@@ -566,7 +608,8 @@ pub async fn start_import(
         Err(err) => ImportProgress::failed(total, err.to_string()),
     };
     publish(&epoch, &workspace, &on_event, final_status.clone());
-    Ok(final_status)
+    // EPOCH-GUARDED
+    Ok(epoch.finish(&workspace, final_status).unwrap_or_else(|_| epoch.status()))
 }
 
 /// The latest import status for the CURRENT workspace epoch — for the StatusBar's
@@ -575,7 +618,14 @@ pub async fn start_import(
 #[tauri::command]
 #[specta::specta]
 pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgress, String> {
-    Ok(current_status(&workspace))
+    match workspace.current() {
+        Some(epoch) => {
+            let status = epoch.status();
+            // EPOCH-GUARDED
+            Ok(epoch.finish(&workspace, status).unwrap_or_default())
+        }
+        None => Ok(ImportProgress::default()),
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -629,12 +679,10 @@ fn list_workspace_files_guarded(
     };
 
     gate();
-    // Commit point (both paths): a switch during the read supersedes this epoch —
-    // discard rather than surface a previous workspace's listing.
-    if !workspace.is_current(&epoch) {
-        return Err("workspace changed during listing".to_string());
-    }
-    Ok(listing)
+    // EPOCH-GUARDED (both paths funnel through the ONE choke-point): a switch
+    // during the read supersedes this epoch — discard rather than surface a
+    // previous workspace's listing.
+    epoch.finish(workspace, listing).map_err(|_| StaleEpoch::message())
 }
 
 /// Build sidebar rows from the index's documents, filtered to those under
@@ -740,8 +788,9 @@ pub fn resolve_wikilink(
 
 /// The resolution core, with a `gate` hook invoked between constructing the
 /// result and the identity re-check (no-op in production; tests inject a switch
-/// there). The re-check sits at the RETURN, after the (DB-touching) heading
-/// lookup and result construction — the true commit point.
+/// there). EVERY exit — no-engine, empty-target, no-match, resolved, ambiguous —
+/// is one computed value funneled through the SINGLE [`Epoch::finish`] at the
+/// return; there are no early raw returns of resolution data.
 fn resolve_wikilink_guarded(
     workspace: &WorkspaceState,
     from_doc: &str,
@@ -753,6 +802,26 @@ fn resolve_wikilink_guarded(
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     wikilink_guard(&epoch, from_doc)?;
+
+    let resolution = resolve_against(&epoch, target, heading)?;
+
+    gate();
+    // EPOCH-GUARDED: a switch during resolution supersedes this epoch — its result
+    // is discarded to `unresolved` (silently-clean) rather than surfacing a
+    // previous workspace's document.
+    Ok(epoch
+        .finish(workspace, resolution)
+        .unwrap_or_else(|_| WikiResolution::unresolved()))
+}
+
+/// Compute the resolution of `target` against `epoch`'s index (the no-engine,
+/// empty-target, and no-match cases all fold to `unresolved`). Kept separate so
+/// the command has exactly one guarded return.
+fn resolve_against(
+    epoch: &Epoch,
+    target: &str,
+    heading: Option<&str>,
+) -> Result<WikiResolution, String> {
     let Some(db) = epoch.engine.get() else {
         return Ok(WikiResolution::unresolved());
     };
@@ -774,7 +843,7 @@ fn resolve_wikilink_guarded(
         matches = title_matches(db, &docs, &normalized)?;
     }
 
-    let resolution = match matches.as_slice() {
+    Ok(match matches.as_slice() {
         [] => WikiResolution::unresolved(),
         [only] => {
             let doc = &docs[*only];
@@ -803,15 +872,7 @@ fn resolve_wikilink_guarded(
                 .collect();
             WikiResolution::ambiguous(candidates)
         }
-    };
-
-    gate();
-    // Commit point: a switch during resolution supersedes this epoch — return
-    // unresolved (silently-clean) rather than a foreign workspace's document.
-    if !workspace.is_current(&epoch) {
-        return Ok(WikiResolution::unresolved());
-    }
-    Ok(resolution)
+    })
 }
 
 /// Strip a `#heading`/`?query` suffix, decode `%20`, and trim — the target key
@@ -1107,52 +1168,60 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_is_a_revocation_barrier_isolating_per_epoch_status() {
+    fn status_publish_is_discarded_when_a_switch_lands_in_the_publish_window() {
         let (_a, root_a) = workspace_dir();
         let (_b, root_b) = workspace_dir();
         let ws = WorkspaceState::default();
-
-        // Grant A: capture epoch E1 exactly as an in-flight import would at entry.
         let e1 = ws.switch(root_a.clone()).unwrap();
-        assert!(ws.is_current(&e1));
-        assert_eq!(e1.root, root_a);
 
-        // The import publishes into E1's OWN slot; import_status surfaces it.
+        // The import records progress into E1's OWN slot; import_status surfaces it.
         record_status(&e1, &ImportProgress::importing(3));
         assert_eq!(current_status(&ws).phase, "importing");
 
-        // A concurrent switch to B swaps in E2 — the revocation barrier. Root,
-        // generation, engine, and status move together; E1 is instantly stale.
-        let e2 = ws.switch(root_b.clone()).unwrap();
-        assert!(ws.is_current(&e2) && !ws.is_current(&e1));
-        assert_eq!(e2.root, root_b);
-        assert_eq!(e2.generation, e1.generation + 1);
+        // GATE: a switch lands INSIDE the publish window — between recording the
+        // status and the "surface it to the UI" commit.
+        let gate = || {
+            let _ = ws.switch(root_b.clone());
+        };
+        gate();
 
-        // The window "between status publishes": E1's late error lands ONLY in
-        // its own (now unread) slot; the user-visible status is E2's (idle).
+        // The surface commit funnels through the choke-point: `finish` fails for
+        // the superseded epoch, so the late status is NOT streamed. The current
+        // epoch reads idle; E1's own (unread) slot still holds its last value.
         record_status(&e1, &ImportProgress::failed(0, "late".to_string()));
-        assert_eq!(e1.status().phase, "error");
+        assert!(e1.finish(&ws, ()).is_err(), "publish surface discarded");
         assert_eq!(current_status(&ws).phase, "idle");
+        assert_eq!(e1.status().phase, "error");
     }
 
     #[test]
-    fn a_stale_epochs_engine_install_does_not_leak_into_the_current_one() {
+    fn engine_install_is_abandoned_when_a_switch_lands_in_the_load_window() {
         let (_a, root_a) = workspace_dir();
         let (_b, root_b) = workspace_dir();
         let ws = WorkspaceState::default();
         let e1 = ws.switch(root_a).unwrap(); // captured at import entry
-        let e2 = ws.switch(root_b).unwrap(); // switch lands → E1 superseded
+        let db = in_memory_engine();
 
-        // The window "between model-load and engine-install": E1 finished loading
-        // but a switch preceded the install. is_current(E1) is false, so the
-        // import abandons; even an install would touch only E1's OWN field.
-        assert!(!ws.is_current(&e1));
-        e1.install_engine_for_test(in_memory_engine());
-        assert!(e1.has_engine());
-        assert!(
-            !e2.has_engine(),
-            "the current epoch has no engine from the stale install"
-        );
+        // GATE: a switch lands INSIDE the model-load window, before the install.
+        let gate = || {
+            let _ = ws.switch(root_b.clone());
+        };
+        gate();
+
+        // The install commit funnels through the choke-point: `finish` fails for
+        // the superseded epoch, so the freshly-built model is DROPPED — nothing
+        // installs into either epoch.
+        assert!(e1.finish(&ws, db).is_err(), "install abandoned");
+        assert!(!e1.has_engine(), "superseded epoch installed nothing");
+        let current = ws.current().unwrap();
+        assert!(!current.has_engine(), "current epoch unaffected");
+
+        // Without a switch, the SAME commit installs into the current epoch.
+        let db2 = in_memory_engine();
+        if let Ok(db2) = current.finish(&ws, db2) {
+            current.install_engine_for_test(db2);
+        }
+        assert!(current.has_engine(), "current epoch installs when not superseded");
     }
 
     #[test]

@@ -317,17 +317,18 @@ fn read_doc_guarded(
             .and_then(|m| m.modified().ok()),
     );
 
-    gate();
-    // Commit point: a switch during the read supersedes this epoch — discard the
-    // (old-root) bytes rather than surfacing them under the new workspace.
-    if !state.is_current(&epoch) {
-        return Err("workspace changed during read".to_string());
-    }
-    Ok(DocPayload {
+    let payload = DocPayload {
         content: String::from_utf8_lossy(&bytes).into_owned(),
         mtime,
         hash,
-    })
+    };
+
+    gate();
+    // EPOCH-GUARDED: a switch during the read supersedes this epoch — discard the
+    // (old-root) bytes rather than surfacing them under the new workspace.
+    epoch
+        .finish(state, payload)
+        .map_err(|_| crate::engine::StaleEpoch::message())
 }
 
 // --------------------------------------------------------------------------
@@ -794,5 +795,43 @@ mod tests {
         });
         assert!(stale.is_err(), "stale read discarded");
         assert_eq!(ws.root().unwrap(), root_b);
+    }
+
+    /// Structural guard (crude, but CI-catching): EVERY `#[tauri::command]` that
+    /// returns workspace-derived data must funnel its result through the
+    /// `Epoch::finish` choke-point. A new command that forgets it trips this — the
+    /// barrier is enforced by construction, not by reviewer vigilance.
+    #[test]
+    fn every_workspace_command_funnels_through_the_epoch_choke_point() {
+        // The barrier-creators and the non-workspace commands are exempt.
+        const EXEMPT: &[&str] = &[
+            "ping",                  // no workspace data
+            "set_workspace",         // CREATES the epoch (the barrier itself)
+            "pick_workspace_folder", // only returns a picked path
+            "watch_workspace",       // CREATES the epoch + arms the watcher
+        ];
+        // Built at runtime so this literal never appears in the scanned source
+        // (which would self-match); the test module is excluded regardless.
+        let marker = format!("#[tauri::{}]", "command");
+        for source in [include_str!("commands.rs"), include_str!("engine.rs")] {
+            // Scan only the non-test code (exclude the test module's string
+            // literals, which would confuse the crude split).
+            let code = source.split("\nmod tests").next().unwrap_or(source);
+            for block in code.split(marker.as_str()).skip(1) {
+                let name = block
+                    .split_once("fn ")
+                    .and_then(|(_, rest)| rest.split_once('('))
+                    .map(|(name, _)| name.trim())
+                    .unwrap_or("");
+                if EXEMPT.contains(&name) {
+                    continue;
+                }
+                assert!(
+                    block.contains(".finish("),
+                    "command `{name}` returns workspace data but never reaches the \
+                     Epoch::finish choke-point — route its result through it (// EPOCH-GUARDED)"
+                );
+            }
+        }
     }
 }
