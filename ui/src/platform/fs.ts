@@ -45,6 +45,12 @@ export interface WorkspaceListing {
   fromIndex: boolean;
 }
 
+/** The canonical grant plus the generation its watcher was armed under. */
+export interface WorkspaceGrant {
+  root: string;
+  generation: number;
+}
+
 /** Import phase for the StatusBar indicator. `loading` covers the one-time
  *  embedding-model construction/download that precedes the first import. */
 export type ImportPhase = 'idle' | 'loading' | 'importing' | 'done' | 'error';
@@ -189,14 +195,16 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
 
 /**
  * The atomic "switch workspace" operation: begin watching `root`, adopt it as
- * the grant (advancing the root generation), and resolve to its canonical path —
- * all in one awaited round-trip (no separate {@link setWorkspace} to sequence).
- * Throws on backend error, leaving the previous workspace fully intact.
+ * the grant (advancing the root generation), and resolve to its canonical path
+ * PLUS the generation the watcher was armed under — all in one awaited round-trip
+ * (no separate {@link setWorkspace} to sequence). The generation is the reference
+ * the frontend filters `fs-changed` / `watch-error` events against. Throws on
+ * backend error, leaving the previous workspace fully intact.
  */
-export async function watchWorkspace(root: string): Promise<string> {
+export async function watchWorkspace(root: string): Promise<WorkspaceGrant> {
   const result = await commands.watchWorkspace(root);
   if (result.status === 'error') throw new Error(result.error);
-  return result.data;
+  return { root: result.data.root, generation: result.data.generation };
 }
 
 /** Subscribe to debounced filesystem changes. Returns an unlisten function. */

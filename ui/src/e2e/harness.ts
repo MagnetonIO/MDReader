@@ -92,9 +92,10 @@ export function installTauriMocks(): void {
         return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: `mock-${path}` };
       }
       case 'watch_workspace':
-        // The atomic switch returns the canonical granted root (mirrors the Rust
-        // command's new contract; the UI adopts this as the active workspace).
-        return (args as { root: string }).root;
+        // The atomic switch returns the canonical granted root plus the
+        // generation its watcher was armed under (mirrors the Rust contract; the
+        // UI adopts this as the active workspace and the event-filter reference).
+        return { root: (args as { root: string }).root, generation: 1 };
       case 'ping':
         return { echoed: (args as { msg: string }).msg, version: '0.0.0' };
       default:

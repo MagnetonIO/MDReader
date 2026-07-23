@@ -94,6 +94,11 @@ export function AppShell() {
   // the value at dispatch and writes to the store ONLY while it is still current.
   // So a late continuation for an older root can never overwrite newer state.
   const openEpochRef = useRef(0);
+  // The backend generation the CURRENT watcher was armed under (from
+  // watchWorkspace). Watcher events/errors carry the generation they were armed
+  // under; we discard mismatches so a previous watcher's still-draining events
+  // can't drive — or fail — the new workspace. `-1` = no watcher yet.
+  const watcherGenRef = useRef(-1);
 
   const refreshFiles = useCallback(async (folder: string, epoch: number) => {
     try {
@@ -124,7 +129,8 @@ export function AppShell() {
         sources.setFromIndex(false);
       }
     } finally {
-      sources.setLoading(false);
+      // A stale listing must not clear the NEWER open's loading flag.
+      if (openEpochRef.current === epoch) sources.setLoading(false);
     }
   }, []);
 
@@ -201,12 +207,12 @@ export function AppShell() {
       const previousRoot = sources.root;
       const isSwitch = previousRoot !== null && previousRoot !== folder;
 
-      let granted: string;
+      let grant: { root: string; generation: number };
       try {
         // The ONE atomic switch: arms the watcher, adopts `folder` as the grant
-        // (advancing the root generation), and returns the canonical root — no
-        // separate set_workspace to sequence against the watcher arming.
-        granted = await watchWorkspace(folder);
+        // (advancing the epoch), and returns the canonical root + the generation
+        // the watcher was armed under — no separate set_workspace to sequence.
+        grant = await watchWorkspace(folder);
       } catch {
         if (isSwitch) {
           // A real switch that could not arm: stay entirely on the old workspace.
@@ -224,6 +230,9 @@ export function AppShell() {
         } catch {
           /* non-Tauri edge — keep the raw path */
         }
+        // A newer open superseded this one during the await → abandon its store
+        // mutations (the newer open owns the workspace now).
+        if (openEpochRef.current !== epoch) return false;
         sources.setRoot(g);
         sources.setWatcher('error');
         sources.setImport(null); // fresh workspace: no import belongs to it yet
@@ -232,12 +241,16 @@ export function AppShell() {
         return true;
       }
 
-      // Watch armed + grant committed atomically; `granted` is the canonical root.
-      sources.setRoot(granted);
+      // A newer open superseded this one during the watch await → abandon.
+      if (openEpochRef.current !== epoch) return false;
+      // Watch armed + grant committed atomically; adopt the generation as the
+      // reference for filtering this watcher's events.
+      watcherGenRef.current = grant.generation;
+      sources.setRoot(grant.root);
       sources.setWatcher('watching');
       sources.setImport(null); // fresh workspace: no import belongs to it yet
-      await listInto(granted, epoch);
-      void triggerReindex(granted, epoch);
+      await listInto(grant.root, epoch);
+      void triggerReindex(grant.root, epoch);
       return true;
     },
     [listInto, triggerReindex],
@@ -629,6 +642,9 @@ export function AppShell() {
     };
 
     onFsChanged((change) => {
+      // Discard events from a PREVIOUS watcher (still draining after a switch) —
+      // they belong to a workspace we have moved off.
+      if (change.generation !== watcherGenRef.current) return;
       const existing = reloadTimers.get(change.path);
       if (existing !== undefined) window.clearTimeout(existing);
       if (change.kind === 'continuous') {
@@ -672,7 +688,9 @@ export function AppShell() {
   // --- watcher runtime errors → degraded status -------------------------
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    onWatchError(() => {
+    onWatchError((error) => {
+      // An OLD watcher's error must not mark the CURRENT watcher failed.
+      if (error.generation !== watcherGenRef.current) return;
       useSourcesStore.getState().setWatcher('error');
     })
       .then((fn) => {
