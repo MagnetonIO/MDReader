@@ -156,6 +156,74 @@ test('search intents: Best is default, Exact is clickable, ⌘/Ctrl+3 selects', 
   await expect(page.getByRole('tab', { name: 'Semantic' })).toHaveAttribute('aria-selected', 'true');
 });
 
+test('edit → save clears the dirty marker; split view renders source + preview', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'reference.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Reference' })).toBeVisible();
+
+  // Enter source view; the CodeMirror editor mounts with the document text.
+  await page.getByRole('button', { name: 'Source view' }).click();
+  const editor = page.locator('.cm-content');
+  await expect(editor).toBeVisible();
+  await expect(editor).toContainText('Reference material.');
+
+  // Type at the end → the tab shows the unsaved-changes dot.
+  await editor.click();
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+ArrowDown' : 'Control+End');
+  await page.keyboard.type('\n\nAn appended edit.\n');
+  await expect(page.locator('.tab__dirty')).toBeVisible();
+
+  // Cmd+S saves (hash-guarded); the dirty dot clears, no conflict banner appears.
+  await page.keyboard.press(meta ? 'Meta+s' : 'Control+s');
+  await expect(page.locator('.tab__dirty')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
+  // Split view shows the editor AND a live preview of the buffer side by side.
+  await page.getByRole('button', { name: 'Split view' }).click();
+  await expect(page.locator('.reader-body--split .source-region .cm-content')).toBeVisible();
+  await expect(
+    page.locator('.reader-body--split .reader-host').getByRole('heading', { name: 'Reference' }),
+  ).toBeVisible();
+});
+
+test('a save that hits an external change raises the conflict banner; Reload adopts disk', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'reference.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Reference' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Source view' }).click();
+  const editor = page.locator('.cm-content');
+  await expect(editor).toContainText('Reference material.');
+
+  // Make a local edit…
+  await editor.click();
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+ArrowDown' : 'Control+End');
+  await page.keyboard.type('\n\nMy local edit.\n');
+
+  // …then simulate the file changing on disk out from under us (bumps its hash).
+  await page.evaluate(() => {
+    (
+      window as unknown as { __E2E__: { writeDisk: (p: string, c: string) => void } }
+    ).__E2E__.writeDisk('/mock/ws/docs/reference.md', '# Reference\n\nChanged elsewhere.\n');
+  });
+
+  // Saving now trips the guard → the non-blocking conflict banner (save flavour).
+  await page.keyboard.press(meta ? 'Meta+s' : 'Control+s');
+  const banner = page.getByRole('alert');
+  await expect(banner).toContainText(/changed on disk since you opened it/i);
+
+  // Reload discards the local buffer and adopts the on-disk version; banner clears.
+  await banner.getByRole('button', { name: 'Reload' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.cm-content')).toContainText('Changed elsewhere.');
+});
+
 test('file-jump palette opens a document by name', async ({ page }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
