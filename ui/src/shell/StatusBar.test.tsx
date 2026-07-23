@@ -25,6 +25,20 @@ describe('StatusBar index indicator', () => {
     expect(container.querySelector('.statusbar__spinner')).not.toBeNull();
   });
 
+  test('while loading the model it shows a spinner and a loading label', () => {
+    const { container } = render(
+      <StatusBar
+        words={null}
+        watcher="watching"
+        fileCount={0}
+        fromIndex={false}
+        importState={{ phase: 'loading', filesDone: 0, filesTotal: 0, chunks: 0, error: null }}
+      />,
+    );
+    expect(screen.getByText(/Loading model/)).toBeTruthy();
+    expect(container.querySelector('.statusbar__spinner')).not.toBeNull();
+  });
+
   test('on done it reports the indexed file count (no spinner)', () => {
     const { container } = render(
       <StatusBar

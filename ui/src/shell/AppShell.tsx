@@ -32,6 +32,7 @@ import type { DocRef, ScrollPos } from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
+import { reindexOnChange } from './reindex.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -116,37 +117,47 @@ export function AppShell() {
     }
   }, []);
 
-  // Kick off the engine import for `folder` in the background: open (or reuse)
-  // the workspace index and stream coarse progress into the store, then re-list
-  // from the index once it finishes. Fire-and-forget — the tree stays populated
-  // from the fs fallback while the index builds. Tauri-only (no backend engine on
-  // the website or in unit tests).
-  const startIndexing = useCallback(
-    (folder: string) => {
-      if (!isTauri()) return;
-      const sources = useSourcesStore.getState();
-      sources.setImport({ phase: 'importing', filesDone: 0, filesTotal: 0, chunks: 0, error: null });
-      void startImport(folder, (progress) => {
-        // Ignore stale progress once the user has switched workspaces.
+  // Run an incremental import for `folder`, streaming coarse progress into the
+  // store and resolving when it settles. Stale updates (the user switched away)
+  // are dropped — the backend likewise discards them per its root generation.
+  // Does NOT re-list: `triggerReindex` owns the import→refresh ordering.
+  // Tauri-only (no backend engine on the website or in unit tests).
+  const runImport = useCallback(async (folder: string): Promise<void> => {
+    if (!isTauri()) return;
+    const sources = useSourcesStore.getState();
+    sources.setImport({ phase: 'importing', filesDone: 0, filesTotal: 0, chunks: 0, error: null });
+    try {
+      const final = await startImport(folder, (progress) => {
         if (useSourcesStore.getState().root === folder) sources.setImport(progress);
-      })
-        .then((final) => {
-          if (useSourcesStore.getState().root !== folder) return;
-          sources.setImport(final);
-          if (final.phase === 'done') void refreshFiles(folder);
-        })
-        .catch((cause) => {
-          if (useSourcesStore.getState().root !== folder) return;
-          sources.setImport({
-            phase: 'error',
-            filesDone: 0,
-            filesTotal: 0,
-            chunks: 0,
-            error: cause instanceof Error ? cause.message : String(cause),
-          });
-        });
+      });
+      if (useSourcesStore.getState().root !== folder) return;
+      sources.setImport(final);
+    } catch (cause) {
+      if (useSourcesStore.getState().root !== folder) return;
+      sources.setImport({
+        phase: 'error',
+        filesDone: 0,
+        filesTotal: 0,
+        chunks: 0,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }, []);
+
+  // Bring the index in step with disk, then re-list. A fresh open or a settled
+  // fs change runs an incremental import THEN refreshes the listing; while an
+  // import is already in flight (backend-coalesced) it refreshes alone.
+  const triggerReindex = useCallback(
+    (folder: string) => {
+      if (!isTauri()) return Promise.resolve('refreshed' as const);
+      const phase = useSourcesStore.getState().importState?.phase;
+      return reindexOnChange({
+        importing: phase === 'importing' || phase === 'loading',
+        startImport: () => runImport(folder),
+        refreshFiles: () => refreshFiles(folder),
+      });
     },
-    [refreshFiles],
+    [runImport, refreshFiles],
   );
 
   // Open `folder` as the active workspace; resolves to `true` once the store
@@ -175,9 +186,12 @@ export function AppShell() {
       const previousRoot = sources.root;
       const isSwitch = previousRoot !== null && previousRoot !== folder;
 
+      let granted: string;
       try {
-        // Arms the watcher AND adopts `folder` as the grant, atomically.
-        await watchWorkspace(folder);
+        // The ONE atomic switch: arms the watcher, adopts `folder` as the grant
+        // (advancing the root generation), and returns the canonical root — no
+        // separate set_workspace to sequence against the watcher arming.
+        granted = await watchWorkspace(folder);
       } catch {
         if (isSwitch) {
           // A real switch that could not arm: stay entirely on the old workspace.
@@ -189,34 +203,29 @@ export function AppShell() {
           return false;
         }
         // First open / same-root reopen: grant independently, read degraded.
-        let granted = folder;
+        let g = folder;
         try {
-          granted = await setWorkspace(folder);
+          g = await setWorkspace(folder);
         } catch {
           /* non-Tauri edge — keep the raw path */
         }
-        sources.setRoot(granted);
+        sources.setRoot(g);
         sources.setWatcher('error');
-        await listInto(granted);
-        startIndexing(granted);
+        sources.setImport(null); // fresh workspace: no import belongs to it yet
+        await listInto(g);
+        void triggerReindex(g);
         return true;
       }
 
-      // Watch armed + grant committed. Read back the canonical root (idempotent
-      // re-grant) for display, then list within it and build the index.
-      let granted = folder;
-      try {
-        granted = await setWorkspace(folder);
-      } catch {
-        /* keep the raw path */
-      }
+      // Watch armed + grant committed atomically; `granted` is the canonical root.
       sources.setRoot(granted);
       sources.setWatcher('watching');
+      sources.setImport(null); // fresh workspace: no import belongs to it yet
       await listInto(granted);
-      startIndexing(granted);
+      void triggerReindex(granted);
       return true;
     },
-    [listInto, startIndexing],
+    [listInto, triggerReindex],
   );
 
   // Switch the active workspace to `folder`, retiring the previous workspace's
@@ -617,7 +626,10 @@ export function AppShell() {
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
         const folder = useSourcesStore.getState().root;
-        if (folder) void refreshFiles(folder);
+        // A settled change drives an incremental import THEN a re-list (or just a
+        // re-list when an import is already running) so the index — and thus
+        // wikilink/title resolution — stays in step with disk.
+        if (folder) void triggerReindex(folder);
       }, 400);
     })
       .then((fn) => {
@@ -631,7 +643,7 @@ export function AppShell() {
       window.clearTimeout(refreshTimer);
       for (const timer of reloadTimers.values()) window.clearTimeout(timer);
     };
-  }, [refreshFiles]);
+  }, [triggerReindex]);
 
   // --- watcher runtime errors → degraded status -------------------------
   useEffect(() => {

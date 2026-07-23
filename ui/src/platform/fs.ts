@@ -45,8 +45,9 @@ export interface WorkspaceListing {
   fromIndex: boolean;
 }
 
-/** Import phase for the StatusBar indicator. */
-export type ImportPhase = 'idle' | 'importing' | 'done' | 'error';
+/** Import phase for the StatusBar indicator. `loading` covers the one-time
+ *  embedding-model construction/download that precedes the first import. */
+export type ImportPhase = 'idle' | 'loading' | 'importing' | 'done' | 'error';
 
 /** A normalised import-progress snapshot (camelCased, never-null counts). */
 export interface ImportState {
@@ -78,7 +79,9 @@ function normalizeProgress(progress: ImportProgress): ImportState {
   const phase = progress.phase;
   return {
     phase:
-      phase === 'importing' || phase === 'done' || phase === 'error' ? phase : 'idle',
+      phase === 'loading' || phase === 'importing' || phase === 'done' || phase === 'error'
+        ? phase
+        : 'idle',
     filesDone: progress.files_done,
     filesTotal: progress.files_total,
     chunks: progress.chunks_embedded,
@@ -184,10 +187,16 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
   return result.data;
 }
 
-/** Begin watching `root`. Throws on backend error. */
-export async function watchWorkspace(root: string): Promise<void> {
+/**
+ * The atomic "switch workspace" operation: begin watching `root`, adopt it as
+ * the grant (advancing the root generation), and resolve to its canonical path —
+ * all in one awaited round-trip (no separate {@link setWorkspace} to sequence).
+ * Throws on backend error, leaving the previous workspace fully intact.
+ */
+export async function watchWorkspace(root: string): Promise<string> {
   const result = await commands.watchWorkspace(root);
   if (result.status === 'error') throw new Error(result.error);
+  return result.data;
 }
 
 /** Subscribe to debounced filesystem changes. Returns an unlisten function. */

@@ -1,7 +1,51 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { navigateWikiLink } from './wikilink.js';
-import type { WikiResolution } from '../platform/fs.js';
+import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
+import type { WikiResolution, WorkspaceFile } from '../platform/fs.js';
+
+function file(path: string): WorkspaceFile {
+  const name = path.split('/').pop()!;
+  return { path, name, dir: path.slice(0, path.length - name.length - 1), mtime: 0, size: 0, ignored: false };
+}
+
+describe('findByWikiTarget — exact basename only', () => {
+  const files = [file('/ws/foobar.md'), file('/ws/bar.md'), file('/ws/notes/Guide.md')];
+
+  test('matches an exact basename, case- and extension-insensitively', () => {
+    expect(findByWikiTarget(files, 'bar')?.path).toBe('/ws/bar.md');
+    expect(findByWikiTarget(files, 'GUIDE')?.path).toBe('/ws/notes/Guide.md');
+    expect(findByWikiTarget(files, 'bar.md')?.path).toBe('/ws/bar.md');
+  });
+
+  test('[[bar]] does NOT match foobar.md (no substring/endsWith matches)', () => {
+    // `bar` must resolve to bar.md, never foobar.md — the old endsWith fallback
+    // would have wrongly opened foobar.md when bar.md was absent.
+    const withoutBar = [file('/ws/foobar.md')];
+    expect(findByWikiTarget(withoutBar, 'bar')).toBeNull();
+  });
+
+  test('an empty target resolves to nothing', () => {
+    expect(findByWikiTarget(files, '   ')).toBeNull();
+  });
+});
+
+describe('headingLineFromOutline', () => {
+  const outline = [
+    { text: 'Intro', lineStart: 1 },
+    { text: 'Section B', lineStart: 7 },
+  ];
+
+  test('finds the source line of a heading by (case-insensitive) text', () => {
+    expect(headingLineFromOutline(outline, 'Section B')).toBe(7);
+    expect(headingLineFromOutline(outline, 'section b')).toBe(7);
+  });
+
+  test('returns null for an unknown or empty heading', () => {
+    expect(headingLineFromOutline(outline, 'Nope')).toBeNull();
+    expect(headingLineFromOutline(outline, null)).toBeNull();
+    expect(headingLineFromOutline(outline, '')).toBeNull();
+  });
+});
 
 function handlers() {
   return {

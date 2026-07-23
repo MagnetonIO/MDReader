@@ -7,11 +7,48 @@
  * unresolved miss so the caller can fall back to a local file-list lookup.
  */
 
-import type { WikiResolution } from '../platform/fs.js';
+import type { WikiResolution, WorkspaceFile } from '../platform/fs.js';
 
 export interface WikiTarget {
   path: string;
   name: string;
+}
+
+/** Drop a trailing `.md`/`.markdown` extension (case-insensitive). */
+function stripExtension(name: string): string {
+  return name.replace(/\.(md|markdown)$/i, '');
+}
+
+/**
+ * The client-side wikilink fallback: resolve `[[target]]` to a workspace file by
+ * its **exact** basename (extension-insensitive, case-insensitive). Used only
+ * after the authoritative index resolver misses — deliberately exact, so
+ * `[[bar]]` does NOT match `foobar.md` (a substring/`endsWith` match would open
+ * the wrong note).
+ */
+export function findByWikiTarget(
+  files: WorkspaceFile[],
+  target: string,
+): WorkspaceFile | null {
+  const wanted = stripExtension(target.trim()).toLowerCase();
+  if (wanted === '') return null;
+  return files.find((file) => stripExtension(file.name).toLowerCase() === wanted) ?? null;
+}
+
+/**
+ * The source line of the outline heading matching `heading` (case-insensitive on
+ * the heading text), or `null` when the document has no such heading. Lets the
+ * client-side fallback honor a `[[Doc#heading]]` request even when the backend
+ * missed and so returned no line of its own.
+ */
+export function headingLineFromOutline(
+  outline: readonly { text: string; lineStart: number }[],
+  heading: string | null | undefined,
+): number | null {
+  const wanted = (heading ?? '').trim().toLowerCase();
+  if (wanted === '') return null;
+  const item = outline.find((entry) => entry.text.trim().toLowerCase() === wanted);
+  return item ? item.lineStart : null;
 }
 
 export interface NavigateWikiLinkOptions {

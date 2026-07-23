@@ -22,7 +22,7 @@ import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
 import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
-import { navigateWikiLink } from './wikilink.js';
+import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
 import type { ReadingFont } from '../stores/settings.js';
@@ -64,20 +64,6 @@ function countWords(content: string): number {
   return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
 }
 
-function stripExtension(name: string): string {
-  return name.replace(/\.(md|markdown)$/i, '');
-}
-
-/** Resolve a `[[wikilink]]` target to a workspace file (by basename). */
-function findByWikiTarget(files: WorkspaceFile[], target: string): WorkspaceFile | null {
-  const wanted = stripExtension(target.trim()).toLowerCase();
-  return (
-    files.find((file) => stripExtension(file.name).toLowerCase() === wanted) ??
-    files.find((file) => stripExtension(file.name).toLowerCase().endsWith(wanted)) ??
-    null
-  );
-}
-
 function resolveRelative(files: WorkspaceFile[], docDir: string, href: string): WorkspaceFile | null {
   const clean = href.split('#')[0]!.split('?')[0]!;
   const base = docDir.replace(/[\\/]+$/, '');
@@ -110,12 +96,22 @@ export function ReaderPane({
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   const [state, setState] = useState<LoadState>({ status: 'idle' });
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
+  // Authoritative dimming for wikilinks: the reader's `resolveWikiLink` predicate
+  // is synchronous and can only see filenames, so a link that resolves by TITLE
+  // would wrongly dim. We resolve each unique target through the index once,
+  // cache the boolean, and re-render so title-resolved links un-dim.
+  const [wikiResolved, setWikiResolved] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const wikiInFlight = useRef<Set<string>>(new Set());
 
   const path = tab?.docRef.path ?? null;
   // A heading a wikilink is aiming at, keyed by the TARGET doc path: recorded at
   // resolve time and consumed once that doc finishes loading (cross-doc heading
   // jumps can't scroll until their document has rendered).
   const pendingLineByPath = useRef<Map<string, number>>(new Map());
+  // Like the above but for the CLIENT-SIDE fallback path, which has only the
+  // heading TEXT (the backend missed, so it returned no source line): resolved
+  // against the target doc's outline once it renders.
+  const pendingHeadingByPath = useRef<Map<string, string>>(new Map());
   // The scroll position to restore for the freshly-loaded doc — captured in a
   // ref so scroll writes (which happen after restore) never retrigger a restore.
   const scrollToRestore = useRef<ScrollPos>({ block: 0, offset: 0 });
@@ -173,6 +169,26 @@ export function ReaderPane({
     return () => cancelAnimationFrame(frame);
   }, [state.doc, path]);
 
+  // Same, for the CLIENT-SIDE fallback: we only have the heading TEXT, so resolve
+  // it to a source line against the freshly-parsed outline before scrolling.
+  useEffect(() => {
+    if (state.status !== 'ready' || !path) return;
+    const heading = pendingHeadingByPath.current.get(path);
+    if (heading === undefined) return;
+    pendingHeadingByPath.current.delete(path);
+    const line = headingLineFromOutline(state.doc?.outline ?? [], heading);
+    if (line === null) return;
+    const frame = requestAnimationFrame(() => readerRef.current?.scrollToLine(line));
+    return () => cancelAnimationFrame(frame);
+  }, [state.doc, path]);
+
+  // Forget cached wikilink resolutions when the document or file set changes, so
+  // dimming re-derives against the current index.
+  useEffect(() => {
+    setWikiResolved(new Map());
+    wikiInFlight.current = new Set();
+  }, [path, files]);
+
   // Persist the scroll anchor, debounced, so store churn (and its re-renders)
   // stays off the scroll's hot path while still capturing the resting position.
   const persistTimer = useRef<number | undefined>(undefined);
@@ -195,12 +211,32 @@ export function ReaderPane({
     readerRef.current?.scrollToLine(item.lineStart);
   }, []);
 
-  // The reader's cheap, synchronous "does this target exist?" predicate, used
-  // only to keep unresolved wikilinks styled muted. The AUTHORITATIVE resolution
-  // (the one navigation follows) goes through the index on click.
+  // The reader's synchronous "does this target resolve?" predicate, used to keep
+  // unresolved wikilinks styled muted. It reflects ACTUAL index resolution
+  // (filename OR title): each unique target is resolved through the index once
+  // and cached, so a link that resolves by title does not dim. Until the
+  // authoritative answer lands it falls back to an exact-basename check.
   const resolveWikiLink = useCallback(
-    (target: string) => findByWikiTarget(files, target) !== null,
-    [files],
+    (target: string): boolean => {
+      const key = target.trim().toLowerCase();
+      if (key === '') return false;
+      const known = wikiResolved.get(key);
+      if (known !== undefined) return known;
+      if (!wikiInFlight.current.has(key)) {
+        wikiInFlight.current.add(key);
+        const record = (value: boolean) =>
+          setWikiResolved((prev) => {
+            const next = new Map(prev);
+            next.set(key, value);
+            return next;
+          });
+        void resolveWikilink(path ?? '', target, null)
+          .then((res) => record(res.status === 'resolved' || res.status === 'ambiguous'))
+          .catch(() => record(findByWikiTarget(files, target) !== null));
+      }
+      return findByWikiTarget(files, target) !== null;
+    },
+    [wikiResolved, path, files],
   );
 
   // Resolve a clicked wikilink through the index (filename then title match):
@@ -224,9 +260,13 @@ export function ReaderPane({
           else onMissingWikiLink(target);
         },
         onUnresolved: () => {
+          // Authoritative miss → exact-basename fallback, honoring the requested
+          // heading (scrolled once the target renders, via its outline).
           const match = findByWikiTarget(files, target);
-          if (match) onNavigate({ path: match.path, name: match.name });
-          else onMissingWikiLink(target);
+          if (match) {
+            if (heading) pendingHeadingByPath.current.set(match.path, heading);
+            onNavigate({ path: match.path, name: match.name });
+          } else onMissingWikiLink(target);
         },
       });
     },

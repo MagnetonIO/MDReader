@@ -27,6 +27,13 @@ function indexIndicator(
   fromIndex: boolean,
 ): { label: string; busy: boolean; title: string } {
   const phase = importState?.phase ?? 'idle';
+  if (phase === 'loading') {
+    return {
+      label: 'Loading model…',
+      busy: true,
+      title: 'Preparing the local embedding model (first run downloads it once)',
+    };
+  }
   if (phase === 'importing') {
     const total = importState?.filesTotal ?? 0;
     return {
