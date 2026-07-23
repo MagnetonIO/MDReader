@@ -159,7 +159,8 @@ fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
 /// [`set_workspace`] and [`watch_workspace`] share to *establish* a workspace
 /// grant (as opposed to validating a candidate against an existing grant).
 fn canonical_dir(root: &str) -> Result<PathBuf, String> {
-    let real = std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
+    let real =
+        std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
     if !real.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -311,7 +312,11 @@ pub fn read_doc(
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
-    let mtime = mtime_millis(std::fs::metadata(&real).ok().and_then(|m| m.modified().ok()));
+    let mtime = mtime_millis(
+        std::fs::metadata(&real)
+            .ok()
+            .and_then(|m| m.modified().ok()),
+    );
     Ok(DocPayload {
         content: String::from_utf8_lossy(&bytes).into_owned(),
         mtime,
@@ -488,8 +493,8 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit, DebounceEventResult,
-        WatcherState, WorkspaceState,
+        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit,
+        DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;

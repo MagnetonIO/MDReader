@@ -167,24 +167,44 @@ fn block_kind(value: &NodeValue) -> (&'static str, Option<String>) {
 }
 
 /// Tolerant frontmatter parsing: `key: value` lines between the delimiters;
-/// anything else (nested lists, malformed lines) is skipped, never an error.
+/// block-list items (`- item`) following a bare `key:` line are recorded as
+/// repeated `(key, item)` pairs (so `tags:` lists survive extraction);
+/// anything else (deeper nesting, malformed lines) is skipped, never an
+/// error.
 fn parse_frontmatter(raw: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    let mut list_key: Option<String> = None;
     for line in raw.lines() {
         let trimmed = line.trim_end();
         if trimmed.trim() == "---" || trimmed.trim().is_empty() {
             continue;
         }
-        // Indented lines belong to nested structures; skip tolerantly.
-        if line.starts_with(' ') || line.starts_with('\t') || line.trim_start().starts_with('-') {
+        // Block-list items attach to the preceding bare key as repeated
+        // (key, item) pairs; a dash with no open list is skipped.
+        if let Some(item) = trimmed.trim_start().strip_prefix('-') {
+            if let Some(key) = &list_key {
+                let value = item.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    out.push((key.clone(), value.to_string()));
+                }
+            }
+            continue;
+        }
+        // Other indented lines belong to nested structures; skip tolerantly.
+        if line.starts_with(' ') || line.starts_with('\t') {
             continue;
         }
         if let Some((key, value)) = trimmed.split_once(':') {
             let key = key.trim();
             if key.is_empty() || key.contains(' ') {
+                list_key = None;
                 continue;
             }
-            out.push((key.to_string(), value.trim().trim_matches('"').to_string()));
+            let value = value.trim().trim_matches('"').to_string();
+            list_key = value.is_empty().then(|| key.to_string());
+            out.push((key.to_string(), value));
+        } else {
+            list_key = None;
         }
     }
     out
@@ -628,11 +648,28 @@ A [[target|label]] and [[plain]].
             vec![
                 ("title".to_string(), "My Note".to_string()),
                 ("tags".to_string(), String::new()),
+                ("tags".to_string(), "a".to_string()),
+                ("tags".to_string(), "b".to_string()),
                 ("rating".to_string(), "4.5".to_string()),
             ]
         );
         // Title still comes from the h1, not the frontmatter.
         assert_eq!(doc.title, "H");
+    }
+
+    #[test]
+    fn frontmatter_block_lists_end_at_the_next_key_or_junk() {
+        let src = "---\naliases:\n  - \"one\"\n- two\nother: x\n- stray\nplain junk\n- more stray\n---\n\nbody\n";
+        let doc = parse_markdown(src, "t");
+        assert_eq!(
+            doc.frontmatter,
+            vec![
+                ("aliases".to_string(), String::new()),
+                ("aliases".to_string(), "one".to_string()),
+                ("aliases".to_string(), "two".to_string()),
+                ("other".to_string(), "x".to_string()),
+            ]
+        );
     }
 
     #[test]

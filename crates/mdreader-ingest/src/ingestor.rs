@@ -46,6 +46,32 @@
 //! `md.sourceSection`, `md.sourceDocument`) so the engine's instance-level
 //! equation check can verify the md schema's path equations over the
 //! imported corpus.
+//!
+//! ## The KN layer: link morphisms and concepts
+//!
+//! On top of the md facts, each sync maintains the knowledge (`kn`) layer
+//! of the builtin pipeline:
+//!
+//! * every document is asserted as a `kn.Artifact` (with `doc_ref` back to
+//!   the `md.Document`, and its `uri` refreshed on rename);
+//! * frontmatter `tags:` become `kn.Concept` objects (identity = the
+//!   normalized, lowercased tag — shared across every document carrying
+//!   it) joined through `kn.ArtifactConcept` rows with `kn.artifact` /
+//!   `kn.concept` morphisms, diffed incrementally (a removed tag retracts
+//!   its join row and morphisms; a concept no other artifact references is
+//!   left in place — stable identity makes re-tagging idempotent);
+//! * resolving a link additionally asserts a `kn.ArtifactLink` **span**
+//!   (the kn schema's `ArtifactLink` entity with its total `from`/`to`
+//!   projection arrows onto `Artifact` — a span, not an
+//!   `Artifact → Artifact` arrow, because arrows are functions while an
+//!   artifact links to zero or many others); each artifact anchors to its
+//!   document via `doc_ref`, which `relation_search` uses to lower the
+//!   span back onto documents. The span is retracted whenever the link
+//!   dies or its target document is deleted (inbound links are looked up
+//!   before the cascade nulls their resolutions).
+//!
+//! All of it rides the same per-file/per-resolution transactions as the
+//! rows it derives from.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -123,6 +149,81 @@ fn stable_uuid(parts: &[&str]) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
+/// `kn.Artifact` identity for a document (stable per document id).
+fn artifact_id(doc_id: Uuid) -> Uuid {
+    stable_uuid(&["kn-artifact", &doc_id.to_string()])
+}
+
+/// `kn.Concept` identity for a tag: global — every document tagged
+/// `retrieval` shares one concept object.
+fn concept_id(tag: &str) -> Uuid {
+    stable_uuid(&["kn-concept", tag])
+}
+
+/// `kn.ArtifactConcept` join identity for (document, tag).
+fn artifact_concept_id(doc_id: Uuid, tag: &str) -> Uuid {
+    stable_uuid(&["kn-artifact-concept", &doc_id.to_string(), tag])
+}
+
+/// `kn.ArtifactLink` span identity, keyed by the underlying md LINK id:
+/// two parallel links between the same documents keep independent span
+/// rows, so a link's death retracts exactly its own edge.
+fn artifact_link_id(link_id: Uuid) -> Uuid {
+    stable_uuid(&["kn-artifact-link", &link_id.to_string()])
+}
+
+/// Queue the retraction of one link's derived `kn.ArtifactLink` span (both
+/// projection morphisms, then the span object) — a no-op when the link
+/// never resolved.
+fn push_artifact_link_retraction(writes: &mut Vec<IngestWrite>, link_id: Uuid) {
+    let al = artifact_link_id(link_id);
+    writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+        morphism_id: stable_uuid(&["m", "kn.from", &al.to_string()]),
+    }));
+    writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+        morphism_id: stable_uuid(&["m", "kn.to", &al.to_string()]),
+    }));
+    writes.push(IngestWrite::Emit(CatOperation::RetractObject {
+        object_id: al,
+    }));
+}
+
+/// Extract normalized tags from tolerant frontmatter pairs: repeated
+/// `(tags, item)` pairs (block lists), inline `[a, b]` arrays, and bare
+/// comma strings all work; tags are trimmed, unquoted, `#`-stripped, and
+/// lowercased (concept identity is case-insensitive); order preserved,
+/// duplicates dropped.
+fn frontmatter_tags(frontmatter: &[(String, String)]) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for (key, value) in frontmatter {
+        if !key.eq_ignore_ascii_case("tags") {
+            continue;
+        }
+        let inner = value.trim();
+        let inner = inner
+            .strip_prefix('[')
+            .and_then(|v| v.strip_suffix(']'))
+            .unwrap_or(inner);
+        for part in inner.split(',') {
+            let tag = part
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_start_matches('#')
+                .trim();
+            if tag.is_empty() {
+                continue;
+            }
+            let tag = tag.to_lowercase();
+            if seen.insert(tag.clone()) {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
 fn provenance(source: &str, range: Option<[u32; 2]>, content_hash: &str) -> Provenance {
     Provenance {
         source: Some(source.to_string()),
@@ -194,7 +295,13 @@ impl Ingestor for MarkdownIngestor {
         };
         let files = scan_root(&req.root, &scan_options)?;
 
-        let stored_before = ctx.list_documents()?;
+        // EVERYTHING below is scoped to THIS import's source: stored state,
+        // rename claiming, deletion, and link resolution all read
+        // `documents_for_source`, so a multi-source database is safe — one
+        // source's reconcile can never observe (let alone delete or rename-
+        // claim) another source's documents.
+        let source_id = req.source.source_id;
+        let stored_before = ctx.documents_for_source(source_id)?;
         let stored_by_path: HashMap<String, DocumentRow> = stored_before
             .iter()
             .map(|d| (d.file_path.clone(), d.clone()))
@@ -215,6 +322,7 @@ impl Ingestor for MarkdownIngestor {
 
         let mut stats = IngestStats::default();
         let mut seen: HashSet<Uuid> = HashSet::new();
+        let files_total = files.len() as u64;
 
         for file in &files {
             stats.files_scanned += 1;
@@ -234,6 +342,7 @@ impl Ingestor for MarkdownIngestor {
                     sync_document(
                         ctx,
                         doc.id,
+                        source_id,
                         file,
                         &text,
                         &content_hash,
@@ -258,6 +367,7 @@ impl Ingestor for MarkdownIngestor {
                             sync_document(
                                 ctx,
                                 old.id,
+                                source_id,
                                 file,
                                 &text,
                                 &content_hash,
@@ -267,7 +377,7 @@ impl Ingestor for MarkdownIngestor {
                             )
                             .await?;
                         } else {
-                            rename_document(ctx, &old, file, &content_hash).await?;
+                            rename_document(ctx, &old, source_id, file, &content_hash).await?;
                             stats.files_renamed += 1;
                         }
                     } else {
@@ -277,6 +387,7 @@ impl Ingestor for MarkdownIngestor {
                         sync_document(
                             ctx,
                             doc_id,
+                            source_id,
                             file,
                             &text,
                             &content_hash,
@@ -288,14 +399,17 @@ impl Ingestor for MarkdownIngestor {
                     }
                 }
             }
+            // Live, pollable job progress (engine `index_status`); advisory,
+            // so it costs one cheap row update per synced file.
+            ctx.report_progress(stats.files_scanned, files_total)
+                .await?;
         }
 
-        // Deletions are scoped against STORED state under this source root:
-        // stored paths are relative to the scanned root (v1's single-source
-        // model, see the crate docs), so every stored document this scan did
-        // not claim — including the contents of a fully deleted nested repo
-        // directory — is gone from disk and must be cleaned up. Multi-source
-        // scoping arrives when documents carry a source id.
+        // Deletions are scoped against THIS SOURCE's stored state (see
+        // `documents_for_source` above): every document of this source the
+        // scan did not claim — including the contents of a fully deleted
+        // nested repo directory — is gone from disk and must be cleaned up.
+        // Other sources' documents are structurally out of reach here.
         for doc in &stored_before {
             if seen.contains(&doc.id) || scan_set.contains(doc.file_path.as_str()) {
                 continue;
@@ -304,7 +418,7 @@ impl Ingestor for MarkdownIngestor {
             stats.files_deleted += 1;
         }
 
-        stats.links_resolved = resolve_links(ctx).await?;
+        stats.links_resolved = resolve_links(ctx, source_id).await?;
         Ok(stats)
     }
 }
@@ -322,6 +436,7 @@ impl Ingestor for MarkdownIngestor {
 async fn sync_document(
     ctx: &dyn IngestContext,
     doc_id: Uuid,
+    source_id: Uuid,
     file: &ScannedFile,
     source_text: &str,
     content_hash: &str,
@@ -460,6 +575,7 @@ async fn sync_document(
     // a failed import leaves this file re-processable (see the module docs).
     writes.push(IngestWrite::UpsertDocuments(vec![DocumentRow {
         id: doc_id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: pending_hash(content_hash),
@@ -474,6 +590,66 @@ async fn sync_document(
         }),
         provenance: provenance(&file.rel, None, content_hash),
     }));
+
+    // KN layer: the document as a kn.Artifact, and its frontmatter tags as
+    // kn.Concept / kn.ArtifactConcept facts, diffed against the previously
+    // committed join morphisms — all in this same transaction.
+    let artifact = artifact_id(doc_id);
+    let kn_prov = provenance(&file.rel, None, content_hash);
+    writes.push(IngestWrite::Emit(CatOperation::AssertObject {
+        entity: qualify("kn", "Artifact"),
+        object_id: artifact,
+        value: serde_json::json!({
+            "uri": file.rel,
+            "artifact_kind": "markdown",
+            "artifact_content_hash": content_hash,
+            "doc_ref": doc_id,
+        }),
+        provenance: kn_prov.clone(),
+    }));
+    let tags = frontmatter_tags(&parsed.frontmatter);
+    let new_acs: HashSet<Uuid> = tags
+        .iter()
+        .map(|tag| artifact_concept_id(doc_id, tag))
+        .collect();
+    let prior_acs = artifact_concepts(ctx, artifact)?;
+    push_artifact_concept_retractions(
+        &mut writes,
+        prior_acs.into_iter().filter(|ac| !new_acs.contains(ac)),
+    );
+    for tag in &tags {
+        let concept = concept_id(tag);
+        let ac = artifact_concept_id(doc_id, tag);
+        writes.push(IngestWrite::Emit(CatOperation::AssertObject {
+            entity: qualify("kn", "Concept"),
+            object_id: concept,
+            value: serde_json::json!({ "concept_name": tag }),
+            provenance: kn_prov.clone(),
+        }));
+        writes.push(IngestWrite::Emit(CatOperation::AssertObject {
+            entity: qualify("kn", "ArtifactConcept"),
+            object_id: ac,
+            value: serde_json::json!({
+                "artifact_ref": artifact,
+                "concept_ref": concept,
+            }),
+            provenance: kn_prov.clone(),
+        }));
+        writes.push(IngestWrite::Emit(CatOperation::AssertMorphism {
+            arrow: qualify("kn", "artifact"),
+            morphism_id: stable_uuid(&["m", "kn.artifact", &ac.to_string()]),
+            source: ac,
+            target: artifact,
+            provenance: kn_prov.clone(),
+        }));
+        writes.push(IngestWrite::Emit(CatOperation::AssertMorphism {
+            arrow: qualify("kn", "concept"),
+            morphism_id: stable_uuid(&["m", "kn.concept", &ac.to_string()]),
+            source: ac,
+            target: concept,
+            provenance: kn_prov.clone(),
+        }));
+    }
 
     // Retractions for every fact this sync replaces or removes — queued
     // before (and committed with) the row writes that make them true:
@@ -667,6 +843,7 @@ async fn sync_document(
     ctx.apply_batch(writes).await?;
     ctx.stage_document_finalize(DocumentRow {
         id: doc_id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: content_hash.to_string(),
@@ -685,12 +862,14 @@ async fn sync_document(
 async fn rename_document(
     ctx: &dyn IngestContext,
     old: &DocumentRow,
+    source_id: Uuid,
     file: &ScannedFile,
     content_hash: &str,
 ) -> EngineResult<()> {
     let mut writes: Vec<IngestWrite> = Vec::new();
     writes.push(IngestWrite::UpsertDocuments(vec![DocumentRow {
         id: old.id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: content_hash.to_string(),
@@ -739,11 +918,26 @@ async fn rename_document(
         }),
         provenance: provenance(&file.rel, None, content_hash),
     }));
+    // The kn.Artifact mirrors the document: refresh its uri. Tags are
+    // content, and content is unchanged — the concept joins stand.
+    writes.push(IngestWrite::Emit(CatOperation::AssertObject {
+        entity: qualify("kn", "Artifact"),
+        object_id: artifact_id(old.id),
+        value: serde_json::json!({
+            "uri": file.rel,
+            "artifact_kind": "markdown",
+            "artifact_content_hash": content_hash,
+            "doc_ref": old.id,
+        }),
+        provenance: provenance(&file.rel, None, content_hash),
+    }));
     ctx.apply_batch(writes).await
 }
 
 /// Delete a vanished document as one transaction: retract every fact
-/// (chunks included) together with the cascade-delete of its rows.
+/// (chunks, KN artifact/concept joins, and the document's `ArtifactLink`
+/// edges — inbound ones included, looked up before the FK cascade nulls
+/// their resolutions) together with the cascade-delete of its rows.
 async fn delete_document(ctx: &dyn IngestContext, doc: &DocumentRow) -> EngineResult<()> {
     let mut writes: Vec<IngestWrite> = Vec::new();
     for chunk in ctx.chunks_for_document(doc.id)? {
@@ -754,6 +948,19 @@ async fn delete_document(ctx: &dyn IngestContext, doc: &DocumentRow) -> EngineRe
     let sections = ctx.sections_for_document(doc.id)?;
     let section_ids: Vec<Uuid> = sections.iter().map(|s| s.id).collect();
     push_section_retractions(ctx, &mut writes, &section_ids)?;
+    // Inbound links (other documents linking here): their rows survive with
+    // `resolved_document` nulled by the FK cascade — re-resolvable later —
+    // but the derived span must go NOW. (This document's own outbound
+    // spans were retracted with its links above.)
+    for inbound in ctx.links_resolved_to(doc.id)? {
+        push_artifact_link_retraction(&mut writes, inbound.id);
+    }
+    // KN teardown: the artifact's concept joins, then the artifact itself.
+    let artifact = artifact_id(doc.id);
+    push_artifact_concept_retractions(&mut writes, artifact_concepts(ctx, artifact)?);
+    writes.push(IngestWrite::Emit(CatOperation::RetractObject {
+        object_id: artifact,
+    }));
     writes.push(IngestWrite::Emit(CatOperation::RetractObject {
         object_id: doc.id,
     }));
@@ -788,7 +995,8 @@ fn push_section_retractions(
     Ok(())
 }
 
-/// Queue retractions of link facts (object + both morphisms per link).
+/// Queue retractions of link facts (object + both md morphisms + the
+/// derived `kn.ArtifactLink` span — a no-op when the link never resolved).
 fn push_link_retractions(writes: &mut Vec<IngestWrite>, link_ids: &[Uuid]) {
     for link_id in link_ids {
         writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
@@ -797,17 +1005,57 @@ fn push_link_retractions(writes: &mut Vec<IngestWrite>, link_ids: &[Uuid]) {
         writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
             morphism_id: stable_uuid(&["m", "md.sourceDocument", &link_id.to_string()]),
         }));
+        push_artifact_link_retraction(writes, *link_id);
         writes.push(IngestWrite::Emit(CatOperation::RetractObject {
             object_id: *link_id,
         }));
     }
 }
 
-/// Resolve every unresolved link against the current corpus: relative paths
-/// (with `.md`/`.markdown` completion) for markdown/image links, stem lookup
-/// for wikilinks. Returns how many links were resolved in this pass.
-async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
-    let docs = ctx.list_documents()?;
+/// The `kn.ArtifactConcept` ids currently joined to `artifact`, read from
+/// the committed `kn.artifact` morphisms (source = join row, target =
+/// artifact).
+fn artifact_concepts(ctx: &dyn IngestContext, artifact: Uuid) -> EngineResult<Vec<Uuid>> {
+    let arrow = qualify("kn", "artifact");
+    Ok(ctx
+        .morphisms_with_arrow_prefix(&arrow)?
+        .into_iter()
+        .filter(|edge| edge.arrow == arrow && edge.target == artifact)
+        .map(|edge| edge.source)
+        .collect())
+}
+
+/// Queue retractions for `kn.ArtifactConcept` join rows: both projection
+/// morphisms, then the join object. Concept objects themselves are kept —
+/// their identity is the tag, so an orphaned concept is harmless and
+/// re-tagging finds it again.
+fn push_artifact_concept_retractions(
+    writes: &mut Vec<IngestWrite>,
+    ac_ids: impl IntoIterator<Item = Uuid>,
+) {
+    for ac in ac_ids {
+        writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+            morphism_id: stable_uuid(&["m", "kn.artifact", &ac.to_string()]),
+        }));
+        writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+            morphism_id: stable_uuid(&["m", "kn.concept", &ac.to_string()]),
+        }));
+        writes.push(IngestWrite::Emit(CatOperation::RetractObject {
+            object_id: ac,
+        }));
+    }
+}
+
+/// Resolve every unresolved link **within one source** against that
+/// source's documents: relative paths (with `.md`/`.markdown` completion)
+/// for markdown/image links, stem lookup for wikilinks. Both sides are
+/// source-scoped — links from other sources are not touched, and this
+/// source's links can only land on this source's documents (stored paths
+/// are root-relative, so cross-source resolution would be meaningless
+/// collisions). Returns how many links were resolved in this pass.
+async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult<u64> {
+    let docs = ctx.documents_for_source(source_id)?;
+    let doc_ids: HashSet<Uuid> = docs.iter().map(|d| d.id).collect();
     let path_map: HashMap<&str, Uuid> = docs.iter().map(|d| (d.file_path.as_str(), d.id)).collect();
     let mut stem_map: HashMap<String, Vec<(&str, Uuid)>> = HashMap::new();
     for doc in &docs {
@@ -822,6 +1070,9 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
 
     let mut resolved_count = 0u64;
     for entry in ctx.unresolved_links()? {
+        if !doc_ids.contains(&entry.source_document) {
+            continue; // another source's link — not this import's to resolve
+        }
         let target = resolve_target(
             &entry.link.kind,
             &entry.link.raw_target,
@@ -832,9 +1083,22 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
         let Some(target_id) = target else { continue };
         let mut link = entry.link.clone();
         link.resolved_document = Some(target_id);
-        // Row update and re-asserted fact commit together; the resolution
-        // provenance is real: the source section's line range and content
-        // hash (the span the link was written in).
+        // Row update, re-asserted link fact, and the derived knowledge-graph
+        // span commit together: a `kn.ArtifactLink` object (identity keyed
+        // by the md link) with its two total projection morphisms —
+        // `kn.from` to the source document's artifact, `kn.to` to the
+        // resolved target's artifact. A span, not an Artifact→Artifact
+        // arrow: arrows are functions (one target per source), while an
+        // artifact links to zero or many others. relation_search walks the
+        // span and lowers each endpoint to its document via `doc_ref`. The
+        // resolution provenance is real: the source section's line range
+        // and content hash (the span of text the link was written in).
+        let al = artifact_link_id(entry.link.id);
+        let resolution_provenance = provenance(
+            &entry.source_path,
+            Some(entry.section_range),
+            &entry.section_content_hash,
+        );
         ctx.apply_batch(vec![
             IngestWrite::UpsertLinks(vec![link]),
             IngestWrite::Emit(CatOperation::AssertObject {
@@ -845,11 +1109,31 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
                     "kind": entry.link.kind,
                     "target_ref": target_id,
                 }),
-                provenance: provenance(
-                    &entry.source_path,
-                    Some(entry.section_range),
-                    &entry.section_content_hash,
-                ),
+                provenance: resolution_provenance.clone(),
+            }),
+            IngestWrite::Emit(CatOperation::AssertObject {
+                entity: qualify("kn", "ArtifactLink"),
+                object_id: al,
+                value: serde_json::json!({
+                    "link_ref": entry.link.id,
+                    "from_ref": artifact_id(entry.source_document),
+                    "to_ref": artifact_id(target_id),
+                }),
+                provenance: resolution_provenance.clone(),
+            }),
+            IngestWrite::Emit(CatOperation::AssertMorphism {
+                arrow: qualify("kn", "from"),
+                morphism_id: stable_uuid(&["m", "kn.from", &al.to_string()]),
+                source: al,
+                target: artifact_id(entry.source_document),
+                provenance: resolution_provenance.clone(),
+            }),
+            IngestWrite::Emit(CatOperation::AssertMorphism {
+                arrow: qualify("kn", "to"),
+                morphism_id: stable_uuid(&["m", "kn.to", &al.to_string()]),
+                source: al,
+                target: artifact_id(target_id),
+                provenance: resolution_provenance,
             }),
         ])
         .await?;
