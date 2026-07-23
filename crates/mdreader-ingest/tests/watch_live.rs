@@ -95,7 +95,10 @@ async fn watch_converges_create_edit_rename_delete_without_manual_imports() {
 
     // Register the source on an EMPTY vault — every document below arrives
     // through the watcher alone.
-    engine.import(&root, ImportOptions::default()).await.unwrap();
+    engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
     let handle = engine.watch_sources().await.unwrap();
     let mut rx = handle.subscribe();
     assert_eq!(handle.watched().len(), 1);
@@ -147,7 +150,11 @@ async fn watch_converges_create_edit_rename_delete_without_manual_imports() {
     );
 
     // EDIT one section of a.md; the watcher re-syncs just that file.
-    write(&root, "a.md", &ALPHA.replace("details paragraph.", "details paragraph, revised."));
+    write(
+        &root,
+        "a.md",
+        &ALPHA.replace("details paragraph.", "details paragraph, revised."),
+    );
     converge("edited section re-chunked", || {
         engine
             .store()
@@ -184,7 +191,10 @@ async fn watch_converges_create_edit_rename_delete_without_manual_imports() {
         .iter()
         .map(|u| u.link.raw_target.clone())
         .collect();
-    assert_eq!(raw, BTreeSet::from(["../a.md".to_string(), "a".to_string()]));
+    assert_eq!(
+        raw,
+        BTreeSet::from(["../a.md".to_string(), "a".to_string()])
+    );
     let status = engine.status().await.unwrap();
     assert_eq!(status.documents, 1);
     assert_eq!(status.chunks, 1);
@@ -214,7 +224,10 @@ async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
     write(&root, "burst.md", "# Burst\n\ndraft 0\n");
     let db_dir = tempfile::tempdir().unwrap();
     let engine = Arc::new(open(&db_dir.path().join("catdb.db")));
-    engine.import(&root, ImportOptions::default()).await.unwrap();
+    engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
 
     let handle = engine.watch_sources().await.unwrap();
     let mut rx = handle.subscribe();
@@ -229,7 +242,11 @@ async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
         write(&root, "burst.md", &format!("# Burst\n\ndraft {i}\n"));
     }
     converge("final draft ingested", || {
-        let doc = engine.store().document_by_path("burst.md").unwrap().unwrap();
+        let doc = engine
+            .store()
+            .document_by_path("burst.md")
+            .unwrap()
+            .unwrap();
         engine
             .store()
             .chunks_for_document(doc.id)
@@ -259,11 +276,18 @@ async fn reconcile_converges_changes_made_while_nothing_watched() {
     write(&root, "a.md", ALPHA);
     let db_dir = tempfile::tempdir().unwrap();
     let engine = open(&db_dir.path().join("catdb.db"));
-    engine.import(&root, ImportOptions::default()).await.unwrap();
+    engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
 
     // Offline drift: create, edit, rename, delete — all unobserved.
     write(&root, "new.md", "# New\n\nCreated while unwatched.\n");
-    write(&root, "a.md", &ALPHA.replace("intro", "intro (edited offline)"));
+    write(
+        &root,
+        "a.md",
+        &ALPHA.replace("intro", "intro (edited offline)"),
+    );
 
     let sources = engine.store().list_sources().await.unwrap();
     let report = engine.reconcile(sources[0].source_id).await.unwrap();
@@ -347,8 +371,14 @@ async fn killed_import_resumes_and_status_reads_failed_then_done() {
     // Reopen (fresh process) and import with a working embedder: the
     // pending-marker machinery re-processes everything; status flips Done.
     let engine = open(&db);
-    let report = engine.import(&root, ImportOptions::default()).await.unwrap();
-    assert_eq!(report.files_skipped_unchanged, 0, "nothing may short-circuit");
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        report.files_skipped_unchanged, 0,
+        "nothing may short-circuit"
+    );
     assert_eq!(report.chunks_embedded, 3);
 
     let status = engine.index_status().await.unwrap();

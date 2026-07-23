@@ -41,9 +41,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 /// keeps the standard App/Edit menus (so copy/paste/select-all keep working) and
 /// remaps window-close to ⌘⇧W, leaving ⌘W free to reach the webview.
 #[cfg(target_os = "macos")]
-fn build_app_menu(
-    handle: &tauri::AppHandle,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
     let app_menu = SubmenuBuilder::new(handle, "MDReader")
