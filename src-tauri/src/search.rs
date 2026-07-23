@@ -531,11 +531,19 @@ mod tests {
     fn search_over_a_real_corpus_returns_provenance_bearing_hits() {
         let corpus = TempDir::new().unwrap();
         let root = fs::canonicalize(corpus.path()).unwrap();
-        fs::write(
-            root.join("guide.md"),
-            "# Guide\n\nIntro.\n\n## Storage engine\n\nThe storage engine persists chunks.\n",
-        )
-        .unwrap();
+        // The fixture corpus (shared, character-for-character, with the reader's
+        // provenance golden test in `@mdreader/ui`).
+        const FIXTURE: &str =
+            "# Guide\n\nIntro.\n\n## Storage engine\n\nThe storage engine persists chunks.\n";
+        fs::write(root.join("guide.md"), FIXTURE).unwrap();
+
+        // The section's true source line, derived from the corpus (never
+        // hardcoded): the `## Storage engine` heading's 1-based line.
+        let heading_line = FIXTURE
+            .lines()
+            .position(|line| line.trim() == "## Storage engine")
+            .map(|index| index as u32 + 1)
+            .expect("heading present in the fixture");
 
         let db = engine();
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -562,7 +570,15 @@ mod tests {
             .iter()
             .find(|h| h.file_path == "guide.md")
             .expect("guide.md is a hit");
-        assert!(hit.start_line >= 1 && hit.end_line >= hit.start_line);
+        // THE contract the reader's golden test consumes: a real hit's
+        // `start_line` is the section's heading line, and the range is well
+        // formed (start ≤ end). The reader then lands on the block whose
+        // `data-line` range contains this very line.
+        assert_eq!(
+            hit.start_line, heading_line,
+            "hit start_line is the section's source line"
+        );
+        assert!(hit.end_line >= hit.start_line);
         assert_eq!(hit.abs_path, root.join("guide.md").to_string_lossy());
         assert!(hit.explain.is_some(), "explain requested");
     }
