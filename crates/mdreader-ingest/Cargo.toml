@@ -40,6 +40,10 @@ ignore = "0.4"
 
 [dev-dependencies]
 catdb-catalog = { path = "../../../../catdb/crates/catdb-catalog" }
+# Kernel types for the KN-layer instance validity tests (MemInstance +
+# builtin schemas): the app depending on the platform is the allowed
+# direction.
+catdb-core = { path = "../../../../catdb/crates/catdb-core" }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }

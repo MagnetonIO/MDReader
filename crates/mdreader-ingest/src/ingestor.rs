@@ -60,13 +60,15 @@
 //!   `kn.concept` morphisms, diffed incrementally (a removed tag retracts
 //!   its join row and morphisms; a concept no other artifact references is
 //!   left in place — stable identity makes re-tagging idempotent);
-//! * resolving a link additionally asserts a `kn.links_to` morphism
-//!   between the source and target **artifacts** (the kn schema's
-//!   `links_to : Artifact → Artifact` arrow; each artifact anchors to its
+//! * resolving a link additionally asserts a `kn.ArtifactLink` **span**
+//!   (the kn schema's `ArtifactLink` entity with its total `from`/`to`
+//!   projection arrows onto `Artifact` — a span, not an
+//!   `Artifact → Artifact` arrow, because arrows are functions while an
+//!   artifact links to zero or many others); each artifact anchors to its
 //!   document via `doc_ref`, which `relation_search` uses to lower the
-//!   edge back onto documents) — retracted whenever the link dies or its
-//!   target document is deleted (inbound links are looked up before the
-//!   cascade nulls their resolutions).
+//!   span back onto documents. The span is retracted whenever the link
+//!   dies or its target document is deleted (inbound links are looked up
+//!   before the cascade nulls their resolutions).
 //!
 //! All of it rides the same per-file/per-resolution transactions as the
 //! rows it derives from.
@@ -163,11 +165,27 @@ fn artifact_concept_id(doc_id: Uuid, tag: &str) -> Uuid {
     stable_uuid(&["kn-artifact-concept", &doc_id.to_string(), tag])
 }
 
-/// `kn.links_to` morphism identity, keyed by the LINK id: two parallel
-/// links between the same documents keep independent morphisms, so a
-/// link's death retracts exactly its own edge.
-fn links_to_morphism_id(link_id: Uuid) -> Uuid {
-    stable_uuid(&["m", "kn.links_to", &link_id.to_string()])
+/// `kn.ArtifactLink` span identity, keyed by the underlying md LINK id:
+/// two parallel links between the same documents keep independent span
+/// rows, so a link's death retracts exactly its own edge.
+fn artifact_link_id(link_id: Uuid) -> Uuid {
+    stable_uuid(&["kn-artifact-link", &link_id.to_string()])
+}
+
+/// Queue the retraction of one link's derived `kn.ArtifactLink` span (both
+/// projection morphisms, then the span object) — a no-op when the link
+/// never resolved.
+fn push_artifact_link_retraction(writes: &mut Vec<IngestWrite>, link_id: Uuid) {
+    let al = artifact_link_id(link_id);
+    writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+        morphism_id: stable_uuid(&["m", "kn.from", &al.to_string()]),
+    }));
+    writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
+        morphism_id: stable_uuid(&["m", "kn.to", &al.to_string()]),
+    }));
+    writes.push(IngestWrite::Emit(CatOperation::RetractObject {
+        object_id: al,
+    }));
 }
 
 /// Extract normalized tags from tolerant frontmatter pairs: repeated
@@ -917,7 +935,7 @@ async fn rename_document(
 }
 
 /// Delete a vanished document as one transaction: retract every fact
-/// (chunks, KN artifact/concept joins, and the document's `links_to`
+/// (chunks, KN artifact/concept joins, and the document's `ArtifactLink`
 /// edges — inbound ones included, looked up before the FK cascade nulls
 /// their resolutions) together with the cascade-delete of its rows.
 async fn delete_document(ctx: &dyn IngestContext, doc: &DocumentRow) -> EngineResult<()> {
@@ -932,12 +950,10 @@ async fn delete_document(ctx: &dyn IngestContext, doc: &DocumentRow) -> EngineRe
     push_section_retractions(ctx, &mut writes, &section_ids)?;
     // Inbound links (other documents linking here): their rows survive with
     // `resolved_document` nulled by the FK cascade — re-resolvable later —
-    // but the derived document edge must go NOW. (This document's own
-    // outbound `links_to` edges were retracted with its links above.)
+    // but the derived span must go NOW. (This document's own outbound
+    // spans were retracted with its links above.)
     for inbound in ctx.links_resolved_to(doc.id)? {
-        writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
-            morphism_id: links_to_morphism_id(inbound.id),
-        }));
+        push_artifact_link_retraction(&mut writes, inbound.id);
     }
     // KN teardown: the artifact's concept joins, then the artifact itself.
     let artifact = artifact_id(doc.id);
@@ -980,8 +996,7 @@ fn push_section_retractions(
 }
 
 /// Queue retractions of link facts (object + both md morphisms + the
-/// derived `kn.links_to` document edge — a no-op when the link never
-/// resolved).
+/// derived `kn.ArtifactLink` span — a no-op when the link never resolved).
 fn push_link_retractions(writes: &mut Vec<IngestWrite>, link_ids: &[Uuid]) {
     for link_id in link_ids {
         writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
@@ -990,9 +1005,7 @@ fn push_link_retractions(writes: &mut Vec<IngestWrite>, link_ids: &[Uuid]) {
         writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
             morphism_id: stable_uuid(&["m", "md.sourceDocument", &link_id.to_string()]),
         }));
-        writes.push(IngestWrite::Emit(CatOperation::RetractMorphism {
-            morphism_id: links_to_morphism_id(*link_id),
-        }));
+        push_artifact_link_retraction(writes, *link_id);
         writes.push(IngestWrite::Emit(CatOperation::RetractObject {
             object_id: *link_id,
         }));
@@ -1071,12 +1084,16 @@ async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult
         let mut link = entry.link.clone();
         link.resolved_document = Some(target_id);
         // Row update, re-asserted link fact, and the derived knowledge-graph
-        // `kn.links_to` morphism commit together. The morphism runs between
-        // the two ARTIFACTS (the kn schema's `links_to : Artifact →
-        // Artifact` arrow), each anchored to its document via `doc_ref` —
-        // relation_search lowers the edge back to documents through that
-        // anchor. The resolution provenance is real: the source section's
-        // line range and content hash (the span the link was written in).
+        // span commit together: a `kn.ArtifactLink` object (identity keyed
+        // by the md link) with its two total projection morphisms —
+        // `kn.from` to the source document's artifact, `kn.to` to the
+        // resolved target's artifact. A span, not an Artifact→Artifact
+        // arrow: arrows are functions (one target per source), while an
+        // artifact links to zero or many others. relation_search walks the
+        // span and lowers each endpoint to its document via `doc_ref`. The
+        // resolution provenance is real: the source section's line range
+        // and content hash (the span of text the link was written in).
+        let al = artifact_link_id(entry.link.id);
         let resolution_provenance = provenance(
             &entry.source_path,
             Some(entry.section_range),
@@ -1094,10 +1111,27 @@ async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult
                 }),
                 provenance: resolution_provenance.clone(),
             }),
+            IngestWrite::Emit(CatOperation::AssertObject {
+                entity: qualify("kn", "ArtifactLink"),
+                object_id: al,
+                value: serde_json::json!({
+                    "link_ref": entry.link.id,
+                    "from_ref": artifact_id(entry.source_document),
+                    "to_ref": artifact_id(target_id),
+                }),
+                provenance: resolution_provenance.clone(),
+            }),
             IngestWrite::Emit(CatOperation::AssertMorphism {
-                arrow: qualify("kn", "links_to"),
-                morphism_id: links_to_morphism_id(entry.link.id),
-                source: artifact_id(entry.source_document),
+                arrow: qualify("kn", "from"),
+                morphism_id: stable_uuid(&["m", "kn.from", &al.to_string()]),
+                source: al,
+                target: artifact_id(entry.source_document),
+                provenance: resolution_provenance.clone(),
+            }),
+            IngestWrite::Emit(CatOperation::AssertMorphism {
+                arrow: qualify("kn", "to"),
+                morphism_id: stable_uuid(&["m", "kn.to", &al.to_string()]),
+                source: al,
                 target: artifact_id(target_id),
                 provenance: resolution_provenance,
             }),

@@ -1,6 +1,6 @@
 //! KN-layer acceptance: frontmatter `tags:` become `kn.Concept` /
 //! `kn.ArtifactConcept` facts, documents become `kn.Artifact`s, resolved
-//! links assert `kn.links_to` morphisms between documents that
+//! links assert `kn.ArtifactLink` spans between artifacts that
 //! `relation_search` traverses (graph test to depth 2), and every derived
 //! fact is retracted when its source dies — with the instance-level
 //! equation check clean throughout (fixtures included).
@@ -75,14 +75,32 @@ fn kn_object_ids(engine: &EmbeddedCatDb, entity: &str) -> Vec<Uuid> {
         .collect()
 }
 
-fn links_to_edges(engine: &EmbeddedCatDb) -> Vec<(Uuid, Uuid)> {
-    let mut edges: Vec<(Uuid, Uuid)> = engine
+/// The artifact-to-artifact edges encoded by the stored `kn.ArtifactLink`
+/// spans: each span object's `kn.from` / `kn.to` projection morphisms are
+/// joined on the span id into one `(from_artifact, to_artifact)` pair.
+fn span_edges(engine: &EmbeddedCatDb) -> Vec<(Uuid, Uuid)> {
+    let from: BTreeMap<Uuid, Uuid> = engine
         .store()
-        .morphisms_with_arrow_prefix("kn.links_to")
+        .morphisms_with_arrow_prefix("kn.from")
         .unwrap()
         .into_iter()
+        .filter(|e| e.arrow == "kn.from")
         .map(|e| (e.source, e.target))
         .collect();
+    let to: BTreeMap<Uuid, Uuid> = engine
+        .store()
+        .morphisms_with_arrow_prefix("kn.to")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.arrow == "kn.to")
+        .map(|e| (e.source, e.target))
+        .collect();
+    assert_eq!(
+        from.keys().collect::<Vec<_>>(),
+        to.keys().collect::<Vec<_>>(),
+        "every span must carry BOTH projections"
+    );
+    let mut edges: Vec<(Uuid, Uuid)> = from.iter().map(|(span, src)| (*src, to[span])).collect();
     edges.sort();
     edges
 }
@@ -199,9 +217,9 @@ async fn frontmatter_tags_become_concepts_and_survive_diffs() {
 }
 
 #[tokio::test]
-async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
+async fn resolved_links_assert_artifact_link_spans_that_related_traverses() {
     // Graph a -> b -> c, built purely from markdown links: resolution must
-    // assert kn.links_to morphisms between DOCUMENTS, `related` must walk
+    // assert kn.ArtifactLink spans between ARTIFACTS, `related` must walk
     // them to depth 2 with depth-decayed scores, and death (link removed /
     // target deleted) must retract exactly the right edge.
     let dir = tempfile::tempdir().unwrap();
@@ -221,14 +239,14 @@ async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
     let b = engine.store().document_by_path("b.md").unwrap().unwrap();
     let c = engine.store().document_by_path("c.md").unwrap().unwrap();
 
-    // The morphisms run between the kn.Artifact ids (the schema's
-    // `links_to : Artifact → Artifact` arrow), not raw document ids.
+    // The span projections land on kn.Artifact ids (the schema's
+    // `from`/`to : ArtifactLink → Artifact` arrows), not raw document ids.
     let mut expected = vec![
         (artifact_id(a.id), artifact_id(b.id)),
         (artifact_id(b.id), artifact_id(c.id)),
     ];
     expected.sort();
-    assert_eq!(links_to_edges(&engine), expected);
+    assert_eq!(span_edges(&engine), expected);
 
     // Depth-2 relation walk from a: b at one hop (0.5), c at two (0.25).
     let related = engine.related(a.id, 10).await.unwrap();
@@ -246,7 +264,7 @@ async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
         .await
         .unwrap();
     assert_eq!(
-        links_to_edges(&engine),
+        span_edges(&engine),
         vec![(artifact_id(a.id), artifact_id(b.id))]
     );
     let unresolved = engine.store().unresolved_links().unwrap();
@@ -262,7 +280,7 @@ async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
         .import(&root, ImportOptions::default())
         .await
         .unwrap();
-    assert_eq!(links_to_edges(&engine), Vec::<(Uuid, Uuid)>::new());
+    assert_eq!(span_edges(&engine), Vec::<(Uuid, Uuid)>::new());
     assert!(engine.related(a.id, 10).await.unwrap().is_empty());
 
     let check = engine.check_equations().await.unwrap();
@@ -301,4 +319,114 @@ async fn fixture_corpus_concepts_extract_and_equations_hold() {
 
     let check = engine.check_equations().await.unwrap();
     assert_eq!(check.violations, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn artifact_link_spans_are_total_and_faithful_to_fanout() {
+    // The REAL instance-level validity of the span model, on stored data:
+    // load the ingested kn instance and assert (a) totality — every
+    // ArtifactLink carries BOTH projections and both endpoints are stored
+    // artifacts — and (b) fan-out fidelity — artifacts with 0, 1, and 3
+    // outgoing links round-trip as exactly 0/1/3 ArtifactLink rows. Fan-out
+    // is precisely what an `Artifact → Artifact` ARROW could not represent:
+    // an arrow is a function (exactly one target per source; MemInstance's
+    // set_fk overwriting duplicates is faithful to that), while a span
+    // entity carries one row per link.
+    use catdb_core::MemInstance;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    write(&root, "zero.md", "# Zero\n\nNo links at all.\n");
+    write(&root, "one.md", "# One\n\nSee [zero](zero.md).\n");
+    write(
+        &root,
+        "three.md",
+        "# Three\n\n[a](zero.md) then [b](one.md) then [c](four.md).\n",
+    );
+    write(&root, "four.md", "# Four\n\nA target.\n");
+    let db_dir = tempfile::tempdir().unwrap();
+    let engine = open(&db_dir.path().join("catdb.db"));
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.links_resolved, 4);
+
+    // Load the stored kn instance.
+    let artifacts: std::collections::BTreeSet<Uuid> =
+        kn_object_ids(&engine, "kn.Artifact").into_iter().collect();
+    let spans: std::collections::BTreeSet<Uuid> = kn_object_ids(&engine, "kn.ArtifactLink")
+        .into_iter()
+        .collect();
+    let from: BTreeMap<Uuid, Uuid> = engine
+        .store()
+        .morphisms_with_arrow_prefix("kn.from")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.arrow == "kn.from")
+        .map(|e| (e.source, e.target))
+        .collect();
+    let to: BTreeMap<Uuid, Uuid> = engine
+        .store()
+        .morphisms_with_arrow_prefix("kn.to")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.arrow == "kn.to")
+        .map(|e| (e.source, e.target))
+        .collect();
+
+    // (a) Totality of `from`/`to`: defined on every span, endpoints exist.
+    assert_eq!(spans.len(), 4);
+    for span in &spans {
+        let f = from
+            .get(span)
+            .unwrap_or_else(|| panic!("span {span} lacks its `from` projection"));
+        let t = to
+            .get(span)
+            .unwrap_or_else(|| panic!("span {span} lacks its `to` projection"));
+        assert!(
+            artifacts.contains(f),
+            "`from` endpoint must be a stored artifact"
+        );
+        assert!(
+            artifacts.contains(t),
+            "`to` endpoint must be a stored artifact"
+        );
+    }
+    // No dangling projections either (every edge belongs to a span row).
+    assert!(from.keys().all(|s| spans.contains(s)));
+    assert!(to.keys().all(|s| spans.contains(s)));
+
+    // (b) Fan-out fidelity: 0 / 1 / 3 outgoing links round-trip exactly.
+    let outgoing = |path: &str| {
+        let doc = engine.store().document_by_path(path).unwrap().unwrap();
+        let a = artifact_id(doc.id);
+        from.values().filter(|src| **src == a).count()
+    };
+    assert_eq!(outgoing("zero.md"), 0);
+    assert_eq!(outgoing("one.md"), 1);
+    assert_eq!(outgoing("three.md"), 3);
+
+    // (c) The loaded instance satisfies the kn schema's equations. NOTE:
+    // that equation loop is INTENTIONALLY empty — the builtin kn schema
+    // declares no path equations (none are invented just to have some);
+    // totality and fan-out above are the real instance-level obligations,
+    // and F_extract's prover validation lives in catdb-validation's
+    // builtin tests.
+    let kn = mdreader_domain::builtin::kn_schema();
+    assert!(kn.equations.is_empty(), "kn is equation-free by design");
+    let mut instance = MemInstance::new("kn");
+    for (id, entity) in engine.store().objects_with_entity_prefix("kn.").unwrap() {
+        let local = &entity["kn.".len()..];
+        if kn.entities.contains(&local.into()) {
+            instance.add_row(local, id.to_string());
+        }
+    }
+    for edge in engine.store().morphisms_with_arrow_prefix("kn.").unwrap() {
+        let local = &edge.arrow["kn.".len()..];
+        if kn.arrows.contains_key(&local.into()) {
+            instance.set_fk(local, edge.source.to_string(), edge.target.to_string());
+        }
+    }
+    assert_eq!(instance.check_equations(&kn), Vec::new());
 }
