@@ -938,7 +938,7 @@ fn filename_matches(docs: &[DocumentRow], target: &str) -> Vec<usize> {
     for (index, doc) in docs.iter().enumerate() {
         let stem = file_stem(&doc.file_path).to_lowercase();
         let rel = doc.file_path.to_lowercase();
-        if stem == wanted || path_forms.iter().any(|form| *form == rel) {
+        if stem == wanted || path_forms.contains(&rel) {
             out.push(index);
         }
     }
@@ -1280,7 +1280,7 @@ mod tests {
         // (`Arc<dyn Embedder>` is not `Debug`, so match rather than `unwrap_err`.)
         let timed_out = rt.block_on(load_embedder_with_deadline(
             Duration::from_millis(20),
-            || std::future::pending::<Result<Arc<dyn Embedder>, String>>(),
+            std::future::pending::<Result<Arc<dyn Embedder>, String>>,
         ));
         match timed_out {
             Err(err) => assert!(err.contains("timed out"), "got: {err}"),
