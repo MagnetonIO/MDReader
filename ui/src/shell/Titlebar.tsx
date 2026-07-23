@@ -35,7 +35,7 @@ export function Titlebar({
   onShowShortcuts,
 }: TitlebarProps) {
   return (
-    <header className="titlebar" style={isMac ? { paddingLeft: 78 } : undefined}>
+    <header className="titlebar" data-tauri-drag-region style={isMac ? { paddingLeft: 78 } : undefined}>
       <button
         type="button"
         className={`icon-btn${sidebarCollapsed ? '' : ' icon-btn--active'}`}
