@@ -22,7 +22,6 @@ export interface TitlebarProps {
 const THEME_LABEL: Record<Theme, string> = { system: 'System', light: 'Light', dark: 'Dark' };
 
 export function Titlebar({
-  isMac,
   sidebarCollapsed,
   onToggleSidebar,
   theme,
@@ -35,7 +34,7 @@ export function Titlebar({
   onShowShortcuts,
 }: TitlebarProps) {
   return (
-    <header className="titlebar" style={isMac ? { paddingLeft: 78 } : undefined}>
+    <header className="titlebar">
       <button
         type="button"
         className={`icon-btn${sidebarCollapsed ? '' : ' icon-btn--active'}`}
