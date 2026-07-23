@@ -8,23 +8,42 @@ export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
 	/**
+	 *  Grant (or re-grant) `root` as the active workspace, returning its
+	 *  canonicalized absolute path. Called by the frontend when a workspace is
+	 *  restored from a persisted session (the folder picker grants directly). Every
+	 *  subsequent `read_doc`/`list_workspace_files`/`watch_workspace` is confined to
+	 *  this root.
+	 */
+	setWorkspace: (root: string) => typedError<string, string>(__TAURI_INVOKE("set_workspace", { root })),
+	/**
 	 *  Recursively list the `.md`/`.markdown` files under `root` (hidden directories
-	 *  pruned, depth-bounded). Thin: no parsing, no ranking — just the raw tree the
-	 *  sidebar renders.
+	 *  pruned, depth-bounded). `root` must be within the granted workspace. Symlinks
+	 *  are never followed (`follow_links(false)`), so a symlinked subtree cannot
+	 *  leak files from outside the workspace. Thin: no parsing, no ranking — just
+	 *  the raw tree the sidebar renders.
 	 */
 	listWorkspaceFiles: (root: string) => typedError<FileEntry[], string>(__TAURI_INVOKE("list_workspace_files", { root })),
-	/**  Read a single document. Thin: reads the bytes, hashes them, decodes to text. */
+	/**
+	 *  Read a single markdown document from within the granted workspace. Thin:
+	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
+	 *  Rejects paths outside the workspace, non-files, and non-markdown extensions.
+	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
 	/**
 	 *  Open the native folder picker and return the chosen absolute path, or `None`
-	 *  when the user cancels. Async so blocking on the dialog never parks the main
-	 *  thread; the dialog plugin pumps the picker on the event loop.
+	 *  when the user cancels. The chosen folder is granted as the active workspace
+	 *  (canonicalized) so subsequent reads are confined to it. Async so blocking on
+	 *  the dialog never parks the main thread; the dialog plugin pumps the picker on
+	 *  the event loop.
 	 */
-	pickWorkspaceFolder: () => __TAURI_INVOKE<string | null>("pick_workspace_folder"),
+	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
 	/**
 	 *  Begin watching `root` recursively, emitting a debounced
-	 *  `mdreader://fs-changed` for every markdown file that changes. Replaces any
-	 *  previous watch. Thin: it wires notify to the event bus, nothing more.
+	 *  `mdreader://fs-changed` for every markdown file that changes. `root` must be
+	 *  within the granted workspace. The swap is atomic: a fresh debouncer is built
+	 *  and its watch armed *before* the previous one is dropped, so a failed new
+	 *  watch leaves the old workspace watched (consistent state either way).
+	 *  Runtime failures during watching are surfaced via `mdreader://watch-error`.
 	 */
 	watchWorkspace: (root: string) => typedError<null, string>(__TAURI_INVOKE("watch_workspace", { root })),
 };
@@ -32,6 +51,7 @@ export const commands = {
 /** Events */
 export const events = {
 	mdreaderFsChanged: makeEvent<FsChanged>("mdreader://fs-changed"),
+	mdreaderWatchError: makeEvent<WatchError>("mdreader://watch-error"),
 };
 
 /* Types */
@@ -85,6 +105,17 @@ export type PingResponse = {
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
+};
+
+/**
+ *  Payload for the `mdreader://watch-error` event — a *runtime* watcher failure
+ *  (raised from the notify callback, distinct from the command-time errors
+ *  `watch_workspace` returns). The frontend surfaces it as a degraded watcher
+ *  status in the StatusBar.
+ */
+export type WatchError = {
+	/**  Human-readable description of the watcher failure. */
+	message: string,
 };
 
 /* Tauri Specta runtime */

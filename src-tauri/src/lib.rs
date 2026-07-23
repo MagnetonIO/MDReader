@@ -8,7 +8,7 @@
 
 mod commands;
 
-use commands::WatcherState;
+use commands::{WatcherState, WorkspaceState};
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
@@ -16,18 +16,73 @@ use tauri_specta::{collect_commands, collect_events, Builder};
 /// as the working directory, so this resolves to `apps/mdreader/ui/src`.
 const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 
+/// Menu id for the remapped "Close Window" item (macOS). See [`build_app_menu`].
+#[cfg(target_os = "macos")]
+const MENU_CLOSE_WINDOW: &str = "mdreader:close-window";
+
 /// Builds the tauri-specta command + event registry. Single source of truth for
 /// both the runtime `invoke_handler`/`mount_events` and the binding exporter.
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
+            commands::set_workspace,
             commands::list_workspace_files,
             commands::read_doc,
             commands::pick_workspace_folder,
             commands::watch_workspace,
         ])
-        .events(collect_events![commands::FsChanged])
+        .events(collect_events![commands::FsChanged, commands::WatchError])
+}
+
+/// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the
+/// native "Close Window", which would swallow the keystroke before it reaches
+/// the webview — stealing the shell's "close tab" binding. This replacement
+/// keeps the standard App/Edit menus (so copy/paste/select-all keep working) and
+/// remaps window-close to ⌘⇧W, leaving ⌘W free to reach the webview.
+#[cfg(target_os = "macos")]
+fn build_app_menu(
+    handle: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let app_menu = SubmenuBuilder::new(handle, "MDReader")
+        .about(Some(AboutMetadata::default()))
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(handle, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    // Custom "Close Window" remapped to ⌘⇧W so plain ⌘W is NOT claimed by any
+    // menu item and therefore reaches the webview (the shell's tab-close chord).
+    let close_window = MenuItemBuilder::new("Close Window")
+        .id(MENU_CLOSE_WINDOW)
+        .accelerator("CmdOrCtrl+Shift+W")
+        .build(handle)?;
+
+    let window_menu = SubmenuBuilder::new(handle, "Window")
+        .minimize()
+        .item(&close_window)
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    MenuBuilder::new(handle)
+        .items(&[&app_menu, &edit_menu, &window_menu])
+        .build()
 }
 
 /// Desktop (and, later, mobile) entry point.
@@ -41,15 +96,35 @@ pub fn run() {
     #[cfg(debug_assertions)]
     export_bindings(&builder).expect("failed to export typescript bindings");
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut tauri_builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .manage(WorkspaceState::default())
         .manage(WatcherState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
             Ok(())
-        })
+        });
+
+    // Only macOS needs the custom menu: it is the platform whose default menu
+    // binds ⌘W to Close Window. Other platforms keep their (harmless) defaults.
+    #[cfg(target_os = "macos")]
+    {
+        tauri_builder = tauri_builder
+            .menu(build_app_menu)
+            .on_menu_event(|app, event| {
+                use tauri::Manager;
+                if event.id().0.as_str() == MENU_CLOSE_WINDOW {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.close();
+                    }
+                }
+            });
+    }
+
+    tauri_builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
