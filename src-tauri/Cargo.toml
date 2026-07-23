@@ -1,0 +1,29 @@
+[package]
+name = "mdreader-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDReader desktop shell (Tauri 2)"
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary so the two
+# don't collide on Windows (see rust-lang/cargo#8519). The binary is the thin
+# `main.rs` shim; all real logic lives in the library so mobile targets (P6)
+# can reuse it via `run()`.
+name = "mdreader_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["specta"] }
+serde = { workspace = true }
+specta = "=2.0.0-rc.25"
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
