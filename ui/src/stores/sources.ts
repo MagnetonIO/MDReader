@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 
-import type { WorkspaceFile } from '../platform/fs.js';
+import type { ImportState, WorkspaceFile } from '../platform/fs.js';
 import type { DocRef, RecentDoc } from './types.js';
 
 export type WatcherStatus = 'idle' | 'watching' | 'error';
@@ -21,6 +21,10 @@ export interface SourcesState {
   recent: RecentDoc[];
   watcher: WatcherStatus;
   loading: boolean;
+  /** Live index-build progress for the active workspace, or `null` when idle. */
+  importState: ImportState | null;
+  /** Whether `files` came from the engine index (vs the fs fallback). */
+  fromIndex: boolean;
 
   setRoot: (root: string | null) => void;
   setFiles: (files: WorkspaceFile[]) => void;
@@ -28,6 +32,8 @@ export interface SourcesState {
   /** Record `docRef` as most-recent under workspace `root` (deduped by path). */
   addRecent: (docRef: DocRef, root: string | null) => void;
   setWatcher: (watcher: WatcherStatus) => void;
+  setImport: (importState: ImportState | null) => void;
+  setFromIndex: (fromIndex: boolean) => void;
   hydrate: (partial: { root?: string | null; recent?: RecentDoc[] }) => void;
   reset: () => void;
 }
@@ -38,6 +44,8 @@ const initialState = {
   recent: [] as RecentDoc[],
   watcher: 'idle' as WatcherStatus,
   loading: false,
+  importState: null as ImportState | null,
+  fromIndex: false,
 };
 
 export const useSourcesStore = create<SourcesState>((set) => ({
@@ -46,6 +54,8 @@ export const useSourcesStore = create<SourcesState>((set) => ({
   setRoot: (root) => set({ root }),
   setFiles: (files) => set({ files }),
   setLoading: (loading) => set({ loading }),
+  setImport: (importState) => set({ importState }),
+  setFromIndex: (fromIndex) => set({ fromIndex }),
   addRecent: (docRef, root) =>
     set((state) => {
       const entry = { path: docRef.path, name: docRef.name, root };

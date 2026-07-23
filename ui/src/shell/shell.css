@@ -511,6 +511,31 @@ body {
   background: var(--color-danger);
 }
 
+/* A small spinner shown while the engine index is building. */
+.statusbar__spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  display: inline-block;
+  margin-right: var(--space-1);
+  vertical-align: -1px;
+  animation: statusbar-spin 0.7s linear infinite;
+}
+
+@keyframes statusbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar__spinner {
+    animation: none;
+  }
+}
+
 /* --- empty / welcome -------------------------------------------------- */
 
 .reader-empty {
