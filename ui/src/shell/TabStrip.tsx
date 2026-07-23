@@ -27,9 +27,16 @@ import { useTabsStore } from '../stores/tabs.js';
 import { useEditorStore } from '../stores/editor.js';
 import type { TabState } from '../stores/types.js';
 
-function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
+function SortableTab({
+  tab,
+  active,
+  onRequestClose,
+}: {
+  tab: TabState;
+  active: boolean;
+  onRequestClose: (tabId: string) => void;
+}) {
   const setActiveTab = useTabsStore((state) => state.setActiveTab);
-  const closeTab = useTabsStore((state) => state.closeTab);
   const togglePin = useTabsStore((state) => state.togglePin);
   // Unsaved-edit marker: a dot on the tab while its editor buffer diverges from
   // disk. Sourced from the editor store (the single source of truth for dirty).
@@ -61,7 +68,7 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
       onAuxClick={(event) => {
         if (event.button === 1) {
           event.preventDefault();
-          closeTab(tab.id);
+          onRequestClose(tab.id);
         }
       }}
     >
@@ -77,7 +84,7 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
-          closeTab(tab.id);
+          onRequestClose(tab.id);
         }}
       >
         <CloseIcon width="12" height="12" />
@@ -86,7 +93,13 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
   );
 }
 
-export function TabStrip() {
+export interface TabStripProps {
+  /** Request to close a tab — routed through the shell so a dirty tab prompts the
+   *  unsaved-changes guard before it is torn down. */
+  onRequestClose: (tabId: string) => void;
+}
+
+export function TabStrip({ onRequestClose }: TabStripProps) {
   const tabs = useTabsStore((state) => state.tabs);
   const activeTabId = useTabsStore((state) => state.activeTabId);
   const reorderTabs = useTabsStore((state) => state.reorderTabs);
@@ -120,7 +133,12 @@ export function TabStrip() {
           strategy={horizontalListSortingStrategy}
         >
           {tabs.map((tab) => (
-            <SortableTab key={tab.id} tab={tab} active={tab.id === activeTabId} />
+            <SortableTab
+              key={tab.id}
+              tab={tab}
+              active={tab.id === activeTabId}
+              onRequestClose={onRequestClose}
+            />
           ))}
         </SortableContext>
       </DndContext>

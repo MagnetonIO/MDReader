@@ -76,6 +76,8 @@ export interface EditorStore {
   mode: (tabId: string) => EditorMode;
   /** Whether the tab has unsaved edits. */
   isDirty: (tabId: string) => boolean;
+  /** Ids of every tab that currently has unsaved edits (for the close/quit guard). */
+  dirtyTabIds: () => string[];
 
   /**
    * Seed an entry for document `path` from a fresh disk read (content + its
@@ -125,6 +127,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   entry: (tabId) => get().entries[tabId],
   mode: (tabId) => get().entries[tabId]?.mode ?? 'read',
   isDirty: (tabId) => get().entries[tabId]?.dirty ?? false,
+  dirtyTabIds: () =>
+    Object.entries(get().entries)
+      .filter(([, entry]) => entry.dirty)
+      .map(([id]) => id),
 
   seed: (tabId, path, content, hash, mode) =>
     set((state) => ({

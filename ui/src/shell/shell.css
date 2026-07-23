@@ -1067,3 +1067,68 @@ body {
   border-color: var(--color-danger);
   color: var(--color-danger);
 }
+
+/* --- unsaved-changes guard (close/quit) ------------------------------- */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-fg) 22%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.unsaved-guard {
+  width: min(420px, 92vw);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.45);
+  padding: var(--space-5);
+}
+
+.unsaved-guard__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-1);
+  color: var(--color-fg);
+}
+
+.unsaved-guard__msg {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-0);
+  color: var(--color-muted);
+}
+
+.unsaved-guard__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.unsaved-guard__btn {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: var(--text--1);
+  cursor: default;
+}
+
+.unsaved-guard__btn:hover {
+  border-color: var(--color-accent);
+}
+
+.unsaved-guard__btn--primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.unsaved-guard__btn--danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}

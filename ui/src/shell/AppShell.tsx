@@ -41,7 +41,7 @@ import type { DocRef, ScrollPos } from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
-import { reindexOnChange } from './reindex.js';
+import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
 import { performSwitch } from './switch-workspace.js';
@@ -53,6 +53,7 @@ import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
+import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
 import './shell.css';
 
@@ -100,6 +101,11 @@ export function AppShell() {
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [relatedOpen, setRelatedOpen] = useState(false);
+  // The unsaved-changes guard: closing a dirty tab, or quitting with dirty tabs,
+  // routes through this prompt before anything is discarded.
+  const [closeGuard, setCloseGuard] = useState<
+    { kind: 'tab'; tabId: string } | { kind: 'quit' } | null
+  >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
   const [jump, setJump] = useState<{ path: string; line: number; nonce: number } | null>(null);
   const jumpSeq = useRef(0);
@@ -108,6 +114,9 @@ export function AppShell() {
   activePathRef.current = activeTab?.docRef.path ?? null;
   const activeTabIdRef = useRef<string | null>(null);
   activeTabIdRef.current = activeTabId;
+  // Late-bound so the close-guard's `performQuit` (declared before `flushSession`)
+  // can reach the latest flusher without a declaration-order dependency.
+  const flushSessionRef = useRef<() => void>(() => {});
 
   // --- workspace loading ------------------------------------------------
   // Frontend request generation, the UI-side mirror of the backend epoch: every
@@ -193,22 +202,30 @@ export function AppShell() {
     }
   }, []);
 
-  // Bring the index in step with disk, then re-list. A fresh open or a settled
-  // fs change runs an incremental import THEN refreshes the listing; while an
-  // import is already in flight (backend-coalesced) it refreshes alone. `epoch`
-  // scopes the continuations so a switch mid-flight discards them.
-  const triggerReindex = useCallback(
-    (folder: string, epoch: number) => {
-      if (!isTauri()) return Promise.resolve('refreshed' as const);
-      const phase = useSourcesStore.getState().importState?.phase;
-      return reindexOnChange({
-        importing: phase === 'importing' || phase === 'loading',
-        startImport: () => runImport(folder, epoch),
-        refreshFiles: () => refreshFiles(folder, epoch),
-      });
-    },
+  // The single reindex coordinator: a fresh open, a settled fs change, or a save
+  // runs an incremental import THEN refreshes the listing; a change that lands
+  // while an import is already in flight queues exactly one follow-up reindex so
+  // it is never dropped from the index (see reindex.ts). Reads the CURRENT root +
+  // request generation at each step (`runImport`/`refreshFiles` self-guard on the
+  // epoch), so a switch mid-flight is handled by those guards.
+  const reindexer = useMemo(
+    () =>
+      createReindexer({
+        startImport: async () => {
+          const folder = useSourcesStore.getState().root;
+          if (folder) await runImport(folder, openEpochRef.current);
+        },
+        refreshFiles: async () => {
+          const folder = useSourcesStore.getState().root;
+          if (folder) await refreshFiles(folder, openEpochRef.current);
+        },
+      }),
     [runImport, refreshFiles],
   );
+  const triggerReindex = useCallback(() => {
+    if (!isTauri()) return Promise.resolve('queued' as const);
+    return reindexer.onChange();
+  }, [reindexer]);
 
   // Open `folder` as the active workspace; resolves to `true` once the store
   // reflects it as the active root. In a Tauri shell the watcher is armed FIRST:
@@ -287,7 +304,7 @@ export function AppShell() {
         // A newer open superseded this one during listInto → report NOT-current
         // so the caller does not retire the newer workspace's tabs.
         if (openEpochRef.current !== epoch) return false;
-        void triggerReindex(g, epoch);
+        void triggerReindex();
         return true;
       }
 
@@ -303,7 +320,7 @@ export function AppShell() {
       // A newer open superseded this one during listInto → report NOT-current so
       // its (stale) success cannot authorize closeAll on the newer workspace.
       if (openEpochRef.current !== epoch) return false;
-      void triggerReindex(grant.root, epoch);
+      void triggerReindex();
       return true;
     },
     [listInto, triggerReindex, loadingSink],
@@ -347,8 +364,7 @@ export function AppShell() {
   // timeout) — the backend re-enters the loading phase since no engine was
   // installed. Rides the current open generation.
   const retryIndex = useCallback(() => {
-    const folder = useSourcesStore.getState().root;
-    if (folder) void triggerReindex(folder, openEpochRef.current);
+    void triggerReindex();
   }, [triggerReindex]);
 
   // --- open / navigate helpers -----------------------------------------
@@ -469,23 +485,23 @@ export function AppShell() {
     void setEditorMode(current === 'read' ? 'source' : 'read');
   }, [setEditorMode]);
 
-  // Save the active document under the hash guard (or forced, from the conflict
-  // banner's explicit overwrite). A `saved` outcome re-anchors the buffer to the
-  // fresh hash — which the watcher then recognises as our own write — and drives
-  // an incremental reindex so search stays fresh. A `conflict` raises the banner
-  // rather than clobbering the on-disk change.
-  const saveActiveDoc = useCallback(
-    async (force: boolean) => {
-      const tabsState = useTabsStore.getState();
-      const tabId = tabsState.activeTabId;
-      const tab = selectActiveTab(tabsState);
-      if (!tabId || !tab) return;
+  // Save tab `tabId` under the hash guard (or forced, from the conflict banner's
+  // explicit overwrite). A `saved` outcome re-anchors the buffer to the fresh hash
+  // — which the watcher then recognises as our own write — and queues a reindex; a
+  // `conflict` raises the banner rather than clobbering the on-disk change.
+  // Resolves to what happened so the close/quit guard can decide whether to
+  // proceed. Works on ANY tab (not just the active one) for save-all-on-quit.
+  const saveTab = useCallback(
+    async (tabId: string | null, force: boolean): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
+      if (!tabId) return 'noop';
+      const tab = useTabsStore.getState().tabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return 'noop';
       const entry = useEditorStore.getState().entry(tabId);
-      if (!entry) return;
+      if (!entry) return 'noop';
       // The buffer belongs to the document it was seeded for; if the tab has since
       // navigated elsewhere, refuse — never write this buffer to another file.
-      if (entry.path !== tab.docRef.path) return;
-      if (!force && !entry.dirty) return; // a clean guarded save is a no-op
+      if (entry.path !== tab.docRef.path) return 'noop';
+      if (!force && !entry.dirty) return 'noop'; // a clean guarded save is a no-op
       // Snapshot exactly what we send, so completion can mark THIS content saved
       // (not a newer buffer produced by typing during the in-flight save).
       const snapshot = entry.buffer;
@@ -501,15 +517,22 @@ export function AppShell() {
       // active tab changed during the await.
       if (result.kind === 'saved') {
         editor.markSaved(tabId, snapshot, result.newHash);
-        const folder = useSourcesStore.getState().root;
-        if (folder) void triggerReindex(folder, openEpochRef.current);
-      } else if (result.kind === 'conflict') {
-        editor.raiseConflict(tabId, result.currentHash, 'save');
-      } else {
-        toast(`Could not save — ${result.message}`);
+        void triggerReindex();
+        return 'saved';
       }
+      if (result.kind === 'conflict') {
+        editor.raiseConflict(tabId, result.currentHash, 'save');
+        return 'conflict';
+      }
+      toast(`Could not save — ${result.message}`);
+      return 'error';
     },
     [triggerReindex],
+  );
+
+  const saveActiveDoc = useCallback(
+    (force: boolean) => saveTab(useTabsStore.getState().activeTabId, force),
+    [saveTab],
   );
 
   // Conflict banner "Reload": discard the local buffer and adopt the on-disk
@@ -530,6 +553,74 @@ export function AppShell() {
       toast(`Could not reload — ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   }, []);
+
+  // Close a tab, dropping its editor buffer. The single place a tab is torn down.
+  const closeTabAndBuffer = useCallback((tabId: string) => {
+    useEditorStore.getState().remove(tabId);
+    useTabsStore.getState().closeTab(tabId);
+  }, []);
+
+  // Request a tab close: a dirty tab prompts the unsaved-changes guard first; a
+  // clean one closes immediately. Every close path (⌘W, the tab's × , middle
+  // click) routes through here, so a dirty buffer is never silently discarded.
+  const requestCloseTab = useCallback(
+    (tabId: string) => {
+      if (useEditorStore.getState().isDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
+      else closeTabAndBuffer(tabId);
+    },
+    [closeTabAndBuffer],
+  );
+
+  // Save every dirty tab (for "Save" on the quit guard). Resolves to whether they
+  // ALL landed cleanly — a conflict leaves that tab open with its banner, so the
+  // quit is aborted rather than losing the buffer.
+  const saveAllDirty = useCallback(async (): Promise<boolean> => {
+    let allClean = true;
+    for (const id of useEditorStore.getState().dirtyTabIds()) {
+      const kind = await saveTab(id, false);
+      if (kind !== 'saved' && kind !== 'noop') allClean = false;
+    }
+    return allClean;
+  }, [saveTab]);
+
+  // Persist the latest session and destroy the window for real (the actual quit).
+  const performQuit = useCallback(async () => {
+    try {
+      flushSessionRef.current();
+      await sessionWriter.drain();
+    } finally {
+      try {
+        await getCurrentWindow().destroy();
+      } catch {
+        /* not a real Tauri window (mocked IPC) — nothing to destroy */
+      }
+    }
+  }, []);
+
+  // Guard "Save": save then proceed (close the tab / quit) — unless a conflict
+  // intervened, in which case stay so the banner can be resolved.
+  const onGuardSave = useCallback(async () => {
+    const guard = closeGuard;
+    if (!guard) return;
+    if (guard.kind === 'tab') {
+      const kind = await saveTab(guard.tabId, false);
+      setCloseGuard(null);
+      if (kind === 'saved' || kind === 'noop') closeTabAndBuffer(guard.tabId);
+    } else {
+      const allClean = await saveAllDirty();
+      setCloseGuard(null);
+      if (allClean) void performQuit();
+    }
+  }, [closeGuard, saveTab, saveAllDirty, performQuit, closeTabAndBuffer]);
+
+  // Guard "Discard": proceed, losing the unsaved edits.
+  const onGuardDiscard = useCallback(() => {
+    const guard = closeGuard;
+    if (!guard) return;
+    setCloseGuard(null);
+    if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
+    else void performQuit();
+  }, [closeGuard, performQuit, closeTabAndBuffer]);
 
   // Prune editor entries that no longer belong: tabs that have closed, and tabs
   // that have NAVIGATED to a different document (the buffer was seeded for the old
@@ -592,7 +683,7 @@ export function AppShell() {
         group: 'Tabs',
         run: () => {
           const id = tabsApi().activeTabId;
-          if (id) tabsApi().closeTab(id);
+          if (id) requestCloseTab(id); // dirty → unsaved-changes guard
         },
       },
       {
@@ -681,7 +772,7 @@ export function AppShell() {
     ];
     map.registerAll(bindings);
     return map;
-  }, [isMac, focusOutline, toggleSourceMode, saveActiveDoc]);
+  }, [isMac, focusOutline, toggleSourceMode, saveActiveDoc, requestCloseTab]);
 
   const shortcutGroups = useMemo<ShortcutGroup[]>(
     () =>
@@ -771,6 +862,7 @@ export function AppShell() {
       }),
     );
   }, []);
+  flushSessionRef.current = flushSession;
 
   // Debounced 1s on every session-shaping change.
   useEffect(() => {
@@ -811,6 +903,12 @@ export function AppShell() {
         const appWindow = getCurrentWindow();
         const off = await appWindow.onCloseRequested(async (event) => {
           event.preventDefault();
+          // Unsaved edits? Prompt (Save / Discard / Cancel) instead of quitting —
+          // the guard's action performs the actual quit. Otherwise quit now.
+          if (useEditorStore.getState().dirtyTabIds().length > 0) {
+            setCloseGuard({ kind: 'quit' });
+            return;
+          }
           try {
             flushSession();
             await sessionWriter.drain();
@@ -937,11 +1035,10 @@ export function AppShell() {
         // Re-validate BOTH generations at fire: a switch during the debounce
         // window means this event belongs to a workspace we have left → discard.
         if (!watcherStampCurrent(stamp, nowStamp())) return;
-        const folder = useSourcesStore.getState().root;
-        // A settled change drives an incremental import THEN a re-list (or just a
-        // re-list when an import is already running) so the index — and thus
+        // A settled change drives an incremental import THEN a re-list (queued as
+        // a follow-up when an import is already running) so the index — and thus
         // wikilink/title resolution — stays in step with disk.
-        if (folder) void triggerReindex(folder, stamp.openGen);
+        void triggerReindex();
       }, 400);
     })
       .then((fn) => {
@@ -1048,7 +1145,7 @@ export function AppShell() {
         />
 
         <main className="shell__main">
-          <TabStrip />
+          <TabStrip onRequestClose={requestCloseTab} />
           <div className="shell__reader-row">
             <ReaderPane
               tab={activeTab ?? null}
@@ -1110,6 +1207,21 @@ export function AppShell() {
       ) : null}
       {sheetOpen ? (
         <ShortcutSheet groups={shortcutGroups} onClose={() => setSheetOpen(false)} />
+      ) : null}
+      {closeGuard ? (
+        <UnsavedGuard
+          count={
+            closeGuard.kind === 'quit' ? useEditorStore.getState().dirtyTabIds().length : 1
+          }
+          name={
+            closeGuard.kind === 'tab'
+              ? tabs.find((tab) => tab.id === closeGuard.tabId)?.docRef.name
+              : undefined
+          }
+          onSave={() => void onGuardSave()}
+          onDiscard={onGuardDiscard}
+          onCancel={() => setCloseGuard(null)}
+        />
       ) : null}
       <Toasts />
     </div>
