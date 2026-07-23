@@ -389,7 +389,15 @@ async fn chunker_version_bump_reprocesses_unchanged_files() {
     // bumped chunker version and serves search.
     let versions = engine.store().list_index_versions().await.unwrap();
     assert_eq!(versions.len(), 2);
-    assert_eq!(versions.iter().filter(|v| v.active).count(), 1);
+    assert_eq!(versions.iter().filter(|v| v.is_active()).count(), 1);
+    assert_eq!(
+        versions
+            .iter()
+            .filter(|v| v.state == catdb_catalog::IndexState::Retired)
+            .count(),
+        1,
+        "the displaced version is retired (terminal), not merely inactive"
+    );
     let status = engine.status().await.unwrap();
     assert_eq!(status.active_index.unwrap().chunker_version, bumped);
     assert_eq!(status.chunks, 6, "no duplicate chunks from the rebuild");
@@ -569,12 +577,14 @@ async fn force_rechunk_with_new_boundaries_sweeps_stale_chunk_rows() {
             hit.id
         );
     }
+    // The old version is retired by the rotation: the state machine makes
+    // its vectors — stale boundaries included — categorically unreachable.
     let query_vec = HashEmbedder::new()
         .embed(&[new_chunks[0].embedding_text.clone()])
         .await
         .unwrap()
         .remove(0);
-    let near = engine
+    let err = engine
         .store()
         .vector_search(VectorQuery {
             index_version: old_version_id,
@@ -583,13 +593,11 @@ async fn force_rechunk_with_new_boundaries_sweeps_stale_chunk_rows() {
             filters: QueryFilters::default(),
         })
         .await
-        .unwrap();
-    for cand in &near {
-        assert!(
-            !old_chunk_ids.contains(&cand.id),
-            "stale vectors must be purged from the retired version's table too"
-        );
-    }
+        .expect_err("a retired version must not be servable");
+    assert!(
+        err.to_string().contains("not servable"),
+        "unexpected error: {err}"
+    );
 
     // End-to-end search serves only new-boundary chunks, and the op log
     // agrees with the rows.
