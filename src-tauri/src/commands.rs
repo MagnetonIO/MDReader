@@ -434,23 +434,46 @@ fn hash_on_disk(path: &Path) -> Result<String, String> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-/// Holds the exclusive advisory `flock` on a save target for the whole
-/// check→write→swap window, releasing it on drop (mirrors the engine's import
-/// lease). Opening a fresh handle and dropping it closes the fd, which alone
-/// releases the lock; the explicit `unlock` matches the engine and is belt-and-
-/// suspenders.
+/// The path of the stable per-document save-lock sidecar: `.<name>.savelock`
+/// beside the target. A hidden dotfile (never surfaced — the listing/watcher
+/// filter to `.md`/`.markdown`), created on demand and never removed, so its
+/// inode is STABLE across the atomic rename that swaps the target's inode.
+fn savelock_path(target: &Path) -> Option<PathBuf> {
+    let name = target.file_name()?.to_string_lossy();
+    Some(target.with_file_name(format!(".{name}.savelock")))
+}
+
+/// Holds an exclusive advisory `flock` on a document's STABLE sidecar lock for the
+/// whole check→write→rename window, releasing it on drop (the engine's import-
+/// lease pattern). The lock lives on the sidecar — NOT the target — because the
+/// target's inode is replaced by the atomic rename, so a lock held on it could not
+/// span the swap; the sidecar's inode never changes, so cooperating app saves (a
+/// second `save_doc`) serialize correctly on it.
+///
+/// ## Residual (documented local-single-user limitation)
+/// An advisory lock only serializes writers that COOPERATE by taking it. A foreign
+/// editor that writes the target directly, in the same instant, is not excluded —
+/// so `save_doc` additionally re-hashes the target under the lock immediately
+/// before the rename (catching such a write → [`SaveOutcome`] conflict rather than
+/// a clobber). The vanishingly small remaining window (a foreign write landing
+/// between that final re-hash and the rename) is accepted for a local, single-user
+/// reader; there is no other tenant to lose the race to.
 struct SaveLock(std::fs::File);
 
 impl SaveLock {
-    /// Open `target` and block until its exclusive advisory lock is held.
+    /// Open (creating if needed) the target's sidecar lock and block until its
+    /// exclusive advisory lock is held.
     fn acquire(target: &Path) -> Result<Self, String> {
+        let sidecar = savelock_path(target)
+            .ok_or_else(|| format!("no lock path for {}", target.display()))?;
         let file = std::fs::OpenOptions::new()
-            .read(true)
+            .create(true)
             .write(true)
-            .open(target)
-            .map_err(|err| format!("open {} for save: {err}", target.display()))?;
+            .truncate(false)
+            .open(&sidecar)
+            .map_err(|err| format!("open save lock {}: {err}", sidecar.display()))?;
         fs2::FileExt::lock_exclusive(&file)
-            .map_err(|err| format!("lock {} for save: {err}", target.display()))?;
+            .map_err(|err| format!("lock save for {}: {err}", target.display()))?;
         Ok(Self(file))
     }
 }
@@ -1241,8 +1264,22 @@ mod tests {
             "the injected crash unwound out of the save"
         );
 
-        // The destination is byte-for-byte the ORIGINAL — the rename never ran.
-        assert_eq!(fs::read(&note).unwrap(), b"# Original\n");
+        // The PUBLISHED file is one of the two WHOLE versions — never a truncated /
+        // partial one. Because temp+rename leaves the destination untouched until
+        // the (never-reached) atomic swap, that whole version is the original. A
+        // truncating in-place copy would have left an empty/partial file here, so
+        // this assertion goes red on that revert.
+        let published = fs::read(&note).unwrap();
+        let old = b"# Original\n".to_vec();
+        let new = b"# New bytes that must never replace the original\n".to_vec();
+        assert!(
+            published == old || published == new,
+            "published file must be fully-old or fully-new, never truncated: {published:?}"
+        );
+        assert_eq!(
+            published, old,
+            "crash before the rename ⇒ the fully-old version"
+        );
 
         // Exactly one staged temp is orphaned beside it — proof the write went to a
         // SIBLING (temp + rename), not in-place.
@@ -1389,39 +1426,55 @@ mod tests {
     }
 
     /// Tighter than the choke-point scan above (which is satisfied merely by the
-    /// guarded core sitting in the same block): the PUBLIC `save_doc` command must
-    /// do none of the guard/write itself — it may only delegate to
-    /// `save_doc_guarded`, where the flock, the hash guard, and the atomic write
-    /// live. This closes the "add a bypass path to the thin wrapper" hole: inlining
-    /// any of the destructive work into the command trips this test.
+    /// guarded core sitting in the same block): the PUBLIC `save_doc` command body
+    /// must be EXACTLY ONE statement — the delegation to `save_doc_guarded`. Parsed
+    /// by brace-matching the fn body, so an extra (unguarded) helper call, or any
+    /// inlined work, adds a `;` (a second statement) and trips this — closing the
+    /// "add a bypass path to the thin wrapper" hole by construction.
     #[test]
-    fn save_doc_command_only_delegates_to_its_guarded_core() {
+    fn save_doc_command_body_is_only_the_delegation() {
         let src = include_str!("commands.rs");
         let start = src
             .find("pub fn save_doc(")
             .expect("the save_doc command exists");
         let rest = &src[start..];
-        // The wrapper body is everything up to the first `\n}` that closes it (its
-        // one-line delegation has only balanced inline `|| {}` braces before that).
-        let end = rest.find("\n}\n").map(|i| i + 2).expect("wrapper closes");
-        let wrapper = &rest[..end];
+        // Find the `{` that opens the fn body (right after the return type).
+        let marker = ") -> Result<SaveOutcome, String> {";
+        let open = rest.find(marker).expect("save_doc signature") + marker.len() - 1;
+
+        // Brace-match from `open` to the fn's closing `}` (inline `|| {}` closures
+        // are balanced, so depth tracking finds the true end).
+        let bytes = rest.as_bytes();
+        let mut depth = 0i32;
+        let mut close = open;
+        for (offset, &byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(close > open, "save_doc body did not close");
+        let body = rest[open + 1..close].trim();
 
         assert!(
-            wrapper.contains("save_doc_guarded("),
-            "save_doc must route through save_doc_guarded"
+            body.starts_with("save_doc_guarded("),
+            "save_doc's body must be a single delegation to save_doc_guarded, was:\n{body}"
         );
-        for forbidden in [
-            "SaveLock",
-            "stage_temp",
-            "commit_rename",
-            "std::fs::",
-            "blake3::hash",
-        ] {
-            assert!(
-                !wrapper.contains(forbidden),
-                "the save_doc command must not perform `{forbidden}` itself — the flock + \
-                 guard + write belong ONLY in save_doc_guarded"
-            );
-        }
+        assert!(
+            body.ends_with(')'),
+            "save_doc's body must be exactly the delegation call, was:\n{body}"
+        );
+        assert!(
+            !body.contains(';'),
+            "save_doc's body must be ONE statement (no `;`) — any extra statement is an \
+             ungoverned bypass; route it through save_doc_guarded. Body was:\n{body}"
+        );
     }
 }
