@@ -24,7 +24,12 @@ fn render(doc: &ParsedDocument) -> String {
     if !doc.frontmatter.is_empty() {
         out.push_str("frontmatter:\n");
         for (k, v) in &doc.frontmatter {
-            out.push_str(&format!("  {k}: {v}\n"));
+            // An empty value renders as `key:` (no trailing whitespace).
+            if v.is_empty() {
+                out.push_str(&format!("  {k}:\n"));
+            } else {
+                out.push_str(&format!("  {k}: {v}\n"));
+            }
         }
     }
     for (i, s) in doc.sections.iter().enumerate() {
