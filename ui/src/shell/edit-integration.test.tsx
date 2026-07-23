@@ -39,7 +39,10 @@ const h = vi.hoisted(() => ({
     if (event.preventDefault.mock.calls.length === 0) h.closed = true;
   }),
   closed: false,
-  drain: vi.fn(async () => {}),
+  // When `drainGate` is set, drain() returns ITS (caller-controlled) promise so a
+  // test can hold the drain pending / never-resolving; otherwise it resolves now.
+  drainGate: null as null | { promise: Promise<void> },
+  drain: vi.fn((): Promise<void> => (h.drainGate ? h.drainGate.promise : Promise.resolve())),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
   seq: 0,
@@ -157,6 +160,7 @@ beforeEach(() => {
   h.onClose = null;
   h.gate = null;
   h.closed = false;
+  h.drainGate = null;
   h.seq = 0;
   vi.clearAllMocks();
 });
@@ -402,5 +406,60 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       await h.onClose!({ preventDefault: vi.fn() });
     });
     await waitFor(() => expect(h.closed).toBe(true));
+  });
+
+  it('the native close AWAITS the drain — it does not close while the drain is pending', async () => {
+    render(<App />);
+    await act(async () => {});
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+
+    // A drain that stays pending until we resolve it.
+    let resolveDrain!: () => void;
+    h.drainGate = { promise: new Promise<void>((resolve) => (resolveDrain = resolve)) };
+
+    let handled: Promise<unknown> | undefined;
+    await act(async () => {
+      handled = Promise.resolve(h.onClose!({ preventDefault: vi.fn() }));
+      await Promise.resolve();
+    });
+    // The drain is in flight → the native close has NOT been reached. (A
+    // fire-and-forget drain would have closed by now → this assertion goes RED.)
+    expect(h.drain).toHaveBeenCalled();
+    expect(h.closed).toBe(false);
+
+    // Resolve the drain → the close now proceeds.
+    await act(async () => {
+      resolveDrain();
+      await handled;
+    });
+    expect(h.closed).toBe(true);
+  });
+
+  it('the 2000ms timeout RELEASES the close even if the drain never resolves', async () => {
+    render(<App />);
+    await act(async () => {});
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+
+    // A drain that never resolves — only the bounded-timeout branch can release it.
+    h.drainGate = { promise: new Promise<void>(() => {}) };
+
+    vi.useFakeTimers();
+    try {
+      let handled: Promise<unknown> | undefined;
+      await act(async () => {
+        handled = Promise.resolve(h.onClose!({ preventDefault: vi.fn() }));
+      });
+      // Before the cap fires, the close is still held on the (never-resolving) drain.
+      expect(h.closed).toBe(false);
+
+      // Advance past the 2s cap → the Promise.race timeout fires and releases it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2100);
+        await handled;
+      });
+      expect(h.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
