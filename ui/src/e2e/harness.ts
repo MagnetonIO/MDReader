@@ -16,7 +16,7 @@ import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 
 const CORPUS: Record<string, string> = {
   '/mock/ws/index.md':
-    '# Welcome\n\nA calm place to read.\n\nSee the [[Guide]] and a [[Nonexistent]] note.\n\n## Getting started\n\nOpen a file from the tree, or press Cmd+P.\n',
+    '# Welcome\n\nA calm place to read.\n\nSee the [[Guide]], a deep link to [[Guide#Section B]], and a [[Nonexistent]] note.\n\n## Getting started\n\nOpen a file from the tree, or press Cmd+P.\n',
   '/mock/ws/docs/guide.md':
     '# Guide\n\nAn introduction.\n\n## Section A\n\nAlpha content.\n\n## Section B\n\nBeta content.\n',
   '/mock/ws/docs/reference.md': '# Reference\n\n## API\n\nReference material.\n',
@@ -39,12 +39,13 @@ function fileEntries() {
 /** The engine's wikilink resolution, mocked from a fixed link table. */
 function resolveWikilink(target: string, heading: string | null) {
   if (/^guide$/i.test(target.trim())) {
+    // `## Section B` sits on line 9 of guide.md; `## Section A` on line 5.
+    const line = heading ? (/section\s*b/i.test(heading) ? 9 : 5) : null;
     return {
       status: 'resolved',
       path: '/mock/ws/docs/guide.md',
       name: 'guide.md',
-      // `## Section B` sits on line 7 of guide.md.
-      line: heading ? 7 : null,
+      line,
       candidates: [],
     };
   }
@@ -64,14 +65,22 @@ export function installTauriMocks(): void {
         // in for both, flagged as index-backed so the tree renders identically.
         return { entries: fileEntries(), from_index: true };
       case 'start_import':
-        // The index "finished" instantly: three files, some chunks embedded.
-        return {
-          phase: 'done',
-          files_done: 3,
-          files_total: 3,
-          chunks_embedded: 6,
-          error: null,
-        };
+        // Resolve after a beat so the StatusBar's optimistic "Indexing…" (busy)
+        // phase is observable before this final "done" lands — a busy→done
+        // transition without the shell needing the (best-effort) channel feed.
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                phase: 'done',
+                files_done: 3,
+                files_total: 3,
+                chunks_embedded: 6,
+                error: null,
+              }),
+            400,
+          ),
+        );
       case 'import_status':
         return { phase: 'idle', files_done: 0, files_total: 0, chunks_embedded: 0, error: null };
       case 'resolve_wikilink': {
@@ -83,7 +92,9 @@ export function installTauriMocks(): void {
         return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: `mock-${path}` };
       }
       case 'watch_workspace':
-        return null;
+        // The atomic switch returns the canonical granted root (mirrors the Rust
+        // command's new contract; the UI adopts this as the active workspace).
+        return (args as { root: string }).root;
       case 'ping':
         return { echoed: (args as { msg: string }).msg, version: '0.0.0' };
       default:
