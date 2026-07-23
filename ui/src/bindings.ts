@@ -24,6 +24,21 @@ export const commands = {
 	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
 	/**
+	 *  Save `content` to a markdown document within the granted workspace under a
+	 *  hash guard — the enforcement of the "never silently rewrite files" rule.
+	 *  Resolves + validates the path exactly like [`read_doc`] (contained, an
+	 *  existing file, `.md`/`.markdown` only), then reads the file's CURRENT bytes
+	 *  and compares their hash to `expected_hash`. On a mismatch it writes NOTHING
+	 *  and returns a typed [`SaveOutcome`] conflict carrying the real on-disk hash,
+	 *  so the UI can raise its non-blocking banner instead of clobbering an external
+	 *  edit. On a match (or when `force` overrides the guard — the user's explicit
+	 *  "overwrite the on-disk changes") it writes atomically (temp + rename) and
+	 *  returns the fresh hash + mtime. Epoch-guarded: a switch mid-save discards the
+	 *  returned outcome (the write itself belongs to the still-correct old-workspace
+	 *  path), so the superseding workspace never adopts a previous doc's provenance.
+	 */
+	saveDoc: (path: string, content: string, expectedHash: string, force: boolean) => typedError<SaveOutcome, string>(__TAURI_INVOKE("save_doc", { path, content, expectedHash, force })),
+	/**
 	 *  Open the native folder picker and return the chosen absolute path
 	 *  (canonicalized), or `None` when the user cancels. This does NOT mutate the
 	 *  workspace grant: the grant is adopted only when the frontend commits to the
@@ -295,6 +310,39 @@ export type RelatedDocDto = {
 	score: number | null,
 	/**  Per-component contributions. */
 	components: RelatedComponentsDto,
+};
+
+/**
+ *  The outcome of a [`save_doc`]. A tagged struct (mirroring [`crate::engine::WikiResolution`]'s
+ *  shape rather than a serde-tagged Rust enum, which specta emits less ergonomically):
+ *  `status == "saved"` carries the fresh provenance the buffer re-anchors to;
+ *  `status == "conflict"` carries the on-disk hash the file *actually* has, and
+ *  guarantees NOTHING was written. A conflict is an expected outcome, not an
+ *  error, so it rides the `Ok` channel — only hard failures (containment, IO)
+ *  surface as `Err(String)`.
+ */
+export type SaveOutcome = {
+	/**
+	 *  `"saved"` (the write landed) or `"conflict"` (the on-disk hash did not
+	 *  match `expected_hash`; the file was left untouched).
+	 */
+	status: string,
+	/**
+	 *  blake3 hex of the freshly-written bytes — the anchor the buffer adopts so
+	 *  the watcher's echo of this very write is recognised as a self-write
+	 *  (`saved` only).
+	 */
+	new_hash: string | null,
+	/**
+	 *  Modification time of the freshly-written file, ms since the Unix epoch
+	 *  (`saved` only).
+	 */
+	mtime: number | null,
+	/**
+	 *  The hash the file *currently* holds on disk when `status == "conflict"` —
+	 *  the anchor a subsequent forced overwrite (or a reload) re-bases onto.
+	 */
+	current_hash: string | null,
 };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */

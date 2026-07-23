@@ -30,6 +30,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::ping,
             commands::set_workspace,
             commands::read_doc,
+            commands::save_doc,
             commands::pick_workspace_folder,
             commands::watch_workspace,
             engine::list_workspace_files,

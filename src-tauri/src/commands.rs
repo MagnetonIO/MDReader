@@ -35,6 +35,7 @@
 //! command ([`read_doc`], [`watch_workspace`], and the engine module's listing)
 //! notes it at the use site.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -332,6 +333,184 @@ fn read_doc_guarded(
 }
 
 // --------------------------------------------------------------------------
+// save_doc
+// --------------------------------------------------------------------------
+
+/// The outcome of a [`save_doc`]. A tagged struct (mirroring [`crate::engine::WikiResolution`]'s
+/// shape rather than a serde-tagged Rust enum, which specta emits less ergonomically):
+/// `status == "saved"` carries the fresh provenance the buffer re-anchors to;
+/// `status == "conflict"` carries the on-disk hash the file *actually* has, and
+/// guarantees NOTHING was written. A conflict is an expected outcome, not an
+/// error, so it rides the `Ok` channel — only hard failures (containment, IO)
+/// surface as `Err(String)`.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SaveOutcome {
+    /// `"saved"` (the write landed) or `"conflict"` (the on-disk hash did not
+    /// match `expected_hash`; the file was left untouched).
+    pub status: String,
+    /// blake3 hex of the freshly-written bytes — the anchor the buffer adopts so
+    /// the watcher's echo of this very write is recognised as a self-write
+    /// (`saved` only).
+    pub new_hash: Option<String>,
+    /// Modification time of the freshly-written file, ms since the Unix epoch
+    /// (`saved` only).
+    pub mtime: Option<f64>,
+    /// The hash the file *currently* holds on disk when `status == "conflict"` —
+    /// the anchor a subsequent forced overwrite (or a reload) re-bases onto.
+    pub current_hash: Option<String>,
+}
+
+impl SaveOutcome {
+    fn saved(new_hash: String, mtime: f64) -> Self {
+        Self {
+            status: "saved".to_string(),
+            new_hash: Some(new_hash),
+            mtime: Some(mtime),
+            current_hash: None,
+        }
+    }
+
+    fn conflict(current_hash: String) -> Self {
+        Self {
+            status: "conflict".to_string(),
+            new_hash: None,
+            mtime: None,
+            current_hash: Some(current_hash),
+        }
+    }
+}
+
+/// A monotonic counter making each staged temp filename unique within a process.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A unique, hidden temp filename for staging a save inside the destination's own
+/// directory. Combines pid + a nanosecond stamp + a process-local counter so two
+/// concurrent saves (or a save racing a previous save's orphaned temp) never
+/// collide.
+fn temp_filename() -> String {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|delta| delta.as_nanos())
+        .unwrap_or(0);
+    format!(".mdreader-save-{}-{nanos}-{seq}.tmp", std::process::id())
+}
+
+/// Stage `bytes` into a fresh temp file in `dir` (a sibling of the destination,
+/// so the follow-up rename is a same-filesystem atomic swap), fsync it durably,
+/// and return the temp path. Split out from the rename so the "crash before the
+/// rename" case is directly testable: the original stays intact while only the
+/// temp is present.
+fn stage_temp(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    let tmp = dir.join(temp_filename());
+    let mut file = std::fs::File::create(&tmp).map_err(|err| format!("stage temp file: {err}"))?;
+    file.write_all(bytes)
+        .map_err(|err| format!("write temp file: {err}"))?;
+    // fsync the bytes before the rename so a power-loss after the rename can't
+    // surface a renamed-but-empty file (the rename only publishes durable bytes).
+    file.sync_all()
+        .map_err(|err| format!("fsync temp file: {err}"))?;
+    Ok(tmp)
+}
+
+/// Atomically replace `dest` with `bytes`: stage a sibling temp, then rename it
+/// over the destination. The rename is atomic on a single filesystem, so a reader
+/// (or a crash) ever sees either the whole old file or the whole new one, never a
+/// half-written document. A rename failure removes the orphaned temp rather than
+/// leaking it.
+fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+    let dir = dest
+        .parent()
+        .ok_or_else(|| format!("no parent directory for {}", dest.display()))?;
+    let tmp = stage_temp(dir, bytes)?;
+    match std::fs::rename(&tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(format!("commit save for {}: {err}", dest.display()))
+        }
+    }
+}
+
+/// Save `content` to a markdown document within the granted workspace under a
+/// hash guard — the enforcement of the "never silently rewrite files" rule.
+/// Resolves + validates the path exactly like [`read_doc`] (contained, an
+/// existing file, `.md`/`.markdown` only), then reads the file's CURRENT bytes
+/// and compares their hash to `expected_hash`. On a mismatch it writes NOTHING
+/// and returns a typed [`SaveOutcome`] conflict carrying the real on-disk hash,
+/// so the UI can raise its non-blocking banner instead of clobbering an external
+/// edit. On a match (or when `force` overrides the guard — the user's explicit
+/// "overwrite the on-disk changes") it writes atomically (temp + rename) and
+/// returns the fresh hash + mtime. Epoch-guarded: a switch mid-save discards the
+/// returned outcome (the write itself belongs to the still-correct old-workspace
+/// path), so the superseding workspace never adopts a previous doc's provenance.
+#[tauri::command]
+#[specta::specta]
+pub fn save_doc(
+    path: String,
+    content: String,
+    expected_hash: String,
+    force: bool,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<SaveOutcome, String> {
+    save_doc_guarded(&state, &path, &content, &expected_hash, force, || {})
+}
+
+/// The save core, with a `gate` hook invoked between deciding the outcome and the
+/// identity re-check (a no-op in production; tests inject a switch into that
+/// window to prove the epoch guard).
+fn save_doc_guarded(
+    state: &WorkspaceState,
+    path: &str,
+    content: &str,
+    expected_hash: &str,
+    force: bool,
+    gate: impl FnOnce(),
+) -> Result<SaveOutcome, String> {
+    // Capture the epoch ONCE; validate + guard + write against its grant.
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    // TOCTOU: the read/write below run after this containment check (accepted —
+    // see the module-level "TOCTOU" note; local single-user reader).
+    let real = resolve_doc(&epoch.root, Path::new(path))?;
+
+    // Hash guard: unless the caller is force-overwriting, the file's current bytes
+    // must still hash to what the buffer was anchored to. A mismatch means the
+    // file changed on disk since it was opened → conflict, WITHOUT writing.
+    if !force {
+        let current = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
+        let current_hash = blake3::hash(&current).to_hex().to_string();
+        if current_hash != expected_hash {
+            let outcome = SaveOutcome::conflict(current_hash);
+            gate();
+            // EPOCH-GUARDED
+            return epoch
+                .finish(state, outcome)
+                .map_err(|_| crate::engine::StaleEpoch::message());
+        }
+    }
+
+    let bytes = content.as_bytes();
+    let new_hash = blake3::hash(bytes).to_hex().to_string();
+    atomic_write(&real, bytes)?;
+    let mtime = mtime_millis(
+        std::fs::metadata(&real)
+            .ok()
+            .and_then(|meta| meta.modified().ok()),
+    );
+    let outcome = SaveOutcome::saved(new_hash, mtime);
+
+    gate();
+    // EPOCH-GUARDED: a switch during the save supersedes this epoch — the write
+    // landed on the (still-correct) old-workspace path, but its provenance must
+    // not be handed to the new workspace, so discard the outcome.
+    epoch
+        .finish(state, outcome)
+        .map_err(|_| crate::engine::StaleEpoch::message())
+}
+
+// --------------------------------------------------------------------------
 // pick_workspace_folder
 // --------------------------------------------------------------------------
 
@@ -548,14 +727,21 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
-        watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
+        atomic_write, canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        save_doc_guarded, stage_temp, watch_and_commit, DebounceEventResult, WatcherState,
+        WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// blake3 hex of `bytes` — the same digest `read_doc`/`save_doc` compute, so a
+    /// test can anchor an `expected_hash` to a file's real contents.
+    fn hash_of(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex().to_string()
+    }
 
     /// A workspace root plus the canonicalized path (macOS `/var` → `/private/var`).
     fn workspace() -> (TempDir, PathBuf) {
@@ -834,6 +1020,191 @@ mod tests {
         });
         assert!(stale.is_err(), "stale read discarded");
         assert_eq!(ws.root().unwrap(), root_b);
+    }
+
+    #[test]
+    fn save_doc_writes_atomically_and_returns_the_new_provenance() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# Old\n").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+        let expected = hash_of(b"# Old\n");
+
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# New\n",
+            &expected,
+            false,
+            || {},
+        )
+        .expect("guarded hash matches → the save lands");
+
+        assert_eq!(outcome.status, "saved");
+        assert_eq!(
+            outcome.new_hash.as_deref(),
+            Some(hash_of(b"# New\n").as_str())
+        );
+        assert!(outcome.mtime.is_some());
+        assert!(outcome.current_hash.is_none());
+        // The bytes on disk are exactly the new content — the write is real.
+        assert_eq!(fs::read(&note).unwrap(), b"# New\n");
+    }
+
+    #[test]
+    fn save_doc_conflict_leaves_the_file_untouched() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# On disk\n").unwrap();
+        let ws = WorkspaceState::granted(root);
+
+        // The buffer was anchored to a STALE hash (the file changed since it was
+        // opened). The guard must refuse and report the file's ACTUAL hash.
+        let stale_anchor = hash_of(b"# What the buffer thinks\n");
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# My edit\n",
+            &stale_anchor,
+            false,
+            || {},
+        )
+        .expect("a conflict is an Ok outcome, not an error");
+
+        assert_eq!(outcome.status, "conflict");
+        assert_eq!(
+            outcome.current_hash.as_deref(),
+            Some(hash_of(b"# On disk\n").as_str())
+        );
+        assert!(outcome.new_hash.is_none());
+        // NOTHING was written — the sacred rule holds.
+        assert_eq!(fs::read(&note).unwrap(), b"# On disk\n");
+    }
+
+    #[test]
+    fn save_doc_force_overwrites_despite_a_hash_mismatch() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# On disk\n").unwrap();
+        let ws = WorkspaceState::granted(root);
+
+        // force = the user's explicit "overwrite the on-disk changes"; the guard
+        // is bypassed and the write lands even though the anchor is stale.
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# Forced\n",
+            "an-utterly-wrong-hash",
+            true,
+            || {},
+        )
+        .expect("force skips the guard");
+
+        assert_eq!(outcome.status, "saved");
+        assert_eq!(fs::read(&note).unwrap(), b"# Forced\n");
+    }
+
+    #[test]
+    fn save_doc_rejects_paths_outside_the_workspace_and_non_markdown() {
+        let (_dir, root) = workspace();
+        let (_other, other_root) = workspace();
+        let ws = WorkspaceState::granted(root.clone());
+
+        // Outside the grant.
+        let outside = other_root.join("outside.md");
+        fs::write(&outside, "# secret\n").unwrap();
+        let before = fs::read(&outside).unwrap();
+        assert!(save_doc_guarded(
+            &ws,
+            outside.to_str().unwrap(),
+            "# hijacked\n",
+            &hash_of(&before),
+            true, // even forced, containment must reject
+            || {},
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&outside).unwrap(),
+            before,
+            "no write escaped the grant"
+        );
+
+        // Contained but not markdown.
+        let data = root.join("data.json");
+        fs::write(&data, "{}").unwrap();
+        assert!(save_doc_guarded(
+            &ws,
+            data.to_str().unwrap(),
+            "hijacked",
+            &hash_of(b"{}"),
+            true,
+            || {},
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn atomic_write_leaves_the_original_intact_when_the_rename_never_happens() {
+        // Crash simulation: a save stages its bytes into a sibling temp and only
+        // THEN renames. If the process dies before the rename, the original must be
+        // whole and the temp must be the only artifact — never a half-written doc.
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# Original\n").unwrap();
+
+        let staged = stage_temp(&root, b"# Half-written interruption\n").expect("stage temp");
+
+        // Original untouched; the temp exists beside it (the rename has not run).
+        assert_eq!(fs::read(&note).unwrap(), b"# Original\n");
+        assert!(staged.exists(), "the staged temp is present");
+        assert_ne!(staged, note, "the temp is a sibling, not the destination");
+        assert_eq!(fs::read(&staged).unwrap(), b"# Half-written interruption\n");
+
+        // And the completing rename publishes the whole new file atomically.
+        atomic_write(&note, b"# Committed\n").expect("atomic write");
+        assert_eq!(fs::read(&note).unwrap(), b"# Committed\n");
+    }
+
+    #[test]
+    fn save_doc_discards_the_outcome_when_a_switch_lands_in_the_save_window() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let note = root_a.join("note.md");
+        fs::write(&note, "# A\n").unwrap();
+        let ws = WorkspaceState::granted(root_a);
+
+        // No switch → the save of the current workspace's file succeeds.
+        let ok = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# A2\n",
+            &hash_of(b"# A\n"),
+            false,
+            || {},
+        )
+        .expect("save");
+        assert_eq!(ok.status, "saved");
+
+        // A switch INSIDE the window (between deciding the outcome and the
+        // re-check) supersedes the captured epoch → the outcome is discarded, so
+        // the new workspace never adopts this doc's fresh provenance. The write
+        // itself landed on the (still-correct) old-workspace path.
+        let stale = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# A3\n",
+            &hash_of(b"# A2\n"),
+            false,
+            || {
+                let _ = ws.switch(root_b.clone());
+            },
+        );
+        assert!(stale.is_err(), "stale save outcome discarded");
+        assert_eq!(
+            fs::read(&note).unwrap(),
+            b"# A3\n",
+            "but the write did land"
+        );
     }
 
     /// Structural guard (crude, but CI-catching): EVERY `#[tauri::command]` that
