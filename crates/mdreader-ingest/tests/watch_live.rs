@@ -217,13 +217,51 @@ async fn watch_converges_create_edit_rename_delete_without_manual_imports() {
     assert!(handle.watched().is_empty());
 }
 
+/// Delegates to [`HashEmbedder`] but sleeps on every non-empty embed call:
+/// stretches content-bearing imports so the burst test can inject events
+/// WHILE a sync is provably in flight (exercising the worker's queue-drain
+/// path).
+struct SlowEmbedder {
+    inner: HashEmbedder,
+    delay: Duration,
+}
+
+#[async_trait::async_trait]
+impl Embedder for SlowEmbedder {
+    fn info(&self) -> ModelInfo {
+        self.inner.info()
+    }
+
+    async fn embed(&self, texts: &[String]) -> EmbedResult<Vec<Vec<f32>>> {
+        if !texts.is_empty() {
+            tokio::time::sleep(self.delay).await;
+        }
+        self.inner.embed(texts).await
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("vault");
     write(&root, "burst.md", "# Burst\n\ndraft 0\n");
     let db_dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(open(&db_dir.path().join("catdb.db")));
+    // Slow embeds (3s) stretch every content-bearing import, giving phase 2
+    // below a wide, provable in-flight window.
+    let engine = Arc::new(
+        EmbeddedCatDb::open(
+            EngineConfig::new(
+                &db_dir.path().join("catdb.db"),
+                Arc::new(SlowEmbedder {
+                    inner: HashEmbedder::new(),
+                    delay: Duration::from_secs(3),
+                }),
+            )
+            .with_domain(mdreader_ingest::registration())
+            .with_actor("watch-test"),
+        )
+        .unwrap(),
+    );
     engine
         .import(&root, ImportOptions::default())
         .await
@@ -236,23 +274,26 @@ async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
     let baseline = handle.syncs_completed();
     assert_eq!(baseline, 1, "only the watch-start reconcile has run");
 
-    // A burst of rapid successive writes to ONE file, well inside the
-    // 500ms debounce window.
+    // Phase 1 — a burst of rapid successive writes to ONE file, well inside
+    // the 500ms debounce window: exactly one coalesced sync.
     for i in 1..=5 {
         write(&root, "burst.md", &format!("# Burst\n\ndraft {i}\n"));
     }
-    converge("final draft ingested", || {
+    converge("final draft ingested and its sync completed", || {
         let doc = engine
             .store()
             .document_by_path("burst.md")
             .unwrap()
             .unwrap();
-        engine
+        let content_in = engine
             .store()
             .chunks_for_document(doc.id)
             .unwrap()
             .iter()
-            .any(|c| c.text.contains("draft 5"))
+            .any(|c| c.text.contains("draft 5"));
+        // Chunk rows land mid-import; wait for the sync itself to finish
+        // (the counter increments when the import returns).
+        content_in && handle.syncs_completed() > baseline
     })
     .await;
 
@@ -264,6 +305,112 @@ async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
         1,
         "a coalesced burst must trigger exactly one sync"
     );
+
+    // Phase 2 — events land WHILE an import is in flight: write A, wait for
+    // its import to be provably running (live `index_status` phase), then
+    // write B and C far enough apart (>500ms) to flush as SEPARATE
+    // debounced batches during that still-running import. Both queue at
+    // the busy worker; when it comes back it drains them into ONE further
+    // sync — 2 syncs total for 3 writes, converging on the final content.
+    let phase1 = handle.syncs_completed();
+    write(&root, "burst.md", "# Burst\n\ndraft A\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let phase = engine.index_status().await.unwrap().phase;
+        if matches!(phase.as_str(), "scanning" | "syncing" | "embedding") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "A's import was never observed running (phase stuck at {phase})"
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    write(&root, "burst.md", "# Burst\n\ndraft B\n");
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    write(&root, "burst.md", "# Burst\n\ndraft C\n");
+    converge(
+        "final in-flight draft ingested and both syncs completed",
+        || {
+            let doc = engine
+                .store()
+                .document_by_path("burst.md")
+                .unwrap()
+                .unwrap();
+            let content_in = engine
+                .store()
+                .chunks_for_document(doc.id)
+                .unwrap()
+                .iter()
+                .any(|c| c.text.contains("draft C"));
+            content_in && handle.syncs_completed() >= phase1 + 2
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        handle.syncs_completed() - phase1,
+        2,
+        "A's sync, then ONE drained sync for B+C queued during it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_watch_handle_stops_all_watching() {
+    // The ownership contract: the handle holds the only strong reference;
+    // dropping it signals the shutdown token, stops the debouncers, and the
+    // workers exit — no further filesystem event may trigger an import.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    write(&root, "a.md", "# A\n\nalpha\n");
+    let db_dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(open(&db_dir.path().join("catdb.db")));
+    engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+
+    let handle = engine.watch_sources().await.unwrap();
+    let mut rx = handle.subscribe();
+    let first = next_event(&mut rx).await;
+    assert_eq!(first.kind, WatchEventKind::Reconcile);
+    // Sanity: the watcher IS live before the drop.
+    write(&root, "b.md", "# B\n\nbeta\n");
+    converge("b ingested while watching", || {
+        engine.store().document_by_path("b.md").unwrap().is_some()
+    })
+    .await;
+
+    drop(handle);
+    // Bounded settling: any in-flight sync completes; nothing new starts.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let jobs_before = engine.store().list_jobs().await.unwrap().len();
+
+    write(&root, "after-drop.md", "# After\n\nnever ingested\n");
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    assert!(
+        engine
+            .store()
+            .document_by_path("after-drop.md")
+            .unwrap()
+            .is_none(),
+        "a dropped handle must not ingest new files"
+    );
+    assert_eq!(
+        engine.store().list_jobs().await.unwrap().len(),
+        jobs_before,
+        "no import may fire after the handle is dropped"
+    );
+
+    // The reconcile guarantee still applies afterwards, by explicit call.
+    let sources = engine.store().list_sources().await.unwrap();
+    engine.reconcile(sources[0].source_id).await.unwrap();
+    assert!(engine
+        .store()
+        .document_by_path("after-drop.md")
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
