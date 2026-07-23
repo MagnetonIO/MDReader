@@ -92,7 +92,7 @@ export const commands = {
 	/**
 	 *  Hybrid search over the workspace index, streamed in two honest phases on
 	 *  `on_event` and returned as the final (hybrid) hit list.
-	 * 
+	 *
 	 *  The typed filter language is honored as-is (`tag:` `path:` `linked-to:`
 	 *  `after:` bare terms, RRF-fused): a parse/validation failure returns the
 	 *  schema-derived error text as the command error (the palette shows it inline
@@ -100,7 +100,7 @@ export const commands = {
 	 *  phase two is the full hybrid pass (streamed as `"final"` and returned).
 	 *  `options.lexical_only` (the `Exact` intent) skips the second pass. Before
 	 *  the engine is installed (no import yet) both phases are empty.
-	 * 
+	 *
 	 *  Epoch-guarded: a workspace switch mid-search supersedes the captured epoch,
 	 *  discarding its hits rather than surfacing a previous workspace's documents.
 	 */
@@ -109,7 +109,7 @@ export const commands = {
 	 *  Documents related to `doc_path` (an absolute path in the granted
 	 *  workspace), unified graph + concept + vector scoring with each component
 	 *  recorded for the rail's decomposition tooltips.
-	 * 
+	 *
 	 *  The absolute path is mapped back to its source-relative stored form and
 	 *  resolved against the index; an unknown document (or an index not yet built)
 	 *  yields an empty list rather than an error, so the rail simply shows nothing
@@ -465,4 +465,3 @@ function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deseria
 
     return Object.assign(fn, base);
 }
-
