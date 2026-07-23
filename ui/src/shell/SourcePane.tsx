@@ -34,6 +34,8 @@ import { markdown } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 
+import { detectMac } from '../keymap/registry.js';
+
 export interface SourcePaneProps {
   /** The document buffer to edit (a controlled value; external changes — reload,
    *  keep-mine — are reconciled into the live editor). */
@@ -128,14 +130,19 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
     // keydowns rather than a CM6 keymap binding: the editor holds focus (the
     // global window handler skips editable targets), and a direct handler fires
     // reliably regardless of keymap precedence, preventing the browser's own
-    // Cmd+S from ever reaching the page.
+    // Cmd+S from ever reaching the page. The modifier is platform-checked: on
+    // macOS ONLY ⌘ is reserved, so Ctrl+E stays CM6's native line-end (and Ctrl+S
+    // is left alone); elsewhere the chord is Ctrl.
+    const isMac = detectMac();
     const domHandlers = EditorView.domEventHandlers({
       scroll: (_event, view) => {
         if (onScrollLineRef.current) onScrollLineRef.current(topVisibleLine(view));
       },
       keydown: (event) => {
-        const mod = event.metaKey || event.ctrlKey;
-        if (!mod || event.altKey || event.shiftKey) return false;
+        const primary = isMac ? event.metaKey : event.ctrlKey;
+        const secondary = isMac ? event.ctrlKey : event.metaKey;
+        // Exactly the platform's primary modifier, nothing else.
+        if (!primary || secondary || event.altKey || event.shiftKey) return false;
         const key = event.key.toLowerCase();
         if (key === 's') {
           event.preventDefault();
