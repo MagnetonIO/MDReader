@@ -1,27 +1,19 @@
 import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
-import type { Mock } from 'vitest';
 
 import App from './App';
 import { detectMac } from './keymap/registry';
 import { useTabsStore } from './stores/tabs';
 import { useSourcesStore } from './stores/sources';
 import { useSettingsStore } from './stores/settings';
-import { saveSession } from './shell/persistence';
-
-// Spy on the session writer so the flush-on-unload path is observable in jsdom
-// (where the real writer is an inert no-op outside a Tauri webview).
-vi.mock('./shell/persistence', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./shell/persistence')>();
-  return { ...actual, saveSession: vi.fn(async () => {}) };
-});
+import { sessionWriter } from './shell/persistence';
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   useTabsStore.getState().reset();
   useSettingsStore.getState().reset();
   useSourcesStore.getState().reset();
-  (saveSession as Mock).mockClear();
 });
 
 /** Fire a portable Mod-chord keydown on window for the detected platform. */
@@ -89,6 +81,7 @@ test('Recent is scoped to the active workspace, hiding cross-workspace entries',
 });
 
 test('flushes the latest session synchronously when the window is going away', async () => {
+  const writeSpy = vi.spyOn(sessionWriter, 'write');
   render(<App />);
   await act(async () => {}); // settle startup hydration so the flush listener attaches
 
@@ -97,15 +90,13 @@ test('flushes the latest session synchronously when the window is going away', a
     useSourcesStore.getState().setRoot('/wsX');
     useTabsStore.getState().openTab({ path: '/wsX/note.md', name: 'note.md' });
   });
-  (saveSession as Mock).mockClear();
+  writeSpy.mockClear();
 
-  // The window going away must persist the CURRENT state immediately.
+  // The window going away must enqueue the CURRENT state immediately.
   act(() => window.dispatchEvent(new Event('beforeunload')));
 
-  expect(saveSession).toHaveBeenCalledTimes(1);
-  const data = (saveSession as Mock).mock.calls[0]![0];
+  expect(writeSpy).toHaveBeenCalledTimes(1);
+  const data = writeSpy.mock.calls[0]![0];
   expect(data.root).toBe('/wsX');
-  expect(data.tabs.map((tab: { docRef: { path: string } }) => tab.docRef.path)).toContain(
-    '/wsX/note.md',
-  );
+  expect(data.tabs.map((tab) => tab.docRef.path)).toContain('/wsX/note.md');
 });

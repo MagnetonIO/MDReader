@@ -28,7 +28,9 @@ import {
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
 import type { DocRef, ScrollPos } from '../stores/types.js';
-import { isTauri, loadPersisted, saveSession, saveSettings } from './persistence.js';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
+import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -137,7 +139,10 @@ export function AppShell() {
       } catch {
         if (isSwitch) {
           // A real switch that could not arm: stay entirely on the old workspace.
-          sources.setWatcher('error');
+          // The backend kept the OLD watcher live, so its status is unchanged and
+          // still accurate — do NOT flip it to 'error' (that would slander a
+          // workspace that is in fact healthily watched). Surface the switch
+          // failure transiently instead.
           toast('Could not switch workspace — staying on the current folder');
           return false;
         }
@@ -431,12 +436,14 @@ export function AppShell() {
   }, [theme]);
 
   // --- persist session --------------------------------------------------
-  // Serialize + persist the current session immediately (bypassing the debounce),
-  // reading the latest store state at call time.
+  // Enqueue the current session onto the single-flight writer, reading the latest
+  // store state at call time. The writer serializes every persist (debounced, on
+  // visibility change, on close) so writes never overlap and a burst coalesces to
+  // the newest snapshot — no interleaving, no lost final state.
   const flushSession = useCallback(() => {
     const t = useTabsStore.getState();
     const s = useSourcesStore.getState();
-    void saveSession(
+    sessionWriter.write(
       serializeSession({
         root: s.root,
         activeTabId: t.activeTabId,
@@ -468,6 +475,39 @@ export function AppShell() {
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
       document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [hydrated, flushSession]);
+
+  // Tauri's native window close is the ONLY reliable "app is quitting" hook (a
+  // webview teardown can cut a best-effort unload write short). We intercept it,
+  // enqueue the latest snapshot, DRAIN the writer (await in-flight + coalesced
+  // follow-up so it truly hits disk), then close for real. `destroy()` bypasses
+  // this handler, so there is no re-entrancy.
+  useEffect(() => {
+    if (!hydrated || !isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const appWindow = getCurrentWindow();
+        const off = await appWindow.onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            flushSession();
+            await sessionWriter.drain();
+          } finally {
+            await appWindow.destroy();
+          }
+        });
+        if (disposed) off();
+        else unlisten = off;
+      } catch {
+        /* not a real Tauri window (mocked IPC / no window API) — no close hook */
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, [hydrated, flushSession]);
 
