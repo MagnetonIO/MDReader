@@ -4,6 +4,29 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/e2e.html');
 });
 
+test('grant → index progress → open → wikilink navigation (resolved + unresolved)', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+
+  // The engine import finished → the StatusBar reports the indexed corpus.
+  await expect(page.getByText(/Indexed 3 files/)).toBeVisible();
+
+  // Open the note that carries the wikilinks.
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // A broken wikilink stays put and raises a toast (muted, non-navigating).
+  await page.getByRole('link', { name: 'Nonexistent' }).click();
+  await expect(page.getByText(/No note named "Nonexistent"/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // A resolved wikilink navigates the tab to the target note (through the index).
+  await page.getByRole('link', { name: 'Guide' }).click();
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+});
+
 test('open from tree → render → outline-jump → tab lifecycle', async ({ page }) => {
   // Welcome state before any folder is open.
   await expect(page.getByText(/A calm place to read your markdown/i)).toBeVisible();
