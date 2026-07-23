@@ -27,3 +27,8 @@ serde = { workspace = true }
 specta = "=2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+tauri-plugin-store = "2.4.4"
+tauri-plugin-dialog = "2.7.2"
+notify-debouncer-mini = "0.7.0"
+blake3 = "1.8.5"
+walkdir = "2.5.0"

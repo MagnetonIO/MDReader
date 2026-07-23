@@ -8,17 +8,26 @@
 
 mod commands;
 
-use tauri_specta::{collect_commands, Builder};
+use commands::WatcherState;
+use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
 /// (`apps/mdreader/src-tauri`). `cargo test` and `tauri dev` both run with that
 /// as the working directory, so this resolves to `apps/mdreader/ui/src`.
 const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 
-/// Builds the tauri-specta command registry. Single source of truth for both
-/// the runtime `invoke_handler` and the binding exporter.
+/// Builds the tauri-specta command + event registry. Single source of truth for
+/// both the runtime `invoke_handler`/`mount_events` and the binding exporter.
 fn specta_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![commands::ping])
+    Builder::<tauri::Wry>::new()
+        .commands(collect_commands![
+            commands::ping,
+            commands::list_workspace_files,
+            commands::read_doc,
+            commands::pick_workspace_folder,
+            commands::watch_workspace,
+        ])
+        .events(collect_events![commands::FsChanged])
 }
 
 /// Desktop (and, later, mobile) entry point.
@@ -33,6 +42,9 @@ pub fn run() {
     export_bindings(&builder).expect("failed to export typescript bindings");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(WatcherState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
