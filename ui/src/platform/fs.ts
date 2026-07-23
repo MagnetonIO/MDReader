@@ -299,9 +299,15 @@ export async function search(
   query: string,
   opts: { lexicalOnly: boolean; explain: boolean },
   onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
+  currentGeneration?: () => number,
 ): Promise<SearchHit[]> {
   const channel = new Channel<SearchBatch>();
   channel.onmessage = (batch) => {
+    // Suspenders (the belt is the palette's workspaceKey): a batch tagged with a
+    // generation OLDER than the current watcher's belongs to a superseded
+    // workspace — drop it, so a switch that interleaved one stale batch onto the
+    // channel (the backend send is not under the epoch lock) never renders.
+    if (currentGeneration && batch.generation < currentGeneration()) return;
     const phase = batch.phase === 'lexical' ? 'lexical' : 'final';
     onPhase(phase, batch.hits.map(normalizeHit));
   };
@@ -321,8 +327,14 @@ export async function related(docPath: string, limit = RELATED_LIMIT): Promise<R
   return result.data.map(normalizeRelated);
 }
 
-/** The palette's transport, backed by the Tauri command surface. */
-export const searchAdapter: SearchAdapter = {
-  search,
-  related: (docPath) => related(docPath),
-};
+/**
+ * Build the palette/rail transport, backed by the Tauri command surface.
+ * `currentGeneration` returns the generation the CURRENT watcher was armed
+ * under; streamed search batches from an older generation are discarded.
+ */
+export function makeSearchAdapter(currentGeneration: () => number): SearchAdapter {
+  return {
+    search: (query, opts, onPhase) => search(query, opts, onPhase, currentGeneration),
+    related: (docPath) => related(docPath),
+  };
+}

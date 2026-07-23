@@ -47,7 +47,7 @@ use catdb_engine::{
 };
 
 use crate::commands::{mtime_millis, WorkspaceState};
-use crate::engine::{Epoch, StaleEpoch};
+use crate::engine::Epoch;
 
 // --------------------------------------------------------------------------
 // Wire DTOs
@@ -216,6 +216,11 @@ pub struct SearchBatch {
     pub phase: String,
     /// The hits for this phase, best-first.
     pub hits: Vec<SearchHitDto>,
+    /// The workspace epoch generation this batch was produced under. `finish`
+    /// releases the state lock before the send below, so a switch could still
+    /// interleave one batch onto the channel — the frontend discards any batch
+    /// whose generation is not the current one (belt+suspenders over the lock).
+    pub generation: u32,
 }
 
 /// Per-component contributions behind a related score.
@@ -334,12 +339,9 @@ pub async fn search(
         .ok_or_else(|| "no workspace has been opened".to_string())?;
 
     let Some(db) = epoch.db() else {
-        // No engine yet (import not finished): honestly empty, still guarded so
-        // a switch during the call cannot surface a foreign empty either.
+        // No engine yet (import not finished): honestly empty (guarded).
         // EPOCH-GUARDED
-        return epoch
-            .finish(&workspace, Vec::new())
-            .map_err(|_| StaleEpoch::message());
+        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
     };
 
     let src_root = epoch.root.clone();
@@ -357,11 +359,11 @@ pub async fn search(
     };
     stream(&epoch, &workspace, &on_event, "final", &final_hits);
 
-    // EPOCH-GUARDED: a switch mid-search discards the hits rather than handing
-    // a previous workspace's documents to the new one.
-    epoch
-        .finish(&workspace, final_hits)
-        .map_err(|_| StaleEpoch::message())
+    // EPOCH-GUARDED: a switch mid-search means these hits belong to a previous
+    // workspace — return an empty list (silently-clean), never the stale hits
+    // and never a spurious error the palette would show as a filter failure. The
+    // generation-tagged batches above are the streaming counterpart of this.
+    Ok(epoch.finish(&workspace, final_hits).unwrap_or_default())
 }
 
 /// Run one engine search pass and lift its hits onto the wire DTO.
@@ -376,7 +378,10 @@ async fn run_phase(
 }
 
 /// Stream one phase's batch while `epoch` is still current (a closed channel is
-/// ignored — the resolved return is authoritative for a mocked IPC).
+/// ignored — the resolved return is authoritative for a mocked IPC). Every batch
+/// is tagged with `epoch.generation` so the frontend can discard one that still
+/// slips through after the `finish` lock is released (the send is not under the
+/// lock — see [`SearchBatch::generation`]).
 fn stream(
     epoch: &std::sync::Arc<Epoch>,
     workspace: &WorkspaceState,
@@ -384,11 +389,13 @@ fn stream(
     phase: &str,
     hits: &[SearchHitDto],
 ) {
+    let generation = epoch.generation as u32;
     // EPOCH-GUARDED: only stream while this epoch is the current era.
     if epoch.finish(workspace, ()).is_ok() {
         let _ = channel.send(SearchBatch {
             phase: phase.to_string(),
             hits: hits.to_vec(),
+            generation,
         });
     }
 }
@@ -418,9 +425,7 @@ pub async fn related(
 
     let Some(db) = epoch.db() else {
         // EPOCH-GUARDED
-        return epoch
-            .finish(&workspace, Vec::new())
-            .map_err(|_| StaleEpoch::message());
+        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
     };
 
     let src_root = epoch.root.clone();
@@ -446,10 +451,9 @@ pub async fn related(
         None => Vec::new(),
     };
 
-    // EPOCH-GUARDED
-    epoch
-        .finish(&workspace, related)
-        .map_err(|_| StaleEpoch::message())
+    // EPOCH-GUARDED: a switch mid-lookup yields an empty rail (silently-clean),
+    // never a previous workspace's related list nor a spurious error.
+    Ok(epoch.finish(&workspace, related).unwrap_or_default())
 }
 
 #[cfg(test)]

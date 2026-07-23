@@ -13,8 +13,8 @@ import {
   listWorkspaceFiles,
   onFsChanged,
   onWatchError,
+  makeSearchAdapter,
   pickWorkspaceFolder,
-  searchAdapter,
   setWorkspace,
   startImport,
   watchWorkspace,
@@ -849,6 +849,9 @@ export function AppShell() {
     () => (activeTab ? { path: activeTab.docRef.path, name: activeTab.docRef.name } : null),
     [activeTab],
   );
+  // The search/related transport, closed over the live watcher generation so
+  // streamed batches from a superseded workspace epoch are discarded.
+  const adapter = useMemo(() => makeSearchAdapter(() => watcherGenRef.current), []);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
@@ -903,7 +906,7 @@ export function AppShell() {
             {activeTab ? (
               <RelatedRail
                 activeDoc={activeDoc}
-                adapter={searchAdapter}
+                adapter={adapter}
                 open={relatedOpen}
                 onToggle={() => setRelatedOpen((open) => !open)}
                 onOpen={openRef}
@@ -929,7 +932,8 @@ export function AppShell() {
           files={paletteFiles}
           activeDoc={activeDoc}
           sourceName={sourceName}
-          adapter={searchAdapter}
+          workspaceKey={root}
+          adapter={adapter}
           isMac={isMac}
           onOpenHit={onOpenHit}
           onOpenFile={onOpenPaletteFile}

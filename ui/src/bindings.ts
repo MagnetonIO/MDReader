@@ -303,6 +303,13 @@ export type SearchBatch = {
 	phase: string,
 	/**  The hits for this phase, best-first. */
 	hits: SearchHitDto[],
+	/**
+	 *  The workspace epoch generation this batch was produced under. `finish`
+	 *  releases the state lock before the send below, so a switch could still
+	 *  interleave one batch onto the channel — the frontend discards any batch
+	 *  whose generation is not the current one (belt+suspenders over the lock).
+	 */
+	generation: number,
 };
 
 /**

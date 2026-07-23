@@ -139,7 +139,7 @@ test('Cmd+K search → result → Enter opens the doc at its provenance section'
   await expect(page.getByRole('heading', { name: 'Section B' })).toBeInViewport();
 });
 
-test('search intents: Best is default, Exact is selectable, Tab cycles', async ({ page }) => {
+test('search intents: Best is default, Exact is clickable, ⌘/Ctrl+3 selects', async ({ page }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
 
@@ -150,8 +150,9 @@ test('search intents: Best is default, Exact is selectable, Tab cycles', async (
   await page.getByRole('tab', { name: 'Exact' }).click();
   await expect(page.getByRole('tab', { name: 'Exact' })).toHaveAttribute('aria-selected', 'true');
 
-  // Tab cycles to the next intent (Semantic).
-  await page.getByRole('combobox').press('Tab');
+  // The intent shortcut (⌘/Ctrl+3) jumps straight to Semantic — bare Tab does not
+  // cycle intents (it moves focus, keeping the breadcrumb buttons reachable).
+  await page.keyboard.press(meta ? 'Meta+3' : 'Control+3');
   await expect(page.getByRole('tab', { name: 'Semantic' })).toHaveAttribute('aria-selected', 'true');
 });
 
