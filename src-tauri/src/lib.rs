@@ -7,6 +7,7 @@
 //! `apps/mdreader/ui/src/bindings.ts` always matches the live command surface.
 
 mod commands;
+mod engine;
 
 use commands::{WatcherState, WorkspaceState};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -27,10 +28,13 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::ping,
             commands::set_workspace,
-            commands::list_workspace_files,
             commands::read_doc,
             commands::pick_workspace_folder,
             commands::watch_workspace,
+            engine::list_workspace_files,
+            engine::start_import,
+            engine::import_status,
+            engine::resolve_wikilink,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }

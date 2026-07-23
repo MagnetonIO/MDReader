@@ -31,3 +31,4 @@ fixtures/generated/
 
 # macOS
 .DS_Store
+.claude/worktrees/

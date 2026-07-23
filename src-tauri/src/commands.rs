@@ -1,10 +1,12 @@
-//! Tauri command surface for the MDReader shell.
+//! Tauri command surface for the MDReader shell — the *filesystem* half.
 //!
-//! P2 keeps every command deliberately THIN: filesystem reads, a folder picker,
-//! and a workspace watcher. No business logic lives here — the real
-//! ingest/query engine (P3) will replace this temporary `fs` command layer. Each
-//! command derives `specta::Type` so tauri-specta emits matching TypeScript into
-//! `apps/mdreader/ui/src/bindings.ts`.
+//! This module owns the thin, containment-guarded fs layer: a folder picker, a
+//! workspace watcher, and live-from-disk document reads. Reading is always done
+//! straight off disk (never a stale index copy), so [`read_doc`] stays here. The
+//! *engine* half — the embedded CatDB index, live import progress, engine-backed
+//! file listing, and wikilink resolution — lives in [`crate::engine`] and reuses
+//! this module's containment helpers. Each command derives `specta::Type` so
+//! tauri-specta emits matching TypeScript into `apps/mdreader/ui/src/bindings.ts`.
 //!
 //! ## Workspace containment
 //!
@@ -30,11 +32,12 @@
 //! between the check and the use. For a LOCAL single-user desktop reader (not a
 //! multi-tenant service) this race is proportionately minor — there is no other
 //! tenant to win it — so it is accepted rather than locked against. Each affected
-//! command ([`read_doc`], [`list_workspace_files`], [`watch_workspace`]) notes it
-//! at the use site.
+//! command ([`read_doc`], [`watch_workspace`], and the engine module's listing)
+//! notes it at the use site.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
@@ -46,38 +49,22 @@ use specta::Type;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
-use walkdir::{DirEntry, WalkDir};
-
-/// Max directory depth walked by [`list_workspace_files`]. A sanity bound so a
-/// pathological or symlinked tree cannot stall the walk.
-const MAX_WALK_DEPTH: usize = 12;
 
 /// Debounce window for the workspace watcher. Collapses editor save-storms (a
 /// single logical edit often lands as several `write` syscalls) into one event.
 const WATCH_DEBOUNCE_MS: u64 = 500;
 
 /// True for the markdown extensions the reader understands.
-fn is_markdown(path: &Path) -> bool {
+pub(crate) fn is_markdown(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
         Some("md") | Some("markdown")
     )
 }
 
-/// Prune hidden directories (`.git`, `.obsidian`, …) from the walk while still
-/// descending the workspace root itself.
-fn is_hidden_dir(entry: &DirEntry) -> bool {
-    entry.depth() > 0
-        && entry.file_type().is_dir()
-        && entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with('.'))
-}
-
 /// Milliseconds since the Unix epoch for a filesystem timestamp, or `0.0` when
 /// the platform cannot report one.
-fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
+pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
     modified
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|delta| delta.as_millis() as f64)
@@ -88,29 +75,67 @@ fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
 // Workspace containment
 // --------------------------------------------------------------------------
 
-/// The single granted workspace root (canonicalized), or `None` before a folder
-/// has been picked/restored. Every path-taking command validates its argument
-/// against this root.
+/// The active workspace, held as a single immutable [`Epoch`](crate::engine::Epoch)
+/// (`None` before a folder has been picked/restored). A switch **creates a new
+/// epoch and swaps it in** — that swap is the one revocation barrier: root,
+/// generation, engine, and import status all move together, never sampled at
+/// different instants. Commands capture the current `Arc<Epoch>` once and compare
+/// identity via [`is_current`](Self::is_current) at their commit points.
 #[derive(Default)]
-pub struct WorkspaceState(pub Mutex<Option<PathBuf>>);
+pub struct WorkspaceState {
+    current: Mutex<Option<Arc<crate::engine::Epoch>>>,
+}
 
 impl WorkspaceState {
+    /// The current epoch, or `None` before any workspace has been granted.
+    pub(crate) fn current(&self) -> Option<Arc<crate::engine::Epoch>> {
+        self.current.lock().ok().and_then(|slot| slot.clone())
+    }
+
     /// The current granted root, or an error when no workspace has been granted.
-    fn root(&self) -> Result<PathBuf, String> {
-        self.0
-            .lock()
-            .map_err(|_| "workspace state poisoned".to_string())?
-            .clone()
+    /// (Commands read `epoch.root` off their captured epoch; this is a test
+    /// convenience for asserting the active grant.)
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> Result<PathBuf, String> {
+        self.current()
+            .map(|epoch| epoch.root.clone())
             .ok_or_else(|| "no workspace has been opened".to_string())
     }
 
-    /// Replace the granted root with `root` (already canonicalized).
-    fn set(&self, root: PathBuf) -> Result<(), String> {
-        *self
-            .0
+    /// Whether `epoch` is the currently-active era — the `Arc::ptr_eq` identity
+    /// check every command uses at its commit points to discard stale work.
+    pub(crate) fn is_current(&self, epoch: &Arc<crate::engine::Epoch>) -> bool {
+        self.current()
+            .is_some_and(|current| Arc::ptr_eq(&current, epoch))
+    }
+
+    /// The current epoch's generation (0 when no workspace is open).
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.current().map_or(0, |epoch| epoch.generation)
+    }
+
+    /// Create a fresh epoch for `root` (already canonicalized) and swap it in,
+    /// advancing the generation. THE revocation barrier: the returned `Arc` is the
+    /// new current era; any epoch captured before this call is now stale. Returns
+    /// the new epoch.
+    pub(crate) fn switch(&self, root: PathBuf) -> Result<Arc<crate::engine::Epoch>, String> {
+        let mut slot = self
+            .current
             .lock()
-            .map_err(|_| "workspace state poisoned".to_string())? = Some(root);
-        Ok(())
+            .map_err(|_| "workspace state poisoned".to_string())?;
+        let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+        let epoch = crate::engine::Epoch::new(root, generation);
+        *slot = Some(Arc::clone(&epoch));
+        Ok(epoch)
+    }
+
+    /// Test helper: a state already granting `root` (generation 1).
+    #[cfg(test)]
+    pub(crate) fn granted(root: PathBuf) -> Self {
+        let state = Self::default();
+        state.switch(root).expect("grant test root");
+        state
     }
 }
 
@@ -119,7 +144,7 @@ impl WorkspaceState {
 /// one check that defeats both `../` traversal and symlink-escape: canonicalize
 /// resolves every `..` and symlink, so `starts_with` is evaluated on real,
 /// fully-resolved paths.
-fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(candidate)
         .map_err(|err| format!("cannot resolve {}: {err}", candidate.display()))?;
     if real.starts_with(root) {
@@ -147,7 +172,7 @@ fn resolve_doc(root: &Path, path: &Path) -> Result<PathBuf, String> {
 
 /// Resolve a *listable/watchable directory*: contained in `root` and an existing
 /// directory.
-fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
     let real = resolve_within(root, dir)?;
     if !real.is_dir() {
         return Err(format!("not a directory: {}", dir.display()));
@@ -158,7 +183,7 @@ fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
 /// Canonicalize `root` and confirm it is an existing directory — the check
 /// [`set_workspace`] and [`watch_workspace`] share to *establish* a workspace
 /// grant (as opposed to validating a candidate against an existing grant).
-fn canonical_dir(root: &str) -> Result<PathBuf, String> {
+pub(crate) fn canonical_dir(root: &str) -> Result<PathBuf, String> {
     let real =
         std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
     if !real.is_dir() {
@@ -207,15 +232,19 @@ pub fn set_workspace(
 ) -> Result<String, String> {
     let real = canonical_dir(&root)?;
     let granted = real.to_string_lossy().into_owned();
-    state.set(real)?;
+    // A grant change is a new epoch (the revocation barrier), even on the
+    // degraded/no-watcher path.
+    state.switch(real)?;
     Ok(granted)
 }
 
 // --------------------------------------------------------------------------
-// list_workspace_files
+// FileEntry — the sidebar row shape, produced by the engine module's listing.
 // --------------------------------------------------------------------------
 
-/// One markdown file discovered under a workspace root.
+/// One markdown file surfaced to the sidebar tree. Produced either from the
+/// engine's index (after an import) or, before the first import finishes, from a
+/// live filesystem scan — see [`crate::engine::list_workspace_files`].
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct FileEntry {
     /// Absolute path to the file.
@@ -229,55 +258,10 @@ pub struct FileEntry {
     /// File size in bytes (an `f64` so it round-trips through JSON losslessly for
     /// realistic document sizes).
     pub size: f64,
-}
-
-/// Recursively list the `.md`/`.markdown` files under `root` (hidden directories
-/// pruned, depth-bounded). `root` must be within the granted workspace. Symlinks
-/// are never followed (`follow_links(false)`), so a symlinked subtree cannot
-/// leak files from outside the workspace. Thin: no parsing, no ranking — just
-/// the raw tree the sidebar renders.
-#[tauri::command]
-#[specta::specta]
-pub fn list_workspace_files(
-    root: String,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<FileEntry>, String> {
-    let granted = state.root()?;
-    // TOCTOU: the walk below runs after this containment check (accepted — see the
-    // module-level "TOCTOU" note; local single-user reader).
-    let root_path = resolve_dir(&granted, Path::new(&root))?;
-
-    let mut entries = Vec::new();
-    for entry in WalkDir::new(&root_path)
-        .max_depth(MAX_WALK_DEPTH)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !is_hidden_dir(entry))
-    {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if !entry.file_type().is_file() || !is_markdown(path) {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else { continue };
-        entries.push(FileEntry {
-            path: path.to_string_lossy().into_owned(),
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            dir: path
-                .parent()
-                .map(|parent| parent.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            mtime: mtime_millis(meta.modified().ok()),
-            size: meta.len() as f64,
-        });
-    }
-
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(entries)
+    /// True when a gitignore/`.contextignore` rule matched the file (the tree
+    /// dims it). Index-listed documents are never ignored (the ingest scan drops
+    /// them before they reach the index); only the fs-fallback listing sets this.
+    pub ignored: bool,
 }
 
 // --------------------------------------------------------------------------
@@ -299,16 +283,31 @@ pub struct DocPayload {
 /// Read a single markdown document from within the granted workspace. Thin:
 /// resolves + validates the path, reads the bytes, hashes them, decodes to text.
 /// Rejects paths outside the workspace, non-files, and non-markdown extensions.
+/// Captures the epoch once and re-checks it is current before returning, so a
+/// switch during the read never hands back a previous workspace's bytes.
 #[tauri::command]
 #[specta::specta]
 pub fn read_doc(
     path: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<DocPayload, String> {
-    let granted = state.root()?;
+    read_doc_guarded(&state, &path, || {})
+}
+
+/// The read core, with a `gate` hook invoked between the read and the identity
+/// re-check (a no-op in production; tests inject a switch into that window).
+fn read_doc_guarded(
+    state: &WorkspaceState,
+    path: &str,
+    gate: impl FnOnce(),
+) -> Result<DocPayload, String> {
+    // Capture the epoch ONCE; validate + read against its grant.
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
     // TOCTOU: the read below runs after this containment check (accepted — see the
     // module-level "TOCTOU" note; local single-user reader).
-    let real = resolve_doc(&granted, Path::new(&path))?;
+    let real = resolve_doc(&epoch.root, Path::new(path))?;
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -317,11 +316,19 @@ pub fn read_doc(
             .ok()
             .and_then(|m| m.modified().ok()),
     );
-    Ok(DocPayload {
+
+    let payload = DocPayload {
         content: String::from_utf8_lossy(&bytes).into_owned(),
         mtime,
         hash,
-    })
+    };
+
+    gate();
+    // EPOCH-GUARDED: a switch during the read supersedes this epoch — discard the
+    // (old-root) bytes rather than surfacing them under the new workspace.
+    epoch
+        .finish(state, payload)
+        .map_err(|_| crate::engine::StaleEpoch::message())
 }
 
 // --------------------------------------------------------------------------
@@ -365,6 +372,10 @@ pub struct FsChanged {
     /// Coarse change kind: `"any"` for a settled change, `"continuous"` while a
     /// path is still being written (the debouncer timed out mid-write).
     pub kind: String,
+    /// The workspace generation this watcher was armed under. The frontend
+    /// discards events whose generation is not the current one, so a *previous*
+    /// watcher's still-draining events can never drive the new workspace.
+    pub generation: u32,
 }
 
 /// Payload for the `mdreader://watch-error` event — a *runtime* watcher failure
@@ -376,6 +387,21 @@ pub struct FsChanged {
 pub struct WatchError {
     /// Human-readable description of the watcher failure.
     pub message: String,
+    /// The workspace generation this watcher was armed under (see
+    /// [`FsChanged::generation`]). An *old* watcher's error must not mark the new
+    /// watcher failed, so the frontend discards generation mismatches.
+    pub generation: u32,
+}
+
+/// The canonical grant plus the generation the watcher was armed under, returned
+/// by [`watch_workspace`]. The frontend adopts `generation` as the reference it
+/// filters `mdreader://fs-changed` / `mdreader://watch-error` events against.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct WorkspaceGrant {
+    /// Canonical granted root.
+    pub root: String,
+    /// The epoch generation this grant + watcher belong to.
+    pub generation: u32,
 }
 
 /// Holds the live workspace watcher. Parking the debouncer here keeps it alive;
@@ -384,14 +410,17 @@ pub struct WatchError {
 pub struct WatcherState(pub Mutex<Option<Debouncer<RecommendedWatcher>>>);
 
 /// Begin watching `root` recursively, emitting a debounced
-/// `mdreader://fs-changed` for every markdown file that changes, and adopt `root`
-/// as the granted workspace. This is the ONE atomic "switch workspace" operation:
-/// the new root becomes the grant *and* the live watcher together, or neither
-/// does. A `root` that cannot be resolved, or whose watch fails to arm, leaves
-/// BOTH the previous grant and the previous watcher fully intact and returns the
-/// error — the caller stays on the old workspace, and backend state can never
-/// diverge (a live watcher on one root while the grant names another). Runtime
-/// failures *during* watching are surfaced separately via `mdreader://watch-error`.
+/// `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
+/// the granted workspace, and **return its canonical path**. This is the ONE
+/// atomic "switch workspace" operation the UI awaits: the new root becomes the
+/// grant *and* the live watcher together (advancing the root generation), or
+/// neither does — so the caller never has to sequence a separate `set_workspace`
+/// against the watcher arming. A `root` that cannot be resolved, or whose watch
+/// fails to arm, leaves BOTH the previous grant and the previous watcher fully
+/// intact and returns the error — the caller stays on the old workspace, and
+/// backend state can never diverge (a live watcher on one root while the grant
+/// names another). Runtime failures *during* watching are surfaced separately
+/// via `mdreader://watch-error`.
 #[tauri::command]
 #[specta::specta]
 pub fn watch_workspace(
@@ -399,50 +428,68 @@ pub fn watch_workspace(
     root: String,
     workspace: tauri::State<'_, WorkspaceState>,
     state: tauri::State<'_, WatcherState>,
-) -> Result<(), String> {
+) -> Result<WorkspaceGrant, String> {
     let emit_app = app.clone();
-    watch_and_commit(
+    // The generation the watcher is armed under — filled by `commit_workspace`
+    // (under the lock, matching the new epoch exactly) and read by the emit
+    // closure so every event is tagged with the era it belongs to.
+    let armed_gen = Arc::new(AtomicU64::new(0));
+    let gen_for_closure = Arc::clone(&armed_gen);
+    let (granted, generation) = watch_and_commit(
         &root,
         &workspace,
         &state,
-        move |result: DebounceEventResult| match result {
-            Ok(events) => {
-                for event in events {
-                    if !is_markdown(&event.path) {
-                        continue;
+        &armed_gen,
+        move |result: DebounceEventResult| {
+            let generation = gen_for_closure.load(Ordering::Acquire) as u32;
+            match result {
+                Ok(events) => {
+                    for event in events {
+                        if !is_markdown(&event.path) {
+                            continue;
+                        }
+                        let kind = match event.kind {
+                            DebouncedEventKind::AnyContinuous => "continuous",
+                            _ => "any",
+                        };
+                        let _ = FsChanged {
+                            path: event.path.to_string_lossy().into_owned(),
+                            kind: kind.to_string(),
+                            generation,
+                        }
+                        .emit(&emit_app);
                     }
-                    let kind = match event.kind {
-                        DebouncedEventKind::AnyContinuous => "continuous",
-                        _ => "any",
-                    };
-                    let _ = FsChanged {
-                        path: event.path.to_string_lossy().into_owned(),
-                        kind: kind.to_string(),
+                }
+                Err(error) => {
+                    let _ = WatchError {
+                        message: error.to_string(),
+                        generation,
                     }
                     .emit(&emit_app);
                 }
             }
-            Err(error) => {
-                let _ = WatchError {
-                    message: error.to_string(),
-                }
-                .emit(&emit_app);
-            }
         },
-    )
+    )?;
+    Ok(WorkspaceGrant {
+        root: granted.to_string_lossy().into_owned(),
+        generation,
+    })
 }
 
 /// The workspace-switch core, factored out of [`watch_workspace`] so it is
 /// exercisable without an `AppHandle` (the handle is only needed to build the
 /// production `on_event` sink; tests pass a no-op). Resolves `root`, arms a fresh
 /// watcher into a *local*, and — only on success — commits the new grant + new
-/// watcher together. Any earlier failure returns with nothing mutated.
+/// watcher together, filling `armed_gen` with the new epoch's generation. Any
+/// earlier failure returns with nothing mutated. Returns the canonical root and
+/// its generation.
 fn watch_and_commit<F: DebounceEventHandler>(
     root: &str,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
+    armed_gen: &AtomicU64,
     on_event: F,
-) -> Result<(), String> {
+) -> Result<(PathBuf, u32), String> {
     // A workspace SWITCH targets a NEW root that is not inside the old grant, so
     // resolve it independently: this command is the one that ESTABLISHES the grant.
     // TOCTOU: the watch below arms after this check (accepted — see the
@@ -459,45 +506,54 @@ fn watch_and_commit<F: DebounceEventHandler>(
         .watch(&new_root, RecursiveMode::Recursive)
         .map_err(|err| format!("watch {root} failed: {err}"))?;
 
-    commit_workspace(workspace, watcher, new_root, debouncer)
+    let generation = commit_workspace(workspace, watcher, new_root.clone(), debouncer, armed_gen)?;
+    Ok((new_root, generation))
 }
 
-/// Adopt `new_root` as the grant and `debouncer` as the live watcher, dropping
-/// (and thereby stopping) the previous watcher. Reached only after the new watch
-/// is armed. Acquires BOTH state locks up front and only then performs the two
-/// (now-infallible) writes, so there is no window in which the grant is advanced
-/// while the watcher swap is still pending: a poisoned lock aborts before ANY
-/// state is touched (grant + watcher stay intact), and once both locks are held
-/// the two roots move as one and can never diverge. Lock order is watcher→grant
-/// everywhere both are held (this is the only such site), so no deadlock.
+/// Swap in a fresh [`Epoch`](crate::engine::Epoch) for `new_root` and `debouncer`
+/// as the live watcher, dropping (and thereby stopping) the previous watcher.
+/// Reached only after the new watch is armed. Acquires BOTH state locks up front
+/// and only then performs the two (now-infallible) writes, so there is no window
+/// in which the new epoch is installed while the watcher swap is still pending: a
+/// poisoned lock aborts before ANY state is touched (epoch + watcher stay
+/// intact), and once both locks are held the new epoch and the watcher move as
+/// one and can never diverge. Lock order is watcher→epoch everywhere both are
+/// held (this is the only such site), so no deadlock. The epoch swap IS the
+/// revocation barrier for any import still running on the old root.
 fn commit_workspace(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     new_root: PathBuf,
     debouncer: Debouncer<RecommendedWatcher>,
-) -> Result<(), String> {
+    armed_gen: &AtomicU64,
+) -> Result<u32, String> {
     let mut watcher_slot = watcher
         .0
         .lock()
         .map_err(|_| "watcher state poisoned".to_string())?;
-    let mut grant_slot = workspace
-        .0
+    let mut epoch_slot = workspace
+        .current
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
-    // Both locks held — neither write below can fail, so the swap is atomic.
-    *grant_slot = Some(new_root);
+    // Both locks held — neither write below can fail, so the swap is atomic. The
+    // watcher's armed generation is published to match the new epoch exactly, so
+    // its events are tagged with the era they belong to.
+    let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    armed_gen.store(generation, Ordering::Release);
+    *epoch_slot = Some(crate::engine::Epoch::new(new_root, generation));
     *watcher_slot = Some(debouncer);
-    Ok(())
+    Ok(generation as u32)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit,
-        DebounceEventResult, WatcherState, WorkspaceState,
+        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -610,7 +666,7 @@ mod tests {
     fn watch_switch_swaps_atomically_and_failure_preserves_old_state() {
         let (_a, root_a) = workspace();
         let (_b, root_b) = workspace();
-        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let workspace = WorkspaceState::granted(root_a.clone());
         let watcher = WatcherState(Mutex::new(None));
 
         // The `on_event` sink is irrelevant to the swap logic — a no-op stands in
@@ -618,12 +674,26 @@ mod tests {
         let sink = || |_result: DebounceEventResult| {};
 
         // Arm the initial watch on A.
-        watch_and_commit(root_a.to_str().unwrap(), &workspace, &watcher, sink()).expect("arm A");
+        watch_and_commit(
+            root_a.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink(),
+        )
+        .expect("arm A");
         assert_eq!(workspace.root().unwrap(), root_a);
         assert!(watcher.0.lock().unwrap().is_some());
 
         // A valid switch to B swaps BOTH the grant and the watcher together.
-        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch B");
+        watch_and_commit(
+            root_b.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink(),
+        )
+        .expect("switch B");
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
 
@@ -631,7 +701,14 @@ mod tests {
         // pre-commit `?`-return path an arm failure would take), leaving the OLD
         // root + watcher fully intact — no half-applied switch, no divergence.
         let bogus = root_b.join("does-not-exist");
-        assert!(watch_and_commit(bogus.to_str().unwrap(), &workspace, &watcher, sink()).is_err());
+        assert!(watch_and_commit(
+            bogus.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink()
+        )
+        .is_err());
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
     }
@@ -640,7 +717,7 @@ mod tests {
     fn commit_failure_leaves_the_grant_unadvanced() {
         let (_a, root_a) = workspace();
         let (_b, root_b) = workspace();
-        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let workspace = WorkspaceState::granted(root_a.clone());
         let watcher = WatcherState(Mutex::new(None));
 
         // Poison the watcher lock (the FIRST lock commit_workspace acquires) by
@@ -658,7 +735,142 @@ mod tests {
         // failure is the poisoned commit lock. The grant must stay on A, not
         // advance to B while the watcher swap never happened (no split commit).
         let sink = |_result: DebounceEventResult| {};
-        assert!(watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink).is_err());
+        assert!(watch_and_commit(
+            root_b.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink
+        )
+        .is_err());
         assert_eq!(workspace.root().unwrap(), root_a);
+    }
+
+    #[test]
+    fn a_rapid_double_switch_converges_to_the_last_root_and_advances_generation() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let (_c, root_c) = workspace();
+        let workspace = WorkspaceState::granted(root_a.clone());
+        let watcher = WatcherState(Mutex::new(None));
+        let sink = || |_result: DebounceEventResult| {};
+
+        let g_start = workspace.generation();
+        // Two switches back-to-back (B then C) converge on C, and EACH advances
+        // the root generation — the hook an import uses to notice it is stale and
+        // discard its late status rather than clobber the new workspace's.
+        watch_and_commit(
+            root_b.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink(),
+        )
+        .expect("switch B");
+        let g_b = workspace.generation();
+        watch_and_commit(
+            root_c.to_str().unwrap(),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            sink(),
+        )
+        .expect("switch C");
+        let g_c = workspace.generation();
+
+        assert_eq!(
+            workspace.root().unwrap(),
+            root_c,
+            "converged on the last root"
+        );
+        assert!(
+            watcher.0.lock().unwrap().is_some(),
+            "the last watcher is live"
+        );
+        assert!(
+            g_b > g_start && g_c > g_b,
+            "each switch advances the generation ({g_start} -> {g_b} -> {g_c})"
+        );
+    }
+
+    #[test]
+    fn the_watcher_is_armed_with_its_epochs_generation() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let ws = WorkspaceState::granted(root_a);
+        let watcher = WatcherState(Mutex::new(None));
+        let armed_gen = AtomicU64::new(0);
+        let sink = |_result: DebounceEventResult| {};
+
+        let (_root, generation) =
+            watch_and_commit(root_b.to_str().unwrap(), &ws, &watcher, &armed_gen, sink)
+                .expect("switch B");
+
+        // The returned generation, the armed cell (read by the emit closure), and
+        // the live epoch's generation all agree — so events are tagged with the
+        // era they belong to.
+        assert_eq!(generation as u64, ws.generation());
+        assert_eq!(armed_gen.load(Ordering::Acquire), ws.generation());
+        assert!(generation >= 2, "advanced past the initial grant");
+    }
+
+    #[test]
+    fn read_doc_discards_bytes_when_a_switch_lands_in_the_read_window() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let note = root_a.join("note.md");
+        fs::write(&note, "# Note\n").unwrap();
+        let ws = WorkspaceState::granted(root_a);
+
+        // No switch → the read of the current workspace's file succeeds.
+        let ok = read_doc_guarded(&ws, note.to_str().unwrap(), || {}).expect("read");
+        assert!(ok.content.contains("Note"));
+
+        // A switch INSIDE the window (injected between the read and the re-check)
+        // supersedes the captured epoch → the old-root bytes are discarded, never
+        // surfaced under the new workspace.
+        let stale = read_doc_guarded(&ws, note.to_str().unwrap(), || {
+            let _ = ws.switch(root_b.clone());
+        });
+        assert!(stale.is_err(), "stale read discarded");
+        assert_eq!(ws.root().unwrap(), root_b);
+    }
+
+    /// Structural guard (crude, but CI-catching): EVERY `#[tauri::command]` that
+    /// returns workspace-derived data must funnel its result through the
+    /// `Epoch::finish` choke-point. A new command that forgets it trips this — the
+    /// barrier is enforced by construction, not by reviewer vigilance.
+    #[test]
+    fn every_workspace_command_funnels_through_the_epoch_choke_point() {
+        // The barrier-creators and the non-workspace commands are exempt.
+        const EXEMPT: &[&str] = &[
+            "ping",                  // no workspace data
+            "set_workspace",         // CREATES the epoch (the barrier itself)
+            "pick_workspace_folder", // only returns a picked path
+            "watch_workspace",       // CREATES the epoch + arms the watcher
+        ];
+        // Built at runtime so this literal never appears in the scanned source
+        // (which would self-match); the test module is excluded regardless.
+        let marker = format!("#[tauri::{}]", "command");
+        for source in [include_str!("commands.rs"), include_str!("engine.rs")] {
+            // Scan only the non-test code (exclude the test module's string
+            // literals, which would confuse the crude split).
+            let code = source.split("\nmod tests").next().unwrap_or(source);
+            for block in code.split(marker.as_str()).skip(1) {
+                let name = block
+                    .split_once("fn ")
+                    .and_then(|(_, rest)| rest.split_once('('))
+                    .map(|(name, _)| name.trim())
+                    .unwrap_or("");
+                if EXEMPT.contains(&name) {
+                    continue;
+                }
+                assert!(
+                    block.contains(".finish("),
+                    "command `{name}` returns workspace data but never reaches the \
+                     Epoch::finish choke-point — route its result through it (// EPOCH-GUARDED)"
+                );
+            }
+        }
     }
 }

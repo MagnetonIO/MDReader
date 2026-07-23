@@ -5,7 +5,14 @@ import { filterFiles, fuzzyScore, rankFiles } from './file-jump.js';
 
 function file(path: string): WorkspaceFile {
   const name = path.split('/').pop()!;
-  return { path, name, dir: path.slice(0, path.length - name.length - 1), mtime: 0, size: 0 };
+  return {
+    path,
+    name,
+    dir: path.slice(0, path.length - name.length - 1),
+    mtime: 0,
+    size: 0,
+    ignored: false,
+  };
 }
 
 const files = [

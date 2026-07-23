@@ -4,6 +4,42 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/e2e.html');
 });
 
+test('grant → index progress → open → wikilink navigation (resolved + unresolved)', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+
+  // The StatusBar transitions from the busy import phase to the finished index.
+  await expect(page.getByText(/Indexing/)).toBeVisible();
+  await expect(page.getByText(/Indexed 3 files/)).toBeVisible();
+
+  // Open the note that carries the wikilinks.
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // A broken wikilink stays put and raises a toast (muted, non-navigating).
+  await page.getByRole('link', { name: 'Nonexistent' }).click();
+  await expect(page.getByText(/No note named "Nonexistent"/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // A resolved wikilink navigates the tab to the target note (through the index).
+  await page.getByRole('link', { name: 'Guide', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+});
+
+test('a wikilink with a heading navigates and scrolls to that section', async ({ page }) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // [[Guide#Section B]] resolves to guide.md AND scrolls to the Section B heading
+  // (the index returns the heading's source line; the reader jumps to it).
+  await page.getByRole('link', { name: 'Guide#Section B' }).click();
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Section B' })).toBeInViewport();
+});
+
 test('open from tree → render → outline-jump → tab lifecycle', async ({ page }) => {
   // Welcome state before any folder is open.
   await expect(page.getByText(/A calm place to read your markdown/i)).toBeVisible();

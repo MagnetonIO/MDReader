@@ -32,6 +32,25 @@ tauri-plugin-dialog = "2.7.2"
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
 walkdir = "2.5.0"
+# The embedded CatDB engine and the MDReader domain registration compose the
+# real index the shell drives. `catdb-embed` is pulled WITH `local-embed` on so
+# the app builds the real semantic embedder (`bge-small-en-v1.5` via ONNX): an
+# index is search-ready and the first-run model download is a visible one-time
+# cost. The deterministic `HashEmbedder` remains available behind the
+# `MDREADER_DEV_HASH_EMBED` runtime flag (dev/CI: no download). `mdreader-ingest`
+# stays default-features off to keep its `catdb` bin's ORT *binary* out of the
+# app build; we consume only its `registration()` and `scan_root` (public API).
+catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
+catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
+catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
+mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
+uuid = { workspace = true }
+# `time` for the model-load deadline (a never-finishing download must surface a
+# timeout, not hang the import forever).
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+# The engine-module tests open an in-memory engine and drive a real import (an
+# async runtime to block on), and exercise the model-load deadline (`time`).
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
