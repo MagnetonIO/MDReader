@@ -12,8 +12,11 @@
 
 #![deny(missing_docs)]
 
+use std::sync::Arc;
+
 pub use catdb_core::builtin;
 use catdb_core::{Mapping, PathProver, Schema};
+use catdb_engine::{DomainRegistration, Ingestor, RegisteredMapping};
 use catdb_validation::ValidationReport;
 
 /// Returns this crate's package name.
@@ -101,11 +104,75 @@ pub fn validate_all(prover: &dyn PathProver) -> ValidationReport {
     report
 }
 
+/// The MDReader domain, packaged for [`catdb_engine`]: every pipeline schema
+/// (and provenance core, and overlay) plus the three pipeline mappings, ready
+/// to be validated by the engine's prover at startup — this is the "domain
+/// registers itself INTO the engine" side of the platform boundary. The
+/// caller supplies the ingest pipelines (e.g. `mdreader-ingest`'s markdown
+/// ingestor) and the chunker version they implement, keeping this crate free
+/// of any parsing dependency.
+pub fn engine_registration(
+    ingestors: Vec<Arc<dyn Ingestor>>,
+    chunker_version: impl Into<String>,
+) -> DomainRegistration {
+    let mappings = vec![
+        RegisteredMapping {
+            name: "F_parse".to_string(),
+            mapping: builtin::parse_mapping(),
+            src: builtin::md_core_schema(),
+            dst: builtin::fs_schema(),
+        },
+        RegisteredMapping {
+            name: "F_extract".to_string(),
+            mapping: builtin::extract_mapping(),
+            src: builtin::kn_core_schema(),
+            dst: builtin::md_schema(),
+        },
+        RegisteredMapping {
+            name: "F_index".to_string(),
+            mapping: builtin::index_mapping(),
+            src: builtin::rx_core_schema(),
+            dst: builtin::kn_schema(),
+        },
+    ];
+    let schemas = pipeline_schemas()
+        .into_iter()
+        .chain(pipeline_core_schemas())
+        .chain(overlay_schemas())
+        .collect();
+    DomainRegistration {
+        name: crate_name().to_string(),
+        schemas,
+        mappings,
+        ingestors,
+        chunker_version: chunker_version.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use catdb_core::SchemaName;
     use catdb_validation::EggProver;
+
+    #[test]
+    fn engine_registration_carries_the_whole_domain() {
+        let registration = engine_registration(Vec::new(), "test-chunker@1");
+        assert_eq!(registration.schemas.len(), 9);
+        assert_eq!(registration.mappings.len(), 3);
+        assert_eq!(registration.chunker_version, "test-chunker@1");
+    }
+
+    #[test]
+    fn engine_accepts_the_registration_at_open() {
+        use catdb_embed::HashEmbedder;
+        use catdb_engine::{EmbeddedCatDb, EngineConfig};
+        let engine = EmbeddedCatDb::open(
+            EngineConfig::in_memory(Arc::new(HashEmbedder::new()))
+                .with_domain(engine_registration(Vec::new(), "test-chunker@1")),
+        );
+        assert!(engine.is_ok(), "engine must validate the mdreader domain");
+    }
 
     #[test]
     fn builds_on_catdb_core() {

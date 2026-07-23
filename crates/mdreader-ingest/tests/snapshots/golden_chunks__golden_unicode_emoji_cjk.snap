@@ -1,0 +1,25 @@
+---
+source: apps/mdreader/crates/mdreader-ingest/tests/golden_chunks.rs
+expression: "golden(\"edge-cases/unicode-emoji-cjk.md\")"
+---
+title: Unicode 🌍 表意文字 テスト
+frontmatter:
+  title: Unicode, Emoji, CJK
+  tags: [edge-case, unicode]
+section[0] depth=1 lines=6..30 own_end=9 parent=- hash=c188539d325d path=[Unicode 🌍 表意文字 テスト]
+  block paragraph 8..8
+  chunk part=0 tokens=22 hash=0bc9152c90ff text="Unicode 🌍 表意文字 テスト\\n\\n# Unicode 🌍 表意文字 テスト\\n\\nMixed scripts in o"
+section[1] depth=2 lines=10..14 own_end=14 parent=0 hash=2952dc1a61aa path=[Unicode 🌍 表意文字 テスト > Emoji]
+  block paragraph 12..13
+  chunk part=0 tokens=48 hash=10d7f34bf760 text="Unicode 🌍 表意文字 テスト > Emoji\\n\\n## Emoji\\n\\nStatus: ✅ done, 🚧 in p"
+section[2] depth=2 lines=15..20 own_end=20 parent=0 hash=29607ffa8a8a path=[Unicode 🌍 表意文字 テスト > CJK]
+  block list 17..19
+  chunk part=0 tokens=25 hash=ba25920f8af0 text="Unicode 🌍 表意文字 テスト > CJK\\n\\n## CJK\\n\\n- 中文：知识库把文档变成向量。\\n- 日本語：ドキュ"
+section[3] depth=2 lines=21..24 own_end=24 parent=0 hash=b306028ab6ca path=[Unicode 🌍 表意文字 テスト > Diacritics and RTL]
+  block paragraph 23..23
+  chunk part=0 tokens=37 hash=aaac7f495485 text="Unicode 🌍 表意文字 テスト > Diacritics and RTL\\n\\n## Diacritics and R"
+section[4] depth=2 lines=25..30 own_end=30 parent=0 hash=fe75f1e83779 path=[Unicode 🌍 表意文字 テスト > Widths and combining marks]
+  block paragraph 27..27
+  block paragraph 29..30
+  link markdown -> ../notes/zettel/node-provenance.md @30
+  chunk part=0 tokens=71 hash=4aaddf4d6dec text="Unicode 🌍 表意文字 テスト > Widths and combining marks\\n\\n## Widths a"

@@ -11,3 +11,7 @@ workspace = true
 [dependencies]
 catdb-core = { path = "../../../../catdb/crates/catdb-core" }
 catdb-validation = { path = "../../../../catdb/crates/catdb-validation" }
+catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
+
+[dev-dependencies]
+catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }

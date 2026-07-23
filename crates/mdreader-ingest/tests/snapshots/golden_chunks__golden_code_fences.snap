@@ -1,0 +1,37 @@
+---
+source: apps/mdreader/crates/mdreader-ingest/tests/golden_chunks.rs
+expression: "golden(\"docs/guides/code-fences.md\")"
+---
+title: Code Fences
+frontmatter:
+  title: Code Fences
+  tags: [guide, code]
+section[0] depth=1 lines=6..72 own_end=10 parent=- hash=1fdbae31455f path=[Code Fences]
+  block paragraph 8..9
+  chunk part=0 tokens=36 hash=375a7b62ee9a text="Code Fences\\n\\n# Code Fences\\n\\nFenced code in several languages"
+section[1] depth=2 lines=11..18 own_end=18 parent=0 hash=f7cfe2083380 path=[Code Fences > Rust]
+  block code 13..17 lang=rust
+  chunk part=0 tokens=36 hash=ec7c2aec7afa text="Code Fences > Rust\\n\\n## Rust\\n\\n```rust\\npub fn embed(text: &str"
+section[2] depth=2 lines=19..25 own_end=25 parent=0 hash=df8976f2e4cd path=[Code Fences > Python]
+  block code 21..24 lang=python
+  chunk part=0 tokens=40 hash=1b2abccee7c4 text="Code Fences > Python\\n\\n## Python\\n\\n```python\\ndef chunk(md: str"
+section[3] depth=2 lines=26..33 own_end=33 parent=0 hash=6c48ec638e38 path=[Code Fences > TypeScript]
+  block code 28..32 lang=typescript
+  chunk part=0 tokens=46 hash=830a6d8fbaf7 text="Code Fences > TypeScript\\n\\n## TypeScript\\n\\n```typescript\\nexpor"
+section[4] depth=2 lines=34..40 own_end=40 parent=0 hash=005b701ce5ee path=[Code Fences > SQL]
+  block code 36..39 lang=sql
+  chunk part=0 tokens=40 hash=9fc86670fce4 text="Code Fences > SQL\\n\\n## SQL\\n\\n```sql\\ncreate index notes_trgm on"
+section[5] depth=2 lines=41..48 own_end=48 parent=0 hash=c79b69f39c11 path=[Code Fences > Bash]
+  block code 43..47 lang=bash
+  chunk part=0 tokens=26 hash=fc416ba91b80 text="Code Fences > Bash\\n\\n## Bash\\n\\n```bash\\n#!/usr/bin/env bash\\nset"
+section[6] depth=2 lines=49..54 own_end=54 parent=0 hash=b3407e695a2f path=[Code Fences > JSON]
+  block code 51..53 lang=json
+  chunk part=0 tokens=27 hash=e0368e58076b text="Code Fences > JSON\\n\\n## JSON\\n\\n```json\\n{ \"path\": \"index.md\", \""
+section[7] depth=2 lines=55..62 own_end=62 parent=0 hash=4a9666e96ea0 path=[Code Fences > TOML]
+  block code 57..61 lang=toml
+  chunk part=0 tokens=20 hash=1030ca2d2bc7 text="Code Fences > TOML\\n\\n## TOML\\n\\n```toml\\n[db]\\nport = 54322\\nmajor"
+section[8] depth=2 lines=63..72 own_end=72 parent=0 hash=d6116502c5e9 path=[Code Fences > Indented (no language)]
+  block code 65..67
+  block paragraph 68..68
+  block code 70..72 lang=text
+  chunk part=0 tokens=50 hash=278e5c921be9 text="Code Fences > Indented (no language)\\n\\n## Indented (no langua"

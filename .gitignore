@@ -26,5 +26,8 @@ playwright-report/
 # Hand-authored fixtures live in fixtures/corpus/ and ARE committed.
 fixtures/generated/
 
+# Local CatDB databases (`catdb import` default --db location)
+.catdb/
+
 # macOS
 .DS_Store
