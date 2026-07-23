@@ -32,16 +32,19 @@ export const commands = {
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
 	/**
 	 *  Begin watching `root` recursively, emitting a debounced
-	 *  `mdreader://fs-changed` for every markdown file that changes, and adopt `root`
-	 *  as the granted workspace. This is the ONE atomic "switch workspace" operation:
-	 *  the new root becomes the grant *and* the live watcher together, or neither
-	 *  does. A `root` that cannot be resolved, or whose watch fails to arm, leaves
-	 *  BOTH the previous grant and the previous watcher fully intact and returns the
-	 *  error — the caller stays on the old workspace, and backend state can never
-	 *  diverge (a live watcher on one root while the grant names another). Runtime
-	 *  failures *during* watching are surfaced separately via `mdreader://watch-error`.
+	 *  `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
+	 *  the granted workspace, and **return its canonical path**. This is the ONE
+	 *  atomic "switch workspace" operation the UI awaits: the new root becomes the
+	 *  grant *and* the live watcher together (advancing the root generation), or
+	 *  neither does — so the caller never has to sequence a separate `set_workspace`
+	 *  against the watcher arming. A `root` that cannot be resolved, or whose watch
+	 *  fails to arm, leaves BOTH the previous grant and the previous watcher fully
+	 *  intact and returns the error — the caller stays on the old workspace, and
+	 *  backend state can never diverge (a live watcher on one root while the grant
+	 *  names another). Runtime failures *during* watching are surfaced separately
+	 *  via `mdreader://watch-error`.
 	 */
-	watchWorkspace: (root: string) => typedError<null, string>(__TAURI_INVOKE("watch_workspace", { root })),
+	watchWorkspace: (root: string) => typedError<string, string>(__TAURI_INVOKE("watch_workspace", { root })),
 	/**
 	 *  List the workspace's markdown files. Once an import has finished the rows come
 	 *  from the engine's index (gitignored files already dropped, so none are dimmed);
@@ -51,22 +54,33 @@ export const commands = {
 	 */
 	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, string>(__TAURI_INVOKE("list_workspace_files", { root })),
 	/**
-	 *  Open (or reuse) the workspace index, register `root` as its source, and run
-	 *  an incremental import — streaming coarse progress on `on_event` and returning
-	 *  the final status. The frontend fires this without awaiting (progress flows on
-	 *  the channel) but the resolved value is authoritative, so a mocked IPC (which
-	 *  need not drive the channel) still lands the StatusBar on `done`.
+	 *  Open (or reuse) the workspace index for the granted root and run an
+	 *  incremental import — streaming coarse progress on `on_event` (`loading` →
+	 *  `importing` → `done`/`error`) and returning the final status. `root` is
+	 *  validated against the active grant (a foreign path is a hard error); the
+	 *  index is keyed to the grant. Coalesced (#4): a second call for the same
+	 *  root+generation returns the live status instead of spawning a duplicate pass.
+	 *  Generation-scoped (#3): if a workspace switch supersedes this import, its
+	 *  status is discarded rather than published over the new workspace's. The
+	 *  frontend fires this without awaiting (progress flows on the channel) but the
+	 *  resolved value is authoritative, so a mocked IPC (which need not drive the
+	 *  channel) still lands the StatusBar on `done`.
 	 */
 	startImport: (root: string, onEvent: Channel<ImportProgress>) => typedError<ImportProgress, string>(__TAURI_INVOKE("start_import", { root, onEvent })),
-	/**  The latest import status — for the StatusBar's initial render and any poll. */
+	/**
+	 *  The latest import status for the current workspace generation — for the
+	 *  StatusBar's initial render and any poll. A status left over from a previous
+	 *  workspace (superseded by a switch) reads as `idle`.
+	 */
 	importStatus: () => typedError<ImportProgress, string>(__TAURI_INVOKE("import_status")),
 	/**
 	 *  Resolve a `[[wikilink]]` against the index. `from_doc` is the absolute path of
-	 *  the document the link sits in (reserved for future same-directory
-	 *  disambiguation); `target` is the raw link text; `heading` (optional) is the
-	 *  `#heading` suffix, resolved to a source line in the target document. Matching
-	 *  is filename-first (stem, case-insensitive), then document title; several
-	 *  matches yield `ambiguous` with the candidate set.
+	 *  the document the link sits in — it must live inside the granted workspace;
+	 *  `target` is the raw link text; `heading` (optional) is the `#heading` suffix,
+	 *  resolved to a source line in the target document. Matching is filename-first
+	 *  (stem, case-insensitive), then document title; several matches yield
+	 *  `ambiguous` with the candidate set. Only the CURRENT grant's engine may
+	 *  answer (a stale engine from a previous workspace never resolves).
 	 */
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
 };
@@ -139,8 +153,8 @@ export type FsChanged = {
  */
 export type ImportProgress = {
 	/**
-	 *  `"idle"` (no import yet), `"importing"` (in flight), `"done"`, or
-	 *  `"error"`.
+	 *  `"idle"` (no import yet), `"loading"` (constructing/downloading the
+	 *  embedding model), `"importing"` (in flight), `"done"`, or `"error"`.
 	 */
 	phase: string,
 	/**

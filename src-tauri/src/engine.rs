@@ -20,20 +20,38 @@
 //! one index. [`read_doc`](crate::commands::read_doc) still reads straight off
 //! disk — the index is for *finding*, never the source of truth for *content*.
 //!
-//! ## Embedder (P3 choice)
+//! ## Embedder (fastembed by default)
 //!
-//! P3 uses the deterministic [`HashEmbedder`]: imports stay offline and fast, so
-//! progress and wikilink features are exercisable without a model download. The
-//! semantic (fastembed) provider arrives with search in P4; the engine records
-//! the model on its index version, so the swap is a one-line change here.
+//! The app builds the real semantic embedder — [`FastembedEmbedder`]
+//! (`bge-small-en-v1.5`, 384-d, via ONNX Runtime) — so an index is search-ready
+//! and the first-run model download is a visible, one-time cost. Construction is
+//! blocking (it deserializes the ONNX graph, downloading weights on first use),
+//! so it runs off the command thread via [`FastembedEmbedder::load`] and is
+//! surfaced as a distinct `"loading"` import phase before scanning begins.
+//!
+//! The deterministic [`HashEmbedder`] is used **only** when the
+//! `MDREADER_DEV_HASH_EMBED` environment variable is set — an explicit dev/CI
+//! escape hatch that keeps imports offline and instant (no model download).
+//! Unit/e2e tests run under that flag (or drive the engine directly with a
+//! `HashEmbedder`), so CI never downloads a model.
 //!
 //! ## Progress granularity (honest)
 //!
 //! `catdb-engine`'s `import` is one atomic call — it exposes no per-file
-//! callback — so progress is coarse by construction: a pre-scan yields the file
-//! *total*, the StatusBar spins through the `importing` phase, and the final
-//! report fills in files/chunks on `done` (or the message on `error`). Finer
-//! streaming would need engine changes, which are out of this lane's scope.
+//! callback — so progress is coarse by construction: a `"loading"` phase covers
+//! model construction, a pre-scan yields the file *total*, the StatusBar spins
+//! through the `importing` phase, and the final report fills in files/chunks on
+//! `done` (or the message on `error`). Finer streaming would need engine
+//! changes, which are out of this lane's scope.
+//!
+//! ## Grant discipline
+//!
+//! Every engine command validates its target against the current canonical
+//! [`WorkspaceState`] grant, exactly like the fs commands: an import root must be
+//! the granted workspace (or contained in it), a wikilink's origin document must
+//! live inside it, and the cached engine is **keyed to and re-verified against**
+//! the active grant so a stale engine from a previous workspace can never answer.
+//! Foreign roots are a hard error.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -44,12 +62,14 @@ use specta::Type;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-use catdb_embed::{Embedder, HashEmbedder};
+use catdb_embed::{Embedder, FastembedEmbedder, HashEmbedder};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
 use mdreader_ingest::{registration, scan_root, ScanOptions};
 
-use crate::commands::{canonical_dir, mtime_millis, resolve_dir, FileEntry, WorkspaceState};
+use crate::commands::{
+    canonical_dir, mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState,
+};
 
 /// Default per-file size ceiling the ingest scan honors (mirrors the engine's
 /// `ImportOptions` default of 2 MiB); the fs-fallback listing uses the same
@@ -60,21 +80,71 @@ const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 // State
 // --------------------------------------------------------------------------
 
-/// The engine for the currently granted workspace, plus the last import status.
-/// One workspace is active at a time (mirroring [`WorkspaceState`]'s single
-/// grant); switching folders replaces the cached engine.
+/// The engine for the currently granted workspace, plus the last import status
+/// and the in-flight-import handle. One workspace is active at a time (mirroring
+/// [`WorkspaceState`]'s single grant); switching folders replaces the cached
+/// engine and advances the root generation.
 #[derive(Default)]
 pub struct EngineState {
     inner: Mutex<EngineInner>,
-    status: Mutex<ImportProgress>,
+    /// The last import status, tagged with the root generation it belongs to, so
+    /// an old import's late status can never overwrite the new workspace's.
+    status: Mutex<GenStatus>,
+    /// The currently-running import (root + generation) for coalescing: a second
+    /// `start_import` for the same root+generation returns the live status
+    /// instead of spawning a duplicate pass.
+    active: Mutex<ActiveImport>,
 }
 
 #[derive(Default)]
 struct EngineInner {
     /// The opened engine, or `None` before the first `start_import`.
     engine: Option<Arc<EmbeddedCatDb>>,
-    /// Canonical source root the cached engine imports from.
+    /// Canonical source root the cached engine imports from (always the grant).
     root: Option<PathBuf>,
+}
+
+/// The last import status plus the root generation it was published under.
+struct GenStatus {
+    generation: u64,
+    progress: ImportProgress,
+}
+
+impl Default for GenStatus {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            progress: ImportProgress::default(),
+        }
+    }
+}
+
+/// The root + generation of the import currently in flight (if any).
+#[derive(Default)]
+struct ActiveImport {
+    root: Option<PathBuf>,
+    generation: u64,
+}
+
+/// Releases the active-import claim on drop — but only if the slot still names
+/// this pass's root+generation (a newer switch may have re-claimed it, and that
+/// claim must survive this pass unwinding).
+struct ActiveGuard<'a> {
+    engine: &'a EngineState,
+    root: PathBuf,
+    generation: u64,
+}
+
+impl Drop for ActiveGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.engine.active.lock() {
+            if active.generation == self.generation
+                && active.root.as_deref() == Some(self.root.as_path())
+            {
+                active.root = None;
+            }
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -86,8 +156,8 @@ struct EngineInner {
 /// see the module docs on progress granularity.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ImportProgress {
-    /// `"idle"` (no import yet), `"importing"` (in flight), `"done"`, or
-    /// `"error"`.
+    /// `"idle"` (no import yet), `"loading"` (constructing/downloading the
+    /// embedding model), `"importing"` (in flight), `"done"`, or `"error"`.
     pub phase: String,
     /// Files processed so far (equals `files_total` on `done`; the atomic import
     /// gives no intermediate count).
@@ -113,6 +183,18 @@ impl Default for ImportProgress {
 }
 
 impl ImportProgress {
+    /// The model is being constructed (deserialized, and downloaded on first
+    /// run). Published before the scan so the first-run download is visible.
+    fn loading() -> Self {
+        Self {
+            phase: "loading".to_string(),
+            files_done: 0,
+            files_total: 0,
+            chunks_embedded: 0,
+            error: None,
+        }
+    }
+
     fn importing(files_total: u32) -> Self {
         Self {
             phase: "importing".to_string(),
@@ -232,10 +314,31 @@ pub(crate) fn db_path_under(base: &Path, canonical_root: &Path) -> PathBuf {
     base.join("workspaces").join(hash).join("catdb.db")
 }
 
+/// Whether the deterministic [`HashEmbedder`] dev/CI escape hatch is engaged
+/// (`MDREADER_DEV_HASH_EMBED` is present in the environment). Off by default, so
+/// the shipping app builds the real semantic model.
+fn dev_hash_embed() -> bool {
+    std::env::var_os("MDREADER_DEV_HASH_EMBED").is_some()
+}
+
+/// Build the embedder for the app, off the command thread. Default: the local
+/// fastembed model (`bge-small-en-v1.5`), constructed — and downloaded on first
+/// run — via [`FastembedEmbedder::load`] inside `spawn_blocking`. Only when the
+/// `MDREADER_DEV_HASH_EMBED` flag is set does it fall back to the deterministic
+/// [`HashEmbedder`] (no model download; dev/CI only).
+async fn build_embedder() -> Result<Arc<dyn Embedder>, String> {
+    if dev_hash_embed() {
+        return Ok(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>);
+    }
+    let embedder = FastembedEmbedder::load(None)
+        .await
+        .map_err(|err| format!("load embedding model: {err}"))?;
+    Ok(Arc::new(embedder) as Arc<dyn Embedder>)
+}
+
 /// Open (creating if needed) the engine at `db_path`, composed with the MDReader
-/// domain and the deterministic hash embedder.
-fn open_engine(db_path: &Path) -> Result<Arc<EmbeddedCatDb>, String> {
-    let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
+/// domain and `embedder`.
+fn open_engine(db_path: &Path, embedder: Arc<dyn Embedder>) -> Result<Arc<EmbeddedCatDb>, String> {
     let mut config = EngineConfig::new(db_path, embedder).with_actor("mdreader-app");
     config.domains = vec![registration()];
     EmbeddedCatDb::open(config)
@@ -243,47 +346,141 @@ fn open_engine(db_path: &Path) -> Result<Arc<EmbeddedCatDb>, String> {
         .map_err(|err| format!("open index: {err}"))
 }
 
-/// Return the cached engine for `root`, opening and caching it if the grant
-/// changed. Yields the engine plus its canonical source root.
-fn ensure_engine(
-    state: &EngineState,
+/// Validate an import `root` against the active grant and return the canonical
+/// grant the engine keys and imports on. The target must be the granted
+/// workspace root (or contained within it); a foreign path — or no grant at all
+/// — is a hard error. The engine is always keyed to the *grant*, never to an
+/// arbitrary caller-supplied path, so one workspace maps to exactly one index.
+fn import_root_for(workspace: &WorkspaceState, root: &str) -> Result<PathBuf, String> {
+    let granted = workspace.root()?;
+    let candidate = canonical_dir(root)?;
+    if !candidate.starts_with(&granted) {
+        return Err(format!("path escapes the workspace: {root}"));
+    }
+    Ok(granted)
+}
+
+/// Return the cached engine, opening (and caching) it for `granted` if the grant
+/// changed. On a fresh open the embedder is constructed off the command thread,
+/// with a `"loading"` phase published first so the first-run model download is
+/// visible. `granted` must already be the validated canonical grant.
+async fn ensure_engine(
+    engine: &EngineState,
+    workspace: &WorkspaceState,
     app: &AppHandle,
-    root: &str,
-) -> Result<(Arc<EmbeddedCatDb>, PathBuf), String> {
-    let canonical = canonical_dir(root)?;
-    let mut inner = state
-        .inner
-        .lock()
-        .map_err(|_| "engine state poisoned".to_string())?;
-    if let (Some(engine), Some(cached)) = (&inner.engine, &inner.root) {
-        if *cached == canonical {
-            return Ok((Arc::clone(engine), canonical));
+    granted: &Path,
+    channel: &Channel<ImportProgress>,
+    generation: u64,
+) -> Result<Arc<EmbeddedCatDb>, String> {
+    // Fast path: the engine is already open for this exact grant.
+    {
+        let inner = engine
+            .inner
+            .lock()
+            .map_err(|_| "engine state poisoned".to_string())?;
+        if let (Some(db), Some(cached)) = (&inner.engine, &inner.root) {
+            if cached == granted {
+                return Ok(Arc::clone(db));
+            }
         }
     }
+
+    // Slow path: build the model (visible as "loading") and open the index. No
+    // state lock is held across the (blocking, possibly network) construction.
     let base = app
         .path()
         .app_data_dir()
         .map_err(|err| format!("no app data dir: {err}"))?;
-    let db_path = db_path_under(&base, &canonical);
-    let engine = open_engine(&db_path)?;
-    // A workspace switch abandons the previous status too (it belonged to the
-    // old root); reset so the StatusBar does not show a stale "done".
-    if let Ok(mut status) = state.status.lock() {
-        *status = ImportProgress::default();
-    }
-    inner.engine = Some(Arc::clone(&engine));
-    inner.root = Some(canonical.clone());
-    Ok((engine, canonical))
+    let db_path = db_path_under(&base, granted);
+    publish(engine, workspace, channel, generation, ImportProgress::loading());
+    let embedder = build_embedder().await?;
+    let db = open_engine(&db_path, embedder)?;
+
+    let mut inner = engine
+        .inner
+        .lock()
+        .map_err(|_| "engine state poisoned".to_string())?;
+    inner.engine = Some(Arc::clone(&db));
+    inner.root = Some(granted.to_path_buf());
+    Ok(db)
 }
 
-/// Record `progress` as the latest status and stream it on the import channel
-/// (a closed channel is ignored — the frontend also gets the final value from
-/// `start_import`'s return).
-fn publish(state: &EngineState, channel: &Channel<ImportProgress>, progress: ImportProgress) {
-    if let Ok(mut status) = state.status.lock() {
-        *status = progress.clone();
+/// Try to claim the active-import slot for `granted`+`generation`. Returns
+/// `true` when the caller now owns the slot (it should run the import) or
+/// `false` when an import for the same root+generation is already in flight (the
+/// caller coalesces onto it — returning the live status — instead of spawning a
+/// duplicate pass). A *different* root/generation supersedes the previous claim.
+fn claim_active(engine: &EngineState, granted: &Path, generation: u64) -> Result<bool, String> {
+    let mut active = engine
+        .active
+        .lock()
+        .map_err(|_| "engine state poisoned".to_string())?;
+    if active.generation == generation && active.root.as_deref() == Some(granted) {
+        return Ok(false);
     }
-    let _ = channel.send(progress);
+    active.generation = generation;
+    active.root = Some(granted.to_path_buf());
+    Ok(true)
+}
+
+/// The current import status (for coalescing returns and polling).
+fn current_status(engine: &EngineState) -> Result<ImportProgress, String> {
+    engine
+        .status
+        .lock()
+        .map(|status| status.progress.clone())
+        .map_err(|_| "engine state poisoned".to_string())
+}
+
+/// The status for the *current* generation: the stored progress when it belongs
+/// to the active grant, else `idle` (a switch has moved on and the stored status
+/// is a previous workspace's).
+fn status_for(engine: &EngineState, workspace: &WorkspaceState) -> Result<ImportProgress, String> {
+    let current = workspace.generation();
+    let status = engine
+        .status
+        .lock()
+        .map_err(|_| "engine state poisoned".to_string())?;
+    Ok(if status.generation == current {
+        status.progress.clone()
+    } else {
+        ImportProgress::default()
+    })
+}
+
+/// Record `progress` as the status for `generation` — UNLESS a switch has
+/// advanced the grant past it, in which case this is a stale pass and its status
+/// is discarded (never overwriting the new workspace's). Returns whether the
+/// write landed.
+fn record_status(
+    engine: &EngineState,
+    workspace: &WorkspaceState,
+    generation: u64,
+    progress: &ImportProgress,
+) -> bool {
+    if workspace.generation() != generation {
+        return false;
+    }
+    if let Ok(mut status) = engine.status.lock() {
+        status.generation = generation;
+        status.progress = progress.clone();
+    }
+    true
+}
+
+/// Record `progress` for `generation` and, when it is not stale, stream it on
+/// the import channel (a closed channel is ignored — the frontend also gets the
+/// final value from `start_import`'s return).
+fn publish(
+    engine: &EngineState,
+    workspace: &WorkspaceState,
+    channel: &Channel<ImportProgress>,
+    generation: u64,
+    progress: ImportProgress,
+) {
+    if record_status(engine, workspace, generation, &progress) {
+        let _ = channel.send(progress);
+    }
 }
 
 /// Best-effort pre-scan for the file total shown while importing. A scan failure
@@ -306,43 +503,74 @@ fn scan_options(respect_gitignore: bool) -> ScanOptions {
 // start_import / import_status
 // --------------------------------------------------------------------------
 
-/// Open (or reuse) the workspace index, register `root` as its source, and run
-/// an incremental import — streaming coarse progress on `on_event` and returning
-/// the final status. The frontend fires this without awaiting (progress flows on
-/// the channel) but the resolved value is authoritative, so a mocked IPC (which
-/// need not drive the channel) still lands the StatusBar on `done`.
+/// Open (or reuse) the workspace index for the granted root and run an
+/// incremental import — streaming coarse progress on `on_event` (`loading` →
+/// `importing` → `done`/`error`) and returning the final status. `root` is
+/// validated against the active grant (a foreign path is a hard error); the
+/// index is keyed to the grant. Coalesced (#4): a second call for the same
+/// root+generation returns the live status instead of spawning a duplicate pass.
+/// Generation-scoped (#3): if a workspace switch supersedes this import, its
+/// status is discarded rather than published over the new workspace's. The
+/// frontend fires this without awaiting (progress flows on the channel) but the
+/// resolved value is authoritative, so a mocked IPC (which need not drive the
+/// channel) still lands the StatusBar on `done`.
 #[tauri::command]
 #[specta::specta]
 pub async fn start_import(
     app: AppHandle,
     root: String,
     on_event: Channel<ImportProgress>,
+    workspace: State<'_, WorkspaceState>,
     engine: State<'_, EngineState>,
 ) -> Result<ImportProgress, String> {
-    let (db, canonical) = ensure_engine(&engine, &app, &root)?;
-    let total = scan_count(&canonical);
-    publish(&engine, &on_event, ImportProgress::importing(total));
+    let granted = import_root_for(&workspace, &root)?;
+    let generation = workspace.generation();
+
+    // Coalesce onto an in-flight import for the same root+generation (#4).
+    if !claim_active(&engine, &granted, generation)? {
+        return current_status(&engine);
+    }
+    let _guard = ActiveGuard {
+        engine: &engine,
+        root: granted.clone(),
+        generation,
+    };
+
+    let db = match ensure_engine(&engine, &workspace, &app, &granted, &on_event, generation).await {
+        Ok(db) => db,
+        Err(err) => {
+            // A model-load / open failure is reported as an `error` status (not a
+            // hard command error — the StatusBar surfaces the message).
+            let failed = ImportProgress::failed(0, err);
+            publish(&engine, &workspace, &on_event, generation, failed.clone());
+            return Ok(failed);
+        }
+    };
+
+    let total = scan_count(&granted);
+    publish(&engine, &workspace, &on_event, generation, ImportProgress::importing(total));
 
     // The engine serializes imports internally (single-writer); a concurrent
     // call simply queues, so re-firing on a rapid re-grant is safe.
-    let outcome = db.import(&canonical, ImportOptions::default()).await;
+    let outcome = db.import(&granted, ImportOptions::default()).await;
     let final_status = match outcome {
         Ok(report) => ImportProgress::done(&report),
         Err(err) => ImportProgress::failed(total, err.to_string()),
     };
-    publish(&engine, &on_event, final_status.clone());
+    publish(&engine, &workspace, &on_event, generation, final_status.clone());
     Ok(final_status)
 }
 
-/// The latest import status — for the StatusBar's initial render and any poll.
+/// The latest import status for the current workspace generation — for the
+/// StatusBar's initial render and any poll. A status left over from a previous
+/// workspace (superseded by a switch) reads as `idle`.
 #[tauri::command]
 #[specta::specta]
-pub fn import_status(engine: State<'_, EngineState>) -> Result<ImportProgress, String> {
-    engine
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .map_err(|_| "engine state poisoned".to_string())
+pub fn import_status(
+    workspace: State<'_, WorkspaceState>,
+    engine: State<'_, EngineState>,
+) -> Result<ImportProgress, String> {
+    status_for(&engine, &workspace)
 }
 
 // --------------------------------------------------------------------------
@@ -366,30 +594,40 @@ pub fn list_workspace_files(
     // the commands module's "TOCTOU" note; local single-user reader).
     let root_path = resolve_dir(&granted, Path::new(&root))?;
 
-    let index_done = engine
-        .status
-        .lock()
-        .map(|status| status.is_done())
-        .unwrap_or(false);
+    // Serve from the index only when the CURRENT generation's import has finished
+    // (a status left from a previous workspace does not count).
+    let index_done = {
+        let current = workspace.generation();
+        engine
+            .status
+            .lock()
+            .map(|status| status.generation == current && status.progress.is_done())
+            .unwrap_or(false)
+    };
     if index_done {
+        // The cached engine may only answer when it is keyed to the ACTIVE grant
+        // (never a stale engine carried over from a previous workspace).
         let cached = {
             let inner = engine
                 .inner
                 .lock()
                 .map_err(|_| "engine state poisoned".to_string())?;
             match (&inner.engine, &inner.root) {
-                (Some(engine), Some(src_root)) => Some((Arc::clone(engine), src_root.clone())),
+                (Some(engine), Some(src_root)) if *src_root == granted => {
+                    Some((Arc::clone(engine), src_root.clone()))
+                }
                 _ => None,
             }
         };
         if let Some((db, src_root)) = cached {
+            // Once the index is built it is authoritative: report its provenance
+            // (`from_index`) even when it legitimately holds no documents (an
+            // empty workspace), rather than masquerading as the fs fallback (#7).
             let entries = index_listing(&db, &src_root, &root_path)?;
-            if !entries.is_empty() {
-                return Ok(WorkspaceListing {
-                    entries,
-                    from_index: true,
-                });
-            }
+            return Ok(WorkspaceListing {
+                entries,
+                from_index: true,
+            });
         }
     }
 
@@ -469,28 +707,45 @@ fn file_entry(abs: &Path, ignored: bool) -> FileEntry {
 // resolve_wikilink
 // --------------------------------------------------------------------------
 
+/// Validate a wikilink resolution request against the active grant: the origin
+/// document `from_doc` (when given) must live inside the granted workspace — a
+/// foreign origin (or no grant at all) is a hard error. Returns the canonical
+/// grant on success. `from_doc` is otherwise reserved for future same-directory
+/// disambiguation.
+fn wikilink_guard(workspace: &WorkspaceState, from_doc: &str) -> Result<PathBuf, String> {
+    let granted = workspace.root()?;
+    if !from_doc.is_empty() {
+        resolve_within(&granted, Path::new(from_doc))?;
+    }
+    Ok(granted)
+}
+
 /// Resolve a `[[wikilink]]` against the index. `from_doc` is the absolute path of
-/// the document the link sits in (reserved for future same-directory
-/// disambiguation); `target` is the raw link text; `heading` (optional) is the
-/// `#heading` suffix, resolved to a source line in the target document. Matching
-/// is filename-first (stem, case-insensitive), then document title; several
-/// matches yield `ambiguous` with the candidate set.
+/// the document the link sits in — it must live inside the granted workspace;
+/// `target` is the raw link text; `heading` (optional) is the `#heading` suffix,
+/// resolved to a source line in the target document. Matching is filename-first
+/// (stem, case-insensitive), then document title; several matches yield
+/// `ambiguous` with the candidate set. Only the CURRENT grant's engine may
+/// answer (a stale engine from a previous workspace never resolves).
 #[tauri::command]
 #[specta::specta]
 pub fn resolve_wikilink(
     from_doc: String,
     target: String,
     heading: Option<String>,
+    workspace: State<'_, WorkspaceState>,
     engine: State<'_, EngineState>,
 ) -> Result<WikiResolution, String> {
-    let _ = from_doc;
+    let granted = wikilink_guard(&workspace, &from_doc)?;
     let cached = {
         let inner = engine
             .inner
             .lock()
             .map_err(|_| "engine state poisoned".to_string())?;
         match (&inner.engine, &inner.root) {
-            (Some(engine), Some(src_root)) => Some((Arc::clone(engine), src_root.clone())),
+            (Some(engine), Some(src_root)) if *src_root == granted => {
+                Some((Arc::clone(engine), src_root.clone()))
+            }
             _ => None,
         }
     };
@@ -613,14 +868,19 @@ fn title_matches(
     Ok(out)
 }
 
-/// A document's title: the outermost heading of its first section, if any.
+/// A document's title: the outermost heading of the first section that actually
+/// carries one. The ingestor deliberately stores a headingless preamble as the
+/// FIRST section (empty `heading_path`), so `sections.first()` would miss the
+/// title on any doc that opens with prose before its heading — skip it and take
+/// the first heading-bearing section instead.
 fn title_of(db: &EmbeddedCatDb, document_id: uuid::Uuid) -> Result<Option<String>, String> {
     let sections = db
         .store()
         .sections_for_document(document_id)
         .map_err(|err| format!("sections: {err}"))?;
     Ok(sections
-        .first()
+        .iter()
+        .find(|section| !section.heading_path.is_empty())
         .and_then(|section| section.heading_path.first().cloned()))
 }
 
@@ -782,5 +1042,132 @@ mod tests {
         let line = heading_line(&db, guide_id, "Deep Dive").unwrap();
         assert_eq!(line, Some(5));
         assert_eq!(heading_line(&db, guide_id, "nope").unwrap(), None);
+    }
+
+    /// A canonicalized temp workspace root.
+    fn workspace_dir() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        (dir, root)
+    }
+
+    #[test]
+    fn import_root_rejects_a_foreign_path_and_accepts_the_grant() {
+        let (_g, granted) = workspace_dir();
+        let (_f, foreign) = workspace_dir();
+        let ws = WorkspaceState::granted(granted.clone());
+
+        // The granted root is accepted and keys the engine to the grant itself.
+        assert_eq!(
+            import_root_for(&ws, granted.to_str().unwrap()).unwrap(),
+            granted
+        );
+        // A nested subdirectory is contained, so it is accepted — still keyed to
+        // the grant (one workspace → one index).
+        let sub = granted.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(import_root_for(&ws, sub.to_str().unwrap()).unwrap(), granted);
+
+        // A foreign root is a hard error, as is having no grant at all.
+        assert!(import_root_for(&ws, foreign.to_str().unwrap()).is_err());
+        assert!(import_root_for(&WorkspaceState::default(), granted.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn wikilink_guard_rejects_a_foreign_origin_document() {
+        let (_g, granted) = workspace_dir();
+        let (_f, foreign) = workspace_dir();
+        let ws = WorkspaceState::granted(granted.clone());
+
+        // An origin document inside the grant (and the empty origin) are accepted.
+        let inside = granted.join("note.md");
+        fs::write(&inside, "# Note").unwrap();
+        assert!(wikilink_guard(&ws, inside.to_str().unwrap()).is_ok());
+        assert!(wikilink_guard(&ws, "").is_ok());
+
+        // An origin document outside the grant is rejected, as is no grant.
+        let outside = foreign.join("secret.md");
+        fs::write(&outside, "# Secret").unwrap();
+        assert!(wikilink_guard(&ws, outside.to_str().unwrap()).is_err());
+        assert!(wikilink_guard(&WorkspaceState::default(), inside.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_superseded_imports_late_status_is_discarded() {
+        let (_g, granted) = workspace_dir();
+        let ws = WorkspaceState::granted(granted);
+        let engine = EngineState::default();
+        let gen = ws.generation();
+
+        // A current-generation publish lands and is what the status reports.
+        assert!(record_status(&engine, &ws, gen, &ImportProgress::importing(3)));
+        assert_eq!(status_for(&engine, &ws).unwrap().phase, "importing");
+
+        // A switch advances the generation. The OLD import's late status is now
+        // stale: record_status refuses it, and the leftover reads as idle for the
+        // NEW workspace (never the previous workspace's progress).
+        let (_g2, granted2) = workspace_dir();
+        ws.advance_for_test(granted2);
+        assert!(!record_status(&engine, &ws, gen, &ImportProgress::importing(9)));
+        assert_eq!(status_for(&engine, &ws).unwrap().phase, "idle");
+
+        // A fresh publish under the CURRENT generation lands normally.
+        assert!(record_status(&engine, &ws, ws.generation(), &ImportProgress::importing(2)));
+        assert_eq!(status_for(&engine, &ws).unwrap().phase, "importing");
+    }
+
+    #[test]
+    fn active_import_is_coalesced_per_root_and_generation() {
+        let (_g, granted) = workspace_dir();
+        let engine = EngineState::default();
+
+        // The first claim for (root, generation) wins; a second for the SAME
+        // root+generation coalesces (returns false → caller reuses the live pass).
+        assert!(claim_active(&engine, &granted, 1).unwrap());
+        assert!(!claim_active(&engine, &granted, 1).unwrap());
+
+        // A newer generation supersedes the previous claim.
+        assert!(claim_active(&engine, &granted, 2).unwrap());
+
+        // Dropping the pass's guard frees the slot so a later run can re-claim.
+        {
+            let _guard = ActiveGuard {
+                engine: &engine,
+                root: granted.clone(),
+                generation: 2,
+            };
+        }
+        assert!(claim_active(&engine, &granted, 2).unwrap());
+    }
+
+    #[test]
+    fn title_resolves_through_a_headingless_preamble() {
+        let corpus = TempDir::new().unwrap();
+        let root = fs::canonicalize(corpus.path()).unwrap();
+        // Prose BEFORE the first heading → the ingestor stores a headingless
+        // preamble section first; the title must still resolve to the real
+        // heading rather than to the (empty) preamble.
+        fs::write(
+            root.join("note.md"),
+            "Intro prose before any heading.\n\n# Real Title\n\nBody.\n",
+        )
+        .unwrap();
+
+        let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
+        let mut config = EngineConfig::in_memory(embedder).with_actor("test");
+        config.domains = vec![registration()];
+        let db = EmbeddedCatDb::open(config).expect("open in-memory engine");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(db.import(&root, ImportOptions::default()))
+            .expect("import corpus");
+
+        let docs = db.store().list_documents().unwrap();
+        let id = docs[0].id;
+        assert_eq!(title_of(&db, id).unwrap().as_deref(), Some("Real Title"));
+        // The title-based wikilink match finds it too (filename stem is `note`).
+        assert_eq!(title_matches(&db, &docs, "real title").unwrap().len(), 1);
     }
 }

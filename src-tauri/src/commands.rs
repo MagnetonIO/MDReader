@@ -36,6 +36,7 @@
 //! notes it at the use site.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -75,28 +76,56 @@ pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
 // --------------------------------------------------------------------------
 
 /// The single granted workspace root (canonicalized), or `None` before a folder
-/// has been picked/restored. Every path-taking command validates its argument
-/// against this root.
+/// has been picked/restored, plus a monotonic **root generation**. Every
+/// path-taking command validates its argument against this root; the generation
+/// advances on every grant change so a switch can invalidate any import still
+/// running for the *previous* workspace (an old pass's late status never
+/// overwrites the new workspace's progress — see the engine module's per-
+/// generation status slot).
 #[derive(Default)]
-pub struct WorkspaceState(pub Mutex<Option<PathBuf>>);
+pub struct WorkspaceState {
+    root: Mutex<Option<PathBuf>>,
+    generation: AtomicU64,
+}
 
 impl WorkspaceState {
     /// The current granted root, or an error when no workspace has been granted.
     pub(crate) fn root(&self) -> Result<PathBuf, String> {
-        self.0
+        self.root
             .lock()
             .map_err(|_| "workspace state poisoned".to_string())?
             .clone()
             .ok_or_else(|| "no workspace has been opened".to_string())
     }
 
-    /// Replace the granted root with `root` (already canonicalized).
+    /// The current root generation (advances on every grant change).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Replace the granted root with `root` (already canonicalized) and advance
+    /// the root generation, invalidating any import scoped to the previous grant.
     fn set(&self, root: PathBuf) -> Result<(), String> {
         *self
-            .0
+            .root
             .lock()
             .map_err(|_| "workspace state poisoned".to_string())? = Some(root);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    /// Test helper: a state already granting `root` (generation advanced to 1).
+    #[cfg(test)]
+    pub(crate) fn granted(root: PathBuf) -> Self {
+        let state = Self::default();
+        state.set(root).expect("grant test root");
+        state
+    }
+
+    /// Test helper: simulate a workspace switch to `root` (advances generation).
+    #[cfg(test)]
+    pub(crate) fn advance_for_test(&self, root: PathBuf) {
+        self.set(root).expect("advance grant");
     }
 }
 
@@ -105,7 +134,7 @@ impl WorkspaceState {
 /// one check that defeats both `../` traversal and symlink-escape: canonicalize
 /// resolves every `..` and symlink, so `starts_with` is evaluated on real,
 /// fully-resolved paths.
-fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(candidate)
         .map_err(|err| format!("cannot resolve {}: {err}", candidate.display()))?;
     if real.starts_with(root) {
@@ -327,14 +356,17 @@ pub struct WatchError {
 pub struct WatcherState(pub Mutex<Option<Debouncer<RecommendedWatcher>>>);
 
 /// Begin watching `root` recursively, emitting a debounced
-/// `mdreader://fs-changed` for every markdown file that changes, and adopt `root`
-/// as the granted workspace. This is the ONE atomic "switch workspace" operation:
-/// the new root becomes the grant *and* the live watcher together, or neither
-/// does. A `root` that cannot be resolved, or whose watch fails to arm, leaves
-/// BOTH the previous grant and the previous watcher fully intact and returns the
-/// error — the caller stays on the old workspace, and backend state can never
-/// diverge (a live watcher on one root while the grant names another). Runtime
-/// failures *during* watching are surfaced separately via `mdreader://watch-error`.
+/// `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
+/// the granted workspace, and **return its canonical path**. This is the ONE
+/// atomic "switch workspace" operation the UI awaits: the new root becomes the
+/// grant *and* the live watcher together (advancing the root generation), or
+/// neither does — so the caller never has to sequence a separate `set_workspace`
+/// against the watcher arming. A `root` that cannot be resolved, or whose watch
+/// fails to arm, leaves BOTH the previous grant and the previous watcher fully
+/// intact and returns the error — the caller stays on the old workspace, and
+/// backend state can never diverge (a live watcher on one root while the grant
+/// names another). Runtime failures *during* watching are surfaced separately
+/// via `mdreader://watch-error`.
 #[tauri::command]
 #[specta::specta]
 pub fn watch_workspace(
@@ -342,9 +374,9 @@ pub fn watch_workspace(
     root: String,
     workspace: tauri::State<'_, WorkspaceState>,
     state: tauri::State<'_, WatcherState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let emit_app = app.clone();
-    watch_and_commit(
+    let granted = watch_and_commit(
         &root,
         &workspace,
         &state,
@@ -372,7 +404,8 @@ pub fn watch_workspace(
                 .emit(&emit_app);
             }
         },
-    )
+    )?;
+    Ok(granted.to_string_lossy().into_owned())
 }
 
 /// The workspace-switch core, factored out of [`watch_workspace`] so it is
@@ -385,7 +418,7 @@ fn watch_and_commit<F: DebounceEventHandler>(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     on_event: F,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     // A workspace SWITCH targets a NEW root that is not inside the old grant, so
     // resolve it independently: this command is the one that ESTABLISHES the grant.
     // TOCTOU: the watch below arms after this check (accepted — see the
@@ -402,7 +435,8 @@ fn watch_and_commit<F: DebounceEventHandler>(
         .watch(&new_root, RecursiveMode::Recursive)
         .map_err(|err| format!("watch {root} failed: {err}"))?;
 
-    commit_workspace(workspace, watcher, new_root, debouncer)
+    commit_workspace(workspace, watcher, new_root.clone(), debouncer)?;
+    Ok(new_root)
 }
 
 /// Adopt `new_root` as the grant and `debouncer` as the live watcher, dropping
@@ -424,11 +458,14 @@ fn commit_workspace(
         .lock()
         .map_err(|_| "watcher state poisoned".to_string())?;
     let mut grant_slot = workspace
-        .0
+        .root
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
-    // Both locks held — neither write below can fail, so the swap is atomic.
+    // Both locks held — neither write below can fail, so the swap is atomic. The
+    // generation advances with the grant so any import still running for the old
+    // root is invalidated (its late status is discarded, not published).
     *grant_slot = Some(new_root);
+    workspace.generation.fetch_add(1, Ordering::AcqRel);
     *watcher_slot = Some(debouncer);
     Ok(())
 }
@@ -553,7 +590,7 @@ mod tests {
     fn watch_switch_swaps_atomically_and_failure_preserves_old_state() {
         let (_a, root_a) = workspace();
         let (_b, root_b) = workspace();
-        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let workspace = WorkspaceState::granted(root_a.clone());
         let watcher = WatcherState(Mutex::new(None));
 
         // The `on_event` sink is irrelevant to the swap logic — a no-op stands in
@@ -583,7 +620,7 @@ mod tests {
     fn commit_failure_leaves_the_grant_unadvanced() {
         let (_a, root_a) = workspace();
         let (_b, root_b) = workspace();
-        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let workspace = WorkspaceState::granted(root_a.clone());
         let watcher = WatcherState(Mutex::new(None));
 
         // Poison the watcher lock (the FIRST lock commit_workspace acquires) by
@@ -603,5 +640,31 @@ mod tests {
         let sink = |_result: DebounceEventResult| {};
         assert!(watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink).is_err());
         assert_eq!(workspace.root().unwrap(), root_a);
+    }
+
+    #[test]
+    fn a_rapid_double_switch_converges_to_the_last_root_and_advances_generation() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let (_c, root_c) = workspace();
+        let workspace = WorkspaceState::granted(root_a.clone());
+        let watcher = WatcherState(Mutex::new(None));
+        let sink = || |_result: DebounceEventResult| {};
+
+        let g_start = workspace.generation();
+        // Two switches back-to-back (B then C) converge on C, and EACH advances
+        // the root generation — the hook an import uses to notice it is stale and
+        // discard its late status rather than clobber the new workspace's.
+        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch B");
+        let g_b = workspace.generation();
+        watch_and_commit(root_c.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch C");
+        let g_c = workspace.generation();
+
+        assert_eq!(workspace.root().unwrap(), root_c, "converged on the last root");
+        assert!(watcher.0.lock().unwrap().is_some(), "the last watcher is live");
+        assert!(
+            g_b > g_start && g_c > g_b,
+            "each switch advances the generation ({g_start} -> {g_b} -> {g_c})"
+        );
     }
 }
