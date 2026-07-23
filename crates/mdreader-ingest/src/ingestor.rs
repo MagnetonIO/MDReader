@@ -215,6 +215,7 @@ impl Ingestor for MarkdownIngestor {
 
         let mut stats = IngestStats::default();
         let mut seen: HashSet<Uuid> = HashSet::new();
+        let files_total = files.len() as u64;
 
         for file in &files {
             stats.files_scanned += 1;
@@ -288,6 +289,9 @@ impl Ingestor for MarkdownIngestor {
                     }
                 }
             }
+            // Live, pollable job progress (engine `index_status`); advisory,
+            // so it costs one cheap row update per synced file.
+            ctx.report_progress(stats.files_scanned, files_total).await?;
         }
 
         // Deletions are scoped against STORED state under this source root:
