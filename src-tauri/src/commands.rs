@@ -434,17 +434,20 @@ fn hash_on_disk(path: &Path) -> Result<String, String> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-/// The path of the stable per-document save-lock sidecar: `.<name>.savelock`
-/// beside the target. A hidden dotfile (never surfaced — the listing/watcher
-/// filter to `.md`/`.markdown`), created on demand and never removed, so its
-/// inode is STABLE across the atomic rename that swaps the target's inode.
+/// The stable per-DIRECTORY save-lock sidecar: `<dir>/.mdreader.savelock`. ONE
+/// hidden lock file per directory (created on demand, never removed — a stable
+/// inode that survives the atomic rename that swaps a document's inode). Chosen
+/// per-directory, NOT per-document, so a saved workspace never accretes a hidden
+/// lock file per edited doc; the coarser granularity (concurrent saves to files in
+/// the same directory serialize) is inconsequential for a local single-user reader
+/// where saves are brief and uncontended. Hidden + non-markdown, so the listing /
+/// watcher (which filter to `.md`/`.markdown`) never surface it.
 fn savelock_path(target: &Path) -> Option<PathBuf> {
-    let name = target.file_name()?.to_string_lossy();
-    Some(target.with_file_name(format!(".{name}.savelock")))
+    Some(target.parent()?.join(".mdreader.savelock"))
 }
 
-/// Holds an exclusive advisory `flock` on a document's STABLE sidecar lock for the
-/// whole check→write→rename window, releasing it on drop (the engine's import-
+/// Holds an exclusive advisory `flock` on the directory's STABLE sidecar lock for
+/// the whole check→write→rename window, releasing it on drop (the engine's import-
 /// lease pattern). The lock lives on the sidecar — NOT the target — because the
 /// target's inode is replaced by the atomic rename, so a lock held on it could not
 /// span the swap; the sidecar's inode never changes, so cooperating app saves (a
@@ -506,20 +509,31 @@ pub fn save_doc(
     force: bool,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<SaveOutcome, String> {
-    save_doc_guarded(&state, &path, &content, &expected_hash, force, || {}, || {})
+    save_doc_guarded(
+        &state,
+        &path,
+        &content,
+        &expected_hash,
+        force,
+        commit_rename,
+        || {},
+        || {},
+    )
 }
 
-/// The save core, with two test hooks (both no-ops in production):
-/// `before_rename` fires UNDER the lock after the hash check + temp staging but
-/// before the swap (a test injects an interleaved external write there); and
-/// `before_finish` fires just before the epoch identity re-check (a test injects
-/// a workspace switch there).
+/// The save core. `commit` is the atomic PUBLISHER (production: [`commit_rename`],
+/// temp→rename); a test can inject a non-atomic one to prove the atomicity
+/// assertion has teeth. Two test hooks (both no-ops in production): `before_rename`
+/// fires UNDER the lock after the hash check + temp staging but before the swap (a
+/// test injects an interleaved external write there); `before_finish` fires just
+/// before the epoch identity re-check (a test injects a workspace switch there).
 fn save_doc_guarded(
     state: &WorkspaceState,
     path: &str,
     content: &str,
     expected_hash: &str,
     force: bool,
+    commit: impl FnOnce(&Path, &Path) -> Result<(), String>,
     before_rename: impl FnOnce(),
     before_finish: impl FnOnce(),
 ) -> Result<SaveOutcome, String> {
@@ -576,7 +590,7 @@ fn save_doc_guarded(
         }
     }
 
-    commit_rename(&tmp, &real)?;
+    commit(&tmp, &real)?;
     let mtime = mtime_millis(
         std::fs::metadata(&real)
             .ok()
@@ -810,11 +824,11 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        canonical_dir, commit_rename, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
         save_doc_guarded, watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -1118,6 +1132,7 @@ mod tests {
             "# New\n",
             &expected,
             false,
+            commit_rename,
             || {},
             || {},
         )
@@ -1150,6 +1165,7 @@ mod tests {
             "# My edit\n",
             &stale_anchor,
             false,
+            commit_rename,
             || {},
             || {},
         )
@@ -1180,6 +1196,7 @@ mod tests {
             "# Forced\n",
             "an-utterly-wrong-hash",
             true,
+            commit_rename,
             || {},
             || {},
         )
@@ -1205,6 +1222,7 @@ mod tests {
             "# hijacked\n",
             &hash_of(&before),
             true, // even forced, containment must reject
+            commit_rename,
             || {},
             || {},
         )
@@ -1224,6 +1242,7 @@ mod tests {
             "hijacked",
             &hash_of(b"{}"),
             true,
+            commit_rename,
             || {},
             || {},
         )
@@ -1231,19 +1250,32 @@ mod tests {
     }
 
     #[test]
-    fn a_crash_before_the_rename_leaves_the_original_intact_and_only_orphans_a_temp() {
-        // Crash simulation driving the REAL save path: the save stages its bytes
-        // into a sibling temp and only THEN renames. We panic in `before_rename`
-        // (fires after the temp is staged, before the swap) to model a crash at
-        // exactly that point, and assert the destination is untouched. This is
-        // revert-breaking: a truncating in-place write would (a) leave no temp and
-        // (b) have already corrupted the destination here.
+    fn the_publisher_is_atomic_a_crash_at_the_swap_never_leaves_a_partial_file() {
+        // Drive the REAL save path but INJECT the commit (publisher) step, and crash
+        // right at it. With the production publisher — `commit_rename`, an atomic
+        // temp→rename — the swap is indivisible: crashing immediately after it
+        // leaves the WHOLE new file (and crashing before it would leave the whole
+        // old file). Either way the published file is never partial.
+        //
+        // This test exercises the publisher as a swappable seam, so it has teeth:
+        // substituting a NON-atomic (truncating in-place) publisher that dies
+        // mid-copy leaves a truncated file and turns the "never partial" assertion
+        // RED — the revert-verification for the atomicity contract.
         let (_dir, root) = workspace();
         let note = root.join("note.md");
         fs::write(&note, "# Original\n").unwrap();
         let ws = WorkspaceState::granted(root.clone());
         let expected = hash_of(b"# Original\n");
         let note_path = note.to_str().unwrap().to_string();
+        let new = b"# The freshly-published version\n".to_vec();
+        let new_str = String::from_utf8(new.clone()).unwrap();
+
+        // Injected publisher: perform the ATOMIC swap, then crash. A reader after the
+        // crash must see the whole new file — never a half-written one.
+        let commit_then_crash = |tmp: &Path, dest: &Path| -> Result<(), String> {
+            commit_rename(tmp, dest)?;
+            panic!("crash the instant the atomic swap completed");
+        };
 
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
@@ -1251,10 +1283,11 @@ mod tests {
             let _ = save_doc_guarded(
                 &ws,
                 &note_path,
-                "# New bytes that must never replace the original\n",
+                &new_str,
                 &expected,
                 false,
-                || panic!("crash between temp-write and rename"),
+                commit_then_crash,
+                || {},
                 || {},
             );
         }));
@@ -1264,36 +1297,140 @@ mod tests {
             "the injected crash unwound out of the save"
         );
 
-        // The PUBLISHED file is one of the two WHOLE versions — never a truncated /
-        // partial one. Because temp+rename leaves the destination untouched until
-        // the (never-reached) atomic swap, that whole version is the original. A
-        // truncating in-place copy would have left an empty/partial file here, so
-        // this assertion goes red on that revert.
+        // The published file is one of the two WHOLE versions — never partial. The
+        // atomic rename means it is the whole NEW file here. A truncating in-place
+        // publisher dying mid-copy would leave a partial file and fail this.
         let published = fs::read(&note).unwrap();
-        let old = b"# Original\n".to_vec();
-        let new = b"# New bytes that must never replace the original\n".to_vec();
         assert!(
-            published == old || published == new,
-            "published file must be fully-old or fully-new, never truncated: {published:?}"
+            published == b"# Original\n".to_vec() || published == new,
+            "published file must be fully-old or fully-new, never partial: {published:?}"
         );
         assert_eq!(
-            published, old,
-            "crash before the rename ⇒ the fully-old version"
+            published, new,
+            "the atomic swap published the whole new file"
+        );
+    }
+
+    #[test]
+    fn two_cooperating_saves_of_the_same_file_serialize_with_no_lost_update() {
+        use std::sync::mpsc;
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        // The stable sidecar lock must SERIALIZE cooperating saves across the rename
+        // (which swaps the document's inode). We prove it: thread 1 saves A→B and
+        // PARKS in `before_finish` — after its atomic rename, still holding the lock.
+        // A second save of the SAME file must not be able to proceed while that lock
+        // is held. (Reverting to a lock on the target inode lets the second save
+        // acquire the NEW inode's lock and run concurrently → this goes RED.)
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "A").unwrap();
+        let ws = Arc::new(WorkspaceState::granted(root));
+        let hash_a = hash_of(b"A");
+        let note_path = note.to_str().unwrap().to_string();
+
+        let (held_tx, held_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let ws1 = Arc::clone(&ws);
+        let (p1, h1) = (note_path.clone(), hash_a.clone());
+        let t1 = thread::spawn(move || {
+            save_doc_guarded(
+                &ws1,
+                &p1,
+                "B",
+                &h1,
+                false,
+                commit_rename,
+                || {},
+                move || {
+                    held_tx.send(()).unwrap(); // renamed; lock still held
+                    release_rx.recv().unwrap(); // park while holding the lock
+                },
+            )
+        });
+
+        held_rx.recv().unwrap(); // thread 1 has renamed and holds the save lock
+
+        // Thread 2 saves the same file; it must BLOCK on the shared directory lock.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let ws2 = Arc::clone(&ws);
+        let (p2, h2) = (note_path.clone(), hash_a.clone());
+        let t2 = thread::spawn(move || {
+            let out = save_doc_guarded(&ws2, &p2, "C", &h2, false, commit_rename, || {}, || {});
+            done_tx.send(()).unwrap();
+            out
+        });
+
+        // A generous window: with serialization thread 2 stays BLOCKED (no
+        // completion); a per-inode lock would let it complete on the new inode.
+        let still_blocked = done_rx.recv_timeout(Duration::from_millis(500)).is_err();
+        assert!(
+            still_blocked,
+            "a second cooperating save must serialize behind the first while the lock is held"
         );
 
-        // Exactly one staged temp is orphaned beside it — proof the write went to a
-        // SIBLING (temp + rename), not in-place.
-        let temps = fs::read_dir(&root)
+        // Release thread 1; thread 2 now proceeds and observes the post-swap state.
+        release_tx.send(()).unwrap();
+        let out1 = t1.join().unwrap().expect("thread 1 save");
+        let out2 = t2.join().unwrap().expect("thread 2 save");
+
+        assert_eq!(out1.status, "saved");
+        // The serialized second save sees the first's write (hash moved off A) →
+        // conflict, NOT a silent lost update.
+        assert_eq!(
+            out2.status, "conflict",
+            "the serialized second save must observe the first's committed write"
+        );
+        // The file is exactly ONE whole version — no interleaving / lost update.
+        assert_eq!(fs::read(&note).unwrap(), b"B");
+    }
+
+    #[test]
+    fn saving_never_leaves_a_per_document_lock_artifact() {
+        // The save lock is per-DIRECTORY, so saving many docs never accretes one
+        // hidden lock file per doc. Reverting to a per-document `.<name>.savelock`
+        // sidecar would leave one artifact per saved doc → this goes RED.
+        let (_dir, root) = workspace();
+        let a = root.join("a.md");
+        let b = root.join("b.md");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+
+        save_doc_guarded(
+            &ws,
+            a.to_str().unwrap(),
+            "a2",
+            &hash_of(b"a"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .unwrap();
+        save_doc_guarded(
+            &ws,
+            b.to_str().unwrap(),
+            "b2",
+            &hash_of(b"b"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .unwrap();
+
+        let locks = fs::read_dir(&root)
             .unwrap()
             .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".mdreader-save-")
-            })
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".savelock"))
             .count();
-        assert_eq!(temps, 1, "the crash orphaned exactly the staged temp");
+        assert!(
+            locks <= 1,
+            "saves must not leave a per-document lock artifact; found {locks} .savelock files"
+        );
     }
 
     #[test]
@@ -1311,6 +1448,7 @@ mod tests {
             "# A2\n",
             &hash_of(b"# A\n"),
             false,
+            commit_rename,
             || {},
             || {},
         )
@@ -1327,6 +1465,7 @@ mod tests {
             "# A3\n",
             &hash_of(b"# A2\n"),
             false,
+            commit_rename,
             || {},
             || {
                 let _ = ws.switch(root_b.clone());
@@ -1364,6 +1503,7 @@ mod tests {
             "# My edit\n",
             &anchored,
             false,
+            commit_rename,
             move || {
                 // Interleaved external write, after our check, before our rename.
                 fs::write(&note_for_hook, &external_for_hook).unwrap();
@@ -1427,54 +1567,53 @@ mod tests {
 
     /// Tighter than the choke-point scan above (which is satisfied merely by the
     /// guarded core sitting in the same block): the PUBLIC `save_doc` command body
-    /// must be EXACTLY ONE statement — the delegation to `save_doc_guarded`. Parsed
-    /// by brace-matching the fn body, so an extra (unguarded) helper call, or any
-    /// inlined work, adds a `;` (a second statement) and trips this — closing the
-    /// "add a bypass path to the thin wrapper" hole by construction.
+    /// must be EXACTLY ONE expression statement whose expression is a BARE CALL to
+    /// `save_doc_guarded`. Parsed with `syn` into a real AST, so a method-chain
+    /// bypass like `save_doc_guarded(..).inspect(|_| unguarded())` — which a
+    /// text/brace scan would pass — is rejected (it is an `Expr::MethodCall`, not a
+    /// bare `Expr::Call`). Closes the "add a bypass path to the thin wrapper" hole.
     #[test]
-    fn save_doc_command_body_is_only_the_delegation() {
-        let src = include_str!("commands.rs");
-        let start = src
-            .find("pub fn save_doc(")
+    fn save_doc_command_body_is_a_single_bare_call_to_the_guarded_core() {
+        let file: syn::File =
+            syn::parse_str(include_str!("commands.rs")).expect("commands.rs parses");
+
+        let func = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(func) if func.sig.ident == "save_doc" => Some(func),
+                _ => None,
+            })
             .expect("the save_doc command exists");
-        let rest = &src[start..];
-        // Find the `{` that opens the fn body (right after the return type).
-        let marker = ") -> Result<SaveOutcome, String> {";
-        let open = rest.find(marker).expect("save_doc signature") + marker.len() - 1;
 
-        // Brace-match from `open` to the fn's closing `}` (inline `|| {}` closures
-        // are balanced, so depth tracking finds the true end).
-        let bytes = rest.as_bytes();
-        let mut depth = 0i32;
-        let mut close = open;
-        for (offset, &byte) in bytes.iter().enumerate().skip(open) {
-            match byte {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close = offset;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        assert!(close > open, "save_doc body did not close");
-        let body = rest[open + 1..close].trim();
+        // Exactly one statement.
+        assert_eq!(
+            func.block.stmts.len(),
+            1,
+            "save_doc's body must be exactly one statement (the delegation)"
+        );
 
-        assert!(
-            body.starts_with("save_doc_guarded("),
-            "save_doc's body must be a single delegation to save_doc_guarded, was:\n{body}"
-        );
-        assert!(
-            body.ends_with(')'),
-            "save_doc's body must be exactly the delegation call, was:\n{body}"
-        );
-        assert!(
-            !body.contains(';'),
-            "save_doc's body must be ONE statement (no `;`) — any extra statement is an \
-             ungoverned bypass; route it through save_doc_guarded. Body was:\n{body}"
+        // …and that statement must be a bare CALL expression (the fn's tail value),
+        // whose callee is the path `save_doc_guarded` — no method chain, no wrapper.
+        let expr = match &func.block.stmts[0] {
+            syn::Stmt::Expr(expr, None) => expr,
+            _ => panic!("save_doc's single statement must be the tail delegation expression"),
+        };
+        let call = match expr {
+            syn::Expr::Call(call) => call,
+            _ => panic!(
+                "save_doc's body must be a BARE call to save_doc_guarded — no method chain \
+                 (e.g. `.inspect(..)`) or other wrapper"
+            ),
+        };
+        let callee = match &*call.func {
+            syn::Expr::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            callee.as_deref(),
+            Some("save_doc_guarded"),
+            "save_doc must delegate directly to save_doc_guarded"
         );
     }
 }
