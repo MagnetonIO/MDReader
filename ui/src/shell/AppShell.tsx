@@ -661,44 +661,25 @@ export function AppShell() {
     };
   }, [hydrated, flushSession]);
 
-  // Tauri's native window close is the ONLY reliable "app is quitting" hook (a
-  // webview teardown can cut a best-effort unload write short). We intercept it,
-  // enqueue the latest snapshot, DRAIN the writer (await in-flight + coalesced
-  // follow-up so it truly hits disk), then close for real. `destroy()` bypasses
-  // this handler, so there is no re-entrancy.
+  // Closing the window must ALWAYS work — never intercept the native close to
+  // "flush first", because a prevented-then-not-completed close (a missing
+  // window permission, a stalled write) traps the user in a window they cannot
+  // shut. Session state is just tabs/scroll and is flushed best-effort on
+  // pagehide/visibilitychange below; losing the last second of it on a hard
+  // close is a fine trade for a red X that always works. (When editing lands,
+  // an unsaved-changes prompt will re-introduce a close guard — with an
+  // explicitly granted core:window:allow-destroy and a bounded flush.)
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void (async () => {
+    const flush = () => {
       try {
-        const appWindow = getCurrentWindow();
-        const off = await appWindow.onCloseRequested(async (event) => {
-          event.preventDefault();
-          // Best-effort session flush, but NEVER trap the user in an unclosable
-          // window: bound the drain so a stuck write still lets the window go,
-          // and always destroy() even if the flush throws.
-          try {
-            flushSession();
-            await Promise.race([
-              sessionWriter.drain(),
-              new Promise((resolve) => setTimeout(resolve, 2000)),
-            ]);
-          } catch {
-            /* flush failed — closing is more important than the last snapshot */
-          }
-          await appWindow.destroy();
-        });
-        if (disposed) off();
-        else unlisten = off;
+        flushSession();
       } catch {
-        /* not a real Tauri window (mocked IPC / no window API) — no close hook */
+        /* best effort */
       }
-    })();
-    return () => {
-      disposed = true;
-      unlisten?.();
     };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
   }, [hydrated, flushSession]);
 
   // --- persist settings (debounced 1s) ----------------------------------
