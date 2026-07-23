@@ -124,6 +124,10 @@ export function AppShell() {
   const commitSwitchRef = useRef<(folder: string) => Promise<boolean>>(() =>
     Promise.resolve(false),
   );
+  // The window is committing to close: the re-entered close handler sees this and
+  // lets the native close proceed (no destroy(), no infinite recursion). Per this
+  // window instance (a ref, not module-level, so tests/mounts stay isolated).
+  const closingRef = useRef(false);
 
   // --- workspace loading ------------------------------------------------
   // Frontend request generation, the UI-side mirror of the backend epoch: every
@@ -616,15 +620,14 @@ export function AppShell() {
     return allClean;
   }, [saveDocEntry]);
 
-  // Complete a quit the guard approved (Save-then-close or Discard). Persist the
-  // session, CLEAR the dirty state so the re-entered close handler finds nothing to
-  // guard, then re-trigger the NATIVE close. No `destroy()` and no allow-destroy
-  // permission: `close()` re-enters `onCloseRequested`, which now sees no dirty
-  // documents and lets the native close proceed.
+  // Complete a quit the guard approved (Save-then-close or Discard). The session
+  // was already drained in the close handler before the prompt; here we clear any
+  // remaining dirty state, mark the window closing, and re-trigger the NATIVE
+  // close. No `destroy()` and no allow-destroy permission: `close()` re-enters
+  // `onCloseRequested`, which sees `closing` and lets the native close proceed.
   const performQuit = useCallback(async () => {
-    flushSessionRef.current();
-    await sessionWriter.drain();
     useEditorStore.getState().reset(); // discard-all: no dirty documents remain
+    closingRef.current = true;
     try {
       await getCurrentWindow().close();
     } catch {
@@ -942,13 +945,16 @@ export function AppShell() {
     };
   }, [hydrated, flushSession]);
 
-  // Native window close (the red X). We intercept ONLY to guard unsaved edits —
-  // never to take over closing. With NO dirty documents we do NOT preventDefault,
-  // so the native close proceeds with zero dependency on any window permission
-  // (this is what keeps the red X working). With dirty documents we preventDefault
-  // and prompt; the guard's Save/Discard path clears the dirty state and calls
-  // `close()` again, re-entering here to find nothing dirty → native close. No
-  // `destroy()`, no allow-destroy permission.
+  // Native window close (the red X). We intercept to (a) honour the persistence
+  // contract — a BOUNDED session drain before the window goes away — and (b) guard
+  // unsaved edits, WITHOUT ever taking over closing or needing a destroy
+  // permission. A `closing` flag makes this safe against the re-entrancy that
+  // calling `close()` from inside the handler causes:
+  //   - re-entry (`closing` already set) → do NOT preventDefault → native close.
+  //   - first entry → preventDefault; flush + BOUNDED drain (never hang the close);
+  //     if dirty → prompt (the guard clears dirty then re-closes); else mark
+  //     `closing` and call `close()` → re-enters → native close.
+  // Net: the red X ALWAYS closes, after a bounded drain, with no `destroy()`.
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -956,15 +962,22 @@ export function AppShell() {
     void (async () => {
       try {
         const appWindow = getCurrentWindow();
-        const off = await appWindow.onCloseRequested((event) => {
-          if (useEditorStore.getState().dirtyTabIds().length === 0) {
-            // Clean: best-effort persist, then LET THE NATIVE CLOSE PROCEED.
-            flushSession();
+        const off = await appWindow.onCloseRequested(async (event) => {
+          if (closingRef.current) return; // re-entry: let the native close proceed
+          event.preventDefault();
+          // Persistence contract: flush the latest session and DRAIN it, bounded so
+          // a stuck write can never wedge the close.
+          flushSession();
+          await Promise.race([
+            sessionWriter.drain(),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+          if (useEditorStore.getState().dirtyTabIds().length > 0) {
+            setCloseGuard({ kind: 'quit' }); // guard clears dirty + re-closes
             return;
           }
-          // Unsaved edits: hold the close and prompt.
-          event.preventDefault();
-          setCloseGuard({ kind: 'quit' });
+          closingRef.current = true;
+          await appWindow.close(); // re-enters → closing set → native close
         });
         if (disposed) off();
         else unlisten = off;

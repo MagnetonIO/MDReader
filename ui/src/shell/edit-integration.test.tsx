@@ -30,7 +30,15 @@ const h = vi.hoisted(() => ({
   fsChanged: null as null | ((change: { path: string; kind: string; generation: number }) => void),
   onClose: null as null | ((event: { preventDefault: () => void }) => void | Promise<void>),
   destroy: vi.fn(async () => {}),
-  close: vi.fn(async () => {}),
+  // Behaves like Tauri: calling close() RE-FIRES the registered onCloseRequested
+  // handler. If that re-entry does not preventDefault, the native close proceeds
+  // (recorded in `closed`). This is what exercises the real re-close→native path.
+  close: vi.fn(async () => {
+    const event = { preventDefault: vi.fn() };
+    if (h.onClose) await h.onClose(event);
+    if (event.preventDefault.mock.calls.length === 0) h.closed = true;
+  }),
+  closed: false,
   drain: vi.fn(async () => {}),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
@@ -148,6 +156,7 @@ beforeEach(() => {
   h.fsChanged = null;
   h.onClose = null;
   h.gate = null;
+  h.closed = false;
   h.seq = 0;
   vi.clearAllMocks();
 });
@@ -315,22 +324,25 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
   });
 
-  it('the red-X path does NOT preventDefault when nothing is unsaved (native close works)', async () => {
-    // A clean app: the close hook must let the native close proceed untouched, so
-    // the red X keeps working with zero window-permission dependency.
+  it('clean red-X: BOUNDED-drains the session, then closes NATIVELY (no destroy)', async () => {
     render(<App />);
     await act(async () => {});
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
+    // The OS close request: the handler holds it (preventDefault) to drain, then
+    // re-triggers the native close via close() → which re-fires the handler, now
+    // `closing`, so the native close proceeds.
     const event = { preventDefault: vi.fn() };
     await act(async () => {
       await h.onClose!(event);
     });
-    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.preventDefault).toHaveBeenCalledTimes(1); // held to drain
+    expect(h.drain).toHaveBeenCalled(); // persistence contract: drained
+    expect(h.closed).toBe(true); // native close proceeded (via close(), not destroy)
     expect(h.destroy).not.toHaveBeenCalled();
   });
 
-  it('the red-X prompts on unsaved docs; Discard clears them and re-closes NATIVELY (no destroy)', async () => {
+  it('dirty red-X → Save → drains, clears dirty, then closes natively', async () => {
     const tabId = await openDirtyDoc();
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
@@ -338,34 +350,57 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     await act(async () => {
       await h.onClose!(event);
     });
-    // Dirty → held + prompted (never quit yet, never destroyed).
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(h.drain).toHaveBeenCalled();
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
-    expect(h.close).not.toHaveBeenCalled();
-    expect(h.destroy).not.toHaveBeenCalled();
+    expect(h.closed).toBe(false); // not closed yet — waiting on the prompt
 
-    // Discard → clears the dirty state and RE-TRIGGERS the native close (which,
-    // re-entering the handler, now finds nothing dirty). Closed via close(), never
-    // destroy().
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    });
+    await waitFor(() => expect(h.closed).toBe(true)); // saved, cleared, closed
+    expect(h.saveCalls.at(-1)).toMatchObject({ force: false });
+    expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
+    expect(h.destroy).not.toHaveBeenCalled();
+  });
+
+  it('dirty red-X → Discard → clears dirty and closes natively (no destroy)', async () => {
+    const tabId = await openDirtyDoc();
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+    await act(async () => {
+      await h.onClose!({ preventDefault: vi.fn() });
+    });
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     });
-    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(h.closed).toBe(true));
     expect(h.destroy).not.toHaveBeenCalled();
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
   });
 
-  it('the red-X prompt Cancel keeps the app open (no close)', async () => {
+  it('dirty red-X → Cancel → stays open and remains closeable (closing not latched)', async () => {
     await openDirtyDoc();
     await waitFor(() => expect(h.onClose).not.toBeNull());
     await act(async () => {
-      await h.onClose!({ preventDefault: () => {} });
+      await h.onClose!({ preventDefault: vi.fn() });
     });
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    expect(h.close).not.toHaveBeenCalled();
+    expect(h.closed).toBe(false); // stayed open
     expect(useTabsStore.getState().tabs.length).toBeGreaterThan(0);
+
+    // `closing` did NOT latch: a later close request (after the user saves) still
+    // works. Save the doc, then re-request close → drains + closes natively.
+    await act(async () => {
+      modKeyDown('s');
+    });
+    await act(async () => {
+      await h.onClose!({ preventDefault: vi.fn() });
+    });
+    await waitFor(() => expect(h.closed).toBe(true));
   });
 });
