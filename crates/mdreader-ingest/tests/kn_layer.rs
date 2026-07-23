@@ -248,13 +248,21 @@ async fn resolved_links_assert_artifact_link_spans_that_related_traverses() {
     expected.sort();
     assert_eq!(span_edges(&engine), expected);
 
-    // Depth-2 relation walk from a: b at one hop (0.5), c at two (0.25).
+    // `related()` is the unified surface (graph + concept + vector). Its GRAPH
+    // component is the depth-2 relation walk this test exercises: b at one hop
+    // (0.5), c at two (0.25). Assert that component directly (the total score
+    // also folds in the vector arm, which these tiny docs contribute a little
+    // to) so the span-edge lifecycle below stays the contract under test.
     let related = engine.related(a.id, 10).await.unwrap();
-    let got: Vec<(&str, f32)> = related
+    let graph: Vec<(&str, f32)> = related
         .iter()
-        .map(|r| (r.file_path.as_str(), r.score))
+        .map(|r| (r.file_path.as_str(), r.components.graph))
         .collect();
-    assert_eq!(got, vec![("b.md", 0.5), ("c.md", 0.25)]);
+    assert_eq!(graph, vec![("b.md", 0.5), ("c.md", 0.25)]);
+    // Best-first, and the span-graph edges are what put b ahead of c.
+    for pair in related.windows(2) {
+        assert!(pair[0].score >= pair[1].score);
+    }
 
     // Deleting the TARGET document retracts the inbound edge (b -> c) and
     // unresolves b's link row so a reappearing target can re-resolve.
@@ -271,17 +279,30 @@ async fn resolved_links_assert_artifact_link_spans_that_related_traverses() {
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].link.raw_target, "c.md");
     let related = engine.related(a.id, 10).await.unwrap();
-    assert_eq!(related.len(), 1);
-    assert_eq!(related[0].file_path, "b.md");
+    let b_related = related
+        .iter()
+        .find(|r| r.file_path == "b.md")
+        .expect("b.md still related via the a -> b span edge");
+    assert_eq!(b_related.components.graph, 0.5);
+    // c.md is gone: no related row can carry its (now-retracted) 2-hop edge.
+    assert!(related.iter().all(|r| r.file_path != "c.md"));
 
-    // Editing the SOURCE section away from the link retracts a -> b.
+    // Editing the SOURCE section away from the link retracts a -> b, so the
+    // GRAPH component of every related row drops to zero — the span edge is
+    // fully gone. (b.md still exists on disk, so a residual vector-arm score
+    // can keep it in the unified list; the graph edge, the thing retracted, is
+    // what we assert.)
     write(&root, "a.md", "# A\n\nStart, no links now.\n");
     engine
         .import(&root, ImportOptions::default())
         .await
         .unwrap();
     assert_eq!(span_edges(&engine), Vec::<(Uuid, Uuid)>::new());
-    assert!(engine.related(a.id, 10).await.unwrap().is_empty());
+    let related = engine.related(a.id, 10).await.unwrap();
+    assert!(
+        related.iter().all(|r| r.components.graph == 0.0),
+        "every span edge retracted: {related:?}"
+    );
 
     let check = engine.check_equations().await.unwrap();
     assert_eq!(check.violations, Vec::<String>::new());
