@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { RelatedHit, SearchAdapter } from '@mdreader/ui';
 
@@ -22,7 +22,36 @@ function adapterWith(related: SearchAdapter['related']): SearchAdapter {
 }
 
 describe('RelatedRail', () => {
-  test('lazily fetches (debounced to one call) and renders the score decomposition', async () => {
+  test('debounces rapid active-doc changes to a SINGLE fetch for the final doc', () => {
+    vi.useFakeTimers();
+    try {
+      const related = vi.fn(async () => []);
+      const base = {
+        adapter: adapterWith(related),
+        open: true,
+        onToggle: vi.fn(),
+        onOpen: vi.fn(),
+        workspaceKey: '/ws',
+      };
+      const { rerender } = render(<RelatedRail {...base} activeDoc={{ path: '/ws/a.md', name: 'a.md' }} />);
+      rerender(<RelatedRail {...base} activeDoc={{ path: '/ws/b.md', name: 'b.md' }} />);
+      rerender(<RelatedRail {...base} activeDoc={{ path: '/ws/c.md', name: 'c.md' }} />);
+
+      // Still inside the 250ms debounce window: NO fetch yet (would be 3 already
+      // if the debounce were removed — this line fails on a reverted debounce).
+      act(() => vi.advanceTimersByTime(200));
+      expect(related).not.toHaveBeenCalled();
+
+      // Past the window: exactly ONE fetch, for the FINAL doc only.
+      act(() => vi.advanceTimersByTime(100));
+      expect(related).toHaveBeenCalledTimes(1);
+      expect(related).toHaveBeenCalledWith('/ws/c.md');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('renders the score decomposition (tooltip + chips)', async () => {
     const related = vi.fn(async () => [relatedHit('storage.md', { graph: 0.5, concept: 0.3, vector: 0.2 })]);
     render(
       <RelatedRail
@@ -36,8 +65,6 @@ describe('RelatedRail', () => {
     );
 
     await waitFor(() => expect(screen.getByRole('button', { name: /storage\.md/ })).toBeTruthy());
-    // One debounced call for the active doc.
-    expect(related).toHaveBeenCalledTimes(1);
     expect(related).toHaveBeenCalledWith('/ws/a.md');
 
     // The score badge tooltip carries the graph/concept/vector decomposition.
