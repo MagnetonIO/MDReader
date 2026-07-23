@@ -28,7 +28,7 @@ import {
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
 import type { DocRef, ScrollPos } from '../stores/types.js';
-import { loadPersisted, saveSession, saveSettings } from './persistence.js';
+import { isTauri, loadPersisted, saveSession, saveSettings } from './persistence.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -92,38 +92,105 @@ export function AppShell() {
     }
   }, []);
 
-  // Load a workspace: establish the backend grant (which confines every read to
-  // this root), then list files and arm the watcher. Adopts the canonical path
-  // the grant returns so file paths and the watched root agree. Never closes
-  // tabs — that is the caller's concern (a workspace *switch*), so restore can
-  // reuse this without disturbing the session it just hydrated.
-  const openRoot = useCallback(async (folder: string) => {
+  // List the workspace's markdown files into the store, toggling `loading`.
+  const listInto = useCallback(async (folder: string) => {
     const sources = useSourcesStore.getState();
-    let granted = folder;
-    try {
-      granted = await setWorkspace(folder);
-    } catch {
-      /* non-Tauri (website/tests) — no grant to establish; keep the raw path */
-    }
-    sources.setRoot(granted);
     sources.setLoading(true);
     try {
-      const list = await listWorkspaceFiles(granted);
-      sources.setFiles(list);
+      sources.setFiles(await listWorkspaceFiles(folder));
     } catch {
       sources.setFiles([]);
     } finally {
       sources.setLoading(false);
     }
-    try {
-      await watchWorkspace(granted);
-      sources.setWatcher('watching');
-    } catch {
-      // We committed to the new root but could not arm its watcher: a degraded
-      // (but honest) state the StatusBar surfaces rather than a silent "idle".
-      sources.setWatcher('error');
-    }
   }, []);
+
+  // Open `folder` as the active workspace; resolves to `true` once the store
+  // reflects it as the active root. In a Tauri shell the watcher is armed FIRST:
+  // watch_workspace canonicalizes the folder, arms the watcher, and adopts it as
+  // the granted root — atomically — so a switch that fails to arm leaves the
+  // previous grant + watcher intact and we stay on the old workspace (no
+  // half-switch, no backend divergence). A FIRST open (or a re-open of the same
+  // root) whose watch fails still degrades gracefully: the folder is granted
+  // independently and read, just without live-reload. Never closes tabs — a
+  // workspace *switch* is the caller's concern (see `switchWorkspace`), so
+  // session restore reuses this without disturbing the session it just hydrated.
+  const openRoot = useCallback(
+    async (folder: string): Promise<boolean> => {
+      const sources = useSourcesStore.getState();
+
+      // Website / tests without a Tauri backend: no grant/watch IPC. Open the
+      // folder best-effort so the shell still renders content.
+      if (!isTauri()) {
+        sources.setRoot(folder);
+        sources.setWatcher('idle');
+        await listInto(folder);
+        return true;
+      }
+
+      const previousRoot = sources.root;
+      const isSwitch = previousRoot !== null && previousRoot !== folder;
+
+      try {
+        // Arms the watcher AND adopts `folder` as the grant, atomically.
+        await watchWorkspace(folder);
+      } catch {
+        if (isSwitch) {
+          // A real switch that could not arm: stay entirely on the old workspace.
+          sources.setWatcher('error');
+          toast('Could not switch workspace — staying on the current folder');
+          return false;
+        }
+        // First open / same-root reopen: grant independently, read degraded.
+        let granted = folder;
+        try {
+          granted = await setWorkspace(folder);
+        } catch {
+          /* non-Tauri edge — keep the raw path */
+        }
+        sources.setRoot(granted);
+        sources.setWatcher('error');
+        await listInto(granted);
+        return true;
+      }
+
+      // Watch armed + grant committed. Read back the canonical root (idempotent
+      // re-grant) for display, then list within it.
+      let granted = folder;
+      try {
+        granted = await setWorkspace(folder);
+      } catch {
+        /* keep the raw path */
+      }
+      sources.setRoot(granted);
+      sources.setWatcher('watching');
+      await listInto(granted);
+      return true;
+    },
+    [listInto],
+  );
+
+  // Switch the active workspace to `folder`, retiring the previous workspace's
+  // open tabs into (its own) Recent — but only once the new root is actually
+  // live. A switch that fails to commit (watcher could not arm) retires nothing,
+  // so the user stays put with tabs intact. Retired tabs carry their originating
+  // root, so they resurface only under that workspace (never as an error tab
+  // reopened under the new grant). Resolves to whether the switch committed.
+  const switchWorkspace = useCallback(
+    async (folder: string): Promise<boolean> => {
+      const sources = useSourcesStore.getState();
+      const previousRoot = sources.root;
+      if (previousRoot === folder) return true;
+
+      const committed = await openRoot(folder);
+      if (committed && previousRoot) {
+        const retired = useTabsStore.getState().closeAll();
+        for (const ref of retired) sources.addRecent(ref, previousRoot);
+      }
+      return committed;
+    },
+    [openRoot],
+  );
 
   const onPickFolder = useCallback(async () => {
     let picked: string | null;
@@ -134,21 +201,14 @@ export function AppShell() {
       return;
     }
     if (!picked) return;
-
-    // Switching to a different workspace: retire the previous workspace's tabs
-    // into Recent so no stale tab survives to refresh against the new root.
-    const sources = useSourcesStore.getState();
-    if (sources.root && sources.root !== picked) {
-      const retired = useTabsStore.getState().closeAll();
-      for (const ref of retired) sources.addRecent(ref);
-    }
-    await openRoot(picked);
-  }, [openRoot]);
+    await switchWorkspace(picked);
+  }, [switchWorkspace]);
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
+    const root = useSourcesStore.getState().root;
     useTabsStore.getState().openTab(ref);
-    useSourcesStore.getState().addRecent(ref);
+    useSourcesStore.getState().addRecent(ref, root);
   }, []);
 
   const openFile = useCallback(
@@ -166,7 +226,7 @@ export function AppShell() {
     } else {
       useTabsStore.getState().navigateInTab(active, ref);
     }
-    useSourcesStore.getState().addRecent(ref);
+    useSourcesStore.getState().addRecent(ref, useSourcesStore.getState().root);
   }, []);
 
   const onPersistScroll = useCallback((scroll: ScrollPos) => {
@@ -370,23 +430,46 @@ export function AppShell() {
     applyTheme(theme);
   }, [theme]);
 
-  // --- persist session (debounced 1s) -----------------------------------
+  // --- persist session --------------------------------------------------
+  // Serialize + persist the current session immediately (bypassing the debounce),
+  // reading the latest store state at call time.
+  const flushSession = useCallback(() => {
+    const t = useTabsStore.getState();
+    const s = useSourcesStore.getState();
+    void saveSession(
+      serializeSession({
+        root: s.root,
+        activeTabId: t.activeTabId,
+        tabs: t.tabs,
+        recent: s.recent,
+      }),
+    );
+  }, []);
+
+  // Debounced 1s on every session-shaping change.
   useEffect(() => {
     if (!hydrated) return;
-    const handle = window.setTimeout(() => {
-      const t = useTabsStore.getState();
-      const s = useSourcesStore.getState();
-      void saveSession(
-        serializeSession({
-          root: s.root,
-          activeTabId: t.activeTabId,
-          tabs: t.tabs,
-          recent: s.recent,
-        }),
-      );
-    }, 1000);
+    const handle = window.setTimeout(flushSession, 1000);
     return () => window.clearTimeout(handle);
-  }, [hydrated, tabs, activeTabId, root, recent]);
+  }, [hydrated, flushSession, tabs, activeTabId, root, recent]);
+
+  // Flush synchronously when the window is going away, so quitting within the 1s
+  // debounce window can't restore a stale (pre-switch) workspace/tab set. Both
+  // signals are best-effort: `visibilitychange:hidden` is the reliable
+  // "app backgrounding/closing" cue, `beforeunload` covers a plain webview close.
+  useEffect(() => {
+    if (!hydrated) return;
+    const onBeforeUnload = () => flushSession();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flushSession();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [hydrated, flushSession]);
 
   // --- persist settings (debounced 1s) ----------------------------------
   useEffect(() => {
@@ -475,6 +558,16 @@ export function AppShell() {
     };
   }, []);
 
+  // Recent is scoped to the active workspace: an entry retired from workspace A
+  // never surfaces (and so can never be reopened as an error tab) under B's grant.
+  const visibleRecent = useMemo(
+    () =>
+      recent
+        .filter((entry) => entry.root === root)
+        .map((entry) => ({ path: entry.path, name: entry.name })),
+    [recent, root],
+  );
+
   const textScale = textScaleFactor({ textScaleIndex });
 
   return (
@@ -498,7 +591,7 @@ export function AppShell() {
           collapsed={sidebarCollapsed}
           root={root}
           files={files}
-          recent={recent}
+          recent={visibleRecent}
           activePath={activeTab?.docRef.path ?? null}
           loading={loading}
           onPickFolder={onPickFolder}

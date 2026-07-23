@@ -6,6 +6,18 @@ export interface DocRef {
   name: string;
 }
 
+/**
+ * A recently-opened document, tagged with the workspace root it belongs to.
+ * Recent is scoped per-workspace: an entry only surfaces while its own workspace
+ * is active, so a document retired from workspace A can never be reopened under
+ * workspace B's grant (which would escape the root and produce an error tab).
+ */
+export interface RecentDoc extends DocRef {
+  /** The granted workspace root this document was opened under (`null` if it was
+   *  opened before any workspace grant existed — e.g. a legacy persisted entry). */
+  root: string | null;
+}
+
 /** Scroll position within a reader, anchored to a top-level block. */
 export interface ScrollPos {
   /** Index of the top-most (or nearest) block. */

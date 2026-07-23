@@ -71,8 +71,9 @@ export async function readDoc(path: string): Promise<Doc> {
 }
 
 /**
- * Open the native folder picker; resolves to the chosen path (granted as the
- * workspace backend-side) or `null` when cancelled. Throws on backend error.
+ * Open the native folder picker; resolves to the chosen (canonical) path or
+ * `null` when cancelled. Does NOT grant the folder — the grant is adopted only
+ * when the caller commits via {@link watchWorkspace}. Throws on backend error.
  */
 export async function pickWorkspaceFolder(): Promise<string | null> {
   const result = await commands.pickWorkspaceFolder();

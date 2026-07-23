@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 
 import type { WorkspaceFile } from '../platform/fs.js';
-import type { DocRef } from './types.js';
+import type { DocRef, RecentDoc } from './types.js';
 
 export type WatcherStatus = 'idle' | 'watching' | 'error';
 
@@ -18,23 +18,24 @@ export const MAX_RECENT = 12;
 export interface SourcesState {
   root: string | null;
   files: WorkspaceFile[];
-  recent: DocRef[];
+  recent: RecentDoc[];
   watcher: WatcherStatus;
   loading: boolean;
 
   setRoot: (root: string | null) => void;
   setFiles: (files: WorkspaceFile[]) => void;
   setLoading: (loading: boolean) => void;
-  addRecent: (docRef: DocRef) => void;
+  /** Record `docRef` as most-recent under workspace `root` (deduped by path). */
+  addRecent: (docRef: DocRef, root: string | null) => void;
   setWatcher: (watcher: WatcherStatus) => void;
-  hydrate: (partial: { root?: string | null; recent?: DocRef[] }) => void;
+  hydrate: (partial: { root?: string | null; recent?: RecentDoc[] }) => void;
   reset: () => void;
 }
 
 const initialState = {
   root: null as string | null,
   files: [] as WorkspaceFile[],
-  recent: [] as DocRef[],
+  recent: [] as RecentDoc[],
   watcher: 'idle' as WatcherStatus,
   loading: false,
 };
@@ -45,12 +46,12 @@ export const useSourcesStore = create<SourcesState>((set) => ({
   setRoot: (root) => set({ root }),
   setFiles: (files) => set({ files }),
   setLoading: (loading) => set({ loading }),
-  addRecent: (docRef) =>
+  addRecent: (docRef, root) =>
     set((state) => ({
-      recent: [docRef, ...state.recent.filter((entry) => entry.path !== docRef.path)].slice(
-        0,
-        MAX_RECENT,
-      ),
+      recent: [
+        { path: docRef.path, name: docRef.name, root },
+        ...state.recent.filter((entry) => entry.path !== docRef.path),
+      ].slice(0, MAX_RECENT),
     })),
   setWatcher: (watcher) => set({ watcher }),
   hydrate: (partial) =>

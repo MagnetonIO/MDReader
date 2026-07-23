@@ -1,15 +1,27 @@
 import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+import type { Mock } from 'vitest';
 
 import App from './App';
 import { detectMac } from './keymap/registry';
 import { useTabsStore } from './stores/tabs';
+import { useSourcesStore } from './stores/sources';
 import { useSettingsStore } from './stores/settings';
+import { saveSession } from './shell/persistence';
+
+// Spy on the session writer so the flush-on-unload path is observable in jsdom
+// (where the real writer is an inert no-op outside a Tauri webview).
+vi.mock('./shell/persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./shell/persistence')>();
+  return { ...actual, saveSession: vi.fn(async () => {}) };
+});
 
 afterEach(() => {
   cleanup();
   useTabsStore.getState().reset();
   useSettingsStore.getState().reset();
+  useSourcesStore.getState().reset();
+  (saveSession as Mock).mockClear();
 });
 
 /** Fire a portable Mod-chord keydown on window for the detected platform. */
@@ -53,4 +65,47 @@ test('Mod+\\ toggles the sidebar collapsed state', async () => {
   expect(useSettingsStore.getState().sidebarCollapsed).toBe(false);
   act(() => modKeyDown('\\'));
   await waitFor(() => expect(useSettingsStore.getState().sidebarCollapsed).toBe(true));
+});
+
+test('Recent is scoped to the active workspace, hiding cross-workspace entries', async () => {
+  render(<App />);
+  await act(async () => {}); // settle startup hydration
+
+  // A note opened under workspace A appears in Recent while A is active.
+  act(() => {
+    useSourcesStore.getState().setRoot('/wsA');
+    useSourcesStore.getState().addRecent({ path: '/wsA/a.md', name: 'a.md' }, '/wsA');
+  });
+  expect(screen.getByRole('button', { name: 'a.md' })).toBeTruthy();
+
+  // Switching to workspace B hides A's entry — so it can never be reopened under
+  // B's grant (which would produce an error tab).
+  act(() => useSourcesStore.getState().setRoot('/wsB'));
+  expect(screen.queryByRole('button', { name: 'a.md' })).toBeNull();
+
+  // Switching back to A resurfaces it, openable in place.
+  act(() => useSourcesStore.getState().setRoot('/wsA'));
+  expect(screen.getByRole('button', { name: 'a.md' })).toBeTruthy();
+});
+
+test('flushes the latest session synchronously when the window is going away', async () => {
+  render(<App />);
+  await act(async () => {}); // settle startup hydration so the flush listener attaches
+
+  // Shape the session AFTER hydration; the 1s debounce has NOT fired yet.
+  act(() => {
+    useSourcesStore.getState().setRoot('/wsX');
+    useTabsStore.getState().openTab({ path: '/wsX/note.md', name: 'note.md' });
+  });
+  (saveSession as Mock).mockClear();
+
+  // The window going away must persist the CURRENT state immediately.
+  act(() => window.dispatchEvent(new Event('beforeunload')));
+
+  expect(saveSession).toHaveBeenCalledTimes(1);
+  const data = (saveSession as Mock).mock.calls[0]![0];
+  expect(data.root).toBe('/wsX');
+  expect(data.tabs.map((tab: { docRef: { path: string } }) => tab.docRef.path)).toContain(
+    '/wsX/note.md',
+  );
 });

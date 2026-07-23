@@ -8,7 +8,7 @@
 
 import { DEFAULT_TEXT_SCALE_INDEX, TEXT_SCALE_STEPS } from './settings.js';
 import type { ReadingFont, SettingsSnapshot, Theme } from './settings.js';
-import type { DocRef, ScrollPos, TabState } from './types.js';
+import type { DocRef, RecentDoc, ScrollPos, TabState } from './types.js';
 
 export const SESSION_VERSION = 1;
 
@@ -27,14 +27,14 @@ export interface SessionData {
   root: string | null;
   activeTabId: string | null;
   tabs: SerializedTab[];
-  recent: DocRef[];
+  recent: RecentDoc[];
 }
 
 export interface SessionInput {
   root: string | null;
   activeTabId: string | null;
   tabs: TabState[];
-  recent: DocRef[];
+  recent: RecentDoc[];
 }
 
 /** The restored, validated session, ready to hydrate the stores. */
@@ -42,7 +42,7 @@ export interface RestoredSession {
   root: string | null;
   activeTabId: string | null;
   tabs: TabState[];
-  recent: DocRef[];
+  recent: RecentDoc[];
 }
 
 export function serializeSession(input: SessionInput): SessionData {
@@ -50,7 +50,7 @@ export function serializeSession(input: SessionInput): SessionData {
     version: SESSION_VERSION,
     root: input.root,
     activeTabId: input.activeTabId,
-    recent: input.recent.map(cloneRef),
+    recent: input.recent.map(cloneRecent),
     tabs: input.tabs.map((tab) => ({
       id: tab.id,
       docRef: cloneRef(tab.docRef),
@@ -79,11 +79,15 @@ export function deserializeSession(raw: unknown): RestoredSession | null {
       ? raw.activeTabId
       : (tabs[0]?.id ?? null);
 
+  const root = typeof raw.root === 'string' ? raw.root : null;
+
   return {
-    root: typeof raw.root === 'string' ? raw.root : null,
+    root,
     activeTabId,
     tabs,
-    recent: parseRefArray(raw.recent),
+    // Legacy blobs stored recents without a workspace root; fall back to the
+    // session's own root so they stay visible under the last-open workspace.
+    recent: parseRecentArray(raw.recent, root),
   };
 }
 
@@ -122,6 +126,19 @@ function parseRefArray(candidate: unknown): DocRef[] {
     if (ref) refs.push(ref);
   }
   return refs;
+}
+
+function parseRecentArray(candidate: unknown, fallbackRoot: string | null): RecentDoc[] {
+  if (!Array.isArray(candidate)) return [];
+  const recents: RecentDoc[] = [];
+  for (const entry of candidate) {
+    const ref = parseRef(entry);
+    if (!ref) continue;
+    const root =
+      isRecord(entry) && typeof entry.root === 'string' ? entry.root : fallbackRoot;
+    recents.push({ path: ref.path, name: ref.name, root });
+  }
+  return recents;
 }
 
 function parseScroll(candidate: unknown): ScrollPos {
@@ -179,6 +196,10 @@ export const DEFAULT_SETTINGS: SettingsSnapshot = {
 
 function cloneRef(ref: DocRef): DocRef {
   return { path: ref.path, name: ref.name };
+}
+
+function cloneRecent(ref: RecentDoc): RecentDoc {
+  return { path: ref.path, name: ref.name, root: ref.root };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

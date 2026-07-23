@@ -28,7 +28,7 @@ describe('session round-trip', () => {
     const input: SessionInput = {
       root: '/ws',
       activeTabId: 'tab-2',
-      recent: [{ path: '/ws/a.md', name: 'a.md' }],
+      recent: [{ path: '/ws/a.md', name: 'a.md', root: '/ws' }],
       tabs: [
         tab('tab-1', 'a', { pinned: true, scroll: { block: 3, offset: 12 } }),
         tab('tab-2', 'b', {
@@ -86,6 +86,22 @@ describe('deserializeSession defensiveness', () => {
     expect(restored!.tabs[0]!.id).toBe('tab-1');
     // active id was invalid → falls back to the first surviving tab.
     expect(restored!.activeTabId).toBe('tab-1');
+  });
+
+  test('tags a legacy recent entry (no root) with the session root', () => {
+    const restored = deserializeSession({
+      version: SESSION_VERSION,
+      root: '/ws',
+      tabs: [],
+      recent: [
+        { path: '/ws/a.md', name: 'a.md' },
+        { path: '/ws/b.md', name: 'b.md', root: '/other' },
+      ],
+    });
+    expect(restored!.recent).toEqual([
+      { path: '/ws/a.md', name: 'a.md', root: '/ws' },
+      { path: '/ws/b.md', name: 'b.md', root: '/other' },
+    ]);
   });
 
   test('clamps an out-of-range historyIndex and back-fills history', () => {
