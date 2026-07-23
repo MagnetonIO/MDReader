@@ -9,21 +9,38 @@
 //! ## Workspace containment
 //!
 //! Filesystem access is confined to a single *granted* workspace root, held in
-//! [`WorkspaceState`]. The grant is established by the native folder picker
-//! ([`pick_workspace_folder`]) or restored explicitly ([`set_workspace`], used on
-//! session restore). Every path-taking command canonicalizes both the granted
-//! root and the candidate path and rejects anything that does not
-//! `starts_with(root)` *after* canonicalization. Canonicalization resolves `..`
-//! segments and symlinks, so this single check defeats path traversal AND
-//! symlink-escape (a symlink living inside the workspace but pointing outside it
-//! resolves to its real, outside target and is rejected).
+//! [`WorkspaceState`]. The grant is established by [`set_workspace`] (session
+//! restore, and to read back the canonical path) and by [`watch_workspace`],
+//! which adopts its target root as the grant *atomically with* arming the
+//! watcher — so the stored root and the live watcher can never diverge. The
+//! native folder picker ([`pick_workspace_folder`]) only *returns* a path; it
+//! never mutates the grant, so a pick that is later abandoned (e.g. the watcher
+//! fails to arm) leaves the active workspace untouched. Every path-taking command
+//! canonicalizes both the granted root and the candidate path and rejects
+//! anything that does not `starts_with(root)` *after* canonicalization.
+//! Canonicalization resolves `..` segments and symlinks, so this single check
+//! defeats path traversal AND symlink-escape (a symlink living inside the
+//! workspace but pointing outside it resolves to its real, outside target and is
+//! rejected).
+//!
+//! ## TOCTOU (accepted)
+//!
+//! Containment canonicalizes the path, then the command reads/walks/watches the
+//! resolved path in a *separate* step, so a path could in principle be swapped
+//! between the check and the use. For a LOCAL single-user desktop reader (not a
+//! multi-tenant service) this race is proportionately minor — there is no other
+//! tenant to win it — so it is accepted rather than locked against. Each affected
+//! command ([`read_doc`], [`list_workspace_files`], [`watch_workspace`]) notes it
+//! at the use site.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, DebouncedEventKind, Debouncer};
+use notify_debouncer_mini::{
+    new_debouncer, DebounceEventHandler, DebounceEventResult, DebouncedEventKind, Debouncer,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::AppHandle;
@@ -138,6 +155,17 @@ fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// Canonicalize `root` and confirm it is an existing directory — the check
+/// [`set_workspace`] and [`watch_workspace`] share to *establish* a workspace
+/// grant (as opposed to validating a candidate against an existing grant).
+fn canonical_dir(root: &str) -> Result<PathBuf, String> {
+    let real = std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
+    if !real.is_dir() {
+        return Err(format!("not a directory: {root}"));
+    }
+    Ok(real)
+}
+
 // --------------------------------------------------------------------------
 // ping — retained from the P0 scaffold as a liveness probe for the IPC path.
 // --------------------------------------------------------------------------
@@ -176,10 +204,7 @@ pub fn set_workspace(
     root: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
-    let real = std::fs::canonicalize(&root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
-    if !real.is_dir() {
-        return Err(format!("not a directory: {root}"));
-    }
+    let real = canonical_dir(&root)?;
     let granted = real.to_string_lossy().into_owned();
     state.set(real)?;
     Ok(granted)
@@ -217,6 +242,8 @@ pub fn list_workspace_files(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Vec<FileEntry>, String> {
     let granted = state.root()?;
+    // TOCTOU: the walk below runs after this containment check (accepted — see the
+    // module-level "TOCTOU" note; local single-user reader).
     let root_path = resolve_dir(&granted, Path::new(&root))?;
 
     let mut entries = Vec::new();
@@ -278,6 +305,8 @@ pub fn read_doc(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<DocPayload, String> {
     let granted = state.root()?;
+    // TOCTOU: the read below runs after this containment check (accepted — see the
+    // module-level "TOCTOU" note; local single-user reader).
     let real = resolve_doc(&granted, Path::new(&path))?;
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
@@ -294,17 +323,15 @@ pub fn read_doc(
 // pick_workspace_folder
 // --------------------------------------------------------------------------
 
-/// Open the native folder picker and return the chosen absolute path, or `None`
-/// when the user cancels. The chosen folder is granted as the active workspace
-/// (canonicalized) so subsequent reads are confined to it. Async so blocking on
-/// the dialog never parks the main thread; the dialog plugin pumps the picker on
-/// the event loop.
+/// Open the native folder picker and return the chosen absolute path
+/// (canonicalized), or `None` when the user cancels. This does NOT mutate the
+/// workspace grant: the grant is adopted only when the frontend commits to the
+/// folder via [`watch_workspace`], so a pick that is later abandoned leaves the
+/// active workspace untouched. Async so blocking on the dialog never parks the
+/// main thread; the dialog plugin pumps the picker on the event loop.
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_workspace_folder(
-    app: AppHandle,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Option<String>, String> {
+pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, String> {
     let Some(path) = app
         .dialog()
         .file()
@@ -314,12 +341,9 @@ pub async fn pick_workspace_folder(
         return Ok(None);
     };
 
-    // Grant the picked folder (canonicalized) as the workspace root.
     let real = std::fs::canonicalize(&path)
         .map_err(|err| format!("cannot resolve {}: {err}", path.display()))?;
-    let granted = real.to_string_lossy().into_owned();
-    state.set(real)?;
-    Ok(Some(granted))
+    Ok(Some(real.to_string_lossy().into_owned()))
 }
 
 // --------------------------------------------------------------------------
@@ -355,11 +379,14 @@ pub struct WatchError {
 pub struct WatcherState(pub Mutex<Option<Debouncer<RecommendedWatcher>>>);
 
 /// Begin watching `root` recursively, emitting a debounced
-/// `mdreader://fs-changed` for every markdown file that changes. `root` must be
-/// within the granted workspace. The swap is atomic: a fresh debouncer is built
-/// and its watch armed *before* the previous one is dropped, so a failed new
-/// watch leaves the old workspace watched (consistent state either way).
-/// Runtime failures during watching are surfaced via `mdreader://watch-error`.
+/// `mdreader://fs-changed` for every markdown file that changes, and adopt `root`
+/// as the granted workspace. This is the ONE atomic "switch workspace" operation:
+/// the new root becomes the grant *and* the live watcher together, or neither
+/// does. A `root` that cannot be resolved, or whose watch fails to arm, leaves
+/// BOTH the previous grant and the previous watcher fully intact and returns the
+/// error — the caller stays on the old workspace, and backend state can never
+/// diverge (a live watcher on one root while the grant names another). Runtime
+/// failures *during* watching are surfaced separately via `mdreader://watch-error`.
 #[tauri::command]
 #[specta::specta]
 pub fn watch_workspace(
@@ -368,12 +395,11 @@ pub fn watch_workspace(
     workspace: tauri::State<'_, WorkspaceState>,
     state: tauri::State<'_, WatcherState>,
 ) -> Result<(), String> {
-    let granted = workspace.root()?;
-    let root_path = resolve_dir(&granted, Path::new(&root))?;
-
     let emit_app = app.clone();
-    let mut debouncer = new_debouncer(
-        Duration::from_millis(WATCH_DEBOUNCE_MS),
+    watch_and_commit(
+        &root,
+        &workspace,
+        &state,
         move |result: DebounceEventResult| match result {
             Ok(events) => {
                 for event in events {
@@ -399,18 +425,50 @@ pub fn watch_workspace(
             }
         },
     )
-    .map_err(|err| format!("watcher init failed: {err}"))?;
+}
 
-    // Arm the new watch BEFORE parking it. On failure we return here with the
-    // freshly-built debouncer dropped and the previously-parked watcher intact,
-    // so the old workspace stays watched (no orphan, no gap).
+/// The workspace-switch core, factored out of [`watch_workspace`] so it is
+/// exercisable without an `AppHandle` (the handle is only needed to build the
+/// production `on_event` sink; tests pass a no-op). Resolves `root`, arms a fresh
+/// watcher into a *local*, and — only on success — commits the new grant + new
+/// watcher together. Any earlier failure returns with nothing mutated.
+fn watch_and_commit<F: DebounceEventHandler>(
+    root: &str,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    on_event: F,
+) -> Result<(), String> {
+    // A workspace SWITCH targets a NEW root that is not inside the old grant, so
+    // resolve it independently: this command is the one that ESTABLISHES the grant.
+    // TOCTOU: the watch below arms after this check (accepted — see the
+    // module-level "TOCTOU" note; local single-user reader).
+    let new_root = canonical_dir(root)?;
+
+    // Build + arm the new watcher into a LOCAL, holding NO state lock across
+    // construction. A failure here changes nothing — the previous grant + watcher
+    // stay live, so the caller simply stays on the old workspace.
+    let mut debouncer = new_debouncer(Duration::from_millis(WATCH_DEBOUNCE_MS), on_event)
+        .map_err(|err| format!("watcher init failed: {err}"))?;
     debouncer
         .watcher()
-        .watch(&root_path, RecursiveMode::Recursive)
+        .watch(&new_root, RecursiveMode::Recursive)
         .map_err(|err| format!("watch {root} failed: {err}"))?;
 
-    // Park the debouncer (drops+stops the previous watch on reassignment).
-    *state
+    commit_workspace(workspace, watcher, new_root, debouncer)
+}
+
+/// Adopt `new_root` as the grant and `debouncer` as the live watcher, dropping
+/// (and thereby stopping) the previous watcher. Reached only after the new watch
+/// is armed, so the grant and the running watcher move as one — they can never
+/// name different roots.
+fn commit_workspace(
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    new_root: PathBuf,
+    debouncer: Debouncer<RecommendedWatcher>,
+) -> Result<(), String> {
+    workspace.set(new_root)?;
+    *watcher
         .0
         .lock()
         .map_err(|_| "watcher state poisoned".to_string())? = Some(debouncer);
@@ -419,9 +477,13 @@ pub fn watch_workspace(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_dir, resolve_doc, resolve_within};
+    use super::{
+        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit, DebounceEventResult,
+        WatcherState, WorkspaceState,
+    };
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     /// A workspace root plus the canonicalized path (macOS `/var` → `/private/var`).
@@ -516,5 +578,45 @@ mod tests {
         let (_dir, root) = workspace();
         let resolved = resolve_within(&root, &root).expect("root allowed");
         assert_eq!(resolved, root);
+    }
+
+    #[test]
+    fn canonical_dir_accepts_a_directory_and_rejects_a_file() {
+        let (_dir, root) = workspace();
+        assert_eq!(canonical_dir(root.to_str().unwrap()).unwrap(), root);
+
+        let file = root.join("note.md");
+        fs::write(&file, "# hi").unwrap();
+        assert!(canonical_dir(file.to_str().unwrap()).is_err());
+        assert!(canonical_dir(root.join("nope").to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn watch_switch_swaps_atomically_and_failure_preserves_old_state() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let watcher = WatcherState(Mutex::new(None));
+
+        // The `on_event` sink is irrelevant to the swap logic — a no-op stands in
+        // for the production emit closure so no AppHandle is needed here.
+        let sink = || |_result: DebounceEventResult| {};
+
+        // Arm the initial watch on A.
+        watch_and_commit(root_a.to_str().unwrap(), &workspace, &watcher, sink()).expect("arm A");
+        assert_eq!(workspace.root().unwrap(), root_a);
+        assert!(watcher.0.lock().unwrap().is_some());
+
+        // A valid switch to B swaps BOTH the grant and the watcher together.
+        watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink()).expect("switch B");
+        assert_eq!(workspace.root().unwrap(), root_b);
+        assert!(watcher.0.lock().unwrap().is_some());
+
+        // A switch whose target cannot be resolved leaves the OLD root + watcher
+        // fully intact (no half-applied switch, no divergence).
+        let bogus = root_b.join("does-not-exist");
+        assert!(watch_and_commit(bogus.to_str().unwrap(), &workspace, &watcher, sink()).is_err());
+        assert_eq!(workspace.root().unwrap(), root_b);
+        assert!(watcher.0.lock().unwrap().is_some());
     }
 }

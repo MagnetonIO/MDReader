@@ -30,20 +30,24 @@ export const commands = {
 	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
 	/**
-	 *  Open the native folder picker and return the chosen absolute path, or `None`
-	 *  when the user cancels. The chosen folder is granted as the active workspace
-	 *  (canonicalized) so subsequent reads are confined to it. Async so blocking on
-	 *  the dialog never parks the main thread; the dialog plugin pumps the picker on
-	 *  the event loop.
+	 *  Open the native folder picker and return the chosen absolute path
+	 *  (canonicalized), or `None` when the user cancels. This does NOT mutate the
+	 *  workspace grant: the grant is adopted only when the frontend commits to the
+	 *  folder via [`watch_workspace`], so a pick that is later abandoned leaves the
+	 *  active workspace untouched. Async so blocking on the dialog never parks the
+	 *  main thread; the dialog plugin pumps the picker on the event loop.
 	 */
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
 	/**
 	 *  Begin watching `root` recursively, emitting a debounced
-	 *  `mdreader://fs-changed` for every markdown file that changes. `root` must be
-	 *  within the granted workspace. The swap is atomic: a fresh debouncer is built
-	 *  and its watch armed *before* the previous one is dropped, so a failed new
-	 *  watch leaves the old workspace watched (consistent state either way).
-	 *  Runtime failures during watching are surfaced via `mdreader://watch-error`.
+	 *  `mdreader://fs-changed` for every markdown file that changes, and adopt `root`
+	 *  as the granted workspace. This is the ONE atomic "switch workspace" operation:
+	 *  the new root becomes the grant *and* the live watcher together, or neither
+	 *  does. A `root` that cannot be resolved, or whose watch fails to arm, leaves
+	 *  BOTH the previous grant and the previous watcher fully intact and returns the
+	 *  error — the caller stays on the old workspace, and backend state can never
+	 *  diverge (a live watcher on one root while the grant names another). Runtime
+	 *  failures *during* watching are surfaced separately via `mdreader://watch-error`.
 	 */
 	watchWorkspace: (root: string) => typedError<null, string>(__TAURI_INVOKE("watch_workspace", { root })),
 };
