@@ -6,6 +6,10 @@ on:
   pull_request:
     paths:
       - 'apps/mdreader/**'
+      - '.github/workflows/tauri.yml'
+      - 'scripts/check-bindings.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 concurrency:
   group: tauri-${{ github.workflow }}-${{ github.ref }}
