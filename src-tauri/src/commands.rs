@@ -1,10 +1,12 @@
-//! Tauri command surface for the MDReader shell.
+//! Tauri command surface for the MDReader shell — the *filesystem* half.
 //!
-//! P2 keeps every command deliberately THIN: filesystem reads, a folder picker,
-//! and a workspace watcher. No business logic lives here — the real
-//! ingest/query engine (P3) will replace this temporary `fs` command layer. Each
-//! command derives `specta::Type` so tauri-specta emits matching TypeScript into
-//! `apps/mdreader/ui/src/bindings.ts`.
+//! This module owns the thin, containment-guarded fs layer: a folder picker, a
+//! workspace watcher, and live-from-disk document reads. Reading is always done
+//! straight off disk (never a stale index copy), so [`read_doc`] stays here. The
+//! *engine* half — the embedded CatDB index, live import progress, engine-backed
+//! file listing, and wikilink resolution — lives in [`crate::engine`] and reuses
+//! this module's containment helpers. Each command derives `specta::Type` so
+//! tauri-specta emits matching TypeScript into `apps/mdreader/ui/src/bindings.ts`.
 //!
 //! ## Workspace containment
 //!
@@ -30,8 +32,8 @@
 //! between the check and the use. For a LOCAL single-user desktop reader (not a
 //! multi-tenant service) this race is proportionately minor — there is no other
 //! tenant to win it — so it is accepted rather than locked against. Each affected
-//! command ([`read_doc`], [`list_workspace_files`], [`watch_workspace`]) notes it
-//! at the use site.
+//! command ([`read_doc`], [`watch_workspace`], and the engine module's listing)
+//! notes it at the use site.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -46,38 +48,22 @@ use specta::Type;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
-use walkdir::{DirEntry, WalkDir};
-
-/// Max directory depth walked by [`list_workspace_files`]. A sanity bound so a
-/// pathological or symlinked tree cannot stall the walk.
-const MAX_WALK_DEPTH: usize = 12;
 
 /// Debounce window for the workspace watcher. Collapses editor save-storms (a
 /// single logical edit often lands as several `write` syscalls) into one event.
 const WATCH_DEBOUNCE_MS: u64 = 500;
 
 /// True for the markdown extensions the reader understands.
-fn is_markdown(path: &Path) -> bool {
+pub(crate) fn is_markdown(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
         Some("md") | Some("markdown")
     )
 }
 
-/// Prune hidden directories (`.git`, `.obsidian`, …) from the walk while still
-/// descending the workspace root itself.
-fn is_hidden_dir(entry: &DirEntry) -> bool {
-    entry.depth() > 0
-        && entry.file_type().is_dir()
-        && entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with('.'))
-}
-
 /// Milliseconds since the Unix epoch for a filesystem timestamp, or `0.0` when
 /// the platform cannot report one.
-fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
+pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
     modified
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|delta| delta.as_millis() as f64)
@@ -96,7 +82,7 @@ pub struct WorkspaceState(pub Mutex<Option<PathBuf>>);
 
 impl WorkspaceState {
     /// The current granted root, or an error when no workspace has been granted.
-    fn root(&self) -> Result<PathBuf, String> {
+    pub(crate) fn root(&self) -> Result<PathBuf, String> {
         self.0
             .lock()
             .map_err(|_| "workspace state poisoned".to_string())?
@@ -147,7 +133,7 @@ fn resolve_doc(root: &Path, path: &Path) -> Result<PathBuf, String> {
 
 /// Resolve a *listable/watchable directory*: contained in `root` and an existing
 /// directory.
-fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
     let real = resolve_within(root, dir)?;
     if !real.is_dir() {
         return Err(format!("not a directory: {}", dir.display()));
@@ -158,8 +144,9 @@ fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
 /// Canonicalize `root` and confirm it is an existing directory — the check
 /// [`set_workspace`] and [`watch_workspace`] share to *establish* a workspace
 /// grant (as opposed to validating a candidate against an existing grant).
-fn canonical_dir(root: &str) -> Result<PathBuf, String> {
-    let real = std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
+pub(crate) fn canonical_dir(root: &str) -> Result<PathBuf, String> {
+    let real =
+        std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
     if !real.is_dir() {
         return Err(format!("not a directory: {root}"));
     }
@@ -211,10 +198,12 @@ pub fn set_workspace(
 }
 
 // --------------------------------------------------------------------------
-// list_workspace_files
+// FileEntry — the sidebar row shape, produced by the engine module's listing.
 // --------------------------------------------------------------------------
 
-/// One markdown file discovered under a workspace root.
+/// One markdown file surfaced to the sidebar tree. Produced either from the
+/// engine's index (after an import) or, before the first import finishes, from a
+/// live filesystem scan — see [`crate::engine::list_workspace_files`].
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct FileEntry {
     /// Absolute path to the file.
@@ -228,55 +217,10 @@ pub struct FileEntry {
     /// File size in bytes (an `f64` so it round-trips through JSON losslessly for
     /// realistic document sizes).
     pub size: f64,
-}
-
-/// Recursively list the `.md`/`.markdown` files under `root` (hidden directories
-/// pruned, depth-bounded). `root` must be within the granted workspace. Symlinks
-/// are never followed (`follow_links(false)`), so a symlinked subtree cannot
-/// leak files from outside the workspace. Thin: no parsing, no ranking — just
-/// the raw tree the sidebar renders.
-#[tauri::command]
-#[specta::specta]
-pub fn list_workspace_files(
-    root: String,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<FileEntry>, String> {
-    let granted = state.root()?;
-    // TOCTOU: the walk below runs after this containment check (accepted — see the
-    // module-level "TOCTOU" note; local single-user reader).
-    let root_path = resolve_dir(&granted, Path::new(&root))?;
-
-    let mut entries = Vec::new();
-    for entry in WalkDir::new(&root_path)
-        .max_depth(MAX_WALK_DEPTH)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| !is_hidden_dir(entry))
-    {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if !entry.file_type().is_file() || !is_markdown(path) {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else { continue };
-        entries.push(FileEntry {
-            path: path.to_string_lossy().into_owned(),
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string(),
-            dir: path
-                .parent()
-                .map(|parent| parent.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            mtime: mtime_millis(meta.modified().ok()),
-            size: meta.len() as f64,
-        });
-    }
-
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(entries)
+    /// True when a gitignore/`.contextignore` rule matched the file (the tree
+    /// dims it). Index-listed documents are never ignored (the ingest scan drops
+    /// them before they reach the index); only the fs-fallback listing sets this.
+    pub ignored: bool,
 }
 
 // --------------------------------------------------------------------------
@@ -311,7 +255,11 @@ pub fn read_doc(
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
-    let mtime = mtime_millis(std::fs::metadata(&real).ok().and_then(|m| m.modified().ok()));
+    let mtime = mtime_millis(
+        std::fs::metadata(&real)
+            .ok()
+            .and_then(|m| m.modified().ok()),
+    );
     Ok(DocPayload {
         content: String::from_utf8_lossy(&bytes).into_owned(),
         mtime,
@@ -488,8 +436,8 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit, DebounceEventResult,
-        WatcherState, WorkspaceState,
+        canonical_dir, resolve_dir, resolve_doc, resolve_within, watch_and_commit,
+        DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::PathBuf;

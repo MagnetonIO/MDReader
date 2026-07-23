@@ -7,8 +7,10 @@
 //! `apps/mdreader/ui/src/bindings.ts` always matches the live command surface.
 
 mod commands;
+mod engine;
 
 use commands::{WatcherState, WorkspaceState};
+use engine::EngineState;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
@@ -27,10 +29,13 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::ping,
             commands::set_workspace,
-            commands::list_workspace_files,
             commands::read_doc,
             commands::pick_workspace_folder,
             commands::watch_workspace,
+            engine::list_workspace_files,
+            engine::start_import,
+            engine::import_status,
+            engine::resolve_wikilink,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }
@@ -41,9 +46,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 /// keeps the standard App/Edit menus (so copy/paste/select-all keep working) and
 /// remaps window-close to ⌘⇧W, leaving ⌘W free to reach the webview.
 #[cfg(target_os = "macos")]
-fn build_app_menu(
-    handle: &tauri::AppHandle,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
     let app_menu = SubmenuBuilder::new(handle, "MDReader")
@@ -102,6 +105,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
+        .manage(EngineState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
