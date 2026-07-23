@@ -7,6 +7,7 @@
  */
 
 import { Channel } from '@tauri-apps/api/core';
+import type { RelatedHit, SearchAdapter, SearchHit } from '@mdreader/ui';
 
 import {
   commands,
@@ -17,9 +18,13 @@ import {
   type WatchError,
   type ImportProgress,
   type WikiResolution as BindingWikiResolution,
+  type SearchHitDto,
+  type SearchBatch,
+  type RelatedDocDto,
 } from '../bindings';
 
 export type { FileEntry, DocPayload, FsChanged, WatchError };
+export type { SearchHit, RelatedHit } from '@mdreader/ui';
 
 /** A `blake3`/`f64`-normalised document payload (never-null numbers). */
 export interface Doc {
@@ -216,3 +221,108 @@ export function onFsChanged(handler: (change: FsChanged) => void): Promise<() =>
 export function onWatchError(handler: (error: WatchError) => void): Promise<() => void> {
   return events.mdreaderWatchError.listen((event) => handler(event.payload));
 }
+
+// --------------------------------------------------------------------------
+// search + related
+// --------------------------------------------------------------------------
+
+/** Default hits per phase / related list length. */
+const SEARCH_LIMIT = 20;
+const RELATED_LIMIT = 12;
+
+/** Normalise a wire search hit (never-null numbers) into the palette's shape. */
+function normalizeHit(dto: SearchHitDto): SearchHit {
+  return {
+    chunkId: dto.chunk_id,
+    documentId: dto.document_id,
+    path: dto.abs_path,
+    filePath: dto.file_path,
+    name: dto.name,
+    headingPath: dto.heading_path,
+    startLine: dto.start_line,
+    endLine: dto.end_line,
+    score: dto.score ?? 0,
+    rrfScore: dto.rrf_score ?? 0,
+    boosts: {
+      title: dto.boosts.title ?? 0,
+      path: dto.boosts.path ?? 0,
+      recency: dto.boosts.recency ?? 0,
+      graph: dto.boosts.graph ?? 0,
+    },
+    lexRank: dto.lex_rank,
+    semRank: dto.sem_rank,
+    snippet: dto.snippet,
+    mtime: dto.mtime ?? 0,
+    explain: dto.explain
+      ? {
+          lexRank: dto.explain.lex_rank,
+          semRank: dto.explain.sem_rank,
+          rrfScore: dto.explain.rrf_score ?? 0,
+          boosts: {
+            title: dto.explain.boosts.title ?? 0,
+            path: dto.explain.boosts.path ?? 0,
+            recency: dto.explain.boosts.recency ?? 0,
+            graph: dto.explain.boosts.graph ?? 0,
+          },
+          finalScore: dto.explain.final_score ?? 0,
+          indexVersion: dto.explain.index_version,
+          embeddingModel: dto.explain.embedding_model,
+        }
+      : null,
+  };
+}
+
+/** Normalise a wire related doc into the palette/rail shape. */
+function normalizeRelated(dto: RelatedDocDto): RelatedHit {
+  return {
+    documentId: dto.document_id,
+    path: dto.abs_path,
+    filePath: dto.file_path,
+    name: dto.name,
+    score: dto.score ?? 0,
+    components: {
+      graph: dto.components.graph ?? 0,
+      concept: dto.components.concept ?? 0,
+      vector: dto.components.vector ?? 0,
+    },
+  };
+}
+
+/**
+ * Hybrid search, streamed in two honest phases: `onPhase('lexical', …)` fires
+ * as the FTS batch lands, `onPhase('final', …)` as the hybrid pass merges in
+ * (the resolved value is the final list — authoritative for a mocked IPC that
+ * need not drive the channel). Throws with the schema-derived filter-error text
+ * on a bad typed query.
+ */
+export async function search(
+  query: string,
+  opts: { lexicalOnly: boolean; explain: boolean },
+  onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
+): Promise<SearchHit[]> {
+  const channel = new Channel<SearchBatch>();
+  channel.onmessage = (batch) => {
+    const phase = batch.phase === 'lexical' ? 'lexical' : 'final';
+    onPhase(phase, batch.hits.map(normalizeHit));
+  };
+  const result = await commands.search(
+    query,
+    { limit: SEARCH_LIMIT, lexical_only: opts.lexicalOnly, explain: opts.explain },
+    channel,
+  );
+  if (result.status === 'error') throw new Error(result.error);
+  return result.data.map(normalizeHit);
+}
+
+/** Documents related to `docPath` (absolute), unified graph+concept+vector. */
+export async function related(docPath: string, limit = RELATED_LIMIT): Promise<RelatedHit[]> {
+  const result = await commands.related(docPath, limit);
+  if (result.status === 'error') throw new Error(result.error);
+  return result.data.map(normalizeRelated);
+}
+
+/** The palette's transport, backed by the Tauri command surface. */
+export const searchAdapter: SearchAdapter = {
+  search,
+  related: (docPath) => related(docPath),
+};

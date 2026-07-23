@@ -46,6 +46,12 @@ export interface ReaderPaneProps {
   onMissingWikiLink: (target: string) => void;
   /** A wikilink matched several notes — surface the candidate set. */
   onAmbiguousWikiLink?: (target: string, candidates: DocRef[]) => void;
+  /**
+   * A pending provenance jump: land on `line` in the document at `path` and
+   * pulse the target block. `nonce` makes each jump distinct so re-jumping to
+   * the same line re-fires. The reader consumes it once the target renders.
+   */
+  jump?: { path: string; line: number; nonce: number } | null;
 }
 
 function dirname(path: string): string {
@@ -87,9 +93,14 @@ export function ReaderPane({
   onPickFolder,
   onMissingWikiLink,
   onAmbiguousWikiLink,
+  jump,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   const [activeSlug, setActiveSlug] = useState<string | undefined>(undefined);
+  // A brief highlight range for the provenance-jump pulse (cleared on a timer).
+  const [pulse, setPulse] = useState<{ start: number; end: number } | null>(null);
+  const pulseTimer = useRef<number | undefined>(undefined);
+  const consumedJump = useRef(0);
 
   const path = tab?.docRef.path ?? null;
   // Live mirrors of the active document + workspace, so an in-flight wikilink
@@ -139,6 +150,24 @@ export function ReaderPane({
     // Intentionally keyed on the loaded doc only, not the tab (scroll writes
     // must not retrigger a restore).
   }, [state.doc]);
+
+  // Consume a pending provenance jump: once the target document is ready, land
+  // on its section line and pulse the block. Declared AFTER the scroll-restore
+  // effect so its rAF runs later and wins (an explicit jump beats a restore).
+  useEffect(() => {
+    if (state.status !== 'ready' || !path || !jump) return;
+    if (jump.path !== path || jump.nonce === consumedJump.current) return;
+    consumedJump.current = jump.nonce;
+    const line = jump.line;
+    const frame = requestAnimationFrame(() => {
+      readerRef.current?.scrollToLine(line);
+      setPulse({ start: line, end: line });
+      window.clearTimeout(pulseTimer.current);
+      pulseTimer.current = window.setTimeout(() => setPulse(null), 1400);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [state.doc, path, jump]);
+  useEffect(() => () => window.clearTimeout(pulseTimer.current), []);
 
   // Once a wikilink-target document has rendered, jump to the heading line the
   // link asked for (recorded at resolve time, keyed by the target path).
@@ -309,6 +338,7 @@ export function ReaderPane({
                 ref={readerRef}
                 doc={state.doc}
                 activeSlug={activeSlug}
+                highlightRange={pulse ?? undefined}
                 onActiveHeadingChange={handleActiveHeading}
                 onNavigate={onReaderNavigate}
                 resolveWikiLink={resolveWikiLink}

@@ -1,9 +1,10 @@
 /**
  * The MDReader application shell: overlay titlebar, collapsible sidebar, tab
- * strip, reading pane, status bar, and the keyboard-first overlays (file-jump
- * palette + shortcut sheet). It owns the wiring the leaf components stay ignorant
- * of: one KeymapRegistry driving both dispatch and the sheet, session/settings
- * persistence, the workspace watcher's live-reload, and theme application.
+ * strip, reading pane, related rail, status bar, and the keyboard-first overlays
+ * (the Cmd+K search / Cmd+P file palette + shortcut sheet). It owns the wiring
+ * the leaf components stay ignorant of: one KeymapRegistry driving both dispatch
+ * and the sheet, session/settings persistence, the workspace watcher's
+ * live-reload, provenance jumps, and theme application.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -13,11 +14,14 @@ import {
   onFsChanged,
   onWatchError,
   pickWorkspaceFolder,
+  searchAdapter,
   setWorkspace,
   startImport,
   watchWorkspace,
   type WorkspaceFile,
 } from '../platform/fs.js';
+import { SearchPalette } from '@mdreader/ui';
+import type { HitTarget, PaletteFile } from '@mdreader/ui';
 import { KeymapRegistry, detectMac } from '../keymap/registry.js';
 import type { Binding } from '../keymap/registry.js';
 import { selectActiveTab, useTabsStore } from '../stores/tabs.js';
@@ -40,8 +44,8 @@ import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
 import { ReaderPane } from './ReaderPane.js';
+import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
-import { FileJumpPalette } from './FileJumpPalette.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { Toasts, toast } from './toasts.js';
@@ -83,10 +87,17 @@ export function AppShell() {
 
   // --- local UI state ---------------------------------------------------
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Which mode the palette opens in: Cmd+K search vs Cmd+P file jump (one
+  // component, two modes — the P4 unification).
+  const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [relatedOpen, setRelatedOpen] = useState(false);
+  // A pending provenance jump handed to the ReaderPane once the target renders.
+  const [jump, setJump] = useState<{ path: string; line: number; nonce: number } | null>(null);
+  const jumpSeq = useRef(0);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -205,9 +216,17 @@ export function AppShell() {
   const openRoot = useCallback(
     async (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
-      // This open supersedes any prior in-flight open: bump the request
-      // generation and thread it through every continuation below.
+      // This open supersedes any prior in-flight open — INCLUDING a re-open of the
+      // SAME root (e.g. a session-restore open racing a user pick): bump the
+      // request generation and thread it through every continuation below, so the
+      // older open's late listing/import writes are all discarded. `previousRoot`
+      // is snapshotted HERE, synchronously before any await, so two overlapping
+      // switches each capture the true prior root (the first's `setRoot` only runs
+      // after its watch await, i.e. strictly after this snapshot) — the root the
+      // retire step must attribute the retired tabs to.
       const epoch = (openEpochRef.current += 1);
+      const previousRoot = sources.root;
+      const isSwitch = previousRoot !== null && previousRoot !== folder;
 
       // Website / tests without a Tauri backend: no grant/watch IPC. Open the
       // folder best-effort so the shell still renders content.
@@ -215,11 +234,10 @@ export function AppShell() {
         sources.setRoot(folder);
         sources.setWatcher('idle');
         await listInto(folder, epoch);
-        return true;
+        // A newer open superseded this one during listInto → report NOT-current so
+        // its (stale) success can't authorize retiring the newer workspace's tabs.
+        return openEpochRef.current === epoch;
       }
-
-      const previousRoot = sources.root;
-      const isSwitch = previousRoot !== null && previousRoot !== folder;
 
       let grant: { root: string; generation: number };
       try {
@@ -237,7 +255,12 @@ export function AppShell() {
           // if this open is the newest (generation >= the one that set loading);
           // an older straggler cannot clear a newer open's loading.
           loadingGateRef.current.fail(epoch, loadingSink);
-          toast('Could not switch workspace — staying on the current folder');
+          // Suppress a STALE failure toast: if a newer open already superseded
+          // this one, its failure is moot (we've moved on to another workspace) —
+          // toasting would nag about a switch the user has already left behind.
+          if (openEpochRef.current === epoch) {
+            toast('Could not switch workspace — staying on the current folder');
+          }
           return false;
         }
         // First open / same-root reopen: grant independently, read degraded.
@@ -288,6 +311,13 @@ export function AppShell() {
   const switchWorkspace = useCallback(
     async (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
+      // Snapshot the root being switched AWAY from SYNCHRONOUSLY, before the
+      // await below. This is the same instant `openRoot` snapshots its own
+      // `previousRoot`, so overlapping switches (B then C, back-to-back) each
+      // capture the true prior root for THEIR call — C's retire attributes tabs
+      // to B, B's (superseded → committed=false) retires nothing. Re-reading the
+      // root after the await would risk attributing tabs to a root a concurrent
+      // switch had already installed.
       const previousRoot = sources.root;
       if (previousRoot === folder) return true;
 
@@ -341,6 +371,28 @@ export function AppShell() {
     [openRef],
   );
 
+  // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
+  // it in the background (the palette itself decides when to close).
+  const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
+    const root = useSourcesStore.getState().root;
+    const ref = { path: file.path, name: file.name };
+    useTabsStore.getState().openTab(ref, { activate: !opts.background });
+    useSourcesStore.getState().addRecent(ref, root);
+  }, []);
+
+  // The palette's search-hit open: land at the hit's provenance line. Enter
+  // focuses the tab and schedules the jump (consumed once the doc renders); ⌘↵
+  // opens a background tab (no jump — it isn't the focused reader).
+  const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
+    const root = useSourcesStore.getState().root;
+    const ref = { path: target.path, name: target.name };
+    useTabsStore.getState().openTab(ref, { activate: !opts.background });
+    useSourcesStore.getState().addRecent(ref, root);
+    if (!opts.background && target.line != null) {
+      setJump({ path: target.path, line: target.line, nonce: (jumpSeq.current += 1) });
+    }
+  }, []);
+
   const onNavigate = useCallback((ref: DocRef) => {
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
@@ -389,21 +441,37 @@ export function AppShell() {
         keys: 'Mod+P',
         description: 'Jump to file',
         group: 'Files',
-        run: () => setPaletteOpen(true),
+        run: () => {
+          setPaletteMode('file');
+          setPaletteOpen(true);
+        },
       },
       {
         id: 'search',
         keys: 'Mod+K',
-        description: 'Search (arrives in P4)',
+        description: 'Search',
         group: 'Search',
-        run: () => toast('Search arrives in P4'),
+        run: () => {
+          setPaletteMode('search');
+          setPaletteOpen(true);
+        },
+      },
+      {
+        id: 'related',
+        keys: 'Mod+Shift+R',
+        description: 'Toggle related rail',
+        group: 'Search',
+        run: () => setRelatedOpen((open) => !open),
       },
       {
         id: 'new-tab',
         keys: 'Mod+T',
         description: 'New tab',
         group: 'Tabs',
-        run: () => setPaletteOpen(true),
+        run: () => {
+          setPaletteMode('file');
+          setPaletteOpen(true);
+        },
       },
       {
         id: 'close-tab',
@@ -765,6 +833,23 @@ export function AppShell() {
 
   const textScale = textScaleFactor({ textScaleIndex });
 
+  // Palette + rail context. `sourceName` (the workspace's basename) is the
+  // breadcrumb's `source` segment; `paletteFiles` feeds file mode; `activeDoc`
+  // (the focused tab) drives the Related intent and the related rail.
+  const sourceName = useMemo(() => {
+    if (!root) return null;
+    const parts = root.replace(/[\\/]+$/, '').split(/[\\/]+/);
+    return parts[parts.length - 1] ?? root;
+  }, [root]);
+  const paletteFiles = useMemo<PaletteFile[]>(
+    () => files.map((file) => ({ path: file.path, name: file.name })),
+    [files],
+  );
+  const activeDoc = useMemo(
+    () => (activeTab ? { path: activeTab.docRef.path, name: activeTab.docRef.name } : null),
+    [activeTab],
+  );
+
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
       <Titlebar
@@ -797,22 +882,35 @@ export function AppShell() {
 
         <main className="shell__main">
           <TabStrip />
-          <ReaderPane
-            tab={activeTab ?? null}
-            root={root}
-            files={files}
-            outlineVisible={outlineVisible}
-            readingFont={readingFont}
-            textScale={textScale}
-            reloadNonce={reloadNonce}
-            onToggleOutline={() => useSettingsStore.getState().toggleOutline()}
-            onNavigate={onNavigate}
-            onPersistScroll={onPersistScroll}
-            onDocMeta={onDocMeta}
-            onPickFolder={onPickFolder}
-            onMissingWikiLink={onMissingWikiLink}
-            onAmbiguousWikiLink={onAmbiguousWikiLink}
-          />
+          <div className="shell__reader-row">
+            <ReaderPane
+              tab={activeTab ?? null}
+              root={root}
+              files={files}
+              outlineVisible={outlineVisible}
+              readingFont={readingFont}
+              textScale={textScale}
+              reloadNonce={reloadNonce}
+              jump={jump}
+              onToggleOutline={() => useSettingsStore.getState().toggleOutline()}
+              onNavigate={onNavigate}
+              onPersistScroll={onPersistScroll}
+              onDocMeta={onDocMeta}
+              onPickFolder={onPickFolder}
+              onMissingWikiLink={onMissingWikiLink}
+              onAmbiguousWikiLink={onAmbiguousWikiLink}
+            />
+            {activeTab ? (
+              <RelatedRail
+                activeDoc={activeDoc}
+                adapter={searchAdapter}
+                open={relatedOpen}
+                onToggle={() => setRelatedOpen((open) => !open)}
+                onOpen={openRef}
+                workspaceKey={root}
+              />
+            ) : null}
+          </div>
         </main>
       </div>
 
@@ -826,10 +924,15 @@ export function AppShell() {
       />
 
       {paletteOpen ? (
-        <FileJumpPalette
-          files={files}
-          root={root}
-          onOpen={openFile}
+        <SearchPalette
+          mode={paletteMode}
+          files={paletteFiles}
+          activeDoc={activeDoc}
+          sourceName={sourceName}
+          adapter={searchAdapter}
+          isMac={isMac}
+          onOpenHit={onOpenHit}
+          onOpenFile={onOpenPaletteFile}
           onClose={() => setPaletteOpen(false)}
         />
       ) : null}

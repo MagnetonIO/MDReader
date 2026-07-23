@@ -7,7 +7,7 @@
  * keying the whole ReaderPane by root — it discards only the stale parse without
  * remounting the reader and losing scroll/outline state.)
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ParsedDoc } from '@mdreader/markdown';
 
 export interface LoadState {
@@ -39,15 +39,26 @@ export interface DocLoaderDeps {
 export function useDocLoader(deps: DocLoaderDeps): LoadState {
   const { path, root, reloadNonce, read, parse, dirOf, wordsOf, onMeta } = deps;
   const [state, setState] = useState<LoadState>({ status: 'idle' });
+  // The root the last render loaded under, so a workspace switch can be told
+  // apart from a same-workspace reload / doc change.
+  const prevRootRef = useRef(root);
 
   useEffect(() => {
     if (!path) {
       setState({ status: 'idle' });
       onMeta(null);
+      prevRootRef.current = root;
       return;
     }
     let cancelled = false;
-    setState((prev) => ({ ...prev, status: 'loading' }));
+    // A ROOT change (workspace switch/reload) must not keep the previous
+    // workspace's document on screen while the new one loads — drop it to a
+    // clean loading state (#d). A same-workspace reload / doc switch keeps the
+    // prior doc mounted (spread) so live-reload doesn't flash empty.
+    const rootChanged = prevRootRef.current !== root;
+    prevRootRef.current = root;
+    if (rootChanged) setState({ status: 'loading' });
+    else setState((prev) => ({ ...prev, status: 'loading' }));
     void (async () => {
       try {
         const content = await read(path);

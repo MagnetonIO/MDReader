@@ -55,4 +55,41 @@ describe('useDocLoader — workspace awareness', () => {
     await waitFor(() => expect(result.current.status).toBe('ready'));
     expect(result.current.doc?.outline[0]?.text).toBe('wsB-doc');
   });
+
+  test('a root switch clears the previous doc immediately (loading, no stale render) — #d', async () => {
+    const pending: Array<(doc: ParsedDoc) => void> = [];
+    const parse = vi.fn(() => new Promise<ParsedDoc>((resolve) => pending.push(resolve)));
+    const base = {
+      path: '/note.md',
+      reloadNonce: 0,
+      read: vi.fn(async () => 'content'),
+      parse,
+      dirOf: (p: string) => p,
+      wordsOf: () => 1,
+      onMeta: vi.fn(),
+    };
+    const { result, rerender } = renderHook((props) => useDocLoader(props), {
+      initialProps: { ...base, root: '/wsA' },
+    });
+
+    // First doc becomes ready under /wsA.
+    await waitFor(() => expect(parse).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      pending[0]!(fakeDoc('wsA-doc'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // A same-workspace RELOAD keeps the prior doc mounted while re-parsing (no
+    // flash of empty on live-reload).
+    rerender({ ...base, root: '/wsA', reloadNonce: 1 });
+    expect(result.current.status).toBe('loading');
+    expect(result.current.doc?.outline[0]?.text).toBe('wsA-doc');
+
+    // A WORKSPACE SWITCH (root change) drops the previous workspace's doc at
+    // once — the reader shows a loading state, never the old content.
+    rerender({ ...base, root: '/wsB', reloadNonce: 1 });
+    expect(result.current.status).toBe('loading');
+    expect(result.current.doc).toBeUndefined();
+  });
 });

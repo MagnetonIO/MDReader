@@ -456,6 +456,169 @@ body {
   height: 100%;
 }
 
+/* --- reader row (reader + related rail) ------------------------------- */
+
+.shell__reader-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* --- related rail ----------------------------------------------------- */
+
+.related-rail {
+  width: 15rem;
+  min-width: 15rem;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.related-rail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.related-rail__title {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+.related-rail__toggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: var(--text-0);
+  line-height: 1;
+  padding: 2px var(--space-1);
+  border-radius: var(--radius-sm);
+}
+
+.related-rail__toggle:hover {
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
+}
+
+.related-rail__toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Collapsed: a thin vertical tab on the reader's right edge. */
+.related-rail__toggle--collapsed {
+  width: 1.6rem;
+  min-width: 1.6rem;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: var(--space-3) 0;
+}
+
+.related-rail__toggle-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+.related-rail__body {
+  overflow: auto;
+  padding: var(--space-2);
+  flex: 1;
+  min-height: 0;
+}
+
+.related-rail__empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-2);
+  color: var(--color-faint);
+  font-size: var(--text--1);
+}
+
+.related-rail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.related-rail__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text--1);
+}
+
+.related-rail__link:hover {
+  background: var(--color-accent-soft);
+}
+
+.related-rail__link:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.related-rail__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.related-rail__score {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--color-muted);
+}
+
+.related-rail__chips {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+}
+
+.related-rail__chip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-border-strong);
+}
+
+.related-rail__chip--graph {
+  background: var(--color-accent);
+}
+
+.related-rail__chip--concept {
+  background: var(--color-warning);
+}
+
+.related-rail__chip--vector {
+  background: var(--color-muted);
+}
+
 /* --- outline rail ----------------------------------------------------- */
 
 .outline-rail {

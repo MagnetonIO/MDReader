@@ -120,6 +120,41 @@ test('Ctrl+Tab cycles tabs by most-recent use', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
 });
 
+test('Cmd+K search → result → Enter opens the doc at its provenance section', async ({ page }) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+k' : 'Control+k');
+  const input = page.getByRole('combobox');
+  await expect(input).toBeVisible();
+
+  // "beta" sits in guide.md's `## Section B`; the hit's start_line points there.
+  await input.fill('beta');
+  await expect(page.getByRole('option').filter({ hasText: 'guide.md' })).toBeVisible();
+
+  // Enter opens the doc tab and lands on the provenance section (Section B).
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Section B' })).toBeInViewport();
+});
+
+test('search intents: Best is default, Exact is selectable, Tab cycles', async ({ page }) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+k' : 'Control+k');
+  await expect(page.getByRole('tab', { name: 'Best' })).toHaveAttribute('aria-selected', 'true');
+
+  await page.getByRole('tab', { name: 'Exact' }).click();
+  await expect(page.getByRole('tab', { name: 'Exact' })).toHaveAttribute('aria-selected', 'true');
+
+  // Tab cycles to the next intent (Semantic).
+  await page.getByRole('combobox').press('Tab');
+  await expect(page.getByRole('tab', { name: 'Semantic' })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('file-jump palette opens a document by name', async ({ page }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
