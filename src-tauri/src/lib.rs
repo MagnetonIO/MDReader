@@ -8,6 +8,7 @@
 
 mod commands;
 mod engine;
+mod search;
 
 use commands::{WatcherState, WorkspaceState};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -35,6 +36,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             engine::start_import,
             engine::import_status,
             engine::resolve_wikilink,
+            search::search,
+            search::related,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }

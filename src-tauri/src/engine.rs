@@ -138,6 +138,13 @@ impl Epoch {
             .unwrap_or_default()
     }
 
+    /// This epoch's installed engine, if the model has finished loading — the
+    /// accessor the sibling [`search`](crate::search) module reads through (the
+    /// `engine` slot itself stays private to this module).
+    pub(crate) fn db(&self) -> Option<Arc<EmbeddedCatDb>> {
+        self.engine.get().map(Arc::clone)
+    }
+
     /// The installed engine, if the model has finished loading for this epoch.
     #[cfg(test)]
     fn has_engine(&self) -> bool {
