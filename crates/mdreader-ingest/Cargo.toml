@@ -17,11 +17,18 @@ workspace = true
 name = "catdb"
 path = "src/bin/catdb.rs"
 
+[features]
+# Passthrough to catdb-cli (and transitively catdb-embed): compiles the
+# fastembed/ORT provider. Default-on so the shipped `catdb` binary embeds
+# locally; `--no-default-features` builds stay genuinely ORT-free.
+default = ["local-embed"]
+local-embed = ["catdb-cli/local-embed"]
+
 [dependencies]
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
 catdb-storage = { path = "../../../../catdb/crates/catdb-storage" }
-catdb-cli = { path = "../../../../catdb/crates/catdb-cli" }
+catdb-cli = { path = "../../../../catdb/crates/catdb-cli", default-features = false }
 mdreader-domain = { path = "../mdreader-domain" }
 async-trait = { workspace = true }
 serde = { workspace = true }
