@@ -47,12 +47,25 @@ export const useSourcesStore = create<SourcesState>((set) => ({
   setFiles: (files) => set({ files }),
   setLoading: (loading) => set({ loading }),
   addRecent: (docRef, root) =>
-    set((state) => ({
-      recent: [
-        { path: docRef.path, name: docRef.name, root },
-        ...state.recent.filter((entry) => entry.path !== docRef.path),
-      ].slice(0, MAX_RECENT),
-    })),
+    set((state) => {
+      const entry = { path: docRef.path, name: docRef.name, root };
+      // Dedupe within the SAME workspace only — the same relative path can exist
+      // in two workspaces, and each keeps its own history.
+      const next = [
+        entry,
+        ...state.recent.filter((e) => !(e.root === root && e.path === entry.path)),
+      ];
+      // Cap PER workspace root (not globally, newest-first) so heavy activity in
+      // one workspace can't evict another's recents.
+      const perRoot = new Map<string | null, number>();
+      return {
+        recent: next.filter((e) => {
+          const count = (perRoot.get(e.root) ?? 0) + 1;
+          perRoot.set(e.root, count);
+          return count <= MAX_RECENT;
+        }),
+      };
+    }),
   setWatcher: (watcher) => set({ watcher }),
   hydrate: (partial) =>
     set((state) => ({
