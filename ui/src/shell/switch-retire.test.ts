@@ -1,45 +1,78 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { retireTabsAfterSwitch } from './switch-retire.js';
+import type { DocRef } from '../stores/types.js';
+
+const ref = (name: string): DocRef => ({ path: `/${name}.md`, name: `${name}.md` });
 
 describe('retireTabsAfterSwitch', () => {
-  test('a stale open success (committed=false) does NOT retire tabs — the newer workspace tabs stay intact', () => {
-    const closeAll = vi.fn(() => [{ path: '/wsA/a.md', name: 'a.md' }]);
+  test('a stale open (committed=false) retires nothing', () => {
+    const retireForeign = vi.fn(() => [{ docRef: ref('a'), originRoot: '/wsA' }]);
     const addRecent = vi.fn();
 
     const retired = retireTabsAfterSwitch({
-      committed: false, // openRoot's epoch was superseded → not the current open
-      previousRoot: '/wsA',
-      closeAll,
+      committed: false,
+      targetRoot: '/wsB',
+      fallbackRoot: '/wsA',
+      retireForeign,
       addRecent,
     });
 
     expect(retired).toBe(false);
-    expect(closeAll).not.toHaveBeenCalled();
+    expect(retireForeign).not.toHaveBeenCalled();
     expect(addRecent).not.toHaveBeenCalled();
   });
 
-  test('a committed switch retires the previous workspace tabs into its Recent', () => {
-    const closeAll = vi.fn(() => [{ path: '/wsA/a.md', name: 'a.md' }]);
+  test('a committed switch retires foreign tabs, each under its OWN origin', () => {
+    const retireForeign = vi.fn(() => [
+      { docRef: ref('a'), originRoot: '/wsA' },
+      { docRef: ref('b'), originRoot: '/wsB' }, // a mixed-origin tab
+    ]);
     const addRecent = vi.fn();
 
     const retired = retireTabsAfterSwitch({
       committed: true,
-      previousRoot: '/wsA',
-      closeAll,
+      targetRoot: '/wsC',
+      fallbackRoot: '/wsA',
+      retireForeign,
       addRecent,
     });
 
     expect(retired).toBe(true);
-    expect(closeAll).toHaveBeenCalledTimes(1);
-    expect(addRecent).toHaveBeenCalledWith({ path: '/wsA/a.md', name: 'a.md' }, '/wsA');
+    expect(retireForeign).toHaveBeenCalledWith('/wsC'); // selects by the NEW root
+    // Attribution is by each tab's own origin — not a single snapshotted root.
+    expect(addRecent).toHaveBeenCalledWith(ref('a'), '/wsA');
+    expect(addRecent).toHaveBeenCalledWith(ref('b'), '/wsB');
   });
 
-  test('a first open (no previous workspace) retires nothing', () => {
-    const closeAll = vi.fn(() => []);
-    expect(
-      retireTabsAfterSwitch({ committed: true, previousRoot: null, closeAll, addRecent: vi.fn() }),
-    ).toBe(false);
-    expect(closeAll).not.toHaveBeenCalled();
+  test('a legacy tab with no origin falls back to the switched-away-from root', () => {
+    const retireForeign = vi.fn(() => [{ docRef: ref('a'), originRoot: null }]);
+    const addRecent = vi.fn();
+
+    retireTabsAfterSwitch({
+      committed: true,
+      targetRoot: '/wsB',
+      fallbackRoot: '/wsA',
+      retireForeign,
+      addRecent,
+    });
+
+    expect(addRecent).toHaveBeenCalledWith(ref('a'), '/wsA');
+  });
+
+  test('a same-root re-open commits but retires nothing (no foreign tabs)', () => {
+    const retireForeign = vi.fn(() => []); // origin === target → nothing foreign
+    const addRecent = vi.fn();
+
+    const retired = retireTabsAfterSwitch({
+      committed: true,
+      targetRoot: '/wsA',
+      fallbackRoot: '/wsA',
+      retireForeign,
+      addRecent,
+    });
+
+    expect(retired).toBe(false);
+    expect(addRecent).not.toHaveBeenCalled();
   });
 });

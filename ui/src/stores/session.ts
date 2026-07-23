@@ -20,6 +20,7 @@ export interface SerializedTab {
   historyIndex: number;
   scroll: ScrollPos;
   pinned: boolean;
+  originRoot: string | null;
 }
 
 export interface SessionData {
@@ -58,6 +59,7 @@ export function serializeSession(input: SessionInput): SessionData {
       historyIndex: tab.historyIndex,
       scroll: { block: tab.scroll.block, offset: tab.scroll.offset },
       pinned: tab.pinned,
+      originRoot: tab.originRoot,
     })),
   };
 }
@@ -109,6 +111,9 @@ function parseTab(candidate: unknown): TabState | null {
     historyIndex,
     scroll: parseScroll(candidate.scroll),
     pinned: candidate.pinned === true,
+    // Legacy blobs predate per-tab origin; a null origin makes the tab foreign
+    // to any real root, so it retires (attributed to session root by the caller).
+    originRoot: typeof candidate.originRoot === 'string' ? candidate.originRoot : null,
   };
 }
 

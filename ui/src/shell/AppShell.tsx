@@ -311,24 +311,26 @@ export function AppShell() {
   const switchWorkspace = useCallback(
     async (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
-      // Snapshot the root being switched AWAY from SYNCHRONOUSLY, before the
-      // await below. This is the same instant `openRoot` snapshots its own
-      // `previousRoot`, so overlapping switches (B then C, back-to-back) each
-      // capture the true prior root for THEIR call — C's retire attributes tabs
-      // to B, B's (superseded → committed=false) retires nothing. Re-reading the
-      // root after the await would risk attributing tabs to a root a concurrent
-      // switch had already installed.
+      // The root being switched away from, only a fallback for legacy tabs with
+      // no origin of their own.
       const previousRoot = sources.root;
-      if (previousRoot === folder) return true;
 
-      // `openRoot` reports `false` when its epoch was superseded (a stale
-      // success): retire tabs ONLY for a switch that committed as the CURRENT
-      // workspace, so a stale success never closes the newer workspace's tabs.
+      // ALWAYS invoke openRoot — a same-root request must still supersede an
+      // in-flight open (the session-restore-vs-user-pick case: hydration installs
+      // the root before its openRoot resolves, so a user pick of that same root
+      // has to bump the epoch and refresh). No early return on `previousRoot ===
+      // folder`; retirement below simply keeps the same-workspace tabs.
       const committed = await openRoot(folder);
+
+      // Retire by each tab's OWN origin against the NEWLY-COMMITTED root (read
+      // post-commit, authoritative), never a snapshot of the transient current
+      // root: `retireForeign` closes tabs whose origin differs from it and hands
+      // each back with its origin. A stale open (committed=false) retires nothing.
       retireTabsAfterSwitch({
         committed,
-        previousRoot,
-        closeAll: () => useTabsStore.getState().closeAll(),
+        targetRoot: committed ? useSourcesStore.getState().root : null,
+        fallbackRoot: previousRoot,
+        retireForeign: (root) => useTabsStore.getState().retireForeign(root),
         addRecent: (ref, root) => sources.addRecent(ref, root),
       });
       return committed;
@@ -359,7 +361,7 @@ export function AppShell() {
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
     const root = useSourcesStore.getState().root;
-    useTabsStore.getState().openTab(ref);
+    useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
   }, []);
 
@@ -376,7 +378,7 @@ export function AppShell() {
   const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
     const root = useSourcesStore.getState().root;
     const ref = { path: file.path, name: file.name };
-    useTabsStore.getState().openTab(ref, { activate: !opts.background });
+    useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
   }, []);
 
@@ -386,7 +388,7 @@ export function AppShell() {
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
-    useTabsStore.getState().openTab(ref, { activate: !opts.background });
+    useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
     if (!opts.background && target.line != null) {
       setJump({ path: target.path, line: target.line, nonce: (jumpSeq.current += 1) });
@@ -394,13 +396,14 @@ export function AppShell() {
   }, []);
 
   const onNavigate = useCallback((ref: DocRef) => {
+    const root = useSourcesStore.getState().root;
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
-      useTabsStore.getState().openTab(ref);
+      useTabsStore.getState().openTab(ref, { originRoot: root });
     } else {
       useTabsStore.getState().navigateInTab(active, ref);
     }
-    useSourcesStore.getState().addRecent(ref, useSourcesStore.getState().root);
+    useSourcesStore.getState().addRecent(ref, root);
   }, []);
 
   const onPersistScroll = useCallback((scroll: ScrollPos) => {
@@ -419,8 +422,9 @@ export function AppShell() {
   const onAmbiguousWikiLink = useCallback((target: string, candidates: DocRef[]) => {
     toast(`${candidates.length} notes match "${target}" — opening the first`);
     if (candidates[0]) {
-      useTabsStore.getState().openTab(candidates[0]);
-      useSourcesStore.getState().addRecent(candidates[0], useSourcesStore.getState().root);
+      const root = useSourcesStore.getState().root;
+      useTabsStore.getState().openTab(candidates[0], { originRoot: root });
+      useSourcesStore.getState().addRecent(candidates[0], root);
     }
   }, []);
 

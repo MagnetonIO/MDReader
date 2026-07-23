@@ -19,6 +19,7 @@ function tab(id: string, name: string, extra: Partial<TabState> = {}): TabState 
     historyIndex: 0,
     scroll: { block: 0, offset: 0 },
     pinned: false,
+    originRoot: '/ws',
     ...extra,
   };
 }
@@ -52,6 +53,28 @@ describe('session round-trip', () => {
     expect(restored!.tabs[0]!.scroll).toEqual({ block: 3, offset: 12 });
     expect(restored!.tabs[1]!.docRef.name).toBe('c.md');
     expect(restored!.tabs[1]!.historyIndex).toBe(1);
+    // Each tab's origin workspace round-trips (drives per-origin retirement).
+    expect(restored!.tabs[0]!.originRoot).toBe('/ws');
+  });
+
+  test('a legacy tab with no origin restores as null', () => {
+    const data = serializeSession({ root: '/ws', activeTabId: null, tabs: [], recent: [] });
+    // Simulate a pre-originRoot blob: strip the field the writer now emits.
+    const legacy = {
+      ...data,
+      tabs: [
+        {
+          id: 'tab-1',
+          docRef: { path: '/ws/a.md', name: 'a.md' },
+          history: [{ path: '/ws/a.md', name: 'a.md' }],
+          historyIndex: 0,
+          scroll: { block: 0, offset: 0 },
+          pinned: false,
+        },
+      ],
+    };
+    const restored = deserializeSession(legacy);
+    expect(restored!.tabs[0]!.originRoot).toBeNull();
   });
 
   test('serialized blob carries the schema version', () => {

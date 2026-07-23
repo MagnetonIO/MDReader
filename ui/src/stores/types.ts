@@ -35,6 +35,14 @@ export interface TabState {
   history: DocRef[];
   historyIndex: number;
   pinned: boolean;
+  /**
+   * The workspace root this tab was opened under, captured at open time. A
+   * workspace switch retires the tabs whose `originRoot` differs from the new
+   * root and records each under ITS OWN origin — so retirement never depends on
+   * snapshotting the (transient, race-prone) current root. `null` for a tab
+   * opened before any grant, or restored from a legacy session.
+   */
+  originRoot: string | null;
 }
 
 /** A closed tab retained for reopen (Cmd+Shift+T). */
@@ -46,4 +54,6 @@ export interface ClosedTab {
   pinned: boolean;
   /** Visual index the tab occupied, so reopen restores its place. */
   index: number;
+  /** The tab's origin workspace root (restored on reopen). */
+  originRoot: string | null;
 }
