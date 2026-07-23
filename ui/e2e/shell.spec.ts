@@ -224,6 +224,28 @@ test('a save that hits an external change raises the conflict banner; Reload ado
   await expect(page.locator('.cm-content')).toContainText('Changed elsewhere.');
 });
 
+test('macOS: Ctrl+E in the source editor is NOT the mode toggle (stays CM6 line-end)', async ({
+  page,
+}) => {
+  const meta = await usesMeta(page);
+  test.skip(!meta, 'the ⌘-only chord reservation only applies on macOS');
+
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'reference.md' }).click();
+  await page.getByRole('button', { name: 'Source view' }).click();
+  await expect(page.locator('.cm-content')).toBeVisible();
+  await page.locator('.cm-content').click();
+
+  // Ctrl+E on macOS must NOT toggle back to reading (that chord is ⌘E); CM6 keeps
+  // Ctrl+E as its native cursor-to-line-end. The editor stays in source view.
+  await page.keyboard.press('Control+e');
+  await expect(page.locator('.cm-content')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Source view' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});
+
 test('split view: scrolling the editor drives the preview (approximate one-way sync)', async ({
   page,
 }) => {
@@ -254,7 +276,7 @@ test('split view: scrolling the editor drives the preview (approximate one-way s
     .toBeGreaterThan(before + 20);
 });
 
-test('navigating a tab away from an edited doc drops the buffer (no wrong-doc save)', async ({
+test('navigating away from an unsaved edit PRESERVES the buffer; returning restores it', async ({
   page,
 }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
@@ -267,7 +289,7 @@ test('navigating a tab away from an edited doc drops the buffer (no wrong-doc sa
   await editor.click();
   const meta = await usesMeta(page);
   await page.keyboard.press(meta ? 'Meta+ArrowDown' : 'Control+End');
-  await page.keyboard.type('\n\nlocal edit\n');
+  await page.keyboard.type('\n\nMY UNSAVED EDIT\n');
   await expect(page.locator('.tab__dirty')).toBeVisible();
 
   // Click [[Guide]] in the preview → the SAME tab navigates to guide.md.
@@ -277,11 +299,16 @@ test('navigating a tab away from an edited doc drops the buffer (no wrong-doc sa
     .click();
   await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
 
-  // The buffer belonged to index.md; navigating drops it — the tab is no longer
-  // dirty and shows the new doc in plain read mode (no editor mounted, so a save
-  // could never write index.md's buffer to guide.md).
-  await expect(page.locator('.tab__dirty')).toHaveCount(0);
+  // The unsaved buffer for index.md is NOT dropped: the tab still shows unsaved
+  // changes, and guide.md is in its own plain read mode (no editor mounted, so a
+  // save could never write index.md's buffer to guide.md).
+  await expect(page.locator('.tab__dirty')).toBeVisible();
   await expect(page.locator('.cm-content')).toHaveCount(0);
+
+  // Navigate BACK to index.md → the unsaved edit is restored in the editor.
+  await page.keyboard.press(meta ? 'Meta+[' : 'Control+[');
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+  await expect(page.locator('.cm-content')).toContainText('MY UNSAVED EDIT');
 });
 
 test('file-jump palette opens a document by name', async ({ page }) => {

@@ -9,11 +9,20 @@
  *     suppression through the same wiring;
  *   - the Keep-mine → explicit overwrite confirmation → force-flag-reaches-the-
  *     command chain;
- *   - the unsaved-changes guard on close and on quit.
+ *   - the TRANSACTIONAL unsaved-changes guard: Save-then-Cancel and typing during
+ *     an in-flight save both leave the tab open; the dirty-quit hook preventDefaults.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 const h = vi.hoisted(() => ({
   disk: new Map<string, { content: string; hash: string }>(),
@@ -22,6 +31,8 @@ const h = vi.hoisted(() => ({
   onClose: null as null | ((event: { preventDefault: () => void }) => void | Promise<void>),
   destroy: vi.fn(async () => {}),
   drain: vi.fn(async () => {}),
+  // When set, saves block until it resolves (to model an in-flight save).
+  gate: null as null | { promise: Promise<void>; resolve: () => void },
   seq: 0,
 }));
 
@@ -33,17 +44,20 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
       const entry = h.disk.get(path) ?? { content: '# missing\n', hash: 'h-missing' };
       return { content: entry.content, mtime: 0, hash: entry.hash };
     }),
-    saveDoc: vi.fn(async (path: string, content: string, expectedHash: string, opts: { force?: boolean } = {}) => {
-      const force = opts.force ?? false;
-      h.saveCalls.push({ path, content, expectedHash, force });
-      const current = h.disk.get(path);
-      if (!force && current && expectedHash !== current.hash) {
-        return { status: 'conflict' as const, currentHash: current.hash };
-      }
-      const newHash = `h-saved-${(h.seq += 1)}`;
-      h.disk.set(path, { content, hash: newHash });
-      return { status: 'saved' as const, newHash, mtime: 0 };
-    }),
+    saveDoc: vi.fn(
+      async (path: string, content: string, expectedHash: string, opts: { force?: boolean } = {}) => {
+        const force = opts.force ?? false;
+        h.saveCalls.push({ path, content, expectedHash, force });
+        if (h.gate) await h.gate.promise; // hold the save in flight
+        const current = h.disk.get(path);
+        if (!force && current && expectedHash !== current.hash) {
+          return { status: 'conflict' as const, currentHash: current.hash };
+        }
+        const newHash = `h-saved-${(h.seq += 1)}`;
+        h.disk.set(path, { content, hash: newHash });
+        return { status: 'saved' as const, newHash, mtime: 0 };
+      },
+    ),
     onFsChanged: vi.fn(async (handler: (c: { path: string; kind: string; generation: number }) => void) => {
       h.fsChanged = handler;
       return () => {};
@@ -93,6 +107,7 @@ import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
 import { useEditorStore } from '../stores/editor';
 
+const NOTE = '/ws/note.md';
 const mac = detectMac();
 function modKeyDown(key: string, extra: Partial<KeyboardEventInit> = {}) {
   fireEvent.keyDown(window, { key, metaKey: mac, ctrlKey: !mac, ...extra });
@@ -101,30 +116,27 @@ function modKeyDown(key: string, extra: Partial<KeyboardEventInit> = {}) {
 /** Open the workspace (through the real openRoot, so the watcher generation is
  *  armed to 1), then open a source-mode dirty tab for `/ws/note.md`. */
 async function openDirtyDoc() {
-  h.disk.set('/ws/note.md', { content: 'hello', hash: 'h0' });
+  h.disk.set(NOTE, { content: 'hello', hash: 'h0' });
 
   render(<App />);
   await act(async () => {}); // settle hydration
 
-  // Real openRoot: pick → switchWorkspace → watchWorkspace(generation 1).
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
   });
   await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws'));
 
-  // Open the doc's tab (via the store; the tree is virtualized) and enter source.
   act(() => {
-    useTabsStore.getState().openTab({ path: '/ws/note.md', name: 'note.md' }, { originRoot: '/ws' });
+    useTabsStore.getState().openTab({ path: NOTE, name: 'note.md' }, { originRoot: '/ws' });
   });
   const tabId = useTabsStore.getState().activeTabId!;
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Source view' }));
   });
-  await waitFor(() => expect(useEditorStore.getState().entry(tabId)?.mode).toBe('source'));
+  await waitFor(() => expect(useEditorStore.getState().entry(tabId, NOTE)?.mode).toBe('source'));
 
-  // An edit makes it dirty (driven through the store — SourcePane is inert here).
-  act(() => useEditorStore.getState().edit(tabId, 'hello + my local edit'));
-  expect(useEditorStore.getState().isDirty(tabId)).toBe(true);
+  act(() => useEditorStore.getState().edit(tabId, NOTE, 'hello + my local edit'));
+  expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
   return tabId;
 }
 
@@ -133,6 +145,7 @@ beforeEach(() => {
   h.saveCalls.length = 0;
   h.fsChanged = null;
   h.onClose = null;
+  h.gate = null;
   h.seq = 0;
   vi.clearAllMocks();
 });
@@ -148,15 +161,8 @@ afterEach(() => {
 describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppression', () => {
   it('an external change to a DIRTY doc raises the conflict banner via the real path', async () => {
     await openDirtyDoc();
-
-    // The file changes on disk out from under us (a NEW hash).
-    h.disk.set('/ws/note.md', { content: 'changed by someone else', hash: 'h-external' });
-
-    // Emit the watcher event the backend would send (generation 1, matching the arm).
-    act(() => h.fsChanged!({ path: '/ws/note.md', kind: 'any', generation: 1 }));
-
-    // The real handler read the disk hash, classified it as a conflict (dirty +
-    // divergent), and the store→ReaderPane path surfaced the banner.
+    h.disk.set(NOTE, { content: 'changed by someone else', hash: 'h-external' });
+    act(() => h.fsChanged!({ path: NOTE, kind: 'any', generation: 1 }));
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toMatch(/changed on disk while you were editing/i),
     );
@@ -164,18 +170,14 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 
   it('the watcher echo of our OWN save is suppressed (no banner, no toast)', async () => {
     const tabId = await openDirtyDoc();
-
-    // Save: the mock writes and hands back a fresh hash the buffer re-anchors to.
     await act(async () => {
       modKeyDown('s');
     });
-    await waitFor(() => expect(useEditorStore.getState().isDirty(tabId)).toBe(false));
-    const savedHash = useEditorStore.getState().entry(tabId)!.baseHash;
-    expect(h.disk.get('/ws/note.md')!.hash).toBe(savedHash);
+    await waitFor(() => expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false));
+    const savedHash = useEditorStore.getState().entry(tabId, NOTE)!.baseHash;
+    expect(h.disk.get(NOTE)!.hash).toBe(savedHash);
 
-    // The watcher now echoes OUR write. Disk hash === our anchor → classified as
-    // self → no conflict banner and no "Updated" toast.
-    act(() => h.fsChanged!({ path: '/ws/note.md', kind: 'any', generation: 1 }));
+    act(() => h.fsChanged!({ path: NOTE, kind: 'any', generation: 1 }));
     await act(async () => {});
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('Updated')).toBeNull();
@@ -185,75 +187,94 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 describe('force-confirmation chain (Keep mine → confirm → force reaches the command)', () => {
   it('Keep-mine requires an explicit second confirmation before the force save', async () => {
     await openDirtyDoc();
-
-    // An external change makes our guarded save conflict.
-    h.disk.set('/ws/note.md', { content: 'changed elsewhere', hash: 'h-external' });
+    h.disk.set(NOTE, { content: 'changed elsewhere', hash: 'h-external' });
     await act(async () => {
       modKeyDown('s');
     });
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toMatch(/changed on disk since you opened it/i),
     );
-    // The guarded save was attempted, and it was NOT forced.
     expect(h.saveCalls.at(-1)).toMatchObject({ force: false });
     const callsBefore = h.saveCalls.length;
 
-    // Keep mine → advances to the explicit overwrite confirmation. It must NOT
-    // save yet (miswiring Keep-mine straight to force would trip this).
     fireEvent.click(screen.getByRole('button', { name: 'Keep mine' }));
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toMatch(/overwrite the on-disk changes/i),
     );
-    expect(h.saveCalls.length).toBe(callsBefore);
+    expect(h.saveCalls.length).toBe(callsBefore); // Keep-mine alone must NOT save
 
-    // Overwrite → the force flag reaches the command.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Overwrite' }));
     });
     await waitFor(() => expect(h.saveCalls.at(-1)?.force).toBe(true));
-    // And the forced write landed.
-    expect(h.disk.get('/ws/note.md')!.content).toBe('hello + my local edit');
+    expect(h.disk.get(NOTE)!.content).toBe('hello + my local edit');
   });
 });
 
-describe('unsaved-changes guard (close tab / quit)', () => {
+describe('unsaved-changes guard is transactional (close / quit)', () => {
   it('closing a dirty tab prompts; Discard drops the buffer and closes', async () => {
     const tabId = await openDirtyDoc();
-
-    modKeyDown('w'); // ⌘W close-tab
-    const dialog = await screen.findByRole('alertdialog', { name: /unsaved changes/i });
-    expect(dialog.textContent).toMatch(/unsaved changes/i);
-
+    modKeyDown('w');
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
     fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     await waitFor(() => expect(useTabsStore.getState().tabs.some((t) => t.id === tabId)).toBe(false));
-    // The buffer is gone too.
-    expect(useEditorStore.getState().entry(tabId)).toBeUndefined();
+    expect(useEditorStore.getState().entry(tabId, NOTE)).toBeUndefined();
   });
 
-  it('closing a dirty tab and choosing Cancel keeps it open with edits intact', async () => {
+  it('Save-then-Cancel during the in-flight save leaves the tab OPEN', async () => {
     const tabId = await openDirtyDoc();
+    h.gate = deferred(); // hold the save in flight
 
     modKeyDown('w');
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    // Click Save — its save is now held; the modal stays up during the await.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    });
+    // Cancel while the save is still in flight → the close must be aborted.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    // Release the (now-moot) save.
+    await act(async () => {
+      h.gate!.resolve();
+      await Promise.resolve();
+    });
 
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(useTabsStore.getState().tabs.some((t) => t.id === tabId)).toBe(true);
-    expect(useEditorStore.getState().isDirty(tabId)).toBe(true);
   });
 
-  it('quitting with a dirty tab prompts; Discard performs the real quit (destroy)', async () => {
+  it('typing during the in-flight save keeps the tab open (still dirty)', async () => {
+    const tabId = await openDirtyDoc();
+    h.gate = deferred();
+
+    modKeyDown('w');
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    });
+    // Type MORE while the save is in flight — newer than the saved snapshot.
+    act(() => useEditorStore.getState().edit(tabId, NOTE, 'even newer content'));
+    await act(async () => {
+      h.gate!.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+    expect(useTabsStore.getState().tabs.some((t) => t.id === tabId)).toBe(true);
+    expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
+  });
+
+  it('the dirty-quit hook calls preventDefault and prompts (does not quit yet)', async () => {
     await openDirtyDoc();
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
-    // The Tauri window close-requested fires with unsaved edits present.
+    const event = { preventDefault: vi.fn() };
     await act(async () => {
-      await h.onClose!({ preventDefault: () => {} });
+      await h.onClose!(event);
     });
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
-    expect(h.destroy).not.toHaveBeenCalled(); // did NOT quit yet
+    expect(h.destroy).not.toHaveBeenCalled();
 
-    // Discard → the actual quit runs.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     });

@@ -1,62 +1,72 @@
 /**
- * Per-tab light-editing state — the source/split buffer, its dirty flag, and the
- * conflict banner's state machine. Deliberately kept OUT of the tabs store (and
- * so out of the persisted session): a live editor buffer is transient working
- * state, never something to restore across launches. Keyed by tab id so each
- * tab remembers its own view mode and buffer while it is open; the entry is
- * dropped when the tab closes.
+ * Per-(tab, document) light-editing state — the source/split buffer, its dirty
+ * flag, and the conflict banner's state machine. Deliberately kept OUT of the
+ * tabs store (and so out of the persisted session): a live editor buffer is
+ * transient working state, never something to restore across launches.
+ *
+ * Keyed by BOTH the tab id and the document path. That composite key is what
+ * makes "never silently drop an unsaved edit" hold across in-tab navigation: a
+ * tab that navigates A→B keeps its `(tab, A)` entry untouched, so navigating back
+ * to A restores the buffer, while B gets its own independent entry — and a save
+ * can only ever reach the CURRENT document's entry, so it can never write one
+ * doc's buffer into another (the wrong-doc guard is structural, not a check).
  *
  * The invariant the whole feature rests on — "never silently rewrite files" — is
- * encoded here as the `baseHash` anchor: every save carries the hash the buffer
- * was opened/last-saved against, and the backend refuses a write whose anchor no
+ * encoded as the `baseHash` anchor: every save carries the hash the buffer was
+ * opened/last-saved against, and the backend refuses a write whose anchor no
  * longer matches disk. `baseHash` doubling as the last self-write hash is what
  * lets the watcher recognise our own echo (see `classifyExternalChange`).
  */
 
 import { create } from 'zustand';
 
-/** The reading pane's mode for a tab. `read` is the default (no editor entry). */
+/** The reading pane's mode for a (tab, doc). `read` is the default (no entry). */
 export type EditorMode = 'read' | 'source' | 'split';
 
 /** Why a conflict banner is up: an external change the watcher caught, or a save
  *  that hit the on-disk guard. Drives the banner copy. */
 export type ConflictSource = 'external' | 'save';
 
-/** The conflict banner's two-step state machine. `choose` offers Reload / Keep
- *  mine; `confirm` is the explicit second confirmation before a force overwrite. */
+/** The conflict banner's two-step state machine. */
 export interface ConflictState {
-  /** The hash the file actually holds on disk right now — the anchor a forced
-   *  overwrite (or a reload) re-bases onto. */
   currentHash: string;
-  /** External (watcher) vs save-time (guard) — selects the banner's message. */
   source: ConflictSource;
-  /** `choose` → Reload / Keep mine; `confirm` → Overwrite / Cancel. */
   phase: 'choose' | 'confirm';
 }
 
-/** One tab's editing state. Absent from `entries` ⇒ the tab is in plain read mode. */
+/** One (tab, document)'s editing state. */
 export interface EditorEntry {
-  /** The document path this buffer was seeded for. A tab can navigate to another
-   *  document (wikilink, back/forward) while an entry lingers; comparing this to
-   *  the tab's current docRef.path is what prevents a save from writing this
-   *  buffer to the WRONG file. */
+  /** The tab this buffer belongs to. */
+  tabId: string;
+  /** The document path this buffer edits (a save writes here, and only here). */
   path: string;
   mode: EditorMode;
   /** The live editor text (what CodeMirror shows and what a save sends). */
   buffer: string;
   /** The text last known to be on disk — a clean buffer equals this. */
   savedContent: string;
-  /** blake3 of `savedContent`: the guard anchor the next save carries, and the
-   *  value the watcher compares a disk hash against to spot our own writes. */
+  /** blake3 of `savedContent`: the guard anchor the next save carries. */
   baseHash: string;
   /** `buffer !== savedContent`. */
   dirty: boolean;
-  /** A pending conflict, or null when there is none. */
+  /** A pending conflict, or null. */
   conflict: ConflictState | null;
 }
 
-function makeEntry(path: string, mode: EditorMode, content: string, hash: string): EditorEntry {
+/** The composite key for a (tab, document). A space can't occur in a tab id. */
+function keyOf(tabId: string, path: string): string {
+  return `${tabId} ${path}`;
+}
+
+function makeEntry(
+  tabId: string,
+  path: string,
+  mode: EditorMode,
+  content: string,
+  hash: string,
+): EditorEntry {
   return {
+    tabId,
     path,
     mode,
     buffer: content,
@@ -70,113 +80,124 @@ function makeEntry(path: string, mode: EditorMode, content: string, hash: string
 export interface EditorStore {
   entries: Record<string, EditorEntry>;
 
-  /** The tab's entry, or undefined when it is in read mode. */
-  entry: (tabId: string) => EditorEntry | undefined;
-  /** The tab's view mode (`read` when there is no entry). */
-  mode: (tabId: string) => EditorMode;
-  /** Whether the tab has unsaved edits. */
-  isDirty: (tabId: string) => boolean;
-  /** Ids of every tab that currently has unsaved edits (for the close/quit guard). */
+  /** The (tab, doc) entry, or undefined when it is in read mode. */
+  entry: (tabId: string, path: string) => EditorEntry | undefined;
+  /** The (tab, doc) view mode (`read` when there is no entry). */
+  mode: (tabId: string, path: string) => EditorMode;
+  /** Whether THIS (tab, doc) has unsaved edits. */
+  isDirty: (tabId: string, path: string) => boolean;
+  /** Whether the tab has ANY unsaved edit (across every doc it has edited). */
+  tabIsDirty: (tabId: string) => boolean;
+  /** Ids of every tab with at least one unsaved edit (for the close/quit guard). */
   dirtyTabIds: () => string[];
+  /** Every dirty entry (for save-all on quit / workspace switch). */
+  allDirtyEntries: () => EditorEntry[];
 
   /**
-   * Seed an entry for document `path` from a fresh disk read (content + its
-   * hash), entering `mode`. A clean starting point: buffer === savedContent, no
-   * conflict. Reused as the "reload from disk" action too — it discards any local
-   * edits.
+   * Seed a (tab, doc) entry from a fresh disk read (content + its hash), entering
+   * `mode`. A clean starting point. Reused as "reload from disk" — it discards any
+   * local edits for THIS (tab, doc) only.
    */
   seed: (tabId: string, path: string, content: string, hash: string, mode: EditorMode) => void;
-  /** Switch an existing entry's mode (no-op if the tab has no entry yet). */
-  setMode: (tabId: string, mode: EditorMode) => void;
+  /** Switch an existing (tab, doc) entry's mode (no-op when there is none yet). */
+  setMode: (tabId: string, path: string, mode: EditorMode) => void;
   /** Record a keystroke-level edit; recomputes `dirty` against `savedContent`. */
-  edit: (tabId: string, buffer: string) => void;
+  edit: (tabId: string, path: string, buffer: string) => void;
   /**
-   * A save of `savedContent` landed: adopt the fresh hash as the new anchor and
-   * clear any conflict. `dirty` is recomputed against the CURRENT buffer — NOT
-   * forced false — so keystrokes that arrived while the save was in flight (the
-   * buffer moved past the snapshot we wrote) leave the tab dirty rather than being
-   * silently marked saved. `savedContent` is exactly the bytes that reached disk.
+   * A save of `savedContent` landed: adopt the fresh hash and clear any conflict.
+   * `dirty` is recomputed against the CURRENT buffer — NOT forced false — so
+   * keystrokes that arrived while the save was in flight leave the tab dirty.
    */
-  markSaved: (tabId: string, savedContent: string, newHash: string) => void;
-  /** Raise the conflict banner in its `choose` phase. Leaves the buffer intact. */
-  raiseConflict: (tabId: string, currentHash: string, source: ConflictSource) => void;
-  /** Advance the banner to its explicit overwrite confirmation. */
-  toConfirmOverwrite: (tabId: string) => void;
-  /** Dismiss the conflict banner (buffer untouched — the user keeps editing). */
-  clearConflict: (tabId: string) => void;
-  /** Drop a tab's entry entirely (called when the tab closes). */
-  remove: (tabId: string) => void;
+  markSaved: (tabId: string, path: string, savedContent: string, newHash: string) => void;
+  raiseConflict: (tabId: string, path: string, currentHash: string, source: ConflictSource) => void;
+  toConfirmOverwrite: (tabId: string, path: string) => void;
+  clearConflict: (tabId: string, path: string) => void;
+  /** Drop EVERY entry for a tab (called when the tab is truly closed). */
+  removeTab: (tabId: string) => void;
   reset: () => void;
 }
 
 function patch(
   set: (fn: (state: EditorStore) => Partial<EditorStore>) => void,
   tabId: string,
+  path: string,
   update: (entry: EditorEntry) => EditorEntry,
 ): void {
   set((state) => {
-    const existing = state.entries[tabId];
+    const key = keyOf(tabId, path);
+    const existing = state.entries[key];
     if (!existing) return {};
-    return { entries: { ...state.entries, [tabId]: update(existing) } };
+    return { entries: { ...state.entries, [key]: update(existing) } };
   });
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   entries: {},
 
-  entry: (tabId) => get().entries[tabId],
-  mode: (tabId) => get().entries[tabId]?.mode ?? 'read',
-  isDirty: (tabId) => get().entries[tabId]?.dirty ?? false,
-  dirtyTabIds: () =>
-    Object.entries(get().entries)
-      .filter(([, entry]) => entry.dirty)
-      .map(([id]) => id),
+  entry: (tabId, path) => get().entries[keyOf(tabId, path)],
+  mode: (tabId, path) => get().entries[keyOf(tabId, path)]?.mode ?? 'read',
+  isDirty: (tabId, path) => get().entries[keyOf(tabId, path)]?.dirty ?? false,
+  tabIsDirty: (tabId) =>
+    Object.values(get().entries).some((entry) => entry.tabId === tabId && entry.dirty),
+  dirtyTabIds: () => [
+    ...new Set(
+      Object.values(get().entries)
+        .filter((entry) => entry.dirty)
+        .map((entry) => entry.tabId),
+    ),
+  ],
+  allDirtyEntries: () => Object.values(get().entries).filter((entry) => entry.dirty),
 
   seed: (tabId, path, content, hash, mode) =>
     set((state) => ({
-      entries: { ...state.entries, [tabId]: makeEntry(path, mode, content, hash) },
+      entries: {
+        ...state.entries,
+        [keyOf(tabId, path)]: makeEntry(tabId, path, mode, content, hash),
+      },
     })),
 
-  setMode: (tabId, mode) => patch(set, tabId, (entry) => ({ ...entry, mode })),
+  setMode: (tabId, path, mode) => patch(set, tabId, path, (entry) => ({ ...entry, mode })),
 
-  edit: (tabId, buffer) =>
-    patch(set, tabId, (entry) => ({
+  edit: (tabId, path, buffer) =>
+    patch(set, tabId, path, (entry) => ({
       ...entry,
       buffer,
       dirty: buffer !== entry.savedContent,
     })),
 
-  markSaved: (tabId, savedContent, newHash) =>
-    patch(set, tabId, (entry) => ({
+  markSaved: (tabId, path, savedContent, newHash) =>
+    patch(set, tabId, path, (entry) => ({
       ...entry,
       savedContent,
       baseHash: newHash,
-      // Recompute against the LIVE buffer: typing during the save leaves it dirty.
+      // Recompute against the LIVE buffer: typing during the save keeps it dirty.
       dirty: entry.buffer !== savedContent,
       conflict: null,
     })),
 
-  raiseConflict: (tabId, currentHash, source) =>
-    patch(set, tabId, (entry) => ({
+  raiseConflict: (tabId, path, currentHash, source) =>
+    patch(set, tabId, path, (entry) => ({
       ...entry,
       conflict: { currentHash, source, phase: 'choose' },
     })),
 
-  toConfirmOverwrite: (tabId) =>
-    patch(set, tabId, (entry) =>
-      entry.conflict
-        ? { ...entry, conflict: { ...entry.conflict, phase: 'confirm' } }
-        : entry,
+  toConfirmOverwrite: (tabId, path) =>
+    patch(set, tabId, path, (entry) =>
+      entry.conflict ? { ...entry, conflict: { ...entry.conflict, phase: 'confirm' } } : entry,
     ),
 
-  clearConflict: (tabId) => patch(set, tabId, (entry) => ({ ...entry, conflict: null })),
+  clearConflict: (tabId, path) =>
+    patch(set, tabId, path, (entry) => ({ ...entry, conflict: null })),
 
-  remove: (tabId) =>
+  removeTab: (tabId) =>
     set((state) => {
-      if (!(tabId in state.entries)) return {};
-      const next = { ...state.entries };
-      delete next[tabId];
-      return { entries: next };
+      const next: Record<string, EditorEntry> = {};
+      let changed = false;
+      for (const [key, entry] of Object.entries(state.entries)) {
+        if (entry.tabId === tabId) changed = true;
+        else next[key] = entry;
+      }
+      return changed ? { entries: next } : {};
     }),
 
   reset: () => set({ entries: {} }),

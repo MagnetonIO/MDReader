@@ -104,7 +104,10 @@ export function AppShell() {
   // The unsaved-changes guard: closing a dirty tab, or quitting with dirty tabs,
   // routes through this prompt before anything is discarded.
   const [closeGuard, setCloseGuard] = useState<
-    { kind: 'tab'; tabId: string } | { kind: 'quit' } | null
+    | { kind: 'tab'; tabId: string }
+    | { kind: 'quit' }
+    | { kind: 'switch'; folder: string }
+    | null
   >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
   const [jump, setJump] = useState<{ path: string; line: number; nonce: number } | null>(null);
@@ -117,6 +120,10 @@ export function AppShell() {
   // Late-bound so the close-guard's `performQuit` (declared before `flushSession`)
   // can reach the latest flusher without a declaration-order dependency.
   const flushSessionRef = useRef<() => void>(() => {});
+  // Late-bound so `proceedAfterGuard` (declared before `commitSwitch`) can reach it.
+  const commitSwitchRef = useRef<(folder: string) => Promise<boolean>>(() =>
+    Promise.resolve(false),
+  );
 
   // --- workspace loading ------------------------------------------------
   // Frontend request generation, the UI-side mirror of the backend epoch: every
@@ -326,13 +333,11 @@ export function AppShell() {
     [listInto, triggerReindex, loadingSink],
   );
 
-  // Switch the active workspace to `folder`, retiring the previous workspace's
-  // open tabs into (its own) Recent — but only once the new root is actually
-  // live. A switch that fails to commit (watcher could not arm) retires nothing,
-  // so the user stays put with tabs intact. Retired tabs carry their originating
-  // root, so they resurface only under that workspace (never as an error tab
-  // reopened under the new grant). Resolves to whether the switch committed.
-  const switchWorkspace = useCallback(
+  // Commit a workspace switch: retire the previous workspace's open tabs into
+  // (their own) Recent, but only once the new root is actually live. Retiring a
+  // tab tears it down, so this must run only after any unsaved edits have been
+  // resolved — the guard in `switchWorkspace` guarantees that.
+  const commitSwitch = useCallback(
     (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
       // `performSwitch` owns the two guarantees (same-root supersede; per-origin
@@ -346,6 +351,25 @@ export function AppShell() {
       });
     },
     [openRoot],
+  );
+  commitSwitchRef.current = commitSwitch;
+
+  // Switch the active workspace to `folder`. A real switch (a different root)
+  // retires the previous workspace's tabs, which would tear down any unsaved edit
+  // — so if ANY tab is dirty, route through the unsaved-changes guard first
+  // (Save-all / Discard / Cancel) and let it commit the switch. A clean workspace
+  // (or a same-root supersede) switches immediately.
+  const switchWorkspace = useCallback(
+    (folder: string): Promise<boolean> => {
+      const currentRoot = useSourcesStore.getState().root;
+      const isRealSwitch = currentRoot !== null && currentRoot !== folder;
+      if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
+        setCloseGuard({ kind: 'switch', folder });
+        return Promise.resolve(false);
+      }
+      return commitSwitch(folder);
+    },
+    [commitSwitch],
   );
 
   const onPickFolder = useCallback(async () => {
@@ -445,24 +469,25 @@ export function AppShell() {
   }, []);
 
   // --- light editing (source/split, hash-guarded save, conflicts) --------
-  // Switch the active tab's view mode. Entering source/split for the first time
-  // seeds the editor buffer from a fresh disk read (content + hash) so the save
-  // guard is anchored to exactly what was on disk when editing began.
+  // Switch the active tab's view mode for its CURRENT document. Entering
+  // source/split for the first time seeds the editor buffer from a fresh disk read
+  // (content + hash) so the save guard is anchored to exactly what was on disk
+  // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
+  // keeps its own entry untouched.
   const setEditorMode = useCallback(async (mode: EditorMode) => {
-    const tabsState = useTabsStore.getState();
-    const tabId = tabsState.activeTabId;
-    const tab = selectActiveTab(tabsState);
-    if (!tabId || !tab) return;
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab) return;
+    const tabId = tab.id;
+    const docPath = tab.docRef.path;
     const editor = useEditorStore.getState();
     if (mode === 'read') {
-      if (editor.entry(tabId)) editor.setMode(tabId, 'read');
+      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
       return;
     }
-    if (editor.entry(tabId)) {
-      editor.setMode(tabId, mode);
+    if (editor.entry(tabId, docPath)) {
+      editor.setMode(tabId, docPath, mode);
       return;
     }
-    const docPath = tab.docRef.path;
     try {
       const doc = await readDoc(docPath);
       // The active tab may have changed (or navigated) during the read — seed only
@@ -475,32 +500,24 @@ export function AppShell() {
     }
   }, []);
 
-  // Cmd+E: toggle read ↔ source for the active tab (from within the editor the
-  // SourcePane handles its own Cmd+E, since the editable target hides it from the
-  // global handler).
+  // Cmd+E: toggle read ↔ source for the active tab's current doc.
   const toggleSourceMode = useCallback(() => {
-    const tabId = useTabsStore.getState().activeTabId;
-    if (!tabId) return;
-    const current = useEditorStore.getState().mode(tabId);
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab) return;
+    const current = useEditorStore.getState().mode(tab.id, tab.docRef.path);
     void setEditorMode(current === 'read' ? 'source' : 'read');
   }, [setEditorMode]);
 
-  // Save tab `tabId` under the hash guard (or forced, from the conflict banner's
-  // explicit overwrite). A `saved` outcome re-anchors the buffer to the fresh hash
-  // — which the watcher then recognises as our own write — and queues a reindex; a
-  // `conflict` raises the banner rather than clobbering the on-disk change.
-  // Resolves to what happened so the close/quit guard can decide whether to
-  // proceed. Works on ANY tab (not just the active one) for save-all-on-quit.
-  const saveTab = useCallback(
-    async (tabId: string | null, force: boolean): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
-      if (!tabId) return 'noop';
-      const tab = useTabsStore.getState().tabs.find((candidate) => candidate.id === tabId);
-      if (!tab) return 'noop';
-      const entry = useEditorStore.getState().entry(tabId);
+  // Save the (tab, doc) entry under the hash guard (or forced, from the conflict
+  // banner's explicit overwrite). A `saved` outcome re-anchors the buffer to the
+  // fresh hash — which the watcher then recognises as our own write — and queues a
+  // reindex; a `conflict` raises the banner rather than clobbering the on-disk
+  // change. The write only ever reaches the entry's OWN document (composite key),
+  // so it can never write one doc's buffer into another.
+  const saveDocEntry = useCallback(
+    async (tabId: string, path: string, force: boolean): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
+      const entry = useEditorStore.getState().entry(tabId, path);
       if (!entry) return 'noop';
-      // The buffer belongs to the document it was seeded for; if the tab has since
-      // navigated elsewhere, refuse — never write this buffer to another file.
-      if (entry.path !== tab.docRef.path) return 'noop';
       if (!force && !entry.dirty) return 'noop'; // a clean guarded save is a no-op
       // Snapshot exactly what we send, so completion can mark THIS content saved
       // (not a newer buffer produced by typing during the in-flight save).
@@ -513,15 +530,13 @@ export function AppShell() {
         save: saveDoc,
       });
       const editor = useEditorStore.getState();
-      // Transitions are keyed by tab id, so they land on the right tab even if the
-      // active tab changed during the await.
       if (result.kind === 'saved') {
-        editor.markSaved(tabId, snapshot, result.newHash);
+        editor.markSaved(tabId, path, snapshot, result.newHash);
         void triggerReindex();
         return 'saved';
       }
       if (result.kind === 'conflict') {
-        editor.raiseConflict(tabId, result.currentHash, 'save');
+        editor.raiseConflict(tabId, path, result.currentHash, 'save');
         return 'conflict';
       }
       toast(`Could not save — ${result.message}`);
@@ -530,23 +545,29 @@ export function AppShell() {
     [triggerReindex],
   );
 
+  // Save the active tab's CURRENT document (Cmd+S / the editor's Cmd+S). If the
+  // tab has navigated to a doc with no entry, this is a no-op — a buffer for a doc
+  // the tab left is never written to the doc it now shows.
   const saveActiveDoc = useCallback(
-    (force: boolean) => saveTab(useTabsStore.getState().activeTabId, force),
-    [saveTab],
+    (force: boolean) => {
+      const tab = selectActiveTab(useTabsStore.getState());
+      if (!tab) return Promise.resolve('noop' as const);
+      return saveDocEntry(tab.id, tab.docRef.path, force);
+    },
+    [saveDocEntry],
   );
 
   // Conflict banner "Reload": discard the local buffer and adopt the on-disk
   // version (re-seeding the anchor), and refresh the reader view too.
   const reloadActiveDoc = useCallback(async () => {
-    const tabsState = useTabsStore.getState();
-    const tabId = tabsState.activeTabId;
-    const tab = selectActiveTab(tabsState);
-    if (!tabId || !tab) return;
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab) return;
+    const tabId = tab.id;
     const docPath = tab.docRef.path;
     try {
       const doc = await readDoc(docPath);
       const editor = useEditorStore.getState();
-      const mode = editor.mode(tabId);
+      const mode = editor.mode(tabId, docPath);
       editor.seed(tabId, docPath, doc.content, doc.hash, mode === 'read' ? 'source' : mode);
       setReloadNonce((nonce) => nonce + 1);
     } catch (cause) {
@@ -554,34 +575,46 @@ export function AppShell() {
     }
   }, []);
 
-  // Close a tab, dropping its editor buffer. The single place a tab is torn down.
+  // Close a tab, dropping ALL of its editor buffers. The single place a tab is
+  // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
-    useEditorStore.getState().remove(tabId);
+    useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
   }, []);
 
-  // Request a tab close: a dirty tab prompts the unsaved-changes guard first; a
-  // clean one closes immediately. Every close path (⌘W, the tab's × , middle
+  // Request a tab close: a tab with ANY unsaved document prompts the guard first;
+  // a clean one closes immediately. Every close path (⌘W, the tab's ×, middle
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
-      if (useEditorStore.getState().isDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
+      if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
     [closeTabAndBuffer],
   );
 
-  // Save every dirty tab (for "Save" on the quit guard). Resolves to whether they
-  // ALL landed cleanly — a conflict leaves that tab open with its banner, so the
-  // quit is aborted rather than losing the buffer.
+  // Save every dirty document of a tab (Save on the tab-close guard).
+  const saveTabAll = useCallback(
+    async (tabId: string): Promise<boolean> => {
+      let allClean = true;
+      for (const entry of useEditorStore.getState().allDirtyEntries().filter((e) => e.tabId === tabId)) {
+        const kind = await saveDocEntry(entry.tabId, entry.path, false);
+        if (kind !== 'saved' && kind !== 'noop') allClean = false;
+      }
+      return allClean;
+    },
+    [saveDocEntry],
+  );
+
+  // Save every dirty document across all tabs (Save on the quit / switch guard).
   const saveAllDirty = useCallback(async (): Promise<boolean> => {
     let allClean = true;
-    for (const id of useEditorStore.getState().dirtyTabIds()) {
-      const kind = await saveTab(id, false);
+    for (const entry of useEditorStore.getState().allDirtyEntries()) {
+      const kind = await saveDocEntry(entry.tabId, entry.path, false);
       if (kind !== 'saved' && kind !== 'noop') allClean = false;
     }
     return allClean;
-  }, [saveTab]);
+  }, [saveDocEntry]);
 
   // Persist the latest session and destroy the window for real (the actual quit).
   const performQuit = useCallback(async () => {
@@ -597,40 +630,59 @@ export function AppShell() {
     }
   }, []);
 
-  // Guard "Save": save then proceed (close the tab / quit) — unless a conflict
-  // intervened, in which case stay so the banner can be resolved.
+  // The destructive action a resolved guard performs. Reached ONLY when the user
+  // chose to proceed (Discard, or Save that landed genuinely clean without a
+  // cancel racing in).
+  const proceedAfterGuard = useCallback(
+    (guard: { kind: 'tab'; tabId: string } | { kind: 'quit' } | { kind: 'switch'; folder: string }) => {
+      if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
+      else if (guard.kind === 'quit') void performQuit();
+      else void commitSwitchRef.current(guard.folder);
+    },
+    [closeTabAndBuffer, performQuit],
+  );
+
+  // A live mirror of the guard so an in-flight Save can detect a Cancel (or a
+  // replacement) that landed during its await.
+  const closeGuardRef = useRef(closeGuard);
+  closeGuardRef.current = closeGuard;
+
+  // Guard "Save" — TRANSACTIONAL: save, then re-check. If the user cancelled
+  // during the save (the guard changed), or a save conflicted, or typing during
+  // the in-flight save left the work dirty, do NOT proceed. Only a genuinely-clean
+  // result closes/quits/switches.
   const onGuardSave = useCallback(async () => {
-    const guard = closeGuard;
+    const guard = closeGuardRef.current;
     if (!guard) return;
-    if (guard.kind === 'tab') {
-      const kind = await saveTab(guard.tabId, false);
-      setCloseGuard(null);
-      if (kind === 'saved' || kind === 'noop') closeTabAndBuffer(guard.tabId);
-    } else {
-      const allClean = await saveAllDirty();
-      setCloseGuard(null);
-      if (allClean) void performQuit();
-    }
-  }, [closeGuard, saveTab, saveAllDirty, performQuit, closeTabAndBuffer]);
+    const allClean = guard.kind === 'tab' ? await saveTabAll(guard.tabId) : await saveAllDirty();
+    // Cancel (or a new guard) raced in during the save → abort the whole thing.
+    if (closeGuardRef.current !== guard) return;
+    const stillDirty =
+      guard.kind === 'tab'
+        ? useEditorStore.getState().tabIsDirty(guard.tabId)
+        : useEditorStore.getState().dirtyTabIds().length > 0;
+    setCloseGuard(null);
+    if (allClean && !stillDirty) proceedAfterGuard(guard);
+  }, [saveTabAll, saveAllDirty, proceedAfterGuard]);
 
   // Guard "Discard": proceed, losing the unsaved edits.
   const onGuardDiscard = useCallback(() => {
-    const guard = closeGuard;
+    const guard = closeGuardRef.current;
     if (!guard) return;
     setCloseGuard(null);
-    if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
-    else void performQuit();
-  }, [closeGuard, performQuit, closeTabAndBuffer]);
+    proceedAfterGuard(guard);
+  }, [proceedAfterGuard]);
 
-  // Prune editor entries that no longer belong: tabs that have closed, and tabs
-  // that have NAVIGATED to a different document (the buffer was seeded for the old
-  // doc — dropping it returns the new doc to read mode and is the last line of
-  // defence against a save reaching the wrong file). Memory hygiene + correctness.
+  // Reclaim editor entries for tabs that no longer exist (closed / retired). Dirty
+  // tabs are always resolved through the close/switch guard BEFORE they are torn
+  // down, so this only reclaims already-handled entries — it NEVER drops a live
+  // dirty buffer (unlike a path-based prune, which would lose an edit on in-tab
+  // navigation). Memory hygiene only.
   useEffect(() => {
-    const pathById = new Map(tabs.map((tab) => [tab.id, tab.docRef.path]));
+    const live = new Set(tabs.map((tab) => tab.id));
     const editor = useEditorStore.getState();
-    for (const [id, entry] of Object.entries(editor.entries)) {
-      if (pathById.get(id) !== entry.path) editor.remove(id);
+    for (const tabId of new Set(Object.values(editor.entries).map((entry) => entry.tabId))) {
+      if (!live.has(tabId)) editor.removeTab(tabId);
     }
   }, [tabs]);
 
@@ -964,7 +1016,7 @@ export function AppShell() {
       if (path !== activePathRef.current) return;
 
       const tabId = activeTabIdRef.current;
-      const entry = tabId ? useEditorStore.getState().entry(tabId) : undefined;
+      const entry = tabId ? useEditorStore.getState().entry(tabId, path) : undefined;
       // Read mode / not editing this doc: the existing live-refresh behavior.
       if (!tabId || !entry) {
         setReloadNonce((nonce) => nonce + 1);
@@ -984,10 +1036,8 @@ export function AppShell() {
       // Re-validate after the await: a switch (or a doc change) may have landed.
       if (!watcherStampCurrent(stamp, nowStamp()) || path !== activePathRef.current) return;
       const editor = useEditorStore.getState();
-      const live = editor.entry(tabId);
-      // Only act on an entry that still belongs to this document (the tab may have
-      // navigated); otherwise treat it as a plain read-mode reload.
-      if (!live || live.path !== path) {
+      const live = editor.entry(tabId, path);
+      if (!live) {
         setReloadNonce((nonce) => nonce + 1);
         toast('Updated');
         return;
@@ -996,7 +1046,7 @@ export function AppShell() {
       if (decision === 'self') return; // our own write echoing back — stay silent
       if (decision === 'conflict') {
         // Unsaved edits + a divergent disk: never clobber — raise the banner.
-        editor.raiseConflict(tabId, disk.hash, 'external');
+        editor.raiseConflict(tabId, path, disk.hash, 'external');
         return;
       }
       // Clean buffer: safe to adopt disk. Re-seed the anchor and refresh the view.
@@ -1211,7 +1261,7 @@ export function AppShell() {
       {closeGuard ? (
         <UnsavedGuard
           count={
-            closeGuard.kind === 'quit' ? useEditorStore.getState().dirtyTabIds().length : 1
+            closeGuard.kind === 'tab' ? 1 : useEditorStore.getState().dirtyTabIds().length
           }
           name={
             closeGuard.kind === 'tab'

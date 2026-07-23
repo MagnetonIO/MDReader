@@ -38,9 +38,10 @@ function SortableTab({
 }) {
   const setActiveTab = useTabsStore((state) => state.setActiveTab);
   const togglePin = useTabsStore((state) => state.togglePin);
-  // Unsaved-edit marker: a dot on the tab while its editor buffer diverges from
-  // disk. Sourced from the editor store (the single source of truth for dirty).
-  const dirty = useEditorStore((state) => state.isDirty(tab.id));
+  // Unsaved-edit marker: a dot on the tab while ANY of its documents' buffers
+  // diverge from disk (including a doc the tab has navigated away from). Sourced
+  // from the editor store (the single source of truth for dirty).
+  const dirty = useEditorStore((state) => state.tabIsDirty(tab.id));
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,

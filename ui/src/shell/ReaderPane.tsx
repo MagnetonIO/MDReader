@@ -129,14 +129,13 @@ export function ReaderPane({
 
   const path = tab?.docRef.path ?? null;
   const tabId = tab?.id ?? null;
-  // The active tab's editing state (undefined ⇒ plain read mode). Subscribed so a
-  // keystroke or a conflict transition re-renders this pane (and only for edits
-  // to THIS tab — the selector keys on the tab's own entry).
-  const rawEntry = useEditorStore((store) => (tabId ? store.entries[tabId] : undefined));
-  // Ignore a lingering entry whose document no longer matches the tab (the tab
-  // navigated within itself); it is pruned by the shell, and treating it as read
-  // mode meanwhile keeps the wrong document's buffer off-screen and unsaveable.
-  const editEntry = rawEntry && path !== null && rawEntry.path === path ? rawEntry : undefined;
+  // The active (tab, document)'s editing state (undefined ⇒ plain read mode).
+  // Keyed by BOTH tab and path, so a tab that has navigated to another document
+  // shows THAT document's state (read mode until edited), while the buffer of the
+  // doc it navigated away from stays intact under its own key.
+  const editEntry = useEditorStore((store) =>
+    tabId && path !== null ? store.entry(tabId, path) : undefined,
+  );
   const mode: EditorMode = editEntry?.mode ?? 'read';
   const buffer = editEntry?.buffer;
 
@@ -356,9 +355,9 @@ export function ReaderPane({
   // editor scroll drives the preview via an approximate line map.
   const onEditBuffer = useCallback(
     (value: string) => {
-      if (tabId) useEditorStore.getState().edit(tabId, value);
+      if (tabId && path !== null) useEditorStore.getState().edit(tabId, path, value);
     },
-    [tabId],
+    [tabId, path],
   );
   const syncPreviewToLine = useCallback((line: number) => {
     splitPreviewRef.current?.scrollToLine(line);
@@ -406,11 +405,11 @@ export function ReaderPane({
           phase={conflict.phase}
           onReload={onReloadActive}
           onKeepMine={() => {
-            if (tabId) useEditorStore.getState().toConfirmOverwrite(tabId);
+            if (tabId && path !== null) useEditorStore.getState().toConfirmOverwrite(tabId, path);
           }}
           onOverwrite={onOverwriteActive}
           onCancel={() => {
-            if (tabId) useEditorStore.getState().clearConflict(tabId);
+            if (tabId && path !== null) useEditorStore.getState().clearConflict(tabId, path);
           }}
         />
       ) : null}

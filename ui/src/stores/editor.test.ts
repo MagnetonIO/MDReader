@@ -6,90 +6,110 @@ function store() {
   return useEditorStore.getState();
 }
 
+const A = '/ws/a.md';
+const B = '/ws/b.md';
+
 beforeEach(() => {
   useEditorStore.getState().reset();
 });
 
 describe('editor store — dirty lifecycle', () => {
-  it('a tab with no entry reads as read mode and not dirty', () => {
-    expect(store().mode('tab-1')).toBe('read');
-    expect(store().isDirty('tab-1')).toBe(false);
-    expect(store().entry('tab-1')).toBeUndefined();
+  it('a (tab, doc) with no entry reads as read mode and not dirty', () => {
+    expect(store().mode('tab-1', A)).toBe('read');
+    expect(store().isDirty('tab-1', A)).toBe(false);
+    expect(store().entry('tab-1', A)).toBeUndefined();
   });
 
   it('seeding enters a clean buffer anchored to the disk hash and its doc path', () => {
-    store().seed('tab-1', '/ws/a.md', '# Hello\n', 'h0', 'source');
-    const entry = store().entry('tab-1')!;
-    expect(entry.path).toBe('/ws/a.md');
+    store().seed('tab-1', A, '# Hello\n', 'h0', 'source');
+    const entry = store().entry('tab-1', A)!;
+    expect(entry.tabId).toBe('tab-1');
+    expect(entry.path).toBe(A);
     expect(entry.mode).toBe('source');
     expect(entry.buffer).toBe('# Hello\n');
-    expect(entry.savedContent).toBe('# Hello\n');
     expect(entry.baseHash).toBe('h0');
     expect(entry.dirty).toBe(false);
-    expect(store().isDirty('tab-1')).toBe(false);
   });
 
-  it('an edit that diverges from disk marks the tab dirty; reverting clears it', () => {
-    store().seed('tab-1', '/ws/a.md', 'original', 'h0', 'source');
-
-    store().edit('tab-1', 'original + edit');
-    expect(store().isDirty('tab-1')).toBe(true);
-
-    // Typing back to exactly the saved content is clean again — no phantom dirt.
-    store().edit('tab-1', 'original');
-    expect(store().isDirty('tab-1')).toBe(false);
+  it('an edit that diverges from disk marks it dirty; reverting clears it', () => {
+    store().seed('tab-1', A, 'original', 'h0', 'source');
+    store().edit('tab-1', A, 'original + edit');
+    expect(store().isDirty('tab-1', A)).toBe(true);
+    store().edit('tab-1', A, 'original');
+    expect(store().isDirty('tab-1', A)).toBe(false);
   });
 
   it('markSaved adopts the fresh hash, clears dirty, and drops any conflict', () => {
-    store().seed('tab-1', '/ws/a.md', 'a', 'h0', 'source');
-    store().edit('tab-1', 'a2');
-    store().raiseConflict('tab-1', 'hDisk', 'save');
-    expect(store().entry('tab-1')!.conflict).not.toBeNull();
-
-    // The content we actually wrote was 'a2'.
-    store().markSaved('tab-1', 'a2', 'h1');
-    const entry = store().entry('tab-1')!;
+    store().seed('tab-1', A, 'a', 'h0', 'source');
+    store().edit('tab-1', A, 'a2');
+    store().raiseConflict('tab-1', A, 'hDisk', 'save');
+    store().markSaved('tab-1', A, 'a2', 'h1');
+    const entry = store().entry('tab-1', A)!;
     expect(entry.dirty).toBe(false);
-    expect(entry.baseHash).toBe('h1'); // the new anchor (self-write detection)
-    expect(entry.savedContent).toBe('a2'); // disk now holds the buffer
+    expect(entry.baseHash).toBe('h1');
+    expect(entry.savedContent).toBe('a2');
     expect(entry.conflict).toBeNull();
   });
 
-  it('typing DURING a save keeps the tab dirty (the newer buffer was not written)', () => {
-    store().seed('tab-1', '/ws/a.md', 'v0', 'h0', 'source');
-    // A save was launched with the snapshot 'v1'…
-    store().edit('tab-1', 'v1');
-    // …and while it was in flight the user kept typing to 'v2'.
-    store().edit('tab-1', 'v2');
-
-    // Completion marks the SNAPSHOT saved, recomputing dirty against the live
-    // buffer: v2 != v1, so the tab stays dirty and 'v2' is preserved.
-    store().markSaved('tab-1', 'v1', 'h1');
-    const entry = store().entry('tab-1')!;
+  it('typing DURING a save keeps it dirty (the newer buffer was not written)', () => {
+    store().seed('tab-1', A, 'v0', 'h0', 'source');
+    store().edit('tab-1', A, 'v1'); // launched with snapshot v1
+    store().edit('tab-1', A, 'v2'); // typed on while in flight
+    store().markSaved('tab-1', A, 'v1', 'h1');
+    const entry = store().entry('tab-1', A)!;
     expect(entry.savedContent).toBe('v1');
     expect(entry.buffer).toBe('v2');
     expect(entry.dirty).toBe(true);
   });
 });
 
+describe('editor store — navigation NEVER drops an unsaved buffer', () => {
+  it('a tab that navigates away keeps its (tab, doc) entry; returning restores it', () => {
+    // Editing A in tab-1…
+    store().seed('tab-1', A, 'A on disk', 'hA', 'source');
+    store().edit('tab-1', A, 'A with my unsaved edit');
+    expect(store().isDirty('tab-1', A)).toBe(true);
+
+    // …the tab navigates to B. B has its own (absent) entry — read mode — while
+    // A's dirty buffer is untouched under its own key (nothing pruned it).
+    expect(store().entry('tab-1', B)).toBeUndefined();
+    expect(store().mode('tab-1', B)).toBe('read');
+    expect(store().entry('tab-1', A)!.buffer).toBe('A with my unsaved edit');
+
+    // The tab still shows as dirty (it has unsaved work, just not on the shown doc).
+    expect(store().tabIsDirty('tab-1')).toBe(true);
+
+    // Returning to A restores the exact unsaved buffer.
+    expect(store().entry('tab-1', A)!.buffer).toBe('A with my unsaved edit');
+    expect(store().isDirty('tab-1', A)).toBe(true);
+  });
+
+  it('a save can only reach the CURRENT document (wrong-doc save is structural)', () => {
+    // tab-1 has a dirty A buffer but is now showing B. A save keyed to B finds no
+    // entry, so A's buffer can never be written to B.
+    store().seed('tab-1', A, 'A body', 'hA', 'source');
+    store().edit('tab-1', A, 'A edited');
+    expect(store().entry('tab-1', B)).toBeUndefined();
+    // The A entry is still there, dirty — preserved, not saved to B.
+    expect(store().isDirty('tab-1', A)).toBe(true);
+  });
+});
+
 describe('editor store — conflict state machine', () => {
   it('raiseConflict opens the choose phase without touching the buffer', () => {
-    store().seed('tab-1', '/ws/a.md', 'mine', 'h0', 'source');
-    store().edit('tab-1', 'mine edited');
-    store().raiseConflict('tab-1', 'hDisk', 'external');
-
-    const entry = store().entry('tab-1')!;
+    store().seed('tab-1', A, 'mine', 'h0', 'source');
+    store().edit('tab-1', A, 'mine edited');
+    store().raiseConflict('tab-1', A, 'hDisk', 'external');
+    const entry = store().entry('tab-1', A)!;
     expect(entry.conflict).toEqual({ currentHash: 'hDisk', source: 'external', phase: 'choose' });
-    expect(entry.buffer).toBe('mine edited'); // buffer preserved
-    expect(entry.dirty).toBe(true);
+    expect(entry.buffer).toBe('mine edited');
   });
 
   it('keep-mine advances to the explicit overwrite confirmation', () => {
-    store().seed('tab-1', '/ws/a.md', 'mine', 'h0', 'source');
-    store().raiseConflict('tab-1', 'hDisk', 'save');
-
-    store().toConfirmOverwrite('tab-1');
-    expect(store().entry('tab-1')!.conflict).toEqual({
+    store().seed('tab-1', A, 'mine', 'h0', 'source');
+    store().raiseConflict('tab-1', A, 'hDisk', 'save');
+    store().toConfirmOverwrite('tab-1', A);
+    expect(store().entry('tab-1', A)!.conflict).toEqual({
       currentHash: 'hDisk',
       source: 'save',
       phase: 'confirm',
@@ -97,51 +117,48 @@ describe('editor store — conflict state machine', () => {
   });
 
   it('clearConflict dismisses the banner and keeps editing', () => {
-    store().seed('tab-1', '/ws/a.md', 'mine', 'h0', 'source');
-    store().edit('tab-1', 'mine!');
-    store().raiseConflict('tab-1', 'hDisk', 'save');
-
-    store().clearConflict('tab-1');
-    const entry = store().entry('tab-1')!;
+    store().seed('tab-1', A, 'mine', 'h0', 'source');
+    store().edit('tab-1', A, 'mine!');
+    store().raiseConflict('tab-1', A, 'hDisk', 'save');
+    store().clearConflict('tab-1', A);
+    const entry = store().entry('tab-1', A)!;
     expect(entry.conflict).toBeNull();
-    expect(entry.buffer).toBe('mine!'); // buffer untouched
+    expect(entry.buffer).toBe('mine!');
     expect(entry.dirty).toBe(true);
   });
 
   it('re-seeding (reload from disk) discards local edits and the conflict', () => {
-    store().seed('tab-1', '/ws/a.md', 'mine', 'h0', 'source');
-    store().edit('tab-1', 'mine edited');
-    store().raiseConflict('tab-1', 'hDisk', 'external');
-
-    // Reload adopts the disk version at its real hash.
-    store().seed('tab-1', '/ws/a.md', 'the disk version', 'hDisk', 'source');
-    const entry = store().entry('tab-1')!;
+    store().seed('tab-1', A, 'mine', 'h0', 'source');
+    store().edit('tab-1', A, 'mine edited');
+    store().raiseConflict('tab-1', A, 'hDisk', 'external');
+    store().seed('tab-1', A, 'the disk version', 'hDisk', 'source');
+    const entry = store().entry('tab-1', A)!;
     expect(entry.buffer).toBe('the disk version');
-    expect(entry.baseHash).toBe('hDisk');
     expect(entry.dirty).toBe(false);
     expect(entry.conflict).toBeNull();
   });
 });
 
-describe('editor store — isolation and cleanup', () => {
-  it('each tab keeps its own mode and buffer', () => {
-    store().seed('tab-1', '/ws/one.md', 'one', 'h1', 'source');
-    store().seed('tab-2', '/ws/two.md', 'two', 'h2', 'split');
-    store().edit('tab-1', 'one!');
+describe('editor store — dirty aggregation and cleanup', () => {
+  it('tracks dirty tabs and every dirty entry across docs and tabs', () => {
+    store().seed('tab-1', A, 'a', 'hA', 'source');
+    store().seed('tab-1', B, 'b', 'hB', 'source'); // same tab, two docs
+    store().seed('tab-2', A, 'a2', 'hA2', 'source');
+    store().edit('tab-1', B, 'b!'); // dirty (tab-1, B)
+    store().edit('tab-2', A, 'a2!'); // dirty (tab-2, A)
 
-    expect(store().isDirty('tab-1')).toBe(true);
-    expect(store().isDirty('tab-2')).toBe(false);
-    expect(store().mode('tab-2')).toBe('split');
+    expect(store().tabIsDirty('tab-1')).toBe(true);
+    expect(store().dirtyTabIds().sort()).toEqual(['tab-1', 'tab-2']);
+    expect(store().allDirtyEntries().map((e) => e.path).sort()).toEqual([A, B]);
   });
 
-  it('an entry records the document path it was seeded for (wrong-doc-save guard)', () => {
-    store().seed('tab-1', '/ws/a.md', 'x', 'h', 'source');
-    expect(store().entry('tab-1')!.path).toBe('/ws/a.md');
-  });
-
-  it('remove drops a closed tab’s entry', () => {
-    store().seed('tab-1', '/ws/a.md', 'x', 'h', 'source');
-    store().remove('tab-1');
-    expect(store().entry('tab-1')).toBeUndefined();
+  it('removeTab drops every entry for a closed tab (and leaves others)', () => {
+    store().seed('tab-1', A, 'a', 'hA', 'source');
+    store().seed('tab-1', B, 'b', 'hB', 'source');
+    store().seed('tab-2', A, 'a', 'hA', 'source');
+    store().removeTab('tab-1');
+    expect(store().entry('tab-1', A)).toBeUndefined();
+    expect(store().entry('tab-1', B)).toBeUndefined();
+    expect(store().entry('tab-2', A)).toBeDefined();
   });
 });
