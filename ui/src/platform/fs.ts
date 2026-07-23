@@ -7,9 +7,16 @@
  * transport in P3.
  */
 
-import { commands, events, type FileEntry, type DocPayload, type FsChanged } from '../bindings';
+import {
+  commands,
+  events,
+  type FileEntry,
+  type DocPayload,
+  type FsChanged,
+  type WatchError,
+} from '../bindings';
 
-export type { FileEntry, DocPayload, FsChanged };
+export type { FileEntry, DocPayload, FsChanged, WatchError };
 
 /** A `blake3`/`f64`-normalised document payload (never-null numbers). */
 export interface Doc {
@@ -37,6 +44,17 @@ function normalizeFile(entry: FileEntry): WorkspaceFile {
   };
 }
 
+/**
+ * Grant `root` as the active workspace (canonicalized backend-side); every
+ * subsequent read/list/watch is confined to it. Resolves to the canonical path.
+ * Throws on backend error (e.g. the folder no longer exists).
+ */
+export async function setWorkspace(root: string): Promise<string> {
+  const result = await commands.setWorkspace(root);
+  if (result.status === 'error') throw new Error(result.error);
+  return result.data;
+}
+
 /** List the markdown files under `root`. Throws on backend error. */
 export async function listWorkspaceFiles(root: string): Promise<WorkspaceFile[]> {
   const result = await commands.listWorkspaceFiles(root);
@@ -52,9 +70,14 @@ export async function readDoc(path: string): Promise<Doc> {
   return { content: payload.content, mtime: payload.mtime ?? 0, hash: payload.hash };
 }
 
-/** Open the native folder picker; resolves to the chosen path or `null`. */
-export function pickWorkspaceFolder(): Promise<string | null> {
-  return commands.pickWorkspaceFolder();
+/**
+ * Open the native folder picker; resolves to the chosen path (granted as the
+ * workspace backend-side) or `null` when cancelled. Throws on backend error.
+ */
+export async function pickWorkspaceFolder(): Promise<string | null> {
+  const result = await commands.pickWorkspaceFolder();
+  if (result.status === 'error') throw new Error(result.error);
+  return result.data;
 }
 
 /** Begin watching `root`. Throws on backend error. */
@@ -66,4 +89,9 @@ export async function watchWorkspace(root: string): Promise<void> {
 /** Subscribe to debounced filesystem changes. Returns an unlisten function. */
 export function onFsChanged(handler: (change: FsChanged) => void): Promise<() => void> {
   return events.mdreaderFsChanged.listen((event) => handler(event.payload));
+}
+
+/** Subscribe to runtime watcher failures. Returns an unlisten function. */
+export function onWatchError(handler: (error: WatchError) => void): Promise<() => void> {
+  return events.mdreaderWatchError.listen((event) => handler(event.payload));
 }

@@ -66,6 +66,12 @@ export interface TabsState {
   setActiveTab: (tabId: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
   togglePin: (tabId: string) => void;
+  /**
+   * Close every open tab (e.g. on a workspace switch) and return their docRefs
+   * in tab order, so the caller can record them in Recent. Clears the reopen
+   * stack too — those tabs belong to the previous workspace.
+   */
+  closeAll: () => DocRef[];
   setScroll: (tabId: string, scroll: ScrollPos) => void;
   /** Advance the Ctrl+Tab MRU cycle by `step` (typically +1 / -1). */
   cycleMru: (step: number) => void;
@@ -245,16 +251,22 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   reorderTabs(fromIndex, toIndex) {
     set((state) => {
       const tabs = [...state.tabs];
-      if (
-        fromIndex < 0 ||
-        toIndex < 0 ||
-        fromIndex >= tabs.length ||
-        toIndex >= tabs.length
-      ) {
+      if (fromIndex < 0 || toIndex < 0 || fromIndex >= tabs.length || toIndex >= tabs.length) {
         return {};
       }
-      const [moved] = tabs.splice(fromIndex, 1);
-      tabs.splice(toIndex, 0, moved!);
+      const moved = tabs[fromIndex]!;
+
+      // Tabs are always grouped `[pinned…, unpinned…]`. A reorder must never
+      // cross that boundary, or a drag would silently pin/unpin a tab. Clamp the
+      // target to the moved tab's own group so pinned-left grouping is preserved.
+      const pinnedCount = tabs.reduce((count, tab) => count + (tab.pinned ? 1 : 0), 0);
+      const lo = moved.pinned ? 0 : pinnedCount;
+      const hi = moved.pinned ? pinnedCount - 1 : tabs.length - 1;
+      const target = Math.min(Math.max(toIndex, lo), hi);
+      if (target === fromIndex) return {};
+
+      tabs.splice(fromIndex, 1);
+      tabs.splice(target, 0, moved);
       return { tabs };
     });
   },
@@ -266,6 +278,20 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       );
       return { tabs: regroup(toggled) };
     });
+  },
+
+  closeAll() {
+    const refs = get().tabs.map((tab) => tab.docRef);
+    set({
+      tabs: [],
+      activeTabId: null,
+      mru: [],
+      closed: [],
+      cycling: false,
+      cycleOrder: [],
+      cyclePos: 0,
+    });
+    return refs;
   },
 
   setScroll(tabId, scroll) {

@@ -36,6 +36,8 @@ export function installTauriMocks(): void {
     switch (cmd) {
       case 'pick_workspace_folder':
         return '/mock/ws';
+      case 'set_workspace':
+        return (args as { root: string }).root;
       case 'list_workspace_files':
         return fileEntries();
       case 'read_doc': {

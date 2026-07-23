@@ -170,3 +170,59 @@ describe('pin and reorder', () => {
     expect(selectActiveTab(store.getState())!.scroll).toEqual({ block: 7, offset: 42 });
   });
 });
+
+describe('pin + reorder compose', () => {
+  test('reorder within the pinned group preserves left grouping', () => {
+    const a = store.getState().openTab(ref('a'));
+    const b = store.getState().openTab(ref('b'));
+    store.getState().openTab(ref('c'));
+    store.getState().togglePin(a); // [a*, b, c]
+    store.getState().togglePin(b); // [a*, b*, c]
+    // Pinned group occupies indices 0..1; move a(0) after b.
+    store.getState().reorderTabs(0, 1);
+    expect(store.getState().tabs.map((t) => t.docRef.name)).toEqual(['b.md', 'a.md', 'c.md']);
+    expect(store.getState().tabs.map((t) => t.pinned)).toEqual([true, true, false]);
+  });
+
+  test('dragging an unpinned tab across the boundary is clamped into its group', () => {
+    const a = store.getState().openTab(ref('a'));
+    store.getState().openTab(ref('b'));
+    store.getState().openTab(ref('c'));
+    store.getState().togglePin(a); // [a*, b, c]; unpinned occupies 1..2
+    // Try to drag c (2) into the pinned region (0) — clamps to index 1.
+    store.getState().reorderTabs(2, 0);
+    expect(store.getState().tabs.map((t) => t.docRef.name)).toEqual(['a.md', 'c.md', 'b.md']);
+    expect(store.getState().tabs[0]!.pinned).toBe(true);
+    expect(store.getState().tabs.slice(1).every((t) => !t.pinned)).toBe(true);
+  });
+
+  test('dragging a pinned tab across the boundary is clamped into its group', () => {
+    const a = store.getState().openTab(ref('a'));
+    const b = store.getState().openTab(ref('b'));
+    store.getState().openTab(ref('c'));
+    store.getState().togglePin(a); // [a*, b, c]
+    store.getState().togglePin(b); // [a*, b*, c]; pinned occupies 0..1
+    // Try to drag a (0) into the unpinned region (2) — clamps to index 1.
+    store.getState().reorderTabs(0, 2);
+    expect(store.getState().tabs.map((t) => t.docRef.name)).toEqual(['b.md', 'a.md', 'c.md']);
+    expect(store.getState().tabs.map((t) => t.pinned)).toEqual([true, true, false]);
+  });
+});
+
+describe('closeAll (workspace switch)', () => {
+  test('clears every tab and returns their docRefs in tab order', () => {
+    store.getState().openTab(ref('a'));
+    store.getState().openTab(ref('b'));
+    const retired = store.getState().closeAll();
+    expect(retired.map((r) => r.name)).toEqual(['a.md', 'b.md']);
+    expect(store.getState().tabs).toHaveLength(0);
+    expect(store.getState().activeTabId).toBeNull();
+    expect(store.getState().mru).toEqual([]);
+  });
+
+  test('clears the reopen stack — retired tabs belong to the old workspace', () => {
+    store.getState().openTab(ref('a'));
+    store.getState().closeAll();
+    expect(store.getState().reopenClosedTab()).toBeNull();
+  });
+});
