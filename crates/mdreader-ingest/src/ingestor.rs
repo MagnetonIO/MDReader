@@ -275,7 +275,13 @@ impl Ingestor for MarkdownIngestor {
         };
         let files = scan_root(&req.root, &scan_options)?;
 
-        let stored_before = ctx.list_documents()?;
+        // EVERYTHING below is scoped to THIS import's source: stored state,
+        // rename claiming, deletion, and link resolution all read
+        // `documents_for_source`, so a multi-source database is safe — one
+        // source's reconcile can never observe (let alone delete or rename-
+        // claim) another source's documents.
+        let source_id = req.source.source_id;
+        let stored_before = ctx.documents_for_source(source_id)?;
         let stored_by_path: HashMap<String, DocumentRow> = stored_before
             .iter()
             .map(|d| (d.file_path.clone(), d.clone()))
@@ -316,6 +322,7 @@ impl Ingestor for MarkdownIngestor {
                     sync_document(
                         ctx,
                         doc.id,
+                        source_id,
                         file,
                         &text,
                         &content_hash,
@@ -340,6 +347,7 @@ impl Ingestor for MarkdownIngestor {
                             sync_document(
                                 ctx,
                                 old.id,
+                                source_id,
                                 file,
                                 &text,
                                 &content_hash,
@@ -349,7 +357,7 @@ impl Ingestor for MarkdownIngestor {
                             )
                             .await?;
                         } else {
-                            rename_document(ctx, &old, file, &content_hash).await?;
+                            rename_document(ctx, &old, source_id, file, &content_hash).await?;
                             stats.files_renamed += 1;
                         }
                     } else {
@@ -359,6 +367,7 @@ impl Ingestor for MarkdownIngestor {
                         sync_document(
                             ctx,
                             doc_id,
+                            source_id,
                             file,
                             &text,
                             &content_hash,
@@ -376,12 +385,11 @@ impl Ingestor for MarkdownIngestor {
                 .await?;
         }
 
-        // Deletions are scoped against STORED state under this source root:
-        // stored paths are relative to the scanned root (v1's single-source
-        // model, see the crate docs), so every stored document this scan did
-        // not claim — including the contents of a fully deleted nested repo
-        // directory — is gone from disk and must be cleaned up. Multi-source
-        // scoping arrives when documents carry a source id.
+        // Deletions are scoped against THIS SOURCE's stored state (see
+        // `documents_for_source` above): every document of this source the
+        // scan did not claim — including the contents of a fully deleted
+        // nested repo directory — is gone from disk and must be cleaned up.
+        // Other sources' documents are structurally out of reach here.
         for doc in &stored_before {
             if seen.contains(&doc.id) || scan_set.contains(doc.file_path.as_str()) {
                 continue;
@@ -390,7 +398,7 @@ impl Ingestor for MarkdownIngestor {
             stats.files_deleted += 1;
         }
 
-        stats.links_resolved = resolve_links(ctx).await?;
+        stats.links_resolved = resolve_links(ctx, source_id).await?;
         Ok(stats)
     }
 }
@@ -408,6 +416,7 @@ impl Ingestor for MarkdownIngestor {
 async fn sync_document(
     ctx: &dyn IngestContext,
     doc_id: Uuid,
+    source_id: Uuid,
     file: &ScannedFile,
     source_text: &str,
     content_hash: &str,
@@ -546,6 +555,7 @@ async fn sync_document(
     // a failed import leaves this file re-processable (see the module docs).
     writes.push(IngestWrite::UpsertDocuments(vec![DocumentRow {
         id: doc_id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: pending_hash(content_hash),
@@ -813,6 +823,7 @@ async fn sync_document(
     ctx.apply_batch(writes).await?;
     ctx.stage_document_finalize(DocumentRow {
         id: doc_id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: content_hash.to_string(),
@@ -831,12 +842,14 @@ async fn sync_document(
 async fn rename_document(
     ctx: &dyn IngestContext,
     old: &DocumentRow,
+    source_id: Uuid,
     file: &ScannedFile,
     content_hash: &str,
 ) -> EngineResult<()> {
     let mut writes: Vec<IngestWrite> = Vec::new();
     writes.push(IngestWrite::UpsertDocuments(vec![DocumentRow {
         id: old.id,
+        source_id: Some(source_id),
         file_path: file.rel.clone(),
         repo: Some(file.repo.clone()),
         content_hash: content_hash.to_string(),
@@ -1018,11 +1031,16 @@ fn push_artifact_concept_retractions(
     }
 }
 
-/// Resolve every unresolved link against the current corpus: relative paths
-/// (with `.md`/`.markdown` completion) for markdown/image links, stem lookup
-/// for wikilinks. Returns how many links were resolved in this pass.
-async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
-    let docs = ctx.list_documents()?;
+/// Resolve every unresolved link **within one source** against that
+/// source's documents: relative paths (with `.md`/`.markdown` completion)
+/// for markdown/image links, stem lookup for wikilinks. Both sides are
+/// source-scoped — links from other sources are not touched, and this
+/// source's links can only land on this source's documents (stored paths
+/// are root-relative, so cross-source resolution would be meaningless
+/// collisions). Returns how many links were resolved in this pass.
+async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult<u64> {
+    let docs = ctx.documents_for_source(source_id)?;
+    let doc_ids: HashSet<Uuid> = docs.iter().map(|d| d.id).collect();
     let path_map: HashMap<&str, Uuid> = docs.iter().map(|d| (d.file_path.as_str(), d.id)).collect();
     let mut stem_map: HashMap<String, Vec<(&str, Uuid)>> = HashMap::new();
     for doc in &docs {
@@ -1037,6 +1055,9 @@ async fn resolve_links(ctx: &dyn IngestContext) -> EngineResult<u64> {
 
     let mut resolved_count = 0u64;
     for entry in ctx.unresolved_links()? {
+        if !doc_ids.contains(&entry.source_document) {
+            continue; // another source's link — not this import's to resolve
+        }
         let target = resolve_target(
             &entry.link.kind,
             &entry.link.raw_target,
