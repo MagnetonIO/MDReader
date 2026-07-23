@@ -224,6 +224,36 @@ test('a save that hits an external change raises the conflict banner; Reload ado
   await expect(page.locator('.cm-content')).toContainText('Changed elsewhere.');
 });
 
+test('split view: scrolling the editor drives the preview (approximate one-way sync)', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'long.md' }).click();
+  // Wait for the document to open (the Split toggle enables once a doc is active).
+  await expect(page.getByRole('button', { name: 'Split view' })).toBeEnabled();
+
+  await page.getByRole('button', { name: 'Split view' }).click();
+  const editorScroller = page.locator('.reader-body--split .cm-scroller');
+  const preview = page.locator('.reader-body--split .reader-host .mdreader');
+  await expect(editorScroller).toBeVisible();
+  await expect(preview).toBeVisible();
+  // Let the editor lay out its full (tall) content before scrolling.
+  await expect.poll(async () => editorScroller.evaluate((el) => el.scrollHeight)).toBeGreaterThan(400);
+
+  const before = await preview.evaluate((el) => el.scrollTop);
+  // Scroll the SOURCE editor to the bottom; its scroll handler maps the top
+  // visible line onto the preview (one-directional, approximate).
+  await editorScroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event('scroll'));
+  });
+
+  // The preview followed (approximate threshold — exact block heights differ).
+  await expect
+    .poll(async () => preview.evaluate((el) => el.scrollTop), { timeout: 4000 })
+    .toBeGreaterThan(before + 20);
+});
+
 test('navigating a tab away from an edited doc drops the buffer (no wrong-doc save)', async ({
   page,
 }) => {

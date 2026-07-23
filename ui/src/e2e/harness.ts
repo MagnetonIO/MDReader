@@ -20,6 +20,14 @@ const CORPUS: Record<string, string> = {
   '/mock/ws/docs/guide.md':
     '# Guide\n\nAn introduction.\n\n## Section A\n\nAlpha content.\n\n## Section B\n\nBeta content.\n',
   '/mock/ws/docs/reference.md': '# Reference\n\n## API\n\nReference material.\n',
+  // A long document, so split-mode scroll sync has room to move (see the e2e).
+  '/mock/ws/long.md':
+    '# Long\n\n' +
+    Array.from(
+      { length: 40 },
+      (_unused, index) =>
+        `## Section ${index + 1}\n\nParagraph text for section ${index + 1}, with enough words on the line to give the editor and the preview real height to scroll through.\n`,
+    ).join('\n'),
 };
 
 // A monotonic per-path "disk version" so the mock can produce a NEW hash whenever
