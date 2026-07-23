@@ -221,7 +221,12 @@ async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
     let b = engine.store().document_by_path("b.md").unwrap().unwrap();
     let c = engine.store().document_by_path("c.md").unwrap().unwrap();
 
-    let mut expected = vec![(a.id, b.id), (b.id, c.id)];
+    // The morphisms run between the kn.Artifact ids (the schema's
+    // `links_to : Artifact → Artifact` arrow), not raw document ids.
+    let mut expected = vec![
+        (artifact_id(a.id), artifact_id(b.id)),
+        (artifact_id(b.id), artifact_id(c.id)),
+    ];
     expected.sort();
     assert_eq!(links_to_edges(&engine), expected);
 
@@ -240,7 +245,10 @@ async fn resolved_links_assert_links_to_morphisms_that_related_traverses() {
         .import(&root, ImportOptions::default())
         .await
         .unwrap();
-    assert_eq!(links_to_edges(&engine), vec![(a.id, b.id)]);
+    assert_eq!(
+        links_to_edges(&engine),
+        vec![(artifact_id(a.id), artifact_id(b.id))]
+    );
     let unresolved = engine.store().unresolved_links().unwrap();
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].link.raw_target, "c.md");

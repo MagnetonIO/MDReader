@@ -251,7 +251,7 @@ async fn rapid_writes_to_one_file_coalesce_into_a_single_sync() {
     let engine = Arc::new(
         EmbeddedCatDb::open(
             EngineConfig::new(
-                &db_dir.path().join("catdb.db"),
+                db_dir.path().join("catdb.db"),
                 Arc::new(SlowEmbedder {
                     inner: HashEmbedder::new(),
                     delay: Duration::from_secs(3),

@@ -61,8 +61,10 @@
 //!   its join row and morphisms; a concept no other artifact references is
 //!   left in place — stable identity makes re-tagging idempotent);
 //! * resolving a link additionally asserts a `kn.links_to` morphism
-//!   between the source and target **documents** — the document graph edge
-//!   `relation_search` traverses — retracted whenever the link dies or its
+//!   between the source and target **artifacts** (the kn schema's
+//!   `links_to : Artifact → Artifact` arrow; each artifact anchors to its
+//!   document via `doc_ref`, which `relation_search` uses to lower the
+//!   edge back onto documents) — retracted whenever the link dies or its
 //!   target document is deleted (inbound links are looked up before the
 //!   cascade nulls their resolutions).
 //!
@@ -1068,11 +1070,13 @@ async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult
         let Some(target_id) = target else { continue };
         let mut link = entry.link.clone();
         link.resolved_document = Some(target_id);
-        // Row update, re-asserted link fact, and the derived document-level
-        // `kn.links_to` morphism (source document -> target document, the
-        // edge relation_search traverses) commit together; the resolution
-        // provenance is real: the source section's line range and content
-        // hash (the span the link was written in).
+        // Row update, re-asserted link fact, and the derived knowledge-graph
+        // `kn.links_to` morphism commit together. The morphism runs between
+        // the two ARTIFACTS (the kn schema's `links_to : Artifact →
+        // Artifact` arrow), each anchored to its document via `doc_ref` —
+        // relation_search lowers the edge back to documents through that
+        // anchor. The resolution provenance is real: the source section's
+        // line range and content hash (the span the link was written in).
         let resolution_provenance = provenance(
             &entry.source_path,
             Some(entry.section_range),
@@ -1093,8 +1097,8 @@ async fn resolve_links(ctx: &dyn IngestContext, source_id: Uuid) -> EngineResult
             IngestWrite::Emit(CatOperation::AssertMorphism {
                 arrow: qualify("kn", "links_to"),
                 morphism_id: links_to_morphism_id(entry.link.id),
-                source: entry.source_document,
-                target: target_id,
+                source: artifact_id(entry.source_document),
+                target: artifact_id(target_id),
                 provenance: resolution_provenance,
             }),
         ])
