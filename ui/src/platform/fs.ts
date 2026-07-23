@@ -14,6 +14,7 @@ import {
   events,
   type FileEntry,
   type DocPayload,
+  type SaveOutcome as SaveOutcomeDto,
   type FsChanged,
   type WatchError,
   type ImportProgress,
@@ -185,6 +186,37 @@ export async function readDoc(path: string): Promise<Doc> {
   if (result.status === 'error') throw new Error(result.error);
   const payload: DocPayload = result.data;
   return { content: payload.content, mtime: payload.mtime ?? 0, hash: payload.hash };
+}
+
+/**
+ * A hash-guarded save outcome (numbers coerced from the nullable binding). A
+ * `conflict` is an expected result — the file changed on disk since it was
+ * opened — carrying the hash the file actually holds now; nothing was written.
+ */
+export type SaveOutcome =
+  | { status: 'saved'; newHash: string; mtime: number }
+  | { status: 'conflict'; currentHash: string };
+
+/**
+ * Save `content` to `path` under a hash guard: the write lands only if the file
+ * still hashes to `expectedHash` (or `opts.force` overrides the guard — the
+ * user's explicit "overwrite the on-disk changes"). A mismatch returns a
+ * `conflict` WITHOUT writing, upholding "never silently rewrite files". Throws
+ * only on a hard backend error (containment, IO). `.md`/`.markdown` only.
+ */
+export async function saveDoc(
+  path: string,
+  content: string,
+  expectedHash: string,
+  opts: { force?: boolean } = {},
+): Promise<SaveOutcome> {
+  const result = await commands.saveDoc(path, content, expectedHash, opts.force ?? false);
+  if (result.status === 'error') throw new Error(result.error);
+  const dto: SaveOutcomeDto = result.data;
+  if (dto.status === 'saved') {
+    return { status: 'saved', newHash: dto.new_hash ?? '', mtime: dto.mtime ?? 0 };
+  }
+  return { status: 'conflict', currentHash: dto.current_hash ?? '' };
 }
 
 /**
