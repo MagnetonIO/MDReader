@@ -35,6 +35,7 @@ import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 
 import { detectMac } from '../keymap/registry.js';
+import { sourceChord } from './source-chord.js';
 
 export interface SourcePaneProps {
   /** The document buffer to edit (a controlled value; external changes — reload,
@@ -139,17 +140,13 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
         if (onScrollLineRef.current) onScrollLineRef.current(topVisibleLine(view));
       },
       keydown: (event) => {
-        const primary = isMac ? event.metaKey : event.ctrlKey;
-        const secondary = isMac ? event.ctrlKey : event.metaKey;
-        // Exactly the platform's primary modifier, nothing else.
-        if (!primary || secondary || event.altKey || event.shiftKey) return false;
-        const key = event.key.toLowerCase();
-        if (key === 's') {
+        const chord = sourceChord(isMac, event);
+        if (chord === 'save') {
           event.preventDefault();
           onSaveRef.current();
           return true;
         }
-        if (key === 'e') {
+        if (chord === 'toggle') {
           event.preventDefault();
           onToggleModeRef.current();
           return true;
