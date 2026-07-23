@@ -34,6 +34,56 @@ test('open from tree → render → outline-jump → tab lifecycle', async ({ pa
   await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
 });
 
+/** Press the shell's primary modifier the same way the app detects it. */
+async function usesMeta(page: import('@playwright/test').Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const platform =
+      (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+      navigator.platform ??
+      '';
+    return /mac|iphone|ipad|ipod/i.test(platform);
+  });
+}
+
+async function openThreeDocs(page: import('@playwright/test').Page): Promise<void> {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await page.getByRole('treeitem', { name: 'guide.md' }).click();
+  await page.getByRole('treeitem', { name: 'reference.md' }).click();
+  await expect(page.getByRole('tab')).toHaveCount(3);
+}
+
+test('double-click pins a tab and regroups it to the left', async ({ page }) => {
+  await openThreeDocs(page);
+  // The active (rightmost) tab is reference.md; pinning it regroups it far left.
+  await page.getByRole('tab', { name: /reference\.md/ }).dblclick();
+  await expect(page.getByRole('tab').first()).toContainText('reference.md');
+  await expect(page.getByRole('tab').first()).toHaveClass(/tab--pinned/);
+});
+
+test('close then reopen restores the tab in place (Mod+Shift+T)', async ({ page }) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await page.getByRole('treeitem', { name: 'guide.md' }).click();
+  await expect(page.getByRole('tab')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Close guide.md' }).click();
+  await expect(page.getByRole('tab')).toHaveCount(1);
+
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+Shift+T' : 'Control+Shift+T');
+  await expect(page.getByRole('tab')).toHaveCount(2);
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+});
+
+test('Ctrl+Tab cycles tabs by most-recent use', async ({ page }) => {
+  await openThreeDocs(page);
+  // MRU is [reference, guide, index]; one Ctrl+Tab lands on the previous doc.
+  await expect(page.getByRole('heading', { name: 'Reference' })).toBeVisible();
+  await page.keyboard.press('Control+Tab');
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+});
+
 test('file-jump palette opens a document by name', async ({ page }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
