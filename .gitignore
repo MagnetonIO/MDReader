@@ -1,4 +1,21 @@
-.DS_Store
+# Superpowers workspace metadata
 .superpowers/
-node_modules/
+
+# Rust
 target/
+**/*.rs.bk
+
+# Node / frontend (Tauri + Next side, scaffolded by later tasks)
+node_modules/
+dist/
+.next/
+.turbo/
+next-env.d.ts
+*.tsbuildinfo
+
+# Synthetic corpus generator output (scripts/gen-corpus.mjs default outdir).
+# Hand-authored fixtures live in fixtures/corpus/ and ARE committed.
+fixtures/generated/
+
+# macOS
+.DS_Store

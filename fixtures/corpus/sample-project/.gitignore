@@ -1,0 +1,4 @@
+# Sample project ignore rules — consumed by .gitignore-aware ingest.
+# Machine output that should never be indexed:
+generated/
+*.tmp
