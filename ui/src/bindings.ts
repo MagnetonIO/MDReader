@@ -27,15 +27,16 @@ export const commands = {
 	 *  Save `content` to a markdown document within the granted workspace under a
 	 *  hash guard — the enforcement of the "never silently rewrite files" rule.
 	 *  Resolves + validates the path exactly like [`read_doc`] (contained, an
-	 *  existing file, `.md`/`.markdown` only), then reads the file's CURRENT bytes
-	 *  and compares their hash to `expected_hash`. On a mismatch it writes NOTHING
-	 *  and returns a typed [`SaveOutcome`] conflict carrying the real on-disk hash,
-	 *  so the UI can raise its non-blocking banner instead of clobbering an external
-	 *  edit. On a match (or when `force` overrides the guard — the user's explicit
-	 *  "overwrite the on-disk changes") it writes atomically (temp + rename) and
-	 *  returns the fresh hash + mtime. Epoch-guarded: a switch mid-save discards the
-	 *  returned outcome (the write itself belongs to the still-correct old-workspace
-	 *  path), so the superseding workspace never adopts a previous doc's provenance.
+	 *  existing file, `.md`/`.markdown` only), then — holding an exclusive advisory
+	 *  lock on the target — reads its CURRENT bytes and compares their hash to
+	 *  `expected_hash`. On a mismatch it writes NOTHING and returns a typed
+	 *  [`SaveOutcome`] conflict carrying the real on-disk hash, so the UI can raise
+	 *  its non-blocking banner instead of clobbering an external edit. On a match
+	 *  (or when `force` overrides the guard — the user's explicit "overwrite the
+	 *  on-disk changes") it writes atomically (temp + rename) and returns the fresh
+	 *  hash + mtime. Epoch-guarded: a switch mid-save discards the returned outcome
+	 *  (the write itself belongs to the still-correct old-workspace path), so the
+	 *  superseding workspace never adopts a previous doc's provenance.
 	 */
 	saveDoc: (path: string, content: string, expectedHash: string, force: boolean) => typedError<SaveOutcome, string>(__TAURI_INVOKE("save_doc", { path, content, expectedHash, force })),
 	/**

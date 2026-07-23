@@ -31,6 +31,11 @@ tauri-plugin-store = "2.4.4"
 tauri-plugin-dialog = "2.7.2"
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
+# Advisory `flock` on the save target so the hash-check → temp-write → rename
+# window is atomic against other cooperating writers (same `fs2` mechanism as the
+# engine's import lease); the compare-then-rename TOCTOU is closed by re-verifying
+# the on-disk hash under the lock, right before the swap.
+fs2 = "0.4"
 walkdir = "2.5.0"
 # The embedded CatDB engine and the MDReader domain registration compose the
 # real index the shell drives. `catdb-embed` is pulled WITH `local-embed` on so
