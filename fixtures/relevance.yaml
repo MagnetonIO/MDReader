@@ -1,0 +1,79 @@
+# Relevance smoke suite over fixtures/corpus.
+#
+# Each case runs `search(query)` against the indexed fixture corpus and
+# asserts the expected document appears in the top `top_k` hits. Filters in
+# the query exercise the typed filter language end-to-end (tag:, linked-to:,
+# path:, type:).
+#
+# `semantic: true` marks cases whose ranking leans on the vector modality:
+# under the deterministic HashEmbedder (CI) they are asserted loosely
+# (membership in a generous top_k); the ignored real-model variant
+# (`cargo test -p catdb-engine --features real-embed --test relevance -- --ignored`)
+# asserts the same cases with a real embedding model.
+cases:
+  - name: gfm-tables-lexical
+    query: "GFM tables"
+    expect_path: docs/guides/gfm-tables.md
+    top_k: 3
+
+  - name: exact-phrase-overview
+    query: '"content-addressed knowledge platform"'
+    expect_path: notes/projects/catdb-overview.md
+    top_k: 3
+
+  - name: footnotes-guide
+    query: "footnotes"
+    expect_path: docs/guides/footnotes.md
+    top_k: 3
+
+  - name: mermaid-pipeline
+    query: "mermaid flowchart pipeline"
+    expect_path: docs/guides/mermaid-flowchart.md
+    top_k: 3
+
+  - name: unicode-edge-case
+    query: "unicode emoji CJK"
+    expect_path: edge-cases/unicode-emoji-cjk.md
+    top_k: 3
+
+  - name: tag-filter-zettel
+    query: "graph tag:zettel"
+    expect_path: notes/zettel/node-graph-view.md
+    top_k: 5
+
+  - name: tag-filter-listing
+    query: "tag:daily type:document"
+    expect_path: notes/daily/2026-07-20.md
+    top_k: 2
+
+  - name: path-filter-reference
+    query: "deep headings path:docs/reference/**"
+    expect_path: docs/reference/headings-deep.md
+    top_k: 5
+
+  - name: linked-to-outbound
+    query: "storage linked-to:notes/zettel/graph-hub.md"
+    expect_path: notes/zettel/node-storage.md
+    top_k: 3
+
+  - name: linked-to-inbound
+    query: "embeddings linked-to:notes/zettel/node-storage.md"
+    expect_path: notes/zettel/node-embeddings.md
+    top_k: 5
+
+  - name: section-granularity
+    query: "tables type:section path:docs/**"
+    expect_path: docs/guides/gfm-tables.md
+    top_k: 3
+
+  - name: semantic-vectors
+    query: "how do vectors measure similarity between notes"
+    expect_path: notes/zettel/node-embeddings.md
+    top_k: 10
+    semantic: true
+
+  - name: semantic-bytes
+    query: "where do the stored bytes live type:document"
+    expect_path: notes/zettel/graph-hub.md
+    top_k: 10
+    semantic: true
