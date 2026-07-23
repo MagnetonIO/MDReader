@@ -89,9 +89,16 @@ export function AppShell() {
   activePathRef.current = activeTab?.docRef.path ?? null;
 
   // --- workspace loading ------------------------------------------------
-  const refreshFiles = useCallback(async (folder: string) => {
+  // Frontend request generation, the UI-side mirror of the backend epoch: every
+  // `openRoot` bumps it, and every async continuation (listing, import) captures
+  // the value at dispatch and writes to the store ONLY while it is still current.
+  // So a late continuation for an older root can never overwrite newer state.
+  const openEpochRef = useRef(0);
+
+  const refreshFiles = useCallback(async (folder: string, epoch: number) => {
     try {
       const listing = await listWorkspaceFiles(folder);
+      if (openEpochRef.current !== epoch) return; // superseded by a newer open
       const sources = useSourcesStore.getState();
       sources.setFiles(listing.files);
       sources.setFromIndex(listing.fromIndex);
@@ -102,38 +109,42 @@ export function AppShell() {
 
   // List the workspace's markdown files into the store, toggling `loading`. The
   // listing carries whether it came from the engine index or the live fs scan.
-  const listInto = useCallback(async (folder: string) => {
+  const listInto = useCallback(async (folder: string, epoch: number) => {
     const sources = useSourcesStore.getState();
     sources.setLoading(true);
     try {
       const listing = await listWorkspaceFiles(folder);
-      sources.setFiles(listing.files);
-      sources.setFromIndex(listing.fromIndex);
+      if (openEpochRef.current === epoch) {
+        sources.setFiles(listing.files);
+        sources.setFromIndex(listing.fromIndex);
+      }
     } catch {
-      sources.setFiles([]);
-      sources.setFromIndex(false);
+      if (openEpochRef.current === epoch) {
+        sources.setFiles([]);
+        sources.setFromIndex(false);
+      }
     } finally {
       sources.setLoading(false);
     }
   }, []);
 
   // Run an incremental import for `folder`, streaming coarse progress into the
-  // store and resolving when it settles. Stale updates (the user switched away)
-  // are dropped — the backend likewise discards them per its root generation.
-  // Does NOT re-list: `triggerReindex` owns the import→refresh ordering.
-  // Tauri-only (no backend engine on the website or in unit tests).
-  const runImport = useCallback(async (folder: string): Promise<void> => {
-    if (!isTauri()) return;
+  // store and resolving when it settles. Continuations write only while their
+  // capturing `epoch` is still current (the backend likewise discards them per
+  // its own epoch). Does NOT re-list: `triggerReindex` owns the import→refresh
+  // ordering. Tauri-only (no backend engine on the website or in unit tests).
+  const runImport = useCallback(async (folder: string, epoch: number): Promise<void> => {
+    if (!isTauri() || openEpochRef.current !== epoch) return;
     const sources = useSourcesStore.getState();
     sources.setImport({ phase: 'importing', filesDone: 0, filesTotal: 0, chunks: 0, error: null });
     try {
       const final = await startImport(folder, (progress) => {
-        if (useSourcesStore.getState().root === folder) sources.setImport(progress);
+        if (openEpochRef.current === epoch) sources.setImport(progress);
       });
-      if (useSourcesStore.getState().root !== folder) return;
+      if (openEpochRef.current !== epoch) return;
       sources.setImport(final);
     } catch (cause) {
-      if (useSourcesStore.getState().root !== folder) return;
+      if (openEpochRef.current !== epoch) return;
       sources.setImport({
         phase: 'error',
         filesDone: 0,
@@ -146,15 +157,16 @@ export function AppShell() {
 
   // Bring the index in step with disk, then re-list. A fresh open or a settled
   // fs change runs an incremental import THEN refreshes the listing; while an
-  // import is already in flight (backend-coalesced) it refreshes alone.
+  // import is already in flight (backend-coalesced) it refreshes alone. `epoch`
+  // scopes the continuations so a switch mid-flight discards them.
   const triggerReindex = useCallback(
-    (folder: string) => {
+    (folder: string, epoch: number) => {
       if (!isTauri()) return Promise.resolve('refreshed' as const);
       const phase = useSourcesStore.getState().importState?.phase;
       return reindexOnChange({
         importing: phase === 'importing' || phase === 'loading',
-        startImport: () => runImport(folder),
-        refreshFiles: () => refreshFiles(folder),
+        startImport: () => runImport(folder, epoch),
+        refreshFiles: () => refreshFiles(folder, epoch),
       });
     },
     [runImport, refreshFiles],
@@ -173,13 +185,16 @@ export function AppShell() {
   const openRoot = useCallback(
     async (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
+      // This open supersedes any prior in-flight open: bump the request
+      // generation and thread it through every continuation below.
+      const epoch = (openEpochRef.current += 1);
 
       // Website / tests without a Tauri backend: no grant/watch IPC. Open the
       // folder best-effort so the shell still renders content.
       if (!isTauri()) {
         sources.setRoot(folder);
         sources.setWatcher('idle');
-        await listInto(folder);
+        await listInto(folder, epoch);
         return true;
       }
 
@@ -212,8 +227,8 @@ export function AppShell() {
         sources.setRoot(g);
         sources.setWatcher('error');
         sources.setImport(null); // fresh workspace: no import belongs to it yet
-        await listInto(g);
-        void triggerReindex(g);
+        await listInto(g, epoch);
+        void triggerReindex(g, epoch);
         return true;
       }
 
@@ -221,8 +236,8 @@ export function AppShell() {
       sources.setRoot(granted);
       sources.setWatcher('watching');
       sources.setImport(null); // fresh workspace: no import belongs to it yet
-      await listInto(granted);
-      void triggerReindex(granted);
+      await listInto(granted, epoch);
+      void triggerReindex(granted, epoch);
       return true;
     },
     [listInto, triggerReindex],
@@ -261,6 +276,14 @@ export function AppShell() {
     if (!picked) return;
     await switchWorkspace(picked);
   }, [switchWorkspace]);
+
+  // Re-run the import for the current workspace (e.g. after a model-load
+  // timeout) — the backend re-enters the loading phase since no engine was
+  // installed. Rides the current open generation.
+  const retryIndex = useCallback(() => {
+    const folder = useSourcesStore.getState().root;
+    if (folder) void triggerReindex(folder, openEpochRef.current);
+  }, [triggerReindex]);
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
@@ -628,8 +651,9 @@ export function AppShell() {
         const folder = useSourcesStore.getState().root;
         // A settled change drives an incremental import THEN a re-list (or just a
         // re-list when an import is already running) so the index — and thus
-        // wikilink/title resolution — stays in step with disk.
-        if (folder) void triggerReindex(folder);
+        // wikilink/title resolution — stays in step with disk. It rides the
+        // CURRENT open generation, so a switch mid-flight discards it.
+        if (folder) void triggerReindex(folder, openEpochRef.current);
       }, 400);
     })
       .then((fn) => {
@@ -740,6 +764,7 @@ export function AppShell() {
         fileCount={files.length}
         importState={importState}
         fromIndex={fromIndex}
+        onRetryIndex={retryIndex}
       />
 
       {paletteOpen ? (

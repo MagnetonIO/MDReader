@@ -53,6 +53,9 @@ export interface ReaderPaneProps {
   onAmbiguousWikiLink?: (target: string, candidates: DocRef[]) => void;
 }
 
+/** Cap on the per-document wikilink dimming-resolution cache (bounded LRU). */
+const WIKI_CACHE_CAP = 512;
+
 function dirname(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   const index = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
@@ -99,9 +102,12 @@ export function ReaderPane({
   // Authoritative dimming for wikilinks: the reader's `resolveWikiLink` predicate
   // is synchronous and can only see filenames, so a link that resolves by TITLE
   // would wrongly dim. We resolve each unique target through the index once,
-  // cache the boolean, and re-render so title-resolved links un-dim.
+  // cache the boolean (bounded LRU), and re-render so title-resolved links
+  // un-dim. Every resolution captures the cache epoch and discards its result if
+  // the cache was reset meanwhile (doc/file-set change) rather than writing stale.
   const [wikiResolved, setWikiResolved] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const wikiInFlight = useRef<Set<string>>(new Set());
+  const wikiEpochRef = useRef(0);
 
   const path = tab?.docRef.path ?? null;
   // A heading a wikilink is aiming at, keyed by the TARGET doc path: recorded at
@@ -183,10 +189,12 @@ export function ReaderPane({
   }, [state.doc, path]);
 
   // Forget cached wikilink resolutions when the document or file set changes, so
-  // dimming re-derives against the current index.
+  // dimming re-derives against the current index. Bumping the cache epoch makes
+  // any in-flight resolution from the previous state discard its late result.
   useEffect(() => {
     setWikiResolved(new Map());
     wikiInFlight.current = new Set();
+    wikiEpochRef.current += 1;
   }, [path, files]);
 
   // Persist the scroll anchor, debounced, so store churn (and its re-renders)
@@ -224,12 +232,24 @@ export function ReaderPane({
       if (known !== undefined) return known;
       if (!wikiInFlight.current.has(key)) {
         wikiInFlight.current.add(key);
-        const record = (value: boolean) =>
+        // Capture the cache epoch; a reset (doc/file-set change) before this
+        // resolution lands makes it discard rather than write a stale result.
+        const epoch = wikiEpochRef.current;
+        const record = (value: boolean) => {
+          if (wikiEpochRef.current !== epoch) return;
           setWikiResolved((prev) => {
             const next = new Map(prev);
             next.set(key, value);
+            // Bounded LRU: evict oldest entries beyond the cap (Map keeps
+            // insertion order) so unique-target growth stays capped.
+            while (next.size > WIKI_CACHE_CAP) {
+              const oldest = next.keys().next().value;
+              if (oldest === undefined) break;
+              next.delete(oldest);
+            }
             return next;
           });
+        };
         void resolveWikilink(path ?? '', target, null)
           .then((res) => record(res.status === 'resolved' || res.status === 'ambiguous'))
           .catch(() => record(findByWikiTarget(files, target) !== null));

@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { StatusBar } from './StatusBar.js';
 import type { ImportState } from '../platform/fs.js';
@@ -64,6 +64,42 @@ describe('StatusBar index indicator', () => {
       />,
     );
     expect(screen.getByText('Index failed')).toBeTruthy();
+  });
+
+  test('on error it offers a Retry that re-runs the import', () => {
+    const onRetryIndex = vi.fn();
+    render(
+      <StatusBar
+        words={null}
+        watcher="idle"
+        fileCount={0}
+        fromIndex={false}
+        importState={{
+          phase: 'error',
+          filesDone: 0,
+          filesTotal: 0,
+          chunks: 0,
+          error: 'model download timed out',
+        }}
+        onRetryIndex={onRetryIndex}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryIndex).toHaveBeenCalledTimes(1);
+  });
+
+  test('no Retry button appears when the index is not in the error phase', () => {
+    render(
+      <StatusBar
+        words={null}
+        watcher="watching"
+        fileCount={3}
+        fromIndex={true}
+        importState={{ phase: 'done', filesDone: 3, filesTotal: 3, chunks: 6, error: null }}
+        onRetryIndex={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   test('idle falls back to the index/local indicator', () => {

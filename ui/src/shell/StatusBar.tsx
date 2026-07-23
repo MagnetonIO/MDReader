@@ -13,6 +13,9 @@ export interface StatusBarProps {
   importState: ImportState | null;
   /** Whether the file list currently comes from the engine index. */
   fromIndex: boolean;
+  /** Re-run the import (e.g. after a model-load timeout). Shown as a Retry
+   *  affordance while the index is in the `error` phase. */
+  onRetryIndex?: () => void;
 }
 
 const WATCHER_LABEL: Record<WatcherStatus, string> = {
@@ -65,8 +68,16 @@ function indexIndicator(
   };
 }
 
-export function StatusBar({ words, watcher, fileCount, importState, fromIndex }: StatusBarProps) {
+export function StatusBar({
+  words,
+  watcher,
+  fileCount,
+  importState,
+  fromIndex,
+  onRetryIndex,
+}: StatusBarProps) {
   const index = indexIndicator(importState, fromIndex);
+  const failed = importState?.phase === 'error';
   return (
     <footer className="statusbar" aria-label="Status">
       <span>{words === null ? '—' : `${words.toLocaleString()} words`}</span>
@@ -79,6 +90,11 @@ export function StatusBar({ words, watcher, fileCount, importState, fromIndex }:
       <span title={index.title} aria-live="polite">
         {index.busy ? <span className="statusbar__spinner" aria-hidden="true" /> : null}
         {index.label}
+        {failed && onRetryIndex ? (
+          <button type="button" className="statusbar__retry" onClick={onRetryIndex}>
+            Retry
+          </button>
+        ) : null}
       </span>
     </footer>
   );
