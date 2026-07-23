@@ -39,7 +39,7 @@ import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persisten
 import { reindexOnChange } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
-import { retireTabsAfterSwitch } from './switch-retire.js';
+import { performSwitch } from './switch-workspace.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
@@ -309,31 +309,17 @@ export function AppShell() {
   // root, so they resurface only under that workspace (never as an error tab
   // reopened under the new grant). Resolves to whether the switch committed.
   const switchWorkspace = useCallback(
-    async (folder: string): Promise<boolean> => {
+    (folder: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
-      // The root being switched away from, only a fallback for legacy tabs with
-      // no origin of their own.
-      const previousRoot = sources.root;
-
-      // ALWAYS invoke openRoot — a same-root request must still supersede an
-      // in-flight open (the session-restore-vs-user-pick case: hydration installs
-      // the root before its openRoot resolves, so a user pick of that same root
-      // has to bump the epoch and refresh). No early return on `previousRoot ===
-      // folder`; retirement below simply keeps the same-workspace tabs.
-      const committed = await openRoot(folder);
-
-      // Retire by each tab's OWN origin against the NEWLY-COMMITTED root (read
-      // post-commit, authoritative), never a snapshot of the transient current
-      // root: `retireForeign` closes tabs whose origin differs from it and hands
-      // each back with its origin. A stale open (committed=false) retires nothing.
-      retireTabsAfterSwitch({
-        committed,
-        targetRoot: committed ? useSourcesStore.getState().root : null,
-        fallbackRoot: previousRoot,
+      // `performSwitch` owns the two guarantees (same-root supersede; per-origin
+      // retirement against the post-commit root) — see switch-workspace.ts.
+      return performSwitch(folder, {
+        openRoot,
+        previousRoot: sources.root,
+        currentRoot: () => useSourcesStore.getState().root,
         retireForeign: (root) => useTabsStore.getState().retireForeign(root),
         addRecent: (ref, root) => sources.addRecent(ref, root),
       });
-      return committed;
     },
     [openRoot],
   );
