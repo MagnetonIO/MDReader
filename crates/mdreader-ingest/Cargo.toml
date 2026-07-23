@@ -8,10 +8,20 @@ repository.workspace = true
 [lints]
 workspace = true
 
+# The `catdb` binary lives HERE, not in catdb-cli, by design: the platform
+# boundary forbids catdb/* from depending on mdreader-*, so the app side is
+# the composition root — main() registers the MDReader domain into the
+# engine and hands it to the platform's CLI library. See the catdb-cli
+# crate docs for the full seam rationale.
+[[bin]]
+name = "catdb"
+path = "src/bin/catdb.rs"
+
 [dependencies]
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
 catdb-storage = { path = "../../../../catdb/crates/catdb-storage" }
+catdb-cli = { path = "../../../../catdb/crates/catdb-cli" }
 mdreader-domain = { path = "../mdreader-domain" }
 async-trait = { workspace = true }
 serde = { workspace = true }
