@@ -673,17 +673,16 @@ export function AppShell() {
     proceedAfterGuard(guard);
   }, [proceedAfterGuard]);
 
-  // Reclaim editor entries for tabs that no longer exist (closed / retired). Dirty
-  // tabs are always resolved through the close/switch guard BEFORE they are torn
-  // down, so this only reclaims already-handled entries — it NEVER drops a live
-  // dirty buffer (unlike a path-based prune, which would lose an edit on in-tab
-  // navigation). Memory hygiene only.
+  // Bound editor memory. Keep an entry only when it is DIRTY (never drop an
+  // unsaved edit) OR it is a live tab's currently-active document. This reclaims
+  // entries for closed/retired tabs (already guard-handled if they were dirty) AND
+  // evicts clean buffers for docs a tab has navigated away from — so a long-lived
+  // tab that has viewed many docs in source mode does not grow unbounded.
   useEffect(() => {
-    const live = new Set(tabs.map((tab) => tab.id));
-    const editor = useEditorStore.getState();
-    for (const tabId of new Set(Object.values(editor.entries).map((entry) => entry.tabId))) {
-      if (!live.has(tabId)) editor.removeTab(tabId);
-    }
+    const activePathByTab = new Map(tabs.map((tab) => [tab.id, tab.docRef.path]));
+    useEditorStore
+      .getState()
+      .retain((tabId, path, dirty) => dirty || activePathByTab.get(tabId) === path);
   }, [tabs]);
 
   // --- the one keymap registry (dispatch + sheet) -----------------------
@@ -1260,14 +1259,11 @@ export function AppShell() {
       ) : null}
       {closeGuard ? (
         <UnsavedGuard
-          count={
-            closeGuard.kind === 'tab' ? 1 : useEditorStore.getState().dirtyTabIds().length
-          }
-          name={
-            closeGuard.kind === 'tab'
-              ? tabs.find((tab) => tab.id === closeGuard.tabId)?.docRef.name
-              : undefined
-          }
+          docs={useEditorStore
+            .getState()
+            .allDirtyEntries()
+            .filter((entry) => closeGuard.kind !== 'tab' || entry.tabId === closeGuard.tabId)
+            .map((entry) => entry.path)}
           onSave={() => void onGuardSave()}
           onDiscard={onGuardDiscard}
           onCancel={() => setCloseGuard(null)}

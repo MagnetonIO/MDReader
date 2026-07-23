@@ -9,16 +9,22 @@
 import { useEffect } from 'react';
 
 export interface UnsavedGuardProps {
-  /** How many documents have unsaved changes (1 for a tab close, N for quit). */
-  count: number;
-  /** The single document's name when `count === 1` (a more specific message). */
-  name?: string;
+  /** The FULL list of document paths with unsaved changes in the affected scope —
+   *  a tab can hold several dirty docs (some not currently displayed), so Discard
+   *  must show EVERY doc it would lose, not just the one on screen. */
+  docs: string[];
   onSave: () => void;
   onDiscard: () => void;
   onCancel: () => void;
 }
 
-export function UnsavedGuard({ count, name, onSave, onDiscard, onCancel }: UnsavedGuardProps) {
+/** The trailing path segment, for a readable label (full path shown on hover). */
+function basename(path: string): string {
+  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]+/);
+  return parts[parts.length - 1] || path;
+}
+
+export function UnsavedGuard({ docs, onSave, onDiscard, onCancel }: UnsavedGuardProps) {
   // Escape cancels (never discards) — the safe default.
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -33,11 +39,9 @@ export function UnsavedGuard({ count, name, onSave, onDiscard, onCancel }: Unsav
   }, [onCancel]);
 
   const message =
-    count > 1
-      ? `${count} documents have unsaved changes.`
-      : name
-        ? `“${name}” has unsaved changes.`
-        : 'This document has unsaved changes.';
+    docs.length === 1
+      ? `“${basename(docs[0]!)}” has unsaved changes.`
+      : `${docs.length} documents have unsaved changes:`;
 
   return (
     <div className="modal-scrim" onClick={onCancel}>
@@ -50,6 +54,15 @@ export function UnsavedGuard({ count, name, onSave, onDiscard, onCancel }: Unsav
       >
         <h2 className="unsaved-guard__title">Unsaved changes</h2>
         <p className="unsaved-guard__msg">{message}</p>
+        {docs.length > 1 ? (
+          <ul className="unsaved-guard__docs">
+            {docs.map((path) => (
+              <li key={path} className="unsaved-guard__doc" title={path}>
+                {basename(path)}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <div className="unsaved-guard__actions">
           <button type="button" className="unsaved-guard__btn" onClick={onCancel}>
             Cancel

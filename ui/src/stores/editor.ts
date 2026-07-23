@@ -114,6 +114,13 @@ export interface EditorStore {
   clearConflict: (tabId: string, path: string) => void;
   /** Drop EVERY entry for a tab (called when the tab is truly closed). */
   removeTab: (tabId: string) => void;
+  /**
+   * Keep only the entries `keep` returns true for; drop the rest. Used to bound
+   * memory: a clean buffer for a doc a tab has navigated away from (not dirty, not
+   * the tab's active doc) is evicted, while dirty buffers are always retained so
+   * an unsaved edit is never lost.
+   */
+  retain: (keep: (tabId: string, path: string, dirty: boolean) => boolean) => void;
   reset: () => void;
 }
 
@@ -196,6 +203,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       for (const [key, entry] of Object.entries(state.entries)) {
         if (entry.tabId === tabId) changed = true;
         else next[key] = entry;
+      }
+      return changed ? { entries: next } : {};
+    }),
+
+  retain: (keep) =>
+    set((state) => {
+      const next: Record<string, EditorEntry> = {};
+      let changed = false;
+      for (const [key, entry] of Object.entries(state.entries)) {
+        if (keep(entry.tabId, entry.path, entry.dirty)) next[key] = entry;
+        else changed = true;
       }
       return changed ? { entries: next } : {};
     }),

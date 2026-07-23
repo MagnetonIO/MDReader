@@ -1097,9 +1097,29 @@ body {
 }
 
 .unsaved-guard__msg {
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-3);
   font-size: var(--text-0);
   color: var(--color-muted);
+}
+
+.unsaved-guard__docs {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+  max-height: 9rem;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.unsaved-guard__doc {
+  font-size: var(--text--1);
+  color: var(--color-fg);
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .unsaved-guard__actions {

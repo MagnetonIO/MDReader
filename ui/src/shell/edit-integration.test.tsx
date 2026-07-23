@@ -221,6 +221,25 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(useEditorStore.getState().entry(tabId, NOTE)).toBeUndefined();
   });
 
+  it('the discard prompt LISTS every dirty document in the tab (not just the displayed one)', async () => {
+    const tabId = await openDirtyDoc(); // note.md is dirty AND displayed
+    // Two MORE dirty docs the tab has edited but is not currently showing.
+    act(() => {
+      useEditorStore.getState().seed(tabId, '/ws/alpha.md', 'a', 'ha', 'source');
+      useEditorStore.getState().edit(tabId, '/ws/alpha.md', 'a edited');
+      useEditorStore.getState().seed(tabId, '/ws/beta.md', 'b', 'hb', 'source');
+      useEditorStore.getState().edit(tabId, '/ws/beta.md', 'b edited');
+    });
+
+    modKeyDown('w');
+    const dialog = await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    // The prompt must name ALL three — a Discard would lose the two hidden ones too.
+    expect(dialog.textContent).toMatch(/3 documents have unsaved changes/i);
+    expect(dialog.textContent).toContain('note.md');
+    expect(dialog.textContent).toContain('alpha.md');
+    expect(dialog.textContent).toContain('beta.md');
+  });
+
   it('Save-then-Cancel during the in-flight save leaves the tab OPEN', async () => {
     const tabId = await openDirtyDoc();
     h.gate = deferred(); // hold the save in flight

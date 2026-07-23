@@ -161,4 +161,23 @@ describe('editor store — dirty aggregation and cleanup', () => {
     expect(store().entry('tab-1', B)).toBeUndefined();
     expect(store().entry('tab-2', A)).toBeDefined();
   });
+
+  it('retain evicts clean navigated-away buffers but keeps dirty + active (bounded memory)', () => {
+    // A tab views five docs in source mode (all clean) and one it edited (dirty).
+    for (const path of ['/d1.md', '/d2.md', '/d3.md', '/d4.md', '/d5.md']) {
+      store().seed('tab-1', path, 'x', 'h', 'source');
+    }
+    store().seed('tab-1', '/dirty.md', 'y', 'h', 'source');
+    store().edit('tab-1', '/dirty.md', 'y edited'); // dirty
+    expect(Object.keys(store().entries).length).toBe(6);
+
+    // The tab is now showing /d5.md; keep dirty OR the active doc.
+    store().retain((tabId, path, dirty) => tabId === 'tab-1' && (dirty || path === '/d5.md'));
+
+    // Only the active doc (/d5) and the dirty doc survive — memory is bounded.
+    expect(store().entry('tab-1', '/d5.md')).toBeDefined();
+    expect(store().entry('tab-1', '/dirty.md')).toBeDefined();
+    expect(store().entry('tab-1', '/d1.md')).toBeUndefined();
+    expect(Object.keys(store().entries).length).toBe(2);
+  });
 });
