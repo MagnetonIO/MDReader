@@ -459,19 +459,29 @@ fn watch_and_commit<F: DebounceEventHandler>(
 
 /// Adopt `new_root` as the grant and `debouncer` as the live watcher, dropping
 /// (and thereby stopping) the previous watcher. Reached only after the new watch
-/// is armed, so the grant and the running watcher move as one — they can never
-/// name different roots.
+/// is armed. Acquires BOTH state locks up front and only then performs the two
+/// (now-infallible) writes, so there is no window in which the grant is advanced
+/// while the watcher swap is still pending: a poisoned lock aborts before ANY
+/// state is touched (grant + watcher stay intact), and once both locks are held
+/// the two roots move as one and can never diverge. Lock order is watcher→grant
+/// everywhere both are held (this is the only such site), so no deadlock.
 fn commit_workspace(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     new_root: PathBuf,
     debouncer: Debouncer<RecommendedWatcher>,
 ) -> Result<(), String> {
-    workspace.set(new_root)?;
-    *watcher
+    let mut watcher_slot = watcher
         .0
         .lock()
-        .map_err(|_| "watcher state poisoned".to_string())? = Some(debouncer);
+        .map_err(|_| "watcher state poisoned".to_string())?;
+    let mut grant_slot = workspace
+        .0
+        .lock()
+        .map_err(|_| "workspace state poisoned".to_string())?;
+    // Both locks held — neither write below can fail, so the swap is atomic.
+    *grant_slot = Some(new_root);
+    *watcher_slot = Some(debouncer);
     Ok(())
 }
 
@@ -612,11 +622,38 @@ mod tests {
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
 
-        // A switch whose target cannot be resolved leaves the OLD root + watcher
-        // fully intact (no half-applied switch, no divergence).
+        // A switch whose target cannot be resolved fails BEFORE commit (the same
+        // pre-commit `?`-return path an arm failure would take), leaving the OLD
+        // root + watcher fully intact — no half-applied switch, no divergence.
         let bogus = root_b.join("does-not-exist");
         assert!(watch_and_commit(bogus.to_str().unwrap(), &workspace, &watcher, sink()).is_err());
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn commit_failure_leaves_the_grant_unadvanced() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let workspace = WorkspaceState(Mutex::new(Some(root_a.clone())));
+        let watcher = WatcherState(Mutex::new(None));
+
+        // Poison the watcher lock (the FIRST lock commit_workspace acquires) by
+        // panicking while it is held. commit_workspace must then abort BEFORE the
+        // grant is touched — the whole point of locking watcher first.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = watcher.0.lock().unwrap();
+            panic!("poison the watcher lock");
+        }));
+        std::panic::set_hook(prev_hook);
+
+        // root_b is perfectly valid and the watcher would arm fine; the ONLY
+        // failure is the poisoned commit lock. The grant must stay on A, not
+        // advance to B while the watcher swap never happened (no split commit).
+        let sink = |_result: DebounceEventResult| {};
+        assert!(watch_and_commit(root_b.to_str().unwrap(), &workspace, &watcher, sink).is_err());
+        assert_eq!(workspace.root().unwrap(), root_a);
     }
 }
