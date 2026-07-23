@@ -675,12 +675,19 @@ export function AppShell() {
         const appWindow = getCurrentWindow();
         const off = await appWindow.onCloseRequested(async (event) => {
           event.preventDefault();
+          // Best-effort session flush, but NEVER trap the user in an unclosable
+          // window: bound the drain so a stuck write still lets the window go,
+          // and always destroy() even if the flush throws.
           try {
             flushSession();
-            await sessionWriter.drain();
-          } finally {
-            await appWindow.destroy();
+            await Promise.race([
+              sessionWriter.drain(),
+              new Promise((resolve) => setTimeout(resolve, 2000)),
+            ]);
+          } catch {
+            /* flush failed — closing is more important than the last snapshot */
           }
+          await appWindow.destroy();
         });
         if (disposed) off();
         else unlisten = off;
