@@ -21,8 +21,8 @@ use catdb_engine::DomainRegistration;
 
 pub use ingestor::MarkdownIngestor;
 pub use parse::{
-    parse_markdown, ParsedBlock, ParsedChunk, ParsedDocument, ParsedLink, ParsedSection,
-    CHUNKER_VERSION,
+    parse_markdown, parse_markdown_with_limit, ParsedBlock, ParsedChunk, ParsedDocument,
+    ParsedLink, ParsedSection, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };
 pub use scan::{scan_root, ScanOptions, ScannedFile};
 

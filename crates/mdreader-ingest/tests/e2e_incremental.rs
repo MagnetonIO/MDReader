@@ -5,11 +5,34 @@
 //!
 //! Uses the deterministic `HashEmbedder` (`--no-default-features` friendly).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
 use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, SearchOptions};
+use catdb_storage::{CatalogStorage, LexicalQuery, QueryFilters, SemanticStore, VectorQuery};
+use uuid::Uuid;
+
+/// Item-4 invariant: every `rx.Chunk` object in the operation-log's
+/// materialized view must correspond to a stored chunk row — a mid-sync
+/// crash plus repair must never strand chunk facts without rows (or,
+/// worse, rows without facts that a later retraction can no longer find).
+fn assert_no_orphan_chunk_objects(engine: &EmbeddedCatDb) {
+    let objects = engine
+        .store()
+        .objects_with_entity_prefix("rx.Chunk")
+        .unwrap();
+    let ids: Vec<Uuid> = objects.iter().map(|(id, _)| *id).collect();
+    let rows = engine.store().chunks_by_ids(&ids).unwrap();
+    assert_eq!(
+        rows.len(),
+        ids.len(),
+        "every rx.Chunk object must have a chunk row (objects: {}, rows: {})",
+        ids.len(),
+        rows.len()
+    );
+}
 
 /// An injectable embedder that reports the same model info as
 /// [`HashEmbedder`] (so a retry with the real one matches the stored index
@@ -216,11 +239,13 @@ async fn failed_embedding_leaves_files_reprocessable() {
             "unexpected error: {err}"
         );
         // The failure is recorded as a Failed ingest job.
-        use catdb_storage::CatalogStorage;
         let jobs = failing.store().list_jobs().await.unwrap();
         let ingest_jobs: Vec<_> = jobs.iter().filter(|j| j.kind == "ingest").collect();
         assert_eq!(ingest_jobs.len(), 1);
         assert_eq!(ingest_jobs[0].status, catdb_catalog::JobStatus::Failed);
+        // Even mid-crash, the op log and the chunk rows agree (each file's
+        // sync is one transaction).
+        assert_no_orphan_chunk_objects(&failing);
     }
 
     // Retry with a working embedder: every file re-processes (nothing
@@ -265,6 +290,8 @@ async fn failed_embedding_leaves_files_reprocessable() {
 
     let check = engine.check_equations().await.unwrap();
     assert_eq!(check.violations, Vec::<String>::new());
+    // After failure + repair: no chunk facts without rows, no leftovers.
+    assert_no_orphan_chunk_objects(&engine);
 }
 
 #[tokio::test]
@@ -360,7 +387,6 @@ async fn chunker_version_bump_reprocesses_unchanged_files() {
 
     // The old index version is retired; the new active one carries the
     // bumped chunker version and serves search.
-    use catdb_storage::CatalogStorage;
     let versions = engine.store().list_index_versions().await.unwrap();
     assert_eq!(versions.len(), 2);
     assert_eq!(versions.iter().filter(|v| v.active).count(), 1);
@@ -426,4 +452,202 @@ async fn fixtures_corpus_imports_cleanly() {
         .unwrap();
     assert_eq!(report.chunks_embedded, 0);
     assert_eq!(report.files_skipped_unchanged, report.files_scanned);
+}
+
+#[tokio::test]
+async fn force_rechunk_with_new_boundaries_sweeps_stale_chunk_rows() {
+    // A REAL chunk-boundary change: the same file re-chunked with a smaller
+    // split threshold (a genuine chunker change, carried by a distinct
+    // chunker version). Section hashes are untouched — only the chunk SET
+    // changes — so this exercises exactly the force-rechunk path: the old
+    // rows' ids match nothing in the new set and must be deleted (rows, FTS
+    // entries, vectors), not merely have their objects retracted.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    // One section, long enough that a 64-token limit splits it into several
+    // chunks while the default limit keeps it whole. The marker word
+    // appears throughout so every boundary regime indexes it.
+    let paragraphs: Vec<String> = (0..12)
+        .map(|i| {
+            format!(
+                "Paragraph {i} about the zebrachunk experiment: retrieval quality \
+                 depends on stable boundaries, and stale rows must never linger \
+                 in the searchable index once boundaries move."
+            )
+        })
+        .collect();
+    write(
+        &root,
+        "long.md",
+        &format!("# Long\n\n{}\n", paragraphs.join("\n\n")),
+    );
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("catdb.db");
+
+    let (old_chunk_ids, old_version_id) = {
+        let engine = open(&db);
+        engine
+            .import(&root, ImportOptions::default())
+            .await
+            .unwrap();
+        let doc = engine
+            .store()
+            .document_by_path("long.md")
+            .unwrap()
+            .expect("document imported");
+        let chunks = engine.store().chunks_for_document(doc.id).unwrap();
+        assert_eq!(
+            chunks.len(),
+            1,
+            "the default limit must keep the section in one chunk"
+        );
+        let active = engine.store().active_index_version().await.unwrap();
+        (
+            chunks.iter().map(|c| c.id).collect::<Vec<Uuid>>(),
+            active.unwrap().id,
+        )
+    };
+
+    // Re-open with a narrower chunker (and, as any real chunker change
+    // must, a distinct chunker version) — the import force-rebuilds.
+    let mut registration = mdreader_ingest::registration();
+    registration.ingestors = vec![Arc::new(
+        mdreader_ingest::MarkdownIngestor::with_chunk_token_limit(64),
+    )];
+    registration.chunker_version = format!("{}+narrow64", mdreader_ingest::CHUNKER_VERSION);
+    let engine = EmbeddedCatDb::open(
+        EngineConfig::new(&db, Arc::new(HashEmbedder::new()))
+            .with_domain(registration)
+            .with_actor("e2e-test"),
+    )
+    .unwrap();
+    let report = engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.files_skipped_unchanged, 0);
+
+    let doc = engine.store().document_by_path("long.md").unwrap().unwrap();
+    let new_chunks = engine.store().chunks_for_document(doc.id).unwrap();
+    let new_ids: HashSet<Uuid> = new_chunks.iter().map(|c| c.id).collect();
+    assert!(
+        new_chunks.len() > 1,
+        "the narrow limit must split the section (got {})",
+        new_chunks.len()
+    );
+    for old_id in &old_chunk_ids {
+        assert!(
+            !new_ids.contains(old_id),
+            "boundary change must produce new chunk ids"
+        );
+    }
+
+    // The old rows are GONE — not present, not lexically searchable, and
+    // their vectors purged from every index version's table.
+    assert!(
+        engine
+            .store()
+            .chunks_by_ids(&old_chunk_ids)
+            .unwrap()
+            .is_empty(),
+        "old chunk rows must be deleted"
+    );
+    let hits = engine
+        .store()
+        .lexical_search(LexicalQuery {
+            text: "zebrachunk".to_string(),
+            limit: 50,
+            filters: QueryFilters::default(),
+        })
+        .await
+        .unwrap();
+    assert!(!hits.is_empty(), "the content is still searchable");
+    for hit in &hits {
+        assert!(
+            new_ids.contains(&hit.id),
+            "FTS must only surface the new-boundary chunks, found stale {}",
+            hit.id
+        );
+    }
+    let query_vec = HashEmbedder::new()
+        .embed(&[new_chunks[0].embedding_text.clone()])
+        .await
+        .unwrap()
+        .remove(0);
+    let near = engine
+        .store()
+        .vector_search(VectorQuery {
+            index_version: old_version_id,
+            embedding: query_vec,
+            limit: 50,
+            filters: QueryFilters::default(),
+        })
+        .await
+        .unwrap();
+    for cand in &near {
+        assert!(
+            !old_chunk_ids.contains(&cand.id),
+            "stale vectors must be purged from the retired version's table too"
+        );
+    }
+
+    // End-to-end search serves only new-boundary chunks, and the op log
+    // agrees with the rows.
+    let hits = engine
+        .search("zebrachunk experiment", SearchOptions::default())
+        .await
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert!(new_ids.contains(&hits[0].chunk_id));
+    assert_no_orphan_chunk_objects(&engine);
+    let check = engine.check_equations().await.unwrap();
+    assert_eq!(check.violations, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn concurrent_imports_serialize_without_resurrecting_deletions() {
+    // The single-writer model, end to end: two concurrent import() calls on
+    // one engine serialize (the second waits), so a deletion observed by
+    // one pass can never be resurrected by a stale concurrent scan.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    corpus(&root);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("catdb.db");
+    let engine = open(&db);
+    engine
+        .import(&root, ImportOptions::default())
+        .await
+        .unwrap();
+
+    std::fs::remove_file(root.join("notes/graph.md")).unwrap();
+    let (a, b) = tokio::join!(
+        engine.import(&root, ImportOptions::default()),
+        engine.import(&root, ImportOptions::default()),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        a.files_deleted + b.files_deleted,
+        1,
+        "exactly one serialized pass performs the deletion"
+    );
+
+    let status = engine.status().await.unwrap();
+    assert_eq!(status.documents, 2, "the deleted document stays deleted");
+    assert!(engine
+        .store()
+        .document_by_path("notes/graph.md")
+        .unwrap()
+        .is_none());
+    let hits = engine
+        .search("wikilink graph", SearchOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        hits.iter().all(|h| h.file_path != "notes/graph.md"),
+        "a concurrently deleted document must not resurface in search"
+    );
+    assert_no_orphan_chunk_objects(&engine);
+    let check = engine.check_equations().await.unwrap();
+    assert_eq!(check.violations, Vec::<String>::new());
 }

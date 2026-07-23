@@ -15,8 +15,9 @@ use serde::Serialize;
 pub const CHUNKER_VERSION: &str = "mdreader-chunker@1";
 
 /// Sections longer than this (estimated tokens) are split at paragraph
-/// boundaries into multiple chunks.
-const CHUNK_TOKEN_LIMIT: u32 = 1600;
+/// boundaries into multiple chunks (the default for [`parse_markdown`] and
+/// [`crate::MarkdownIngestor::new`]).
+pub const CHUNK_TOKEN_LIMIT: u32 = 1600;
 
 /// Estimated tokens: ~4 characters per token, the standard rough cut for
 /// English prose and code alike.
@@ -221,7 +222,12 @@ fn breadcrumb(title: &str, heading_path: &[String]) -> String {
     parts.join(" > ")
 }
 
-fn build_chunks(title: &str, heading_path: &[String], text: &str) -> Vec<ParsedChunk> {
+fn build_chunks(
+    title: &str,
+    heading_path: &[String],
+    text: &str,
+    token_limit: u32,
+) -> Vec<ParsedChunk> {
     let prefix = breadcrumb(title, heading_path);
     let make = |part: u32, chunk_text: &str| {
         let embedding_text = format!("{prefix}\n\n{chunk_text}");
@@ -233,7 +239,7 @@ fn build_chunks(title: &str, heading_path: &[String], text: &str) -> Vec<ParsedC
             embedding_text,
         }
     };
-    if estimate_tokens(text) <= CHUNK_TOKEN_LIMIT {
+    if estimate_tokens(text) <= token_limit {
         if text.trim().is_empty() {
             return Vec::new();
         }
@@ -248,7 +254,7 @@ fn build_chunks(title: &str, heading_path: &[String], text: &str) -> Vec<ParsedC
     let mut current_tokens = 0u32;
     for segment in split_paragraphs(text) {
         let segment_tokens = estimate_tokens(&segment);
-        if !current.is_empty() && current_tokens + segment_tokens > CHUNK_TOKEN_LIMIT {
+        if !current.is_empty() && current_tokens + segment_tokens > token_limit {
             chunks.push(current.join("\n\n"));
             current.clear();
             current_tokens = 0;
@@ -267,8 +273,22 @@ fn build_chunks(title: &str, heading_path: &[String], text: &str) -> Vec<ParsedC
 }
 
 /// Parse a markdown source into its structural form. Never fails: malformed
-/// input degrades to whatever CommonMark makes of it.
+/// input degrades to whatever CommonMark makes of it. Chunks split at the
+/// default [`CHUNK_TOKEN_LIMIT`].
 pub fn parse_markdown(source: &str, fallback_title: &str) -> ParsedDocument {
+    parse_markdown_with_limit(source, fallback_title, CHUNK_TOKEN_LIMIT)
+}
+
+/// [`parse_markdown`] with an explicit chunk token limit. A different limit
+/// produces different chunk *boundaries* for the same source — which is
+/// exactly a chunker change, so any caller deviating from the default must
+/// also carry a distinct chunker version (see
+/// [`crate::MarkdownIngestor::with_chunk_token_limit`]).
+pub fn parse_markdown_with_limit(
+    source: &str,
+    fallback_title: &str,
+    chunk_token_limit: u32,
+) -> ParsedDocument {
     let arena = Arena::new();
     let options = comrak_options();
     let root = parse_document(&arena, source, &options);
@@ -463,7 +483,7 @@ pub fn parse_markdown(source: &str, fallback_title: &str) -> ParsedDocument {
             .cloned()
             .collect();
         sections.push(ParsedSection {
-            chunks: build_chunks(&title, &bound.heading_path, &text),
+            chunks: build_chunks(&title, &bound.heading_path, &text, chunk_token_limit),
             content_hash: blake3_hex(&hash_input),
             text,
             heading_path: bound.heading_path,
