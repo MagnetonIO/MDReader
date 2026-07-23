@@ -616,17 +616,19 @@ export function AppShell() {
     return allClean;
   }, [saveDocEntry]);
 
-  // Persist the latest session and destroy the window for real (the actual quit).
+  // Complete a quit the guard approved (Save-then-close or Discard). Persist the
+  // session, CLEAR the dirty state so the re-entered close handler finds nothing to
+  // guard, then re-trigger the NATIVE close. No `destroy()` and no allow-destroy
+  // permission: `close()` re-enters `onCloseRequested`, which now sees no dirty
+  // documents and lets the native close proceed.
   const performQuit = useCallback(async () => {
+    flushSessionRef.current();
+    await sessionWriter.drain();
+    useEditorStore.getState().reset(); // discard-all: no dirty documents remain
     try {
-      flushSessionRef.current();
-      await sessionWriter.drain();
-    } finally {
-      try {
-        await getCurrentWindow().destroy();
-      } catch {
-        /* not a real Tauri window (mocked IPC) — nothing to destroy */
-      }
+      await getCurrentWindow().close();
+    } catch {
+      /* not a real Tauri window (mocked IPC) — nothing to close */
     }
   }, []);
 
@@ -940,11 +942,13 @@ export function AppShell() {
     };
   }, [hydrated, flushSession]);
 
-  // Tauri's native window close is the ONLY reliable "app is quitting" hook (a
-  // webview teardown can cut a best-effort unload write short). We intercept it,
-  // enqueue the latest snapshot, DRAIN the writer (await in-flight + coalesced
-  // follow-up so it truly hits disk), then close for real. `destroy()` bypasses
-  // this handler, so there is no re-entrancy.
+  // Native window close (the red X). We intercept ONLY to guard unsaved edits —
+  // never to take over closing. With NO dirty documents we do NOT preventDefault,
+  // so the native close proceeds with zero dependency on any window permission
+  // (this is what keeps the red X working). With dirty documents we preventDefault
+  // and prompt; the guard's Save/Discard path clears the dirty state and calls
+  // `close()` again, re-entering here to find nothing dirty → native close. No
+  // `destroy()`, no allow-destroy permission.
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -952,20 +956,15 @@ export function AppShell() {
     void (async () => {
       try {
         const appWindow = getCurrentWindow();
-        const off = await appWindow.onCloseRequested(async (event) => {
-          event.preventDefault();
-          // Unsaved edits? Prompt (Save / Discard / Cancel) instead of quitting —
-          // the guard's action performs the actual quit. Otherwise quit now.
-          if (useEditorStore.getState().dirtyTabIds().length > 0) {
-            setCloseGuard({ kind: 'quit' });
+        const off = await appWindow.onCloseRequested((event) => {
+          if (useEditorStore.getState().dirtyTabIds().length === 0) {
+            // Clean: best-effort persist, then LET THE NATIVE CLOSE PROCEED.
+            flushSession();
             return;
           }
-          try {
-            flushSession();
-            await sessionWriter.drain();
-          } finally {
-            await appWindow.destroy();
-          }
+          // Unsaved edits: hold the close and prompt.
+          event.preventDefault();
+          setCloseGuard({ kind: 'quit' });
         });
         if (disposed) off();
         else unlisten = off;

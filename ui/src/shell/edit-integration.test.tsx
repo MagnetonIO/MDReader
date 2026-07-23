@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   fsChanged: null as null | ((change: { path: string; kind: string; generation: number }) => void),
   onClose: null as null | ((event: { preventDefault: () => void }) => void | Promise<void>),
   destroy: vi.fn(async () => {}),
+  close: vi.fn(async () => {}),
   drain: vi.fn(async () => {}),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
@@ -91,6 +92,7 @@ vi.mock('@tauri-apps/api/window', () => ({
       return () => {};
     }),
     destroy: h.destroy,
+    close: h.close,
   }),
 }));
 
@@ -211,6 +213,37 @@ describe('force-confirmation chain (Keep mine → confirm → force reaches the 
   });
 });
 
+describe('memory: navigating away from a clean doc evicts its buffer (real wiring)', () => {
+  it('a clean, navigated-away source buffer is evicted by the AppShell eviction effect', async () => {
+    // Open note.md in source mode but DO NOT edit it — a clean entry.
+    h.disk.set(NOTE, { content: 'hello', hash: 'h0' });
+    render(<App />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    });
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws'));
+    act(() => {
+      useTabsStore.getState().openTab({ path: NOTE, name: 'note.md' }, { originRoot: '/ws' });
+    });
+    const tabId = useTabsStore.getState().activeTabId!;
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Source view' }));
+    });
+    await waitFor(() => expect(useEditorStore.getState().entry(tabId, NOTE)?.mode).toBe('source'));
+    expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
+
+    // Navigate the SAME tab to a different doc through the real store action; the
+    // AppShell eviction effect (keyed on `tabs`) must drop the clean note.md buffer.
+    h.disk.set('/ws/other.md', { content: 'other', hash: 'hO' });
+    await act(async () => {
+      useTabsStore.getState().navigateInTab(tabId, { path: '/ws/other.md', name: 'other.md' });
+    });
+
+    await waitFor(() => expect(useEditorStore.getState().entry(tabId, NOTE)).toBeUndefined());
+  });
+});
+
 describe('unsaved-changes guard is transactional (close / quit)', () => {
   it('closing a dirty tab prompts; Discard drops the buffer and closes', async () => {
     const tabId = await openDirtyDoc();
@@ -282,21 +315,57 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
   });
 
-  it('the dirty-quit hook calls preventDefault and prompts (does not quit yet)', async () => {
-    await openDirtyDoc();
+  it('the red-X path does NOT preventDefault when nothing is unsaved (native close works)', async () => {
+    // A clean app: the close hook must let the native close proceed untouched, so
+    // the red X keeps working with zero window-permission dependency.
+    render(<App />);
+    await act(async () => {});
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
     const event = { preventDefault: vi.fn() };
     await act(async () => {
       await h.onClose!(event);
     });
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(h.destroy).not.toHaveBeenCalled();
+  });
+
+  it('the red-X prompts on unsaved docs; Discard clears them and re-closes NATIVELY (no destroy)', async () => {
+    const tabId = await openDirtyDoc();
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+
+    const event = { preventDefault: vi.fn() };
+    await act(async () => {
+      await h.onClose!(event);
+    });
+    // Dirty → held + prompted (never quit yet, never destroyed).
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    expect(h.close).not.toHaveBeenCalled();
     expect(h.destroy).not.toHaveBeenCalled();
 
+    // Discard → clears the dirty state and RE-TRIGGERS the native close (which,
+    // re-entering the handler, now finds nothing dirty). Closed via close(), never
+    // destroy().
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     });
-    await waitFor(() => expect(h.destroy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(h.close).toHaveBeenCalledTimes(1));
+    expect(h.destroy).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
+  });
+
+  it('the red-X prompt Cancel keeps the app open (no close)', async () => {
+    await openDirtyDoc();
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+    await act(async () => {
+      await h.onClose!({ preventDefault: () => {} });
+    });
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(h.close).not.toHaveBeenCalled();
+    expect(useTabsStore.getState().tabs.length).toBeGreaterThan(0);
   });
 });
