@@ -36,6 +36,11 @@ export interface ConflictState {
 
 /** One tab's editing state. Absent from `entries` ⇒ the tab is in plain read mode. */
 export interface EditorEntry {
+  /** The document path this buffer was seeded for. A tab can navigate to another
+   *  document (wikilink, back/forward) while an entry lingers; comparing this to
+   *  the tab's current docRef.path is what prevents a save from writing this
+   *  buffer to the WRONG file. */
+  path: string;
   mode: EditorMode;
   /** The live editor text (what CodeMirror shows and what a save sends). */
   buffer: string;
@@ -50,8 +55,9 @@ export interface EditorEntry {
   conflict: ConflictState | null;
 }
 
-function makeEntry(mode: EditorMode, content: string, hash: string): EditorEntry {
+function makeEntry(path: string, mode: EditorMode, content: string, hash: string): EditorEntry {
   return {
+    path,
     mode,
     buffer: content,
     savedContent: content,
@@ -72,20 +78,24 @@ export interface EditorStore {
   isDirty: (tabId: string) => boolean;
 
   /**
-   * Seed an entry from a fresh disk read (content + its hash), entering `mode`.
-   * A clean starting point: buffer === savedContent, no conflict. Reused as the
-   * "reload from disk" action too — it discards any local edits.
+   * Seed an entry for document `path` from a fresh disk read (content + its
+   * hash), entering `mode`. A clean starting point: buffer === savedContent, no
+   * conflict. Reused as the "reload from disk" action too — it discards any local
+   * edits.
    */
-  seed: (tabId: string, content: string, hash: string, mode: EditorMode) => void;
+  seed: (tabId: string, path: string, content: string, hash: string, mode: EditorMode) => void;
   /** Switch an existing entry's mode (no-op if the tab has no entry yet). */
   setMode: (tabId: string, mode: EditorMode) => void;
   /** Record a keystroke-level edit; recomputes `dirty` against `savedContent`. */
   edit: (tabId: string, buffer: string) => void;
   /**
-   * A save landed: adopt the fresh hash as the new anchor, mark clean, clear any
-   * conflict. `savedContent` becomes the current buffer (the bytes now on disk).
+   * A save of `savedContent` landed: adopt the fresh hash as the new anchor and
+   * clear any conflict. `dirty` is recomputed against the CURRENT buffer — NOT
+   * forced false — so keystrokes that arrived while the save was in flight (the
+   * buffer moved past the snapshot we wrote) leave the tab dirty rather than being
+   * silently marked saved. `savedContent` is exactly the bytes that reached disk.
    */
-  markSaved: (tabId: string, newHash: string) => void;
+  markSaved: (tabId: string, savedContent: string, newHash: string) => void;
   /** Raise the conflict banner in its `choose` phase. Leaves the buffer intact. */
   raiseConflict: (tabId: string, currentHash: string, source: ConflictSource) => void;
   /** Advance the banner to its explicit overwrite confirmation. */
@@ -116,9 +126,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   mode: (tabId) => get().entries[tabId]?.mode ?? 'read',
   isDirty: (tabId) => get().entries[tabId]?.dirty ?? false,
 
-  seed: (tabId, content, hash, mode) =>
+  seed: (tabId, path, content, hash, mode) =>
     set((state) => ({
-      entries: { ...state.entries, [tabId]: makeEntry(mode, content, hash) },
+      entries: { ...state.entries, [tabId]: makeEntry(path, mode, content, hash) },
     })),
 
   setMode: (tabId, mode) => patch(set, tabId, (entry) => ({ ...entry, mode })),
@@ -130,12 +140,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       dirty: buffer !== entry.savedContent,
     })),
 
-  markSaved: (tabId, newHash) =>
+  markSaved: (tabId, savedContent, newHash) =>
     patch(set, tabId, (entry) => ({
       ...entry,
-      savedContent: entry.buffer,
+      savedContent,
       baseHash: newHash,
-      dirty: false,
+      // Recompute against the LIVE buffer: typing during the save leaves it dirty.
+      dirty: entry.buffer !== savedContent,
       conflict: null,
     })),
 

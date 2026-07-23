@@ -446,11 +446,14 @@ export function AppShell() {
       editor.setMode(tabId, mode);
       return;
     }
+    const docPath = tab.docRef.path;
     try {
-      const doc = await readDoc(tab.docRef.path);
-      // The active tab may have changed during the read — seed only if it stands.
-      if (useTabsStore.getState().activeTabId !== tabId) return;
-      useEditorStore.getState().seed(tabId, doc.content, doc.hash, mode);
+      const doc = await readDoc(docPath);
+      // The active tab may have changed (or navigated) during the read — seed only
+      // if it still stands on the same document.
+      const landed = selectActiveTab(useTabsStore.getState());
+      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
+      useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
     } catch (cause) {
       toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
     }
@@ -479,10 +482,16 @@ export function AppShell() {
       if (!tabId || !tab) return;
       const entry = useEditorStore.getState().entry(tabId);
       if (!entry) return;
+      // The buffer belongs to the document it was seeded for; if the tab has since
+      // navigated elsewhere, refuse — never write this buffer to another file.
+      if (entry.path !== tab.docRef.path) return;
       if (!force && !entry.dirty) return; // a clean guarded save is a no-op
+      // Snapshot exactly what we send, so completion can mark THIS content saved
+      // (not a newer buffer produced by typing during the in-flight save).
+      const snapshot = entry.buffer;
       const result = await runSave({
-        path: tab.docRef.path,
-        buffer: entry.buffer,
+        path: entry.path,
+        buffer: snapshot,
         baseHash: entry.baseHash,
         force,
         save: saveDoc,
@@ -491,7 +500,7 @@ export function AppShell() {
       // Transitions are keyed by tab id, so they land on the right tab even if the
       // active tab changed during the await.
       if (result.kind === 'saved') {
-        editor.markSaved(tabId, result.newHash);
+        editor.markSaved(tabId, snapshot, result.newHash);
         const folder = useSourcesStore.getState().root;
         if (folder) void triggerReindex(folder, openEpochRef.current);
       } else if (result.kind === 'conflict') {
@@ -510,24 +519,27 @@ export function AppShell() {
     const tabId = tabsState.activeTabId;
     const tab = selectActiveTab(tabsState);
     if (!tabId || !tab) return;
+    const docPath = tab.docRef.path;
     try {
-      const doc = await readDoc(tab.docRef.path);
+      const doc = await readDoc(docPath);
       const editor = useEditorStore.getState();
       const mode = editor.mode(tabId);
-      editor.seed(tabId, doc.content, doc.hash, mode === 'read' ? 'source' : mode);
+      editor.seed(tabId, docPath, doc.content, doc.hash, mode === 'read' ? 'source' : mode);
       setReloadNonce((nonce) => nonce + 1);
     } catch (cause) {
       toast(`Could not reload — ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   }, []);
 
-  // Prune editor entries for tabs that have closed (memory hygiene; the dirty dot
-  // and buffers belong to a live tab only).
+  // Prune editor entries that no longer belong: tabs that have closed, and tabs
+  // that have NAVIGATED to a different document (the buffer was seeded for the old
+  // doc — dropping it returns the new doc to read mode and is the last line of
+  // defence against a save reaching the wrong file). Memory hygiene + correctness.
   useEffect(() => {
-    const live = new Set(tabs.map((tab) => tab.id));
+    const pathById = new Map(tabs.map((tab) => [tab.id, tab.docRef.path]));
     const editor = useEditorStore.getState();
-    for (const id of Object.keys(editor.entries)) {
-      if (!live.has(id)) editor.remove(id);
+    for (const [id, entry] of Object.entries(editor.entries)) {
+      if (pathById.get(id) !== entry.path) editor.remove(id);
     }
   }, [tabs]);
 
@@ -875,7 +887,13 @@ export function AppShell() {
       if (!watcherStampCurrent(stamp, nowStamp()) || path !== activePathRef.current) return;
       const editor = useEditorStore.getState();
       const live = editor.entry(tabId);
-      if (!live) return;
+      // Only act on an entry that still belongs to this document (the tab may have
+      // navigated); otherwise treat it as a plain read-mode reload.
+      if (!live || live.path !== path) {
+        setReloadNonce((nonce) => nonce + 1);
+        toast('Updated');
+        return;
+      }
       const decision = classifyExternalChange(disk.hash, live.baseHash, live.dirty);
       if (decision === 'self') return; // our own write echoing back — stay silent
       if (decision === 'conflict') {
@@ -884,7 +902,7 @@ export function AppShell() {
         return;
       }
       // Clean buffer: safe to adopt disk. Re-seed the anchor and refresh the view.
-      editor.seed(tabId, disk.content, disk.hash, live.mode);
+      editor.seed(tabId, path, disk.content, disk.hash, live.mode);
       setReloadNonce((nonce) => nonce + 1);
       toast('Updated');
     };

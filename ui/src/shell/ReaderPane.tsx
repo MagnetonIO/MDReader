@@ -132,7 +132,11 @@ export function ReaderPane({
   // The active tab's editing state (undefined ⇒ plain read mode). Subscribed so a
   // keystroke or a conflict transition re-renders this pane (and only for edits
   // to THIS tab — the selector keys on the tab's own entry).
-  const editEntry = useEditorStore((store) => (tabId ? store.entries[tabId] : undefined));
+  const rawEntry = useEditorStore((store) => (tabId ? store.entries[tabId] : undefined));
+  // Ignore a lingering entry whose document no longer matches the tab (the tab
+  // navigated within itself); it is pruned by the shell, and treating it as read
+  // mode meanwhile keeps the wrong document's buffer off-screen and unsaveable.
+  const editEntry = rawEntry && path !== null && rawEntry.path === path ? rawEntry : undefined;
   const mode: EditorMode = editEntry?.mode ?? 'read';
   const buffer = editEntry?.buffer;
 

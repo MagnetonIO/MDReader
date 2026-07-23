@@ -224,6 +224,36 @@ test('a save that hits an external change raises the conflict banner; Reload ado
   await expect(page.locator('.cm-content')).toContainText('Changed elsewhere.');
 });
 
+test('navigating a tab away from an edited doc drops the buffer (no wrong-doc save)', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.getByRole('heading', { name: 'Welcome' })).toBeVisible();
+
+  // Split mode gives us an editor AND a preview whose wikilinks we can click.
+  await page.getByRole('button', { name: 'Split view' }).click();
+  const editor = page.locator('.cm-content');
+  await editor.click();
+  const meta = await usesMeta(page);
+  await page.keyboard.press(meta ? 'Meta+ArrowDown' : 'Control+End');
+  await page.keyboard.type('\n\nlocal edit\n');
+  await expect(page.locator('.tab__dirty')).toBeVisible();
+
+  // Click [[Guide]] in the preview → the SAME tab navigates to guide.md.
+  await page
+    .locator('.reader-body--split .reader-host')
+    .getByRole('link', { name: 'Guide', exact: true })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Guide' })).toBeVisible();
+
+  // The buffer belonged to index.md; navigating drops it — the tab is no longer
+  // dirty and shows the new doc in plain read mode (no editor mounted, so a save
+  // could never write index.md's buffer to guide.md).
+  await expect(page.locator('.tab__dirty')).toHaveCount(0);
+  await expect(page.locator('.cm-content')).toHaveCount(0);
+});
+
 test('file-jump palette opens a document by name', async ({ page }) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
