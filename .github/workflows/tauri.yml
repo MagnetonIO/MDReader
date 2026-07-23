@@ -8,6 +8,8 @@ on:
       - 'apps/mdreader/**'
       - '.github/workflows/tauri.yml'
       - 'scripts/check-bindings.sh'
+      - 'scripts/macos-smoke.sh'
+      - 'fixtures/corpus/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
 
@@ -71,3 +73,147 @@ jobs:
       - name: Bindings drift guard
         if: runner.os == 'Linux'
         run: ./scripts/check-bindings.sh
+
+  # --------------------------------------------------------------------------
+  # Milestone PT — desktop GUI functional tests (WebdriverIO + tauri-driver).
+  #
+  # Drives the REAL built app through tauri-driver on Linux (WebKitGTK) and
+  # Windows (WebView2). macOS is deliberately absent: WKWebView exposes no
+  # WebDriver, so the Mac path is the AppleScript smoke (see `macos-smoke`).
+  #
+  # The suite (apps/mdreader/e2e-native) lives OUTSIDE the pnpm workspace, so it
+  # installs its WebdriverIO toolchain on demand here and never touches the root
+  # lockfile. It is authored + wired but CI-validated-pending: it has not yet run
+  # green end-to-end (the macOS dev box cannot execute it). First real run may
+  # need driver-version tuning (msedgedriver on Windows; WebKitWebDriver on Linux).
+  # --------------------------------------------------------------------------
+  desktop-e2e:
+    name: desktop e2e (wdio + tauri-driver) (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # WebKitGTK + its WebDriver (WebKitWebDriver, from webkit2gtk-driver), plus
+      # xvfb so the headed webview has a display in CI.
+      - name: Install Tauri + WebDriver system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            webkit2gtk-driver \
+            xvfb
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-${{ matrix.os }}
+
+      # Build the workspace deps (@mdreader/ui, @mdreader/markdown) then the app
+      # bundle. The app binary tauri-driver launches lands at
+      # target/release/mdreader-app[.exe].
+      - name: Build MDReader app
+        run: |
+          pnpm --filter "@mdreader/app..." run build
+          pnpm --filter @mdreader/app tauri build --bundles app
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      # msedgedriver must match the runner's WebView2/Edge for the Windows leg.
+      - name: Install Edge WebDriver (Windows)
+        if: runner.os == 'Windows'
+        uses: browser-actions/setup-edge@v1
+
+      - name: Install e2e-native toolchain
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm install
+
+      - name: Typecheck the GUI suite
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run typecheck
+
+      - name: Run desktop e2e (Linux, headed under xvfb)
+        if: runner.os == 'Linux'
+        working-directory: apps/mdreader/e2e-native
+        run: xvfb-run -a pnpm run test:desktop
+
+      - name: Run desktop e2e (Windows)
+        if: runner.os == 'Windows'
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run test:desktop
+
+  # --------------------------------------------------------------------------
+  # Milestone PT — macOS GUI smoke (AppleScript System Events + screencapture).
+  #
+  # This is the ONLY harness that exercises the real app on macOS (WKWebView has
+  # no WebDriver). It drives the native window and asserts the two things a
+  # "process booted" check never could: a real titlebar drag moves the window,
+  # and the red-X close ends the process.
+  #
+  # It CANNOT run on GitHub-hosted macOS runners: System Events keystrokes,
+  # synthetic CoreGraphics mouse events, and `screencapture` all require an
+  # interactive Aqua login session with Accessibility + Screen-Recording (TCC)
+  # granted to the controlling process — permissions a hosted runner has no way
+  # to approve non-interactively. It is therefore a DOCUMENTED MANUAL / SELF-
+  # HOSTED gate: run `scripts/macos-smoke.sh` locally (its output is the
+  # acceptance evidence), or enable this job on a self-hosted macOS GUI runner by
+  # setting the repository variable MACOS_GUI_RUNNER=true. See
+  # docs/testing/gui-e2e.md for the honest coverage matrix.
+  # --------------------------------------------------------------------------
+  macos-smoke:
+    name: macOS GUI smoke (manual / self-hosted gate)
+    needs: check
+    if: ${{ vars.MACOS_GUI_RUNNER == 'true' }}
+    runs-on: macos-latest # override to a [self-hosted, macOS] GUI runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-smoke
+
+      # Builds the .app (if missing) and runs the native smoke driver. Exits
+      # non-zero on any failed step.
+      - name: Run macOS GUI smoke
+        run: ./scripts/macos-smoke.sh
