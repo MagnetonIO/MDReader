@@ -288,6 +288,29 @@ impl Extraction {
 /// find out which schema laws that graph would break — all in memory, with
 /// no path to the durable store. Only
 /// [`Extraction::approved_operations`] crosses that line.
+///
+/// The approved path yields operations, which is what a durable apply takes:
+///
+/// ```
+/// use mdreader_domain::extract::{decision, SourceDocument};
+/// let corpus: Vec<SourceDocument> = Vec::new();
+/// let extraction = decision::extract(&corpus);
+/// let ops: Vec<catdb_ir::CatOperation> = extraction.approved_operations();
+/// assert!(ops.is_empty(), "nothing approved yet");
+/// ```
+///
+/// The preview path does not, and cannot be made to — the snippet below does
+/// **not** compile, which is the whole guarantee. It differs from the one
+/// above by exactly one thing: which method it reaches for.
+///
+/// ```compile_fail
+/// use mdreader_domain::extract::{decision, SourceDocument};
+/// let corpus: Vec<SourceDocument> = Vec::new();
+/// let extraction = decision::extract(&corpus);
+/// // `ProposalPreview` has no method that produces operations, so an
+/// // unreviewed fact has no route to `apply_operations`.
+/// let ops: Vec<catdb_ir::CatOperation> = extraction.preview().operations();
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ProposalPreview<'a> {
     extraction: &'a Extraction,

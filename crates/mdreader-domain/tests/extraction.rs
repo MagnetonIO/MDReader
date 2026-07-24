@@ -179,7 +179,7 @@ fn architecture_extraction_proposes_exactly_the_declared_components() {
                 r#"{"component_kind":"crate","component_name":"catdb-core"}"#.into(),
                 "docs/arch/catdb-core.md".into(),
                 1,
-                19,
+                25,
                 0.95
             ),
             (
@@ -188,7 +188,7 @@ fn architecture_extraction_proposes_exactly_the_declared_components() {
                 r#"{"layer_name":"platform"}"#.into(),
                 "docs/arch/catdb-core.md".into(),
                 1,
-                19,
+                25,
                 0.95
             ),
             (
@@ -222,10 +222,13 @@ fn architecture_extraction_proposes_exactly_the_declared_components() {
             (
                 "architecture_overlay.Interface".into(),
                 "A3".into(),
+                // `Path Prover` has a `#### Limitations` subsection, so its
+                // subtree runs to 25 — but the fact is cited to lines 17-20,
+                // the span its `content_hash` actually covers.
                 r#"{"interface_name":"Path Prover"}"#.into(),
                 "docs/arch/catdb-core.md".into(),
                 17,
-                19,
+                20,
                 0.85
             ),
             (
@@ -284,7 +287,7 @@ fn architecture_extraction_proposes_exactly_the_declared_components() {
                 "A2".into(),
                 "docs/arch/catdb-core.md".into(),
                 1,
-                19
+                25
             ),
             (
                 "architecture_overlay.inLayer".into(),
@@ -312,7 +315,7 @@ fn architecture_extraction_proposes_exactly_the_declared_components() {
                 "A3".into(),
                 "docs/arch/catdb-core.md".into(),
                 17,
-                19
+                20
             ),
             (
                 "architecture_overlay.exposes".into(),
