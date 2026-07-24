@@ -124,9 +124,11 @@ export function AppShell() {
   const commitSwitchRef = useRef<(folder: string) => Promise<boolean>>(() =>
     Promise.resolve(false),
   );
-  // The window is committing to close: the re-entered close handler sees this and
-  // lets the native close proceed (no destroy(), no infinite recursion). Per this
-  // window instance (a ref, not module-level, so tests/mounts stay isolated).
+  // Latched once the window is committing to close, so the force-close runs at
+  // most once. We force-close with destroy(), which tears the window down WITHOUT
+  // re-firing onCloseRequested — but the flag stays as a cheap guard against a
+  // second close request racing in before destroy() completes. Per this window
+  // instance (a ref, not module-level, so tests/mounts stay isolated).
   const closingRef = useRef(false);
 
   // --- workspace loading ------------------------------------------------
@@ -622,14 +624,15 @@ export function AppShell() {
 
   // Complete a quit the guard approved (Save-then-close or Discard). The session
   // was already drained in the close handler before the prompt; here we clear any
-  // remaining dirty state, mark the window closing, and re-trigger the NATIVE
-  // close. No `destroy()` and no allow-destroy permission: `close()` re-enters
-  // `onCloseRequested`, which sees `closing` and lets the native close proceed.
+  // remaining dirty state and force the window down. We use `destroy()` (not
+  // `close()`): the window was already `preventDefault`'d in onCloseRequested, and
+  // `close()` merely re-requests a close the webview won't honour; `destroy()`
+  // tears it down unconditionally.
   const performQuit = useCallback(async () => {
     useEditorStore.getState().reset(); // discard-all: no dirty documents remain
     closingRef.current = true;
     try {
-      await getCurrentWindow().close();
+      await getCurrentWindow().destroy();
     } catch {
       /* not a real Tauri window (mocked IPC) — nothing to close */
     }
@@ -947,14 +950,16 @@ export function AppShell() {
 
   // Native window close (the red X). We intercept to (a) honour the persistence
   // contract — a BOUNDED session drain before the window goes away — and (b) guard
-  // unsaved edits, WITHOUT ever taking over closing or needing a destroy
-  // permission. A `closing` flag makes this safe against the re-entrancy that
-  // calling `close()` from inside the handler causes:
-  //   - re-entry (`closing` already set) → do NOT preventDefault → native close.
+  // unsaved edits. Because we preventDefault to do that async work, we must then
+  // force the close ourselves, and we do so with destroy() (which requires the
+  // `core:window:allow-destroy` capability), NOT close(): a window we just vetoed
+  // will not honour a fresh close() in the real webview. The `closing` flag guards
+  // against a second close request racing in before destroy() completes:
+  //   - re-entry (`closing` already set) → do NOT preventDefault → let it through.
   //   - first entry → preventDefault; flush + BOUNDED drain (never hang the close);
-  //     if dirty → prompt (the guard clears dirty then re-closes); else mark
-  //     `closing` and call `close()` → re-enters → native close.
-  // Net: the red X ALWAYS closes, after a bounded drain, with no `destroy()`.
+  //     if dirty → prompt (the guard clears dirty then force-closes via destroy());
+  //     else mark `closing` and call destroy() to tear the window down.
+  // Net: the red X ALWAYS closes, after a bounded drain, via destroy().
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -977,7 +982,12 @@ export function AppShell() {
             return;
           }
           closingRef.current = true;
-          await appWindow.close(); // re-enters → closing set → native close
+          // Force the close PAST our own preventDefault. `close()` only re-requests
+          // a close (re-firing onCloseRequested) and, in the real webview, does not
+          // actually shut a window we just vetoed — the mock that "re-fires" misled
+          // the unit tests; the macOS GUI smoke is the real guard. `destroy()` tears
+          // the window down unconditionally without re-firing (needs allow-destroy).
+          await appWindow.destroy();
         });
         if (disposed) off();
         else unlisten = off;

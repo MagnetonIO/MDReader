@@ -29,15 +29,26 @@ const h = vi.hoisted(() => ({
   saveCalls: [] as { path: string; content: string; expectedHash: string; force: boolean }[],
   fsChanged: null as null | ((change: { path: string; kind: string; generation: number }) => void),
   onClose: null as null | ((event: { preventDefault: () => void }) => void | Promise<void>),
-  destroy: vi.fn(async () => {}),
-  // Behaves like Tauri: calling close() RE-FIRES the registered onCloseRequested
-  // handler. If that re-entry does not preventDefault, the native close proceeds
-  // (recorded in `closed`). This is what exercises the real re-close→native path.
-  close: vi.fn(async () => {
-    const event = { preventDefault: vi.fn() };
-    if (h.onClose) await h.onClose(event);
-    if (event.preventDefault.mock.calls.length === 0) h.closed = true;
+  // --- FORCE-CLOSE PRIMITIVE -------------------------------------------------
+  // The guard force-closes with destroy() (NOT close()), so destroy() is what
+  // marks the window "closed" here.
+  //
+  // HONESTY BOUNDARY — read before trusting these close/quit tests: this mock
+  // exercises the JS control flow ONLY (preventDefault → bounded drain →
+  // dirty-guard → destroy). It does NOT reproduce real Tauri window semantics or
+  // the capability ACL. A window mock CANNOT catch a missing/incorrect
+  // `core:window:allow-destroy` capability, and it cannot catch the
+  // close()-vs-destroy() distinction — a vetoed window ignores a fresh close()
+  // in the real webview but tears down on destroy(). That distinction is EXACTLY
+  // the bug that shipped past these very tests. The macOS GUI smoke
+  // (apps/mdreader/e2e-native, milestone PT) is the ONLY thing that validates the
+  // red X actually ends the process.
+  destroy: vi.fn(async () => {
+    h.closed = true;
   }),
+  // The guard no longer calls close(); kept as a harmless no-op so the mocked
+  // window matches Tauri's shape (and to prove nothing invokes it).
+  close: vi.fn(async () => {}),
   closed: false,
   // When `drainGate` is set, drain() returns ITS (caller-controlled) promise so a
   // test can hold the drain pending / never-resolving; otherwise it resolves now.
@@ -328,25 +339,25 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
   });
 
-  it('clean red-X: BOUNDED-drains the session, then closes NATIVELY (no destroy)', async () => {
+  it('clean red-X: BOUNDED-drains the session, then force-closes via destroy()', async () => {
     render(<App />);
     await act(async () => {});
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
-    // The OS close request: the handler holds it (preventDefault) to drain, then
-    // re-triggers the native close via close() → which re-fires the handler, now
-    // `closing`, so the native close proceeds.
+    // The OS close request: the handler holds it (preventDefault) to run a bounded
+    // session drain, then force-closes PAST its own veto with destroy().
     const event = { preventDefault: vi.fn() };
     await act(async () => {
       await h.onClose!(event);
     });
     expect(event.preventDefault).toHaveBeenCalledTimes(1); // held to drain
     expect(h.drain).toHaveBeenCalled(); // persistence contract: drained
-    expect(h.closed).toBe(true); // native close proceeded (via close(), not destroy)
-    expect(h.destroy).not.toHaveBeenCalled();
+    expect(h.destroy).toHaveBeenCalled(); // force-closed via destroy()
+    expect(h.closed).toBe(true); // …which tore the window down
+    expect(h.close).not.toHaveBeenCalled(); // never the vetoed-window close()
   });
 
-  it('dirty red-X → Save → drains, clears dirty, then closes natively', async () => {
+  it('dirty red-X → Save → drains, clears dirty, then force-closes via destroy()', async () => {
     const tabId = await openDirtyDoc();
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
@@ -358,17 +369,18 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(h.drain).toHaveBeenCalled();
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
     expect(h.closed).toBe(false); // not closed yet — waiting on the prompt
+    expect(h.destroy).not.toHaveBeenCalled(); // no force-close before the guard resolves
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     });
-    await waitFor(() => expect(h.closed).toBe(true)); // saved, cleared, closed
+    await waitFor(() => expect(h.closed).toBe(true)); // saved, cleared, force-closed
     expect(h.saveCalls.at(-1)).toMatchObject({ force: false });
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
-    expect(h.destroy).not.toHaveBeenCalled();
+    expect(h.destroy).toHaveBeenCalled(); // performQuit force-closes via destroy()
   });
 
-  it('dirty red-X → Discard → clears dirty and closes natively (no destroy)', async () => {
+  it('dirty red-X → Discard → clears dirty and force-closes via destroy()', async () => {
     const tabId = await openDirtyDoc();
     await waitFor(() => expect(h.onClose).not.toBeNull());
     await act(async () => {
@@ -380,7 +392,7 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
     });
     await waitFor(() => expect(h.closed).toBe(true));
-    expect(h.destroy).not.toHaveBeenCalled();
+    expect(h.destroy).toHaveBeenCalled(); // performQuit force-closes via destroy()
     expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(false);
   });
 
@@ -395,10 +407,12 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(h.closed).toBe(false); // stayed open
+    expect(h.destroy).not.toHaveBeenCalled(); // Cancel force-closes nothing
     expect(useTabsStore.getState().tabs.length).toBeGreaterThan(0);
 
     // `closing` did NOT latch: a later close request (after the user saves) still
-    // works. Save the doc, then re-request close → drains + closes natively.
+    // works. Save the doc, then re-request close → drains + force-closes via
+    // destroy().
     await act(async () => {
       modKeyDown('s');
     });
@@ -406,9 +420,10 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       await h.onClose!({ preventDefault: vi.fn() });
     });
     await waitFor(() => expect(h.closed).toBe(true));
+    expect(h.destroy).toHaveBeenCalled();
   });
 
-  it('the native close AWAITS the drain — it does not close while the drain is pending', async () => {
+  it('the force-close AWAITS the drain — it does not destroy while the drain is pending', async () => {
     render(<App />);
     await act(async () => {});
     await waitFor(() => expect(h.onClose).not.toBeNull());
@@ -422,16 +437,18 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       handled = Promise.resolve(h.onClose!({ preventDefault: vi.fn() }));
       await Promise.resolve();
     });
-    // The drain is in flight → the native close has NOT been reached. (A
-    // fire-and-forget drain would have closed by now → this assertion goes RED.)
+    // The drain is in flight → destroy() has NOT been reached. (A fire-and-forget
+    // drain would have destroyed the window by now → this assertion goes RED.)
     expect(h.drain).toHaveBeenCalled();
+    expect(h.destroy).not.toHaveBeenCalled();
     expect(h.closed).toBe(false);
 
-    // Resolve the drain → the close now proceeds.
+    // Resolve the drain → the force-close (destroy) now proceeds.
     await act(async () => {
       resolveDrain();
       await handled;
     });
+    expect(h.destroy).toHaveBeenCalled();
     expect(h.closed).toBe(true);
   });
 
@@ -449,14 +466,18 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       await act(async () => {
         handled = Promise.resolve(h.onClose!({ preventDefault: vi.fn() }));
       });
-      // Before the cap fires, the close is still held on the (never-resolving) drain.
+      // Before the cap fires, the close is still held on the (never-resolving)
+      // drain — destroy() has not run.
+      expect(h.destroy).not.toHaveBeenCalled();
       expect(h.closed).toBe(false);
 
-      // Advance past the 2s cap → the Promise.race timeout fires and releases it.
+      // Advance past the 2s cap → the Promise.race timeout fires and releases the
+      // close, which force-closes via destroy().
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2100);
         await handled;
       });
+      expect(h.destroy).toHaveBeenCalled();
       expect(h.closed).toBe(true);
     } finally {
       vi.useRealTimers();
