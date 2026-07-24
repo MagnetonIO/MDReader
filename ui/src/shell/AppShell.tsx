@@ -89,6 +89,7 @@ export function AppShell() {
   const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
   const outlineVisible = useSettingsStore((state) => state.outlineVisible);
+  const relatedRailOpen = useSettingsStore((state) => state.relatedRailOpen);
   const focusMode = useSettingsStore((state) => state.focusMode);
 
   // --- local UI state ---------------------------------------------------
@@ -100,7 +101,6 @@ export function AppShell() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const [relatedOpen, setRelatedOpen] = useState(false);
   // The unsaved-changes guard: closing a dirty tab, or quitting with dirty tabs,
   // routes through this prompt before anything is discarded.
   const [closeGuard, setCloseGuard] = useState<
@@ -723,7 +723,7 @@ export function AppShell() {
         keys: 'Mod+Shift+R',
         description: 'Toggle related rail',
         group: 'Search',
-        run: () => setRelatedOpen((open) => !open),
+        run: () => useSettingsStore.getState().toggleRelatedRail(),
       },
       {
         id: 'new-tab',
@@ -923,6 +923,24 @@ export function AppShell() {
   }, []);
   flushSessionRef.current = flushSession;
 
+  // Persist the current settings NOW (bypassing the 1s debounce), reading the
+  // latest store state at call time. Returns the write promise so the close path
+  // can bound-await it. Settings are small and last-writer-wins, so an immediate
+  // write-through is safe; without this, a preference toggled in the last second
+  // before the app closes (theme, reading font, text size, the related rail) is
+  // lost when only the session — not settings — is flushed on the way out.
+  const flushSettings = useCallback(() => {
+    const s = useSettingsStore.getState();
+    return saveSettings({
+      theme: s.theme,
+      readingFont: s.readingFont,
+      textScaleIndex: s.textScaleIndex,
+      sidebarCollapsed: s.sidebarCollapsed,
+      outlineVisible: s.outlineVisible,
+      relatedRailOpen: s.relatedRailOpen,
+    });
+  }, []);
+
   // Debounced 1s on every session-shaping change.
   useEffect(() => {
     if (!hydrated) return;
@@ -936,9 +954,13 @@ export function AppShell() {
   // "app backgrounding/closing" cue, `beforeunload` covers a plain webview close.
   useEffect(() => {
     if (!hydrated) return;
-    const onBeforeUnload = () => flushSession();
+    const flushAll = () => {
+      flushSession();
+      void flushSettings();
+    };
+    const onBeforeUnload = () => flushAll();
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') flushSession();
+      if (document.visibilityState === 'hidden') flushAll();
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     document.addEventListener('visibilitychange', onVisibility);
@@ -946,7 +968,7 @@ export function AppShell() {
       window.removeEventListener('beforeunload', onBeforeUnload);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [hydrated, flushSession]);
+  }, [hydrated, flushSession, flushSettings]);
 
   // Native window close (the red X). We intercept to (a) honour the persistence
   // contract — a BOUNDED session drain before the window goes away — and (b) guard
@@ -970,11 +992,14 @@ export function AppShell() {
         const off = await appWindow.onCloseRequested(async (event) => {
           if (closingRef.current) return; // re-entry: let the native close proceed
           event.preventDefault();
-          // Persistence contract: flush the latest session and DRAIN it, bounded so
-          // a stuck write can never wedge the close.
+          // Persistence contract: flush the latest session AND settings, then DRAIN
+          // them, bounded so a stuck write can never wedge the close. Settings ride
+          // the same barrier as the session so a last-second preference change
+          // (theme, font, text size, related rail) survives an immediate quit.
           flushSession();
+          const settingsWrite = flushSettings();
           await Promise.race([
-            sessionWriter.drain(),
+            Promise.all([sessionWriter.drain(), settingsWrite]),
             new Promise((resolve) => setTimeout(resolve, 2000)),
           ]);
           if (useEditorStore.getState().dirtyTabIds().length > 0) {
@@ -999,23 +1024,23 @@ export function AppShell() {
       disposed = true;
       unlisten?.();
     };
-  }, [hydrated, flushSession]);
+  }, [hydrated, flushSession, flushSettings]);
 
   // --- persist settings (debounced 1s) ----------------------------------
   useEffect(() => {
     if (!hydrated) return;
-    const handle = window.setTimeout(() => {
-      const s = useSettingsStore.getState();
-      void saveSettings({
-        theme: s.theme,
-        readingFont: s.readingFont,
-        textScaleIndex: s.textScaleIndex,
-        sidebarCollapsed: s.sidebarCollapsed,
-        outlineVisible: s.outlineVisible,
-      });
-    }, 1000);
+    const handle = window.setTimeout(() => void flushSettings(), 1000);
     return () => window.clearTimeout(handle);
-  }, [hydrated, theme, readingFont, textScaleIndex, sidebarCollapsed, outlineVisible]);
+  }, [
+    hydrated,
+    flushSettings,
+    theme,
+    readingFont,
+    textScaleIndex,
+    sidebarCollapsed,
+    outlineVisible,
+    relatedRailOpen,
+  ]);
 
   // --- live reload from the workspace watcher ---------------------------
   // A "continuous" write burst (a long save) can fire many events for one path.
@@ -1217,7 +1242,11 @@ export function AppShell() {
 
         <main className="shell__main">
           <TabStrip onRequestClose={requestCloseTab} />
-          <div className="shell__reader-row">
+          <div
+            className={`shell__reader-row${
+              relatedRailOpen ? ' shell__reader-row--related-open' : ''
+            }`}
+          >
             <ReaderPane
               tab={activeTab ?? null}
               root={root}
@@ -1243,8 +1272,8 @@ export function AppShell() {
               <RelatedRail
                 activeDoc={activeDoc}
                 adapter={adapter}
-                open={relatedOpen}
-                onToggle={() => setRelatedOpen((open) => !open)}
+                open={relatedRailOpen}
+                onToggle={() => useSettingsStore.getState().toggleRelatedRail()}
                 onOpen={openRef}
                 workspaceKey={root}
               />

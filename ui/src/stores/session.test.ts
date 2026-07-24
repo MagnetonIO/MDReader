@@ -171,6 +171,7 @@ describe('settings', () => {
       textScaleIndex: 5,
       sidebarCollapsed: true,
       outlineVisible: false,
+      relatedRailOpen: true,
     } as const;
     expect(sanitizeSettings(serializeSettings(snapshot))).toEqual(snapshot);
   });
@@ -182,8 +183,17 @@ describe('settings', () => {
       textScaleIndex: 999,
       sidebarCollapsed: 'yes',
       outlineVisible: true,
+      relatedRailOpen: 'open',
     });
     expect(cleaned).toEqual({ readingFont: 'sans', outlineVisible: true });
+  });
+
+  test('persists the related-rail open/collapsed choice', () => {
+    // The collapsed default is the absence of the flag; an explicit `true`
+    // survives the disk round-trip so the rail reopens where the user left it.
+    expect(sanitizeSettings({ relatedRailOpen: true })).toEqual({ relatedRailOpen: true });
+    expect(sanitizeSettings({ relatedRailOpen: false })).toEqual({ relatedRailOpen: false });
+    expect(DEFAULT_SETTINGS.relatedRailOpen).toBe(false);
   });
 
   test('exposes sane defaults', () => {

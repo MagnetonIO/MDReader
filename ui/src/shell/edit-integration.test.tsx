@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Integration tests that drive the REAL AppShell editing wiring, mocking only the
  * IPC boundary (`platform/fs.js`), persistence (`isTauri` + the session writer),
@@ -124,12 +125,15 @@ vi.mock('./SourcePane.js', () => ({
   SourcePane: ({ value }: { value: string }) => <div data-testid="source-pane">{value}</div>,
 }));
 
+import { readFileSync } from 'node:fs';
+
 import App from '../App';
 import { detectMac } from '../keymap/registry';
 import { useTabsStore } from '../stores/tabs';
 import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
 import { useEditorStore } from '../stores/editor';
+import { saveSettings } from './persistence.js';
 
 const NOTE = '/ws/note.md';
 const mac = detectMac();
@@ -482,5 +486,111 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// The Related rail as a reading-first, INTEGRATED right column: collapsed by
+// default, opened on demand (persisted), and — when open — its own grid track so
+// opening it REFLOWS the reader rather than floating over it. jsdom can't compute
+// pixel widths, so these assert the layout STRUCTURE/CLASS the CSS grid keys off.
+describe('related rail: collapsed default, integrated reflow, persistence, focus', () => {
+  async function openReadDoc() {
+    h.disk.set(NOTE, { content: '# Note\n\nbody\n', hash: 'h0' });
+    render(<App />);
+    await act(async () => {}); // settle hydration
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    });
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws'));
+    act(() => {
+      useTabsStore.getState().openTab({ path: NOTE, name: 'note.md' }, { originRoot: '/ws' });
+    });
+    await waitFor(() => expect(useTabsStore.getState().activeTabId).toBeTruthy());
+  }
+
+  it('is COLLAPSED by default: the thin strip shows, no open column, no floating panel', async () => {
+    await openReadDoc();
+    const row = document.querySelector('.shell__reader-row');
+    expect(row).not.toBeNull();
+    // Nothing persisted → the settings default keeps it collapsed.
+    expect(useSettingsStore.getState().relatedRailOpen).toBe(false);
+    expect(row!.classList.contains('shell__reader-row--related-open')).toBe(false);
+    // The collapsed strip (a toggle) is present; the open aside is not.
+    expect(screen.getByTitle('Show related notes')).toBeTruthy();
+    expect(document.querySelector('.related-rail')).toBeNull();
+  });
+
+  it('the Toggle-related shortcut OPENS it and reflows the reader into its own grid column', async () => {
+    await openReadDoc();
+    act(() => modKeyDown('R', { shiftKey: true }));
+    // The binding drives the PERSISTED setting (not throwaway local state)...
+    await waitFor(() => expect(useSettingsStore.getState().relatedRailOpen).toBe(true));
+
+    const row = document.querySelector('.shell__reader-row')!;
+    // ...and the shell reflows: the row carries the open modifier (which pins the
+    // rail its own fixed grid column, narrowing the reader) and the rail renders
+    // as a direct CHILD of the reader row — a column, not an overlay.
+    expect(row.classList.contains('shell__reader-row--related-open')).toBe(true);
+    const rail = document.querySelector('.related-rail');
+    expect(rail).not.toBeNull();
+    expect(rail!.parentElement).toBe(row);
+    // The collapsed strip is gone; the open header's Hide control took its place.
+    expect(screen.queryByTitle('Show related notes')).toBeNull();
+    expect(screen.getByTitle('Hide related notes')).toBeTruthy();
+
+    // Toggling again collapses it — the reader reclaims the column.
+    act(() => modKeyDown('R', { shiftKey: true }));
+    await waitFor(() => expect(useSettingsStore.getState().relatedRailOpen).toBe(false));
+    expect(
+      document
+        .querySelector('.shell__reader-row')!
+        .classList.contains('shell__reader-row--related-open'),
+    ).toBe(false);
+  });
+
+  it('clicking the collapsed strip opens the rail too', async () => {
+    await openReadDoc();
+    await act(async () => {
+      fireEvent.click(screen.getByTitle('Show related notes'));
+    });
+    await waitFor(() => expect(document.querySelector('.related-rail')).not.toBeNull());
+    expect(useSettingsStore.getState().relatedRailOpen).toBe(true);
+  });
+
+  it('flushes pending SETTINGS on the native close so a last-second change is not lost', async () => {
+    await openReadDoc();
+    // The close hook is wired once the shell is hydrated in the (mocked) Tauri shell.
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+
+    // Toggle a preference and DO NOT wait out the 1s settings debounce — this is the
+    // last-second change that the session-only close flush used to drop.
+    vi.mocked(saveSettings).mockClear();
+    act(() => useSettingsStore.getState().setRelatedRailOpen(true));
+
+    // The native close must persist settings on the way out (mirroring the session
+    // flush). Reverting the settings close-flush makes this write never happen.
+    await act(async () => {
+      await h.onClose!({ preventDefault: vi.fn() });
+    });
+    const flushedOpen = vi
+      .mocked(saveSettings)
+      .mock.calls.some(([snapshot]) => snapshot.relatedRailOpen === true);
+    expect(flushedOpen).toBe(true);
+  });
+
+  it('focus mode hides the Related rail in BOTH forms (the focus-hide rule covers it)', () => {
+    // jsdom won't cascade the stylesheet, so assert the rule itself: the bug was
+    // that .shell--focus hid the other rails but NOT the Related rail (open OR
+    // collapsed), so focus mode looked like a no-op with the rail still on screen.
+    // jsdom does not cascade imported stylesheets and vite strips CSS to empty
+    // under `?raw` in test mode, so read the real file and inspect the rule text.
+    // (jsdom makes `import.meta.url` an http: URL, so anchor on the package cwd.)
+    const shellCss = readFileSync(`${process.cwd()}/src/shell/shell.css`, 'utf8');
+    const hideBlocks: string[] = shellCss.match(/[^{}]+\{\s*display:\s*none;?\s*\}/g) ?? [];
+    const focusHide = hideBlocks.find((block) => block.includes('.shell--focus .sidebar'));
+    expect(focusHide, 'the focus-mode display:none rule').toBeTruthy();
+    // Both the OPEN aside and the COLLAPSED strip must be in the hide list.
+    expect(focusHide!).toContain('.shell--focus .related-rail,');
+    expect(focusHide!).toContain('.shell--focus .related-rail__toggle--collapsed,');
   });
 });

@@ -185,6 +185,7 @@ export function sanitizeSettings(raw: unknown): Partial<SettingsSnapshot> {
   }
   if (typeof raw.sidebarCollapsed === 'boolean') out.sidebarCollapsed = raw.sidebarCollapsed;
   if (typeof raw.outlineVisible === 'boolean') out.outlineVisible = raw.outlineVisible;
+  if (typeof raw.relatedRailOpen === 'boolean') out.relatedRailOpen = raw.relatedRailOpen;
   return out;
 }
 
@@ -195,6 +196,7 @@ export function serializeSettings(snapshot: SettingsSnapshot): SettingsSnapshot 
     textScaleIndex: snapshot.textScaleIndex,
     sidebarCollapsed: snapshot.sidebarCollapsed,
     outlineVisible: snapshot.outlineVisible,
+    relatedRailOpen: snapshot.relatedRailOpen,
   };
 }
 
@@ -205,6 +207,7 @@ export const DEFAULT_SETTINGS: SettingsSnapshot = {
   textScaleIndex: DEFAULT_TEXT_SCALE_INDEX,
   sidebarCollapsed: false,
   outlineVisible: true,
+  relatedRailOpen: false,
 };
 
 // --- helpers ---

@@ -23,6 +23,8 @@ export interface SettingsState {
   textScaleIndex: number;
   sidebarCollapsed: boolean;
   outlineVisible: boolean;
+  /** Whether the reader's Related rail is expanded (persisted, collapsed by default). */
+  relatedRailOpen: boolean;
   focusMode: boolean;
 
   setTheme: (theme: Theme) => void;
@@ -34,6 +36,8 @@ export interface SettingsState {
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleOutline: () => void;
+  toggleRelatedRail: () => void;
+  setRelatedRailOpen: (open: boolean) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
   hydrate: (partial: Partial<SettingsSnapshot>) => void;
@@ -43,7 +47,7 @@ export interface SettingsState {
 /** The persisted subset of the settings (no actions). */
 export type SettingsSnapshot = Pick<
   SettingsState,
-  'theme' | 'readingFont' | 'textScaleIndex' | 'sidebarCollapsed' | 'outlineVisible'
+  'theme' | 'readingFont' | 'textScaleIndex' | 'sidebarCollapsed' | 'outlineVisible' | 'relatedRailOpen'
 >;
 
 const defaults: SettingsSnapshot & { focusMode: boolean } = {
@@ -52,6 +56,7 @@ const defaults: SettingsSnapshot & { focusMode: boolean } = {
   textScaleIndex: DEFAULT_TEXT_SCALE_INDEX,
   sidebarCollapsed: false,
   outlineVisible: true,
+  relatedRailOpen: false,
   focusMode: false,
 };
 
@@ -75,6 +80,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   toggleOutline: () => set((state) => ({ outlineVisible: !state.outlineVisible })),
+  toggleRelatedRail: () => set((state) => ({ relatedRailOpen: !state.relatedRailOpen })),
+  setRelatedRailOpen: (relatedRailOpen) => set({ relatedRailOpen }),
   toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
   setFocusMode: (focusMode) => set({ focusMode }),
 
