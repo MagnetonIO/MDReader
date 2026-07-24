@@ -13,7 +13,15 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework", "expect-webdriverio"]
+    "types": ["node", "webdriverio", "@wdio/globals/types", "@wdio/mocha-framework", "expect-webdriverio"]
   },
-  "include": ["flows.ts", "seed.ts", "wdio.conf.ts", "macos/**/*.ts", "specs/**/*.ts"]
+  "include": [
+    "flows.ts",
+    "seed.ts",
+    "capabilities.ts",
+    "drivers/**/*.ts",
+    "runners/**/*.ts",
+    "config/**/*.ts",
+    "specs/**/*.ts"
+  ]
 }

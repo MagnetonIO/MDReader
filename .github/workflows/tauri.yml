@@ -75,20 +75,25 @@ jobs:
         run: ./scripts/check-bindings.sh
 
   # --------------------------------------------------------------------------
-  # Milestone PT — desktop GUI functional tests (WebdriverIO + tauri-driver).
+  # Milestone PT — desktop leg of the UNIFIED harness (WebdriverIO + tauri-driver).
   #
-  # Drives the REAL built app through tauri-driver on Linux (WebKitGTK) and
-  # Windows (WebView2). macOS is deliberately absent: WKWebView exposes no
-  # WebDriver, so the Mac path is the AppleScript smoke (see `macos-smoke`).
+  # Drives the REAL built app's webview DOM through tauri-driver on Linux
+  # (WebKitGTK) and Windows (WebView2), running the SAME shared FLOW the macOS
+  # mac2 leg runs. macOS is deliberately absent here: WKWebView exposes no
+  # WebDriver, so the Mac path is the appium-mac2-driver leg (see `macos-smoke`).
   #
-  # The suite (apps/mdreader/e2e-native) lives OUTSIDE the pnpm workspace, so it
-  # installs its WebdriverIO toolchain on demand here and never touches the root
-  # lockfile. It is authored + wired but CI-validated-pending: it has not yet run
-  # green end-to-end (the macOS dev box cannot execute it). First real run may
-  # need driver-version tuning (msedgedriver on Windows; WebKitWebDriver on Linux).
+  # The harness (apps/mdreader/e2e-native) lives OUTSIDE the pnpm workspace, so it
+  # installs its Appium/WebdriverIO toolchain on demand with `npm install` (NOT
+  # `pnpm install`, which walks up to the root pnpm-workspace.yaml and installs the
+  # workspace instead of these deps, leaving webdriverio absent). This matches
+  # scripts/macos-smoke.sh and never touches the root lockfile. It is authored +
+  # wired but CI-validated-pending: it has not yet
+  # run green end-to-end (the macOS dev box cannot execute tauri-driver). First
+  # real run may need driver-version tuning (msedgedriver on Windows;
+  # WebKitWebDriver on Linux).
   # --------------------------------------------------------------------------
   desktop-e2e:
-    name: desktop e2e (wdio + tauri-driver) (${{ matrix.os }})
+    name: desktop e2e (unified wdio + tauri-driver) (${{ matrix.os }})
     needs: check
     runs-on: ${{ matrix.os }}
     strategy:
@@ -153,7 +158,7 @@ jobs:
 
       - name: Install e2e-native toolchain
         working-directory: apps/mdreader/e2e-native
-        run: pnpm install
+        run: npm install
 
       - name: Typecheck the GUI suite
         working-directory: apps/mdreader/e2e-native
@@ -170,21 +175,23 @@ jobs:
         run: pnpm run test:desktop
 
   # --------------------------------------------------------------------------
-  # Milestone PT — macOS GUI smoke (AppleScript System Events + screencapture).
+  # Milestone PT — macOS leg of the UNIFIED harness (appium-mac2-driver / XCUITest).
   #
-  # This is the ONLY harness that exercises the real app on macOS (WKWebView has
-  # no WebDriver). It drives the native window and asserts the two things a
-  # "process booted" check never could: a real titlebar drag moves the window,
-  # and the red-X close ends the process.
+  # This is the ONLY leg that exercises the real app on macOS (WKWebView has no
+  # WebDriver). It drives the native window through a mac2 (XCUITest) WebDriver
+  # session — real titlebar drag (with a content-area negative control) + real
+  # red-X close — and reads the webview UI through WebKit's Accessibility tree
+  # (`AXDOMClassList`). `scripts/macos-smoke.sh` builds the app, installs the mac2
+  # driver into a local APPIUM_HOME, and runs `runners/macos.ts`.
   #
-  # It CANNOT run on GitHub-hosted macOS runners: System Events keystrokes,
-  # synthetic CoreGraphics mouse events, `screencapture`, and Accessibility reads
-  # all require an interactive Aqua login session with Accessibility +
-  # Screen-Recording (TCC) granted to the controlling process — permissions a
-  # hosted runner has no way to approve non-interactively; there it would only
-  # ERROR, never false-pass. It is therefore a DOCUMENTED MANUAL / SELF-HOSTED
-  # gate: run `scripts/macos-smoke.sh` locally (its output is the acceptance
-  # evidence), or enable it on a self-hosted macOS GUI runner.
+  # It CANNOT run on GitHub-hosted macOS runners: XCUITest (WebDriverAgentMac)
+  # needs FULL Xcode + xcodebuild + code-signing, Accessibility reads need the TCC
+  # Accessibility grant, and the capture oracle needs Screen-Recording — approvals
+  # a hosted runner can't give non-interactively; there it would only ERROR, never
+  # false-pass. (It no longer needs the AppleScript/Automation grant — mac2 drives
+  # over XCUITest, not System Events.) It is therefore a DOCUMENTED MANUAL /
+  # SELF-HOSTED gate: run `scripts/macos-smoke.sh` locally (its output is the
+  # acceptance evidence), or enable it on a self-hosted macOS GUI runner.
   #
   # This job is wired so it can ONLY ever land on a self-hosted GUI runner, never
   # on hosted macos-latest:
@@ -193,11 +200,11 @@ jobs:
   #   - `runs-on` selects the labels [self-hosted, macOS, mdreader-gui]. GitHub
   #     dispatches this to a self-hosted runner carrying those labels ONLY — with
   #     no such runner registered it stays queued and is never scheduled onto a
-  #     hosted image. Register your GUI runner with the `mdreader-gui` label to
-  #     enable the gate. See docs/testing/gui-e2e.md for the coverage matrix.
+  #     hosted image. Register your GUI runner with the `mdreader-gui` label (full
+  #     Xcode selected, TCC granted) to enable the gate. See docs/testing/gui-e2e.md.
   # --------------------------------------------------------------------------
   macos-smoke:
-    name: macOS GUI smoke (self-hosted GUI gate)
+    name: macOS GUI smoke (unified mac2 leg, self-hosted GUI gate)
     needs: check
     if: ${{ vars.MACOS_GUI_RUNNER == 'true' }}
     runs-on: [self-hosted, macOS, mdreader-gui]
@@ -222,7 +229,112 @@ jobs:
         with:
           key: macos-smoke
 
-      # Builds the .app (if missing) and runs the native smoke driver. Exits
+      # Builds the .app (if missing) and runs the unified mac2 runner. Exits
       # non-zero on any failed step.
       - name: Run macOS GUI smoke
         run: ./scripts/macos-smoke.sh
+
+  # --------------------------------------------------------------------------
+  # Milestone PT — mobile legs of the UNIFIED harness (Appium).
+  #
+  # iOS via appium-xcuitest-driver (Simulator), Android via
+  # appium-uiautomator2-driver (emulator). Both run the SAME shared FLOW off the
+  # app's WEBVIEW context (see specs/mobile.e2e.ts) — one behavioural spec, phone
+  # to laptop.
+  #
+  # BLOCKED on P6: there is NO iOS/Android app build yet (the app has no mobile
+  # shell). The harness — capabilities, WEBVIEW-context adapter, wdio configs — is
+  # ready and CI-wired so these run the moment the P6 shell lands and supplies a
+  # built .app / .apk (via MDREADER_IOS_APP / MDREADER_ANDROID_APP).
+  #
+  # To avoid a promised-but-fake gate, both jobs are SKIPPED explicitly until the
+  # repo variable MDREADER_MOBILE_READY is set to 'true' (set it in the same PR
+  # that lands the P6 mobile shell). Skipped — never false-passing.
+  # --------------------------------------------------------------------------
+  ios-e2e:
+    name: iOS e2e (unified wdio + appium-xcuitest) — blocked on P6 shell
+    needs: check
+    if: ${{ vars.MDREADER_MOBILE_READY == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # P6 supplies the iOS build step here and exports MDREADER_IOS_APP to the
+      # built simulator .app. Until then this job is skipped by the `if` gate.
+      - name: Build MDReader iOS app (P6)
+        run: echo "P6 mobile shell provides the iOS build + MDREADER_IOS_APP" && exit 1
+
+      - name: Install e2e-native toolchain
+        working-directory: apps/mdreader/e2e-native
+        run: npm install
+
+      - name: Install Appium xcuitest driver
+        working-directory: apps/mdreader/e2e-native
+        run: npx appium driver install xcuitest
+
+      - name: Typecheck the GUI harness
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run typecheck
+
+      - name: Run iOS e2e (Simulator)
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run test:ios
+
+  android-e2e:
+    name: Android e2e (unified wdio + appium-uiautomator2) — blocked on P6 shell
+    needs: check
+    if: ${{ vars.MDREADER_MOBILE_READY == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # P6 supplies the Android build step here and exports MDREADER_ANDROID_APP to
+      # the built .apk. Until then this job is skipped by the `if` gate.
+      - name: Build MDReader Android app (P6)
+        run: echo "P6 mobile shell provides the Android build + MDREADER_ANDROID_APP" && exit 1
+
+      - name: Install e2e-native toolchain
+        working-directory: apps/mdreader/e2e-native
+        run: npm install
+
+      - name: Install Appium uiautomator2 driver
+        working-directory: apps/mdreader/e2e-native
+        run: npx appium driver install uiautomator2
+
+      - name: Typecheck the GUI harness
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run typecheck
+
+      - name: Run Android e2e (emulator)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          working-directory: apps/mdreader/e2e-native
+          script: pnpm run test:android

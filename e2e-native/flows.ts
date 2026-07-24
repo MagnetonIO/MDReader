@@ -1,30 +1,33 @@
 /**
- * Milestone PT — the SHARED behavioural spec for MDReader's desktop GUI.
+ * Milestone PT — the SHARED behavioural spec for MDReader's GUI, desktop + mobile.
  *
  * This is the single source of truth for the core end-to-end flow, expressed as
- * an ordered, platform-agnostic list of {@link Step}s. BOTH functional-test
- * harnesses consume this same array:
+ * an ordered, platform-agnostic list of {@link Step}s. The UNIFIED harness runs it
+ * ONCE per target through one interpreter (`drivers/runner.ts`) over a thin per-
+ * platform adapter, so every leg describes the exact same "working":
  *
- *   - the WebdriverIO + tauri-driver suite (`specs/desktop.e2e.ts`), which drives
- *     the real app's webview DOM on Linux (WebKitGTK) and Windows (WebView2) in
- *     CI, and
- *   - the macOS smoke driver (`macos/smoke.ts`), which drives the real native
- *     window via AppleScript System Events + `screencapture` on a Mac, where
- *     WKWebView exposes no WebDriver endpoint.
+ *   - macOS   → `drivers/macos/mac2-adapter.ts` (appium-mac2-driver / XCUITest).
+ *               Drives the native shell over the WebDriver protocol; reads
+ *               WKWebView's Accessibility tree (`AXDOMClassList`) because WKWebView
+ *               exposes no WebDriver bridge. RUNS locally (`runners/macos.ts`).
+ *   - Linux/Windows → `drivers/webview-adapter.ts` over `tauri-driver`
+ *               (WebKitGTK / WebView2) — the live webview DOM.
+ *   - iOS/Android   → `drivers/webview-adapter.ts` over appium-xcuitest-driver /
+ *               appium-uiautomator2-driver, in the WEBVIEW context (blocked on the
+ *               P6 mobile shell; scaffolded + CI-wired).
  *
- * Each step carries its own semantics (`kind`) plus the data both interpreters
- * need. A step's `channel` says which layer it exercises:
+ * Each step carries its own semantics (`kind`) plus the data the interpreter
+ * needs. A step's `channel` says which context it exercises:
  *
- *   - `'dom'`    — a webview interaction/assertion. The WebdriverIO suite asserts
- *                  these rigorously against the live DOM; the macOS driver drives
- *                  the same keystrokes and captures a screenshot as evidence
- *                  (WKWebView can't be queried, so its DOM assertions are visual).
+ *   - `'dom'`    — a webview interaction/assertion, asserted rigorously against the
+ *                  live DOM (WebDriver legs) or WebKit's AX tree (macOS). Same
+ *                  class-based contract on every leg.
  *   - `'window'` — a NATIVE-window interaction/assertion (drag / resize / red-X
- *                  close). These are the steps that a "process booted" check can
- *                  never cover — the dead-titlebar class of bug. The macOS driver
- *                  asserts these rigorously (window position, window size, process
- *                  liveness); the WebdriverIO suite marks them pending because a
- *                  W3C WebDriver session drives the webview, not the OS chrome.
+ *                  close). The steps a "process booted" check can never cover — the
+ *                  dead-titlebar class of bug. The macOS mac2 leg asserts these
+ *                  rigorously (window position/size, process liveness); the webview
+ *                  legs register them pending because a WebDriver session drives the
+ *                  webview document, not the OS chrome.
  *
  * Keep this module free of any runtime dependency (Node built-ins only are used
  * by its consumers, never here) so it stays importable from both a plain
