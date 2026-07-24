@@ -17,7 +17,17 @@ export default defineConfig({
   // `ReferenceError: document is not defined` on load, breaking every document
   // routed off-thread (>= 64 KiB). Prepending the DOM-free `worker` condition
   // (source of truth in @mdreader/markdown) resolves those deps to their
-  // worker-safe variants; the main-thread variants stay functionally identical.
+  // worker-safe variants.
+  //
+  // SCOPE: Vite has no worker-only resolve.conditions (only worker.format /
+  // .plugins / .rollupOptions), so this applies to the MAIN/client bundle too.
+  // That is intentional and safe: for every affected dep the `worker` variant
+  // serializes byte-identically to the `browser` variant — proven for the whole
+  // pipeline by the DOM↔worker parity guard (packages/markdown
+  // dom-worker-parity.test.ts), which fails if any dep's `worker` export ever
+  // diverges in output. The only non-pipeline app dep with a `worker` condition
+  // is react-dom, and only on its `./server`/`./static` subpaths (unused by the
+  // client) where `worker` maps to the same file as `browser`.
   resolve: { conditions: [...WORKER_BUNDLE_RESOLVE_CONDITIONS, ...defaultClientConditions] },
   server: {
     port: 1420,
