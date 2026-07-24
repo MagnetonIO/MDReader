@@ -28,9 +28,11 @@
  *                     after diff), not merely "a non-blank frame".
  *   - search:        after Cmd+K → type, >= 1 palette result row is present (AX
  *                     count of `.mdsearch__item`).
- *   - jumpToHit:     after Enter, the palette closes, the jumped-to document's
- *                     heading is shown, and its provenance line — text unique to
- *                     that document — is in the reader (the jump really landed).
+ *   - jumpToHit:     after Enter, the search dialog container (`.mdsearch`) is
+ *                     positively ABSENT (closure is not inferred from a row
+ *                     count), the jumped-to document's heading is shown, and its
+ *                     provenance line — text unique to that document — is in the
+ *                     reader region (`.shell__main`). The jump really landed.
  *   - dragWindow:    a SYNTHETIC titlebar drag moves the window by ~the delta,
  *                     AND a NEGATIVE-CONTROL drag started in the CONTENT area does
  *                     NOT move it. Together they prove the titlebar is genuinely
@@ -41,11 +43,15 @@
  *                    An intercepted/blocked close (the bug that shipped) → the
  *                    process survives → FAIL.
  *
- * Fault injection (RED proof): set `MDREADER_SMOKE_FAULT=<step id>` to break the
- * real behaviour one step exercises (e.g. drag the whole window on the negative
- * control, or skip the red-X click) and confirm the driver goes RED at exactly
- * that step. It proves each assertion is load-bearing, not vacuous. Inert unless
- * the env var is set.
+ * Fault injection (RED proof): set `MDREADER_SMOKE_FAULT=<id>` to break the real
+ * behaviour a step exercises, or to break the harness's own read path, and
+ * confirm the driver goes RED there. `<id>` is a step id (e.g. `drag-window`
+ * drags the whole window on the negative control; `close-window` skips the red-X
+ * click) OR one of the FAIL-OPEN probes: `jump-closure-error` (the palette-
+ * closure AX read errors mid-check — must FAIL, never be read as "closed") and
+ * `frame-oracle` (feeds a wrong-size frame to the visual oracle — must FAIL, never
+ * be treated as "fully changed"). It proves each assertion is load-bearing and
+ * fails CLOSED. Inert unless the env var is set.
  *
  * Node built-ins only. Runs under Node's native TypeScript (Node >= 22.13 with
  * `--experimental-strip-types`; >= 23 strips by default) — no build step.
@@ -342,16 +348,30 @@ interface Ax {
 }
 
 function makeAx(bin: string, pid: number): Ax {
-  // axquery's arg order is `<subcommand> <pid> [cssClass]`.
+  // axquery's arg order is `<subcommand> <pid> [cssClass]`. FAIL CLOSED: a helper
+  // invocation error, a nonzero swift exit, or unparseable output must THROW —
+  // never be coerced to an empty string or a count of 0. Otherwise "0" would be
+  // ambiguous (genuine-zero vs helper-broke) and a broken query could false-pass
+  // a "== 0"/absence check. Only a SUCCESSFUL query that genuinely found nothing
+  // yields "" / 0.
   const run = (sub: string, extra: string[] = []): string => {
-    try {
-      return execFileSync(bin, [sub, String(pid), ...extra], { encoding: 'utf8' }).trim();
-    } catch {
-      return '';
-    }
+    // No try/catch: execFileSync throws on spawn failure or nonzero exit, and we
+    // want that to propagate and fail the step.
+    return execFileSync(bin, [sub, String(pid), ...extra], { encoding: 'utf8' }).trim();
   };
   return {
-    count: (cssClass) => Number.parseInt(run('count', [cssClass]) || '0', 10),
+    count: (cssClass) => {
+      const out = run('count', [cssClass]);
+      const n = Number.parseInt(out, 10);
+      // Reject anything that isn't exactly a non-negative integer (e.g. "",
+      // "NaN", "3\n7", garbage) so a malformed read can't masquerade as a count.
+      if (!/^\d+$/.test(out) || !Number.isSafeInteger(n)) {
+        throw new Error(
+          `axquery count(${cssClass}) returned unparseable output: ${JSON.stringify(out)}`,
+        );
+      }
+      return n;
+    },
     text: (cssClass) => run('text', cssClass ? [cssClass] : []),
     headings: () => run('headings'),
   };
@@ -365,9 +385,19 @@ function capture(rect: Rect, path: string): void {
   execFileSync('screencapture', ['-x', '-R', `${rect.x},${rect.y},${rect.w},${rect.h}`, path]);
 }
 
-/** Capture the app's CURRENT window bounds (focused + raised first, so nothing
- *  occludes it) to `path`, and return the file path. */
+/** Capture an arbitrary screen rect to `path` and return the path (no focus/raise
+ *  — used only by the oracle fault to inject a deliberately wrong-size frame). */
+function captureRect(rect: Rect, path: string): string {
+  capture(rect, path);
+  return path;
+}
+
+/** RAISE + focus the target window, then capture ITS identified bounds. The
+ *  raise/focus happens immediately before the grab so a background window or an
+ *  occluder over a fixed screen rectangle can't supply false variance — the frame
+ *  is always the front-most MDReader window. Returns the file path. */
 function captureWindow(pid: number, path: string): string {
+  focusWindow(pid); // frontmost + AXRaise of window 1 (asserts the app is alive)
   capture(windowRect(pid), path);
   return path;
 }
@@ -389,13 +419,28 @@ function rawScanlines(png: Buffer): Buffer {
   return inflateSync(Buffer.concat(idat));
 }
 
-/** Fraction of sampled bytes that differ between two same-window frames. Differing
- *  frame sizes count as fully changed (1.0). This is a BEFORE/AFTER diff — proof
- *  the action changed the pixels — not a single-frame "is it blank" guess. */
+/** A capture anomaly (blank / wrong-size / undecodable frame) — distinct from a
+ *  genuine below-threshold diff. Retried a bounded number of times; if it
+ *  persists, the step FAILS. Never silently treated as "fully changed". */
+class FrameAnomaly extends Error {}
+
+/** Fraction of sampled bytes that differ between two same-window frames. A size
+ *  or format mismatch is NOT "fully changed" — it is a capture anomaly (a blank
+ *  or wrong-size grab) and THROWS, so it can never pass the lower bound. This is
+ *  a BEFORE/AFTER diff — proof the action changed the pixels — not a single-frame
+ *  "is it blank" guess. */
 function frameDiffFraction(beforePng: Buffer, afterPng: Buffer): number {
-  const a = rawScanlines(beforePng);
-  const b = rawScanlines(afterPng);
-  if (a.length !== b.length) return 1;
+  let a: Buffer;
+  let b: Buffer;
+  try {
+    a = rawScanlines(beforePng);
+    b = rawScanlines(afterPng);
+  } catch (err) {
+    throw new FrameAnomaly(`undecodable frame: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (a.length !== b.length) {
+    throw new FrameAnomaly(`frame size mismatch (${a.length} vs ${b.length} decoded bytes)`);
+  }
   const stride = Math.max(1, Math.floor(a.length / 200_000));
   let n = 0;
   let changed = 0;
@@ -404,6 +449,46 @@ function frameDiffFraction(beforePng: Buffer, afterPng: Buffer): number {
     if (Math.abs(a[i]! - b[i]!) > 8) changed++;
   }
   return n === 0 ? 0 : changed / n;
+}
+
+/** Perform the AFTER capture, diff it against `before`, and assert a real visible
+ *  change (>= FRAME_DIFF_MIN). A capture ANOMALY (size/format mismatch, blank or
+ *  wrong-size grab) is retried up to `tries` times, then FAILS — it is never
+ *  accepted as change. A genuine below-threshold diff fails immediately. Returns
+ *  the change fraction. Secondary sanity check behind the AX oracle. */
+async function assertFrameChanged(
+  pid: number,
+  before: Buffer,
+  shotPath: string,
+  label: string,
+  tries = 4,
+): Promise<number> {
+  let lastAnomaly = '';
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    // FAULT: substitute a wrong-size grab (a tiny 8x8 screen rect) for every
+    // attempt, exercising the "mismatch → FAIL, not fully-changed" path.
+    const after = faulted('frame-oracle')
+      ? readFileSync(captureRect({ x: 0, y: 0, w: 8, h: 8 }, shotPath))
+      : readFileSync(captureWindow(pid, shotPath));
+    try {
+      const frac = frameDiffFraction(before, after);
+      if (frac < FRAME_DIFF_MIN) {
+        throw new Error(
+          `no visible change for ${label} (diff ${(frac * 100).toFixed(1)}% < ` +
+            `${(FRAME_DIFF_MIN * 100).toFixed(1)}%) — the action rendered nothing.`,
+        );
+      }
+      return frac;
+    } catch (err) {
+      if (!(err instanceof FrameAnomaly)) throw err; // real below-threshold → fail now
+      lastAnomaly = err.message;
+      await sleep(400);
+    }
+  }
+  throw new Error(
+    `frame oracle could not obtain comparable captures for ${label} after ${tries} tries ` +
+      `(last: ${lastAnomaly}) — refusing to treat a blank/wrong-size frame as a change.`,
+  );
 }
 
 // --------------------------------------------------------------------------
@@ -512,7 +597,8 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
     }
 
     case 'openDoc': {
-      focusWindow(pid);
+      // captureWindow raises+focuses the window; that focus also lets the ensuing
+      // keystrokes reach the webview.
       const before = readFileSync(captureWindow(pid, ctx.shot('04-open-doc-before')));
       sendChord('Mod+P');
       await sleep(700);
@@ -527,26 +613,18 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
         headings = ax.headings();
         return re.test(headings);
       }, 15_000);
-      const shot = ctx.shot('04-open-doc');
-      const after = readFileSync(captureWindow(pid, shot));
       if (!ok) {
         throw new Error(
           `opened "${step.query}" but no rendered heading matched /${re.source}/ ` +
             `(headings: ${JSON.stringify(headings.replace(/\n/g, ' | ').slice(0, 160))})`,
         );
       }
-      const frac = frameDiffFraction(before, after);
-      if (frac < FRAME_DIFF_MIN) {
-        throw new Error(
-          `heading matched but the frame did not change (diff ${(frac * 100).toFixed(1)}% < ` +
-            `${(FRAME_DIFF_MIN * 100).toFixed(0)}%) — nothing actually rendered.`,
-        );
-      }
+      const shot = ctx.shot('04-open-doc');
+      const frac = await assertFrameChanged(pid, before, shot, `openDoc "${step.query}"`);
       return `opened "${step.query}" — heading /${step.headingPattern}/ rendered, frame changed ${(frac * 100).toFixed(0)}% → ${shot}`;
     }
 
     case 'search': {
-      focusWindow(pid);
       const before = readFileSync(captureWindow(pid, ctx.shot('05-search-before')));
       sendChord('Mod+K');
       await sleep(700);
@@ -560,50 +638,49 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
         rows = ax.count(rowClass);
         return rows >= 1;
       }, 15_000);
-      const shot = ctx.shot('05-search');
-      const after = readFileSync(captureWindow(pid, shot));
       if (!ok) throw new Error(`Cmd+K "${step.query}" returned no result rows`);
-      const frac = frameDiffFraction(before, after);
-      if (frac < FRAME_DIFF_MIN) {
-        throw new Error(`palette rows reported but the frame did not change (diff ${(frac * 100).toFixed(1)}%)`);
-      }
+      const shot = ctx.shot('05-search');
+      const frac = await assertFrameChanged(pid, before, shot, `search "${step.query}"`);
       return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn (frame changed ${(frac * 100).toFixed(0)}%) → ${shot}`;
     }
 
     case 'jumpToHit': {
-      assertAlive(pid, 'jump-to-hit');
       const before = readFileSync(captureWindow(pid, ctx.shot('06-jump-to-hit-before')));
-      // On fault, do NOT press Enter — the jump never happens, the palette stays
-      // open, and the "reader shows the provenance line" assertion must fail.
+      // Fault "jump-to-hit": skip Enter — the jump never happens, the palette
+      // stays open, the assertion must fail. Fault "jump-closure-error": press
+      // Enter normally but make the palette-closure AX read ERROR — a broken
+      // helper must FAIL the step, never be read as "palette gone" (the fail-open
+      // path a swallowed error would have created).
       if (!faulted(step.id)) sendChord('Enter');
+      const closureAx = faulted('jump-closure-error') ? makeAx(`${ctx.axBin}__missing`, pid) : ax;
       const headRe = new RegExp(step.headingPattern);
       const provRe = new RegExp(step.provenancePattern);
-      let heads = '';
-      let reader = '';
-      let paletteRows = 1;
-      // SAME contract, on BOTH legs: the palette closed AND the reader navigated
-      // to the hit's document at its provenance line (heading + a line unique to
-      // that document are in view).
+      let palettePresent = 1;
+      let readerText = '';
+      // POSITIVE CLOSURE: the search dialog's own container (`.mdsearch`) must be
+      // ABSENT — closure is asserted directly, NOT inferred from a row count of 0
+      // (which a fail-open zero could fake). Heading AND provenance are read from
+      // the reader region only (`.shell__main`, the surfaced ancestor of the
+      // generic `.mdreader` scroll container that macOS AX collapses), so the
+      // sidebar/status bar can't supply a false match — matching the WebdriverIO
+      // leg's scoped `.mdreader` reads. `count` FAILS CLOSED on a helper error.
       const ok = await waitUntil(() => {
-        paletteRows = ax.count('mdsearch__item');
-        heads = ax.headings();
-        reader = ax.text();
-        return paletteRows === 0 && headRe.test(heads) && provRe.test(reader);
+        palettePresent = closureAx.count('mdsearch');
+        readerText = ax.text('shell__main');
+        return palettePresent === 0 && headRe.test(readerText) && provRe.test(readerText);
       }, 15_000);
-      const shot = ctx.shot('06-jump-to-hit');
-      const after = readFileSync(captureWindow(pid, shot));
       if (!ok) {
         throw new Error(
-          `jump did not land on the provenance target: palette rows=${paletteRows} ` +
-            `(want 0), heading /${headRe.source}/ ${headRe.test(heads) ? 'shown' : 'MISSING'}, ` +
-            `provenance line /${provRe.source}/ ${provRe.test(reader) ? 'shown' : 'MISSING'}.`,
+          `jump did not land on the provenance target: palette container ` +
+            `${palettePresent === 0 ? 'gone' : 'STILL PRESENT'}, ` +
+            `heading /${headRe.source}/ ${headRe.test(readerText) ? 'shown' : 'MISSING'}, ` +
+            `provenance line /${provRe.source}/ ${provRe.test(readerText) ? 'shown' : 'MISSING'} ` +
+            `(reader region).`,
         );
       }
-      const frac = frameDiffFraction(before, after);
-      if (frac < FRAME_DIFF_MIN) {
-        throw new Error(`jumped but the frame did not change (diff ${(frac * 100).toFixed(1)}%)`);
-      }
-      return `Enter landed on the hit — heading /${step.headingPattern}/ + provenance line /${step.provenancePattern}/ in view (frame changed ${(frac * 100).toFixed(0)}%) → ${shot}`;
+      const shot = ctx.shot('06-jump-to-hit');
+      const frac = await assertFrameChanged(pid, before, shot, 'jumpToHit');
+      return `Enter landed on the hit — palette gone, heading /${step.headingPattern}/ + provenance /${step.provenancePattern}/ in reader region (frame changed ${(frac * 100).toFixed(0)}%) → ${shot}`;
     }
 
     case 'dragWindow': {
