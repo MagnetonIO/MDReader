@@ -851,3 +851,71 @@ async fn the_consistent_part_of_the_corpus_checks_clean() {
         report.violation_messages()
     );
 }
+
+// ---------------------------------------------------------------------------
+// The guarantee, not the guardrail
+// ---------------------------------------------------------------------------
+
+/// Reconstructing operations by hand from proposed facts — the bypass that
+/// deleting `operations()` could never close — is refused by the engine.
+///
+/// `CatOperation` is a public IR type with public constructors, and the
+/// preview *must* expose the proposed objects or no reviewer could see what
+/// they are approving. So the domain-side API can only make this
+/// inconvenient. The guarantee lives at the write boundary: `mdreader-domain`
+/// declares its overlays approval-required, and the engine refuses any
+/// unapproved assertion into them regardless of how the operation was built.
+#[tokio::test]
+async fn hand_built_operations_from_proposed_facts_are_refused_by_the_engine() {
+    let extraction = decision::extract(&corpus());
+    // Exactly the reconstruction a determined caller would write, reading the
+    // proposals straight off the preview.
+    let smuggled: Vec<catdb_ir::CatOperation> = extraction
+        .preview()
+        .objects()
+        .iter()
+        .map(|extracted| catdb_ir::CatOperation::AssertObject {
+            entity: extracted.object.entity.to_string(),
+            object_id: *extracted.object.id.as_uuid(),
+            value: extracted.object.value.clone(),
+            provenance: catdb_ir::Provenance {
+                source: extracted.object.provenance.source.clone(),
+                range: extracted
+                    .object
+                    .provenance
+                    .range
+                    .map(|(start, end)| [start, end]),
+                content_hash: extracted.object.provenance.content_hash.clone(),
+                schema_version: extracted.object.provenance.schema_version.clone(),
+                extractor: extracted.object.provenance.extractor.clone(),
+                confidence: extracted.object.provenance.confidence,
+                approved_by: None,
+            },
+        })
+        .collect();
+    assert_eq!(smuggled.len(), 3, "three proposed decisions to smuggle");
+
+    let engine = open_engine();
+    let err = engine
+        .apply_operations(smuggled, Some("attacker".into()))
+        .await
+        .expect_err("the engine must refuse unapproved overlay facts");
+    assert!(
+        matches!(
+            err,
+            catdb_engine::EngineError::UnapprovedFact {
+                kind: "object",
+                ref schema,
+                ..
+            } if schema == "decision_overlay"
+        ),
+        "unexpected error: {err:?}"
+    );
+
+    // And nothing landed.
+    let stored = engine
+        .store()
+        .objects_with_entity_prefix("decision_overlay.")
+        .expect("read back");
+    assert!(stored.is_empty(), "a refused batch writes nothing");
+}

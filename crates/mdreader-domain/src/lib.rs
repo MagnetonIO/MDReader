@@ -155,6 +155,17 @@ pub fn engine_registration(
     DomainRegistration {
         name: crate_name().to_string(),
         schemas,
+        // The overlays — and only the overlays — hold human-reviewable
+        // assertions. Declaring them here is what makes the engine refuse an
+        // unapproved overlay fact at the write boundary, no matter how the
+        // caller built the operation (see [`extract`] for why a domain-side
+        // guardrail alone could never be that guarantee). The four pipeline
+        // stages and their provenance cores are mechanical derivations of the
+        // corpus and carry no approval stamp.
+        approval_required_schemas: overlay_schemas()
+            .iter()
+            .map(|schema| schema.name.clone())
+            .collect(),
         mappings,
         ingestors,
         chunker_version: chunker_version.into(),

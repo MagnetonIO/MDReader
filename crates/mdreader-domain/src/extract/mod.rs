@@ -35,15 +35,33 @@
 //! and version, and a confidence. An approved fact carries its reviewer in
 //! the kernel's existing [`Provenance::approved_by`].
 //!
-//! The gate is **structural, not conventional**: [`Extraction`] has exactly
-//! one method that yields [`CatOperation`]s — [`Extraction::approved_operations`]
-//! — and it emits only what a human accepted. Proposals are reachable solely
-//! through [`Extraction::preview`], whose [`ProposalPreview`] deliberately
-//! produces no operations, so unreviewed facts cannot be handed to
-//! [`EmbeddedCatDb::apply_operations`] even by a caller who has not read a
-//! word of this. A preview can still be turned into an in-memory instance and
-//! checked against the schema's laws, so "what would approving this do?" is
-//! answerable without writing anything.
+//! # Where the approval guarantee actually lives
+//!
+//! **In the engine, at the write boundary — not here.**
+//!
+//! [`CatOperation`] is a public IR type with public constructors, and a
+//! review UI must be able to *see* proposed facts or it cannot render them.
+//! So no amount of type-hiding in this module can make an unapproved write
+//! impossible; anything that can read a proposal can rebuild the operation by
+//! hand. Chasing that would trade real UI capability for a guarantee that
+//! still would not hold.
+//!
+//! Instead, [`engine_registration`](crate::engine_registration) declares the
+//! overlay schemas in
+//! [`DomainRegistration::approval_required_schemas`](catdb_engine::DomainRegistration::approval_required_schemas),
+//! and [`EmbeddedCatDb::apply_operations`] refuses any assertion into one of
+//! them whose provenance names no reviewer — rejecting the whole batch, with
+//! [`EngineError::UnapprovedFact`](catdb_engine::EngineError::UnapprovedFact).
+//! That holds however the operation was constructed.
+//!
+//! What this module provides is **defence in depth**, and is described as
+//! such: there is no convenience path to an unapproved write.
+//! [`Extraction`] has exactly one method yielding [`CatOperation`]s —
+//! [`Extraction::approved_operations`] — and it emits only what a human
+//! accepted. Proposals are reachable through [`Extraction::preview`], whose
+//! [`ProposalPreview`] produces no operations at all, and which can still be
+//! turned into an in-memory instance and checked against the schema's laws,
+//! so "what would approving this do?" is answerable without writing anything.
 //!
 //! [`Provenance::approved_by`]: catdb_core::Provenance::approved_by
 //! [`EmbeddedCatDb::apply_operations`]: catdb_engine::EmbeddedCatDb::apply_operations
@@ -280,14 +298,16 @@ impl Extraction {
 
 /// A read-only view of an [`Extraction`]'s proposed graph.
 ///
-/// The type exists to make one mistake impossible rather than merely
-/// discouraged: **it yields no [`CatOperation`]s**, so nothing reachable
-/// through it can be handed to
-/// [`EmbeddedCatDb::apply_operations`](catdb_engine::EmbeddedCatDb::apply_operations).
+/// **It yields no [`CatOperation`]s**, so there is no convenient way to
+/// persist a proposal: only [`Extraction::approved_operations`] produces
+/// something a durable apply accepts. This is a guardrail, not the guarantee
+/// — the objects and morphisms below are public kernel values, and a caller
+/// determined to write one anyway can construct the operation by hand. That
+/// attempt is refused by the engine, which is where the guarantee lives; see
+/// the [module docs](self#where-the-approval-guarantee-actually-lives).
+///
 /// A reviewer can see every proposal, build the graph they would get, and
-/// find out which schema laws that graph would break — all in memory, with
-/// no path to the durable store. Only
-/// [`Extraction::approved_operations`] crosses that line.
+/// find out which schema laws that graph would break — all in memory.
 ///
 /// The approved path yields operations, which is what a durable apply takes:
 ///
@@ -299,16 +319,15 @@ impl Extraction {
 /// assert!(ops.is_empty(), "nothing approved yet");
 /// ```
 ///
-/// The preview path does not, and cannot be made to — the snippet below does
-/// **not** compile, which is the whole guarantee. It differs from the one
-/// above by exactly one thing: which method it reaches for.
+/// The preview path does not. The snippet below fails to compile, which is
+/// what "no convenience path" means concretely; it differs from the one above
+/// by exactly one thing — which method it reaches for.
 ///
 /// ```compile_fail
 /// use mdreader_domain::extract::{decision, SourceDocument};
 /// let corpus: Vec<SourceDocument> = Vec::new();
 /// let extraction = decision::extract(&corpus);
-/// // `ProposalPreview` has no method that produces operations, so an
-/// // unreviewed fact has no route to `apply_operations`.
+/// // `ProposalPreview` has no method that produces operations.
 /// let ops: Vec<catdb_ir::CatOperation> = extraction.preview().operations();
 /// ```
 #[derive(Debug, Clone, Copy)]
