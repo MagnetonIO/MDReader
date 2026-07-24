@@ -48,3 +48,10 @@ catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features 
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tempfile = { workspace = true }
+# Read-only inspection of the workspace FILE in `tests/composed_cli.rs`: that
+# test proves the `catdb` binary produced a real CatDB workspace (operation
+# log, objects/morphisms, execution indexes) rather than an app-private
+# format, which means reading it without going through the engine. Not a new
+# dependency — the same version and `bundled` feature already compile as part
+# of catdb-storage-sqlite, one layer down.
+rusqlite = { version = "0.37", features = ["bundled"] }
