@@ -234,22 +234,25 @@ export class Mac2Adapter implements PlatformDriver {
    *  `window.buttons[XCUIIdentifierCloseWindow]` resolves to. This targets the
    *  close control specifically (NOT the minimize `_XCUI:MinimizeWindow` or the
    *  fullscreen/zoom `_XCUI:FullScreenWindow` sibling), so we can only ever click
-   *  close. Only if that element genuinely can't be found does it fall back to the
-   *  top-left geometric estimate — and it logs that it did. */
+   *  close.
+   *
+   *  FAIL CLOSED: the geometric fallback fires ONLY when the element GENUINELY
+   *  isn't found (`isExisting()` is false — no `_XCUI:CloseWindow` match). If the
+   *  element IS found but its location/size query then fails, that is a real error
+   *  and PROPAGATES — we never mask it by silently clicking an estimated point
+   *  (which could hit the wrong control). A lookup that errors outright likewise
+   *  propagates. Only the clean "not found" path is soft, and it logs. */
   private async closeButtonTarget(): Promise<{ x: number; y: number }> {
-    try {
-      const closeBtn = await this.b.$('//XCUIElementTypeButton[@identifier="_XCUI:CloseWindow"]');
-      if (await closeBtn.isExisting()) {
-        const loc = await closeBtn.getLocation();
-        const size = await closeBtn.getSize();
-        return { x: Math.round(loc.x + size.width / 2), y: Math.round(loc.y + size.height / 2) };
-      }
-    } catch {
-      /* fall through to the geometric estimate */
+    const closeBtn = await this.b.$('//XCUIElementTypeButton[@identifier="_XCUI:CloseWindow"]');
+    if (await closeBtn.isExisting()) {
+      // Element found — a query failure here is a REAL error; let it throw.
+      const loc = await closeBtn.getLocation();
+      const size = await closeBtn.getSize();
+      return { x: Math.round(loc.x + size.width / 2), y: Math.round(loc.y + size.height / 2) };
     }
     const r = await this.windowRect();
     console.warn(
-      `mac2: could not locate the window close button (_XCUI:CloseWindow) via XCUITest — ` +
+      `mac2: window close button (_XCUI:CloseWindow) not found via XCUITest — ` +
         `falling back to the top-left geometric estimate at (${r.x + 16},${r.y + 16}).`,
     );
     return { x: r.x + 16, y: r.y + 16 };
