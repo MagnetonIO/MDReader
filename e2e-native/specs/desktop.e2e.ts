@@ -1,133 +1,44 @@
 /**
- * Milestone PT — the desktop GUI suite, driven by WebdriverIO + tauri-driver
- * against the REAL built app on Linux (WebKitGTK) and Windows (WebView2).
+ * Milestone PT — the desktop leg of the UNIFIED harness (WebdriverIO + tauri-driver).
  *
- * It walks the SAME `FLOW` the macOS smoke driver walks (`../flows.ts`), so the
- * two harnesses can never diverge on what "working" means. Each webview
- * (`channel: 'dom'`) step is asserted rigorously against the live DOM. The
- * native-window (`channel: 'window'`) steps — drag / resize / red-X close —
- * are registered as PENDING here with an explicit reason: a W3C WebDriver
- * session drives the webview document, not the OS window chrome, so those
- * assertions live in the macOS AppleScript driver (`../macos/smoke.ts`), which
- * CAN move and close the real window.
+ * Drives the SAME shared `FLOW` the macOS mac2 leg drives, but off the real app's
+ * webview DOM on Linux (WebKitGTK) and Windows (WebView2) via `tauri-driver`. The
+ * webview-channel steps are asserted rigorously against the live DOM; the native-
+ * window steps (drag / resize / red-X close) are registered PENDING here — a
+ * webview WebDriver session drives the document, not the OS chrome, so those live
+ * in the macOS mac2 leg.
  *
- * STATUS: CI-validated-pending — authored + wired into tauri.yml, not yet run on
- * a machine with tauri-driver (the macOS dev box cannot run it).
+ * STATUS: authored + wired into CI (tauri.yml, ubuntu + windows), CI-validated-
+ * pending — the macOS dev box cannot run tauri-driver.
  */
 
-import { browser, $, $$, expect } from '@wdio/globals';
-import { Key } from 'webdriverio';
+import { browser, expect } from '@wdio/globals';
 
-import { DOM_STEPS, SELECTORS, WINDOW_STEPS, type Step } from '../flows.ts';
+import { WINDOW_STEPS } from '../flows.ts';
+import { runFlow } from '../drivers/runner.ts';
+import { WebviewAdapter } from '../drivers/webview-adapter.ts';
 
-/** The primary modifier the app listens for off-macOS (detectMac === false). */
-const MOD = Key.Ctrl;
-
-/** Map a shell chord to a WebdriverIO key sequence. */
-function chordKeys(chord: string): string[] {
-  if (chord === 'Enter') return [Key.Enter];
-  if (chord === 'Escape') return [Key.Escape];
-  const parts = chord.split('+');
-  const key = parts[parts.length - 1]!.toLowerCase();
-  return parts.includes('Mod') ? [MOD, key] : [key];
-}
-
-async function press(chord: string): Promise<void> {
-  await browser.keys(chordKeys(chord));
-}
-
-describe('MDReader desktop — core flow (WebdriverIO + tauri-driver)', () => {
-  it('renders the shell once the app has launched', async () => {
-    // The workspace was seeded (see wdio.conf onPrepare), so the shell mounts
-    // straight into the granted corpus.
-    await $(SELECTORS.workspaceTree.css!).waitForExist({ timeout: 30_000 });
+describe('MDReader desktop — unified FLOW over the webview DOM (tauri-driver)', () => {
+  it('drives grant → index → open → search → provenance-jump against the live DOM', async () => {
+    const adapter = new WebviewAdapter({
+      browser,
+      name: `${process.platform} desktop (tauri-driver webview)`,
+      windowPendingReason:
+        'a webview WebDriver session drives the DOM, not the OS window chrome; asserted by the macOS mac2 leg',
+    });
+    const result = await runFlow(adapter);
+    // The runner logs each step PASS/PEND; surface the first failure clearly.
+    if (!result.ok) throw new Error(`unified FLOW failed at step "${result.failedAt}"`);
+    expect(result.ok).toBe(true);
   });
 
-  for (const step of DOM_STEPS) {
-    it(step.title, async () => {
-      await runDomStep(step);
-    });
-  }
-
-  // The native-window assertions cannot be made through a webview WebDriver
-  // session — they are covered by the macOS smoke driver. Register them as
-  // pending so the report shows the coverage boundary explicitly.
+  // Make the coverage boundary explicit in the report: the native-window steps are
+  // the macOS mac2 leg's rigorous domain, pending on a webview session.
   for (const step of WINDOW_STEPS) {
+    if (step.kind === 'launch') continue;
     it.skip(
-      `${step.title} — asserted by the macOS smoke driver (native window not drivable via WebDriver)`,
+      `${step.title} — asserted by the macOS mac2 leg (native window not drivable via a webview WebDriver session)`,
       () => undefined,
     );
   }
 });
-
-async function runDomStep(step: Step): Promise<void> {
-  switch (step.kind) {
-    case 'grantWorkspace': {
-      await $(SELECTORS.workspaceTree.css!).waitForDisplayed({ timeout: 30_000 });
-      const rows = await $$(SELECTORS.treeItem.css!);
-      expect(rows.length).toBeGreaterThanOrEqual(step.minFiles);
-      return;
-    }
-    case 'waitIndexed': {
-      const status = $(SELECTORS.statusBar.css!);
-      const re = new RegExp(step.pattern);
-      await browser.waitUntil(async () => re.test(await status.getText()), {
-        timeout: 30_000,
-        timeoutMsg: `status bar never matched /${step.pattern}/`,
-      });
-      return;
-    }
-    case 'openDoc': {
-      await press('Mod+P');
-      await $(SELECTORS.paletteInput.css!).waitForDisplayed();
-      await browser.keys(step.query.split(''));
-      await press('Enter');
-      const reader = $(SELECTORS.reader.css!);
-      await reader.waitForExist({ timeout: 15_000 });
-      const re = new RegExp(step.headingPattern);
-      await browser.waitUntil(async () => re.test(await $(SELECTORS.reader.css!).getText()), {
-        timeout: 15_000,
-        timeoutMsg: `opened document never showed a heading matching /${step.headingPattern}/`,
-      });
-      return;
-    }
-    case 'search': {
-      await press('Mod+K');
-      await $(SELECTORS.paletteInput.css!).waitForDisplayed();
-      await browser.keys(step.query.split(''));
-      // At least one hit must come back.
-      await browser.waitUntil(async () => (await $$(SELECTORS.paletteOption.css!)).length > 0, {
-        timeout: 15_000,
-        timeoutMsg: `Cmd+K "${step.query}" returned no hits`,
-      });
-      return;
-    }
-    case 'jumpToHit': {
-      await press('Enter');
-      // The palette closes and the hit's document renders scrolled to its
-      // provenance target. Assert BOTH the jumped-to document's heading and the
-      // provenance line — text unique to that document — are in the reader, so
-      // this proves the jump actually navigated to the right doc at the right
-      // content (not merely that "a block exists").
-      await $(SELECTORS.paletteDialog.css!).waitForExist({ reverse: true, timeout: 15_000 });
-      await $(SELECTORS.readerBlock.css!).waitForExist({ timeout: 15_000 });
-      const headRe = new RegExp(step.headingPattern);
-      const provRe = new RegExp(step.provenancePattern);
-      await browser.waitUntil(
-        async () => {
-          const text = await $(SELECTORS.reader.css!).getText();
-          return headRe.test(text) && provRe.test(text);
-        },
-        {
-          timeout: 15_000,
-          timeoutMsg:
-            `after jump the reader never showed heading /${step.headingPattern}/ ` +
-            `and provenance line /${step.provenancePattern}/`,
-        },
-      );
-      return;
-    }
-    default:
-      throw new Error(`runDomStep received a non-dom step: ${step.kind}`);
-  }
-}
