@@ -178,20 +178,29 @@ jobs:
   # and the red-X close ends the process.
   #
   # It CANNOT run on GitHub-hosted macOS runners: System Events keystrokes,
-  # synthetic CoreGraphics mouse events, and `screencapture` all require an
-  # interactive Aqua login session with Accessibility + Screen-Recording (TCC)
-  # granted to the controlling process — permissions a hosted runner has no way
-  # to approve non-interactively. It is therefore a DOCUMENTED MANUAL / SELF-
-  # HOSTED gate: run `scripts/macos-smoke.sh` locally (its output is the
-  # acceptance evidence), or enable this job on a self-hosted macOS GUI runner by
-  # setting the repository variable MACOS_GUI_RUNNER=true. See
-  # docs/testing/gui-e2e.md for the honest coverage matrix.
+  # synthetic CoreGraphics mouse events, `screencapture`, and Accessibility reads
+  # all require an interactive Aqua login session with Accessibility +
+  # Screen-Recording (TCC) granted to the controlling process — permissions a
+  # hosted runner has no way to approve non-interactively; there it would only
+  # ERROR, never false-pass. It is therefore a DOCUMENTED MANUAL / SELF-HOSTED
+  # gate: run `scripts/macos-smoke.sh` locally (its output is the acceptance
+  # evidence), or enable it on a self-hosted macOS GUI runner.
+  #
+  # This job is wired so it can ONLY ever land on a self-hosted GUI runner, never
+  # on hosted macos-latest:
+  #   - the `if` gate keeps it skipped entirely unless the repo variable
+  #     MACOS_GUI_RUNNER is set to 'true'; and
+  #   - `runs-on` selects the labels [self-hosted, macOS, mdreader-gui]. GitHub
+  #     dispatches this to a self-hosted runner carrying those labels ONLY — with
+  #     no such runner registered it stays queued and is never scheduled onto a
+  #     hosted image. Register your GUI runner with the `mdreader-gui` label to
+  #     enable the gate. See docs/testing/gui-e2e.md for the coverage matrix.
   # --------------------------------------------------------------------------
   macos-smoke:
-    name: macOS GUI smoke (manual / self-hosted gate)
+    name: macOS GUI smoke (self-hosted GUI gate)
     needs: check
     if: ${{ vars.MACOS_GUI_RUNNER == 'true' }}
-    runs-on: macos-latest # override to a [self-hosted, macOS] GUI runner
+    runs-on: [self-hosted, macOS, mdreader-gui]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

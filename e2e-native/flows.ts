@@ -173,14 +173,30 @@ export type Step =
       readonly query: string;
     }
   | {
-      /** Press Enter on the top hit; assert it jumps to the provenance line. */
+      /** Press Enter on the top hit; assert the reader actually navigated to the
+       *  hit's document AND scrolled its provenance target into view. Both legs
+       *  assert this: the palette closes, a rendered heading matches
+       *  {@link headingPattern}, and the provenance line ({@link provenancePattern})
+       *  — text unique to the target document — is present in the reader. */
       readonly kind: 'jumpToHit';
       readonly id: string;
       readonly title: string;
       readonly channel: 'dom';
+      /** Regex source the jumped-to document's heading must match. */
+      readonly headingPattern: string;
+      /** Regex source for the provenance line the search hit points at — text
+       *  that exists ONLY in the target document, so seeing it in the reader
+       *  proves the jump landed on the right doc at the right content. */
+      readonly provenancePattern: string;
     }
   | {
-      /** Drag the native window; assert its screen position changed. THE
+      /** Prove the native titlebar is genuinely, and *locally*, draggable. Two
+       *  synthetic CoreGraphics gestures with the SAME delta:
+       *    (1) started ON the titlebar → the window moves by ~the delta; and
+       *    (2) NEGATIVE CONTROL — started in the CONTENT area → the window does
+       *        NOT move.
+       *  Together they show the movement came from the drag GESTURE localized to
+       *  the titlebar, not from a reposition or a whole-window drag region. THE
        *  assertion a "process booted" check can't make. */
       readonly kind: 'dragWindow';
       readonly id: string;
@@ -246,7 +262,11 @@ export const FLOW: readonly Step[] = [
     id: 'grant-workspace',
     title: 'Fixture workspace is granted — the file tree is populated',
     channel: 'dom',
-    minFiles: 1,
+    // The fixture corpus has 45 markdown files across several directories, all
+    // expanded by default, so a populated tree renders many rows. 5 is a floor
+    // that is safely below the rendered set on every platform yet high enough to
+    // be a real "the tree is populated" assertion, not "one stray row exists".
+    minFiles: 5,
   },
   {
     kind: 'waitIndexed',
@@ -278,6 +298,11 @@ export const FLOW: readonly Step[] = [
     id: 'jump-to-hit',
     title: 'Enter jumps to the hit’s provenance line',
     channel: 'dom',
+    // "pluggable" occurs only in notes/zettel/node-storage.md (H1 "Storage"), so
+    // the top hit lands there and the reader must show that heading plus the
+    // exact provenance line — text that appears nowhere else in the corpus.
+    headingPattern: 'Storage',
+    provenancePattern: 'Storage is pluggable',
   },
   {
     kind: 'dragWindow',

@@ -4,32 +4,51 @@
  * WKWebView (the macOS webview) exposes no WebDriver endpoint, so the WebdriverIO
  * suite cannot drive the real app here. This driver does it the only way macOS
  * allows: it launches the real `.app`, then drives + inspects the NATIVE window
- * through AppleScript System Events (position/size/close-button, keystrokes) and
- * CoreGraphics synthetic input (`cgdrag`), capturing the webview with
- * `screencapture`. It consumes the SAME `FLOW` the WebdriverIO suite does.
+ * through AppleScript System Events (keystrokes, position/size/close-button) and
+ * CoreGraphics synthetic input (`cgdrag`), and — the part that makes its DOM
+ * assertions RIGOROUS rather than pixel-guessing — it reads the webview's
+ * Accessibility tree with the compiled `axquery` helper. WebKit publishes each
+ * DOM element's CSS class list on `AXDOMClassList`, so this driver enforces the
+ * SAME semantic contract the WebdriverIO leg does (the shared `FLOW`): it counts
+ * `.filetree__row` rows, parses the status-bar text against the same regex,
+ * matches a rendered heading, counts palette result rows, and proves the reader
+ * scrolled to a hit's provenance line.
  *
- * What is asserted RIGOROUSLY (fails the run, exit 1):
- *   - launch:        the process is alive and a native window exists.
- *   - grantWorkspace: the captured frame shows rendered content (not a blank
- *                     webview) — the "booted but nothing rendered" failure.
- *   - waitIndexed:   the engine wrote its on-disk index (a `catdb.db` appears).
- *   - openDoc:       after Cmd+P → open, the frame shows rendered content.
- *   - search:        after Cmd+K → type, the frame shows rendered content.
- *   - jumpToHit:     after Enter, the frame shows rendered content.
- *   - dragWindow:    a SYNTHETIC titlebar drag moves the window by ~the delta.
- *                    A dead drag region (the class of bug that shipped) → no
- *                    move → FAIL.
+ * What is asserted, and why a "process booted" check could never catch it:
+ *   - launch:        a native window exists (the process is alive).
+ *   - grantWorkspace: the file tree is populated to >= minFiles rows (AX count of
+ *                     `.filetree__row`) — not "the screen changed".
+ *   - waitIndexed:   the STATUS BAR reads /Indexed N files/ (the same regex the
+ *                     WebdriverIO leg uses), AND the engine wrote its index to the
+ *                     workspace-scoped path `workspaces/<blake3(canonical root)>/
+ *                     catdb.db` (a stale db elsewhere cannot satisfy it). The
+ *                     status-bar signal is the gate; the db is corroboration.
+ *   - openDoc:       after Cmd+P → open, a rendered HEADING matches the expected
+ *                     pattern (AX heading read) AND the frame changed (before/
+ *                     after diff), not merely "a non-blank frame".
+ *   - search:        after Cmd+K → type, >= 1 palette result row is present (AX
+ *                     count of `.mdsearch__item`).
+ *   - jumpToHit:     after Enter, the palette closes, the jumped-to document's
+ *                     heading is shown, and its provenance line — text unique to
+ *                     that document — is in the reader (the jump really landed).
+ *   - dragWindow:    a SYNTHETIC titlebar drag moves the window by ~the delta,
+ *                     AND a NEGATIVE-CONTROL drag started in the CONTENT area does
+ *                     NOT move it. Together they prove the titlebar is genuinely
+ *                     and *locally* draggable — a dead drag region, or a
+ *                     whole-window drag region, fails one or the other.
  *   - resizeWindow:  the window size changes.
  *   - closeWindow:   a SYNTHETIC click on the red close button ends the process.
  *                    An intercepted/blocked close (the bug that shipped) → the
  *                    process survives → FAIL.
  *
- * The dragWindow and closeWindow assertions are the two a "process booted" check
- * can never make — they are the reason this harness exists. Every step also
- * writes a PNG artifact for the run log.
+ * Fault injection (RED proof): set `MDREADER_SMOKE_FAULT=<step id>` to break the
+ * real behaviour one step exercises (e.g. drag the whole window on the negative
+ * control, or skip the red-X click) and confirm the driver goes RED at exactly
+ * that step. It proves each assertion is load-bearing, not vacuous. Inert unless
+ * the env var is set.
  *
- * Node built-ins only. Runs under Node's native TypeScript (Node ≥ 22.13 with
- * `--experimental-strip-types`; ≥ 23 by default) — no build step.
+ * Node built-ins only. Runs under Node's native TypeScript (Node >= 22.13 with
+ * `--experimental-strip-types`; >= 23 strips by default) — no build step.
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -37,7 +56,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -51,9 +70,20 @@ import { appConfigDir, clearSeed, seedWorkspace } from '../seed.ts';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
 
-/** Below this inflated-scanline stddev a frame is treated as blank/unrendered.
- *  Calibrated: real content ≈ 22, a solid frame ≈ 0.5 (see docs/testing). */
-const RENDERED_STDDEV_MIN = 4.0;
+/** Fraction of sampled frame bytes that must change between the BEFORE and AFTER
+ *  capture of an interaction step for it to count as "the action produced a
+ *  visible result". Only the content pane changes (the sidebar/titlebar/status
+ *  bar are identical across the transition), so the fraction is modest. Measured:
+ *  two identical frames differ ~0.1% (compression/cursor noise); the smallest
+ *  real transition (welcome → document) is ~1.9%, and document → palette /
+ *  palette → reader are ~6%. 0.5% sits ~4.5x above the noise floor and ~3.8x
+ *  below the smallest real change — it rejects "nothing moved" without flaking. */
+const FRAME_DIFF_MIN = 0.005;
+
+/** The step id whose real behaviour to break, for RED evidence. Empty in normal
+ *  runs. See the module doc-comment. */
+const FAULT = process.env.MDREADER_SMOKE_FAULT ?? '';
+const faulted = (id: string): boolean => FAULT === id;
 
 interface Options {
   app: string;
@@ -80,6 +110,100 @@ function parseArgs(argv: string[]): Options {
     identifier: FLOW_CONFIG.bundleIdentifier,
     keep: argv.includes('--keep'),
   };
+}
+
+// --------------------------------------------------------------------------
+// BLAKE3 (single chunk) — to locate the engine's per-workspace index dir.
+//
+// The engine writes its db to `<app-data-dir>/workspaces/<blake3(canonical
+// root)>/catdb.db` (see engine.rs `db_path_under`). Reproducing that hash lets
+// the driver scope its "the index exists" check to THIS workspace, so a stale db
+// left by another workspace can never satisfy it. macOS PATH_MAX is 1024, so any
+// canonical path fits in a single BLAKE3 chunk — a single-chunk implementation is
+// exact here. Verified against the official empty-input vector and the real dir
+// the app creates for the fixture corpus.
+// --------------------------------------------------------------------------
+
+const B3_IV = [
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+];
+const B3_MSG = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+const B3_CHUNK_START = 1;
+const B3_CHUNK_END = 2;
+const B3_ROOT = 8;
+
+const rotr = (x: number, n: number): number => ((x >>> n) | (x << (32 - n))) >>> 0;
+
+function b3g(v: number[], a: number, b: number, c: number, d: number, mx: number, my: number): void {
+  v[a] = (v[a]! + v[b]! + mx) >>> 0;
+  v[d] = rotr(v[d]! ^ v[a]!, 16);
+  v[c] = (v[c]! + v[d]!) >>> 0;
+  v[b] = rotr(v[b]! ^ v[c]!, 12);
+  v[a] = (v[a]! + v[b]! + my) >>> 0;
+  v[d] = rotr(v[d]! ^ v[a]!, 8);
+  v[c] = (v[c]! + v[d]!) >>> 0;
+  v[b] = rotr(v[b]! ^ v[c]!, 7);
+}
+
+function b3round(v: number[], m: number[]): void {
+  b3g(v, 0, 4, 8, 12, m[0]!, m[1]!);
+  b3g(v, 1, 5, 9, 13, m[2]!, m[3]!);
+  b3g(v, 2, 6, 10, 14, m[4]!, m[5]!);
+  b3g(v, 3, 7, 11, 15, m[6]!, m[7]!);
+  b3g(v, 0, 5, 10, 15, m[8]!, m[9]!);
+  b3g(v, 1, 6, 11, 12, m[10]!, m[11]!);
+  b3g(v, 2, 7, 8, 13, m[12]!, m[13]!);
+  b3g(v, 3, 4, 9, 14, m[14]!, m[15]!);
+}
+
+function b3compress(cv: number[], block: number[], blockLen: number, flags: number): number[] {
+  const v = [
+    cv[0]!, cv[1]!, cv[2]!, cv[3]!, cv[4]!, cv[5]!, cv[6]!, cv[7]!,
+    B3_IV[0]!, B3_IV[1]!, B3_IV[2]!, B3_IV[3]!,
+    0, 0, blockLen >>> 0, flags >>> 0,
+  ];
+  let m = block.slice();
+  for (let r = 0; r < 7; r++) {
+    b3round(v, m);
+    if (r < 6) {
+      const nm = new Array<number>(16);
+      for (let i = 0; i < 16; i++) nm[i] = m[B3_MSG[i]!]!;
+      m = nm;
+    }
+  }
+  const out = new Array<number>(8);
+  for (let i = 0; i < 8; i++) out[i] = (v[i]! ^ v[i + 8]!) >>> 0;
+  return out;
+}
+
+/** Lowercase hex BLAKE3-256 of `buf` (single chunk; buf.length must be <= 1024). */
+function blake3hex(buf: Buffer): string {
+  if (buf.length > 1024) throw new Error('blake3hex: single-chunk only (input > 1024 bytes)');
+  const nBlocks = Math.max(1, Math.ceil(buf.length / 64));
+  let cv = B3_IV.slice();
+  for (let bi = 0; bi < nBlocks; bi++) {
+    const start = bi * 64;
+    const blockLen = Math.min(64, buf.length - start);
+    const words = new Array<number>(16).fill(0);
+    for (let w = 0; w < 16; w++) {
+      const o = start + w * 4;
+      words[w] =
+        (((buf[o] ?? 0) | ((buf[o + 1] ?? 0) << 8) | ((buf[o + 2] ?? 0) << 16) | ((buf[o + 3] ?? 0) << 24)) >>>
+          0);
+    }
+    let flags = 0;
+    if (bi === 0) flags |= B3_CHUNK_START;
+    if (bi === nBlocks - 1) flags |= B3_CHUNK_END | B3_ROOT; // single chunk ⇒ also the root
+    cv = b3compress(cv, words, blockLen, flags);
+  }
+  let hex = '';
+  for (let i = 0; i < 8; i++) {
+    const le = cv[i]!;
+    hex += [le & 0xff, (le >>> 8) & 0xff, (le >>> 16) & 0xff, (le >>> 24) & 0xff]
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return hex;
 }
 
 // --------------------------------------------------------------------------
@@ -158,8 +282,9 @@ function assertAlive(pid: number, where: string): void {
   }
 }
 
-/** Bring the app forward and raise its window — the precondition for keystrokes
- *  to reach the webview. NO coordinate clicks (those can activate other apps). */
+/** Bring the app forward and raise its window — the precondition both for
+ *  keystrokes to reach the webview AND for an unoccluded screencapture. NO
+ *  coordinate clicks (those can activate other apps). */
 function focusWindow(pid: number): void {
   assertAlive(pid, 'focus');
   osa(`tell application "System Events"
@@ -197,16 +322,59 @@ function sleep(ms: number): Promise<void> {
 }
 
 // --------------------------------------------------------------------------
-// screencapture + rendered-content check
+// axquery (Accessibility reads) — compiled once from the committed Swift source
+// --------------------------------------------------------------------------
+
+function buildSwift(artifacts: string, name: string): string {
+  const src = join(HERE, `${name}.swift`);
+  const bin = join(artifacts, name);
+  execFileSync('swiftc', ['-O', '-o', bin, src]);
+  return bin;
+}
+
+interface Ax {
+  /** Number of DOM elements whose CSS class list contains `cssClass`. */
+  count(cssClass: string): number;
+  /** Text of every element, or of the subtree(s) scoped to `cssClass`. */
+  text(cssClass?: string): string;
+  /** Text of every rendered heading (AXHeading). */
+  headings(): string;
+}
+
+function makeAx(bin: string, pid: number): Ax {
+  // axquery's arg order is `<subcommand> <pid> [cssClass]`.
+  const run = (sub: string, extra: string[] = []): string => {
+    try {
+      return execFileSync(bin, [sub, String(pid), ...extra], { encoding: 'utf8' }).trim();
+    } catch {
+      return '';
+    }
+  };
+  return {
+    count: (cssClass) => Number.parseInt(run('count', [cssClass]) || '0', 10),
+    text: (cssClass) => run('text', cssClass ? [cssClass] : []),
+    headings: () => run('headings'),
+  };
+}
+
+// --------------------------------------------------------------------------
+// screencapture + before/after frame diff
 // --------------------------------------------------------------------------
 
 function capture(rect: Rect, path: string): void {
   execFileSync('screencapture', ['-x', '-R', `${rect.x},${rect.y},${rect.w},${rect.h}`, path]);
 }
 
-/** Standard deviation of a PNG's inflated (filtered) scanline bytes. A blank/
- *  solid frame yields ≈0; rendered content yields tens. Node built-ins only. */
-function renderedStddev(png: Buffer): number {
+/** Capture the app's CURRENT window bounds (focused + raised first, so nothing
+ *  occludes it) to `path`, and return the file path. */
+function captureWindow(pid: number, path: string): string {
+  capture(windowRect(pid), path);
+  return path;
+}
+
+/** A PNG's inflated (filtered) scanline bytes — the raw pixel-ish stream, filter
+ *  bytes included. Used only to compare two frames of the same window. */
+function rawScanlines(png: Buffer): Buffer {
   if (png.length < 8 || png.readUInt32BE(0) !== 0x89504e47) throw new Error('not a PNG');
   let off = 8;
   const idat: Buffer[] = [];
@@ -218,44 +386,29 @@ function renderedStddev(png: Buffer): number {
     if (type === 'IEND') break;
     off = start + len + 4;
   }
-  const raw = inflateSync(Buffer.concat(idat));
-  let n = 0;
-  let sum = 0;
-  let sumSq = 0;
-  const stride = Math.max(1, Math.floor(raw.length / 200_000));
-  for (let i = 0; i < raw.length; i += stride) {
-    const v = raw[i]!;
-    n++;
-    sum += v;
-    sumSq += v * v;
-  }
-  const mean = sum / n;
-  return Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+  return inflateSync(Buffer.concat(idat));
 }
 
-/** Capture the window and assert the frame is not blank. Returns the stddev. */
-function assertRenderedContent(pid: number, path: string): number {
-  const rect = windowRect(pid);
-  capture(rect, path);
-  const stddev = renderedStddev(readFileSync(path));
-  if (stddev < RENDERED_STDDEV_MIN) {
-    throw new Error(
-      `frame is blank (stddev ${stddev.toFixed(1)} < ${RENDERED_STDDEV_MIN}) — nothing rendered`,
-    );
+/** Fraction of sampled bytes that differ between two same-window frames. Differing
+ *  frame sizes count as fully changed (1.0). This is a BEFORE/AFTER diff — proof
+ *  the action changed the pixels — not a single-frame "is it blank" guess. */
+function frameDiffFraction(beforePng: Buffer, afterPng: Buffer): number {
+  const a = rawScanlines(beforePng);
+  const b = rawScanlines(afterPng);
+  if (a.length !== b.length) return 1;
+  const stride = Math.max(1, Math.floor(a.length / 200_000));
+  let n = 0;
+  let changed = 0;
+  for (let i = 0; i < a.length; i += stride) {
+    n++;
+    if (Math.abs(a[i]! - b[i]!) > 8) changed++;
   }
-  return stddev;
+  return n === 0 ? 0 : changed / n;
 }
 
 // --------------------------------------------------------------------------
 // cgdrag (synthetic mouse) — compiled once from the committed Swift source
 // --------------------------------------------------------------------------
-
-function buildCgdrag(artifacts: string): string {
-  const src = join(HERE, 'cgdrag.swift');
-  const bin = join(artifacts, 'cgdrag');
-  execFileSync('swiftc', ['-O', '-o', bin, src]);
-  return bin;
-}
 
 function cgDrag(bin: string, x1: number, y1: number, x2: number, y2: number): void {
   execFileSync(bin, ['drag', String(x1), String(y1), String(x2), String(y2)]);
@@ -265,6 +418,11 @@ function cgClick(bin: string, x: number, y: number): void {
   execFileSync(bin, ['click', String(x), String(y)]);
 }
 
+/** One synthetic drag that GRABS at (grabX,grabY) and pulls by (dx,dy). */
+function cgDragBy(bin: string, grabX: number, grabY: number, dx: number, dy: number): void {
+  cgDrag(bin, grabX, grabY, grabX + dx, grabY + dy);
+}
+
 // --------------------------------------------------------------------------
 // step interpreter
 // --------------------------------------------------------------------------
@@ -272,29 +430,30 @@ function cgClick(bin: string, x: number, y: number): void {
 interface Ctx {
   opts: Options;
   cgdrag: string;
+  axBin: string;
   pid: number;
   shot: (name: string) => string;
+  /** Absolute path of the workspace-scoped index db for the seeded corpus. */
+  indexDb: string;
 }
 
 /** Poll `check` until it is true or `timeoutMs` elapses. */
-async function waitUntil(check: () => boolean, timeoutMs: number, everyMs = 300): Promise<boolean> {
+async function waitUntil(
+  check: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  everyMs = 300,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (check()) return true;
+    if (await check()) return true;
     if (Date.now() >= deadline) return false;
     await sleep(everyMs);
   }
 }
 
-/** True once the engine has written an index db for any workspace. */
-function indexOnDisk(identifier: string): boolean {
-  const dir = join(appConfigDir(identifier), 'workspaces');
-  if (!existsSync(dir)) return false;
-  return readdirSync(dir).some((h) => existsSync(join(dir, h, 'catdb.db')));
-}
-
 async function runStep(step: Step, ctx: Ctx): Promise<string> {
   const { pid, opts } = ctx;
+  const ax = makeAx(ctx.axBin, pid);
   switch (step.kind) {
     case 'launch': {
       const ok = await waitUntil(() => windowCount(pid) >= 1, 20_000);
@@ -303,88 +462,217 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
       capture(windowRect(pid), shot);
       return `process ${pid} alive, window present → ${shot}`;
     }
+
     case 'grantWorkspace': {
-      await sleep(1500);
+      // SAME contract as the WebdriverIO leg: the file tree is populated to
+      // >= minFiles rows. Counted from the AX tree (`.filetree__row`), the exact
+      // elements `[role="treeitem"]` maps to — not "the screen changed".
+      const need = faulted(step.id) ? Number.MAX_SAFE_INTEGER : step.minFiles;
+      let rows = 0;
+      const ok = await waitUntil(() => {
+        rows = ax.count('filetree__row');
+        return rows >= need;
+      }, 15_000);
       const shot = ctx.shot('02-grant-workspace');
-      const stddev = assertRenderedContent(pid, shot);
-      return `workspace granted, sidebar rendered (stddev ${stddev.toFixed(1)}) → ${shot}`;
+      captureWindow(pid, shot);
+      if (!ok) {
+        throw new Error(
+          `file tree not populated: ${rows} rows < required ${need} — the seeded ` +
+            `workspace was not granted/listed.`,
+        );
+      }
+      return `workspace granted — file tree populated with ${rows} rows (>= ${need}) → ${shot}`;
     }
+
     case 'waitIndexed': {
-      const ok = await waitUntil(() => indexOnDisk(opts.identifier), FLOW_CONFIG.indexTimeoutMs);
-      if (!ok) throw new Error(`no engine index (catdb.db) within ${FLOW_CONFIG.indexTimeoutMs}ms`);
+      // GATE on the status-bar signal — the same regex the WebdriverIO leg uses —
+      // read from the status bar's AX subtree. Corroborated by the engine's
+      // WORKSPACE-SCOPED index db (a stale db elsewhere cannot satisfy it).
+      const re = new RegExp(faulted(step.id) ? 'Indexed 9999999 files' : step.pattern);
+      let statusText = '';
+      const statusOk = await waitUntil(() => {
+        statusText = ax.text('statusbar');
+        return re.test(statusText);
+      }, FLOW_CONFIG.indexTimeoutMs);
+      if (!statusOk) {
+        throw new Error(
+          `status bar never matched /${re.source}/ within ${FLOW_CONFIG.indexTimeoutMs}ms ` +
+            `(last read: ${JSON.stringify(statusText.replace(/\n/g, ' ⏎ ').slice(0, 160))})`,
+        );
+      }
+      if (!existsSync(ctx.indexDb)) {
+        throw new Error(
+          `status reported indexed but the workspace-scoped index db is absent: ${ctx.indexDb}`,
+        );
+      }
       const shot = ctx.shot('03-wait-indexed');
-      capture(windowRect(pid), shot);
-      return `engine wrote its index (catdb.db on disk); status shows the count → ${shot}`;
+      captureWindow(pid, shot);
+      const line = statusText.split('\n').find((l) => re.test(l)) ?? statusText;
+      return `status bar reads "${line.trim()}"; index db present at the workspace-scoped path → ${shot}`;
     }
+
     case 'openDoc': {
       focusWindow(pid);
+      const before = readFileSync(captureWindow(pid, ctx.shot('04-open-doc-before')));
       sendChord('Mod+P');
       await sleep(700);
       typeText(step.query);
       await sleep(1300);
       sendChord('Enter');
-      await sleep(1300);
+      // SAME contract as the WebdriverIO leg: a rendered heading matches. On
+      // fault, demand a heading the doc does not have.
+      const re = new RegExp(faulted(step.id) ? 'No Such Heading 12345' : step.headingPattern);
+      let headings = '';
+      const ok = await waitUntil(() => {
+        headings = ax.headings();
+        return re.test(headings);
+      }, 15_000);
       const shot = ctx.shot('04-open-doc');
-      const stddev = assertRenderedContent(pid, shot);
-      return `opened "${step.query}" via Cmd+P, document rendered (stddev ${stddev.toFixed(1)}) → ${shot}`;
+      const after = readFileSync(captureWindow(pid, shot));
+      if (!ok) {
+        throw new Error(
+          `opened "${step.query}" but no rendered heading matched /${re.source}/ ` +
+            `(headings: ${JSON.stringify(headings.replace(/\n/g, ' | ').slice(0, 160))})`,
+        );
+      }
+      const frac = frameDiffFraction(before, after);
+      if (frac < FRAME_DIFF_MIN) {
+        throw new Error(
+          `heading matched but the frame did not change (diff ${(frac * 100).toFixed(1)}% < ` +
+            `${(FRAME_DIFF_MIN * 100).toFixed(0)}%) — nothing actually rendered.`,
+        );
+      }
+      return `opened "${step.query}" — heading /${step.headingPattern}/ rendered, frame changed ${(frac * 100).toFixed(0)}% → ${shot}`;
     }
+
     case 'search': {
       focusWindow(pid);
+      const before = readFileSync(captureWindow(pid, ctx.shot('05-search-before')));
       sendChord('Mod+K');
       await sleep(700);
       typeText(step.query);
-      await sleep(2000);
+      // SAME contract as the WebdriverIO leg: >= 1 result row (`.mdsearch__item`,
+      // the elements cmdk gives role="option"). On fault, count a class no row
+      // carries → 0 rows, standing in for "the search returned nothing".
+      const rowClass = faulted(step.id) ? 'mdsearch__item__ABSENT' : 'mdsearch__item';
+      let rows = 0;
+      const ok = await waitUntil(() => {
+        rows = ax.count(rowClass);
+        return rows >= 1;
+      }, 15_000);
       const shot = ctx.shot('05-search');
-      const stddev = assertRenderedContent(pid, shot);
-      return `Cmd+K "${step.query}" returned results (stddev ${stddev.toFixed(1)}) → ${shot}`;
+      const after = readFileSync(captureWindow(pid, shot));
+      if (!ok) throw new Error(`Cmd+K "${step.query}" returned no result rows`);
+      const frac = frameDiffFraction(before, after);
+      if (frac < FRAME_DIFF_MIN) {
+        throw new Error(`palette rows reported but the frame did not change (diff ${(frac * 100).toFixed(1)}%)`);
+      }
+      return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn (frame changed ${(frac * 100).toFixed(0)}%) → ${shot}`;
     }
+
     case 'jumpToHit': {
       assertAlive(pid, 'jump-to-hit');
-      sendChord('Enter');
-      await sleep(1500);
+      const before = readFileSync(captureWindow(pid, ctx.shot('06-jump-to-hit-before')));
+      // On fault, do NOT press Enter — the jump never happens, the palette stays
+      // open, and the "reader shows the provenance line" assertion must fail.
+      if (!faulted(step.id)) sendChord('Enter');
+      const headRe = new RegExp(step.headingPattern);
+      const provRe = new RegExp(step.provenancePattern);
+      let heads = '';
+      let reader = '';
+      let paletteRows = 1;
+      // SAME contract, on BOTH legs: the palette closed AND the reader navigated
+      // to the hit's document at its provenance line (heading + a line unique to
+      // that document are in view).
+      const ok = await waitUntil(() => {
+        paletteRows = ax.count('mdsearch__item');
+        heads = ax.headings();
+        reader = ax.text();
+        return paletteRows === 0 && headRe.test(heads) && provRe.test(reader);
+      }, 15_000);
       const shot = ctx.shot('06-jump-to-hit');
-      const stddev = assertRenderedContent(pid, shot);
-      return `Enter opened the hit at its provenance line (stddev ${stddev.toFixed(1)}) → ${shot}`;
+      const after = readFileSync(captureWindow(pid, shot));
+      if (!ok) {
+        throw new Error(
+          `jump did not land on the provenance target: palette rows=${paletteRows} ` +
+            `(want 0), heading /${headRe.source}/ ${headRe.test(heads) ? 'shown' : 'MISSING'}, ` +
+            `provenance line /${provRe.source}/ ${provRe.test(reader) ? 'shown' : 'MISSING'}.`,
+        );
+      }
+      const frac = frameDiffFraction(before, after);
+      if (frac < FRAME_DIFF_MIN) {
+        throw new Error(`jumped but the frame did not change (diff ${(frac * 100).toFixed(1)}%)`);
+      }
+      return `Enter landed on the hit — heading /${step.headingPattern}/ + provenance line /${step.provenancePattern}/ in view (frame changed ${(frac * 100).toFixed(0)}%) → ${shot}`;
     }
+
     case 'dragWindow': {
       focusWindow(pid);
-      const before = windowRect(pid);
-      // Grab the titlebar mid-top, clear of the traffic lights on the left.
-      const grabX = before.x + Math.round(before.w / 2);
-      const grabY = before.y + 12;
-      cgDrag(ctx.cgdrag, grabX, grabY, grabX + step.dx, grabY + step.dy);
-      await sleep(500);
-      const after = windowRect(pid);
-      const movedX = after.x - before.x;
-      const movedY = after.y - before.y;
-      const shot = ctx.shot('07-drag-window');
-      capture(after, shot);
+      // (1) POSITIVE: a genuine drag STARTED ON the titlebar moves the window by
+      // ~the delta. Grab the titlebar mid-top, clear of the traffic lights.
+      const r0 = windowRect(pid);
+      const tbX = r0.x + Math.round(r0.w / 2);
+      const tbY = r0.y + 12;
+      cgDragBy(ctx.cgdrag, tbX, tbY, step.dx, step.dy);
+      await sleep(400);
+      const moved = windowRect(pid);
+      const posMovedX = moved.x - r0.x;
+      const posMovedY = moved.y - r0.y;
       const tol = 20;
-      if (Math.abs(movedX - step.dx) > tol || Math.abs(movedY - step.dy) > tol) {
+      if (Math.abs(posMovedX - step.dx) > tol || Math.abs(posMovedY - step.dy) > tol) {
         throw new Error(
-          `titlebar drag did NOT move the window as expected: moved (${movedX},${movedY}), ` +
+          `titlebar drag did NOT move the window as expected: moved (${posMovedX},${posMovedY}), ` +
             `wanted ~(${step.dx},${step.dy}). A dead drag region looks exactly like this.`,
         );
       }
-      return `window moved (${before.x},${before.y}) → (${after.x},${after.y}) [Δ ${movedX},${movedY}] → ${shot}`;
+      // (2) NEGATIVE CONTROL: the SAME drag started in the CONTENT area must NOT
+      // move the window (the native titlebar is the only drag surface). On fault,
+      // grab the titlebar instead — a whole-window drag region would look like
+      // this, and this assertion must catch it.
+      const cx = moved.x + Math.round(moved.w / 2);
+      const cy = faulted(step.id) ? moved.y + 12 : moved.y + Math.round(moved.h * 0.6);
+      cgDragBy(ctx.cgdrag, cx, cy, step.dx, step.dy);
+      await sleep(400);
+      const settled = windowRect(pid);
+      const negMovedX = settled.x - moved.x;
+      const negMovedY = settled.y - moved.y;
+      const shot = ctx.shot('07-drag-window');
+      captureWindow(pid, shot);
+      const negTol = 6;
+      if (Math.abs(negMovedX) > negTol || Math.abs(negMovedY) > negTol) {
+        throw new Error(
+          `NEGATIVE CONTROL FAILED: a content-area drag moved the window ` +
+            `(${negMovedX},${negMovedY}) — the window is draggable outside the titlebar, so the ` +
+            `positive drag proves nothing about titlebar draggability.`,
+        );
+      }
+      return (
+        `titlebar drag moved the window Δ(${posMovedX},${posMovedY}) ~ (${step.dx},${step.dy}); ` +
+        `content-area drag moved it Δ(${negMovedX},${negMovedY}) ~ (0,0) → ${shot}`
+      );
     }
+
     case 'resizeWindow': {
       focusWindow(pid);
       const before = windowRect(pid);
-      resizeWindowTo(pid, before.w + step.dw, before.h + step.dh);
+      // On fault, skip the resize → size unchanged → the assertion must fire.
+      if (!faulted(step.id)) resizeWindowTo(pid, before.w + step.dw, before.h + step.dh);
       await sleep(500);
       const after = windowRect(pid);
       const shot = ctx.shot('08-resize-window');
-      capture(after, shot);
+      captureWindow(pid, shot);
       if (after.w === before.w && after.h === before.h) {
         throw new Error(`window did not resize: still ${before.w}x${before.h}`);
       }
       return `window resized ${before.w}x${before.h} → ${after.w}x${after.h} → ${shot}`;
     }
+
     case 'closeWindow': {
       focusWindow(pid);
       const cb = closeButtonRect(pid);
-      cgClick(ctx.cgdrag, cb.x + Math.round(cb.w / 2), cb.y + Math.round(cb.h / 2));
+      // On fault, skip the click → the process survives → the assertion must fire
+      // (this is the dead-titlebar / intercepted-close class of bug).
+      if (!faulted(step.id)) cgClick(ctx.cgdrag, cb.x + Math.round(cb.w / 2), cb.y + Math.round(cb.h / 2));
       const gone = await waitUntil(() => windowCount(pid) === 0 && !isAlive(pid), 5000);
       if (!gone) {
         throw new Error(
@@ -394,6 +682,7 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
       }
       return `red-X closed the app — process ${pid} is gone`;
     }
+
     default: {
       const _exhaustive: never = step;
       throw new Error(`unhandled step ${JSON.stringify(_exhaustive)}`);
@@ -410,6 +699,47 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/** True while any `mdreader-app` process is running (a real check, not a swallowed
+ *  pkill exit code). */
+function anyInstanceRunning(): boolean {
+  try {
+    const out = execFileSync('pgrep', ['-x', 'mdreader-app'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out.length > 0;
+  } catch {
+    // pgrep exits 1 (throws) when nothing matches — that means none running.
+    return false;
+  }
+}
+
+/** Ensure NO stray `mdreader-app` survives before we launch our own — a leftover
+ *  instance owns a window/pid and an index that would contaminate this run.
+ *  Escalates TERM → KILL and VERIFIES the app is actually gone; refuses to
+ *  proceed otherwise (rather than swallowing the pkill exit code). */
+async function ensureNoStrayInstance(): Promise<void> {
+  if (!anyInstanceRunning()) return;
+  try {
+    execFileSync('pkill', ['-x', 'mdreader-app']);
+  } catch {
+    /* pkill exits 1 if the process died between the check and here — fine */
+  }
+  if (await waitUntil(() => !anyInstanceRunning(), 5000)) return;
+  // Still alive after a polite TERM — escalate.
+  try {
+    execFileSync('pkill', ['-9', '-x', 'mdreader-app']);
+  } catch {
+    /* raced to exit */
+  }
+  if (!(await waitUntil(() => !anyInstanceRunning(), 5000))) {
+    throw new Error(
+      'a prior mdreader-app instance is still running and could not be killed — refusing to ' +
+        'proceed (its window/pid/index would contaminate the run).',
+    );
+  }
+}
+
 // --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
@@ -421,6 +751,7 @@ async function main(): Promise<number> {
   console.log(`app:       ${opts.app}`);
   console.log(`corpus:    ${opts.corpus}`);
   console.log(`artifacts: ${opts.artifacts}`);
+  if (FAULT) console.log(`FAULT INJECTION ACTIVE: "${FAULT}" — expect a RED failure at that step.`);
 
   if (!existsSync(opts.binary)) {
     console.error(`\nFAIL: app binary not found: ${opts.binary}`);
@@ -435,12 +766,9 @@ async function main(): Promise<number> {
   mkdirSync(opts.artifacts, { recursive: true });
   const shot = (name: string): string => join(opts.artifacts, `${name}.png`);
 
-  // Any leftover instance would confuse window/pid lookups.
-  try {
-    execFileSync('pkill', ['-x', 'mdreader-app']);
-  } catch {
-    /* none running */
-  }
+  // Any leftover instance would confuse window/pid lookups AND its stale index
+  // could satisfy a laxly-scoped check — verify it is actually gone first.
+  await ensureNoStrayInstance();
 
   // Fresh state: wipe the plugin-store + engine index so the run re-grants and
   // re-indexes from scratch (hash-embed makes this instant).
@@ -448,9 +776,16 @@ async function main(): Promise<number> {
   const workspaces = join(appConfigDir(opts.identifier), 'workspaces');
   rmSync(workspaces, { recursive: true, force: true });
   const seedPath = await seedWorkspace(opts.identifier, opts.corpus);
-  console.log(`seeded:    ${seedPath}\n`);
+  console.log(`seeded:    ${seedPath}`);
 
-  const cgdrag = buildCgdrag(opts.artifacts);
+  // The engine writes its index to workspaces/<blake3(canonical root)>/catdb.db.
+  // Reproduce that path so waitIndexed's db check is scoped to THIS workspace.
+  const canonicalCorpus = realpathSync(opts.corpus);
+  const indexDb = join(workspaces, blake3hex(Buffer.from(canonicalCorpus, 'utf8')), 'catdb.db');
+  console.log(`index db:  ${indexDb}\n`);
+
+  const cgdrag = buildSwift(opts.artifacts, 'cgdrag');
+  const axBin = buildSwift(opts.artifacts, 'axquery');
 
   // Launch the real binary with the offline hash embedder so indexing is instant
   // and deterministic (no ONNX model download).
@@ -465,7 +800,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const ctx: Ctx = { opts, cgdrag, pid, shot };
+  const ctx: Ctx = { opts, cgdrag, axBin, pid, shot, indexDb };
   let failedAt: string | null = null;
 
   try {

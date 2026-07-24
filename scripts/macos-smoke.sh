@@ -51,6 +51,8 @@ else
 fi
 
 echo "==> Running macOS GUI smoke driver…"
-# Node runs the TypeScript driver directly (native type-stripping). --no-warnings
-# hushes the experimental-strip-types notice on Node < 23.
-exec node --no-warnings "$DRIVER" --app "$APP" "${DRIVER_ARGS[@]}"
+# Node runs the TypeScript driver directly via native type-stripping.
+# --experimental-strip-types is REQUIRED on Node 22.13–22.x (stripping is not on
+# by default until Node 23); it is a harmless no-op flag on Node >= 23.
+# --no-warnings hushes the experimental notice.
+exec node --experimental-strip-types --no-warnings "$DRIVER" --app "$APP" "${DRIVER_ARGS[@]}"

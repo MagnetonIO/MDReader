@@ -104,10 +104,27 @@ async function runDomStep(step: Step): Promise<void> {
     }
     case 'jumpToHit': {
       await press('Enter');
-      // The palette closes and the hit's document renders at its provenance line.
+      // The palette closes and the hit's document renders scrolled to its
+      // provenance target. Assert BOTH the jumped-to document's heading and the
+      // provenance line — text unique to that document — are in the reader, so
+      // this proves the jump actually navigated to the right doc at the right
+      // content (not merely that "a block exists").
       await $(SELECTORS.paletteDialog.css!).waitForExist({ reverse: true, timeout: 15_000 });
-      const blocks = $(SELECTORS.readerBlock.css!);
-      await blocks.waitForExist({ timeout: 15_000 });
+      await $(SELECTORS.readerBlock.css!).waitForExist({ timeout: 15_000 });
+      const headRe = new RegExp(step.headingPattern);
+      const provRe = new RegExp(step.provenancePattern);
+      await browser.waitUntil(
+        async () => {
+          const text = await $(SELECTORS.reader.css!).getText();
+          return headRe.test(text) && provRe.test(text);
+        },
+        {
+          timeout: 15_000,
+          timeoutMsg:
+            `after jump the reader never showed heading /${step.headingPattern}/ ` +
+            `and provenance line /${step.provenancePattern}/`,
+        },
+      );
       return;
     }
     default:
