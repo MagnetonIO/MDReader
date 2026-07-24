@@ -23,7 +23,7 @@ fn assert_no_orphan_chunk_objects(engine: &EmbeddedCatDb) {
         .store()
         .objects_with_entity_prefix("rx.Chunk")
         .unwrap();
-    let ids: Vec<Uuid> = objects.iter().map(|(id, _)| *id).collect();
+    let ids: Vec<Uuid> = objects.iter().map(|object| object.id).collect();
     let rows = engine.store().chunks_by_ids(&ids).unwrap();
     assert_eq!(
         rows.len(),
@@ -198,7 +198,15 @@ async fn import_edit_rename_delete_lifecycle() {
 
     // The operation log mirrors the corpus coherently at every step.
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 
     let status = engine.status().await.unwrap();
     assert_eq!(status.documents, 2);
@@ -289,7 +297,15 @@ async fn failed_embedding_leaves_files_reprocessable() {
     assert_eq!(report.chunks_embedded, 0);
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
     // After failure + repair: no chunk facts without rows, no leftovers.
     assert_no_orphan_chunk_objects(&engine);
 }
@@ -341,7 +357,15 @@ async fn deleting_a_nested_repo_directory_cleans_up_its_documents() {
         "deleted nested-repo document must not be searchable"
     );
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test]
@@ -430,7 +454,15 @@ async fn fixtures_corpus_imports_cleanly() {
     assert_eq!(report.links_resolved, 107);
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 
     let hits = engine
         .search("wikilink graph", SearchOptions::default())
@@ -609,7 +641,15 @@ async fn force_rechunk_with_new_boundaries_sweeps_stale_chunk_rows() {
     assert!(new_ids.contains(&hits[0].chunk_id));
     assert_no_orphan_chunk_objects(&engine);
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test]
@@ -657,5 +697,13 @@ async fn concurrent_imports_serialize_without_resurrecting_deletions() {
     );
     assert_no_orphan_chunk_objects(&engine);
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }

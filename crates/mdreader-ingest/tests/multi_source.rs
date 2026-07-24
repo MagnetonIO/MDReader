@@ -140,7 +140,15 @@ async fn imports_and_reconciles_stay_scoped_to_their_source() {
     );
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -184,7 +192,15 @@ async fn watch_converges_each_source_independently() {
     .await;
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 async fn converge(what: &str, mut check: impl FnMut() -> bool) {

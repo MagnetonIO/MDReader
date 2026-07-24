@@ -1,0 +1,15 @@
+---
+type: crate
+name: broken-app
+layer: app
+---
+
+# broken-app
+
+Claims to depend on catdb-core through an interface catdb-core does not
+expose — `Search API` belongs to catdb-engine. This is the corpus-level
+inconsistency the architecture overlay's law is meant to catch.
+
+## Depends on
+
+- [[catdb-core#Search API]]

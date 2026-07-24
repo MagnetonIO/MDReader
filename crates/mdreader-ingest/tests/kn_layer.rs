@@ -58,8 +58,8 @@ fn artifact_concept_id(doc: Uuid, tag: &str) -> Uuid {
 /// Count stored `kn.*` objects by entity name.
 fn kn_counts(engine: &EmbeddedCatDb) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
-    for (_, entity) in engine.store().objects_with_entity_prefix("kn.").unwrap() {
-        *counts.entry(entity).or_insert(0) += 1;
+    for object in engine.store().objects_with_entity_prefix("kn.").unwrap() {
+        *counts.entry(object.entity).or_insert(0) += 1;
     }
     counts
 }
@@ -70,8 +70,8 @@ fn kn_object_ids(engine: &EmbeddedCatDb, entity: &str) -> Vec<Uuid> {
         .objects_with_entity_prefix("kn.")
         .unwrap()
         .into_iter()
-        .filter(|(_, e)| e == entity)
-        .map(|(id, _)| id)
+        .filter(|object| object.entity == entity)
+        .map(|object| object.id)
         .collect()
 }
 
@@ -213,7 +213,15 @@ async fn frontmatter_tags_become_concepts_and_survive_diffs() {
     assert_eq!(kn_counts(&engine), counts);
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test]
@@ -305,7 +313,15 @@ async fn resolved_links_assert_artifact_link_spans_that_related_traverses() {
     );
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test]
@@ -339,7 +355,15 @@ async fn fixture_corpus_concepts_extract_and_equations_hold() {
     assert!(counts.get("kn.ArtifactConcept").copied().unwrap_or(0) >= 4);
 
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 }
 
 #[tokio::test]
@@ -437,10 +461,10 @@ async fn artifact_link_spans_are_total_and_faithful_to_fanout() {
     let kn = mdreader_domain::builtin::kn_schema();
     assert!(kn.equations.is_empty(), "kn is equation-free by design");
     let mut instance = MemInstance::new("kn");
-    for (id, entity) in engine.store().objects_with_entity_prefix("kn.").unwrap() {
-        let local = &entity["kn.".len()..];
+    for object in engine.store().objects_with_entity_prefix("kn.").unwrap() {
+        let local = &object.entity["kn.".len()..];
         if kn.entities.contains(&local.into()) {
-            instance.add_row(local, id.to_string());
+            instance.add_row(local, object.id.to_string());
         }
     }
     for edge in engine.store().morphisms_with_arrow_prefix("kn.").unwrap() {
