@@ -20,34 +20,67 @@
 //   axquery headings <pid>              — print the text of every AXHeading, one
 //                                          per line (a rendered <h1..h6>).
 //
-// Reads only; never mutates the UI. Exit 0 on success (possibly empty output —
-// the app's AX tree may not be populated yet, which the driver handles by
-// polling), exit 2 on a usage error. Requires the controlling process to hold
-// the Accessibility (TCC) permission.
+// Reads only; never mutates the UI. Requires the controlling process to hold the
+// Accessibility (TCC) permission.
+//
+// EXIT CODES — the helper FAILS CLOSED so the caller (makeAx) can tell a genuine
+// empty result from a broken read:
+//   0  success. Output may be empty / `0` — but ONLY because the query genuinely
+//      found nothing (the tree isn't populated yet, or no element carries the
+//      class). Every AXUIElementCopyAttributeValue on the path returned success,
+//      or a *legitimately-absent* attribute (kAXErrorNoValue /
+//      kAXErrorAttributeUnsupported).
+//   2  usage error (bad arguments).
+//   3  a REAL AX read error (kAXErrorCannotComplete / kAXErrorAPIDisabled /
+//      kAXErrorInvalidUIElement / kAXErrorNotImplemented / …). We do NOT print
+//      `0` and exit 0 in this case — a broken read must never masquerade as
+//      "count 0 / not found". The distinct `AX_READ_ERROR:` marker goes to
+//      stderr and the nonzero exit makes the TS side THROW.
 import ApplicationServices
 import Foundation
 
-func attr(_ el: AXUIElement, _ name: String) -> AnyObject? {
+/// A genuine AX read failure — distinct from a legitimately-absent attribute.
+struct AXReadError: Error {
+    let attribute: String
+    let code: AXError
+}
+
+/// Copy attribute `name` off `el`, checking the AXError return code at THIS single
+/// call site (every read below routes through here, so every call site is
+/// covered). Returns nil ONLY when the attribute is legitimately absent
+/// (`kAXErrorNoValue` — supported but unset; `kAXErrorAttributeUnsupported` — the
+/// element doesn't have it, e.g. a menu item has no `AXDOMClassList`). THROWS on
+/// any other non-success code, which are real errors (the app is unreachable,
+/// the element ref is stale, the AX API is disabled, …).
+func attr(_ el: AXUIElement, _ name: String) throws -> AnyObject? {
     var value: AnyObject?
-    return AXUIElementCopyAttributeValue(el, name as CFString, &value) == .success ? value : nil
+    let code = AXUIElementCopyAttributeValue(el, name as CFString, &value)
+    switch code {
+    case .success:
+        return value
+    case .noValue, .attributeUnsupported:
+        return nil
+    default:
+        throw AXReadError(attribute: name, code: code)
+    }
 }
 
-func string(_ el: AXUIElement, _ name: String) -> String? { attr(el, name) as? String }
+func string(_ el: AXUIElement, _ name: String) throws -> String? { try attr(el, name) as? String }
 
-func classList(_ el: AXUIElement) -> [String] {
-    (attr(el, "AXDOMClassList") as? [String]) ?? []
+func classList(_ el: AXUIElement) throws -> [String] {
+    (try attr(el, "AXDOMClassList") as? [String]) ?? []
 }
 
-func children(_ el: AXUIElement) -> [AXUIElement] {
-    (attr(el, "AXChildren") as? [AXUIElement]) ?? []
+func children(_ el: AXUIElement) throws -> [AXUIElement] {
+    (try attr(el, "AXChildren") as? [AXUIElement]) ?? []
 }
 
-func role(_ el: AXUIElement) -> String { string(el, "AXRole") ?? "" }
+func role(_ el: AXUIElement) throws -> String { (try string(el, "AXRole")) ?? "" }
 
 /// The visible text a node contributes, from the AX attributes WebKit populates
 /// for it (value for inputs/text, title/description for labelled controls).
-func nodeText(_ el: AXUIElement) -> String {
-    [string(el, "AXValue"), string(el, "AXTitle"), string(el, "AXDescription")]
+func nodeText(_ el: AXUIElement) throws -> String {
+    [try string(el, "AXValue"), try string(el, "AXTitle"), try string(el, "AXDescription")]
         .compactMap { $0 }
         .filter { !$0.isEmpty }
         .joined(separator: " ")
@@ -61,57 +94,68 @@ guard args.count >= 3, let pid = Int32(args[2]) else {
 }
 let app = AXUIElementCreateApplication(pid_t(pid))
 
-switch args[1] {
-case "count":
-    guard args.count == 4 else { exit(2) }
-    let cls = args[3]
-    var count = 0
-    func walk(_ el: AXUIElement) {
-        if classList(el).contains(cls) { count += 1 }
-        for child in children(el) { walk(child) }
-    }
-    walk(app)
-    print(count)
-
-case "text":
-    let scope = args.count > 3 ? args[3] : ""
-    var lines: [String] = []
-    func collect(_ el: AXUIElement) {
-        let text = nodeText(el)
-        if !text.isEmpty { lines.append(text) }
-        for child in children(el) { collect(child) }
-    }
-    if scope.isEmpty {
-        collect(app)
-    } else {
-        // Descend to each element whose class list contains `scope`, then gather
-        // all text beneath it. Does not recurse past a match (a scope root
-        // already yields its whole subtree).
-        func find(_ el: AXUIElement) {
-            if classList(el).contains(scope) {
-                collect(el)
-            } else {
-                for child in children(el) { find(child) }
-            }
+do {
+    switch args[1] {
+    case "count":
+        guard args.count == 4 else { exit(2) }
+        let cls = args[3]
+        var count = 0
+        func walk(_ el: AXUIElement) throws {
+            if try classList(el).contains(cls) { count += 1 }
+            for child in try children(el) { try walk(child) }
         }
-        find(app)
-    }
-    print(lines.joined(separator: "\n"))
+        try walk(app)
+        print(count)
 
-case "headings":
-    var lines: [String] = []
-    func walk(_ el: AXUIElement) {
-        if role(el) == "AXHeading" {
-            let text = nodeText(el)
+    case "text":
+        let scope = args.count > 3 ? args[3] : ""
+        var lines: [String] = []
+        func collect(_ el: AXUIElement) throws {
+            let text = try nodeText(el)
             if !text.isEmpty { lines.append(text) }
+            for child in try children(el) { try collect(child) }
         }
-        for child in children(el) { walk(child) }
-    }
-    walk(app)
-    print(lines.joined(separator: "\n"))
+        if scope.isEmpty {
+            try collect(app)
+        } else {
+            // Descend to each element whose class list contains `scope`, then gather
+            // all text beneath it. Does not recurse past a match (a scope root
+            // already yields its whole subtree).
+            func find(_ el: AXUIElement) throws {
+                if try classList(el).contains(scope) {
+                    try collect(el)
+                } else {
+                    for child in try children(el) { try find(child) }
+                }
+            }
+            try find(app)
+        }
+        print(lines.joined(separator: "\n"))
 
-default:
+    case "headings":
+        var lines: [String] = []
+        func walk(_ el: AXUIElement) throws {
+            if try role(el) == "AXHeading" {
+                let text = try nodeText(el)
+                if !text.isEmpty { lines.append(text) }
+            }
+            for child in try children(el) { try walk(child) }
+        }
+        try walk(app)
+        print(lines.joined(separator: "\n"))
+
+    default:
+        FileHandle.standardError.write(
+            "usage: axquery count|text|headings <pid> [cssClass]\n".data(using: .utf8)!)
+        exit(2)
+    }
+} catch let error as AXReadError {
+    // A REAL AX error — surface it distinctly and exit NONZERO so the caller
+    // throws instead of reading a false 0 / empty.
     FileHandle.standardError.write(
-        "usage: axquery count|text|headings <pid> [cssClass]\n".data(using: .utf8)!)
-    exit(2)
+        "AX_READ_ERROR: \(error.attribute) code=\(error.code.rawValue)\n".data(using: .utf8)!)
+    exit(3)
+} catch {
+    FileHandle.standardError.write("AX_READ_ERROR: \(error)\n".data(using: .utf8)!)
+    exit(3)
 }

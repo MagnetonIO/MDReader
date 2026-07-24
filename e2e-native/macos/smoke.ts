@@ -48,10 +48,13 @@
  * confirm the driver goes RED there. `<id>` is a step id (e.g. `drag-window`
  * drags the whole window on the negative control; `close-window` skips the red-X
  * click) OR one of the FAIL-OPEN probes: `jump-closure-error` (the palette-
- * closure AX read errors mid-check — must FAIL, never be read as "closed") and
- * `frame-oracle` (feeds a wrong-size frame to the visual oracle — must FAIL, never
- * be treated as "fully changed"). It proves each assertion is load-bearing and
- * fails CLOSED. Inert unless the env var is set.
+ * closure read spawns a MISSING helper — the TS makeAx path throws),
+ * `jump-ax-read-error` (the closure read hits a GENUINE AXUIElementCopyAttribute-
+ * Value error via an invalid pid — the Swift helper exits nonzero instead of
+ * printing a false 0), and `frame-oracle` (feeds a wrong-size frame to the visual
+ * oracle — must FAIL, never "fully changed"). Each must FAIL the step, never be
+ * read as "palette gone / count 0 / fully changed". It proves each assertion is
+ * load-bearing and fails CLOSED. Inert unless the env var is set.
  *
  * Node built-ins only. Runs under Node's native TypeScript (Node >= 22.13 with
  * `--experimental-strip-types`; >= 23 strips by default) — no build step.
@@ -646,13 +649,25 @@ async function runStep(step: Step, ctx: Ctx): Promise<string> {
 
     case 'jumpToHit': {
       const before = readFileSync(captureWindow(pid, ctx.shot('06-jump-to-hit-before')));
-      // Fault "jump-to-hit": skip Enter — the jump never happens, the palette
-      // stays open, the assertion must fail. Fault "jump-closure-error": press
-      // Enter normally but make the palette-closure AX read ERROR — a broken
-      // helper must FAIL the step, never be read as "palette gone" (the fail-open
-      // path a swallowed error would have created).
+      // Faults that each break a DIFFERENT layer of the palette-closure check —
+      // all must FAIL the step, never be read as "palette gone":
+      //   - "jump-to-hit":       skip Enter → the palette stays open (the app-
+      //                          behaviour fault).
+      //   - "jump-closure-error": press Enter, but spawn a MISSING axquery binary
+      //                          → the TS makeAx path throws (spawn error).
+      //   - "jump-ax-read-error": press Enter, but point axquery at an INVALID pid
+      //                          (> macOS PID_MAX) so AXUIElementCopyAttributeValue
+      //                          returns a real error (kAXErrorCannotComplete) and
+      //                          the helper EXITS NONZERO → the in-helper AX-read-
+      //                          failure path throws. This is the class a swallowed
+      //                          nil-and-print-0 would have masked.
       if (!faulted(step.id)) sendChord('Enter');
-      const closureAx = faulted('jump-closure-error') ? makeAx(`${ctx.axBin}__missing`, pid) : ax;
+      const INVALID_PID = 999_999; // above macOS PID_MAX (99999): never a live app
+      const closureAx = faulted('jump-closure-error')
+        ? makeAx(`${ctx.axBin}__missing`, pid)
+        : faulted('jump-ax-read-error')
+          ? makeAx(ctx.axBin, INVALID_PID)
+          : ax;
       const headRe = new RegExp(step.headingPattern);
       const provRe = new RegExp(step.provenancePattern);
       let palettePresent = 1;
