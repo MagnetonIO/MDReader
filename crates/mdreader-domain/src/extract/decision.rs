@@ -174,7 +174,9 @@ pub fn extract(corpus: &[SourceDocument]) -> Extraction {
                         extractor: EXTRACTOR,
                         file: &document.path,
                         lines: (link.line, link.line),
-                        content_hash: &section.content_hash,
+                        // The cited span is the link's line, so that is what
+                        // is hashed — not the enclosing section.
+                        content_hash: &super::blake3_hex(&link.line_text),
                         confidence: D3_CONFIDENCE,
                     },
                 ));

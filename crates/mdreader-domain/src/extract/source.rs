@@ -21,8 +21,17 @@ pub struct SourceDocument {
     pub path: String,
     /// The document title: its first level-1 heading, or the file stem.
     pub title: String,
-    /// blake3 hash of the whole file at parse time.
+    /// blake3 hash of the document's **newline-normalized text** — that is,
+    /// of exactly the lines [`Self::span`] names, joined by `\n`.
+    ///
+    /// Deliberately not the hash of the raw file bytes: a fact's recorded
+    /// range and its recorded hash must describe the same thing, or the hash
+    /// cannot be used to detect that the cited span drifted. (The ingest
+    /// layer keeps its own raw-bytes hash for change detection; that is a
+    /// different job.)
     pub content_hash: String,
+    /// Total number of lines in the document.
+    pub line_count: u32,
     /// Tolerantly parsed `key: value` frontmatter pairs, in source order.
     pub frontmatter: Vec<(String, String)>,
     /// Heading-delimited sections in document order.
@@ -41,14 +50,15 @@ impl SourceDocument {
         })
     }
 
-    /// The document's full line span: `(1, last section's end line)`. Used as
-    /// the provenance range for document-level facts, whose evidence is the
-    /// frontmatter plus the title rather than any single section.
+    /// The whole document, `(1, line_count)` — the span
+    /// [`Self::content_hash`] covers.
+    ///
+    /// This is the provenance range for document-level facts, whose evidence
+    /// is the frontmatter plus the title rather than any single section.
+    /// Derived from `line_count` rather than from the last section's end so
+    /// that it stays exact for a document with no sections at all.
     pub fn span(&self) -> (u32, u32) {
-        (
-            1,
-            self.sections.iter().map(|s| s.end_line).max().unwrap_or(1),
-        )
+        (1, self.line_count.max(1))
     }
 
     /// The file stem (basename without the `.md` extension), used for
@@ -69,12 +79,17 @@ pub struct SourceSection {
     pub depth: u8,
     /// First source line of the section span (1-based, inclusive).
     pub start_line: u32,
-    /// Last source line of the span, subsections included (1-based,
+    /// Last source line of the subtree span, subsections included (1-based,
     /// inclusive).
     pub end_line: u32,
+    /// Last line of the section's **own** content — the line before its first
+    /// subsection, or [`Self::end_line`] when it has none. This, not
+    /// `end_line`, is what [`Self::content_hash`] covers.
+    pub own_end_line: u32,
     /// Index (into [`SourceDocument::sections`]) of the parent section.
     pub parent: Option<usize>,
-    /// blake3 hash of the section's own content.
+    /// blake3 hash of the section's own text: lines `start_line ..=
+    /// own_end_line`, joined by `\n`. Exactly the span [`Self::span`] names.
     pub content_hash: String,
     /// Links written in the section's **own** content — those in a
     /// subsection belong to that subsection, not to this one. The rules rely
@@ -90,9 +105,13 @@ impl SourceSection {
         self.heading_path.last().map_or("", String::as_str)
     }
 
-    /// The section's line span as a provenance range.
+    /// The span [`Self::content_hash`] covers: `(start_line, own_end_line)`.
+    ///
+    /// A fact cited to this section records this range, **not** the subtree
+    /// range — a range that named lines the hash does not cover could never
+    /// be verified against it.
     pub fn span(&self) -> (u32, u32) {
-        (self.start_line, self.end_line)
+        (self.start_line, self.own_end_line.max(self.start_line))
     }
 }
 
@@ -106,6 +125,14 @@ pub struct SourceLink {
     pub kind: String,
     /// Source line the link starts on.
     pub line: u32,
+    /// The full text of that line.
+    ///
+    /// Carried so that a fact cited to a *single line* can record the hash of
+    /// that line. Without it the extractor would have to borrow the enclosing
+    /// section's hash, and the recorded range and hash would describe
+    /// different spans — silently defeating the drift detection the hash
+    /// exists for.
+    pub line_text: String,
 }
 
 #[cfg(test)]
@@ -117,6 +144,7 @@ mod tests {
             path: "docs/adr/0007-storage.md".into(),
             title: "Storage".into(),
             content_hash: "blake3:doc".into(),
+            line_count: 24,
             frontmatter: vec![
                 ("Type".into(), " decision ".into()),
                 ("layer".into(), "  ".into()),
@@ -126,6 +154,7 @@ mod tests {
                 depth: 1,
                 start_line: 4,
                 end_line: 20,
+                own_end_line: 9,
                 parent: None,
                 content_hash: "blake3:s".into(),
                 links: Vec::new(),
@@ -146,9 +175,26 @@ mod tests {
         assert_eq!(document().frontmatter_any(&["layer"]), None);
     }
 
+    /// The document span is the whole file, so it matches the whole-file
+    /// hash — not the last section's end, which can fall short of it.
     #[test]
-    fn document_span_runs_to_the_last_section() {
-        assert_eq!(document().span(), (1, 20));
+    fn document_span_is_every_line_of_the_file() {
+        assert_eq!(document().span(), (1, 24));
+        let empty = SourceDocument {
+            sections: Vec::new(),
+            line_count: 3,
+            ..document()
+        };
+        assert_eq!(empty.span(), (1, 3), "a document with no sections too");
+    }
+
+    /// A section's span must stop where its own content stops, because that
+    /// is what its `content_hash` covers.
+    #[test]
+    fn section_span_covers_its_own_content_not_its_subtree() {
+        let section = &document().sections[0];
+        assert_eq!(section.end_line, 20, "the subtree runs to 20");
+        assert_eq!(section.span(), (4, 9), "but its own content stops at 9");
     }
 
     #[test]

@@ -459,31 +459,48 @@ fn every_proposed_fact_carries_a_complete_derivation_record() {
     }
 }
 
-/// A section's recorded content hash must be the hash of the span the
-/// provenance points at — otherwise "the source moved under this fact" could
-/// never be detected.
+/// **Every** fact's `content_hash` must be the hash of exactly the lines its
+/// `range` names — re-derived here from the raw file, not from any structure
+/// the extractor also produced.
+///
+/// A range and hash that describe different spans cannot be checked against
+/// each other, which silently destroys the drift detection the hash exists
+/// for: the source under a cited line could change and the fact would still
+/// look fresh. Asserted as an invariant over the whole corpus rather than
+/// spot-checked on one object, so no rule can quietly opt out.
 #[test]
-fn a_facts_content_hash_is_the_hash_of_the_span_it_names() {
+fn every_facts_content_hash_is_the_hash_of_the_lines_its_range_names() {
+    let root = fixture_root();
     let corpus = corpus();
-    let extraction = architecture::extract(&corpus);
-    let interface = extraction
-        .objects
-        .iter()
-        .find(|o| o.object.value.to_string().contains("Search API"))
-        .expect("the Search API interface");
-    let document = corpus
-        .iter()
-        .find(|d| d.path == "docs/arch/catdb-engine.md")
-        .expect("provider document");
-    let section = document
-        .sections
-        .iter()
-        .find(|s| s.heading() == "Search API")
-        .expect("its section");
-    assert_eq!(
-        interface.object.provenance.content_hash.as_deref(),
-        Some(section.content_hash.as_str())
-    );
+    let mut checked = 0usize;
+    for extraction in [decision::extract(&corpus), architecture::extract(&corpus)] {
+        let provenances = extraction
+            .objects
+            .iter()
+            .map(|o| (&o.object.provenance, o.rule.clone()))
+            .chain(
+                extraction
+                    .morphisms
+                    .iter()
+                    .map(|m| (&m.morphism.provenance, m.rule.clone())),
+            );
+        for (provenance, rule) in provenances {
+            let file = provenance.source.as_ref().expect("source");
+            let (start, end) = provenance.range.expect("range");
+            let text = std::fs::read_to_string(root.join(file)).expect("readable");
+            let lines: Vec<&str> = text.lines().collect();
+            let cited = lines[(start as usize - 1)..(end as usize)].join("\n");
+            assert_eq!(
+                provenance.content_hash.as_deref(),
+                Some(support::hash(&cited).as_str()),
+                "{rule} cites {file}:{start}-{end} but hashed something else"
+            );
+            checked += 1;
+        }
+    }
+    // Both the whole-file rules (D1/A1/A2), the section rules (D2/A3) and the
+    // single-line link rules (D3/A4) are covered by that sweep.
+    assert_eq!(checked, 4 + 28, "every fact in the corpus was checked");
 }
 
 // ---------------------------------------------------------------------------
@@ -505,9 +522,15 @@ async fn extraction_leaves_the_corpus_byte_for_byte_identical() {
 
     let corpus = support::read_corpus(&root);
     let engine = open_engine();
-    for extraction in [decision::extract(&corpus), architecture::extract(&corpus)] {
+    for mut extraction in [decision::extract(&corpus), architecture::extract(&corpus)] {
+        // Both halves of the surface: previewing the proposed graph (and
+        // checking its laws), and applying the approved one.
+        extraction
+            .preview()
+            .check_equations(&schema_of(&extraction));
+        approve_all(&mut extraction, "alice");
         engine
-            .apply_operations(extraction.operations(), Some("extractor".into()))
+            .apply_operations(extraction.approved_operations(), Some("extractor".into()))
             .await
             .expect("apply");
     }
@@ -533,13 +556,38 @@ fn open_engine() -> EmbeddedCatDb {
     .expect("engine opens with the mdreader domain")
 }
 
+/// Accept every proposal, the way a reviewer who agreed with all of it would.
+fn approve_all(extraction: &mut Extraction, reviewer: &str) {
+    for object in &mut extraction.objects {
+        object.review.approve(reviewer).expect("approve");
+    }
+    for morphism in &mut extraction.morphisms {
+        morphism.review.approve(reviewer).expect("approve");
+    }
+}
+
+fn schema_of(extraction: &Extraction) -> catdb_core::Schema {
+    match extraction.schema.as_str() {
+        "decision_overlay" => mdreader_domain::builtin::decision_overlay_schema(),
+        "architecture_overlay" => mdreader_domain::builtin::architecture_overlay_schema(),
+        other => panic!("no schema for {other}"),
+    }
+}
+
 #[tokio::test]
 async fn extracted_provenance_survives_the_round_trip_through_storage() {
     let corpus = corpus();
-    let extraction = architecture::extract(&corpus);
+    let mut extraction = architecture::extract(&corpus);
+    // Extraction itself never claims review...
+    assert!(extraction
+        .objects
+        .iter()
+        .all(|o| o.object.provenance.approved_by.is_none()));
+    approve_all(&mut extraction, "alice");
+
     let engine = open_engine();
     engine
-        .apply_operations(extraction.operations(), Some("extractor".into()))
+        .apply_operations(extraction.approved_operations(), Some("extractor".into()))
         .await
         .expect("apply");
 
@@ -565,68 +613,58 @@ async fn extracted_provenance_survives_the_round_trip_through_storage() {
         assert_eq!(header.provenance.schema_version, original.schema_version);
         assert_eq!(header.provenance.extractor, original.extractor);
         assert_eq!(header.provenance.confidence, original.confidence);
-        // Unreviewed on the way in, unreviewed on the way out.
-        assert_eq!(header.provenance.approved_by, None);
-    }
-}
-
-#[tokio::test]
-async fn an_approved_fact_stores_its_reviewer() {
-    let corpus = corpus();
-    let mut extraction = decision::extract(&corpus);
-    extraction.objects[0]
-        .review
-        .approve("alice")
-        .expect("approve");
-    let approved = *extraction.objects[0].object.id.as_uuid();
-
-    let engine = open_engine();
-    engine
-        .apply_operations(extraction.operations(), Some("extractor".into()))
-        .await
-        .expect("apply");
-
-    let stored = engine
-        .store()
-        .objects_with_entity_prefix("decision_overlay.")
-        .expect("read back");
-    for header in &stored {
-        let expected = (header.id == approved).then(|| "alice".to_string());
-        assert_eq!(header.provenance.approved_by, expected, "{}", header.id);
+        // ...and the reviewer is stamped on the way out.
+        assert_eq!(header.provenance.approved_by.as_deref(), Some("alice"));
     }
 }
 
 // ---------------------------------------------------------------------------
-// Approval gates materialization
+// Approval gates materialization — structurally
 // ---------------------------------------------------------------------------
 
+/// `approved_operations` is the ONLY method on `Extraction` that yields
+/// `CatOperation`s, so this is the only door to a durable apply — and it is
+/// shut until a human opens it.
 #[test]
-fn only_approved_facts_reach_the_authoritative_subset() {
+fn nothing_is_applyable_until_a_human_approves_it() {
     let mut extraction = decision::extract(&corpus());
     assert_eq!(extraction.objects.len(), 3);
+    assert_eq!(extraction.morphisms.len(), 1);
+
     assert!(
         extraction.approved_operations().is_empty(),
         "nothing is authoritative until a human says so"
     );
-    // All four facts (3 objects + 1 morphism) are proposals, and proposals do
-    // enter the reviewable graph.
-    assert_eq!(extraction.operations().len(), 4);
+    // The proposals are all still inspectable — just not applyable.
+    assert_eq!(extraction.preview().objects().len(), 3);
+    assert_eq!(extraction.preview().morphisms().len(), 1);
 
-    extraction.objects[0].review.approve("alice").unwrap();
-    extraction.objects[1].review.approve("alice").unwrap();
-    extraction.morphisms[0].review.approve("alice").unwrap();
-    assert_eq!(extraction.approved_operations().len(), 3);
+    approve_all(&mut extraction, "alice");
+    assert_eq!(extraction.approved_operations().len(), 4);
 }
 
+/// Proposed and Rejected facts must not reach storage even when the caller
+/// applies whatever the extraction will give them — because the only thing it
+/// will give them is the approved subset.
 #[tokio::test]
-async fn a_rejected_fact_is_never_asserted() {
+async fn only_approved_facts_can_reach_a_durable_apply() {
     let mut extraction = architecture::extract(&corpus());
     let rejected = *extraction.objects[0].object.id.as_uuid();
+    let left_proposed = *extraction.objects[2].object.id.as_uuid();
+
+    approve_all(&mut extraction, "alice");
     extraction.objects[0].review.reject("alice").unwrap();
+    extraction.objects[2].review = Default::default(); // back to Proposed
+    let approved_ids: Vec<_> = extraction
+        .objects
+        .iter()
+        .filter(|o| o.review.state == ApprovalState::Approved)
+        .map(|o| *o.object.id.as_uuid())
+        .collect();
 
     let engine = open_engine();
     engine
-        .apply_operations(extraction.operations(), Some("extractor".into()))
+        .apply_operations(extraction.approved_operations(), Some("extractor".into()))
         .await
         .expect("apply");
 
@@ -634,11 +672,79 @@ async fn a_rejected_fact_is_never_asserted() {
         .store()
         .objects_with_entity_prefix("architecture_overlay.")
         .expect("read back");
-    assert_eq!(stored.len(), extraction.objects.len() - 1);
+    let stored_ids: Vec<_> = stored.iter().map(|header| header.id).collect();
     assert!(
-        !stored.iter().any(|header| header.id == rejected),
+        !stored_ids.contains(&rejected),
         "a rejected proposal must not reach the graph"
     );
+    assert!(
+        !stored_ids.contains(&left_proposed),
+        "an unreviewed proposal must not reach the graph"
+    );
+    assert_eq!(stored_ids.len(), approved_ids.len());
+    for id in approved_ids {
+        assert!(stored_ids.contains(&id), "approved object {id} is missing");
+    }
+}
+
+/// Approving an edge whose endpoints are still proposals would write a
+/// dangling morphism into the authoritative graph, so it is withheld until
+/// they are approved too.
+#[test]
+fn an_approved_morphism_with_unapproved_endpoints_is_withheld() {
+    let mut extraction = decision::extract(&corpus());
+    let edge = &extraction.morphisms[0].morphism;
+    let (source, target) = (*edge.source.as_uuid(), *edge.target.as_uuid());
+    extraction.morphisms[0].review.approve("alice").unwrap();
+    assert!(
+        extraction.approved_operations().is_empty(),
+        "an edge alone is not applyable"
+    );
+
+    // Approve one endpoint: still not enough.
+    for object in &mut extraction.objects {
+        if *object.object.id.as_uuid() == source {
+            object.review.approve("alice").unwrap();
+        }
+    }
+    assert_eq!(
+        extraction.approved_operations().len(),
+        1,
+        "the endpoint object, but not the edge"
+    );
+
+    // Approve the other: the edge follows.
+    for object in &mut extraction.objects {
+        if *object.object.id.as_uuid() == target {
+            object.review.approve("alice").unwrap();
+        }
+    }
+    assert_eq!(extraction.approved_operations().len(), 3);
+}
+
+/// The capability the preview must preserve: a reviewer can see which schema
+/// laws approving the proposals *would* break — with nothing written.
+#[tokio::test]
+async fn a_proposed_graphs_law_violations_are_visible_without_persisting_anything() {
+    let extraction = architecture::extract(&corpus());
+    let schema = mdreader_domain::builtin::architecture_overlay_schema();
+
+    let previewed = extraction.preview().check_equations(&schema);
+    assert_eq!(previewed.len(), 1, "the broken-app dependency");
+    assert_eq!(previewed[0].schema, "architecture_overlay");
+    assert_eq!(
+        previewed[0].law,
+        "Dependency.via.exposes = Dependency.provider"
+    );
+    let span = previewed[0].subject.source.as_ref().expect("located");
+    assert_eq!(span.file, "docs/arch/broken-app.md");
+    assert_eq!(span.start_line, Some(15));
+
+    // ...and none of it is in the store, because a preview cannot be applied.
+    let engine = open_engine();
+    let report = engine.check_equations().await.expect("check");
+    assert_eq!(report.schemas_checked, 0, "nothing was ever written");
+    assert!(report.violations.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -655,10 +761,11 @@ async fn a_rejected_fact_is_never_asserted() {
 #[tokio::test]
 async fn the_inconsistent_dependency_is_reported_with_its_law_and_its_line() {
     let corpus = corpus();
-    let extraction = architecture::extract(&corpus);
+    let mut extraction = architecture::extract(&corpus);
+    approve_all(&mut extraction, "alice");
     let engine = open_engine();
     engine
-        .apply_operations(extraction.operations(), Some("extractor".into()))
+        .apply_operations(extraction.approved_operations(), Some("extractor".into()))
         .await
         .expect("apply");
 
@@ -725,10 +832,11 @@ async fn the_consistent_part_of_the_corpus_checks_clean() {
         .into_iter()
         .filter(|document| document.path != "docs/arch/broken-app.md")
         .collect();
-    let extraction = architecture::extract(&corpus);
+    let mut extraction = architecture::extract(&corpus);
+    approve_all(&mut extraction, "alice");
     let engine = open_engine();
     engine
-        .apply_operations(extraction.operations(), Some("extractor".into()))
+        .apply_operations(extraction.approved_operations(), Some("extractor".into()))
         .await
         .expect("apply");
 

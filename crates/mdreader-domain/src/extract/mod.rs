@@ -30,20 +30,31 @@
 //! # Nothing is authoritative by fiat
 //!
 //! Every extracted fact starts [`ApprovalState::Proposed`] and carries full
-//! derivation provenance — source path, line range, content hash of that
-//! span, the schema and version it is typed against, the extractor id and
-//! version, and a confidence. A rejected proposal is never materialized into
-//! the graph; an approved one carries its reviewer in the kernel's existing
-//! [`Provenance::approved_by`].
+//! derivation provenance — source path, line range, content hash of exactly
+//! that span, the schema and version it is typed against, the extractor id
+//! and version, and a confidence. An approved fact carries its reviewer in
+//! the kernel's existing [`Provenance::approved_by`].
+//!
+//! The gate is **structural, not conventional**: [`Extraction`] has exactly
+//! one method that yields [`CatOperation`]s — [`Extraction::approved_operations`]
+//! — and it emits only what a human accepted. Proposals are reachable solely
+//! through [`Extraction::preview`], whose [`ProposalPreview`] deliberately
+//! produces no operations, so unreviewed facts cannot be handed to
+//! [`EmbeddedCatDb::apply_operations`] even by a caller who has not read a
+//! word of this. A preview can still be turned into an in-memory instance and
+//! checked against the schema's laws, so "what would approving this do?" is
+//! answerable without writing anything.
 //!
 //! [`Provenance::approved_by`]: catdb_core::Provenance::approved_by
+//! [`EmbeddedCatDb::apply_operations`]: catdb_engine::EmbeddedCatDb::apply_operations
 
 pub mod architecture;
 pub mod decision;
 mod resolve;
 mod source;
 
-use catdb_core::{MorphismInstance, Object, Provenance};
+use catdb_core::{MemInstance, MorphismInstance, Object, Provenance, RowId, Schema};
+use catdb_engine::{LocatedViolation, SourceSpan, ViolatingObject};
 use catdb_ir::CatOperation;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -194,27 +205,34 @@ pub struct Extraction {
 }
 
 impl Extraction {
-    /// Every materializable fact (everything not rejected) as engine
-    /// operations, objects before morphisms so a morphism never references
-    /// an object the same batch has not asserted yet.
+    /// The approved facts, as engine operations — **the only way an
+    /// extraction can reach durable storage.**
     ///
-    /// Proposals are included deliberately: a review UI needs the proposed
-    /// graph in order to show what approving would mean — including which
-    /// schema laws it would violate. Their provenance carries no
-    /// `approved_by`, so an unreviewed fact is always distinguishable from
-    /// an approved one.
-    pub fn operations(&self) -> Vec<CatOperation> {
-        self.operations_matching(ApprovalState::is_materializable)
-    }
-
-    /// Only the facts a human has approved — the authoritative subset.
+    /// There is deliberately no sibling that turns proposals into
+    /// [`CatOperation`]s. A `CatOperation` is the engine's durable write unit
+    /// ([`EmbeddedCatDb::apply_operations`] takes exactly a
+    /// `Vec<CatOperation>`), so a method that produced them for unreviewed
+    /// facts would put the whole approval model one function call away from
+    /// being bypassed — by a caller who never read this doc comment. Use
+    /// [`Self::preview`] to inspect what approving *would* mean; it cannot be
+    /// applied, because it yields no operations.
+    ///
+    /// Objects come before morphisms so a morphism never references an object
+    /// the same batch has not asserted yet, and a morphism is emitted only
+    /// when **both of its endpoints are also approved**: approving an edge
+    /// whose endpoints are still proposals would write a dangling edge into
+    /// the authoritative graph. Under-emitting is the safe direction — the
+    /// edge appears as soon as its endpoints are approved too.
+    ///
+    /// [`EmbeddedCatDb::apply_operations`]: catdb_engine::EmbeddedCatDb::apply_operations
     pub fn approved_operations(&self) -> Vec<CatOperation> {
-        self.operations_matching(|state| state == ApprovalState::Approved)
-    }
-
-    fn operations_matching(&self, keep: fn(ApprovalState) -> bool) -> Vec<CatOperation> {
         let mut ops = Vec::new();
-        for extracted in self.objects.iter().filter(|o| keep(o.review.state)) {
+        let mut approved_objects = std::collections::HashSet::new();
+        for extracted in &self.objects {
+            if extracted.review.state != ApprovalState::Approved {
+                continue;
+            }
+            approved_objects.insert(*extracted.object.id.as_uuid());
             ops.push(CatOperation::AssertObject {
                 entity: extracted.object.entity.to_string(),
                 object_id: *extracted.object.id.as_uuid(),
@@ -225,12 +243,22 @@ impl Extraction {
                 ),
             });
         }
-        for extracted in self.morphisms.iter().filter(|m| keep(m.review.state)) {
+        for extracted in &self.morphisms {
+            if extracted.review.state != ApprovalState::Approved {
+                continue;
+            }
+            let (source, target) = (
+                *extracted.morphism.source.as_uuid(),
+                *extracted.morphism.target.as_uuid(),
+            );
+            if !approved_objects.contains(&source) || !approved_objects.contains(&target) {
+                continue;
+            }
             ops.push(CatOperation::AssertMorphism {
                 arrow: extracted.morphism.arrow.to_string(),
                 morphism_id: *extracted.morphism.id.as_uuid(),
-                source: *extracted.morphism.source.as_uuid(),
-                target: *extracted.morphism.target.as_uuid(),
+                source,
+                target,
                 provenance: to_ir_provenance(
                     &extracted.morphism.provenance,
                     extracted.review.approved_by(),
@@ -239,6 +267,132 @@ impl Extraction {
         }
         ops
     }
+
+    /// A read-only preview of everything this extraction proposes — including
+    /// facts nobody has approved.
+    ///
+    /// This is how a review UI answers "what would approving this do?"
+    /// without any of it becoming durable. See [`ProposalPreview`].
+    pub fn preview(&self) -> ProposalPreview<'_> {
+        ProposalPreview { extraction: self }
+    }
+}
+
+/// A read-only view of an [`Extraction`]'s proposed graph.
+///
+/// The type exists to make one mistake impossible rather than merely
+/// discouraged: **it yields no [`CatOperation`]s**, so nothing reachable
+/// through it can be handed to
+/// [`EmbeddedCatDb::apply_operations`](catdb_engine::EmbeddedCatDb::apply_operations).
+/// A reviewer can see every proposal, build the graph they would get, and
+/// find out which schema laws that graph would break — all in memory, with
+/// no path to the durable store. Only
+/// [`Extraction::approved_operations`] crosses that line.
+#[derive(Debug, Clone, Copy)]
+pub struct ProposalPreview<'a> {
+    extraction: &'a Extraction,
+}
+
+impl<'a> ProposalPreview<'a> {
+    /// Every proposed object, rejected ones included, in extraction order.
+    pub fn objects(&self) -> &'a [ExtractedObject] {
+        &self.extraction.objects
+    }
+
+    /// Every proposed morphism, rejected ones included, in extraction order.
+    pub fn morphisms(&self) -> &'a [ExtractedMorphism] {
+        &self.extraction.morphisms
+    }
+
+    /// The graph that approving every non-rejected proposal would produce, as
+    /// a kernel instance keyed by object id.
+    ///
+    /// Entity and arrow names are schema-local (the qualifying `schema.`
+    /// prefix stripped) so the schema's own equations apply directly.
+    pub fn instance(&self) -> MemInstance {
+        let prefix = format!("{}.", self.extraction.schema);
+        let mut instance = MemInstance::new(self.extraction.schema.clone());
+        for extracted in self.objects() {
+            if !extracted.review.state.is_materializable() {
+                continue;
+            }
+            if let Some(local) = extracted.object.entity.as_str().strip_prefix(&prefix) {
+                instance.add_row(local, extracted.object.id.to_string());
+            }
+        }
+        for extracted in self.morphisms() {
+            if !extracted.review.state.is_materializable() {
+                continue;
+            }
+            if let Some(local) = extracted.morphism.arrow.as_str().strip_prefix(&prefix) {
+                instance.set_fk(
+                    local,
+                    extracted.morphism.source.to_string(),
+                    extracted.morphism.target.to_string(),
+                );
+            }
+        }
+        instance
+    }
+
+    /// Which of `schema`'s laws the proposed graph would violate, reported in
+    /// the same [`LocatedViolation`] shape the engine produces for the
+    /// committed graph — so a UI renders a preview violation and a real one
+    /// with one code path.
+    ///
+    /// Nothing is written: this runs entirely over [`Self::instance`].
+    pub fn check_equations(&self, schema: &Schema) -> Vec<LocatedViolation> {
+        let instance = self.instance();
+        let located = |row: Option<&RowId>| -> Option<ViolatingObject> {
+            let row = row?.as_str();
+            self.objects()
+                .iter()
+                .find(|extracted| extracted.object.id.to_string() == row)
+                .map(|extracted| ViolatingObject {
+                    id: *extracted.object.id.as_uuid(),
+                    entity: extracted.object.entity.to_string(),
+                    source: source_span(&extracted.object.provenance),
+                })
+        };
+        instance
+            .check_equations(schema)
+            .into_iter()
+            .filter_map(|violation| {
+                Some(LocatedViolation {
+                    schema: schema.name.to_string(),
+                    law: violation.equation.to_string(),
+                    lhs_path: violation
+                        .equation
+                        .lhs
+                        .arrows
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    rhs_path: violation
+                        .equation
+                        .rhs
+                        .arrows
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    subject: located(Some(&violation.row))?,
+                    lhs: located(violation.lhs.as_ref()),
+                    rhs: located(violation.rhs.as_ref()),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The engine's [`SourceSpan`] shape, read out of kernel provenance.
+fn source_span(provenance: &Provenance) -> Option<SourceSpan> {
+    let (start, end) = provenance.range?;
+    Some(SourceSpan {
+        file: provenance.source.clone()?,
+        start_line: Some(start),
+        end_line: Some(end),
+        content_hash: provenance.content_hash.clone(),
+    })
 }
 
 /// Translate kernel provenance to the wire form the operation log stores,
@@ -270,7 +424,11 @@ pub(crate) struct Derivation<'a> {
     pub file: &'a str,
     /// Inclusive 1-based line range of the span the fact was read from.
     pub lines: (u32, u32),
-    /// blake3 hash of that span, as recorded by the parser.
+    /// blake3 hash of **exactly** the lines `lines` names.
+    ///
+    /// The two fields are a pair: a range that named more (or fewer) lines
+    /// than the hash covers could never be checked against it, so the hash
+    /// would silently stop detecting that the cited text had drifted.
     pub content_hash: &'a str,
     /// Extractor confidence in `[0, 1]`.
     pub confidence: f32,
@@ -289,6 +447,17 @@ impl Derivation<'_> {
             approved_by: None,
         }
     }
+}
+
+/// blake3 hash of a source span's text, in the `blake3:<hex>` form the
+/// parser uses.
+///
+/// A fact's `content_hash` must always be the hash of *exactly* the lines its
+/// `range` names — see [`Derivation`]. Facts cited to a whole section or a
+/// whole document reuse the hash the parser already computed for that span;
+/// facts cited to a single line (a link) hash that line here.
+pub(crate) fn blake3_hex(text: &str) -> String {
+    format!("blake3:{}", blake3::hash(text.as_bytes()).to_hex())
 }
 
 /// Deterministic UUID from labelled parts (blake3-derived), so re-extracting

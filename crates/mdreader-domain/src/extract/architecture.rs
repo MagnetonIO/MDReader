@@ -269,11 +269,14 @@ pub fn extract(corpus: &[SourceDocument]) -> Extraction {
                 debug_assert_eq!(interface.slug, slug(fragment));
 
                 let id = dependency_id(&document.path, link.line, &link.raw_target);
+                let line_hash = super::blake3_hex(&link.line_text);
                 let derivation = Derivation {
                     extractor: EXTRACTOR,
                     file: &document.path,
                     lines: (link.line, link.line),
-                    content_hash: &section.content_hash,
+                    // The cited span is the link's line, so that is what is
+                    // hashed — not the enclosing section.
+                    content_hash: &line_hash,
                     confidence: A4_CONFIDENCE,
                 };
                 extraction.objects.push(object(
@@ -364,6 +367,7 @@ mod tests {
             depth,
             start_line: start,
             end_line: end,
+            own_end_line: end,
             parent,
             content_hash: format!("blake3:{heading}"),
             links: Vec::new(),
@@ -376,6 +380,7 @@ mod tests {
             path: "docs/x.md".into(),
             title: "X".into(),
             content_hash: "blake3:x".into(),
+            line_count: 9,
             frontmatter: vec![("type".into(), "Crate".into())],
             sections: vec![section("X", 1, 1, 3, None)],
         };
@@ -392,6 +397,7 @@ mod tests {
             path: "docs/x.md".into(),
             title: "X".into(),
             content_hash: "blake3:x".into(),
+            line_count: 9,
             frontmatter: Vec::new(),
             sections: vec![
                 section("X", 1, 1, 20, None),                    // 0
@@ -413,11 +419,13 @@ mod tests {
                 raw_target: "catdb-core".into(),
                 kind: "wikilink".into(),
                 line: 6,
+                line_text: "- [[catdb-core]]".into(),
             },
             SourceLink {
                 raw_target: "catdb-core#Search API".into(),
                 kind: "wikilink".into(),
                 line: 7,
+                line_text: "- [[catdb-core#Search API]]".into(),
             },
         ];
         let corpus = vec![
@@ -425,6 +433,7 @@ mod tests {
                 path: "docs/app.md".into(),
                 title: "app".into(),
                 content_hash: "blake3:app".into(),
+                line_count: 9,
                 frontmatter: vec![("type".into(), "crate".into())],
                 sections: vec![section("app", 1, 1, 9, None), depends],
             },
@@ -432,6 +441,7 @@ mod tests {
                 path: "docs/catdb-core.md".into(),
                 title: "catdb-core".into(),
                 content_hash: "blake3:core".into(),
+                line_count: 9,
                 frontmatter: vec![("type".into(), "crate".into())],
                 sections: vec![
                     section("catdb-core", 1, 1, 9, None),
@@ -461,6 +471,7 @@ mod tests {
             path: path.into(),
             title: title.into(),
             content_hash: format!("blake3:{title}"),
+            line_count: 9,
             frontmatter: vec![("type".into(), "crate".into())],
             sections: vec![
                 section(title, 1, 1, 9, None),
@@ -473,12 +484,14 @@ mod tests {
             raw_target: "one#Search API".into(),
             kind: "wikilink".into(),
             line: 6,
+            line_text: "- [[one#Search API]]".into(),
         }];
         let mut corpus = vec![
             SourceDocument {
                 path: "docs/app.md".into(),
                 title: "app".into(),
                 content_hash: "blake3:app".into(),
+                line_count: 9,
                 frontmatter: vec![("type".into(), "crate".into())],
                 sections: vec![section("app", 1, 1, 7, None), depends],
             },

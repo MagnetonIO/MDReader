@@ -178,6 +178,7 @@ pub fn parse(path: &str, text: &str) -> SourceDocument {
             depth: *depth,
             start_line: *start_line,
             end_line,
+            own_end_line,
             parent,
             content_hash: hash(&own_text),
             links: scan_links(&lines, *start_line, own_end_line),
@@ -200,7 +201,10 @@ pub fn parse(path: &str, text: &str) -> SourceDocument {
     SourceDocument {
         path: path.to_string(),
         title,
-        content_hash: hash(text),
+        // The newline-normalized text, i.e. exactly the lines `span()` names
+        // — see `SourceDocument::content_hash`.
+        content_hash: hash(&lines.join("\n")),
+        line_count: lines.len() as u32,
         frontmatter,
         sections,
     }
@@ -211,7 +215,8 @@ fn scan_links(lines: &[&str], start: u32, end: u32) -> Vec<SourceLink> {
     let mut links = Vec::new();
     let mut in_fence = false;
     for line_number in start..=end {
-        let mut rest = lines[line_number as usize - 1];
+        let line_text = lines[line_number as usize - 1];
+        let mut rest = line_text;
         if rest.trim_start().starts_with("```") {
             in_fence = !in_fence;
             continue;
@@ -230,6 +235,7 @@ fn scan_links(lines: &[&str], start: u32, end: u32) -> Vec<SourceLink> {
                     raw_target: raw.split('|').next().unwrap_or(raw).trim().to_string(),
                     kind: "wikilink".into(),
                     line: line_number,
+                    line_text: line_text.to_string(),
                 });
                 rest = &rest[open + 2 + close + 2..];
                 continue;
@@ -241,6 +247,7 @@ fn scan_links(lines: &[&str], start: u32, end: u32) -> Vec<SourceLink> {
                         raw_target: rest[target_start..target_start + close].trim().to_string(),
                         kind: "markdown".into(),
                         line: line_number,
+                        line_text: line_text.to_string(),
                     });
                     rest = &rest[target_start + close + 1..];
                     continue;
