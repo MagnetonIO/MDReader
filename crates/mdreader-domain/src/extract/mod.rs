@@ -37,7 +37,7 @@
 //!
 //! # Where the approval guarantee actually lives
 //!
-//! **In the engine, at the write boundary — not here.**
+//! **In the engine, at its write boundaries — not here.**
 //!
 //! [`CatOperation`] is a public IR type with public constructors, and a
 //! review UI must be able to *see* proposed facts or it cannot render them.
@@ -49,10 +49,15 @@
 //! Instead, [`engine_registration`](crate::engine_registration) declares the
 //! overlay schemas in
 //! [`DomainRegistration::approval_required_schemas`](catdb_engine::DomainRegistration::approval_required_schemas),
-//! and [`EmbeddedCatDb::apply_operations`] refuses any assertion into one of
-//! them whose provenance names no reviewer — rejecting the whole batch, with
+//! and the engine refuses any assertion into one of them whose provenance
+//! names no reviewer, with
 //! [`EngineError::UnapprovedFact`](catdb_engine::EngineError::UnapprovedFact).
-//! That holds however the operation was constructed.
+//! That holds however the operation was constructed, and on **both** of the
+//! engine's persistence paths — the external write surface
+//! ([`EmbeddedCatDb::apply_operations`]) and the engine-owned ingest path
+//! that wave 3 will wire extraction into
+//! ([`IngestContext::emit`](catdb_engine::IngestContext::emit) and
+//! `apply_batch`). Either way the batch is rejected whole, writing nothing.
 //!
 //! What this module provides is **defence in depth**, and is described as
 //! such: there is no convenience path to an unapproved write.
@@ -223,17 +228,19 @@ pub struct Extraction {
 }
 
 impl Extraction {
-    /// The approved facts, as engine operations — **the only way an
-    /// extraction can reach durable storage.**
+    /// The approved facts, as engine operations — the intended route from an
+    /// extraction to durable storage.
     ///
     /// There is deliberately no sibling that turns proposals into
-    /// [`CatOperation`]s. A `CatOperation` is the engine's durable write unit
-    /// ([`EmbeddedCatDb::apply_operations`] takes exactly a
-    /// `Vec<CatOperation>`), so a method that produced them for unreviewed
-    /// facts would put the whole approval model one function call away from
-    /// being bypassed — by a caller who never read this doc comment. Use
-    /// [`Self::preview`] to inspect what approving *would* mean; it cannot be
-    /// applied, because it yields no operations.
+    /// [`CatOperation`]s: a method that produced them for unreviewed facts
+    /// would put the approval model one call away from being bypassed by
+    /// someone who never read this doc comment. That is a **guardrail, not an
+    /// impossibility** — `CatOperation` has public constructors, so a caller
+    /// can still hand-build one from a proposal. Such a write is refused by
+    /// the engine, which is where the guarantee lives; see the
+    /// [module docs](self#where-the-approval-guarantee-actually-lives). Use
+    /// [`Self::preview`] to inspect what approving *would* mean without
+    /// writing anything.
     ///
     /// Objects come before morphisms so a morphism never references an object
     /// the same batch has not asserted yet, and a morphism is emitted only
