@@ -10,7 +10,10 @@
  *   - titlebar/content drag → `macos: clickAndDrag` (a genuine tracked gesture:
  *                          the window server sees a real drag, not a reposition)
  *   - resize           → `macos: clickAndDrag` on the bottom-right resize corner
- *   - red-X close      → `macos: click` on the AXCloseButton the session locates
+ *   - red-X close      → `macos: click` on the window's close button, which the
+ *                          session locates by XCUITest's standard
+ *                          `_XCUI:CloseWindow` identifier (the close traffic light,
+ *                          not minimize/zoom)
  *   - window geometry  → the XCUITest window element's rect
  *
  * For the WEBVIEW it reads WebKit's Accessibility tree via the compiled `axquery`
@@ -222,31 +225,33 @@ export class Mac2Adapter implements PlatformDriver {
   }
 
   async clickClose(): Promise<void> {
-    const { x, y } = await this.closeButtonCenter();
+    const { x, y } = await this.closeButtonTarget();
     await this.b.execute('macos: click', { x, y });
   }
 
-  /** Center of the native red close button — the leftmost of the traffic-light
-   *  triplet at the window's top-left. Located from the XCUITest button set
-   *  (robust to titlebar layout), with a geometric fallback. */
-  private async closeButtonCenter(): Promise<{ x: number; y: number }> {
-    const r = await this.windowRect();
+  /** Center of THE window close button (the red traffic light), located via
+   *  XCUITest's standard `_XCUI:CloseWindow` identifier — the same control
+   *  `window.buttons[XCUIIdentifierCloseWindow]` resolves to. This targets the
+   *  close control specifically (NOT the minimize `_XCUI:MinimizeWindow` or the
+   *  fullscreen/zoom `_XCUI:FullScreenWindow` sibling), so we can only ever click
+   *  close. Only if that element genuinely can't be found does it fall back to the
+   *  top-left geometric estimate — and it logs that it did. */
+  private async closeButtonTarget(): Promise<{ x: number; y: number }> {
     try {
-      const buttons = await this.b.$$('//XCUIElementTypeButton');
-      const candidates: Rect[] = [];
-      for (const btn of buttons) {
-        const loc = await btn.getLocation();
-        const size = await btn.getSize();
-        const rect: Rect = { x: loc.x, y: loc.y, w: size.width, h: size.height };
-        // Traffic lights: small square controls hugging the window's top-left.
-        if (rect.y < r.y + 30 && rect.x < r.x + 120 && rect.w > 4 && rect.w < 40) candidates.push(rect);
+      const closeBtn = await this.b.$('//XCUIElementTypeButton[@identifier="_XCUI:CloseWindow"]');
+      if (await closeBtn.isExisting()) {
+        const loc = await closeBtn.getLocation();
+        const size = await closeBtn.getSize();
+        return { x: Math.round(loc.x + size.width / 2), y: Math.round(loc.y + size.height / 2) };
       }
-      candidates.sort((a, b) => a.x - b.x);
-      const close = candidates[0];
-      if (close) return { x: Math.round(close.x + close.w / 2), y: Math.round(close.y + close.h / 2) };
     } catch {
       /* fall through to the geometric estimate */
     }
+    const r = await this.windowRect();
+    console.warn(
+      `mac2: could not locate the window close button (_XCUI:CloseWindow) via XCUITest — ` +
+        `falling back to the top-left geometric estimate at (${r.x + 16},${r.y + 16}).`,
+    );
     return { x: r.x + 16, y: r.y + 16 };
   }
 

@@ -3,13 +3,18 @@
  * harness. One place every leg's capabilities live, so the runner + adapters stay
  * transport-agnostic and the CI configs just import the right set.
  *
- * Each set names the Appium driver (automationName) that speaks the WebDriver
- * protocol for that target:
- *   - macOS   → Mac2      (appium-mac2-driver, XCUITest)   — RUNS locally
- *   - Windows → Windows   (appium-windows-driver, WinAppDriver + WebView2)
- *   - Linux   → tauri-driver (WebKitGTK webview)           — via tauri:options
- *   - iOS     → XCUITest  (appium-xcuitest-driver, Simulator)
- *   - Android → UiAutomator2 (appium-uiautomator2-driver, emulator)
+ * Each set names the driver that speaks the WebDriver protocol for that target:
+ *   - macOS   → Mac2  (appium-mac2-driver, XCUITest) — drives native shell + AX
+ *               webview reads. RUNS locally.
+ *   - Linux   → tauri-driver (WebKitGTK webview)  — webview DOM only.
+ *   - Windows → tauri-driver (WebView2)           — webview DOM only.
+ *   - iOS     → XCUITest  (appium-xcuitest-driver, Simulator) — webview context.
+ *   - Android → UiAutomator2 (appium-uiautomator2-driver, emulator) — webview context.
+ *
+ * A Windows NATIVE-shell leg (appium-windows-driver / WinAppDriver, for
+ * drag/resize/close) is a FOLLOW-UP: {@link windowsNativeCapabilities} exists as a
+ * capability stub, but no adapter drives the Windows OS chrome yet — today the
+ * native-window steps are covered only by the macOS mac2 leg.
  *
  * Node built-ins only; no runtime deps.
  */
@@ -43,15 +48,32 @@ export const macosCapabilities: WebdriverIO.Capabilities = {
 };
 
 /**
- * Linux/Windows desktop — driven through `tauri-driver`, which bridges W3C
+ * Linux/Windows desktop WEBVIEW — driven through `tauri-driver`, which bridges W3C
  * WebDriver to the platform webview driver (WebKitWebDriver on Linux, msedgedriver
- * / WebView2 on Windows). `tauri:options.application` is the binary to launch.
+ * / WebView2 on Windows). This drives the webview DOM ONLY (the shared FLOW's DOM
+ * steps + launch); the native-window steps are pending on these legs (the mac2 leg
+ * covers them). `tauri:options.application` is the binary to launch.
  * CI-validated-pending (cannot run on the macOS dev box).
  */
 export const desktopCapabilities: WebdriverIO.Capabilities = {
   'tauri:options': { application: desktopAppBinary() },
   // A W3C-valid but webview-agnostic browserName; tauri-driver ignores it.
   browserName: 'wry',
+} as WebdriverIO.Capabilities;
+
+/**
+ * Windows NATIVE shell — appium-windows-driver (WinAppDriver). FOLLOW-UP stub: this
+ * capability set is here so a future Windows native-window adapter (drag/resize/
+ * close over the OS chrome) has a home, but NO adapter drives it yet — today the
+ * native-window steps are covered only by the macOS mac2 leg. Not wired into any
+ * wdio config until that adapter lands.
+ */
+export const windowsNativeCapabilities: WebdriverIO.Capabilities = {
+  platformName: 'windows',
+  'appium:automationName': 'Windows',
+  // WinAppDriver identifies the app by its Application User Model ID or the exe path
+  // once the native-shell adapter exists; the P0 build lands the app at target/.
+  'appium:app': desktopAppBinary(),
 } as WebdriverIO.Capabilities;
 
 /**
