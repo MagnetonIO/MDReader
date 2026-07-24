@@ -527,6 +527,12 @@ pub fn save_doc(
 /// fires UNDER the lock after the hash check + temp staging but before the swap (a
 /// test injects an interleaved external write there); `before_finish` fires just
 /// before the epoch identity re-check (a test injects a workspace switch there).
+// The 8 args are a deliberate test-injection seam (5 data params + the 3
+// swappable hooks above), not incidental sprawl — bundling them into a struct
+// would still have to satisfy `save_doc_command_body_is_a_single_bare_call_to_the_guarded_core`,
+// which asserts this exact positional wiring (and ~a dozen test call sites) by
+// design, so the lint is silenced narrowly here instead of restructuring that.
+#[allow(clippy::too_many_arguments)]
 fn save_doc_guarded(
     state: &WorkspaceState,
     path: &str,
