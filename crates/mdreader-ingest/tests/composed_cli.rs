@@ -37,6 +37,18 @@ use uuid::Uuid;
 // Driving the real binary
 // ---------------------------------------------------------------------------
 
+/// Spawn the composed `catdb` binary and return its raw exit status + stdout.
+fn catdb_raw(args: &[&str]) -> (std::process::ExitStatus, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_catdb"))
+        .args(args)
+        .output()
+        .expect("the composed `catdb` binary must be runnable");
+    (
+        out.status,
+        String::from_utf8(out.stdout).expect("stdout is utf-8"),
+    )
+}
+
 /// Run the composed `catdb` binary, asserting it exited 0, and return stdout.
 #[track_caller]
 fn catdb(args: &[&str]) -> String {
@@ -511,12 +523,15 @@ fn mdreader_corpus_round_trips_through_the_composed_catdb_binary() {
     }
     // The per-index-version vector table, `chunk_vec_v<rowid>` (sqlite-vec
     // shadow tables carry a further `_suffix`, so require an all-digit tail).
-    assert!(
-        tables.iter().any(|t| t
-            .strip_prefix("chunk_vec_v")
-            .is_some_and(|tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))),
-        "the workspace must carry a chunk_vec_v* vector table; found: {tables:?}"
-    );
+    let vec_table = tables
+        .iter()
+        .find(|t| {
+            t.strip_prefix("chunk_vec_v")
+                .is_some_and(|tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
+        })
+        .unwrap_or_else(|| {
+            panic!("the workspace must carry a chunk_vec_v* vector table; found: {tables:?}")
+        });
 
     let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
     let ops = count("SELECT COUNT(*) FROM operation_log");
@@ -538,6 +553,69 @@ fn mdreader_corpus_round_trips_through_the_composed_catdb_binary() {
         ops,
         "the operation-log anchor must count the log it anchors"
     );
+
+    // Existence proves only that migrations ran. The EXECUTION INDEXES must
+    // additionally be POPULATED — an empty `chunk_fts` means lexical search is
+    // backed by nothing, and an empty vector table means the semantic arm has
+    // nothing to serve. Both are the failures that actually matter, and both
+    // survive a table-existence check. Assert the stronger property: each index
+    // carries exactly one entry per stored chunk.
+    let chunks = count("SELECT COUNT(*) FROM chunks");
+    assert_eq!(chunks, 6, "the workspace must carry the corpus's chunks");
+    // `chunk_fts` is an EXTERNAL-CONTENT fts5 table (`content='chunks'`), so
+    // `SELECT COUNT(*) FROM chunk_fts` reads the CONTENT table and returns the
+    // chunk count even when the index is completely empty — a tautology, not a
+    // check (verified: emptying the index leaves that count at 6). The index
+    // itself lives in the `_docsize` shadow table, one row per indexed chunk.
+    assert_eq!(
+        count("SELECT COUNT(*) FROM chunk_fts_docsize"),
+        chunks,
+        "the FTS index must carry one entry per chunk, not merely exist"
+    );
+    // And it must actually RESOLVE: the marker term matches exactly the chunks
+    // that contain it (one per marker file in this corpus).
+    assert_eq!(
+        count(&format!(
+            "SELECT COUNT(*) FROM chunk_fts WHERE chunk_fts MATCH '{MARKER}'"
+        )),
+        MARKER_FILES.len() as i64,
+        "the FTS index must resolve {MARKER:?} to the chunks that contain it"
+    );
+    // The vec0 table itself is only queryable with the sqlite-vec extension
+    // loaded, which the platform registers behind a private `unsafe` FFI
+    // helper this crate cannot call (and `unsafe_code` is denied workspace
+    // wide). Its `_rowids` shadow table is a PLAIN table holding exactly one
+    // live row per stored vector — verified against deletion: dropping a
+    // one-chunk file from the corpus takes the count from 6 to 5, so these are
+    // live vectors, not tombstones.
+    assert_eq!(
+        count(&format!("SELECT COUNT(*) FROM {vec_table}_rowids")),
+        chunks,
+        "the vector index must carry one embedding per chunk, not merely exist"
+    );
+    // The catalogue really registered the index version those entries belong to.
+    assert_eq!(
+        count("SELECT COUNT(*) FROM index_versions WHERE state = 'active'"),
+        1,
+        "the import must leave exactly one active index version"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM sources"),
+        1,
+        "the import must register its source root"
+    );
+    // The realized domain tables agree with what `status` reported above.
+    assert_eq!(count("SELECT COUNT(*) FROM documents"), 3);
+    assert_eq!(count("SELECT COUNT(*) FROM sections"), 6);
+    assert_eq!(count("SELECT COUNT(*) FROM links"), 2);
+    // NOTE: `schema_defs` is deliberately NOT row-counted. It is legitimately
+    // EMPTY after a successful import: `CatalogStorage::put_schema_def` is
+    // declared and implemented by both storage backends but has no caller
+    // outside those crates' own tests — the engine holds registered domain
+    // schemas in memory and proves them at open (`catdb validate`, step 5)
+    // without ever persisting them to the catalogue table. Asserting
+    // non-emptiness here would fail against correct behaviour; its presence
+    // above is a migration check only.
 
     // -- 5. validate: the registered domain schemas pass the prover ---------
     // (Asserted in full by `registered_domains_pass_the_schema_prover`; here
@@ -603,7 +681,11 @@ fn the_binary_refuses_a_workspace_that_was_never_imported() {
         0,
         "output:\n{out}"
     );
-    let out = catdb(&[
+    // "No hits" must be the binary REPORTING no results, not the binary
+    // erroring out, changing its output format, or this file's parser simply
+    // failing to match. Assert the real user-visible behaviour: a successful
+    // exit AND the human message, before trusting the parse.
+    let (status, out) = catdb_raw(&[
         "search",
         MARKER,
         "--db",
@@ -613,6 +695,15 @@ fn the_binary_refuses_a_workspace_that_was_never_imported() {
         "--lexical-only",
         "--explain",
     ]);
+    assert!(
+        status.success(),
+        "an empty workspace is not an error: searching it must exit 0, got {:?}; output:\n{out}",
+        status.code()
+    );
+    assert!(
+        out.contains(&format!("no hits for {MARKER:?}")),
+        "the binary must REPORT no hits in its human output; output:\n{out}"
+    );
     assert!(
         parse_hits(&out).is_empty(),
         "an empty workspace must yield no hits; output:\n{out}"
