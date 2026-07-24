@@ -449,4 +449,55 @@ mod tests {
             "provenance points at the link's own line"
         );
     }
+
+    /// A4 resolves the interface fragment *globally*, which is what keeps the
+    /// schema law falsifiable — but it means an interface name claimed by two
+    /// components is genuinely ambiguous. Picking one would fabricate a `via`
+    /// edge (and, through the law, an apparent violation) out of nothing, so
+    /// nothing is asserted at all.
+    #[test]
+    fn an_ambiguous_interface_name_yields_no_dependency_at_all() {
+        let component = |path: &str, title: &str, interface: &str| SourceDocument {
+            path: path.into(),
+            title: title.into(),
+            content_hash: format!("blake3:{title}"),
+            frontmatter: vec![("type".into(), "crate".into())],
+            sections: vec![
+                section(title, 1, 1, 9, None),
+                section("Interfaces", 2, 3, 9, Some(0)),
+                section(interface, 3, 5, 9, Some(1)),
+            ],
+        };
+        let mut depends = section("Depends on", 2, 5, 7, Some(0));
+        depends.links = vec![SourceLink {
+            raw_target: "one#Search API".into(),
+            kind: "wikilink".into(),
+            line: 6,
+        }];
+        let mut corpus = vec![
+            SourceDocument {
+                path: "docs/app.md".into(),
+                title: "app".into(),
+                content_hash: "blake3:app".into(),
+                frontmatter: vec![("type".into(), "crate".into())],
+                sections: vec![section("app", 1, 1, 7, None), depends],
+            },
+            component("docs/one.md", "one", "Search API"),
+        ];
+        // With a single `Search API` in the corpus the dependency extracts...
+        assert_eq!(objects_of(&extract(&corpus), "Dependency").len(), 1);
+
+        // ...and the moment a second component claims the same interface
+        // name, the extractor refuses to guess which one was meant.
+        corpus.push(component("docs/two.md", "two", "Search API"));
+        let extraction = extract(&corpus);
+        assert!(
+            objects_of(&extraction, "Dependency").is_empty(),
+            "an ambiguous interface name must not produce a dependency"
+        );
+        // The unambiguous facts around it survive: three components, and one
+        // interface per declaring document.
+        assert_eq!(objects_of(&extraction, "Component").len(), 3);
+        assert_eq!(objects_of(&extraction, "Interface").len(), 2);
+    }
 }
