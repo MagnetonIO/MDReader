@@ -14,6 +14,7 @@ import {
   events,
   type FileEntry,
   type DocPayload,
+  type SaveOutcome as SaveOutcomeDto,
   type FsChanged,
   type WatchError,
   type ImportProgress,
@@ -185,6 +186,57 @@ export async function readDoc(path: string): Promise<Doc> {
   if (result.status === 'error') throw new Error(result.error);
   const payload: DocPayload = result.data;
   return { content: payload.content, mtime: payload.mtime ?? 0, hash: payload.hash };
+}
+
+/**
+ * A hash-guarded save outcome — a proper discriminated union. A `conflict` is an
+ * expected result (the file changed on disk since it was opened), carrying the
+ * hash the file actually holds now; nothing was written.
+ */
+export type SaveOutcome =
+  | { status: 'saved'; newHash: string; mtime: number }
+  | { status: 'conflict'; currentHash: string };
+
+/**
+ * Parse the backend DTO into a validated {@link SaveOutcome}. The discriminant is
+ * matched exhaustively: an UNRECOGNISED status — or a variant missing its hash —
+ * is a hard error, never silently coerced into a conflict-with-empty-hash (which
+ * would misfire the conflict banner and lose the write). Exported for unit tests.
+ */
+export function parseSaveOutcome(dto: SaveOutcomeDto): SaveOutcome {
+  switch (dto.status) {
+    case 'saved':
+      if (dto.new_hash == null) {
+        throw new Error('save_doc returned a "saved" outcome without a new hash');
+      }
+      return { status: 'saved', newHash: dto.new_hash, mtime: dto.mtime ?? 0 };
+    case 'conflict':
+      if (dto.current_hash == null) {
+        throw new Error('save_doc returned a "conflict" outcome without the on-disk hash');
+      }
+      return { status: 'conflict', currentHash: dto.current_hash };
+    default:
+      throw new Error(`save_doc returned an unrecognised outcome status: "${dto.status}"`);
+  }
+}
+
+/**
+ * Save `content` to `path` under a hash guard: the write lands only if the file
+ * still hashes to `expectedHash` (or `opts.force` overrides the guard — the
+ * user's explicit "overwrite the on-disk changes"). A mismatch returns a
+ * `conflict` WITHOUT writing, upholding "never silently rewrite files". Throws
+ * only on a hard backend error (containment, IO) or an unparseable outcome.
+ * `.md`/`.markdown` only.
+ */
+export async function saveDoc(
+  path: string,
+  content: string,
+  expectedHash: string,
+  opts: { force?: boolean } = {},
+): Promise<SaveOutcome> {
+  const result = await commands.saveDoc(path, content, expectedHash, opts.force ?? false);
+  if (result.status === 'error') throw new Error(result.error);
+  return parseSaveOutcome(result.data);
 }
 
 /**

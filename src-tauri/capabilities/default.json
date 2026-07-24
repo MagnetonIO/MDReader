@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
-    "core:window:allow-destroy",
     "store:allow-load",
     "store:allow-get",
     "store:allow-set",

@@ -35,6 +35,7 @@
 //! command ([`read_doc`], [`watch_workspace`], and the engine module's listing)
 //! notes it at the use site.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -332,6 +333,281 @@ fn read_doc_guarded(
 }
 
 // --------------------------------------------------------------------------
+// save_doc
+// --------------------------------------------------------------------------
+
+/// The outcome of a [`save_doc`]. A tagged struct (mirroring [`crate::engine::WikiResolution`]'s
+/// shape rather than a serde-tagged Rust enum, which specta emits less ergonomically):
+/// `status == "saved"` carries the fresh provenance the buffer re-anchors to;
+/// `status == "conflict"` carries the on-disk hash the file *actually* has, and
+/// guarantees NOTHING was written. A conflict is an expected outcome, not an
+/// error, so it rides the `Ok` channel — only hard failures (containment, IO)
+/// surface as `Err(String)`.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SaveOutcome {
+    /// `"saved"` (the write landed) or `"conflict"` (the on-disk hash did not
+    /// match `expected_hash`; the file was left untouched).
+    pub status: String,
+    /// blake3 hex of the freshly-written bytes — the anchor the buffer adopts so
+    /// the watcher's echo of this very write is recognised as a self-write
+    /// (`saved` only).
+    pub new_hash: Option<String>,
+    /// Modification time of the freshly-written file, ms since the Unix epoch
+    /// (`saved` only).
+    pub mtime: Option<f64>,
+    /// The hash the file *currently* holds on disk when `status == "conflict"` —
+    /// the anchor a subsequent forced overwrite (or a reload) re-bases onto.
+    pub current_hash: Option<String>,
+}
+
+impl SaveOutcome {
+    fn saved(new_hash: String, mtime: f64) -> Self {
+        Self {
+            status: "saved".to_string(),
+            new_hash: Some(new_hash),
+            mtime: Some(mtime),
+            current_hash: None,
+        }
+    }
+
+    fn conflict(current_hash: String) -> Self {
+        Self {
+            status: "conflict".to_string(),
+            new_hash: None,
+            mtime: None,
+            current_hash: Some(current_hash),
+        }
+    }
+}
+
+/// A monotonic counter making each staged temp filename unique within a process.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A unique, hidden temp filename for staging a save inside the destination's own
+/// directory. Combines pid + a nanosecond stamp + a process-local counter so two
+/// concurrent saves (or a save racing a previous save's orphaned temp) never
+/// collide.
+fn temp_filename() -> String {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|delta| delta.as_nanos())
+        .unwrap_or(0);
+    format!(".mdreader-save-{}-{nanos}-{seq}.tmp", std::process::id())
+}
+
+/// Stage `bytes` into a fresh temp file in `dir` (a sibling of the destination,
+/// so the follow-up rename is a same-filesystem atomic swap), fsync it durably,
+/// and return the temp path. Split out from the rename so the "crash before the
+/// rename" case is directly testable: the original stays intact while only the
+/// temp is present.
+fn stage_temp(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    let tmp = dir.join(temp_filename());
+    let mut file = std::fs::File::create(&tmp).map_err(|err| format!("stage temp file: {err}"))?;
+    file.write_all(bytes)
+        .map_err(|err| format!("write temp file: {err}"))?;
+    // fsync the bytes before the rename so a power-loss after the rename can't
+    // surface a renamed-but-empty file (the rename only publishes durable bytes).
+    file.sync_all()
+        .map_err(|err| format!("fsync temp file: {err}"))?;
+    Ok(tmp)
+}
+
+/// Rename a staged temp over `dest` — the atomic half of a save. The rename is
+/// atomic on a single filesystem, so a reader (or a crash) only ever sees the
+/// whole old file or the whole new one, never a half-written document. A rename
+/// failure removes the orphaned temp rather than leaking it.
+fn commit_rename(tmp: &Path, dest: &Path) -> Result<(), String> {
+    match std::fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(tmp);
+            Err(format!("commit save for {}: {err}", dest.display()))
+        }
+    }
+}
+
+/// Reads `path`'s current bytes and returns their blake3 hex digest — the digest
+/// [`read_doc`]/[`save_doc`] agree on.
+fn hash_on_disk(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+/// The stable per-DIRECTORY save-lock sidecar: `<dir>/.mdreader.savelock`. ONE
+/// hidden lock file per directory (created on demand, never removed — a stable
+/// inode that survives the atomic rename that swaps a document's inode). Chosen
+/// per-directory, NOT per-document, so a saved workspace never accretes a hidden
+/// lock file per edited doc; the coarser granularity (concurrent saves to files in
+/// the same directory serialize) is inconsequential for a local single-user reader
+/// where saves are brief and uncontended. Hidden + non-markdown, so the listing /
+/// watcher (which filter to `.md`/`.markdown`) never surface it.
+fn savelock_path(target: &Path) -> Option<PathBuf> {
+    Some(target.parent()?.join(".mdreader.savelock"))
+}
+
+/// Holds an exclusive advisory `flock` on the directory's STABLE sidecar lock for
+/// the whole check→write→rename window, releasing it on drop (the engine's import-
+/// lease pattern). The lock lives on the sidecar — NOT the target — because the
+/// target's inode is replaced by the atomic rename, so a lock held on it could not
+/// span the swap; the sidecar's inode never changes, so cooperating app saves (a
+/// second `save_doc`) serialize correctly on it.
+///
+/// ## Residual (documented local-single-user limitation)
+/// An advisory lock only serializes writers that COOPERATE by taking it. A foreign
+/// editor that writes the target directly, in the same instant, is not excluded —
+/// so `save_doc` additionally re-hashes the target under the lock immediately
+/// before the rename (catching such a write → [`SaveOutcome`] conflict rather than
+/// a clobber). The vanishingly small remaining window (a foreign write landing
+/// between that final re-hash and the rename) is accepted for a local, single-user
+/// reader; there is no other tenant to lose the race to.
+struct SaveLock(std::fs::File);
+
+impl SaveLock {
+    /// Open (creating if needed) the target's sidecar lock and block until its
+    /// exclusive advisory lock is held.
+    fn acquire(target: &Path) -> Result<Self, String> {
+        let sidecar = savelock_path(target)
+            .ok_or_else(|| format!("no lock path for {}", target.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&sidecar)
+            .map_err(|err| format!("open save lock {}: {err}", sidecar.display()))?;
+        fs2::FileExt::lock_exclusive(&file)
+            .map_err(|err| format!("lock save for {}: {err}", target.display()))?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for SaveLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+/// Save `content` to a markdown document within the granted workspace under a
+/// hash guard — the enforcement of the "never silently rewrite files" rule.
+/// Resolves + validates the path exactly like [`read_doc`] (contained, an
+/// existing file, `.md`/`.markdown` only), then — holding an exclusive advisory
+/// lock on the target — reads its CURRENT bytes and compares their hash to
+/// `expected_hash`. On a mismatch it writes NOTHING and returns a typed
+/// [`SaveOutcome`] conflict carrying the real on-disk hash, so the UI can raise
+/// its non-blocking banner instead of clobbering an external edit. On a match
+/// (or when `force` overrides the guard — the user's explicit "overwrite the
+/// on-disk changes") it writes atomically (temp + rename) and returns the fresh
+/// hash + mtime. Epoch-guarded: a switch mid-save discards the returned outcome
+/// (the write itself belongs to the still-correct old-workspace path), so the
+/// superseding workspace never adopts a previous doc's provenance.
+#[tauri::command]
+#[specta::specta]
+pub fn save_doc(
+    path: String,
+    content: String,
+    expected_hash: String,
+    force: bool,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<SaveOutcome, String> {
+    save_doc_guarded(
+        &state,
+        &path,
+        &content,
+        &expected_hash,
+        force,
+        commit_rename,
+        || {},
+        || {},
+    )
+}
+
+/// The save core. `commit` is the atomic PUBLISHER (production: [`commit_rename`],
+/// temp→rename); a test can inject a non-atomic one to prove the atomicity
+/// assertion has teeth. Two test hooks (both no-ops in production): `before_rename`
+/// fires UNDER the lock after the hash check + temp staging but before the swap (a
+/// test injects an interleaved external write there); `before_finish` fires just
+/// before the epoch identity re-check (a test injects a workspace switch there).
+fn save_doc_guarded(
+    state: &WorkspaceState,
+    path: &str,
+    content: &str,
+    expected_hash: &str,
+    force: bool,
+    commit: impl FnOnce(&Path, &Path) -> Result<(), String>,
+    before_rename: impl FnOnce(),
+    before_finish: impl FnOnce(),
+) -> Result<SaveOutcome, String> {
+    // Capture the epoch ONCE; validate + guard + write against its grant.
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    // TOCTOU: the read/write below run after this containment check (accepted —
+    // see the module-level "TOCTOU" note; local single-user reader).
+    let real = resolve_doc(&epoch.root, Path::new(path))?;
+
+    // Serialize the ENTIRE check → temp-write → rename window against other
+    // cooperating writers (a second `save_doc`, the engine) with an exclusive
+    // advisory `flock` held on the target. A non-cooperating external writer can
+    // still ignore an advisory lock, so we ALSO re-verify the on-disk hash under
+    // the lock immediately before the swap — together these close the
+    // compare-then-rename TOCTOU: a write that lands between our check and the
+    // rename is caught and the swap is refused (the external bytes stay intact).
+    let _lock = SaveLock::acquire(&real)?;
+
+    // Hash guard (under the lock): unless force-overwriting, the file's current
+    // bytes must still hash to what the buffer was anchored to.
+    let current_hash = hash_on_disk(&real)?;
+    if !force && current_hash != expected_hash {
+        before_finish();
+        // EPOCH-GUARDED
+        return epoch
+            .finish(state, SaveOutcome::conflict(current_hash))
+            .map_err(|_| crate::engine::StaleEpoch::message());
+    }
+
+    // Stage the new bytes into a sibling temp (still holding the lock).
+    let bytes = content.as_bytes();
+    let new_hash = blake3::hash(bytes).to_hex().to_string();
+    let dir = real
+        .parent()
+        .ok_or_else(|| format!("no parent directory for {}", real.display()))?;
+    let tmp = stage_temp(dir, bytes)?;
+
+    before_rename();
+
+    // Re-verify under the lock, right before the swap: a write that raced in
+    // between our check and now (a non-cooperating external writer) changes the
+    // hash → refuse the rename so its content survives, and report the conflict.
+    if !force {
+        let now_hash = hash_on_disk(&real)?;
+        if now_hash != current_hash {
+            let _ = std::fs::remove_file(&tmp);
+            before_finish();
+            // EPOCH-GUARDED
+            return epoch
+                .finish(state, SaveOutcome::conflict(now_hash))
+                .map_err(|_| crate::engine::StaleEpoch::message());
+        }
+    }
+
+    commit(&tmp, &real)?;
+    let mtime = mtime_millis(
+        std::fs::metadata(&real)
+            .ok()
+            .and_then(|meta| meta.modified().ok()),
+    );
+    let outcome = SaveOutcome::saved(new_hash, mtime);
+
+    before_finish();
+    // EPOCH-GUARDED: a switch during the save supersedes this epoch — the write
+    // landed on the (still-correct) old-workspace path, but its provenance must
+    // not be handed to the new workspace, so discard the outcome.
+    epoch
+        .finish(state, outcome)
+        .map_err(|_| crate::engine::StaleEpoch::message())
+}
+
+// --------------------------------------------------------------------------
 // pick_workspace_folder
 // --------------------------------------------------------------------------
 
@@ -548,14 +824,20 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
-        watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
+        canonical_dir, commit_rename, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
+        save_doc_guarded, watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// blake3 hex of `bytes` — the same digest `read_doc`/`save_doc` compute, so a
+    /// test can anchor an `expected_hash` to a file's real contents.
+    fn hash_of(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex().to_string()
+    }
 
     /// A workspace root plus the canonicalized path (macOS `/var` → `/private/var`).
     fn workspace() -> (TempDir, PathBuf) {
@@ -836,6 +1118,408 @@ mod tests {
         assert_eq!(ws.root().unwrap(), root_b);
     }
 
+    #[test]
+    fn save_doc_writes_atomically_and_returns_the_new_provenance() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# Old\n").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+        let expected = hash_of(b"# Old\n");
+
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# New\n",
+            &expected,
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .expect("guarded hash matches → the save lands");
+
+        assert_eq!(outcome.status, "saved");
+        assert_eq!(
+            outcome.new_hash.as_deref(),
+            Some(hash_of(b"# New\n").as_str())
+        );
+        assert!(outcome.mtime.is_some());
+        assert!(outcome.current_hash.is_none());
+        // The bytes on disk are exactly the new content — the write is real.
+        assert_eq!(fs::read(&note).unwrap(), b"# New\n");
+    }
+
+    #[test]
+    fn save_doc_conflict_leaves_the_file_untouched() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# On disk\n").unwrap();
+        let ws = WorkspaceState::granted(root);
+
+        // The buffer was anchored to a STALE hash (the file changed since it was
+        // opened). The guard must refuse and report the file's ACTUAL hash.
+        let stale_anchor = hash_of(b"# What the buffer thinks\n");
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# My edit\n",
+            &stale_anchor,
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .expect("a conflict is an Ok outcome, not an error");
+
+        assert_eq!(outcome.status, "conflict");
+        assert_eq!(
+            outcome.current_hash.as_deref(),
+            Some(hash_of(b"# On disk\n").as_str())
+        );
+        assert!(outcome.new_hash.is_none());
+        // NOTHING was written — the sacred rule holds.
+        assert_eq!(fs::read(&note).unwrap(), b"# On disk\n");
+    }
+
+    #[test]
+    fn save_doc_force_overwrites_despite_a_hash_mismatch() {
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# On disk\n").unwrap();
+        let ws = WorkspaceState::granted(root);
+
+        // force = the user's explicit "overwrite the on-disk changes"; the guard
+        // is bypassed and the write lands even though the anchor is stale.
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# Forced\n",
+            "an-utterly-wrong-hash",
+            true,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .expect("force skips the guard");
+
+        assert_eq!(outcome.status, "saved");
+        assert_eq!(fs::read(&note).unwrap(), b"# Forced\n");
+    }
+
+    #[test]
+    fn save_doc_rejects_paths_outside_the_workspace_and_non_markdown() {
+        let (_dir, root) = workspace();
+        let (_other, other_root) = workspace();
+        let ws = WorkspaceState::granted(root.clone());
+
+        // Outside the grant.
+        let outside = other_root.join("outside.md");
+        fs::write(&outside, "# secret\n").unwrap();
+        let before = fs::read(&outside).unwrap();
+        assert!(save_doc_guarded(
+            &ws,
+            outside.to_str().unwrap(),
+            "# hijacked\n",
+            &hash_of(&before),
+            true, // even forced, containment must reject
+            commit_rename,
+            || {},
+            || {},
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&outside).unwrap(),
+            before,
+            "no write escaped the grant"
+        );
+
+        // Contained but not markdown.
+        let data = root.join("data.json");
+        fs::write(&data, "{}").unwrap();
+        assert!(save_doc_guarded(
+            &ws,
+            data.to_str().unwrap(),
+            "hijacked",
+            &hash_of(b"{}"),
+            true,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn the_publisher_is_atomic_a_crash_at_the_swap_never_leaves_a_partial_file() {
+        // Drive the REAL save path but INJECT the commit (publisher) step, and crash
+        // right at it. With the production publisher — `commit_rename`, an atomic
+        // temp→rename — the swap is indivisible: crashing immediately after it
+        // leaves the WHOLE new file (and crashing before it would leave the whole
+        // old file). Either way the published file is never partial.
+        //
+        // This test exercises the publisher as a swappable seam, so it has teeth:
+        // substituting a NON-atomic (truncating in-place) publisher that dies
+        // mid-copy leaves a truncated file and turns the "never partial" assertion
+        // RED — the revert-verification for the atomicity contract.
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# Original\n").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+        let expected = hash_of(b"# Original\n");
+        let note_path = note.to_str().unwrap().to_string();
+        let new = b"# The freshly-published version\n".to_vec();
+        let new_str = String::from_utf8(new.clone()).unwrap();
+
+        // Injected publisher: perform the ATOMIC swap, then crash. A reader after the
+        // crash must see the whole new file — never a half-written one.
+        let commit_then_crash = |tmp: &Path, dest: &Path| -> Result<(), String> {
+            commit_rename(tmp, dest)?;
+            panic!("crash the instant the atomic swap completed");
+        };
+
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = save_doc_guarded(
+                &ws,
+                &note_path,
+                &new_str,
+                &expected,
+                false,
+                commit_then_crash,
+                || {},
+                || {},
+            );
+        }));
+        std::panic::set_hook(prev);
+        assert!(
+            result.is_err(),
+            "the injected crash unwound out of the save"
+        );
+
+        // The published file is one of the two WHOLE versions — never partial. The
+        // atomic rename means it is the whole NEW file here. A truncating in-place
+        // publisher dying mid-copy would leave a partial file and fail this.
+        let published = fs::read(&note).unwrap();
+        assert!(
+            published == b"# Original\n".to_vec() || published == new,
+            "published file must be fully-old or fully-new, never partial: {published:?}"
+        );
+        assert_eq!(
+            published, new,
+            "the atomic swap published the whole new file"
+        );
+    }
+
+    #[test]
+    fn two_saves_to_different_files_in_the_same_directory_serialize() {
+        use std::sync::mpsc;
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        // Proves the lock is per-DIRECTORY, not per-file: two saves to DIFFERENT
+        // files in the same directory must serialize. Thread 1 saves a.md and PARKS
+        // holding the lock (in `before_finish`, after its rename); a save of b.md
+        // (a different file, same directory) must block on the shared lock.
+        //
+        // Revert-genuine: a per-FILE or per-inode lock gives a.md and b.md different
+        // locks, so the second save runs concurrently and completes → RED. (The
+        // old same-file test could not distinguish this — a per-doc lock also
+        // serialized same-file saves.)
+        let (_dir, root) = workspace();
+        let a = root.join("a.md");
+        let b = root.join("b.md");
+        fs::write(&a, "A").unwrap();
+        fs::write(&b, "B").unwrap();
+        let ws = Arc::new(WorkspaceState::granted(root));
+
+        let (held_tx, held_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let ws1 = Arc::clone(&ws);
+        let (pa, ha) = (a.to_str().unwrap().to_string(), hash_of(b"A"));
+        let t1 = thread::spawn(move || {
+            save_doc_guarded(
+                &ws1,
+                &pa,
+                "A2",
+                &ha,
+                false,
+                commit_rename,
+                || {},
+                move || {
+                    held_tx.send(()).unwrap(); // renamed a.md; lock still held
+                    release_rx.recv().unwrap(); // park while holding the directory lock
+                },
+            )
+        });
+
+        held_rx.recv().unwrap(); // thread 1 holds the directory lock
+
+        // Thread 2 saves a DIFFERENT file in the SAME directory.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let ws2 = Arc::clone(&ws);
+        let (pb, hb) = (b.to_str().unwrap().to_string(), hash_of(b"B"));
+        let t2 = thread::spawn(move || {
+            let out = save_doc_guarded(&ws2, &pb, "B2", &hb, false, commit_rename, || {}, || {});
+            done_tx.send(()).unwrap();
+            out
+        });
+
+        // With a per-directory lock the second save stays BLOCKED; a per-file/inode
+        // lock (different lock per file) would let it complete concurrently.
+        let still_blocked = done_rx.recv_timeout(Duration::from_millis(500)).is_err();
+        assert!(
+            still_blocked,
+            "saves to different files in the same directory must serialize on the shared lock"
+        );
+
+        // Release thread 1; both saves succeed (different files, no conflict).
+        release_tx.send(()).unwrap();
+        let out1 = t1.join().unwrap().expect("thread 1 save");
+        let out2 = t2.join().unwrap().expect("thread 2 save");
+        assert_eq!(out1.status, "saved");
+        assert_eq!(out2.status, "saved");
+        assert_eq!(fs::read(&a).unwrap(), b"A2");
+        assert_eq!(fs::read(&b).unwrap(), b"B2");
+    }
+
+    #[test]
+    fn saving_never_leaves_a_per_document_lock_artifact() {
+        // The save lock is per-DIRECTORY, so saving many docs never accretes one
+        // hidden lock file per doc. Reverting to a per-document `.<name>.savelock`
+        // sidecar would leave one artifact per saved doc → this goes RED.
+        let (_dir, root) = workspace();
+        let a = root.join("a.md");
+        let b = root.join("b.md");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        let ws = WorkspaceState::granted(root.clone());
+
+        save_doc_guarded(
+            &ws,
+            a.to_str().unwrap(),
+            "a2",
+            &hash_of(b"a"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .unwrap();
+        save_doc_guarded(
+            &ws,
+            b.to_str().unwrap(),
+            "b2",
+            &hash_of(b"b"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .unwrap();
+
+        let locks = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".savelock"))
+            .count();
+        assert!(
+            locks <= 1,
+            "saves must not leave a per-document lock artifact; found {locks} .savelock files"
+        );
+    }
+
+    #[test]
+    fn save_doc_discards_the_outcome_when_a_switch_lands_in_the_save_window() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let note = root_a.join("note.md");
+        fs::write(&note, "# A\n").unwrap();
+        let ws = WorkspaceState::granted(root_a);
+
+        // No switch → the save of the current workspace's file succeeds.
+        let ok = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# A2\n",
+            &hash_of(b"# A\n"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .expect("save");
+        assert_eq!(ok.status, "saved");
+
+        // A switch INSIDE the window (injected at `before_finish`, just before the
+        // re-check) supersedes the captured epoch → the outcome is discarded, so
+        // the new workspace never adopts this doc's fresh provenance. The write
+        // itself landed on the (still-correct) old-workspace path.
+        let stale = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# A3\n",
+            &hash_of(b"# A2\n"),
+            false,
+            commit_rename,
+            || {},
+            || {
+                let _ = ws.switch(root_b.clone());
+            },
+        );
+        assert!(stale.is_err(), "stale save outcome discarded");
+        assert_eq!(
+            fs::read(&note).unwrap(),
+            b"# A3\n",
+            "but the write did land"
+        );
+    }
+
+    #[test]
+    fn save_doc_refuses_when_the_file_is_rewritten_between_the_check_and_the_rename() {
+        // The compare-then-rename TOCTOU: the buffer's anchor matches at the initial
+        // hash check, but a racing external writer lands NEW bytes AFTER the check
+        // and BEFORE the swap (injected via the `before_rename` hook — a
+        // non-cooperating writer that ignores the advisory lock). The re-verify
+        // under the lock must catch it: conflict, and the external content survives
+        // (our staged edit is never renamed over it).
+        let (_dir, root) = workspace();
+        let note = root.join("note.md");
+        fs::write(&note, "# Original\n").unwrap();
+        let ws = WorkspaceState::granted(root);
+        let anchored = hash_of(b"# Original\n");
+
+        let external = b"# Written by someone else\n".to_vec();
+        let external_for_hook = external.clone();
+        let note_for_hook = note.clone();
+
+        let outcome = save_doc_guarded(
+            &ws,
+            note.to_str().unwrap(),
+            "# My edit\n",
+            &anchored,
+            false,
+            commit_rename,
+            move || {
+                // Interleaved external write, after our check, before our rename.
+                fs::write(&note_for_hook, &external_for_hook).unwrap();
+            },
+            || {},
+        )
+        .expect("a race is reported as a conflict, not an error");
+
+        assert_eq!(outcome.status, "conflict");
+        assert_eq!(
+            outcome.current_hash.as_deref(),
+            Some(hash_of(&external).as_str()),
+            "the conflict reports the racing writer's actual on-disk hash"
+        );
+        assert!(outcome.new_hash.is_none());
+        // The external content is intact — our edit never clobbered it.
+        assert_eq!(fs::read(&note).unwrap(), external);
+    }
+
     /// Structural guard (crude, but CI-catching): EVERY `#[tauri::command]` that
     /// returns workspace-derived data must funnel its result through the
     /// `Epoch::finish` choke-point. A new command that forgets it trips this — the
@@ -876,5 +1560,94 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Tighter than the choke-point scan above (which is satisfied merely by the
+    /// guarded core sitting in the same block): the PUBLIC `save_doc` command body
+    /// must be EXACTLY ONE expression statement whose expression is a BARE CALL to
+    /// `save_doc_guarded`. Parsed with `syn` into a real AST, so a method-chain
+    /// bypass like `save_doc_guarded(..).inspect(|_| unguarded())` — which a
+    /// text/brace scan would pass — is rejected (it is an `Expr::MethodCall`, not a
+    /// bare `Expr::Call`). Closes the "add a bypass path to the thin wrapper" hole.
+    #[test]
+    fn save_doc_command_body_is_a_single_bare_call_to_the_guarded_core() {
+        let file: syn::File =
+            syn::parse_str(include_str!("commands.rs")).expect("commands.rs parses");
+
+        let func = file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(func) if func.sig.ident == "save_doc" => Some(func),
+                _ => None,
+            })
+            .expect("the save_doc command exists");
+
+        // Exactly one statement.
+        assert_eq!(
+            func.block.stmts.len(),
+            1,
+            "save_doc's body must be exactly one statement (the delegation)"
+        );
+
+        // …and that statement must be a bare CALL expression (the fn's tail value),
+        // whose callee is the path `save_doc_guarded` — no method chain, no wrapper.
+        let expr = match &func.block.stmts[0] {
+            syn::Stmt::Expr(expr, None) => expr,
+            _ => panic!("save_doc's single statement must be the tail delegation expression"),
+        };
+        let call = match expr {
+            syn::Expr::Call(call) => call,
+            _ => panic!(
+                "save_doc's body must be a BARE call to save_doc_guarded — no method chain \
+                 (e.g. `.inspect(..)`) or other wrapper"
+            ),
+        };
+        let callee = match &*call.func {
+            syn::Expr::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            callee.as_deref(),
+            Some("save_doc_guarded"),
+            "save_doc must delegate directly to save_doc_guarded"
+        );
+
+        // Inspecting the callee alone is not enough: a truncating or side-effecting
+        // publisher passed AS THE ARGUMENT would still pass. Assert the argument
+        // wiring — all 8 args, the publisher (index 5) being the real atomic
+        // `commit_rename` path (not a substitute closure), and the two test hooks
+        // (6, 7) being EMPTY closures (no injected side-effects) in production.
+        let args: Vec<&syn::Expr> = call.args.iter().collect();
+        assert_eq!(
+            args.len(),
+            8,
+            "save_doc_guarded must be called with its full 8-arg wiring"
+        );
+
+        let publisher = match args[5] {
+            syn::Expr::Path(path) => path.path.segments.last().map(|seg| seg.ident.to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            publisher.as_deref(),
+            Some("commit_rename"),
+            "the publisher argument must be the atomic commit_rename — not a substitute closure"
+        );
+
+        let is_empty_closure = |expr: &syn::Expr| match expr {
+            syn::Expr::Closure(closure) => {
+                matches!(&*closure.body, syn::Expr::Block(block) if block.block.stmts.is_empty())
+            }
+            _ => false,
+        };
+        assert!(
+            is_empty_closure(args[6]),
+            "the before_rename hook must be an empty closure in production (no injected work)"
+        );
+        assert!(
+            is_empty_closure(args[7]),
+            "the before_finish hook must be an empty closure in production (no injected work)"
+        );
     }
 }

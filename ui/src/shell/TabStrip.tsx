@@ -24,12 +24,24 @@ import { CSS } from '@dnd-kit/utilities';
 
 import { CloseIcon, PinIcon } from './icons.js';
 import { useTabsStore } from '../stores/tabs.js';
+import { useEditorStore } from '../stores/editor.js';
 import type { TabState } from '../stores/types.js';
 
-function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
+function SortableTab({
+  tab,
+  active,
+  onRequestClose,
+}: {
+  tab: TabState;
+  active: boolean;
+  onRequestClose: (tabId: string) => void;
+}) {
   const setActiveTab = useTabsStore((state) => state.setActiveTab);
-  const closeTab = useTabsStore((state) => state.closeTab);
   const togglePin = useTabsStore((state) => state.togglePin);
+  // Unsaved-edit marker: a dot on the tab while ANY of its documents' buffers
+  // diverge from disk (including a doc the tab has navigated away from). Sourced
+  // from the editor store (the single source of truth for dirty).
+  const dirty = useEditorStore((state) => state.tabIsDirty(tab.id));
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: tab.id,
@@ -57,12 +69,15 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
       onAuxClick={(event) => {
         if (event.button === 1) {
           event.preventDefault();
-          closeTab(tab.id);
+          onRequestClose(tab.id);
         }
       }}
     >
       {tab.pinned ? <PinIcon className="tab__pin" /> : null}
       <span className="tab__label">{tab.docRef.name}</span>
+      {dirty ? (
+        <span className="tab__dirty" role="img" aria-label="Unsaved changes" title="Unsaved changes" />
+      ) : null}
       <button
         type="button"
         className="tab__close"
@@ -70,7 +85,7 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
-          closeTab(tab.id);
+          onRequestClose(tab.id);
         }}
       >
         <CloseIcon width="12" height="12" />
@@ -79,7 +94,13 @@ function SortableTab({ tab, active }: { tab: TabState; active: boolean }) {
   );
 }
 
-export function TabStrip() {
+export interface TabStripProps {
+  /** Request to close a tab — routed through the shell so a dirty tab prompts the
+   *  unsaved-changes guard before it is torn down. */
+  onRequestClose: (tabId: string) => void;
+}
+
+export function TabStrip({ onRequestClose }: TabStripProps) {
   const tabs = useTabsStore((state) => state.tabs);
   const activeTabId = useTabsStore((state) => state.activeTabId);
   const reorderTabs = useTabsStore((state) => state.reorderTabs);
@@ -113,7 +134,12 @@ export function TabStrip() {
           strategy={horizontalListSortingStrategy}
         >
           {tabs.map((tab) => (
-            <SortableTab key={tab.id} tab={tab} active={tab.id === activeTabId} />
+            <SortableTab
+              key={tab.id}
+              tab={tab}
+              active={tab.id === activeTabId}
+              onRequestClose={onRequestClose}
+            />
           ))}
         </SortableContext>
       </DndContext>

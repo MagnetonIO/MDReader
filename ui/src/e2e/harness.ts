@@ -20,7 +20,32 @@ const CORPUS: Record<string, string> = {
   '/mock/ws/docs/guide.md':
     '# Guide\n\nAn introduction.\n\n## Section A\n\nAlpha content.\n\n## Section B\n\nBeta content.\n',
   '/mock/ws/docs/reference.md': '# Reference\n\n## API\n\nReference material.\n',
+  // A long document, so split-mode scroll sync has room to move (see the e2e).
+  '/mock/ws/long.md':
+    '# Long\n\n' +
+    Array.from(
+      { length: 40 },
+      (_unused, index) =>
+        `## Section ${index + 1}\n\nParagraph text for section ${index + 1}, with enough words on the line to give the editor and the preview real height to scroll through.\n`,
+    ).join('\n'),
 };
+
+// A monotonic per-path "disk version" so the mock can produce a NEW hash whenever
+// a file's bytes change — enough to exercise the save hash-guard end to end. The
+// real backend hashes bytes; the mock's opaque token is equivalent for the UI,
+// which only ever compares hashes for equality.
+const DISK_VERSION: Record<string, number> = {};
+
+/** The current on-disk hash the read/save commands agree on for `path`. */
+function diskHash(path: string): string {
+  return `h:${path}:${DISK_VERSION[path] ?? 0}`;
+}
+
+/** Write `content` to the mock disk and bump its version (⇒ a fresh hash). */
+function writeDisk(path: string, content: string): void {
+  CORPUS[path] = content;
+  DISK_VERSION[path] = (DISK_VERSION[path] ?? 0) + 1;
+}
 
 function fileEntries() {
   return Object.keys(CORPUS).map((path) => {
@@ -110,6 +135,11 @@ function resolveWikilink(target: string, heading: string | null) {
 }
 
 export function installTauriMocks(): void {
+  // Test hook: let an e2e simulate an EXTERNAL edit landing on disk (bumping the
+  // file's hash) so a subsequent save trips the guard — the watcher's own event
+  // channel isn't available under a pure IPC mock.
+  (window as unknown as { __E2E__?: { writeDisk: (path: string, content: string) => void } }).__E2E__ =
+    { writeDisk };
   mockWindows('main');
   mockIPC((cmd, args) => {
     switch (cmd) {
@@ -150,7 +180,23 @@ export function installTauriMocks(): void {
         return related((args as { docPath: string }).docPath);
       case 'read_doc': {
         const path = (args as { path: string }).path;
-        return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: `mock-${path}` };
+        return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: diskHash(path) };
+      }
+      case 'save_doc': {
+        // Mirrors the Rust hash guard: unless forced, the write lands only if the
+        // buffer's anchor still matches disk; a mismatch is a typed conflict with
+        // NOTHING written. On success the bytes are stored and a fresh hash issued.
+        const { path, content, expectedHash, force } = args as {
+          path: string;
+          content: string;
+          expectedHash: string;
+          force: boolean;
+        };
+        if (!force && expectedHash !== diskHash(path)) {
+          return { status: 'conflict', new_hash: null, mtime: null, current_hash: diskHash(path) };
+        }
+        writeDisk(path, content);
+        return { status: 'saved', new_hash: diskHash(path), mtime: 1_700_000_000_000, current_hash: null };
       }
       case 'watch_workspace':
         // The atomic switch returns the canonical granted root plus the
