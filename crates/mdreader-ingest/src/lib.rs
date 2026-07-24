@@ -58,7 +58,8 @@ mod tests {
     fn registration_bundles_domain_and_ingestor() {
         let registration = registration();
         assert_eq!(registration.name, "mdreader-domain");
-        assert_eq!(registration.schemas.len(), 9);
+        // Four pipeline schemas, three provenance cores, three overlays.
+        assert_eq!(registration.schemas.len(), 10);
         assert_eq!(registration.mappings.len(), 3);
         assert_eq!(registration.ingestors.len(), 1);
         assert_eq!(registration.chunker_version, CHUNKER_VERSION);

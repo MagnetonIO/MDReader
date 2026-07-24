@@ -10,8 +10,17 @@ workspace = true
 
 [dependencies]
 catdb-core = { path = "../../../../catdb/crates/catdb-core" }
+catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-validation = { path = "../../../../catdb/crates/catdb-validation" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
+blake3 = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
+blake3 = "1"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

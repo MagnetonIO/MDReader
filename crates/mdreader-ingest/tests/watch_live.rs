@@ -209,7 +209,15 @@ async fn watch_converges_create_edit_rename_delete_without_manual_imports() {
 
     // The op log stayed coherent through every watcher-driven mutation.
     let check = engine.check_equations().await.unwrap();
-    assert_eq!(check.violations, Vec::<String>::new());
+    assert!(
+        check.violations.is_empty(),
+        "corpus must be coherent: {:?}",
+        check.violations
+    );
+    assert!(
+        check.schemas_checked > 0,
+        "the equation check must have run"
+    );
 
     // Stop: the handle winds the watcher down; further disk changes are
     // (deliberately) not observed until the next reconcile.

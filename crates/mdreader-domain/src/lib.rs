@@ -9,8 +9,14 @@
 //! [`validate_all`] runs the whole domain — every schema, every equation,
 //! every mapping — through a prover and returns the aggregated
 //! [`ValidationReport`]; tests (and later, app startup) assert it is clean.
+//!
+//! [`extract`] adds the other half of the domain: the deterministic,
+//! rules-based extractors that read a parsed markdown corpus and *propose*
+//! typed overlay facts over it, without ever touching the markdown.
 
 #![deny(missing_docs)]
+
+pub mod extract;
 
 use std::sync::Arc;
 
@@ -59,11 +65,17 @@ pub fn pipeline_mappings() -> Vec<Mapping> {
     ]
 }
 
-/// The overlay demo schemas: `document_overlay` and `decision_overlay`.
-pub fn overlay_schemas() -> [Schema; 2] {
+/// The overlay schemas: `document_overlay`, `decision_overlay`, and
+/// `architecture_overlay`.
+///
+/// Overlays are non-destructive interpretations laid over the same markdown:
+/// one file may be a `Document`, a `Decision`, and a `Component` at once. See
+/// [`extract`] for the extractors that populate the latter two.
+pub fn overlay_schemas() -> [Schema; 3] {
     [
         builtin::document_overlay_schema(),
         builtin::decision_overlay_schema(),
+        builtin::architecture_overlay_schema(),
     ]
 }
 
@@ -158,7 +170,7 @@ mod tests {
     #[test]
     fn engine_registration_carries_the_whole_domain() {
         let registration = engine_registration(Vec::new(), "test-chunker@1");
-        assert_eq!(registration.schemas.len(), 9);
+        assert_eq!(registration.schemas.len(), 10);
         assert_eq!(registration.mappings.len(), 3);
         assert_eq!(registration.chunker_version, "test-chunker@1");
     }
@@ -216,11 +228,12 @@ mod tests {
             "domain must validate cleanly:\n{}",
             report.error_messages().join("\n")
         );
-        // Nine schemas, three mappings, and every builtin equation verdict
-        // recorded (fs has 1 equation, md and md_core have 2 each).
-        assert_eq!(report.schemas.len(), 9);
+        // Ten schemas, three mappings, and every builtin equation verdict
+        // recorded (fs has 1 equation, md and md_core have 2 each, and
+        // architecture_overlay has its interface-ownership law).
+        assert_eq!(report.schemas.len(), 10);
         assert_eq!(report.mappings.len(), 3);
-        assert_eq!(report.equations.len(), 5);
+        assert_eq!(report.equations.len(), 6);
         assert!(report
             .mappings
             .iter()
