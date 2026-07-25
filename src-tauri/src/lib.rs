@@ -8,6 +8,7 @@
 
 mod commands;
 mod engine;
+mod mapping;
 mod overlay;
 mod search;
 
@@ -48,6 +49,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             overlay::approve_fact,
             overlay::reject_fact,
             overlay::check_constraints,
+            mapping::list_mappings,
+            mapping::inspect_mapping,
+            mapping::compose_mappings,
+            mapping::diff_schema_versions,
+            mapping::inspect_migration,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }
