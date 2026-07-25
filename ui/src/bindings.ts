@@ -242,10 +242,10 @@ export const commands = {
 	/**
 	 *  Diff two persisted versions of one schema, by ordinal.
 	 *
-	 *  The comparison short-circuits on the stored content checksums, so two
-	 *  identical versions cost one string comparison and no parsing — and the
-	 *  short answer can never disagree with the long one (see
-	 *  [`catdb_engine::semantic_diff`]).
+	 *  Each version's stored body is verified against its recorded checksum first,
+	 *  so a corrupt row is refused rather than certified "unchanged"; only then does
+	 *  an equal-checksum pair skip the structural comparison. The short answer can
+	 *  never disagree with the long one (see [`catdb_engine::semantic_diff`]).
 	 */
 	diffSchemaVersions: (schema: string, from: number, to: number) => typedError<SchemaDiffDto, string>(__TAURI_INVOKE("diff_schema_versions", { schema, from, to })),
 	/**
