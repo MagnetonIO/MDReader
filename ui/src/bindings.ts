@@ -73,8 +73,15 @@ export const commands = {
 	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, string>(__TAURI_INVOKE("list_workspace_files", { root })),
 	/**
 	 *  Open (or reuse) the workspace index and run an incremental import, streaming
-	 *  coarse progress on `on_event` (`loading` → `importing` → `done`/`error`) and
-	 *  returning the final status.
+	 *  coarse progress on `on_event` (`loading` → `importing` → `done`, or
+	 *  `model-unavailable`/`error`) and returning the final status.
+	 *
+	 *  The two preconditions are separate on purpose: the **index** opens first and
+	 *  needs no model, so the workspace is readable from that moment on; the
+	 *  **model** is loaded second and only gates the import itself and the semantic
+	 *  search arm. A model that cannot load therefore yields `model-unavailable`
+	 *  (with the reason) over a fully open workspace — never an empty one, and never
+	 *  the generic `error` an actual index-build failure reports.
 	 *  Captures the current [`Epoch`] once at entry — root, generation, engine, and
 	 *  status travel together. `root` is validated against the epoch's grant (a
 	 *  foreign path is a hard error). Coalesced (#4): a second import for the same
@@ -107,7 +114,8 @@ export const commands = {
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
 	/**
 	 *  Hybrid search over the workspace index, streamed in two honest phases on
-	 *  `on_event` and returned as the final (hybrid) hit list.
+	 *  `on_event` and returned as the final hit list plus whether that list is the
+	 *  full ranking.
 	 *
 	 *  The typed filter language is honored as-is (`tag:` `path:` `linked-to:`
 	 *  `after:` bare terms, RRF-fused): a parse/validation failure returns the
@@ -117,10 +125,16 @@ export const commands = {
 	 *  `options.lexical_only` (the `Exact` intent) skips the second pass. Before
 	 *  the engine is installed (no import yet) both phases are empty.
 	 *
+	 *  **Degrading honestly.** The lexical arm needs no embedder, so when the model
+	 *  could not be loaded this still searches — and says so: the second pass is
+	 *  skipped and [`SearchResults::semantic_unavailable`] carries the reason, on the
+	 *  streamed batches as well as the returned value. What it never does is run a
+	 *  lexical-only pass and hand it back as though the vector arm had contributed.
+	 *
 	 *  Epoch-guarded: a workspace switch mid-search supersedes the captured epoch,
 	 *  discarding its hits rather than surfacing a previous workspace's documents.
 	 */
-	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("search", { query, options, onEvent })),
+	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
 	/**
 	 *  Documents related to `doc_path` (an absolute path in the granted
 	 *  workspace), unified graph + concept + vector scoring with each component
@@ -146,6 +160,11 @@ export const commands = {
 	 *
 	 *  Before the engine is installed (no import yet) the list is honestly empty.
 	 *  Epoch-guarded like [`search`].
+	 *
+	 *  Unlike [`search`] this has no honest degraded form: the thing being explained
+	 *  IS the fused hybrid ranking, so when the semantic arm cannot run there is no
+	 *  ranking to explain and the command says exactly that rather than presenting a
+	 *  lexical-only breakdown as the explanation.
 	 */
 	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
 	/**
@@ -515,7 +534,10 @@ export type ImportProgress = {
 	 *  `"idle"` (no import yet), `"loading"` (constructing/downloading the
 	 *  embedding model), `"importing"` (in flight), `"reembedding"` (in
 	 *  flight, and re-embedding the whole workspace because the embedding
-	 *  model changed), `"done"`, or `"error"`.
+	 *  model changed), `"done"`, `"model-unavailable"` (the embedding model
+	 *  could not be loaded — the workspace is open and readable, but nothing
+	 *  could be indexed and the semantic arm is off), or `"error"` (the index
+	 *  build itself failed).
 	 */
 	phase: string,
 	/**
@@ -1067,6 +1089,13 @@ export type SearchBatch = {
 	 *  whose generation is not the current one (belt+suspenders over the lock).
 	 */
 	generation: number,
+	/**
+	 *  Set when the semantic arm was **wanted and could not run** — see
+	 *  [`SearchResults::semantic_unavailable`]. Carried on the batch as well as
+	 *  the resolved value so a consumer that renders streamed phases cannot
+	 *  paint a lexical-only list as the hybrid ranking, even for an instant.
+	 */
+	semantic_unavailable: string | null,
 };
 
 /**
@@ -1121,6 +1150,27 @@ export type SearchQuery = {
 	lexical_only: boolean,
 	/**  Attach the full [`HitExplain`] breakdown to every hit. */
 	explain: boolean,
+};
+
+/**
+ *  What a [`search`] produced, and whether it is the full ranking.
+ *
+ *  The hits alone cannot say this: a hybrid pass that quietly lost its vector
+ *  arm returns fewer, differently-ordered hits that look exactly like a normal
+ *  result set. So the outcome carries the distinction explicitly, and the caller
+ *  has to look at it to get at the hits.
+ */
+export type SearchResults = {
+	/**  The final hits, best-first. */
+	hits: SearchHitDto[],
+	/**
+	 *  `None` when the ranking is what was asked for — either a full hybrid pass,
+	 *  or a lexical-only pass the caller requested (the `Exact` intent). `Some`
+	 *  carries the reason the semantic arm could not run when it *was* asked for
+	 *  (typically: the embedding model could not be loaded), so `hits` is a
+	 *  lexical-only list and must be presented as one.
+	 */
+	semantic_unavailable: string | null,
 };
 
 /**  What Σ did, or why it did not run. */

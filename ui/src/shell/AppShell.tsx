@@ -417,9 +417,11 @@ export function AppShell() {
     await switchWorkspace(picked);
   }, [switchWorkspace]);
 
-  // Re-run the import for the current workspace (e.g. after a model-load
-  // timeout) — the backend re-enters the loading phase since no engine was
-  // installed. Rides the current open generation.
+  // Re-run the import for the current workspace. When the failure was the model
+  // (the `model-unavailable` phase), this genuinely re-attempts the LOAD: the
+  // backend's index is already open, and `start_import` re-enters its model step
+  // — which is the step that failed — rather than merely re-scanning files.
+  // Rides the current open generation.
   const retryIndex = useCallback(() => {
     void triggerReindex();
   }, [triggerReindex]);

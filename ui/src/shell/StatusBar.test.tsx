@@ -127,6 +127,75 @@ describe('StatusBar index indicator', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
+  /**
+   * The reported bug's whole point: a model that could not be loaded is a real,
+   * nameable condition, and the status bar must name it — not fall back to a
+   * label that reads as "nothing is wrong" (Indexed / Local files) and not blame
+   * the index build (Index failed).
+   *
+   * Revert-RED: delete the `model-unavailable` branch from `indexIndicator` and
+   * the phase falls through to the idle label — `getByText('Embedding model
+   * unavailable')` fails, and the "does not read as" assertions below catch the
+   * `Local files` it lands on instead.
+   */
+  test('a model that could not load is named, with its reason, distinctly', () => {
+    render(
+      <StatusBar
+        words={null}
+        watcher="idle"
+        fileCount={49}
+        fromIndex={false}
+        importState={{
+          phase: 'model-unavailable',
+          filesDone: 0,
+          filesTotal: 0,
+          chunks: 0,
+          error: 'the embedding model could not be loaded — timed out after 120s',
+        }}
+      />,
+    );
+    const label = screen.getByText('Embedding model unavailable');
+    expect(label).toBeTruthy();
+
+    // It carries the reason the backend actually observed — verbatim.
+    const title = label.closest('span')?.getAttribute('title') ?? '';
+    expect(title).toContain('the embedding model could not be loaded');
+    expect(title).toContain('timed out after 120s');
+    // ...and says what still works, so "unavailable" is not read as "broken".
+    expect(title).toMatch(/read and text-search/);
+
+    // It is not any of the labels that would misdescribe it.
+    expect(screen.queryByText('Index failed')).toBeNull();
+    expect(screen.queryByText('Local files')).toBeNull();
+    expect(screen.queryByText('Indexed')).toBeNull();
+    // The workspace is still open: the file count keeps reporting its files.
+    expect(screen.getByText('49 files')).toBeTruthy();
+  });
+
+  test('the model-unavailable retry is labelled as a model retry, not an index one', () => {
+    const onRetryIndex = vi.fn();
+    render(
+      <StatusBar
+        words={null}
+        watcher="idle"
+        fileCount={49}
+        fromIndex={false}
+        importState={{
+          phase: 'model-unavailable',
+          filesDone: 0,
+          filesTotal: 0,
+          chunks: 0,
+          error: 'the embedding model could not be loaded — timed out after 120s',
+        }}
+        onRetryIndex={onRetryIndex}
+      />,
+    );
+    // Distinct from the index-error "Retry": what needs re-attempting is the load.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry model load' }));
+    expect(onRetryIndex).toHaveBeenCalledTimes(1);
+  });
+
   test('idle falls back to the index/local indicator', () => {
     const { rerender } = render(
       <StatusBar words={null} watcher="idle" fileCount={0} fromIndex={false} importState={null} />,

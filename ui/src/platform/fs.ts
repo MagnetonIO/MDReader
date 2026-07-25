@@ -7,7 +7,7 @@
  */
 
 import { Channel } from '@tauri-apps/api/core';
-import type { RelatedHit, SearchAdapter, SearchHit } from '@mdreader/ui';
+import type { RelatedHit, SearchAdapter, SearchHit, SearchOutcome } from '@mdreader/ui';
 
 import {
   commands,
@@ -25,7 +25,7 @@ import {
 } from '../bindings';
 
 export type { FileEntry, DocPayload, FsChanged, WatchError };
-export type { SearchHit, RelatedHit } from '@mdreader/ui';
+export type { SearchHit, RelatedHit, SearchOutcome } from '@mdreader/ui';
 
 /** A `blake3`/`f64`-normalised document payload (never-null numbers). */
 export interface Doc {
@@ -61,8 +61,17 @@ export interface WorkspaceGrant {
  *  embedding-model construction/download that precedes the first import;
  *  `reembedding` is an import that is re-embedding the whole workspace because
  *  the embedding model changed (a one-time cost the generic `importing` label
- *  would understate). */
-export type ImportPhase = 'idle' | 'loading' | 'importing' | 'reembedding' | 'done' | 'error';
+ *  would understate); `model-unavailable` is that model failing to load at all —
+ *  its own phase because the workspace is open and readable, only the index and
+ *  the semantic arm are missing, which neither `done` nor `error` says. */
+export type ImportPhase =
+  | 'idle'
+  | 'loading'
+  | 'importing'
+  | 'reembedding'
+  | 'done'
+  | 'model-unavailable'
+  | 'error';
 
 /** A normalised import-progress snapshot (camelCased, never-null counts). */
 export interface ImportState {
@@ -98,6 +107,7 @@ function normalizeProgress(progress: ImportProgress): ImportState {
       phase === 'importing' ||
       phase === 'reembedding' ||
       phase === 'done' ||
+      phase === 'model-unavailable' ||
       phase === 'error'
         ? phase
         : 'idle',
@@ -350,16 +360,20 @@ function normalizeRelated(dto: RelatedDocDto): RelatedHit {
 /**
  * Hybrid search, streamed in two honest phases: `onPhase('lexical', …)` fires
  * as the FTS batch lands, `onPhase('final', …)` as the hybrid pass merges in
- * (the resolved value is the final list — authoritative for a mocked IPC that
+ * (the resolved value is the final outcome — authoritative for a mocked IPC that
  * need not drive the channel). Throws with the schema-derived filter-error text
  * on a bad typed query.
+ *
+ * The resolved {@link SearchOutcome} carries `semanticUnavailable`: non-null when
+ * the vector arm was wanted and could not run, so the hits are lexical-only and
+ * the caller must present them as such.
  */
 export async function search(
   query: string,
   opts: { lexicalOnly: boolean; explain: boolean },
   onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   currentGeneration?: () => number,
-): Promise<SearchHit[]> {
+): Promise<SearchOutcome> {
   const channel = new Channel<SearchBatch>();
   channel.onmessage = (batch) => {
     // Suspenders (the belt is the palette's workspaceKey): a batch tagged with a
@@ -376,7 +390,10 @@ export async function search(
     channel,
   );
   if (result.status === 'error') throw new Error(result.error);
-  return result.data.map(normalizeHit);
+  return {
+    hits: result.data.hits.map(normalizeHit),
+    semanticUnavailable: result.data.semantic_unavailable,
+  };
 }
 
 /** Documents related to `docPath` (absolute), unified graph+concept+vector. */
