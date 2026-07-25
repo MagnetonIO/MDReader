@@ -56,6 +56,10 @@ catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
 mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }
+# The shell implements `catdb_embed::Embedder` once, for the `DeferredEmbedder`
+# that lets the index open before (or without) the model — and that trait is
+# `#[async_trait]`, so the impl needs the same macro.
+async-trait = { workspace = true }
 # `time` for the model-load deadline (a never-finishing download must surface a
 # timeout, not hang the import forever).
 tokio = { workspace = true, features = ["time"] }

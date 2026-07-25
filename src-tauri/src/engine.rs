@@ -20,7 +20,7 @@
 //! one index. [`read_doc`](crate::commands::read_doc) still reads straight off
 //! disk — the index is for *finding*, never the source of truth for *content*.
 //!
-//! ## Embedder (fastembed by default)
+//! ## Embedder (fastembed by default), and why it is NOT on the read path
 //!
 //! The app builds the real semantic embedder — [`FastembedEmbedder`]
 //! (`bge-small-en-v1.5`, 384-d, via ONNX Runtime) — so an index is search-ready
@@ -29,11 +29,26 @@
 //! so it runs off the command thread via [`FastembedEmbedder::load`] and is
 //! surfaced as a distinct `"loading"` import phase before scanning begins.
 //!
+//! **Reading a workspace does not need vectors.** Opening the folder, listing
+//! the tree, and reading a document are pure filesystem work; wikilink
+//! resolution and the lexical (FTS) search arm are index reads that never touch
+//! the embedder. Only *indexing* and the *semantic* search arm do. So the model
+//! load is deliberately **not** a precondition for opening a workspace: the
+//! index is opened first, through a [`DeferredEmbedder`] that knows the
+//! configured model's identity (which is static) while its weights are still
+//! loading — or never load at all. A model that cannot load therefore costs the
+//! semantic arm and the index build, and nothing else; it is reported as the
+//! distinct [`"model-unavailable"`](ImportProgress::model_unavailable) phase,
+//! never as an empty workspace and never as a generic index failure.
+//!
 //! The deterministic [`HashEmbedder`] is used **only** when the
 //! `MDREADER_DEV_HASH_EMBED` environment variable is set — an explicit dev/CI
 //! escape hatch that keeps imports offline and instant (no model download).
 //! Unit/e2e tests run under that flag (or drive the engine directly with a
-//! `HashEmbedder`), so CI never downloads a model.
+//! `HashEmbedder`), so CI never downloads a model. It is **never** a fallback:
+//! [`DeferredEmbedder::install`] refuses any model whose identity differs from
+//! the configured one, so a failed fastembed load can never be quietly served by
+//! test vectors.
 //!
 //! ## Progress granularity (honest)
 //!
@@ -73,15 +88,16 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-use catdb_embed::{Embedder, FastembedEmbedder, HashEmbedder};
+use catdb_embed::{EmbedError, EmbedResult, Embedder, FastembedEmbedder, HashEmbedder, ModelInfo};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
 use mdreader_ingest::{registration_with_proposals, scan_root, ProposalStore, ScanOptions};
@@ -101,6 +117,149 @@ const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 const MODEL_LOAD_DEADLINE: Duration = Duration::from_secs(120);
 
 // --------------------------------------------------------------------------
+// The deferred embedder — what decouples opening a workspace from the model
+// --------------------------------------------------------------------------
+
+/// Whether the semantic (vector) modality can run right now, and if not, why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Semantic {
+    /// A model is installed: the vector arm can run.
+    Ready,
+    /// The model is still being constructed/downloaded.
+    Loading,
+    /// The model could not be loaded; the string is the reason, already phrased
+    /// for a human ("the embedding model could not be loaded — …").
+    Unavailable(String),
+}
+
+/// The state a [`DeferredEmbedder`] is in.
+enum ModelSlot {
+    Loading,
+    Ready(Arc<dyn Embedder>),
+    Failed(String),
+}
+
+/// An [`Embedder`] whose *identity* is known up front but whose *weights* may
+/// arrive later — or never.
+///
+/// The app is configured for exactly one model, and that model's name and
+/// dimensionality are static constants; only producing vectors requires the
+/// downloaded weights. Splitting the two is what lets the index be opened (and
+/// therefore read: wikilinks, lexical search) the moment a workspace is granted,
+/// with the model installed afterwards. Because the identity handed to the
+/// engine is the real model's, the index this opens is keyed exactly as it would
+/// have been had the model loaded first — no placeholder model name ever reaches
+/// the catalog's index versions.
+///
+/// It is **not** a fallback embedder. With no model installed, [`Embedder::embed`]
+/// returns an error; it never invents a vector, and [`Self::install`] refuses any
+/// model whose [`ModelInfo`] differs from the configured one — so the test-only
+/// [`HashEmbedder`] cannot be slipped in behind the real model's name.
+pub(crate) struct DeferredEmbedder {
+    info: ModelInfo,
+    slot: RwLock<ModelSlot>,
+}
+
+impl DeferredEmbedder {
+    /// A deferred embedder for `info`, with no weights yet.
+    pub(crate) fn loading(info: ModelInfo) -> Self {
+        Self {
+            info,
+            slot: RwLock::new(ModelSlot::Loading),
+        }
+    }
+
+    /// Adopt `model` as the loaded weights. Refused — and recorded as a failure —
+    /// when `model` is not the model this embedder promised the engine, because
+    /// installing it would mean vectors from one model being read out of an index
+    /// keyed to another.
+    pub(crate) fn install(&self, model: Arc<dyn Embedder>) -> Result<(), String> {
+        if model.info() != self.info {
+            let reason = format!(
+                "loaded model `{}` ({}-d) is not the configured model `{}` ({}-d)",
+                model.info().name,
+                model.info().dim,
+                self.info.name,
+                self.info.dim
+            );
+            self.fail(reason.clone());
+            return Err(reason);
+        }
+        if let Ok(mut slot) = self.slot.write() {
+            *slot = ModelSlot::Ready(model);
+        }
+        Ok(())
+    }
+
+    /// Record that the model could not be loaded. A later [`Self::install`]
+    /// still succeeds — a retry genuinely re-attempts the load.
+    pub(crate) fn fail(&self, reason: String) {
+        if let Ok(mut slot) = self.slot.write() {
+            *slot = ModelSlot::Failed(reason);
+        }
+    }
+
+    /// Whether the semantic modality can run, and if not, why.
+    pub(crate) fn semantic(&self) -> Semantic {
+        match self.slot.read() {
+            Ok(slot) => match &*slot {
+                ModelSlot::Ready(_) => Semantic::Ready,
+                ModelSlot::Loading => Semantic::Loading,
+                ModelSlot::Failed(reason) => Semantic::Unavailable(reason.clone()),
+            },
+            Err(_) => Semantic::Unavailable("embedding model state poisoned".to_string()),
+        }
+    }
+
+    /// The installed model, if any (cloned out so no lock is held across an await).
+    fn model(&self) -> Result<Arc<dyn Embedder>, String> {
+        match self.slot.read() {
+            Ok(slot) => match &*slot {
+                ModelSlot::Ready(model) => Ok(Arc::clone(model)),
+                ModelSlot::Loading => Err("the embedding model is still loading".to_string()),
+                ModelSlot::Failed(reason) => Err(reason.clone()),
+            },
+            Err(_) => Err("embedding model state poisoned".to_string()),
+        }
+    }
+}
+
+#[async_trait]
+impl Embedder for DeferredEmbedder {
+    fn info(&self) -> ModelInfo {
+        self.info.clone()
+    }
+
+    async fn embed(&self, texts: &[String]) -> EmbedResult<Vec<Vec<f32>>> {
+        // The lock is released before the await: `model()` clones the handle out.
+        let model = self.model().map_err(EmbedError::Init)?;
+        model.embed(texts).await
+    }
+}
+
+/// The identity of the model this app is configured for — known WITHOUT loading
+/// it, which is exactly what lets a workspace open before (or without) the
+/// weights. Mirrors [`build_embedder`]'s choice: the dev/CI hash embedder under
+/// the flag, the real fastembed model otherwise.
+fn configured_model_info() -> ModelInfo {
+    model_info_for(dev_hash_embed())
+}
+
+/// The identity of the model each branch of [`build_embedder`] produces. Split
+/// out from the environment read so both branches are testable without mutating
+/// the process environment.
+fn model_info_for(hash_embed: bool) -> ModelInfo {
+    if hash_embed {
+        return HashEmbedder::new().info();
+    }
+    ModelInfo {
+        name: FastembedEmbedder::MODEL_NAME.to_string(),
+        dim: FastembedEmbedder::DIM,
+        max_tokens: FastembedEmbedder::MAX_TOKENS,
+    }
+}
+
+// --------------------------------------------------------------------------
 // State — the workspace epoch
 // --------------------------------------------------------------------------
 
@@ -115,9 +274,15 @@ pub struct Epoch {
     /// Monotonic era number (advances on every switch); for logs/observability —
     /// `Arc::ptr_eq` is the authoritative identity.
     pub(crate) generation: u64,
-    /// The opened engine, installed once (after the async model load). Per-epoch,
-    /// so a stale epoch installing its engine can never leak into the current one.
+    /// The opened engine, installed once — as soon as the *index* opens, which
+    /// needs no model (see [`ensure_index`]). Per-epoch, so a stale epoch
+    /// installing its engine can never leak into the current one.
     engine: OnceLock<Arc<EmbeddedCatDb>>,
+    /// The [`DeferredEmbedder`] this epoch's engine was opened with, installed
+    /// alongside it. The model is installed *into* it later (or never), so the
+    /// engine handle never has to be replaced when the weights land — and the
+    /// semantic modality's availability is one read away for [`crate::search`].
+    embedder: OnceLock<Arc<DeferredEmbedder>>,
     /// This workspace's overlay **proposal** store, installed with the engine
     /// (ingest records into it, so the two must be the same pair for the whole
     /// epoch). It holds reviewable claims, never authoritative facts — see
@@ -138,6 +303,7 @@ impl Epoch {
             root,
             generation,
             engine: OnceLock::new(),
+            embedder: OnceLock::new(),
             proposals: OnceLock::new(),
             status: Mutex::new(ImportProgress::default()),
             active: Mutex::new(false),
@@ -163,6 +329,23 @@ impl Epoch {
     /// accessor the sibling [`overlay`](crate::overlay) module reads through.
     pub(crate) fn proposals(&self) -> Option<Arc<ProposalStore>> {
         self.proposals.get().map(Arc::clone)
+    }
+
+    /// Whether this epoch's semantic (vector) modality can run, and if not, why —
+    /// the read [`crate::search`] uses to decide whether to run the second arm,
+    /// and what to tell the caller when it does not. An epoch with no engine yet
+    /// reports [`Semantic::Loading`]; it has no index to search either, so the
+    /// distinction is moot for the caller.
+    pub(crate) fn semantic(&self) -> Semantic {
+        self.embedder
+            .get()
+            .map_or(Semantic::Loading, |embedder| embedder.semantic())
+    }
+
+    /// Test helper: install `embedder` as this epoch's deferred embedder.
+    #[cfg(test)]
+    pub(crate) fn install_embedder_for_test(&self, embedder: Arc<DeferredEmbedder>) {
+        let _ = self.embedder.set(embedder);
     }
 
     /// The installed engine, if the model has finished loading for this epoch.
@@ -276,7 +459,10 @@ pub struct ImportProgress {
     /// `"idle"` (no import yet), `"loading"` (constructing/downloading the
     /// embedding model), `"importing"` (in flight), `"reembedding"` (in
     /// flight, and re-embedding the whole workspace because the embedding
-    /// model changed), `"done"`, or `"error"`.
+    /// model changed), `"done"`, `"model-unavailable"` (the embedding model
+    /// could not be loaded — the workspace is open and readable, but nothing
+    /// could be indexed and the semantic arm is off), or `"error"` (the index
+    /// build itself failed).
     pub phase: String,
     /// Files processed so far (equals `files_total` on `done`; the atomic import
     /// gives no intermediate count).
@@ -356,6 +542,22 @@ impl ImportProgress {
             files_total,
             chunks_embedded: 0,
             error: Some(message),
+        }
+    }
+
+    /// The embedding model could not be loaded. Its **own** phase, distinct from
+    /// both `done` and `error`: the workspace is open, its files are listed and
+    /// its documents readable — what is missing is the ability to embed, so
+    /// nothing could be indexed and the semantic search arm is off. `reason` is
+    /// the underlying condition (a load timeout, a download failure, …), carried
+    /// verbatim so the status bar can say what actually happened.
+    fn model_unavailable(reason: String) -> Self {
+        Self {
+            phase: "model-unavailable".to_string(),
+            files_done: 0,
+            files_total: 0,
+            chunks_embedded: 0,
+            error: Some(reason),
         }
     }
 
@@ -521,58 +723,108 @@ where
 {
     match tokio::time::timeout(deadline, load()).await {
         Ok(result) => result,
-        Err(_elapsed) => Err(
-            "model download timed out — check your connection; retry from the status bar"
-                .to_string(),
-        ),
+        Err(_elapsed) => Err(format!(
+            "timed out after {}s (the first run downloads the model)",
+            deadline.as_secs()
+        )),
     }
 }
 
-/// Ensure `epoch`'s engine is installed, opening it (after the async, deadlined
-/// model load — visible as `"loading"`) if this is the first import. Re-checks
-/// the epoch is still current across the slow load: `Ok(Some(db))` to proceed,
-/// `Ok(None)` when a switch superseded this epoch mid-load (abandon clean),
-/// `Err` on a model/open failure.
-async fn ensure_engine(
+/// The two handles an opened index yields: the engine, and the deferred embedder
+/// it was opened through (the one the model is installed into later).
+type OpenIndex = (Arc<EmbeddedCatDb>, Arc<DeferredEmbedder>);
+
+/// Ensure `epoch`'s **index** is open and installed. Deliberately independent of
+/// the embedding model: opening the database, listing its documents, resolving
+/// wikilinks and running the lexical arm need no vectors, so this step must never
+/// be gated on a download. It is opened through a [`DeferredEmbedder`] carrying
+/// the configured model's identity, so the index is keyed exactly as it would be
+/// had the model loaded first, and the weights can be installed into it later.
+///
+/// `Ok(Some(pair))` to proceed, `Ok(None)` when a switch superseded this epoch
+/// (abandon clean), `Err` when the index itself could not be opened.
+fn ensure_index(
     epoch: &Arc<Epoch>,
     workspace: &WorkspaceState,
     app: &AppHandle,
-    channel: &Channel<ImportProgress>,
-) -> Result<Option<Arc<EmbeddedCatDb>>, String> {
-    // Fast path: this epoch's engine is already installed.
-    if let Some(db) = epoch.engine.get() {
-        return Ok(Some(Arc::clone(db)));
-    }
-
+) -> Result<Option<OpenIndex>, String> {
     let base = app
         .path()
         .app_data_dir()
         .map_err(|err| format!("no app data dir: {err}"))?;
-    let db_path = db_path_under(&base, &epoch.root);
+    open_index_at(epoch, workspace, &db_path_under(&base, &epoch.root))
+}
 
-    // Publish "loading" and build the model off the command thread, deadlined.
-    publish(epoch, workspace, channel, ImportProgress::loading());
-    let embedder = load_embedder_with_deadline(MODEL_LOAD_DEADLINE, build_embedder).await?;
+/// [`ensure_index`] with the database path already resolved — the app-handle-free
+/// core, so a test drives exactly the same open + install sequence.
+fn open_index_at(
+    epoch: &Arc<Epoch>,
+    workspace: &WorkspaceState,
+    db_path: &Path,
+) -> Result<Option<OpenIndex>, String> {
+    // Fast path: this epoch's engine is already installed (with its embedder).
+    if let (Some(db), Some(embedder)) = (epoch.engine.get(), epoch.embedder.get()) {
+        return Ok(Some((Arc::clone(db), Arc::clone(embedder))));
+    }
 
-    // EPOCH-GUARDED commit point: a switch during the (slow) load supersedes this
-    // epoch — drop the freshly-built model and abandon rather than install into a
-    // dead era.
+    let embedder = Arc::new(DeferredEmbedder::loading(configured_model_info()));
+    let (db, proposals) = open_engine(db_path, Arc::clone(&embedder) as Arc<dyn Embedder>)?;
+
+    // EPOCH-GUARDED commit point: a switch during the open supersedes this epoch
+    // — drop the freshly-opened index rather than install into a dead era.
     if epoch.finish(workspace, ()).is_err() {
         return Ok(None);
     }
 
-    let (db, proposals) = open_engine(&db_path, embedder)?;
-    // Install into THIS epoch's slots (idempotent; a coalesced racer that beat
-    // us wins and we adopt its engine). The store goes in FIRST, so no reader
-    // can ever see an installed engine with no proposal store beside it. If a
-    // racer then wins the engine slot, the two handles are still two
-    // connections to the SAME file — the pair cannot point at different
-    // workspaces, because both are derived from this epoch's `db_path`.
+    // Install into THIS epoch's slots (idempotent; `claim_active` serializes
+    // imports per epoch, so a racer here would have to be a coalesced straggler
+    // and we simply adopt what it installed). The embedder and proposal store go
+    // in FIRST, so no reader can ever see an installed engine without the
+    // embedder whose availability describes it or the proposal store beside it.
+    // Every handle is derived from this epoch's own `db_path`, so even an adopted
+    // pair cannot point at another workspace.
+    let _ = epoch.embedder.set(Arc::clone(&embedder));
     let _ = epoch.proposals.set(proposals);
-    match epoch.engine.set(Arc::clone(&db)) {
-        Ok(()) => Ok(Some(db)),
-        Err(_) => Ok(epoch.engine.get().map(Arc::clone)),
+    let _ = epoch.engine.set(Arc::clone(&db));
+    Ok(Some((
+        epoch.engine.get().map_or(db, Arc::clone),
+        epoch.embedder.get().map_or(embedder, Arc::clone),
+    )))
+}
+
+/// Ensure the embedding model is loaded into `embedder`, publishing the
+/// `"loading"` phase across the (slow, possibly downloading) construction.
+/// Returns the failure reason — already phrased for a human — when it cannot be
+/// loaded; a subsequent call genuinely re-attempts the load, which is what makes
+/// the status bar's retry mean something.
+async fn ensure_model(
+    epoch: &Arc<Epoch>,
+    workspace: &WorkspaceState,
+    channel: &Channel<ImportProgress>,
+    embedder: &Arc<DeferredEmbedder>,
+) -> Result<(), String> {
+    if embedder.semantic() == Semantic::Ready {
+        return Ok(());
     }
+    publish(epoch, workspace, channel, ImportProgress::loading());
+    let loaded = load_embedder_with_deadline(MODEL_LOAD_DEADLINE, build_embedder).await;
+    match loaded {
+        // `install` is the choke-point that refuses a model which is not the one
+        // the index was opened under — the structural reason a failed load can
+        // never be served by the test-only hash embedder.
+        Ok(model) => embedder.install(model).map_err(model_load_failure),
+        Err(reason) => {
+            let reason = model_load_failure(reason);
+            embedder.fail(reason.clone());
+            Err(reason)
+        }
+    }
+}
+
+/// The one phrasing of a model-load failure, so the status bar, the search
+/// degradation notice and the log all say the same true thing.
+fn model_load_failure(reason: String) -> String {
+    format!("the embedding model could not be loaded — {reason}")
 }
 
 /// The progress a starting import should publish: the ordinary `importing`
@@ -642,8 +894,15 @@ fn scan_options(respect_gitignore: bool) -> ScanOptions {
 // --------------------------------------------------------------------------
 
 /// Open (or reuse) the workspace index and run an incremental import, streaming
-/// coarse progress on `on_event` (`loading` → `importing` → `done`/`error`) and
-/// returning the final status.
+/// coarse progress on `on_event` (`loading` → `importing` → `done`, or
+/// `model-unavailable`/`error`) and returning the final status.
+///
+/// The two preconditions are separate on purpose: the **index** opens first and
+/// needs no model, so the workspace is readable from that moment on; the
+/// **model** is loaded second and only gates the import itself and the semantic
+/// search arm. A model that cannot load therefore yields `model-unavailable`
+/// (with the reason) over a fully open workspace — never an empty one, and never
+/// the generic `error` an actual index-build failure reports.
 /// Captures the current [`Epoch`] once at entry — root, generation, engine, and
 /// status travel together. `root` is validated against the epoch's grant (a
 /// foreign path is a hard error). Coalesced (#4): a second import for the same
@@ -680,9 +939,11 @@ pub async fn start_import(
         epoch: Arc::clone(&epoch),
     };
 
-    let db = match ensure_engine(&epoch, &workspace, &app, &on_event).await {
-        Ok(Some(db)) => db,
-        // A switch superseded this epoch during the model load — abandon clean.
+    // Step 1 — the index, which needs no model. Once this lands the workspace is
+    // fully readable: the tree, the documents, wikilinks and the lexical arm.
+    let (db, embedder) = match ensure_index(&epoch, &workspace, &app) {
+        Ok(Some(pair)) => pair,
+        // A switch superseded this epoch during the open — abandon clean.
         // EPOCH-GUARDED
         Ok(None) => {
             return Ok(epoch
@@ -690,8 +951,7 @@ pub async fn start_import(
                 .unwrap_or_else(|_| epoch.status()))
         }
         Err(err) => {
-            // A model-load / open failure (incl. the load deadline) surfaces as an
-            // `error` status the StatusBar shows (not a hard command error).
+            // The index itself could not be opened — a genuine index failure.
             let failed = ImportProgress::failed(0, err);
             publish(&epoch, &workspace, &on_event, failed.clone());
             // EPOCH-GUARDED
@@ -700,6 +960,19 @@ pub async fn start_import(
                 .unwrap_or_else(|_| epoch.status()));
         }
     };
+
+    // Step 2 — the model, which ONLY indexing and the semantic arm need. A
+    // failure here is reported as itself (`model-unavailable`, carrying the
+    // reason) and stops the import: the workspace stays open and readable, and
+    // the semantic arm reports its own unavailability at search time.
+    if let Err(reason) = ensure_model(&epoch, &workspace, &on_event, &embedder).await {
+        let unavailable = ImportProgress::model_unavailable(reason);
+        publish(&epoch, &workspace, &on_event, unavailable.clone());
+        // EPOCH-GUARDED
+        return Ok(epoch
+            .finish(&workspace, unavailable)
+            .unwrap_or_else(|_| epoch.status()));
+    }
 
     let total = scan_count(&epoch.root);
     publish(
@@ -1420,6 +1693,168 @@ mod tests {
             };
         }
         assert!(claim_active(&epoch).unwrap());
+    }
+
+    /// THE decoupling, at the level the bug was reported: a workspace whose
+    /// embedding model cannot load still OPENS. Its index is installed, its files
+    /// are listed and its documents readable — and the condition is reported as
+    /// itself, not as an empty workspace and not as a generic index failure.
+    ///
+    /// Revert-RED: make `start_import` require the model before the index (open
+    /// the index only after `ensure_model` succeeds, as it did before) and the
+    /// `db()` / listing assertions below fail — the workspace has no engine and
+    /// nothing to serve.
+    #[test]
+    fn a_workspace_whose_model_cannot_load_still_opens_and_lists_its_files() {
+        let corpus = TempDir::new().unwrap();
+        let root = fs::canonicalize(corpus.path()).unwrap();
+        fs::write(root.join("keep.md"), "# Keep\n\nBody.\n").unwrap();
+        let data = TempDir::new().unwrap();
+        let db_path = data.path().join("catdb.db");
+
+        let ws = WorkspaceState::granted(root.clone());
+        let epoch = ws.current().unwrap();
+
+        // Step 1 of `start_import`: the index opens with NO model at all.
+        let (db, embedder) = open_index_at(&epoch, &ws, &db_path)
+            .expect("the index opens without an embedding model")
+            .expect("not superseded");
+        assert!(
+            epoch.has_engine(),
+            "the engine is installed by step 1 alone"
+        );
+        assert!(
+            epoch.proposals().is_some(),
+            "the proposal store is installed beside it"
+        );
+
+        // Step 2 fails: the model cannot be loaded.
+        embedder.fail(model_load_failure("timed out after 120s".to_string()));
+
+        // The workspace is open: the listing serves the corpus (from the live fs
+        // scan, since no import could run) rather than an empty tree.
+        let listing = list_workspace_files_guarded(&ws, root.to_str().unwrap(), || {}).unwrap();
+        assert!(
+            listing.entries.iter().any(|entry| entry.name == "keep.md"),
+            "the file tree is populated with no embedder: {:?}",
+            listing.entries
+        );
+        assert!(!listing.from_index, "and says it is reading local files");
+
+        // The engine is readable — the index-backed reads that need no vectors.
+        assert!(db.store().list_documents().is_ok());
+
+        // The condition is nameable, and names the real reason.
+        match epoch.semantic() {
+            Semantic::Unavailable(reason) => {
+                assert!(
+                    reason.contains("the embedding model could not be loaded"),
+                    "got: {reason}"
+                );
+                assert!(reason.contains("timed out"), "carries the reason: {reason}");
+            }
+            other => panic!("expected an unavailable model, got {other:?}"),
+        }
+
+        // ...and it is its OWN status phase, distinct from both `done` and `error`.
+        let progress = ImportProgress::model_unavailable(match epoch.semantic() {
+            Semantic::Unavailable(reason) => reason,
+            other => panic!("expected an unavailable model, got {other:?}"),
+        });
+        assert_eq!(progress.phase, "model-unavailable");
+        assert_ne!(progress.phase, ImportProgress::failed(0, "x".into()).phase);
+        assert!(!progress.is_done());
+        assert!(
+            progress.error.is_some(),
+            "the reason travels with the phase"
+        );
+    }
+
+    /// The test-only [`HashEmbedder`] can never stand in for a model that failed
+    /// to load: the deferred embedder refuses any model that is not the one the
+    /// index was opened under, and reports the refusal.
+    ///
+    /// Revert-RED: drop the identity check in `DeferredEmbedder::install` (just
+    /// store the model) and the `is_err()` + `Unavailable` assertions fail — the
+    /// hash embedder installs and the workspace starts answering searches with
+    /// test vectors.
+    #[test]
+    fn a_failed_model_is_never_replaced_by_the_test_embedder() {
+        let deferred = DeferredEmbedder::loading(model_info_for(false));
+        deferred.fail(model_load_failure("network is unreachable".to_string()));
+
+        let refused = deferred.install(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>);
+        assert!(refused.is_err(), "the test embedder is refused");
+        let message = refused.unwrap_err();
+        assert!(message.contains(HashEmbedder::MODEL_NAME), "got: {message}");
+        assert!(
+            message.contains(FastembedEmbedder::MODEL_NAME),
+            "got: {message}"
+        );
+
+        // Still unavailable — a refused install does not quietly become a success.
+        assert!(matches!(deferred.semantic(), Semantic::Unavailable(_)));
+
+        // And with no model installed, embedding ERRORS rather than inventing a
+        // vector: nothing downstream can mistake a stand-in for a real embedding.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(rt
+            .block_on(deferred.embed(&["anything".to_string()]))
+            .is_err());
+    }
+
+    /// A retry genuinely re-attempts the load: after a failure the same deferred
+    /// embedder still accepts the configured model, and the engine it was opened
+    /// with becomes fully semantic without being reopened.
+    ///
+    /// Revert-RED: make `DeferredEmbedder::install` refuse once `Failed` (an
+    /// `if matches!(*slot, ModelSlot::Failed(_)) { return Ok(()) }` early return)
+    /// and the `Semantic::Ready` assertion fails — Retry would be decorative.
+    #[test]
+    fn a_retry_after_a_failed_load_installs_the_model_into_the_open_index() {
+        let deferred = Arc::new(DeferredEmbedder::loading(model_info_for(true)));
+        deferred.fail(model_load_failure("timed out after 120s".to_string()));
+        assert!(matches!(deferred.semantic(), Semantic::Unavailable(_)));
+
+        deferred
+            .install(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>)
+            .expect("the configured model installs");
+        assert_eq!(deferred.semantic(), Semantic::Ready);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let vectors = rt
+            .block_on(deferred.embed(&["semantic search".to_string()]))
+            .expect("the installed model embeds");
+        assert_eq!(vectors.len(), 1);
+        assert_eq!(vectors[0].len(), HashEmbedder::DEFAULT_DIM as usize);
+    }
+
+    /// The configured model's identity is knowable WITHOUT loading it — the fact
+    /// that lets the index open first. It must match what `build_embedder`
+    /// actually produces on each branch, or the index would be keyed to a model
+    /// name no embedder ever answers to.
+    #[test]
+    fn the_configured_model_identity_matches_the_embedder_each_branch_builds() {
+        assert_eq!(model_info_for(true), HashEmbedder::new().info());
+
+        let real = model_info_for(false);
+        assert_eq!(real.name, FastembedEmbedder::MODEL_NAME);
+        assert_eq!(real.dim, FastembedEmbedder::DIM);
+        assert_eq!(real.max_tokens, FastembedEmbedder::MAX_TOKENS);
+        assert_ne!(
+            real.name,
+            HashEmbedder::MODEL_NAME,
+            "the shipping app is not configured for the test embedder"
+        );
+
+        // The identity the engine sees is the configured one, weights or not.
+        assert_eq!(DeferredEmbedder::loading(real.clone()).info(), real);
     }
 
     #[test]

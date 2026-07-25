@@ -10,6 +10,12 @@
  * mocked at the boundary too: `start_import` reports a finished index directly
  * from its return value (the channel feed is best-effort, so a mock need not
  * drive it), and `resolve_wikilink` answers from a tiny fixed link table.
+ *
+ * Loading the page with `?nomodel` stands the whole backend in the state the
+ * shipping app reaches when the embedding model cannot be loaded: `start_import`
+ * settles on `model-unavailable`, the listing comes off the filesystem rather
+ * than an index, `search` still answers but marks its hits lexical-only, and
+ * `explain_query` refuses. See {@link MODEL_UNAVAILABLE}.
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -45,6 +51,34 @@ const DISK_VERSION: Record<string, number> = {};
  * claims, and only a read of what crossed the boundary tells them apart.
  */
 const SENT: { cmd: string; args: unknown }[] = [];
+
+/**
+ * Whether this run stands in for a shipping app whose embedding model cannot be
+ * loaded (no cached weights, no network). Armed from the page URL *before* the
+ * shell mounts, because the workspace restore happens on mount — the failure has
+ * to be in place for the very first `start_import`.
+ *
+ * The point of driving it here rather than mocking one command in the spec: the
+ * whole backend contract moves together (import phase, search degradation), so
+ * the spec asserts the app's behaviour under a coherent backend state instead of
+ * a hand-held one.
+ */
+const MODEL_UNAVAILABLE =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('nomodel');
+
+/** The reason the (mocked) backend observed — the real one is a load timeout. */
+const MODEL_FAILURE_REASON = 'timed out after 120s (the first run downloads the model)';
+
+/** The `model-unavailable` import status: no files indexed, and a stated reason. */
+function modelUnavailableProgress() {
+  return {
+    phase: 'model-unavailable',
+    files_done: 0,
+    files_total: 0,
+    chunks_embedded: 0,
+    error: `the embedding model could not be loaded — ${MODEL_FAILURE_REASON}`,
+  };
+}
 
 /** The current on-disk hash the read/save commands agree on for `path`. */
 function diskHash(path: string): string {
@@ -105,13 +139,27 @@ function searchHit(path: string, query: string) {
 }
 
 /** The engine's hybrid search, mocked as substring matches over the corpus.
- *  The channel feed is best-effort, so the returned array is authoritative. */
-function search(query: string) {
+ *  The channel feed is best-effort, so the returned value is authoritative. */
+function searchHits(query: string) {
   const q = query.trim().toLowerCase();
   if (q.length === 0) return [];
   return Object.keys(CORPUS)
     .filter((path) => CORPUS[path]!.toLowerCase().includes(q))
     .map((path) => searchHit(path, query));
+}
+
+/**
+ * `search`'s wire shape: the hits plus whether the semantic arm actually ran.
+ * Mirrors the Rust `SearchResults` — the lexical arm needs no embedder, so with
+ * the model unavailable the hits still come back, labelled as lexical-only.
+ */
+function search(query: string) {
+  return {
+    hits: searchHits(query),
+    semantic_unavailable: MODEL_UNAVAILABLE
+      ? `the embedding model could not be loaded — ${MODEL_FAILURE_REASON}`
+      : null,
+  };
 }
 
 /** related() of a document, mocked with a decomposed unified score. */
@@ -376,7 +424,7 @@ const CONSTRAINT_REPORT = {
 
 /** `search`, with the full ranking breakdown attached to every hit. */
 function explainQuery(query: string) {
-  return search(query).map((hit, index) => ({
+  return searchHits(query).map((hit, index) => ({
     ...hit,
     lex_rank: index + 1,
     sem_rank: index === 0 ? 1 : null,
@@ -453,26 +501,35 @@ export function installTauriMocks(): void {
       case 'list_workspace_files':
         // Post-import the shell re-lists from the index; the mock corpus stands
         // in for both, flagged as index-backed so the tree renders identically.
-        return { entries: fileEntries(), from_index: true };
+        // With no model there is no index, so the listing is the live fs scan —
+        // the same files, read straight off disk, which is precisely why the
+        // workspace stays usable.
+        return { entries: fileEntries(), from_index: !MODEL_UNAVAILABLE };
       case 'start_import':
         // Resolve after a beat so the StatusBar's optimistic "Indexing…" (busy)
-        // phase is observable before this final "done" lands — a busy→done
+        // phase is observable before the final status lands — a busy→settled
         // transition without the shell needing the (best-effort) channel feed.
         return new Promise((resolve) =>
           setTimeout(
             () =>
-              resolve({
-                phase: 'done',
-                files_done: 3,
-                files_total: 3,
-                chunks_embedded: 6,
-                error: null,
-              }),
+              resolve(
+                MODEL_UNAVAILABLE
+                  ? modelUnavailableProgress()
+                  : {
+                      phase: 'done',
+                      files_done: 3,
+                      files_total: 3,
+                      chunks_embedded: 6,
+                      error: null,
+                    },
+              ),
             400,
           ),
         );
       case 'import_status':
-        return { phase: 'idle', files_done: 0, files_total: 0, chunks_embedded: 0, error: null };
+        return MODEL_UNAVAILABLE
+          ? modelUnavailableProgress()
+          : { phase: 'idle', files_done: 0, files_total: 0, chunks_embedded: 0, error: null };
       case 'resolve_wikilink': {
         const { target, heading } = args as { target: string; heading: string | null };
         return resolveWikilink(target, heading);
@@ -536,6 +593,13 @@ export function installTauriMocks(): void {
       case 'check_constraints':
         return CONSTRAINT_REPORT;
       case 'explain_query':
+        // Mirrors the Rust refusal: the thing being explained IS the fused
+        // ranking, so with no semantic arm there is nothing to explain.
+        if (MODEL_UNAVAILABLE) {
+          throw new Error(
+            `the embedding model could not be loaded — ${MODEL_FAILURE_REASON}; a hybrid ranking cannot be explained without its semantic arm`,
+          );
+        }
         return explainQuery((args as { query: string }).query);
       case 'read_doc': {
         const path = (args as { path: string }).path;

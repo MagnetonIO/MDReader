@@ -1,6 +1,12 @@
 /** The bottom status bar: document word count, the workspace watcher's live
  * state, and the engine index's build progress (spinner + counts while
- * importing, then Indexed/Failed). */
+ * importing, then Indexed/Failed).
+ *
+ * Every phase the backend can be in has a label of its own here, and none of
+ * them is a benign-looking zero. In particular a model that could not be loaded
+ * is neither "Indexed" nor "Index failed": it reads "Embedding model
+ * unavailable", carries the reason the backend actually observed, and offers the
+ * retry that re-attempts the load. */
 
 import type { ImportState } from '../platform/fs.js';
 import type { WatcherStatus } from '../stores/sources.js';
@@ -13,8 +19,9 @@ export interface StatusBarProps {
   importState: ImportState | null;
   /** Whether the file list currently comes from the engine index. */
   fromIndex: boolean;
-  /** Re-run the import (e.g. after a model-load timeout). Shown as a Retry
-   *  affordance while the index is in the `error` phase. */
+  /** Re-run the import. Shown as a retry affordance while the index is in the
+   *  `error` phase, and — with its own label — while the embedding model is
+   *  unavailable, where the retry's job is to re-attempt the model load. */
   onRetryIndex?: () => void;
 }
 
@@ -56,6 +63,20 @@ function indexIndicator(
         'The embedding model changed, so every file is being embedded again — a one-time pass. Search keeps using the previous index until it finishes.',
     };
   }
+  if (phase === 'model-unavailable') {
+    // Its own label, because it is its own condition. "Index failed" would blame
+    // the index, and "Indexed"/"Local files" would say nothing happened at all —
+    // when in fact a nameable thing did, and the user can act on it. The reason
+    // the backend observed travels in the tooltip verbatim; nothing is invented.
+    const reason = importState?.error;
+    return {
+      label: 'Embedding model unavailable',
+      busy: false,
+      title: `${
+        reason ?? 'The embedding model could not be loaded'
+      }. The workspace is open and you can read and text-search it; indexing and semantic ranking resume once the model loads.`,
+    };
+  }
   if (phase === 'error') {
     return {
       label: 'Index failed',
@@ -88,7 +109,11 @@ export function StatusBar({
   onRetryIndex,
 }: StatusBarProps) {
   const index = indexIndicator(importState, fromIndex);
-  const failed = importState?.phase === 'error';
+  const phase = importState?.phase;
+  // Two different retries, labelled as such: one re-runs an index build that
+  // failed, the other re-attempts a model load that never completed.
+  const retryLabel =
+    phase === 'error' ? 'Retry' : phase === 'model-unavailable' ? 'Retry model load' : null;
   return (
     <footer className="statusbar" aria-label="Status">
       <span>{words === null ? '—' : `${words.toLocaleString()} words`}</span>
@@ -101,9 +126,9 @@ export function StatusBar({
       <span title={index.title} aria-live="polite">
         {index.busy ? <span className="statusbar__spinner" aria-hidden="true" /> : null}
         {index.label}
-        {failed && onRetryIndex ? (
+        {retryLabel && onRetryIndex ? (
           <button type="button" className="statusbar__retry" onClick={onRetryIndex}>
-            Retry
+            {retryLabel}
           </button>
         ) : null}
       </span>

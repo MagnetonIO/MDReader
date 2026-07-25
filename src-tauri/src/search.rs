@@ -47,7 +47,7 @@ use catdb_engine::{
 };
 
 use crate::commands::{mtime_millis, WorkspaceState};
-use crate::engine::Epoch;
+use crate::engine::{Epoch, Semantic};
 
 // --------------------------------------------------------------------------
 // Wire DTOs
@@ -221,6 +221,29 @@ pub struct SearchBatch {
     /// interleave one batch onto the channel — the frontend discards any batch
     /// whose generation is not the current one (belt+suspenders over the lock).
     pub generation: u32,
+    /// Set when the semantic arm was **wanted and could not run** — see
+    /// [`SearchResults::semantic_unavailable`]. Carried on the batch as well as
+    /// the resolved value so a consumer that renders streamed phases cannot
+    /// paint a lexical-only list as the hybrid ranking, even for an instant.
+    pub semantic_unavailable: Option<String>,
+}
+
+/// What a [`search`] produced, and whether it is the full ranking.
+///
+/// The hits alone cannot say this: a hybrid pass that quietly lost its vector
+/// arm returns fewer, differently-ordered hits that look exactly like a normal
+/// result set. So the outcome carries the distinction explicitly, and the caller
+/// has to look at it to get at the hits.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct SearchResults {
+    /// The final hits, best-first.
+    pub hits: Vec<SearchHitDto>,
+    /// `None` when the ranking is what was asked for — either a full hybrid pass,
+    /// or a lexical-only pass the caller requested (the `Exact` intent). `Some`
+    /// carries the reason the semantic arm could not run when it *was* asked for
+    /// (typically: the embedding model could not be loaded), so `hits` is a
+    /// lexical-only list and must be presented as one.
+    pub semantic_unavailable: Option<String>,
 }
 
 /// Per-component contributions behind a related score.
@@ -313,7 +336,8 @@ fn related_dto(src_root: &Path, doc: RelatedDoc) -> RelatedDocDto {
 // --------------------------------------------------------------------------
 
 /// Hybrid search over the workspace index, streamed in two honest phases on
-/// `on_event` and returned as the final (hybrid) hit list.
+/// `on_event` and returned as the final hit list plus whether that list is the
+/// full ranking.
 ///
 /// The typed filter language is honored as-is (`tag:` `path:` `linked-to:`
 /// `after:` bare terms, RRF-fused): a parse/validation failure returns the
@@ -322,6 +346,12 @@ fn related_dto(src_root: &Path, doc: RelatedDoc) -> RelatedDocDto {
 /// phase two is the full hybrid pass (streamed as `"final"` and returned).
 /// `options.lexical_only` (the `Exact` intent) skips the second pass. Before
 /// the engine is installed (no import yet) both phases are empty.
+///
+/// **Degrading honestly.** The lexical arm needs no embedder, so when the model
+/// could not be loaded this still searches — and says so: the second pass is
+/// skipped and [`SearchResults::semantic_unavailable`] carries the reason, on the
+/// streamed batches as well as the returned value. What it never does is run a
+/// lexical-only pass and hand it back as though the vector arm had contributed.
 ///
 /// Epoch-guarded: a workspace switch mid-search supersedes the captured epoch,
 /// discarding its hits rather than surfacing a previous workspace's documents.
@@ -332,7 +362,23 @@ pub async fn search(
     options: SearchQuery,
     on_event: Channel<SearchBatch>,
     workspace: State<'_, WorkspaceState>,
-) -> Result<Vec<SearchHitDto>, String> {
+) -> Result<SearchResults, String> {
+    // A closed channel is ignored — the resolved return is authoritative.
+    search_over(&workspace, &query, &options, |batch| {
+        let _ = on_event.send(batch);
+    })
+    .await
+}
+
+/// The search core, streaming each phase into `sink` instead of a Tauri
+/// [`Channel`] so the whole two-phase contract — including the degraded one — is
+/// drivable from a test against a real engine.
+async fn search_over(
+    workspace: &WorkspaceState,
+    query: &str,
+    options: &SearchQuery,
+    mut sink: impl FnMut(SearchBatch),
+) -> Result<SearchResults, String> {
     // Capture the epoch ONCE; root + engine travel together.
     let epoch = workspace
         .current()
@@ -341,29 +387,82 @@ pub async fn search(
     let Some(db) = epoch.db() else {
         // No engine yet (import not finished): honestly empty (guarded).
         // EPOCH-GUARDED
-        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
+        return Ok(epoch
+            .finish(workspace, SearchResults::empty())
+            .unwrap_or_else(|_| SearchResults::empty()));
     };
 
     let src_root = epoch.root.clone();
+    // Whether the vector arm can run. Only reported when it was actually wanted:
+    // a caller that asked for `lexical_only` got exactly the ranking it asked for.
+    let unavailable = if options.lexical_only {
+        None
+    } else {
+        semantic_unavailable(&epoch)
+    };
 
     // Phase 1 — the lexical (FTS) arm alone. A typed-filter error surfaces here
     // (same parse both phases), so we never stream a partial for a bad query.
-    let lexical = run_phase(&db, &src_root, &query, options.engine_options(true)).await?;
-    stream(&epoch, &workspace, &on_event, "lexical", &lexical);
+    let lexical = run_phase(&db, &src_root, query, options.engine_options(true)).await?;
+    stream(
+        &epoch,
+        workspace,
+        &mut sink,
+        "lexical",
+        &lexical,
+        unavailable.as_deref(),
+    );
 
-    // Phase 2 — the full hybrid pass (unless the caller asked lexical-only).
-    let final_hits = if options.lexical_only {
+    // Phase 2 — the full hybrid pass, unless the caller asked lexical-only or the
+    // semantic arm cannot run (in which case the lexical list IS the answer, and
+    // travels labelled as one rather than dressed up as a fused ranking).
+    let final_hits = if options.lexical_only || unavailable.is_some() {
         lexical
     } else {
-        run_phase(&db, &src_root, &query, options.engine_options(false)).await?
+        run_phase(&db, &src_root, query, options.engine_options(false)).await?
     };
-    stream(&epoch, &workspace, &on_event, "final", &final_hits);
+    stream(
+        &epoch,
+        workspace,
+        &mut sink,
+        "final",
+        &final_hits,
+        unavailable.as_deref(),
+    );
 
+    let results = SearchResults {
+        hits: final_hits,
+        semantic_unavailable: unavailable,
+    };
     // EPOCH-GUARDED: a switch mid-search means these hits belong to a previous
     // workspace — return an empty list (silently-clean), never the stale hits
     // and never a spurious error the palette would show as a filter failure. The
     // generation-tagged batches above are the streaming counterpart of this.
-    Ok(epoch.finish(&workspace, final_hits).unwrap_or_default())
+    Ok(epoch
+        .finish(workspace, results)
+        .unwrap_or_else(|_| SearchResults::empty()))
+}
+
+impl SearchResults {
+    /// No hits, and no claim about the ranking — the shape every guarded
+    /// "discard this" return uses.
+    fn empty() -> Self {
+        Self {
+            hits: Vec::new(),
+            semantic_unavailable: None,
+        }
+    }
+}
+
+/// The reason the semantic arm cannot run for `epoch`, or `None` when it can.
+/// A model still loading is reported too: hits produced while it loads are just
+/// as lexical-only as hits produced after it failed.
+fn semantic_unavailable(epoch: &Epoch) -> Option<String> {
+    match epoch.semantic() {
+        Semantic::Ready => None,
+        Semantic::Loading => Some("the embedding model is still loading".to_string()),
+        Semantic::Unavailable(reason) => Some(reason),
+    }
 }
 
 /// Run one engine search pass and lift its hits onto the wire DTO.
@@ -385,17 +484,19 @@ async fn run_phase(
 fn stream(
     epoch: &std::sync::Arc<Epoch>,
     workspace: &WorkspaceState,
-    channel: &Channel<SearchBatch>,
+    sink: &mut impl FnMut(SearchBatch),
     phase: &str,
     hits: &[SearchHitDto],
+    semantic_unavailable: Option<&str>,
 ) {
     let generation = epoch.generation as u32;
     // EPOCH-GUARDED: only stream while this epoch is the current era.
     if epoch.finish(workspace, ()).is_ok() {
-        let _ = channel.send(SearchBatch {
+        sink(SearchBatch {
             phase: phase.to_string(),
             hits: hits.to_vec(),
             generation,
+            semantic_unavailable: semantic_unavailable.map(str::to_string),
         });
     }
 }
@@ -417,6 +518,11 @@ fn stream(
 ///
 /// Before the engine is installed (no import yet) the list is honestly empty.
 /// Epoch-guarded like [`search`].
+///
+/// Unlike [`search`] this has no honest degraded form: the thing being explained
+/// IS the fused hybrid ranking, so when the semantic arm cannot run there is no
+/// ranking to explain and the command says exactly that rather than presenting a
+/// lexical-only breakdown as the explanation.
 #[tauri::command]
 #[specta::specta]
 pub async fn explain_query(
@@ -432,6 +538,12 @@ pub async fn explain_query(
         // EPOCH-GUARDED
         return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
     };
+
+    if let Some(reason) = semantic_unavailable(&epoch) {
+        return Err(format!(
+            "{reason}; a hybrid ranking cannot be explained without its semantic arm"
+        ));
+    }
 
     let hits = run_phase(
         &db,
@@ -761,6 +873,144 @@ mod tests {
             ))
             .expect("plain search");
         assert!(plain.first().expect("a hit").explain.is_none());
+    }
+
+    /// A workspace with an index but no loadable embedding model still searches —
+    /// the lexical arm needs no vectors — and the result set is LABELLED as
+    /// lexical-only rather than handed back as if the vector arm had run.
+    ///
+    /// Both halves matter and both are asserted against the same real engine and
+    /// the same corpus: with the model installed the hybrid pass runs and claims
+    /// nothing; with the model failed the hits keep coming, no hit claims a
+    /// semantic rank, and every streamed batch carries the reason.
+    ///
+    /// Revert-RED: drop the `|| unavailable.is_some()` from `search_over`'s phase-2
+    /// condition (run the hybrid pass regardless) and this fails on the degraded
+    /// half — the engine's embed call errors, so `search_over` returns `Err` and
+    /// the lexical hits the user could have had are lost. Alternatively set
+    /// `semantic_unavailable: None` unconditionally and the labelling assertions
+    /// fail: a lexical-only list is served as the full ranking.
+    #[test]
+    fn a_search_without_an_embedder_stays_lexical_and_says_so() {
+        use crate::engine::DeferredEmbedder;
+        use catdb_embed::ModelInfo;
+
+        let corpus = TempDir::new().unwrap();
+        let root = fs::canonicalize(corpus.path()).unwrap();
+        fs::write(
+            root.join("guide.md"),
+            "# Guide\n\n## Storage engine\n\nThe storage engine persists chunks.\n",
+        )
+        .unwrap();
+
+        // The engine is opened through the deferred embedder, exactly as the app
+        // opens it, with the model installed — so a real index gets built.
+        let info: ModelInfo = HashEmbedder::new().info();
+        let deferred = Arc::new(DeferredEmbedder::loading(info));
+        deferred
+            .install(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>)
+            .expect("the configured model installs");
+        let mut config =
+            EngineConfig::in_memory(Arc::clone(&deferred) as Arc<dyn Embedder>).with_actor("test");
+        config.domains = vec![registration()];
+        let db = Arc::new(EmbeddedCatDb::open(config).expect("open in-memory engine"));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(db.import(&root, ImportOptions::default()))
+            .expect("import corpus");
+
+        let ws = WorkspaceState::granted(root.clone());
+        let epoch = ws.current().unwrap();
+        epoch.install_engine_for_test(Arc::clone(&db));
+        epoch.install_embedder_for_test(Arc::clone(&deferred));
+
+        let options = SearchQuery {
+            limit: 10,
+            lexical_only: false,
+            explain: false,
+        };
+
+        // Control: with the model installed, the hybrid pass runs and the result
+        // claims nothing about being degraded.
+        let mut batches: Vec<SearchBatch> = Vec::new();
+        let full = rt
+            .block_on(search_over(&ws, "storage engine", &options, |batch| {
+                batches.push(batch)
+            }))
+            .expect("hybrid search");
+        assert!(!full.hits.is_empty(), "the corpus matches");
+        assert_eq!(full.semantic_unavailable, None, "nothing to report");
+        assert!(
+            full.hits.iter().any(|hit| hit.sem_rank.is_some()),
+            "the semantic arm contributed"
+        );
+        assert!(batches
+            .iter()
+            .all(|batch| batch.semantic_unavailable.is_none()));
+
+        // Now the model becomes unavailable (the reported failure), over the SAME
+        // index the earlier import built.
+        deferred.fail("the embedding model could not be loaded — timed out after 120s".to_string());
+
+        let mut batches: Vec<SearchBatch> = Vec::new();
+        let degraded = rt
+            .block_on(search_over(&ws, "storage engine", &options, |batch| {
+                batches.push(batch)
+            }))
+            .expect("lexical search still runs without an embedder");
+
+        // Lexical search still works…
+        assert!(
+            !degraded.hits.is_empty(),
+            "the lexical arm needs no embedder"
+        );
+        // …and it is not passed off as the hybrid ranking.
+        let reason = degraded
+            .semantic_unavailable
+            .as_deref()
+            .expect("the semantic arm reports its own unavailability");
+        assert!(
+            reason.contains("the embedding model could not be loaded"),
+            "got: {reason}"
+        );
+        assert!(
+            degraded.hits.iter().all(|hit| hit.sem_rank.is_none()),
+            "no hit may claim a semantic rank when the vector arm never ran"
+        );
+        // Every streamed phase carries it too, so a consumer rendering the stream
+        // cannot paint the lexical batch as final-and-complete even for an instant.
+        assert_eq!(batches.len(), 2, "both phases streamed");
+        for batch in &batches {
+            assert_eq!(batch.semantic_unavailable.as_deref(), Some(reason));
+        }
+
+        // The Exact intent is NOT a degradation: the caller asked for lexical.
+        let exact = rt
+            .block_on(search_over(
+                &ws,
+                "storage engine",
+                &SearchQuery {
+                    limit: 10,
+                    lexical_only: true,
+                    explain: false,
+                },
+                |_| {},
+            ))
+            .expect("exact search");
+        assert_eq!(
+            exact.semantic_unavailable, None,
+            "a lexical-only request got exactly the ranking it asked for"
+        );
+
+        // And the explanation surface refuses rather than explaining a ranking
+        // that never happened.
+        assert!(matches!(
+            crate::engine::Epoch::semantic(&epoch),
+            crate::engine::Semantic::Unavailable(_)
+        ));
     }
 
     /// related maps an absolute path back to the stored path and returns the

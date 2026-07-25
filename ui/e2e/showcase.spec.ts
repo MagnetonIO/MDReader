@@ -873,3 +873,82 @@ test('Selection: a drag across a paragraph selects exactly what it crossed, visi
   expect(contrast.selectionVsPage, 'selection tint vs the page').toBeGreaterThan(2);
   expect(contrast.textOnSelection, 'text on the selection tint').toBeGreaterThan(4.5);
 });
+
+// ---------------------------------------------------------------------------
+// 8. A model that cannot load — reported as itself, over a workspace that works
+// ---------------------------------------------------------------------------
+//
+// The shipping app, launched with no cached model, showed "No folder" and the
+// "Open a workspace folder…" placeholder: a real, nameable failure rendered as a
+// benign empty state. `?nomodel` puts the mocked backend in exactly that
+// condition (see src/e2e/harness.ts) and these assert what the browser actually
+// paints — the workspace open and usable, the failure named with its reason, and
+// search still answering but marked as text-only.
+
+test('No embedding model: the workspace still opens, and the failure is named — not an empty state', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?nomodel');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+
+  // The workspace is OPEN: named, listed, and a document renders. Non-emptiness
+  // first, so an empty render cannot satisfy any of it.
+  await expect(page.locator('.source-switcher__name')).toHaveText('ws');
+  await expect(page.getByText('No folder')).toHaveCount(0);
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.locator('.reader-host .mdreader-block').first()).toBeVisible();
+  await expect(page.getByText('Open a workspace folder')).toHaveCount(0);
+
+  // The status bar names the real condition, and none of the labels that would
+  // misdescribe it. `Local files` is the one the bug actually showed.
+  const status = page.locator('.statusbar');
+  await expect(status.getByText('Embedding model unavailable')).toBeVisible();
+  await expect(status.getByText('Index failed')).toHaveCount(0);
+  await expect(status.getByText('Local files')).toHaveCount(0);
+  await expect(status.getByText(/^Indexed/)).toHaveCount(0);
+
+  // The reason travels with it, verbatim, on the segment the label sits in.
+  const title = await status
+    .locator('span[title]')
+    .filter({ hasText: 'Embedding model unavailable' })
+    .getAttribute('title');
+  expect(title).toContain('the embedding model could not be loaded');
+  expect(title).toContain('timed out');
+
+  // And there is a way forward, labelled as what it re-attempts.
+  await expect(status.getByRole('button', { name: 'Retry model load' })).toBeVisible();
+});
+
+test('No embedding model: search still answers, and says its hits are text-only', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?nomodel');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+
+  await chord(page, 'k');
+  const palette = page.locator('.mdsearch');
+  await expect(palette).toBeVisible();
+  await palette.getByRole('combobox').fill('calm');
+
+  // Non-emptiness first: the lexical arm needs no embedder, so hits DO land.
+  await expect(palette.getByRole('option').first()).toBeVisible();
+
+  // …and the list is labelled rather than passed off as the hybrid ranking.
+  const notice = palette.getByRole('status');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('semantic ranking is unavailable');
+  await expect(notice).toContainText('the embedding model could not be loaded');
+  // A qualification, not a failure: no error banner over the results.
+  await expect(palette.getByRole('alert')).toHaveCount(0);
+
+  // The band is genuinely painted (a browser computes CSS; jsdom does not), and
+  // sits above the results rather than among them.
+  const noticeBox = await notice.boundingBox();
+  const firstHitBox = await palette.getByRole('option').first().boundingBox();
+  expect(noticeBox, 'the notice has no layout box').not.toBeNull();
+  expect(firstHitBox).not.toBeNull();
+  expect(noticeBox!.height).toBeGreaterThan(0);
+  expect(noticeBox!.y + noticeBox!.height).toBeLessThanOrEqual(firstHitBox!.y + 1);
+});
