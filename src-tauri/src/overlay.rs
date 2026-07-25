@@ -636,7 +636,7 @@ fn schema_detail(known: &KnownSchema) -> SchemaDetail {
 /// — the schemas are known from the registration — while the version, the
 /// checksum, and the counts are absent or `0`, which is the truth rather than
 /// a placeholder. See [`known_schemas`].
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn list_schemas(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<SchemaSummary>, String> {
     list_schemas_guarded(&state, || {})
@@ -667,7 +667,7 @@ fn list_schemas_guarded(
 /// exactly the facts a human approved, which is what "the semantic view of
 /// this corpus" means. `limit` caps the object list; [`Projection::truncated`]
 /// says whether it bit.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn project_corpus(
     schema: String,
@@ -766,7 +766,7 @@ fn project_corpus_guarded(
 /// with domain and codomain, and the path equations it imposes — read back
 /// from what the engine persisted, and carrying that version's ordinal and
 /// checksum (see [`known_schemas`]).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn describe_schema(
     schema: String,
@@ -804,7 +804,7 @@ fn describe_schema_guarded(
 /// Each carries its full derivation record (file, lines, content hash,
 /// schema version, extractor, confidence), the rule that fired, its approval
 /// state and reviewer, and whether it is currently in the graph.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn inspect_span(
     query: SpanQuery,

@@ -439,7 +439,7 @@ pub struct MigrationPlanDto {
 
 /// Every registered mapping, with its persisted version identity and a one-
 /// glance verdict on whether it is total and lossless.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn list_mappings(
     state: tauri::State<'_, WorkspaceState>,
@@ -485,7 +485,7 @@ fn list_mappings_guarded(
 
 /// One mapping's full coverage: every source concept, where it lands, what it
 /// shares that landing with, and what the destination is left holding.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn inspect_mapping(
     mapping: String,
@@ -527,7 +527,7 @@ fn inspect_mapping_guarded(
 /// A chain that does not compose returns a plan-shaped answer with
 /// [`MappingCompositionDto::failure`] set, so the Explorer can draw the break
 /// on the leg that caused it.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn compose_mappings(
     mappings: Vec<String>,
@@ -627,7 +627,7 @@ fn compose_mappings_guarded(
 /// so a corrupt row is refused rather than certified "unchanged"; only then does
 /// an equal-checksum pair skip the structural comparison. The short answer can
 /// never disagree with the long one (see [`catdb_engine::semantic_diff`]).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn diff_schema_versions(
     schema: String,
@@ -674,7 +674,7 @@ fn diff_schema_versions_guarded(
 /// [`SigmaOutcomeDto::state`] says whether the chase ran, was declined, or
 /// refused, and [`MigrationPlanDto::notes`] carries the claims the plan is
 /// explicitly NOT making. Render the notes.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn inspect_migration(
     mapping: String,

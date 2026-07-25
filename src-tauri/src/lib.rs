@@ -26,6 +26,13 @@ const MENU_CLOSE_WINDOW: &str = "mdreader:close-window";
 
 /// Builds the tauri-specta command + event registry. Single source of truth for
 /// both the runtime `invoke_handler`/`mount_events` and the binding exporter.
+///
+/// Every command listed here is dispatched OFF the platform's UI thread —
+/// `async fn`, or `#[tauri::command(async)]` for the synchronous ones. That is
+/// not a style choice: a plain `#[tauri::command]` runs on the UI thread, where
+/// it blocks the webview's asset loads, layer-tree commits and key events for as
+/// long as it takes. See `tests::no_command_runs_on_the_ui_thread`, which
+/// enforces it.
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -180,5 +187,70 @@ mod tests {
     #[test]
     fn export_bindings_up_to_date() {
         export_bindings(&specta_builder()).expect("failed to export typescript bindings");
+    }
+
+    /// THE first-paint guarantee, enforced by construction.
+    ///
+    /// Tauri dispatches a command that is neither `async fn` nor marked
+    /// `#[tauri::command(async)]` **on the platform's UI thread** — on macOS that
+    /// is `com.apple.main-thread`, running inside the WKWebView custom-protocol
+    /// handler (`wry … url_scheme_handler::start_task` → `tauri::ipc::protocol::get`
+    /// → the handler). While such a command runs, the UI process serves nothing
+    /// else for the webview: no asset request, no layer-tree commit, no key event.
+    /// A slow one therefore does not merely delay its own answer — it freezes the
+    /// window, and if it lands before the first layer-tree commit the window never
+    /// paints at all (a blank frame, dead to the keyboard, at 0% CPU).
+    ///
+    /// The startup path invokes commands before first paint (`watch_workspace`,
+    /// then `list_workspace_files`), so ANY command that can block — on I/O, on a
+    /// lock, on a permission prompt, on the engine — is a first-paint hazard.
+    /// Rather than audit which ones are "fast enough", every command is dispatched
+    /// off the UI thread; then no backend work can ever hold first paint, whatever
+    /// it waits on. A new command that forgets the flag trips this test.
+    #[test]
+    fn no_command_runs_on_the_ui_thread() {
+        let mut checked = 0;
+        for (module, source) in [
+            ("commands.rs", include_str!("commands.rs")),
+            ("engine.rs", include_str!("engine.rs")),
+            ("search.rs", include_str!("search.rs")),
+            ("overlay.rs", include_str!("overlay.rs")),
+            ("mapping.rs", include_str!("mapping.rs")),
+        ] {
+            let file: syn::File = syn::parse_str(source).expect("module parses");
+            for item in &file.items {
+                let syn::Item::Fn(func) = item else { continue };
+                let Some(attr) = func.attrs.iter().find(|attr| {
+                    let path = &attr.path();
+                    path.segments.len() == 2
+                        && path.segments[0].ident == "tauri"
+                        && path.segments[1].ident == "command"
+                }) else {
+                    continue;
+                };
+                checked += 1;
+                let name = func.sig.ident.to_string();
+                // Off the UI thread either way: `async fn` is spawned onto the
+                // async runtime, and `(async)` spawns an otherwise-sync body onto
+                // it too. A bare `#[tauri::command]` is the hazard.
+                let spawned = func.sig.asyncness.is_some()
+                    || attr
+                        .meta
+                        .require_list()
+                        .is_ok_and(|list| list.tokens.to_string().contains("async"));
+                assert!(
+                    spawned,
+                    "{module}: command `{name}` is dispatched on the UI thread — while it runs \
+                     the window cannot paint or accept input. Declare it `async fn` or mark it \
+                     `#[tauri::command(async)]`."
+                );
+            }
+        }
+        // The scan is only as good as its reach: a marker that stopped matching
+        // would pass vacuously.
+        assert!(
+            checked >= 20,
+            "only {checked} commands were scanned — the attribute marker has drifted"
+        );
     }
 }

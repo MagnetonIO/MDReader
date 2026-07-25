@@ -952,3 +952,55 @@ test('No embedding model: search still answers, and says its hits are text-only'
   expect(noticeBox!.height).toBeGreaterThan(0);
   expect(noticeBox!.y + noticeBox!.height).toBeLessThanOrEqual(firstHitBox!.y + 1);
 });
+
+// ---------------------------------------------------------------------------
+// 9. A model that is STILL LOADING — the shell never waits for it
+// ---------------------------------------------------------------------------
+//
+// Section 8 covers the settled verdict. This covers the state every launch
+// passes through on its way there, and the one a first run on a slow link sits
+// in for the whole 120s deadline: `start_import` has been issued and has NOT
+// answered. The shipping app was reported blank for exactly that window, so what
+// is asserted here is that nothing the user needs is sequenced behind it — the
+// tree, the reading column and the keyboard are all live while the import
+// promise is still outstanding. `?modelloading` never resolves `start_import`
+// (see src/e2e/harness.ts), so any await on it would hang these assertions out.
+
+test('Model still loading: the shell, the tree and reading are all live while the import is unanswered', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?modelloading');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+
+  // Non-emptiness first: the tree has real rows, and the workspace is named.
+  await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
+  expect(await page.getByRole('treeitem').count()).toBeGreaterThan(0);
+  await expect(page.locator('.source-switcher__name')).toHaveText('ws');
+  await expect(page.getByText('No folder')).toHaveCount(0);
+
+  // Reading works: a document opens and renders real blocks.
+  await page.getByRole('treeitem', { name: 'index.md' }).click();
+  await expect(page.locator('.reader-host .mdreader-block').first()).toBeVisible();
+  await expect(page.getByText('Open a workspace folder')).toHaveCount(0);
+
+  // The shell is LIVE, not a frozen frame: a keystroke still opens the palette.
+  await chord(page, 'p');
+  await expect(page.locator('.mdsearch')).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // The status bar is honestly busy — it has not claimed an index that does not
+  // exist, and has not pronounced a failure that has not happened.
+  const status = page.locator('.statusbar');
+  await expect(status.getByText(/^Indexed/)).toHaveCount(0);
+  await expect(status.getByText('Index failed')).toHaveCount(0);
+  await expect(status.getByText('Embedding model unavailable')).toHaveCount(0);
+
+  // …and this ran against a genuinely PENDING model, not a resolved one: the
+  // import was issued, and the listing that paints the tree crossed the boundary
+  // BEFORE it. That ordering is the guarantee — a listing sequenced behind the
+  // import is a tree that waits on the embedding model.
+  const sent = await sentCommands(page);
+  expect(sent).toContain('start_import');
+  expect(sent).toContain('list_workspace_files');
+  expect(sent.indexOf('list_workspace_files')).toBeLessThan(sent.indexOf('start_import'));
+});
