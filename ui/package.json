@@ -11,7 +11,7 @@
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "tauri": "cd .. && tauri"
+    "tauri": "cd .. && PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:$PATH\" tauri"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
