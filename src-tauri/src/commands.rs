@@ -207,7 +207,7 @@ pub struct PingResponse {
 }
 
 /// Echoes `msg` back to the webview alongside the shell version.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn ping(msg: String) -> PingResponse {
     PingResponse {
@@ -225,7 +225,7 @@ pub fn ping(msg: String) -> PingResponse {
 /// restored from a persisted session (the folder picker grants directly). Every
 /// subsequent `read_doc`/`list_workspace_files`/`watch_workspace` is confined to
 /// this root.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_workspace(
     root: String,
@@ -286,7 +286,7 @@ pub struct DocPayload {
 /// Rejects paths outside the workspace, non-files, and non-markdown extensions.
 /// Captures the epoch once and re-checks it is current before returning, so a
 /// switch during the read never hands back a previous workspace's bytes.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn read_doc(
     path: String,
@@ -500,7 +500,7 @@ impl Drop for SaveLock {
 /// hash + mtime. Epoch-guarded: a switch mid-save discards the returned outcome
 /// (the write itself belongs to the still-correct old-workspace path), so the
 /// superseding workspace never adopts a previous doc's provenance.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn save_doc(
     path: String,
@@ -703,7 +703,7 @@ pub struct WatcherState(pub Mutex<Option<Debouncer<RecommendedWatcher>>>);
 /// backend state can never diverge (a live watcher on one root while the grant
 /// names another). Runtime failures *during* watching are surfaced separately
 /// via `mdreader://watch-error`.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn watch_workspace(
     app: AppHandle,
@@ -1540,8 +1540,12 @@ mod tests {
             "watch_workspace",       // CREATES the epoch + arms the watcher
         ];
         // Built at runtime so this literal never appears in the scanned source
-        // (which would self-match); the test module is excluded regardless.
-        let marker = format!("#[tauri::{}]", "command");
+        // (which would self-match); the test module is excluded regardless. The
+        // closing bracket is deliberately NOT part of the marker: commands carry
+        // the off-UI-thread `(async)` dispatch flag (see
+        // `no_command_runs_on_the_ui_thread`), and a marker that demanded `]`
+        // would silently stop scanning every one of them.
+        let marker = format!("#[tauri::{}", "command");
         for source in [
             include_str!("commands.rs"),
             include_str!("engine.rs"),

@@ -999,7 +999,7 @@ pub async fn start_import(
 /// The latest import status for the CURRENT workspace epoch — for the StatusBar's
 /// initial render and any poll. A superseded epoch's status is never read, so a
 /// switch leaves this reading `idle` until the new epoch's import publishes.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgress, String> {
     match workspace.current() {
@@ -1021,7 +1021,7 @@ pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgr
 /// before then — or if the index is somehow empty — a live filesystem scan fills
 /// in, marking gitignored files so the tree can dim them. `root` must be within
 /// the granted workspace.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn list_workspace_files(
     root: String,
@@ -1161,7 +1161,7 @@ fn wikilink_guard(epoch: &Epoch, from_doc: &str) -> Result<(), String> {
 /// consistent) and re-checks it is current AT THE RETURN — after the heading
 /// lookup and result construction — so a switch mid-resolution can never surface
 /// a previous workspace's document.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn resolve_wikilink(
     from_doc: String,

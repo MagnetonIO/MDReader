@@ -16,6 +16,11 @@
  * settles on `model-unavailable`, the listing comes off the filesystem rather
  * than an index, `search` still answers but marks its hits lexical-only, and
  * `explain_query` refuses. See {@link MODEL_UNAVAILABLE}.
+ *
+ * Loading it with `?modelloading` stands in for the state BEFORE that verdict —
+ * the model is still being fetched/deserialized, so `start_import` has not
+ * answered and will not for as long as the load takes. See
+ * {@link MODEL_LOADING}.
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -66,8 +71,33 @@ const SENT: { cmd: string; args: unknown }[] = [];
 const MODEL_UNAVAILABLE =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('nomodel');
 
+/**
+ * Whether this run stands in for a shipping app whose embedding model is STILL
+ * LOADING — the state every launch passes through, and the one a first run on a
+ * slow link (or a stalled download) sits in for the whole 120s deadline.
+ *
+ * Distinct from {@link MODEL_UNAVAILABLE}, which is the *settled* failure: here
+ * `start_import` never resolves at all. That is what the real backend does while
+ * `ensure_model` is awaiting the weights, and it is the precise condition under
+ * which the app was reported blank — so the spec drives it to prove the shell,
+ * the tree and reading do not wait on it.
+ */
+const MODEL_LOADING =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('modelloading');
+
 /** The reason the (mocked) backend observed — the real one is a load timeout. */
 const MODEL_FAILURE_REASON = 'timed out after 120s (the first run downloads the model)';
+
+/** The in-flight `loading` status: the model is being fetched/deserialized. */
+function modelLoadingProgress() {
+  return {
+    phase: 'loading',
+    files_done: 0,
+    files_total: 0,
+    chunks_embedded: 0,
+    error: null,
+  };
+}
 
 /** The `model-unavailable` import status: no files indexed, and a stated reason. */
 function modelUnavailableProgress() {
@@ -156,9 +186,10 @@ function searchHits(query: string) {
 function search(query: string) {
   return {
     hits: searchHits(query),
-    semantic_unavailable: MODEL_UNAVAILABLE
-      ? `the embedding model could not be loaded — ${MODEL_FAILURE_REASON}`
-      : null,
+    semantic_unavailable:
+      MODEL_UNAVAILABLE || MODEL_LOADING
+        ? `the embedding model could not be loaded — ${MODEL_FAILURE_REASON}`
+        : null,
   };
 }
 
@@ -503,9 +534,14 @@ export function installTauriMocks(): void {
         // in for both, flagged as index-backed so the tree renders identically.
         // With no model there is no index, so the listing is the live fs scan —
         // the same files, read straight off disk, which is precisely why the
-        // workspace stays usable.
-        return { entries: fileEntries(), from_index: !MODEL_UNAVAILABLE };
+        // workspace stays usable. Same while the model is still loading: the
+        // index is open (P7.2) but nothing has been imported into it yet.
+        return { entries: fileEntries(), from_index: !MODEL_UNAVAILABLE && !MODEL_LOADING };
       case 'start_import':
+        // The model is still loading: the command has NOT answered yet, and will
+        // not for as long as the load takes. Nothing the shell shows may wait on
+        // this promise.
+        if (MODEL_LOADING) return new Promise(() => {});
         // Resolve after a beat so the StatusBar's optimistic "Indexing…" (busy)
         // phase is observable before the final status lands — a busy→settled
         // transition without the shell needing the (best-effort) channel feed.
@@ -527,6 +563,7 @@ export function installTauriMocks(): void {
           ),
         );
       case 'import_status':
+        if (MODEL_LOADING) return modelLoadingProgress();
         return MODEL_UNAVAILABLE
           ? modelUnavailableProgress()
           : { phase: 'idle', files_done: 0, files_total: 0, chunks_embedded: 0, error: null };
