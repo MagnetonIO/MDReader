@@ -33,6 +33,7 @@ import {
   confidenceLabel,
   factSchemaLabel,
   factStanding,
+  reReviewHashes,
   reReviewPrompt,
   shortHash,
 } from './lens-format.js';
@@ -276,6 +277,7 @@ function ClaimCard({ fact, busy, canRule, onApprove, onReject, onCite }: ClaimCa
   const rereview = reReviewPrompt(fact);
   const fields = reading.kind === 'object' ? claimFields(fact.value) : [];
   const { provenance } = fact;
+  const hashes = reReviewHashes(fact, provenance);
   const citation = citeProvenance(provenance);
   const canCite = provenance.file !== null && provenance.startLine !== null;
 
@@ -309,11 +311,14 @@ function ClaimCard({ fact, busy, canRule, onApprove, onReject, onCite }: ClaimCa
       {rereview ? (
         <p className="claim__note claim__note--rereview">
           {rereview}
-          {fact.reviewedContentHash ? (
-            <span className="claim__hashes lens-mono">
-              reviewed {shortHash(fact.reviewedContentHash)}
-              {provenance.contentHash ? ` · now ${shortHash(provenance.contentHash)}` : ''}
-            </span>
+          {/* Both sides, always. A digest the engine did not record is named as
+              missing rather than dropped: showing one hash alone would read as a
+              comparison this panel is in no position to have made. */}
+          <span className="claim__hashes lens-mono">
+            {hashes.reviewed} · {hashes.current}
+          </span>
+          {hashes.uncomparable ? (
+            <span className="claim__hashes-why">{hashes.uncomparable}</span>
           ) : null}
         </p>
       ) : null}

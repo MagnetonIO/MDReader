@@ -365,6 +365,15 @@
   color: var(--color-faint);
 }
 
+/* Why the two digests cannot be held against each other. Set in the sans face
+ * with the rest of the prose — it is something the app is SAYING, not a value
+ * it recorded, and the type rule keeps that distinction visible. */
+.claim__hashes-why {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-faint);
+}
+
 /* The citation apparatus. */
 .claim__cite,
 .lens-mono {

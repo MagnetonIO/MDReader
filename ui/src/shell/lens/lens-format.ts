@@ -266,6 +266,57 @@ export function reReviewPrompt(fact: Pick<InspectedFact, 'sourceChangedSinceRevi
   return `${ruling}. The cited text has changed since — review it again?`;
 }
 
+/** The two digests a re-review prompt is checked against, and whether it can be. */
+export interface ReReviewHashes {
+  /** The digest as it read at review time — or the statement that none was. */
+  reviewed: string;
+  /** The digest as the cited text reads now — or the statement that none is. */
+  current: string;
+  /**
+   * Why the two cannot be held against each other; `null` when both are real
+   * digests and a reader can compare them themselves.
+   */
+  uncomparable: string | null;
+}
+
+/**
+ * The hash pair beneath a re-review prompt.
+ *
+ * The prompt asserts that the cited text CHANGED, and the only thing that makes
+ * that assertion checkable rather than merely stated is seeing both digests. So
+ * a digest the engine did not record is NAMED as missing, with the reason, and
+ * never quietly left out: one hash on its own reads as a comparison that was
+ * made, when none could be. "These differ" and "we could not compare" are
+ * different claims, and this makes exactly the one that is true.
+ */
+export function reReviewHashes(
+  fact: Pick<InspectedFact, 'reviewedContentHash'>,
+  provenance: Pick<FactProvenance, 'file' | 'contentHash'>,
+): ReReviewHashes {
+  const reviewed = fact.reviewedContentHash;
+  const current = provenance.contentHash;
+  return {
+    reviewed: reviewed === null ? 'reviewed hash not recorded' : `reviewed ${shortHash(reviewed)}`,
+    current: current === null ? 'current hash unavailable' : `now ${shortHash(current)}`,
+    uncomparable:
+      reviewed !== null && current !== null
+        ? null
+        : uncomparableReason(reviewed === null, current === null, provenance.file),
+  };
+}
+
+function uncomparableReason(noReviewed: boolean, noCurrent: boolean, file: string | null): string {
+  const why =
+    noCurrent && noReviewed
+      ? 'neither digest was recorded'
+      : noCurrent && file === null
+        ? 'this claim cites no source text, so there is nothing to take a digest of'
+        : noCurrent
+          ? 'no digest was recorded for the cited text as it now stands'
+          : 'no digest was recorded when this was reviewed';
+  return `The two cannot be compared here — ${why}.`;
+}
+
 // --- laws -----------------------------------------------------------------
 
 /** A composed path, stated the way you would say it out loud. */

@@ -101,7 +101,10 @@ vi.mock('@tauri-apps/api/window', () => ({
   }),
 }));
 
-// The reading surface's own seam: it renders exactly what the shell computed.
+// The reading surface's own seam: it renders exactly what the shell computed —
+// including BOTH ends of the jump range, so a range narrowed on the way here is
+// visible rather than hidden behind the seam. Whether the reader then MARKS that
+// whole range is one layer further on, and is covered by `click-to-source.test.tsx`.
 vi.mock('./ReaderPane.js', () => ({
   ReaderPane: ({
     jump,
@@ -109,7 +112,7 @@ vi.mock('./ReaderPane.js', () => ({
     onViewAs,
     lensSchema,
   }: {
-    jump: { path: string; line: number } | null;
+    jump: { path: string; startLine: number; endLine: number } | null;
     lensBand: React.ReactNode;
     onViewAs?: () => void;
     lensSchema: string | null;
@@ -121,7 +124,9 @@ vi.mock('./ReaderPane.js', () => ({
         </button>
       ) : null}
       {lensBand}
-      <div data-testid="jump">{jump ? `${jump.path}#${jump.line}` : 'none'}</div>
+      <div data-testid="jump">
+        {jump ? `${jump.path}#${jump.startLine}–${jump.endLine}` : 'none'}
+      </div>
       <div className="reader-host">
         <p data-line-start="12" data-line-end="18">
           A decision paragraph
@@ -253,7 +258,7 @@ afterEach(() => {
 });
 
 describe('Constraint Explorer: click-to-source', () => {
-  it('jumps the reader to the EXACT file and line the violation names', async () => {
+  it('jumps the reader to the EXACT file and line range the violation names', async () => {
     await openWorkspace();
     act(() => modKeyDown('L', { shiftKey: true }));
 
@@ -269,9 +274,10 @@ describe('Constraint Explorer: click-to-source', () => {
         '/ws/notes/services.md',
       ),
     );
-    // …and the reader was handed the violation's OWN first line, not line 1 and
-    // not the document's top. This is the assertion the whole surface exists for.
-    expect(screen.getByTestId('jump').textContent).toBe('/ws/notes/services.md#41');
+    // …and the reader was handed the violation's OWN lines — the whole range,
+    // 41 THROUGH 47, not line 1, not the document's top, and not just 41. This
+    // is the assertion the whole surface exists for.
+    expect(screen.getByTestId('jump').textContent).toBe('/ws/notes/services.md#41–47');
     // The sheet steps out of the way once it has delivered you somewhere.
     expect(screen.queryByRole('dialog', { name: 'Constraint explorer' })).toBeNull();
   });

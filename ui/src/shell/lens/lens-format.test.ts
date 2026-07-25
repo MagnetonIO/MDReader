@@ -31,6 +31,7 @@ import {
   projectionSummary,
   registrationSummary,
   rankLabel,
+  reReviewHashes,
   reReviewPrompt,
   scoreLabel,
   shortHash,
@@ -137,6 +138,60 @@ describe('a review whose source has moved', () => {
 
   test('is silent when the source has not changed', () => {
     expect(reReviewPrompt(fact({ state: 'rejected', sourceChangedSinceReview: false }))).toBeNull();
+  });
+
+  test('shows BOTH digests, so "changed" is checkable rather than asserted', () => {
+    const hashes = reReviewHashes(
+      fact({ reviewedContentHash: 'blake3:0000111122223333aaaa' }),
+      fact().provenance,
+    );
+    expect(hashes.reviewed).toBe('reviewed blake3:00001111…aaaa');
+    expect(hashes.current).toBe('now blake3:9f2c1a4e…d3c2');
+    // Two real digests: the reader compares them, and nothing needs explaining.
+    expect(hashes.uncomparable).toBeNull();
+  });
+
+  test('a missing CURRENT hash says so — it is NOT a comparison against one hash', () => {
+    const hashes = reReviewHashes(fact({ reviewedContentHash: 'blake3:0000111122223333aaaa' }), {
+      file: 'notes/adr-3.md',
+      contentHash: null,
+    });
+    // The reviewed digest still stands, and the other side is named as absent
+    // rather than dropped — "these differ" is never implied by one hash alone.
+    expect(hashes.reviewed).toBe('reviewed blake3:00001111…aaaa');
+    expect(hashes.current).toBe('current hash unavailable');
+    expect(hashes.uncomparable).toBe(
+      'The two cannot be compared here — no digest was recorded for the cited text as it now stands.',
+    );
+  });
+
+  test('a claim citing no source text says THAT, rather than blaming the digest', () => {
+    const hashes = reReviewHashes(fact({ reviewedContentHash: 'blake3:0000111122223333aaaa' }), {
+      file: null,
+      contentHash: null,
+    });
+    expect(hashes.uncomparable).toBe(
+      'The two cannot be compared here — this claim cites no source text, so there is nothing to take a digest of.',
+    );
+  });
+
+  test('a missing REVIEWED hash is named too, not silently dropped from the pair', () => {
+    const hashes = reReviewHashes(fact({ reviewedContentHash: null }), fact().provenance);
+    expect(hashes.reviewed).toBe('reviewed hash not recorded');
+    expect(hashes.current).toBe('now blake3:9f2c1a4e…d3c2');
+    expect(hashes.uncomparable).toBe(
+      'The two cannot be compared here — no digest was recorded when this was reviewed.',
+    );
+  });
+
+  test('neither digest recorded reads as neither — not as a match', () => {
+    const hashes = reReviewHashes(fact({ reviewedContentHash: null }), {
+      file: 'notes/adr-3.md',
+      contentHash: null,
+    });
+    expect(hashes.reviewed).toBe('reviewed hash not recorded');
+    expect(hashes.current).toBe('current hash unavailable');
+    expect(hashes.uncomparable).toBe('The two cannot be compared here — neither digest was recorded.');
   });
 });
 

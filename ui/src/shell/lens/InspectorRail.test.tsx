@@ -227,6 +227,35 @@ describe('what the panel refuses to smooth over', () => {
     // Both hashes are shown, so "changed" is checkable rather than asserted.
     expect(within(claim).getByText(/reviewed blake3:00001111…aaaa/)).toBeTruthy();
     expect(within(claim).getByText(/now blake3:9f2c1a4e…ff01/)).toBeTruthy();
+    // Two real digests — nothing to explain away.
+    expect(within(claim).queryByText(/cannot be compared/)).toBeNull();
+  });
+
+  test('an unavailable CURRENT hash is stated — one hash must not read as a comparison', async () => {
+    // The engine recorded no digest for the cited text as it now stands. The
+    // prompt still asserts the source moved, so the panel has to distinguish
+    // "these two differ" from "we could not compare them".
+    const adapter = adapterWith([
+      fact({
+        state: 'rejected',
+        reviewer: 'Ada',
+        sourceChangedSinceReview: true,
+        reviewedContentHash: 'blake3:0000111122223333aaaa',
+        provenance: { ...fact().provenance, contentHash: null },
+      }),
+    ]);
+    renderRail(adapter, { reviewer: 'Ada' });
+
+    const claim = await screen.findByTestId('claim-fact-1');
+    // The side that IS recorded still stands beside the one that is not.
+    expect(within(claim).getByText(/reviewed blake3:00001111…aaaa/)).toBeTruthy();
+    expect(within(claim).getByText(/current hash unavailable/)).toBeTruthy();
+    // …and the reason, so the absence is an account rather than a shrug.
+    expect(
+      within(claim).getByText(
+        /cannot be compared here — no digest was recorded for the cited text as it now stands/,
+      ),
+    ).toBeTruthy();
   });
 
   test('extraction reads as a proposal, with the rule and extractor that made it', async () => {

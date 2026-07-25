@@ -49,6 +49,7 @@ import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
 import { TabStrip } from './TabStrip.js';
 import { ReaderPane } from './ReaderPane.js';
+import type { JumpTarget } from './ReaderPane.js';
 import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
@@ -123,7 +124,10 @@ export function AppShell() {
     | null
   >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
-  const [jump, setJump] = useState<{ path: string; line: number; nonce: number } | null>(null);
+  // It carries the WHOLE range, not just where to land: a citation that names
+  // lines 41–47 must arrive at the reader still naming 41–47, or the reader
+  // cannot mark what was actually cited. See `JumpTarget`.
+  const [jump, setJump] = useState<JumpTarget | null>(null);
   const jumpSeq = useRef(0);
 
   // --- the semantic surfaces -------------------------------------------
@@ -444,16 +448,25 @@ export function AppShell() {
     useSourcesStore.getState().addRecent(ref, root);
   }, []);
 
-  // The palette's search-hit open: land at the hit's provenance line. Enter
-  // focuses the tab and schedules the jump (consumed once the doc renders); ⌘↵
-  // opens a background tab (no jump — it isn't the focused reader).
+  // The palette's search-hit open: land at the hit's provenance line and mark the
+  // chunk that matched. Enter focuses the tab and schedules the jump (consumed
+  // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
+  // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
     if (!opts.background && target.line != null) {
-      setJump({ path: target.path, line: target.line, nonce: (jumpSeq.current += 1) });
+      // A target that carries no end line names one line, not an unknown extent:
+      // the palette's file crumb deliberately opens at the top with no line at
+      // all, and only a chunk target supplies a range.
+      setJump({
+        path: target.path,
+        startLine: target.line,
+        endLine: target.endLine ?? target.line,
+        nonce: (jumpSeq.current += 1),
+      });
     }
   }, []);
 
@@ -500,24 +513,27 @@ export function AppShell() {
     [schemas, lensSchema],
   );
 
-  // Open a document at an exact line range and pulse it — the one landing used
-  // by every provenance affordance (a claim's citation, a projected object's
-  // citation, a located violation). The line range is carried through
-  // unmodified: a violation that knows its lines is the entire point of the
-  // Constraint Explorer, so this either lands on them or reports that it could
-  // not, and never approximates.
-  const jumpToSpan = useCallback((absPath: string, name: string, line: number) => {
-    const workspaceRoot = useSourcesStore.getState().root;
-    const ref = { path: absPath, name };
-    useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
-    useSourcesStore.getState().addRecent(ref, workspaceRoot);
-    setJump({ path: absPath, line, nonce: (jumpSeq.current += 1) });
-  }, []);
+  // Open a document at an exact line range and mark it — the one landing used by
+  // every provenance affordance (a claim's citation, a projected object's
+  // citation, a located violation, an explained hit). The range is carried
+  // through unmodified, BOTH ends of it: a violation that knows its lines is the
+  // entire point of the Constraint Explorer, so this either lands on the whole
+  // range or reports that it could not, and never approximates.
+  const jumpToSpan = useCallback(
+    (absPath: string, name: string, startLine: number, endLine: number) => {
+      const workspaceRoot = useSourcesStore.getState().root;
+      const ref = { path: absPath, name };
+      useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
+      useSourcesStore.getState().addRecent(ref, workspaceRoot);
+      setJump({ path: absPath, startLine, endLine, nonce: (jumpSeq.current += 1) });
+    },
+    [],
+  );
 
   // Resolve a repo-relative file (how the engine cites provenance) to a path the
-  // reader can open, then land on `startLine`.
+  // reader can open, then hand over the cited range whole.
   const openCitation = useCallback(
-    (file: string, startLine: number) => {
+    (file: string, startLine: number, endLine: number) => {
       const sources = useSourcesStore.getState();
       const absPath = resolveSourcePath(file, sources.root, sources.files);
       if (absPath === null) {
@@ -525,13 +541,15 @@ export function AppShell() {
         return;
       }
       const name = absPath.split(/[\\/]+/).pop() ?? file;
-      jumpToSpan(absPath, name, startLine);
+      jumpToSpan(absPath, name, startLine, endLine);
     },
     [jumpToSpan],
   );
 
+  // The Inspector's and the View As sheet's citation jump. Both hand over the
+  // claim's recorded first AND last line; neither is narrowed here.
   const onCite = useCallback(
-    (file: string, startLine: number) => openCitation(file, startLine),
+    (file: string, startLine: number, endLine: number) => openCitation(file, startLine, endLine),
     [openCitation],
   );
 
@@ -544,15 +562,21 @@ export function AppShell() {
         toast(`${span.file} has no line range recorded for this violation`);
         return;
       }
-      openCitation(span.file, span.startLine);
+      // A span with a start and NO end is a single-line location — that is what
+      // `citeSourceSpan` already renders it as (`file:41`, not `file:41–?`), so
+      // the marked extent matches the citation the reader clicked. It is not a
+      // stand-in for an end the engine failed to record.
+      openCitation(span.file, span.startLine, span.endLine ?? span.startLine);
       setConstraintsOpen(false);
     },
     [openCitation],
   );
 
+  // The Query Explanation's open. A hit is a chunk, and a chunk is a range: the
+  // reader marks the chunk that actually matched, not its opening line.
   const onOpenExplained = useCallback(
     (hit: ExplainedHit) => {
-      jumpToSpan(hit.absPath, hit.name, hit.startLine);
+      jumpToSpan(hit.absPath, hit.name, hit.startLine, hit.endLine);
       setExplainOpen(false);
     },
     [jumpToSpan],

@@ -40,6 +40,25 @@ import type { EditorMode } from '../stores/editor.js';
 import type { ReadingFont } from '../stores/settings.js';
 import type { DocRef, ScrollPos, TabState } from '../stores/types.js';
 
+/**
+ * A pending provenance jump, carrying the WHOLE cited range.
+ *
+ * `startLine` is where the reader lands; `endLine` is how far the citation
+ * actually reaches. The two are separate on purpose: a violation that names
+ * lines 41–47 is a claim about seven lines, and a jump that kept only the first
+ * one would silently shrink it to a claim about one. Callers that genuinely
+ * cite a single line pass the same value twice — deliberately, at the call site,
+ * where the reason can be read.
+ *
+ * `nonce` makes each jump distinct so re-jumping to the same range re-fires.
+ */
+export interface JumpTarget {
+  path: string;
+  startLine: number;
+  endLine: number;
+  nonce: number;
+}
+
 export interface ReaderPaneProps {
   tab: TabState | null;
   root: string | null;
@@ -57,11 +76,11 @@ export interface ReaderPaneProps {
   /** A wikilink matched several notes — surface the candidate set. */
   onAmbiguousWikiLink?: (target: string, candidates: DocRef[]) => void;
   /**
-   * A pending provenance jump: land on `line` in the document at `path` and
-   * pulse the target block. `nonce` makes each jump distinct so re-jumping to
-   * the same line re-fires. The reader consumes it once the target renders.
+   * A pending provenance jump: land on the range's first line in the document at
+   * `path`, and mark every block the range covers. The reader consumes it once
+   * the target renders.
    */
-  jump?: { path: string; line: number; nonce: number } | null;
+  jump?: JumpTarget | null;
   /** Switch the active tab's view mode (seeds the editor buffer on first entry). */
   onSetMode: (mode: EditorMode) => void;
   /** Guarded save of the active document (Cmd+S / editor Cmd+S). */
@@ -217,22 +236,34 @@ export function ReaderPane({
     // must not retrigger a restore).
   }, [state.doc]);
 
-  // Consume a pending provenance jump: once the target document is ready, land
-  // on its section line and pulse the block. Declared AFTER the scroll-restore
-  // effect so its rAF runs later and wins (an explicit jump beats a restore).
+  // Consume a pending provenance jump: once the jump's OWN document is on
+  // screen, land on the range's first line and mark EVERY block the range
+  // covers — the reader's `highlightRange` is matched against each block's
+  // stamped `[data-line-start, data-line-end]`, so the marked extent is the
+  // cited extent and not merely its opening line. Declared AFTER the
+  // scroll-restore effect so its rAF runs later and wins (an explicit jump beats
+  // a restore).
   useEffect(() => {
     if (state.status !== 'ready' || !path || !jump) return;
-    if (jump.path !== path || jump.nonce === consumedJump.current) return;
-    consumedJump.current = jump.nonce;
-    const line = jump.line;
+    // `ready` is not enough. A jump to ANOTHER document arrives while the
+    // previous one is still mounted, so the loaded path is checked too —
+    // otherwise the cited lines get marked in the file you were reading before.
+    if (state.path !== path || jump.path !== path) return;
+    if (jump.nonce === consumedJump.current) return;
+    const { startLine, endLine } = jump;
     const frame = requestAnimationFrame(() => {
-      readerRef.current?.scrollToLine(line);
-      setPulse({ start: line, end: line });
+      // Marked as consumed only once it has actually been APPLIED. Consuming at
+      // schedule time silently swallowed every cross-document jump: the effect
+      // re-ran when the target finished loading, cancelled the pending frame,
+      // and then declined to reschedule because the jump "had been" handled.
+      consumedJump.current = jump.nonce;
+      readerRef.current?.scrollToLine(startLine);
+      setPulse({ start: startLine, end: endLine });
       window.clearTimeout(pulseTimer.current);
       pulseTimer.current = window.setTimeout(() => setPulse(null), 1400);
     });
     return () => cancelAnimationFrame(frame);
-  }, [state.doc, path, jump]);
+  }, [state.doc, state.path, path, jump]);
   useEffect(() => () => window.clearTimeout(pulseTimer.current), []);
 
   // Once a wikilink-target document has rendered, jump to the heading line the
