@@ -641,3 +641,235 @@ test('Focus mode: the lens surfaces are ACTUALLY not visible, by computed style'
   await expect(band).toContainText('decision_overlay');
   expect(await computedDisplay(page, '.lens-band')).not.toBe('none');
 });
+
+// ---------------------------------------------------------------------------
+// 7. Focus mode — where the reading column actually SITS
+// ---------------------------------------------------------------------------
+
+/**
+ * The gutters left and right of the reading column, measured against the whole
+ * shell rather than against the reader's own box.
+ *
+ * Measured against `.shell` on purpose. The bug this closes was upstream of the
+ * reader: with the sidebar hidden, `main` auto-placed into the leading `auto`
+ * grid track and shrink-to-fit, so the reading column filled its own host
+ * exactly — left and right gaps of 0 apiece — while sitting flush against the
+ * left edge of a window twice its width. Anything that measures the column
+ * inside its host calls that centred.
+ */
+async function readingGutters(page: Page): Promise<{ left: number; right: number; width: number }> {
+  const column = (await page.locator('.reader-host .mdreader__measure').boundingBox())!;
+  const shell = (await page.locator('.shell').boundingBox())!;
+  expect(column.width).toBeGreaterThan(0);
+  expect(shell.width).toBeGreaterThan(0);
+  return {
+    left: column.x - shell.x,
+    right: shell.x + shell.width - (column.x + column.width),
+    width: column.width,
+  };
+}
+
+/** Step the reader's text size, through the real control, `steps` times. */
+async function stepTextSize(page: Page, direction: 'Larger' | 'Smaller', steps: number) {
+  for (let step = 0; step < steps; step += 1) {
+    await page.getByRole('button', { name: `${direction} text` }).click();
+  }
+}
+
+test('Focus mode: the reading column is CENTRED, at the default AND a raised text scale', async ({
+  page,
+}) => {
+  await openWorkspace(page, 'index.md');
+
+  // Non-emptiness first: there is prose, and a column with a real box.
+  await expect(page.locator('.reader-host .mdreader__measure')).not.toBeEmpty();
+
+  // Both window widths matter, and for different reasons. In a wide window the
+  // failure was the column pinned left with the leftover track empty beside it.
+  // In a narrow one it is the measure itself: `--measure` is `70ch` and `ch`
+  // grows with the text-size setting, so at the top of the scale the column
+  // reaches the usable width, `margin: 0 auto` has nothing left to clamp, and
+  // the prose ends up against its own padding.
+  for (const width of [1280, 900]) {
+    await page.setViewportSize({ width, height: 800 });
+
+    for (const scale of ['default', 'largest'] as const) {
+      if (scale === 'largest') await stepTextSize(page, 'Larger', 4);
+
+      await chord(page, '.');
+      await expect(page.locator('.shell--focus')).toHaveCount(1);
+
+      const where = `${width}px / ${scale}`;
+      // The reader really did reclaim the window: no empty track beside it.
+      const host = (await page.locator('.reader-host').boundingBox())!;
+      const shell = (await page.locator('.shell').boundingBox())!;
+      expect(host.x, `${where}: reader host starts at the shell's left edge`).toBeLessThanOrEqual(
+        shell.x + 1,
+      );
+      expect(host.width, `${where}: reader host spans the shell`).toBeGreaterThanOrEqual(
+        shell.width - 1,
+      );
+
+      const gutters = await readingGutters(page);
+      // Centred: the two gutters agree. A flush-left column reads as left 0 /
+      // right ≈ half the window, which is the reported bug exactly.
+      expect(
+        Math.abs(gutters.left - gutters.right),
+        `${where}: gutters ${Math.round(gutters.left)} | ${Math.round(gutters.right)}`,
+      ).toBeLessThanOrEqual(2);
+      // …and they are real gutters, not a hairline: a column that has run to the
+      // window edge is symmetric-at-zero and must not pass.
+      expect(gutters.left, `${where}: left gutter`).toBeGreaterThan(24);
+      expect(gutters.width, `${where}: column width`).toBeGreaterThan(320);
+
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.shell--focus')).toHaveCount(0);
+      if (scale === 'largest') await stepTextSize(page, 'Smaller', 4);
+    }
+  }
+});
+
+test('Focus mode in SPLIT: the editor goes with the chrome, and comes back with it', async ({
+  page,
+}) => {
+  await openWorkspace(page, 'index.md');
+  await page.getByRole('button', { name: 'Split view' }).click();
+
+  // Non-emptiness first: both panes are really there, each with half the row.
+  const source = page.locator('.source-region');
+  await expect(source).toBeVisible();
+  await expect(page.locator('.source-pane .cm-content')).not.toBeEmpty();
+  const editorBefore = await page.locator('.source-pane .cm-content').innerText();
+  expect(editorBefore.length).toBeGreaterThan(0);
+  const splitHost = (await page.locator('.reader-host').boundingBox())!;
+  const shell = (await page.locator('.shell').boundingBox())!;
+  expect(splitHost.width).toBeLessThan(shell.width * 0.6); // genuinely sharing
+
+  await chord(page, '.');
+  await expect(page.locator('.shell--focus')).toHaveCount(1);
+
+  // Focus is a READING mode: the editor leaves with the rest of the chrome
+  // rather than pinning the prose to half a row.
+  expect(await computedDisplay(page, '.source-region')).toBe('none');
+  await expect(source).toBeHidden();
+  expect(await source.boundingBox()).toBeNull();
+
+  const gutters = await readingGutters(page);
+  expect(Math.abs(gutters.left - gutters.right)).toBeLessThanOrEqual(2);
+  expect(gutters.left).toBeGreaterThan(24);
+
+  // Hidden, never unmounted: the buffer is exactly where it was left.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.shell--focus')).toHaveCount(0);
+  await expect(source).toBeVisible();
+  expect((await page.locator('.source-pane .cm-content').innerText()).trim()).toBe(
+    editorBefore.trim(),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 8. Selecting text with the mouse — the reported gesture, in a real engine
+// ---------------------------------------------------------------------------
+
+/** Press, move in stages, release — a genuine selection drag, not `setSelection`. */
+async function dragSelect(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): Promise<string> {
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 6 });
+  await page.mouse.move(to.x, to.y, { steps: 6 });
+  await page.mouse.up();
+  return page.evaluate(() => String(window.getSelection() ?? ''));
+}
+
+test('Selection: a drag that starts in a heading’s left gutter selects the heading', async ({
+  page,
+}) => {
+  await openWorkspace(page, 'index.md');
+
+  const heading = page.getByRole('heading', { name: 'Getting started' });
+  await expect(heading).toBeVisible();
+  const headingText = (await heading.innerText()).trim();
+  expect(headingText.length).toBeGreaterThan(0);
+
+  // The section anchor is faded out, not removed — it keeps a box, and that box
+  // sits in the left gutter where a select-from-the-left drag begins. Starting
+  // the drag on it is the whole point of this test.
+  const anchor = heading.locator('a.mdreader-heading__anchor');
+  await expect(anchor).toHaveCount(1);
+  const anchorBox = (await anchor.boundingBox())!;
+  const headingBox = (await heading.boundingBox())!;
+  expect(anchorBox.width).toBeGreaterThan(0);
+  expect(anchorBox.x + anchorBox.width).toBeLessThanOrEqual(headingBox.x + 1); // truly the gutter
+
+  const selected = await dragSelect(
+    page,
+    { x: anchorBox.x + anchorBox.width / 2, y: anchorBox.y + anchorBox.height / 2 },
+    { x: headingBox.x + headingBox.width * 0.8, y: headingBox.y + headingBox.height / 2 },
+  );
+
+  // A hit-testable invisible <a> here swallowed the gesture: no engine starts a
+  // text selection from inside a link, so the drag produced nothing at all.
+  expect(selected.trim().length, 'the gutter drag selected nothing').toBeGreaterThan(0);
+  expect(headingText).toContain(selected.trim());
+
+  // The anchor is hidden from the POINTER, not from assistive technology: it is
+  // still in the DOM, still named, and still reachable by keyboard.
+  await expect(anchor).toHaveAttribute('aria-label', 'Link to this section');
+  await expect(anchor).toHaveAttribute('href', /^#/);
+  expect(
+    await anchor.evaluate((el) => (el as HTMLElement).tabIndex),
+    'the anchor is still keyboard-reachable',
+  ).toBeGreaterThanOrEqual(0);
+});
+
+test('Selection: a drag across a paragraph selects exactly what it crossed, visibly', async ({
+  page,
+}) => {
+  await openWorkspace(page, 'index.md');
+
+  // A wikilink-dense line — three links in one sentence — begun on plain text.
+  const paragraph = page.locator('.reader-host [data-line-start="5"]').first();
+  await expect(paragraph).toBeVisible();
+  const paragraphText = (await paragraph.innerText()).trim();
+  expect(paragraphText.length).toBeGreaterThan(0);
+  await expect(paragraph.locator('a.mdreader-wikilink')).not.toHaveCount(0);
+
+  const box = (await paragraph.boundingBox())!;
+  const selected = await dragSelect(
+    page,
+    { x: box.x + 2, y: box.y + box.height / 2 },
+    { x: box.x + box.width - 2, y: box.y + box.height / 2 },
+  );
+  expect(selected.trim().length, 'the paragraph drag selected nothing').toBeGreaterThan(0);
+  expect(selected.trim()).toBe(paragraphText);
+
+  // And a successful selection has to LOOK like one. The tint was 1.26:1 against
+  // the page, which is a selection that reads as a failed drag; the contrast is
+  // asserted here rather than eyeballed because that is how it got shipped.
+  const contrast = await page.evaluate(() => {
+    const read = (name: string) =>
+      getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const luminance = (hex: string) => {
+      const c = hex.replace('#', '');
+      const channels = [0, 2, 4]
+        .map((i) => parseInt(c.slice(i, i + 2), 16) / 255)
+        .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+    };
+    const ratio = (a: string, b: string) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi! + 0.05) / (lo! + 0.05);
+    };
+    return {
+      selectionVsPage: ratio(read('--color-selection'), read('--color-bg')),
+      textOnSelection: ratio(read('--color-selection-fg'), read('--color-selection')),
+    };
+  });
+  expect(contrast.selectionVsPage, 'selection tint vs the page').toBeGreaterThan(2);
+  expect(contrast.textOnSelection, 'text on the selection tint').toBeGreaterThan(4.5);
+});

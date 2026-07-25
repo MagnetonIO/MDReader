@@ -32,8 +32,11 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* A selection has to be legible as well as visible: setting only a background
+ * left accent-coloured links invisible inside their own highlight. */
 ::selection {
   background: var(--color-selection);
+  color: var(--color-selection-fg);
 }
 
 /* --- shell grid ------------------------------------------------------- */
@@ -388,7 +391,18 @@ body {
 
 /* --- main column ------------------------------------------------------ */
 
+/* `grid-column: 2` is load-bearing, not decoration.
+ *
+ * `display: none` does not merely hide a grid item, it removes it from the box
+ * tree — so when focus mode hides the sidebar, `main` becomes the FIRST grid
+ * item and auto-places into the leading `auto` track, which shrink-to-fits the
+ * prose. That is exactly the reported bug: the reading column pinned to x=0 at
+ * its content width with the whole `1fr` track left empty on the right. Pinning
+ * `main` to the flexible track keeps the empty `auto` track at zero and the
+ * reading column full-width — whatever reason the sidebar leaves the box tree
+ * for. */
 .shell__main {
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -847,10 +861,32 @@ body {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.shell--focus .reader-host :is(.mdreader__measure) {
-  max-width: var(--measure);
-  padding-top: var(--space-8);
-  padding-bottom: var(--space-8);
+/* Focus mode gives the column more air above and below the prose.
+ *
+ * This is done through a custom property rather than by styling
+ * `.mdreader__measure` directly. The reading column's own box is set INLINE by
+ * @mdreader/ui (it has to work outside this shell), and an inline declaration
+ * beats any author rule here — the previous version of this block set
+ * `max-width` and `padding-top`/`padding-bottom` on that element and every line
+ * of it silently lost. `--reader-pad` is a channel the component actually
+ * reads, so this one takes effect. */
+.shell--focus .reader-host {
+  --reader-pad: var(--space-8) var(--space-6);
+}
+
+/* Focus mode is a READING mode: in split, the editor goes with the rest of the
+ * chrome and the reader takes the whole row. Leaving a half-width editor behind
+ * would be incoherent — the mode toggle lives in the toolbar focus just hid, so
+ * there would be no way back to full-width prose without leaving focus — and
+ * the editor is the one surface in the row that is definitionally not prose.
+ * `display: none` keeps SourcePane mounted, so the buffer, the caret and the
+ * undo history are all still there when focus ends.
+ *
+ * Scoped to split on purpose: in `source` mode there is no reader to fall back
+ * on, and hiding the editor there would leave an empty window. Focus over a
+ * lone editor stays what it should be — distraction-free editing. */
+.shell--focus .reader-body--split .source-region {
+  display: none;
 }
 
 /* --- reader typography polish (scoped, does not touch @mdreader/ui) --- */
