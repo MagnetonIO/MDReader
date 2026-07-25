@@ -464,16 +464,21 @@ body {
  * column and the reader gives up exactly that width.
  */
 
+/* Two trailing tracks, both content-sized: the Inspector (the apparatus, nearest
+ * the text) and Related (navigation, outermost). Each rail declares its own
+ * width when open and shrinks to a strip when collapsed, so the reader gives up
+ * exactly what is in use and no class permutation has to enumerate the states.
+ * `--related-open` remains as the state marker it always was. */
 .shell__reader-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   flex: 1;
   min-height: 0;
   min-width: 0;
 }
 
 .shell__reader-row--related-open {
-  grid-template-columns: minmax(0, 1fr) 13.5rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 /* --- related rail ----------------------------------------------------- */
@@ -482,6 +487,7 @@ body {
  * hairline separates it from the page — no raised panel, no shadow. Fills its
  * grid track (width comes from the row's column template above). */
 .related-rail {
+  width: 13.5rem;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -818,18 +824,24 @@ body {
   opacity: 1;
 }
 
+/* The semantic chrome is chrome: it leaves with the rest of it. The lens band
+ * goes too — in focus mode there is only the prose, whatever it is being read
+ * as. */
 .shell--focus .sidebar,
 .shell--focus .tabstrip,
 .shell--focus .reader-toolbar,
 .shell--focus .outline-rail,
 .shell--focus .related-rail,
 .shell--focus .related-rail__toggle--collapsed,
+.shell--focus .lens-rail,
+.shell--focus .lens-strip,
+.shell--focus .lens-band,
 .shell--focus .statusbar {
   display: none;
 }
 
-/* With the rail hidden, drop its column entirely so the reader reclaims the full
- * width and centers — even when Related was left open before entering focus. */
+/* With the rails hidden, drop their columns entirely so the reader reclaims the
+ * full width and centers — even when a rail was left open before entering focus. */
 .shell--focus .shell__reader-row,
 .shell--focus .shell__reader-row--related-open {
   grid-template-columns: minmax(0, 1fr);

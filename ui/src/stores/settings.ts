@@ -25,6 +25,21 @@ export interface SettingsState {
   outlineVisible: boolean;
   /** Whether the reader's Related rail is expanded (persisted, collapsed by default). */
   relatedRailOpen: boolean;
+  /** Whether the Inspector rail is expanded (persisted, collapsed by default). */
+  inspectorOpen: boolean;
+  /**
+   * The schema the reader is currently interpreted through, or `null` for the
+   * plain reading. Only a name is held: the schema's shape and contents are
+   * always re-read from the engine, so a stale or retired name resolves to the
+   * plain reading rather than to a remembered snapshot.
+   */
+  lensSchema: string | null;
+  /**
+   * The name reviews are signed with. Empty means **no reviewer is set** — the
+   * app has no identity of its own to fall back on, and a review may not be
+   * submitted until a person supplies one. Never defaulted, never a placeholder.
+   */
+  reviewer: string;
   focusMode: boolean;
 
   setTheme: (theme: Theme) => void;
@@ -38,6 +53,11 @@ export interface SettingsState {
   toggleOutline: () => void;
   toggleRelatedRail: () => void;
   setRelatedRailOpen: (open: boolean) => void;
+  toggleInspector: () => void;
+  setInspectorOpen: (open: boolean) => void;
+  setLensSchema: (schema: string | null) => void;
+  /** Adopt a reviewer name. Trimmed; a blank name clears it rather than storing whitespace. */
+  setReviewer: (reviewer: string) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
   hydrate: (partial: Partial<SettingsSnapshot>) => void;
@@ -47,7 +67,15 @@ export interface SettingsState {
 /** The persisted subset of the settings (no actions). */
 export type SettingsSnapshot = Pick<
   SettingsState,
-  'theme' | 'readingFont' | 'textScaleIndex' | 'sidebarCollapsed' | 'outlineVisible' | 'relatedRailOpen'
+  | 'theme'
+  | 'readingFont'
+  | 'textScaleIndex'
+  | 'sidebarCollapsed'
+  | 'outlineVisible'
+  | 'relatedRailOpen'
+  | 'inspectorOpen'
+  | 'lensSchema'
+  | 'reviewer'
 >;
 
 const defaults: SettingsSnapshot & { focusMode: boolean } = {
@@ -57,6 +85,9 @@ const defaults: SettingsSnapshot & { focusMode: boolean } = {
   sidebarCollapsed: false,
   outlineVisible: true,
   relatedRailOpen: false,
+  inspectorOpen: false,
+  lensSchema: null,
+  reviewer: '',
   focusMode: false,
 };
 
@@ -82,12 +113,27 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   toggleOutline: () => set((state) => ({ outlineVisible: !state.outlineVisible })),
   toggleRelatedRail: () => set((state) => ({ relatedRailOpen: !state.relatedRailOpen })),
   setRelatedRailOpen: (relatedRailOpen) => set({ relatedRailOpen }),
+  toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
+  setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
+  setLensSchema: (lensSchema) => set({ lensSchema }),
+  // Trim at the door: a whitespace-only name is not an identity, and storing it
+  // would let a blank review reach a backend that (rightly) refuses it.
+  setReviewer: (reviewer) => set({ reviewer: reviewer.trim() }),
   toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
   setFocusMode: (focusMode) => set({ focusMode }),
 
   hydrate: (partial) => set({ ...get(), ...partial }),
   reset: () => set({ ...defaults }),
 }));
+
+/**
+ * Whether a real reviewer identity is on file. The single predicate every
+ * review path consults — an approval or rejection may not be submitted while
+ * this is false, and the app never substitutes a name of its own.
+ */
+export function hasReviewer(state: Pick<SettingsState, 'reviewer'>): boolean {
+  return state.reviewer.trim().length > 0;
+}
 
 /** The current text-size multiplier. */
 export function textScaleFactor(state: Pick<SettingsState, 'textScaleIndex'>): number {

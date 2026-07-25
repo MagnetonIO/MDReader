@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
@@ -70,6 +70,16 @@ export interface ReaderPaneProps {
   onReloadActive: () => void;
   /** Conflict banner: force-overwrite the on-disk version with the buffer. */
   onOverwriteActive: () => void;
+  /**
+   * The active-lens band, rendered at the head of the reading column so the
+   * interpretation in force is visible while reading — and so the untouched
+   * prose beneath it makes the point. `null` for the plain reading.
+   */
+  lensBand?: ReactNode;
+  /** Open the View As sheet (omitted when no schema is registered). */
+  onViewAs?: () => void;
+  /** The schema in force, for the toolbar's View As control. */
+  lensSchema?: string | null;
 }
 
 function dirname(path: string): string {
@@ -116,6 +126,9 @@ export function ReaderPane({
   onSaveActive,
   onReloadActive,
   onOverwriteActive,
+  lensBand,
+  onViewAs,
+  lensSchema = null,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   // A separate reader for the split-mode preview, so its scroll-sync never
@@ -398,7 +411,10 @@ export function ReaderPane({
         mode={mode}
         onSetMode={onSetMode}
         canEdit
+        onViewAs={onViewAs}
+        lensSchema={lensSchema}
       />
+      {lensBand}
       {conflict ? (
         <ConflictBanner
           source={conflict.source}

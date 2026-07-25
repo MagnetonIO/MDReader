@@ -55,7 +55,17 @@ import { ShortcutSheet } from './ShortcutSheet.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
+import { makeSemanticsAdapter } from '../platform/semantics.js';
+import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
+import { InspectorRail } from './lens/InspectorRail.js';
+import { LensBand } from './lens/LensBand.js';
+import { LensSheet } from './lens/LensSheet.js';
+import { ConstraintSheet } from './lens/ConstraintSheet.js';
+import { ExplainSheet } from './lens/ExplainSheet.js';
+import { useSchemas } from './lens/use-schemas.js';
+import { resolveSourcePath, spanFromSelection } from './lens/source-span.js';
 import './shell.css';
+import './lens/lens.css';
 
 function isEditable(element: Element | null): boolean {
   if (!element) return false;
@@ -90,6 +100,9 @@ export function AppShell() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
   const outlineVisible = useSettingsStore((state) => state.outlineVisible);
   const relatedRailOpen = useSettingsStore((state) => state.relatedRailOpen);
+  const inspectorOpen = useSettingsStore((state) => state.inspectorOpen);
+  const lensSchema = useSettingsStore((state) => state.lensSchema);
+  const reviewer = useSettingsStore((state) => state.reviewer);
   const focusMode = useSettingsStore((state) => state.focusMode);
 
   // --- local UI state ---------------------------------------------------
@@ -112,6 +125,16 @@ export function AppShell() {
   // A pending provenance jump handed to the ReaderPane once the target renders.
   const [jump, setJump] = useState<{ path: string; line: number; nonce: number } | null>(null);
   const jumpSeq = useRef(0);
+
+  // --- the semantic surfaces -------------------------------------------
+  // Which corpus-scoped sheet is up (at most one; they are all Escape-closable).
+  const [lensSheetOpen, setLensSheetOpen] = useState(false);
+  const [constraintsOpen, setConstraintsOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  // The passage the Inspector is reading claims for: a real, non-collapsed
+  // selection in the reading column. It STICKS — clicking Approve collapses the
+  // selection, and the panel must not empty itself out from under the ruling.
+  const [inspected, setInspected] = useState<SpanSelection | null>(null);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -467,6 +490,108 @@ export function AppShell() {
     }
   }, []);
 
+  // --- semantic surfaces: transport, selection, click-to-source ---------
+  const semantics = useMemo(makeSemanticsAdapter, []);
+  // The registered schemas drive the toolbar's View As control and the lens
+  // band. Only read inside a Tauri shell — there is no engine on the website.
+  const { schemas, reload: reloadSchemas } = useSchemas(semantics, root, isTauri());
+  const activeLens = useMemo(
+    () => schemas.find((schema) => schema.name === lensSchema) ?? null,
+    [schemas, lensSchema],
+  );
+
+  // Open a document at an exact line range and pulse it — the one landing used
+  // by every provenance affordance (a claim's citation, a projected object's
+  // citation, a located violation). The line range is carried through
+  // unmodified: a violation that knows its lines is the entire point of the
+  // Constraint Explorer, so this either lands on them or reports that it could
+  // not, and never approximates.
+  const jumpToSpan = useCallback((absPath: string, name: string, line: number) => {
+    const workspaceRoot = useSourcesStore.getState().root;
+    const ref = { path: absPath, name };
+    useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
+    useSourcesStore.getState().addRecent(ref, workspaceRoot);
+    setJump({ path: absPath, line, nonce: (jumpSeq.current += 1) });
+  }, []);
+
+  // Resolve a repo-relative file (how the engine cites provenance) to a path the
+  // reader can open, then land on `startLine`.
+  const openCitation = useCallback(
+    (file: string, startLine: number) => {
+      const sources = useSourcesStore.getState();
+      const absPath = resolveSourcePath(file, sources.root, sources.files);
+      if (absPath === null) {
+        toast(`No document in this workspace matches ${file}`);
+        return;
+      }
+      const name = absPath.split(/[\\/]+/).pop() ?? file;
+      jumpToSpan(absPath, name, startLine);
+    },
+    [jumpToSpan],
+  );
+
+  const onCite = useCallback(
+    (file: string, startLine: number) => openCitation(file, startLine),
+    [openCitation],
+  );
+
+  // The Constraint Explorer's jump. The whole located span arrives; a violation
+  // with no line is not click-to-source and says so rather than opening the
+  // document at the top and pretending that was the answer.
+  const onJumpToViolation = useCallback(
+    (span: SourceSpan) => {
+      if (span.startLine === null) {
+        toast(`${span.file} has no line range recorded for this violation`);
+        return;
+      }
+      openCitation(span.file, span.startLine);
+      setConstraintsOpen(false);
+    },
+    [openCitation],
+  );
+
+  const onOpenExplained = useCallback(
+    (hit: ExplainedHit) => {
+      jumpToSpan(hit.absPath, hit.name, hit.startLine);
+      setExplainOpen(false);
+    },
+    [jumpToSpan],
+  );
+
+  // Reading a selection in the reading column as a line range. Only a real,
+  // non-collapsed selection inside `.reader-host` counts — a bare click is not
+  // an inspection request, so the panel keeps the passage it was already on.
+  useEffect(() => {
+    if (!inspectorOpen) return;
+    const capture = () => {
+      const host = document.querySelector('.reader-host');
+      const span = spanFromSelection(window.getSelection(), host);
+      const path = activePathRef.current;
+      if (!span || !path) return;
+      setInspected((current) =>
+        current &&
+        current.path === path &&
+        current.startLine === span.startLine &&
+        current.endLine === span.endLine
+          ? current
+          : { path, startLine: span.startLine, endLine: span.endLine },
+      );
+    };
+    document.addEventListener('mouseup', capture);
+    document.addEventListener('keyup', capture);
+    return () => {
+      document.removeEventListener('mouseup', capture);
+      document.removeEventListener('keyup', capture);
+    };
+  }, [inspectorOpen]);
+
+  // A passage belongs to the document it was selected in; switching documents
+  // clears it rather than showing another file's claims under this file's lines.
+  const activeDocPath = activeTab?.docRef.path ?? null;
+  useEffect(() => {
+    setInspected((current) => (current && current.path === activeDocPath ? current : null));
+  }, [activeDocPath]);
+
   const focusOutline = useCallback(() => {
     useSettingsStore.setState({ outlineVisible: true });
     requestAnimationFrame(() => {
@@ -726,6 +851,34 @@ export function AppShell() {
         run: () => useSettingsStore.getState().toggleRelatedRail(),
       },
       {
+        id: 'explain',
+        keys: 'Mod+Shift+K',
+        description: 'Explain a search',
+        group: 'Search',
+        run: () => setExplainOpen((open) => !open),
+      },
+      {
+        id: 'view-as',
+        keys: 'Mod+Shift+V',
+        description: 'View as…',
+        group: 'Semantics',
+        run: () => setLensSheetOpen((open) => !open),
+      },
+      {
+        id: 'inspector',
+        keys: 'Mod+Shift+I',
+        description: 'Toggle semantic inspector',
+        group: 'Semantics',
+        run: () => useSettingsStore.getState().toggleInspector(),
+      },
+      {
+        id: 'laws',
+        keys: 'Mod+Shift+L',
+        description: 'Where the laws break',
+        group: 'Semantics',
+        run: () => setConstraintsOpen((open) => !open),
+      },
+      {
         id: 'new-tab',
         keys: 'Mod+T',
         description: 'New tab',
@@ -860,13 +1013,28 @@ export function AppShell() {
           event.preventDefault();
           return;
         }
+        // The semantic sheets dismiss in the same one-at-a-time order as the
+        // rest of the overlay stack, ahead of leaving focus mode.
+        if (lensSheetOpen || constraintsOpen || explainOpen) {
+          setLensSheetOpen(false);
+          setConstraintsOpen(false);
+          setExplainOpen(false);
+          event.preventDefault();
+          return;
+        }
         if (useSettingsStore.getState().focusMode) {
           useSettingsStore.getState().setFocusMode(false);
           event.preventDefault();
           return;
         }
       }
-      const inEditable = isEditable(document.activeElement) || paletteOpen || sheetOpen;
+      const inEditable =
+        isEditable(document.activeElement) ||
+        paletteOpen ||
+        sheetOpen ||
+        lensSheetOpen ||
+        constraintsOpen ||
+        explainOpen;
       if (registry.dispatch(event, { inEditable })) event.preventDefault();
     }
     function onKeyUp(event: KeyboardEvent) {
@@ -878,7 +1046,7 @@ export function AppShell() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [registry, paletteOpen, sheetOpen]);
+  }, [registry, paletteOpen, sheetOpen, lensSheetOpen, constraintsOpen, explainOpen]);
 
   // --- startup: restore session + settings ------------------------------
   useEffect(() => {
@@ -938,6 +1106,9 @@ export function AppShell() {
       sidebarCollapsed: s.sidebarCollapsed,
       outlineVisible: s.outlineVisible,
       relatedRailOpen: s.relatedRailOpen,
+      inspectorOpen: s.inspectorOpen,
+      lensSchema: s.lensSchema,
+      reviewer: s.reviewer,
     });
   }, []);
 
@@ -1040,6 +1211,9 @@ export function AppShell() {
     sidebarCollapsed,
     outlineVisible,
     relatedRailOpen,
+    inspectorOpen,
+    lensSchema,
+    reviewer,
   ]);
 
   // --- live reload from the workspace watcher ---------------------------
@@ -1267,7 +1441,31 @@ export function AppShell() {
               onSaveActive={() => void saveActiveDoc(false)}
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
+              onViewAs={schemas.length > 0 ? () => setLensSheetOpen(true) : undefined}
+              lensSchema={activeLens?.name ?? null}
+              lensBand={
+                activeLens ? (
+                  <LensBand
+                    schema={activeLens}
+                    onOpen={() => setLensSheetOpen(true)}
+                    onClear={() => useSettingsStore.getState().setLensSchema(null)}
+                  />
+                ) : null
+              }
             />
+            {/* The apparatus sits nearest the text, navigation outside it. */}
+            {activeTab ? (
+              <InspectorRail
+                adapter={semantics}
+                open={inspectorOpen}
+                onToggle={() => useSettingsStore.getState().toggleInspector()}
+                selection={inspected}
+                reviewer={reviewer}
+                onSetReviewer={(name) => useSettingsStore.getState().setReviewer(name)}
+                onCite={onCite}
+                workspaceKey={root}
+              />
+            ) : null}
             {activeTab ? (
               <RelatedRail
                 activeDoc={activeDoc}
@@ -1307,6 +1505,34 @@ export function AppShell() {
       ) : null}
       {sheetOpen ? (
         <ShortcutSheet groups={shortcutGroups} onClose={() => setSheetOpen(false)} />
+      ) : null}
+      {lensSheetOpen ? (
+        <LensSheet
+          adapter={semantics}
+          activeSchema={lensSchema}
+          onChoose={(schema) => {
+            useSettingsStore.getState().setLensSchema(schema);
+            // Counts move as claims are ruled on; re-read so the band never
+            // reports a total the graph no longer holds.
+            reloadSchemas();
+          }}
+          onCite={onCite}
+          onClose={() => setLensSheetOpen(false)}
+        />
+      ) : null}
+      {constraintsOpen ? (
+        <ConstraintSheet
+          adapter={semantics}
+          onJump={onJumpToViolation}
+          onClose={() => setConstraintsOpen(false)}
+        />
+      ) : null}
+      {explainOpen ? (
+        <ExplainSheet
+          adapter={semantics}
+          onOpen={onOpenExplained}
+          onClose={() => setExplainOpen(false)}
+        />
       ) : null}
       {closeGuard ? (
         <UnsavedGuard
