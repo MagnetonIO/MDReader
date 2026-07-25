@@ -29,29 +29,29 @@ catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
 catdb-storage = { path = "../../../../catdb/crates/catdb-storage" }
 catdb-cli = { path = "../../../../catdb/crates/catdb-cli", default-features = false }
+# Kernel value types (`Object`, `MorphismInstance`, `Provenance`) — the
+# proposal store persists them verbatim, so a promoted fact carries the exact
+# provenance extraction recorded. The app depending on the platform kernel is
+# the allowed direction.
+catdb-core = { path = "../../../../catdb/crates/catdb-core" }
 mdreader-domain = { path = "../mdreader-domain" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
 blake3 = "1"
 comrak = "0.54"
 ignore = "0.4"
+# The proposal store's backing database — reviewable claims live BESIDE the
+# workspace index, never inside it. Not a new dependency in the build graph:
+# the same version and `bundled` feature already compile as part of
+# catdb-storage-sqlite, one layer down.
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]
 catdb-catalog = { path = "../../../../catdb/crates/catdb-catalog" }
-# Kernel types for the KN-layer instance validity tests (MemInstance +
-# builtin schemas): the app depending on the platform is the allowed
-# direction.
-catdb-core = { path = "../../../../catdb/crates/catdb-core" }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tempfile = { workspace = true }
-# Read-only inspection of the workspace FILE in `tests/composed_cli.rs`: that
-# test proves the `catdb` binary produced a real CatDB workspace (operation
-# log, objects/morphisms, execution indexes) rather than an app-private
-# format, which means reading it without going through the engine. Not a new
-# dependency — the same version and `bundled` feature already compile as part
-# of catdb-storage-sqlite, one layer down.
-rusqlite = { version = "0.37", features = ["bundled"] }

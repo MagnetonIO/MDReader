@@ -13,7 +13,9 @@
 
 mod ingestor;
 mod parse;
+pub mod proposals;
 mod scan;
+mod source_view;
 
 use std::sync::Arc;
 
@@ -24,14 +26,31 @@ pub use parse::{
     parse_markdown, parse_markdown_with_limit, ParsedBlock, ParsedChunk, ParsedDocument,
     ParsedLink, ParsedSection, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };
+pub use proposals::ProposalStore;
 pub use scan::{scan_root, ScanOptions, ScannedFile};
+pub use source_view::{parse_source_document, source_document};
 
 /// The fully composed MDReader domain registration: `mdreader-domain`'s
 /// schemas and mappings plus this crate's [`MarkdownIngestor`] and chunker
 /// version. This is what the `catdb` binary (and later the Tauri app) hands
 /// to [`catdb_engine::EngineConfig`].
+///
+/// Overlay extraction does **not** run under this registration: there is
+/// nowhere to put a proposal, and the one place a proposal must never go is
+/// the authoritative graph. Use [`registration_with_proposals`] to enable it.
 pub fn registration() -> DomainRegistration {
     mdreader_domain::engine_registration(vec![Arc::new(MarkdownIngestor::new())], CHUNKER_VERSION)
+}
+
+/// [`registration`] with overlay extraction wired to `store`: each import ends
+/// by running the decision and architecture extractors over the whole corpus
+/// and recording what they *propose* into the store — reviewable claims,
+/// none of them asserted into the graph until a human approves them.
+pub fn registration_with_proposals(store: Arc<ProposalStore>) -> DomainRegistration {
+    mdreader_domain::engine_registration(
+        vec![Arc::new(MarkdownIngestor::new().with_proposal_store(store))],
+        CHUNKER_VERSION,
+    )
 }
 
 /// Returns this crate's package name.

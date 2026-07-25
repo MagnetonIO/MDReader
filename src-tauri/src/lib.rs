@@ -8,6 +8,7 @@
 
 mod commands;
 mod engine;
+mod overlay;
 mod search;
 
 use commands::{WatcherState, WorkspaceState};
@@ -39,6 +40,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
             engine::resolve_wikilink,
             search::search,
             search::related,
+            search::explain_query,
+            overlay::list_schemas,
+            overlay::project_corpus,
+            overlay::describe_schema,
+            overlay::inspect_span,
+            overlay::approve_fact,
+            overlay::reject_fact,
+            overlay::check_constraints,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }

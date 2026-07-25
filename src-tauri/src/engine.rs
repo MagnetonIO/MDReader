@@ -76,7 +76,7 @@ use tauri::{AppHandle, Manager, State};
 use catdb_embed::{Embedder, FastembedEmbedder, HashEmbedder};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
-use mdreader_ingest::{registration, scan_root, ScanOptions};
+use mdreader_ingest::{registration_with_proposals, scan_root, ProposalStore, ScanOptions};
 
 use crate::commands::{
     canonical_dir, mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState,
@@ -110,6 +110,11 @@ pub struct Epoch {
     /// The opened engine, installed once (after the async model load). Per-epoch,
     /// so a stale epoch installing its engine can never leak into the current one.
     engine: OnceLock<Arc<EmbeddedCatDb>>,
+    /// This workspace's overlay **proposal** store, installed with the engine
+    /// (ingest records into it, so the two must be the same pair for the whole
+    /// epoch). It holds reviewable claims, never authoritative facts — see
+    /// [`mdreader_ingest::proposals`].
+    proposals: OnceLock<Arc<ProposalStore>>,
     /// This epoch's import status. A superseded import writes only here — nobody
     /// reads a stale epoch's slot ([`import_status`] reads the current epoch's).
     status: Mutex<ImportProgress>,
@@ -125,6 +130,7 @@ impl Epoch {
             root,
             generation,
             engine: OnceLock::new(),
+            proposals: OnceLock::new(),
             status: Mutex::new(ImportProgress::default()),
             active: Mutex::new(false),
         })
@@ -145,6 +151,12 @@ impl Epoch {
         self.engine.get().map(Arc::clone)
     }
 
+    /// This epoch's proposal store, installed alongside its engine — the
+    /// accessor the sibling [`overlay`](crate::overlay) module reads through.
+    pub(crate) fn proposals(&self) -> Option<Arc<ProposalStore>> {
+        self.proposals.get().map(Arc::clone)
+    }
+
     /// The installed engine, if the model has finished loading for this epoch.
     #[cfg(test)]
     fn has_engine(&self) -> bool {
@@ -154,8 +166,14 @@ impl Epoch {
     /// Test helper: install `db` as this epoch's engine (simulates the post-load
     /// engine install).
     #[cfg(test)]
-    fn install_engine_for_test(&self, db: Arc<EmbeddedCatDb>) {
+    pub(crate) fn install_engine_for_test(&self, db: Arc<EmbeddedCatDb>) {
         let _ = self.engine.set(db);
+    }
+
+    /// Test helper: install `store` as this epoch's proposal store.
+    #[cfg(test)]
+    pub(crate) fn install_proposals_for_test(&self, store: Arc<ProposalStore>) {
+        let _ = self.proposals.set(store);
     }
 
     /// THE choke-point. The single identity re-check every command / engine
@@ -405,6 +423,19 @@ pub(crate) fn db_path_under(base: &Path, canonical_root: &Path) -> PathBuf {
     base.join("workspaces").join(hash).join("catdb.db")
 }
 
+/// The overlay **proposal** store for the index at `db_path`: a sibling file,
+/// `proposals.db`, in the same per-workspace directory.
+///
+/// Deliberately a separate database, not a table inside the index. The index
+/// holds facts the corpus mechanically implies; this holds claims a human has
+/// not ruled on yet. Keeping them in one file would invite exactly the
+/// conflation the approval model exists to prevent — and a reviewer's pending
+/// decisions must survive an index rebuild, which drops and recreates the
+/// other file's contents.
+pub(crate) fn proposals_path_beside(db_path: &Path) -> PathBuf {
+    db_path.with_file_name("proposals.db")
+}
+
 /// Whether the deterministic [`HashEmbedder`] dev/CI escape hatch is engaged
 /// (`MDREADER_DEV_HASH_EMBED` is present in the environment). Off by default, so
 /// the shipping app builds the real semantic model.
@@ -427,14 +458,28 @@ async fn build_embedder() -> Result<Arc<dyn Embedder>, String> {
     Ok(Arc::new(embedder) as Arc<dyn Embedder>)
 }
 
-/// Open (creating if needed) the engine at `db_path`, composed with the MDReader
-/// domain and `embedder`.
-fn open_engine(db_path: &Path, embedder: Arc<dyn Embedder>) -> Result<Arc<EmbeddedCatDb>, String> {
+/// Open (creating if needed) the engine at `db_path` and the overlay proposal
+/// store beside it, composed with the MDReader domain and `embedder`.
+///
+/// The two are opened together and returned together because ingest writes to
+/// both: the index gets the corpus, the proposal store gets what the overlay
+/// extractors *propose* over it. Nothing extraction produces is asserted into
+/// the graph here — the engine would refuse it, and rightly, until a human
+/// approves it through [`crate::overlay::approve_fact`].
+fn open_engine(
+    db_path: &Path,
+    embedder: Arc<dyn Embedder>,
+) -> Result<(Arc<EmbeddedCatDb>, Arc<ProposalStore>), String> {
+    let proposals = Arc::new(
+        ProposalStore::open(proposals_path_beside(db_path))
+            .map_err(|err| format!("open proposal store: {err}"))?,
+    );
     let mut config = EngineConfig::new(db_path, embedder).with_actor("mdreader-app");
-    config.domains = vec![registration()];
-    EmbeddedCatDb::open(config)
+    config.domains = vec![registration_with_proposals(Arc::clone(&proposals))];
+    let db = EmbeddedCatDb::open(config)
         .map(Arc::new)
-        .map_err(|err| format!("open index: {err}"))
+        .map_err(|err| format!("open index: {err}"))?;
+    Ok((db, proposals))
 }
 
 /// Run the (blocking, possibly downloading) embedder construction under a
@@ -492,9 +537,14 @@ async fn ensure_engine(
         return Ok(None);
     }
 
-    let db = open_engine(&db_path, embedder)?;
-    // Install into THIS epoch's slot (idempotent; a coalesced racer that beat us
-    // wins and we adopt its engine).
+    let (db, proposals) = open_engine(&db_path, embedder)?;
+    // Install into THIS epoch's slots (idempotent; a coalesced racer that beat
+    // us wins and we adopt its engine). The store goes in FIRST, so no reader
+    // can ever see an installed engine with no proposal store beside it. If a
+    // racer then wins the engine slot, the two handles are still two
+    // connections to the SAME file — the pair cannot point at different
+    // workspaces, because both are derived from this epoch's `db_path`.
+    let _ = epoch.proposals.set(proposals);
     match epoch.engine.set(Arc::clone(&db)) {
         Ok(()) => Ok(Some(db)),
         Err(_) => Ok(epoch.engine.get().map(Arc::clone)),
@@ -1011,6 +1061,7 @@ fn heading_line(
 mod tests {
     use super::*;
     use catdb_storage::DocumentRow;
+    use mdreader_ingest::registration;
     use std::fs;
     use tempfile::TempDir;
     use uuid::Uuid;

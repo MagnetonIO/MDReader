@@ -132,6 +132,85 @@ export const commands = {
 	 *  until the import lands. Epoch-guarded like [`search`].
 	 */
 	related: (docPath: string, limit: number) => typedError<RelatedDocDto[], string>(__TAURI_INVOKE("related", { docPath, limit })),
+	/**
+	 *  One hybrid pass with the full score breakdown attached to every hit — the
+	 *  **Query Explanation** surface's read.
+	 *
+	 *  It is [`search`]'s second phase with `explain` forced on and no channel:
+	 *  the same engine call, the same [`ExplainDto`], surfaced as a plain
+	 *  request/response because an explanation panel has nothing to stream. Each
+	 *  hit carries its lexical and semantic ranks, the fused RRF score, every
+	 *  boost's recorded contribution, the final ordering key, the index version
+	 *  and embedding model the semantic arm used, and the
+	 *  chunk → section → document → file → source provenance chain.
+	 *
+	 *  Before the engine is installed (no import yet) the list is honestly empty.
+	 *  Epoch-guarded like [`search`].
+	 */
+	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
+	/**
+	 *  Every schema registered into this workspace's engine, with live counts of
+	 *  what the graph and the proposal store hold for each.
+	 *
+	 *  Before the engine is installed (no import yet) the shape is still complete
+	 *  — the schemas are known from the registration — and the counts are `0`,
+	 *  which is the truth rather than a placeholder.
+	 */
+	listSchemas: () => typedError<SchemaSummary[], string>(__TAURI_INVOKE("list_schemas")),
+	/**
+	 *  The corpus projected through one schema: its committed objects (with
+	 *  provenance) and typed edges.
+	 *
+	 *  This is the *graph*, not the proposal store — so for an overlay it shows
+	 *  exactly the facts a human approved, which is what "the semantic view of
+	 *  this corpus" means. `limit` caps the object list; [`Projection::truncated`]
+	 *  says whether it bit.
+	 */
+	projectCorpus: (schema: string, limit: number) => typedError<Projection, string>(__TAURI_INVOKE("project_corpus", { schema, limit })),
+	/**
+	 *  Introspect one registered schema: entities with their attributes, arrows
+	 *  with domain and codomain, and the path equations it imposes.
+	 */
+	describeSchema: (schema: string) => typedError<SchemaDetail, string>(__TAURI_INVOKE("describe_schema", { schema })),
+	/**
+	 *  The extracted facts derived from a span of a document — every object and
+	 *  typed morphism whose cited range overlaps `query`'s selection.
+	 *
+	 *  Each carries its full derivation record (file, lines, content hash,
+	 *  schema version, extractor, confidence), the rule that fired, its approval
+	 *  state and reviewer, and whether it is currently in the graph.
+	 */
+	inspectSpan: (query: SpanQuery) => typedError<InspectedFact[], string>(__TAURI_INVOKE("inspect_span", { query })),
+	/**
+	 *  Accept a proposed fact and promote it into the overlay graph.
+	 *
+	 *  The promotion runs through `Extraction::approved_operations` — the only
+	 *  method that yields engine operations, and only for facts a human accepted
+	 *  — so the engine's approval check passes because the fact genuinely *was*
+	 *  approved, with `reviewer` stamped on its provenance.
+	 *
+	 *  A blank reviewer is refused here rather than at the engine: a
+	 *  whitespace-only name counts as unapproved, so accepting it would produce a
+	 *  confusing rejection two layers down.
+	 */
+	approveFact: (factId: string, reviewer: string) => typedError<ApprovalOutcomeDto, string>(__TAURI_INVOKE("approve_fact", { factId, reviewer })),
+	/**
+	 *  Reject a fact, and retract it if a previous approval had already committed
+	 *  it.
+	 *
+	 *  Rejecting an approved object cascades to every approved morphism it
+	 *  anchors: an edge whose endpoint a human ruled out cannot stand.
+	 */
+	rejectFact: (factId: string, reviewer: string) => typedError<RejectionOutcomeDto, string>(__TAURI_INVOKE("reject_fact", { factId, reviewer })),
+	/**
+	 *  Run every registered schema's path equations over the committed graph and
+	 *  return the violations **as the engine located them** — schema, law, both
+	 *  paths, the offending object, and the markdown span it came from.
+	 *
+	 *  Nothing is re-rendered to prose: a violation that knows which line of which
+	 *  file caused it is the entire value of the surface.
+	 */
+	checkConstraints: () => typedError<ConstraintReport, string>(__TAURI_INVOKE("check_constraints")),
 };
 
 /** Events */
@@ -141,6 +220,19 @@ export const events = {
 };
 
 /* Types */
+/**  What approving a fact wrote. */
+export type ApprovalOutcomeDto = {
+	/**  The fact that was approved. */
+	fact_id: string,
+	/**
+	 *  Ids newly asserted into the overlay graph. More than one when
+	 *  approving an object also released morphisms it was the missing
+	 *  endpoint of; empty when the fact is an edge still waiting on an
+	 *  endpoint.
+	 */
+	promoted: string[],
+};
+
 /**  The recorded contribution of each ranking boost to a hit's score. */
 export type BoostsDto = {
 	/**  Title match (query terms in the heading breadcrumb's head). */
@@ -151,6 +243,14 @@ export type BoostsDto = {
 	recency: number | null,
 	/**  Graph proximity to a `linked-to:` document. */
 	graph: number | null,
+};
+
+/**  The result of running every registered schema's laws over the graph. */
+export type ConstraintReport = {
+	/**  How many schemas were checked. */
+	schemas_checked: number,
+	/**  Every violation found, unmodified. */
+	violations: ViolationDto[],
 };
 
 /**  The bytes of a document plus the provenance a conflict guard needs. */
@@ -184,6 +284,26 @@ export type ExplainDto = {
 	embedding_model: string | null,
 	/**  The provenance chain. */
 	provenance: ProvenanceDto,
+};
+
+/**  A fact's derivation record — every field the extractor stamped, unmodified. */
+export type FactProvenanceDto = {
+	/**  Repo-relative source file. */
+	file: string | null,
+	/**  First cited line (1-based, inclusive). */
+	start_line: number | null,
+	/**  Last cited line (1-based, inclusive). */
+	end_line: number | null,
+	/**  blake3 of exactly the lines the range names. */
+	content_hash: string | null,
+	/**  Version of the schema the fact is typed against. */
+	schema_version: string | null,
+	/**  Extractor id and version (e.g. `mdreader.decision@1`). */
+	extractor: string | null,
+	/**  Extractor confidence in `[0, 1]`. */
+	confidence: number | null,
+	/**  The reviewer stamped at approval time; `None` until a human accepts it. */
+	approved_by: string | null,
 };
 
 /**
@@ -257,12 +377,89 @@ export type ImportProgress = {
 	error: string | null,
 };
 
+/**
+ *  One extracted fact derived from a span of a document, with everything the
+ *  Inspector renders about it.
+ */
+export type InspectedFact = {
+	/**  The fact's id — the object id or the morphism id (uuid string). */
+	fact_id: string,
+	/**  `"object"` or `"morphism"`. */
+	kind: string,
+	/**  The overlay schema the fact is typed against. */
+	schema: string,
+	/**  Qualified entity (objects) or arrow (morphisms) name. */
+	name: string,
+	/**  The object's payload as compact JSON; `None` for a morphism. */
+	value: string | null,
+	/**  Source endpoint (uuid string); `None` for an object. */
+	source_id: string | null,
+	/**  Target endpoint (uuid string); `None` for an object. */
+	target_id: string | null,
+	/**  The rule that fired (e.g. `D1`), so a reviewer can see *why*. */
+	rule: string,
+	/**  Extractor id and version that proposed it. */
+	extractor: string,
+	/**  Full derivation record. */
+	provenance: FactProvenanceDto,
+	/**  `"proposed"`, `"approved"`, or `"rejected"`. */
+	state: string,
+	/**  Who set that state, when anyone has. */
+	reviewer: string | null,
+	/**
+	 *  Whether the fact is *actually* committed to the overlay graph right
+	 *  now — read from storage, not inferred from [`Self::state`].
+	 */
+	in_graph: boolean,
+};
+
 /**  Reply returned by [`ping`]. */
 export type PingResponse = {
 	/**  The message echoed back to the caller. */
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
+};
+
+/**
+ *  One typed edge in a projection.
+ *
+ *  It carries no provenance and no id: the engine's morphism read
+ *  (`morphisms_with_arrow_prefix`) returns `(arrow, source, target)` and
+ *  nothing else. Rather than invent the missing fields, the projection says
+ *  only what storage actually knows.
+ */
+export type ProjectedMorphism = {
+	/**  Qualified arrow name (e.g. `architecture_overlay.exposes`). */
+	arrow: string,
+	/**  Source object id (uuid string). */
+	source: string,
+	/**  Target object id (uuid string). */
+	target: string,
+};
+
+/**  One object in a projection of the corpus through a schema. */
+export type ProjectedObject = {
+	/**  Object id (uuid string). */
+	id: string,
+	/**  Qualified entity name (e.g. `decision_overlay.Decision`). */
+	entity: string,
+	/**  The object's payload, as compact JSON (specta has no `Value` type). */
+	value: string,
+	/**  Where the fact came from. */
+	provenance: FactProvenanceDto,
+};
+
+/**  The corpus seen through one schema. */
+export type Projection = {
+	/**  The schema projected through. */
+	schema: string,
+	/**  Its objects, ordered by entity then id. */
+	objects: ProjectedObject[],
+	/**  Its morphisms, ordered by arrow then endpoints. */
+	morphisms: ProjectedMorphism[],
+	/**  True when `limit` cut the object list short. */
+	truncated: boolean,
 };
 
 /**
@@ -282,6 +479,22 @@ export type ProvenanceDto = {
 	source_id: string | null,
 	/**  That source's root directory, if any. */
 	source_root: string | null,
+};
+
+/**  What rejecting a fact wrote. */
+export type RejectionOutcomeDto = {
+	/**  The fact that was rejected. */
+	fact_id: string,
+	/**
+	 *  Ids retracted from the overlay graph. Empty when the fact had never
+	 *  been approved — nothing was written, so nothing is undone.
+	 */
+	retracted: string[],
+	/**
+	 *  Morphisms rejected alongside an object rejection (an edge whose
+	 *  endpoint is rejected cannot stand).
+	 */
+	cascaded: string[],
 };
 
 /**  Per-component contributions behind a related score. */
@@ -344,6 +557,92 @@ export type SaveOutcome = {
 	 *  the anchor a subsequent forced overwrite (or a reload) re-bases onto.
 	 */
 	current_hash: string | null,
+};
+
+/**  One generating arrow, with its domain and codomain. */
+export type SchemaArrowDto = {
+	/**  Arrow name. */
+	name: string,
+	/**  Domain entity. */
+	dom: string,
+	/**  Codomain entity. */
+	cod: string,
+};
+
+/**  One attribute of an entity. */
+export type SchemaAttributeDto = {
+	/**  Attribute name. */
+	name: string,
+	/**  Typeside type of its values. */
+	ty: string,
+	/**  Whether it may be absent on a row. */
+	nullable: boolean,
+};
+
+/**  A registered schema, fully introspected. */
+export type SchemaDetail = {
+	/**  Schema name. */
+	name: string,
+	/**  Typeside type names the attributes draw from, sorted. */
+	typeside: string[],
+	/**  Entities with their attributes. */
+	entities: SchemaEntityDto[],
+	/**  Generating arrows with domain and codomain. */
+	arrows: SchemaArrowDto[],
+	/**  Path equations. */
+	equations: SchemaEquationDto[],
+	/**  Whether the engine requires approval for facts in this schema. */
+	approval_required: boolean,
+};
+
+/**  One entity, with the attributes observed on it. */
+export type SchemaEntityDto = {
+	/**  Entity name (schema-local, as the schema declares it). */
+	name: string,
+	/**  Its attributes, sorted by name. */
+	attributes: SchemaAttributeDto[],
+};
+
+/**  One path equation the schema imposes. */
+export type SchemaEquationDto = {
+	/**  The law as the kernel renders it (`Dependency.via.exposes = Dependency.provider`). */
+	law: string,
+	/**  Entity both sides start at. */
+	start: string,
+	/**  Arrows composed on the left, in application order. */
+	lhs: string[],
+	/**  Arrows composed on the right, in application order. */
+	rhs: string[],
+};
+
+/**  One registered schema, as the **View As** picker lists it. */
+export type SchemaSummary = {
+	/**  Schema name (e.g. `decision_overlay`). */
+	name: string,
+	/**  Its entities, sorted. */
+	entities: string[],
+	/**  How many generating arrows it declares. */
+	arrow_count: number,
+	/**  How many attributes it declares. */
+	attribute_count: number,
+	/**  How many path equations (laws) it imposes. */
+	equation_count: number,
+	/**
+	 *  Whether the engine requires human approval before a fact may be
+	 *  asserted into this schema — true exactly for the overlays.
+	 */
+	approval_required: boolean,
+	/**
+	 *  How many objects of this schema are currently committed to the graph.
+	 *  For an approval-required schema this is the count of *approved* facts,
+	 *  because nothing else can be in there.
+	 */
+	object_count: number,
+	/**
+	 *  How many claims the proposal store holds for this schema, in any review
+	 *  state. Always `0` for a schema that carries no reviewable assertions.
+	 */
+	proposal_count: number,
 };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
@@ -413,6 +712,63 @@ export type SearchQuery = {
 	lexical_only: boolean,
 	/**  Attach the full [`HitExplain`] breakdown to every hit. */
 	explain: boolean,
+};
+
+/**  A source span, exactly as the engine located it. */
+export type SourceSpanDto = {
+	/**  Repo-relative file. */
+	file: string,
+	/**  First line (1-based, inclusive). */
+	start_line: number | null,
+	/**  Last line (1-based, inclusive). */
+	end_line: number | null,
+	/**  blake3 of exactly those lines. */
+	content_hash: string | null,
+};
+
+/**
+ *  A document span to inspect. Absolute path (the shape the reader holds) plus
+ *  an inclusive 1-based line range; a fact is returned when its cited span
+ *  **overlaps** the range.
+ */
+export type SpanQuery = {
+	/**  Absolute path of the document, inside the granted workspace. */
+	path: string,
+	/**  First line of the selection (1-based, inclusive). */
+	start_line: number,
+	/**  Last line of the selection (1-based, inclusive). */
+	end_line: number,
+};
+
+/**  An object named by a violation. */
+export type ViolatingObjectDto = {
+	/**  Object id (uuid string). */
+	id: string,
+	/**  Qualified entity name. */
+	entity: string,
+	/**  The markdown the object was derived from, when it carries a span. */
+	source: SourceSpanDto | null,
+};
+
+/**  One violated law, field for field from the engine. */
+export type ViolationDto = {
+	/**  The schema whose law failed. */
+	schema: string,
+	/**  The law, as the kernel renders it. */
+	law: string,
+	/**  Arrows composed on the left. */
+	lhs_path: string[],
+	/**  Arrows composed on the right. */
+	rhs_path: string[],
+	/**  The object the two paths disagree on — located in the markdown. */
+	subject: ViolatingObjectDto,
+	/**
+	 *  Where the left path lands; `None` when a morphism on that side is
+	 *  missing, which is itself the failure.
+	 */
+	lhs: ViolatingObjectDto | null,
+	/**  Where the right path lands; `None` as above. */
+	rhs: ViolatingObjectDto | null,
 };
 
 /**
