@@ -65,7 +65,11 @@ if [[ ! -d "$E2E_DIR/node_modules/webdriverio" ]]; then
   (cd "$E2E_DIR" && npm install)
 fi
 # Install the mac2 driver into the local APPIUM_HOME if it isn't already there.
-if ! (cd "$E2E_DIR" && npx appium driver list --installed 2>/dev/null | grep -q 'mac2'); then
+# `appium driver list` writes its inventory to STDERR, so the probe must read
+# both streams — reading stdout alone always looked empty and made every run
+# after the first attempt a reinstall, which errors out ("already installed")
+# and, under `set -e`, killed the smoke before it launched anything.
+if ! (cd "$E2E_DIR" && npx appium driver list --installed 2>&1 | grep -q 'mac2'); then
   (cd "$E2E_DIR" && npx appium driver install mac2)
 fi
 

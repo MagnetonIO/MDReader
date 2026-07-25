@@ -40,6 +40,15 @@ export class WebviewAdapter implements PlatformDriver {
   readonly windowOps = false;
   readonly windowPendingReason: string;
   readonly frameOracle = false;
+  // The lens surfaces ARE in this leg's DOM and a WebDriver session could drive
+  // them — but no run has exercised them here yet, and advertising a capability
+  // that has never been demonstrated is how a suite goes green somewhere the
+  // product does not live. Declared false so the runner registers those steps
+  // PENDING with this reason, which keeps the coverage boundary visible instead
+  // of implied. The macOS leg is the acceptance evidence today.
+  readonly semanticOps = false;
+  readonly semanticPendingReason =
+    'the P7 semantic surfaces are asserted on the macOS (mac2/AX) leg; this WebDriver leg has not been exercised against them yet';
 
   private readonly b: WebdriverIO.Browser;
   private readonly activateFn?: (browser: WebdriverIO.Browser) => Promise<void>;

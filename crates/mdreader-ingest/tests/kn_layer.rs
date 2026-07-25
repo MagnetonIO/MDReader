@@ -349,7 +349,7 @@ async fn fixture_corpus_concepts_extract_and_equations_hold() {
     let counts = kn_counts(&engine);
     assert_eq!(
         counts.get("kn.Artifact").copied().unwrap_or(0),
-        45,
+        49,
         "every fixture document is an artifact"
     );
     assert!(counts.get("kn.ArtifactConcept").copied().unwrap_or(0) >= 4);

@@ -29,6 +29,11 @@
   { "path": "docs/guides/mermaid-flowchart.md", "features": ["frontmatter", "mermaid", "relative-link"] },
   { "path": "docs/guides/mermaid-sequence.md", "features": ["frontmatter", "mermaid", "relative-link"] },
 
+  { "path": "docs/arch/catdb-core.md", "features": ["frontmatter", "architecture-component", "architecture-interface", "deep-headings"] },
+  { "path": "docs/arch/catdb-engine.md", "features": ["frontmatter", "architecture-component", "architecture-interface", "architecture-dependency", "wikilink-heading"] },
+  { "path": "docs/arch/broken-app.md", "features": ["frontmatter", "architecture-component", "architecture-dependency", "law-violation", "wikilink-heading"] },
+  { "path": "docs/arch/mdreader-app.md", "features": ["frontmatter", "architecture-component", "architecture-dependency", "wikilink-heading"] },
+
   { "path": "docs/reference/headings-deep.md", "features": ["frontmatter", "deep-headings"] },
   { "path": "docs/reference/headings-duplicate.md", "features": ["frontmatter", "duplicate-headings"] },
   { "path": "docs/reference/headings-start-h3.md", "features": ["frontmatter", "start-h3"] },

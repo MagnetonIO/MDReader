@@ -19,6 +19,17 @@
 //                                          line.
 //   axquery headings <pid>              — print the text of every AXHeading, one
 //                                          per line (a rendered <h1..h6>).
+//   axquery frame    <pid> <cssClass> <nth> [substring]
+//                                       — print `x y w h` (screen coordinates,
+//                                          top-left origin) of the <nth>
+//                                          (0-based, document order) element
+//                                          whose class list contains <cssClass>
+//                                          and whose own subtree text contains
+//                                          <substring>, when given. Exits 4 when
+//                                          there is no such element — a MISSING
+//                                          control is not a zero-size one, and a
+//                                          caller must never click an invented
+//                                          point.
 //
 // Reads only; never mutates the UI. Requires the controlling process to hold the
 // Accessibility (TCC) permission.
@@ -36,6 +47,10 @@
 //      `0` and exit 0 in this case — a broken read must never masquerade as
 //      "count 0 / not found". The distinct `AX_READ_ERROR:` marker goes to
 //      stderr and the nonzero exit makes the TS side THROW.
+//   4  `frame` found no such element (or it has no position/size). Distinct
+//      from 3 so a caller can say "that control is not on screen" rather than
+//      "the AX read broke", and distinct from 0 so it can never be mistaken for
+//      a usable rectangle.
 import ApplicationServices
 import Foundation
 
@@ -86,10 +101,24 @@ func nodeText(_ el: AXUIElement) throws -> String {
         .joined(separator: " ")
 }
 
+/// The element's screen rectangle, or nil when WebKit publishes neither
+/// attribute for it (an off-screen / unrendered node).
+func frame(_ el: AXUIElement) throws -> CGRect? {
+    guard let positionValue = try attr(el, kAXPositionAttribute as String),
+        let sizeValue = try attr(el, kAXSizeAttribute as String)
+    else { return nil }
+    var origin = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &origin),
+        AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+    else { return nil }
+    return CGRect(origin: origin, size: size)
+}
+
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[2]) else {
     FileHandle.standardError.write(
-        "usage: axquery count|text|headings <pid> [cssClass]\n".data(using: .utf8)!)
+        "usage: axquery count|text|headings|frame <pid> [cssClass] [nth] [substring]\n".data(using: .utf8)!)
     exit(2)
 }
 let app = AXUIElementCreateApplication(pid_t(pid))
@@ -144,9 +173,45 @@ do {
         try walk(app)
         print(lines.joined(separator: "\n"))
 
+    case "frame":
+        guard args.count >= 5, let nth = Int(args[4]), nth >= 0 else { exit(2) }
+        let cls = args[3]
+        // Optional substring filter over the candidate's own subtree text, so a
+        // caller can say "the jump button that cites catdb-core.md" instead of
+        // guessing an ordinal that shifts whenever the report changes.
+        let needle = args.count > 5 ? args[5] : ""
+        var matches: [AXUIElement] = []
+        func subtreeText(_ el: AXUIElement) throws -> String {
+            var lines: [String] = []
+            func collect(_ node: AXUIElement) throws {
+                let text = try nodeText(node)
+                if !text.isEmpty { lines.append(text) }
+                for child in try children(node) { try collect(child) }
+            }
+            try collect(el)
+            return lines.joined(separator: " ")
+        }
+        func walk(_ el: AXUIElement) throws {
+            if try classList(el).contains(cls) {
+                if try needle.isEmpty || subtreeText(el).contains(needle) { matches.append(el) }
+            }
+            for child in try children(el) { try walk(child) }
+        }
+        try walk(app)
+        // FAIL CLOSED: no such element, or one the window server places
+        // nowhere, is exit 4 — never a fabricated rectangle the caller would
+        // then click.
+        guard nth < matches.count, let rect = try frame(matches[nth]) else {
+            FileHandle.standardError.write(
+                "AX_NO_ELEMENT: \(cls)[\(nth)] matching \(needle.isEmpty ? "<any>" : needle) "
+                    .appending("— \(matches.count) candidate(s)\n").data(using: .utf8)!)
+            exit(4)
+        }
+        print("\(Int(rect.origin.x)) \(Int(rect.origin.y)) \(Int(rect.width)) \(Int(rect.height))")
+
     default:
         FileHandle.standardError.write(
-            "usage: axquery count|text|headings <pid> [cssClass]\n".data(using: .utf8)!)
+            "usage: axquery count|text|headings|frame <pid> [cssClass] [nth] [substring]\n".data(using: .utf8)!)
         exit(2)
     }
 } catch let error as AXReadError {

@@ -79,6 +79,18 @@ export interface PlatformDriver {
    *  frame-diff visual oracle? Only the macOS leg does (screencapture); the
    *  WebDriver DOM legs assert the DOM directly and need no pixel corroboration. */
   readonly frameOracle: boolean;
+  /** Can this driver drive AND rigorously assert the P7 semantic surfaces
+   *  (View As, Semantic Inspector, Constraint Explorer, Query Explanation)?
+   *  They need two primitives beyond the class counts the base contract has:
+   *  clicking a specific in-webview control located by what it SAYS
+   *  ({@link clickIn}) and reading the text under one class
+   *  ({@link scopedText}). True on the macOS mac2 leg (AX frames +
+   *  `macos: click`); false elsewhere until that leg is exercised, and then the
+   *  runner registers those steps PENDING with {@link semanticPendingReason}
+   *  rather than skipping them silently. */
+  readonly semanticOps: boolean;
+  /** Why the semantic steps are pending, when {@link semanticOps} is false. */
+  readonly semanticPendingReason?: string;
 
   /** Bring the app to front / make its window key — the precondition for both
    *  keystrokes to land and (on macOS) an unoccluded capture. */
@@ -109,10 +121,25 @@ export interface PlatformDriver {
 
   // ---- input ----
 
-  /** Send a shell chord (`Mod+P`, `Mod+K`, `Enter`, `Escape`) to the focused UI. */
+  /** Send a shell chord (`Mod+P`, `Mod+K`, `Enter`, `Escape`, `Mod+Shift+…`)
+   *  to the focused UI. */
   chord(chord: Chord): Promise<void>;
   /** Type literal text into the focused input. */
   type(text: string): Promise<void>;
+
+  // ---- P7 semantic surfaces (only meaningful when semanticOps === true) ----
+
+  /** Text under every element carrying `cssClass`. Same fail-closed rule as the
+   *  other reads: a broken read THROWS, only a successful empty one returns "". */
+  scopedText?(cssClass: string): Promise<string>;
+  /** Click the first element carrying `cssClass` whose own text contains
+   *  `contains` (when given). MUST throw when there is no such element — a
+   *  control that is not there is never a click at an estimated point. */
+  clickIn?(cssClass: string, contains?: string): Promise<void>;
+  /** Double-click inside the `nth` element carrying `cssClass`, selecting a word
+   *  — the genuine text selection the Semantic Inspector reads a passage from
+   *  (a bare click yields no selection and no claims). Throws when absent. */
+  doubleClickIn?(cssClass: string, nth: number): Promise<void>;
 
   // ---- NATIVE window context (only meaningful when windowOps === true) ----
 
