@@ -45,6 +45,17 @@ function indexIndicator(
       title: 'Building the search index',
     };
   }
+  if (phase === 'reembedding') {
+    // Its own label: this pass re-embeds every file, not just what changed, so
+    // "Indexing N files…" would understate how long it takes.
+    const total = importState?.filesTotal ?? 0;
+    return {
+      label: total > 0 ? `Re-embedding ${total.toLocaleString()} files…` : 'Re-embedding…',
+      busy: true,
+      title:
+        'The embedding model changed, so every file is being embedded again — a one-time pass. Search keeps using the previous index until it finishes.',
+    };
+  }
   if (phase === 'error') {
     return {
       label: 'Index failed',

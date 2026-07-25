@@ -44,6 +44,14 @@
 //! `done` (or the message on `error`). Finer streaming would need engine
 //! changes, which are out of this lane's scope.
 //!
+//! One import is not like the others, though, and says so: when the workspace
+//! was embedded by a *different* model than the one now configured, the engine
+//! rotates the index — re-embedding the entire corpus, a one-time cost
+//! proportional to the workspace rather than to what changed on disk. That pass
+//! publishes the distinct `"reembedding"` phase (see
+//! [`EmbeddedCatDb::pending_model_rotation`]) so the StatusBar can say what is
+//! actually happening instead of an understated `Indexing N files…`.
+//!
 //! ## Workspace epoch (the revocation barrier)
 //!
 //! Switching workspaces is a *revocation barrier*, not a set of independent
@@ -266,7 +274,9 @@ impl Drop for ActiveGuard {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ImportProgress {
     /// `"idle"` (no import yet), `"loading"` (constructing/downloading the
-    /// embedding model), `"importing"` (in flight), `"done"`, or `"error"`.
+    /// embedding model), `"importing"` (in flight), `"reembedding"` (in
+    /// flight, and re-embedding the whole workspace because the embedding
+    /// model changed), `"done"`, or `"error"`.
     pub phase: String,
     /// Files processed so far (equals `files_total` on `done`; the atomic import
     /// gives no intermediate count).
@@ -307,6 +317,20 @@ impl ImportProgress {
     fn importing(files_total: u32) -> Self {
         Self {
             phase: "importing".to_string(),
+            files_done: 0,
+            files_total,
+            chunks_embedded: 0,
+            error: None,
+        }
+    }
+
+    /// The same in-flight pass, reported as what it actually is: the embedding
+    /// model changed, so the engine rotates the index and every file is
+    /// embedded again. Its own phase because the ordinary `importing` label
+    /// would understate a corpus-sized, one-time cost.
+    fn reembedding(files_total: u32) -> Self {
+        Self {
+            phase: "reembedding".to_string(),
             files_done: 0,
             files_total,
             chunks_embedded: 0,
@@ -551,6 +575,23 @@ async fn ensure_engine(
     }
 }
 
+/// The progress a starting import should publish: the ordinary `importing`
+/// phase, or the distinct `reembedding` phase when this workspace's index was
+/// built by a different embedding model and the engine is about to rotate it
+/// (re-embedding every file — see the module docs on progress granularity).
+///
+/// The rotation question is asked of the engine, which answers with the same
+/// comparison its import then makes, so the label cannot claim a rotation the
+/// import does not perform. A failed probe is not itself an import failure:
+/// it falls back to the ordinary label and lets the import surface any real
+/// error.
+async fn starting_progress(db: &EmbeddedCatDb, total: u32) -> ImportProgress {
+    match db.pending_model_rotation().await {
+        Ok(Some(_)) => ImportProgress::reembedding(total),
+        Ok(None) | Err(_) => ImportProgress::importing(total),
+    }
+}
+
 /// Record `progress` into `epoch`'s own status slot and, while the epoch is
 /// still current, stream it on the import channel (a closed channel is ignored —
 /// the frontend also gets the final value from `start_import`'s return). A stale
@@ -665,7 +706,7 @@ pub async fn start_import(
         &epoch,
         &workspace,
         &on_event,
-        ImportProgress::importing(total),
+        starting_progress(&db, total).await,
     );
 
     // The engine serializes imports internally (single-writer); a concurrent
@@ -1190,6 +1231,67 @@ mod tests {
         let line = heading_line(&db, guide_id, "Deep Dive").unwrap();
         assert_eq!(line, Some(5));
         assert_eq!(heading_line(&db, guide_id, "nope").unwrap(), None);
+    }
+
+    /// The reported bug's user-visible half: a workspace embedded by another
+    /// model is not merely re-indexed, it is re-embedded end to end, and the
+    /// StatusBar must be told so rather than shown a generic `Indexing N
+    /// files…`.
+    ///
+    /// Revert-RED: have `starting_progress` always return
+    /// `ImportProgress::importing(total)` and the phase assertion below fails
+    /// with `reembedding` vs `importing`.
+    #[test]
+    fn a_workspace_embedded_by_another_model_starts_in_the_reembedding_phase() {
+        use catdb_catalog::{IndexState, IndexVersionRow};
+        use catdb_storage::CatalogStorage;
+
+        let corpus = TempDir::new().unwrap();
+        let root = fs::canonicalize(corpus.path()).unwrap();
+        fs::write(root.join("guide.md"), "# Guide\n\nIntro.\n").unwrap();
+        let data = TempDir::new().unwrap();
+        let db_path = data.path().join("catdb.db");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
+        let (db, _proposals) = open_engine(&db_path, embedder).expect("open engine");
+        rt.block_on(db.import(&root, ImportOptions::default()))
+            .expect("import corpus");
+
+        // The ordinary pass keeps the ordinary label.
+        assert_eq!(rt.block_on(starting_progress(&db, 7)).phase, "importing");
+
+        // Manufacture the reported situation through the storage lifecycle:
+        // the ACTIVE version was embedded by a different model at the same
+        // width (staged -> built -> flipped, the only legal route in).
+        let active = rt
+            .block_on(db.store().active_index_version())
+            .unwrap()
+            .unwrap();
+        let other = IndexVersionRow {
+            id: Uuid::new_v4(),
+            embedding_model: "some-other-model/v1".to_string(),
+            dim: active.dim,
+            chunker_version: active.chunker_version.clone(),
+            state: IndexState::Staged,
+        };
+        rt.block_on(db.store().put_index_version(other.clone()))
+            .unwrap();
+        rt.block_on(db.store().mark_index_built(other.id)).unwrap();
+        db.store().activate_index_version_now(other.id).unwrap();
+
+        let progress = rt.block_on(starting_progress(&db, 7));
+        assert_eq!(
+            progress.phase, "reembedding",
+            "a model change reports itself instead of an understated index pass"
+        );
+        assert_eq!(
+            progress.files_total, 7,
+            "the file total still drives the spinner"
+        );
     }
 
     /// A canonicalized temp workspace root.

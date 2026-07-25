@@ -25,6 +25,31 @@ describe('StatusBar index indicator', () => {
     expect(container.querySelector('.statusbar__spinner')).not.toBeNull();
   });
 
+  test('a model change is reported as a re-embed, not a generic index pass', () => {
+    const { container } = render(
+      <StatusBar
+        words={null}
+        watcher="watching"
+        fileCount={1200}
+        fromIndex={true}
+        importState={{
+          phase: 'reembedding',
+          filesDone: 0,
+          filesTotal: 1200,
+          chunks: 0,
+          error: null,
+        }}
+      />,
+    );
+    const label = screen.getByText(/Re-embedding 1,200 files/);
+    expect(label).toBeTruthy();
+    // And it says WHY, so a long pass is not mistaken for a stuck one.
+    expect(label.closest('span')?.getAttribute('title')).toMatch(/embedding model changed/);
+    expect(container.querySelector('.statusbar__spinner')).not.toBeNull();
+    // It is not a failure: no Retry affordance.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
   test('while loading the model it shows a spinner and a loading label', () => {
     const { container } = render(
       <StatusBar

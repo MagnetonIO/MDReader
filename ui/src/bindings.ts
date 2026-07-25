@@ -513,7 +513,9 @@ export type FsChanged = {
 export type ImportProgress = {
 	/**
 	 *  `"idle"` (no import yet), `"loading"` (constructing/downloading the
-	 *  embedding model), `"importing"` (in flight), `"done"`, or `"error"`.
+	 *  embedding model), `"importing"` (in flight), `"reembedding"` (in
+	 *  flight, and re-embedding the whole workspace because the embedding
+	 *  model changed), `"done"`, or `"error"`.
 	 */
 	phase: string,
 	/**
