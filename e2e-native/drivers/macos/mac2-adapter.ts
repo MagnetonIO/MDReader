@@ -21,6 +21,13 @@
  * `AXDOMClassList`), against the SAME app process the session drives (by pid). The
  * before/after `screencapture` frame oracle corroborates each interaction step.
  *
+ * Clicking INSIDE the webview goes through {@link Mac2Adapter.reveal}, because an
+ * AX rectangle is not a click target: WebKit reports where an element is laid
+ * out even when its scroll container has it out of view, and clicking that point
+ * hits whatever is painted there (for a sheet, the backdrop — which closes it).
+ * So the point is hit-tested first, and a control that is out of view is
+ * scrolled into view the way a user would before it is clicked at all.
+ *
  * READ-PATH FAULTS (RED proof the AX reads fail closed) are owned here, matching
  * the bespoke smoke:
  *   - `jump-closure-error`  — the palette-closure read spawns a MISSING axquery
@@ -44,7 +51,7 @@ import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 
 import type { Chord } from '../../flows.ts';
-import { makeAx, type Ax } from '../ax-helper.ts';
+import { AxNotHittable, makeAx, type Ax, type AxPoint, type AxSelector } from '../ax-helper.ts';
 import { faulted, type DragOrigin, type FrameToken, type PlatformDriver, type Rect } from '../types.ts';
 
 /** Fraction of sampled frame bytes that must change between BEFORE and AFTER for
@@ -62,6 +69,16 @@ const CMD = 16;
 /** XCUIKeyModifierFlags.shift (1 << 1) — the `Mod+Shift+…` semantic chords. */
 const SHIFT = 2;
 
+/** How many scroll gestures {@link Mac2Adapter.reveal} will spend bringing a
+ *  control into view before it gives up and FAILS the step. Six wheel notches of
+ *  {@link SCROLL_NOTCH} cover ~360pt of overflow — more than any of the app's
+ *  sheets can hide — and a bounded loop can never become a silent hang. */
+const REVEAL_TRIES = 6;
+
+/** Points of content one reveal gesture scrolls. Measured on this app: mac2's
+ *  `deltaY` is 1pt per unit, so a notch of 60 moves a sheet by ~60pt. */
+const SCROLL_NOTCH = 60;
+
 /** A capture anomaly (blank / wrong-size / undecodable frame) — distinct from a
  *  genuine below-threshold diff. Retried; if it persists the step FAILS. */
 class FrameAnomaly extends Error {}
@@ -75,8 +92,17 @@ export interface Mac2AdapterOptions {
   pid: number;
   /** Path to the compiled `axquery` binary. */
   axBin: string;
+  /** Path to the compiled `keypost` binary — the chord-delivery fallback. */
+  keyBin: string;
   /** Directory to write frame-oracle captures into. */
   artifacts: string;
+}
+
+/** The shared `Chord` vocabulary in `keypost`'s notation. */
+function keypostChord(chord: Chord): string {
+  if (chord === 'Enter') return 'enter';
+  if (chord === 'Escape') return 'escape';
+  return chord.toLowerCase().replace('mod', 'cmd');
 }
 
 export class Mac2Adapter implements PlatformDriver {
@@ -93,6 +119,7 @@ export class Mac2Adapter implements PlatformDriver {
   private readonly bundleId: string;
   private readonly pid: number;
   private readonly axBin: string;
+  private readonly keyBin: string;
   private readonly artifacts: string;
   private readonly ax: Ax;
   private shotSeq = 0;
@@ -102,6 +129,7 @@ export class Mac2Adapter implements PlatformDriver {
     this.bundleId = o.bundleId;
     this.pid = o.pid;
     this.axBin = o.axBin;
+    this.keyBin = o.keyBin;
     this.artifacts = o.artifacts;
     this.ax = makeAx(o.axBin, o.pid);
   }
@@ -175,6 +203,13 @@ export class Mac2Adapter implements PlatformDriver {
     await this.b.execute('macos: keys', { keys });
   }
 
+  async chordDirect(chord: Chord): Promise<void> {
+    // `execFileSync` throws on a nonzero exit, so an unmappable chord FAILS the
+    // step instead of quietly posting nothing (keypost exits 2).
+    execFileSync(this.keyBin, [String(this.pid), keypostChord(chord)]);
+    await sleep(400);
+  }
+
   async type(text: string): Promise<void> {
     await this.b.execute('macos: keys', { keys: [...text].map((c) => ({ key: c })) });
   }
@@ -186,27 +221,73 @@ export class Mac2Adapter implements PlatformDriver {
   }
 
   async clickIn(cssClass: string, contains?: string): Promise<void> {
-    // `ax.frame` THROWS when no such element exists (axquery exits 4), so a
-    // control that is not on screen can never become a click at a guessed
-    // point — the step fails naming what it could not find.
-    const rect = this.ax.frame(cssClass, 0, contains);
-    await this.b.execute('macos: click', {
-      x: Math.round(rect.x + rect.w / 2),
-      y: Math.round(rect.y + rect.h / 2),
-    });
+    const point = await this.reveal(cssClass, contains);
+    await this.b.execute('macos: click', point);
     await sleep(350);
   }
 
-  async doubleClickIn(cssClass: string, nth: number): Promise<void> {
-    const rect = this.ax.frame(cssClass, nth);
+  async doubleClickText(text: string): Promise<void> {
+    // Addressed by the words it renders, because the reading column's blocks
+    // carry no class the AX tree publishes (see `axquery.swift`'s SELECTORS).
+    const point = await this.reveal(`text:${text}`);
     // A double-click selects a word. That is a REAL DOM selection — which is
     // what the Semantic Inspector reads a passage from; a single click leaves
     // the selection collapsed and yields nothing.
-    await this.b.execute('macos: doubleClick', {
-      x: Math.round(rect.x + rect.w / 2),
-      y: Math.round(rect.y + Math.min(rect.h / 2, 12)),
-    });
+    await this.b.execute('macos: doubleClick', point);
     await sleep(350);
+  }
+
+  /**
+   * A point that genuinely hits the named control, scrolling the surface it
+   * lives on until it does.
+   *
+   * WebKit publishes an element's LAID-OUT rectangle whether or not it is
+   * inside its clipping ancestor, so a control scrolled below the fold reports
+   * a perfectly plausible frame that belongs, on screen, to whatever is painted
+   * there — for a modal, the backdrop, whose click dismisses the sheet. That
+   * failure is silent and it blames the wrong thing: the run reads "the lens is
+   * not in force" when what happened is that the picker was closed out from
+   * under it. So the click point comes from `ax.point`, which hit-tests before
+   * it answers, and this loop treats "not hittable" as an instruction to reveal
+   * the control the way a user would — point at the surface and scroll — rather
+   * than as permission to click anyway.
+   *
+   * FAILS CLOSED at both ends: a control that does not exist throws out of
+   * `ax.point` (axquery exit 4) on the first call, and one that never becomes
+   * hittable throws here naming what it is and where it is laid out. Neither is
+   * ever answered with a click at a guessed point.
+   */
+  private async reveal(selector: AxSelector, contains?: string): Promise<AxPoint> {
+    // Hit-testing only means anything against the frontmost app.
+    await this.focus();
+    let lastReason = '';
+    for (let attempt = 0; attempt <= REVEAL_TRIES; attempt++) {
+      try {
+        return this.ax.point(selector, 0, contains);
+      } catch (err) {
+        if (!(err instanceof AxNotHittable)) throw err;
+        lastReason = err.message;
+      }
+      // Where it is laid out says which way to scroll: a control below the
+      // window's middle is below the fold, one above it is above.
+      const rect = this.ax.frame(selector, 0, contains);
+      const window = await this.windowRect();
+      const down = rect.y + rect.h / 2 > window.y + window.h / 2;
+      await this.b.execute('macos: scroll', {
+        // Point INTO the surface that is hiding it — same column as the
+        // control, vertically in the middle of the window, which is inside the
+        // sheet/rail/reader doing the clipping.
+        x: Math.round(Math.min(Math.max(rect.x + rect.w / 2, window.x + 8), window.x + window.w - 8)),
+        y: Math.round(window.y + window.h / 2),
+        deltaX: 0,
+        deltaY: down ? -SCROLL_NOTCH : SCROLL_NOTCH,
+      });
+      await sleep(250);
+    }
+    throw new Error(
+      `could not bring ${selector}${contains === undefined ? '' : ` containing ${JSON.stringify(contains)}`} into view ` +
+        `after ${REVEAL_TRIES} scroll gestures — refusing to click a point that does not resolve to it. (${lastReason})`,
+    );
   }
 
   // ---- NATIVE window (mac2 execute-methods + XCUITest geometry) ----

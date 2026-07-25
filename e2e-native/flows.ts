@@ -306,6 +306,13 @@ export type Step =
       readonly id: string;
       readonly title: string;
       readonly channel: 'dom';
+      /** The passage to select, named by the words it renders — a double-click
+       *  lands on it and selects a word there. Addressed by its text rather
+       *  than by a block ordinal because the reading column's block wrappers
+       *  are generic `<div>`s that WebKit omits from the AX tree, so the macOS
+       *  leg has no class to reach them by; naming the passage is also what the
+       *  assertion below is about ("what was derived from THESE lines"). */
+      readonly selectText: string;
       /** Regex source the rail's text must match (a claim's rendered sentence). */
       readonly claimPattern: string;
       /** Regex source for the claim's citation back to the source. */
@@ -493,14 +500,22 @@ export const FLOW: readonly Step[] = [
     channel: 'dom',
     schema: 'architecture_overlay',
     // 12 committed objects for this corpus; the count is read live, so the
-    // pattern only insists it is a real, non-zero number.
-    bandPattern: 'architecture_overlay[\\s\\S]*[1-9]\\d* in the graph',
+    // pattern only insists it is a real, non-zero number. `\s+` and not a
+    // literal space because the count and its unit are separate text nodes:
+    // the DOM renders "12 in the graph", and macOS's AX tree hands the two
+    // nodes back on separate lines. Either way a zero interpretation still
+    // cannot satisfy it.
+    bandPattern: 'architecture_overlay[\\s\\S]*[1-9]\\d*\\s+in the graph',
   },
   {
     kind: 'inspectPassage',
     id: 'inspect-passage',
     title: 'The Semantic Inspector reports what was derived from the passage',
     channel: 'dom',
+    // The opening sentence of `docs/arch/broken-app.md` — the document on
+    // screen from the previous step, and the very passage the overlay's
+    // `Component` claim was extracted from.
+    selectText: 'Claims to depend on catdb-core',
     // broken-app.md yields a whole-file `Component` claim, approved by the
     // seeded reviewer, so the rail must show the claim AND that it is in force.
     claimPattern: 'Component',

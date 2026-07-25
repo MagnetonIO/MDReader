@@ -26,6 +26,22 @@ const SESSION_KEY = 'session';
 const SESSION_VERSION = 1;
 
 /**
+ * Every tauri-plugin-store file the app persists (`shell/persistence.ts`), and
+ * therefore everything {@link clearSeed} has to remove for a run to start from
+ * the product's real defaults.
+ *
+ * `settings.json` belongs on this list as much as `session.json` does, and
+ * leaving it off cost a lane a day: it carries `lensSchema`, so a workspace
+ * left with an interpretation in force hands the NEXT run an app that is
+ * already reading through that lens. The View As step then has nothing to
+ * adopt — the sheet opens on "Reading as this" — and the run fails claiming the
+ * lens never took effect, which is the opposite of what happened. It also
+ * carries `inspectorOpen` and `reviewer`, which the Inspector step toggles and
+ * signs.
+ */
+const STORE_FILES = ['session.json', 'settings.json'] as const;
+
+/**
  * The directory tauri-plugin-store resolves a bare store filename against — the
  * app's config dir for `identifier`.
  *
@@ -81,9 +97,11 @@ export async function seedWorkspace(identifier: string, rootAbs: string): Promis
 }
 
 /**
- * Remove a previously-seeded `session.json` so a run starts from a clean slate
- * (no leftover tabs/root from an earlier run). Ignores a missing file.
+ * Remove every persisted store file so a run starts from a clean slate — no
+ * leftover tabs/root, and no leftover UI state (see {@link STORE_FILES}).
+ * Ignores files that are not there.
  */
 export async function clearSeed(identifier: string): Promise<void> {
-  await rm(sessionStorePath(identifier), { force: true });
+  const dir = appConfigDir(identifier);
+  for (const file of STORE_FILES) await rm(join(dir, file), { force: true });
 }

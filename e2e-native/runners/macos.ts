@@ -210,7 +210,12 @@ async function main(): Promise<number> {
   }
 
   const axBin = buildSwiftHelper(opts.artifacts, 'axquery');
-  console.log(`axquery:   ${axBin}\n`);
+  console.log(`axquery:   ${axBin}`);
+  // The chord-delivery fallback, used only when a shortcut demonstrably never
+  // reached the app because another application owns it system-wide. See
+  // `drivers/macos/keypost.swift` and `runner.ts`'s `openSurface`.
+  const keyBin = buildSwiftHelper(opts.artifacts, 'keypost');
+  console.log(`keypost:   ${keyBin}\n`);
 
   const appium = await ensureAppium();
 
@@ -267,6 +272,7 @@ async function main(): Promise<number> {
     bundleId: opts.identifier,
     pid,
     axBin,
+    keyBin,
     artifacts: opts.artifacts,
   });
 

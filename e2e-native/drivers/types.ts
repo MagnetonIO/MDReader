@@ -126,8 +126,22 @@ export interface PlatformDriver {
   // ---- input ----
 
   /** Send a shell chord (`Mod+P`, `Mod+K`, `Enter`, `Escape`, `Mod+Shift+…`)
-   *  to the focused UI. */
+   *  to the focused UI, the way the platform's own automation types. */
   chord(chord: Chord): Promise<void>;
+  /**
+   * Deliver the same chord STRAIGHT to the app under test, bypassing any other
+   * application's claim on the combination.
+   *
+   * On macOS any app can register a chord as a global hot key, and the window
+   * server then consumes it before the frontmost app is offered it — so a
+   * shortcut the product implements correctly can produce nothing at all on a
+   * particular machine. The runner uses this ONLY as a second attempt, after
+   * {@link chord} has been tried and demonstrably opened nothing, and it says
+   * in the step's own result when it had to. Never a substitute for the real
+   * typing path: it is what tells "this machine ate the keystroke" apart from
+   * "the app ignored it", and both must stay distinguishable.
+   */
+  chordDirect?(chord: Chord): Promise<void>;
   /** Type literal text into the focused input. */
   type(text: string): Promise<void>;
 
@@ -137,13 +151,21 @@ export interface PlatformDriver {
    *  other reads: a broken read THROWS, only a successful empty one returns "". */
   scopedText?(cssClass: string): Promise<string>;
   /** Click the first element carrying `cssClass` whose own text contains
-   *  `contains` (when given). MUST throw when there is no such element — a
-   *  control that is not there is never a click at an estimated point. */
+   *  `contains` (when given), bringing it into view first if the surface it
+   *  lives on has it scrolled out. MUST throw when there is no such element, and
+   *  when it cannot be made genuinely clickable — a control that is not there,
+   *  or not where it is laid out, is never a click at an estimated point. (On
+   *  macOS that second case is not hypothetical: WebKit reports the frame of a
+   *  control scrolled below a modal's fold, and clicking it hits the backdrop
+   *  and dismisses the modal.) */
   clickIn?(cssClass: string, contains?: string): Promise<void>;
-  /** Double-click inside the `nth` element carrying `cssClass`, selecting a word
-   *  — the genuine text selection the Semantic Inspector reads a passage from
-   *  (a bare click yields no selection and no claims). Throws when absent. */
-  doubleClickIn?(cssClass: string, nth: number): Promise<void>;
+  /** Double-click the rendered text `text` in the document, selecting a word —
+   *  the genuine text selection the Semantic Inspector reads a passage from (a
+   *  bare click yields no selection and no claims). The passage is addressed by
+   *  the words it says: the reading column's block wrappers are generic `<div>`s
+   *  that WebKit leaves out of the AX tree, so no class-based locator can reach
+   *  them on the macOS leg. Throws when the text is not rendered. */
+  doubleClickText?(text: string): Promise<void>;
 
   // ---- NATIVE window context (only meaningful when windowOps === true) ----
 

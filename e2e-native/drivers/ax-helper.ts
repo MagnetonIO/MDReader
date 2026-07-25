@@ -23,6 +23,15 @@
  * retries it only for as long as a just-launched app can still be publishing its
  * web area, then THROWS.
  *
+ * The same discipline covers the CLICK TARGETS. WebKit publishes an element's
+ * laid-out rectangle whether or not it is inside its clipping ancestor, so the
+ * frame of a control scrolled below a modal's fold is a perfectly plausible
+ * point that belongs, on screen, to the backdrop behind it — and clicking it
+ * dismisses the modal instead. {@link Ax.point} therefore hit-tests before it
+ * answers, and reports "found, but not where it says it is" as
+ * {@link AxNotHittable} (axquery exit 6) so the caller reveals the control and
+ * asks again rather than clicking regardless.
+ *
  * The mac2 adapter runs these against the SAME app process its WebDriver session
  * drives (located by pid), so the native XCUITest layer and the AX read layer see
  * one running app. Node built-ins only.
@@ -38,6 +47,21 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  *  class-list channel itself is not proven alive (no `AXWebArea`, or not one
  *  element in the app publishing a class list). See `macos/axquery.swift`. */
 const EXIT_UNREADABLE = 5;
+
+/** axquery's "it is not where it says it is" exit: the element was found and is
+ *  laid out, but nothing at its rectangle hit-tests back to it — it is scrolled
+ *  outside a clipping ancestor, or something is painted over it. See
+ *  `macos/axquery.swift` and {@link AxNotHittable}. */
+const EXIT_NOT_HITTABLE = 6;
+
+/**
+ * The located control exists but cannot be clicked WHERE IT IS LAID OUT.
+ *
+ * Its own class — not a generic Error — because it is the one failure a caller
+ * can legitimately act on rather than report: reveal the control (scroll the
+ * surface it lives on) and ask again. Every other read failure stays fatal.
+ */
+export class AxNotHittable extends Error {}
 
 /** How long to keep re-reading through an `AX_UNREADABLE` before giving up. The
  *  webview's AX content root lands a beat AFTER the native window the `launch`
@@ -70,6 +94,21 @@ export interface AxRect {
   h: number;
 }
 
+/** A screen point in the same coordinate space as {@link AxRect}. */
+export interface AxPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * How an element is addressed. A bare string is a CSS class (what
+ * `AXDOMClassList` carries). `text:<words>` addresses the innermost element
+ * that RENDERS those words — the only way to reach the reading column's blocks,
+ * which WebKit leaves out of the AX tree entirely because they are generic
+ * `<div>`s whose children are all block-level.
+ */
+export type AxSelector = string;
+
 /** The fail-closed AX read surface over a compiled `axquery` binary + a pid. */
 export interface Ax {
   /** Number of elements whose `AXDOMClassList` contains `cssClass`. THROWS
@@ -81,14 +120,26 @@ export interface Ax {
   /** Text of every rendered heading (AXHeading). */
   headings(): string;
   /**
-   * Screen rectangle of the `nth` (0-based, document order) element carrying
-   * `cssClass` whose own subtree text contains `contains` (when given) — what
-   * lets the harness CLICK one specific control inside the webview, where
-   * WebDriver cannot reach, addressed by what it SAYS rather than by an ordinal
-   * that shifts. THROWS when there is no such element (axquery exits 4): a
-   * missing control must never be answered with a rectangle nobody rendered.
+   * Screen rectangle of the `nth` (0-based, document order) element the
+   * `selector` picks out, whose own subtree text contains `contains` (when
+   * given). THROWS when there is no such element (axquery exits 4): a missing
+   * control must never be answered with a rectangle nobody rendered.
+   *
+   * This is a LAYOUT rectangle and not a click target — see {@link point}.
    */
-  frame(cssClass: string, nth: number, contains?: string): AxRect;
+  frame(selector: AxSelector, nth: number, contains?: string): AxRect;
+  /**
+   * A point that HIT-TESTS to that same element — the only coordinate the
+   * harness may click, addressed by what the control SAYS rather than by an
+   * ordinal that shifts.
+   *
+   * WebKit publishes an element's laid-out frame even when it is scrolled
+   * outside its clipping ancestor, so clicking a {@link frame} blind lands on
+   * whatever is painted there instead. Throws {@link AxNotHittable} for exactly
+   * that case (axquery exits 6) so the caller can reveal the control and ask
+   * again; every other failure stays fatal.
+   */
+  point(selector: AxSelector, nth: number, contains?: string): AxPoint;
 }
 
 /**
@@ -134,21 +185,54 @@ export function makeAx(bin: string, pid: number): Ax {
     },
     text: (cssClass) => run('text', cssClass ? [cssClass] : []),
     headings: () => run('headings'),
-    frame: (cssClass, nth, contains) => {
+    frame: (selector, nth, contains) => {
       // A nonzero exit (4 = no such element, 3 = a real AX error) throws out of
       // `execFileSync`, which is exactly what we want: the caller must not get
       // a point to click.
-      const label = `${cssClass}[${nth}]${contains === undefined ? '' : ` containing ${JSON.stringify(contains)}`}`;
-      const out = run('frame', contains === undefined ? [cssClass, String(nth)] : [cssClass, String(nth), contains]);
+      const out = run('frame', locator(selector, nth, contains));
       const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
+      const what = label(selector, nth, contains);
       if (parts.length !== 4 || parts.some((n) => !Number.isSafeInteger(n))) {
-        throw new Error(`axquery frame(${label}) returned unparseable output: ${JSON.stringify(out)}`);
+        throw new Error(`axquery frame(${what}) returned unparseable output: ${JSON.stringify(out)}`);
       }
       const [x, y, w, h] = parts as [number, number, number, number];
       if (w <= 0 || h <= 0) {
-        throw new Error(`axquery frame(${label}) is not a clickable rectangle: ${w}x${h} at (${x},${y})`);
+        throw new Error(`axquery frame(${what}) is not a clickable rectangle: ${w}x${h} at (${x},${y})`);
       }
       return { x, y, w, h };
     },
+    point: (selector, nth, contains) => {
+      const what = label(selector, nth, contains);
+      let out: string;
+      try {
+        out = run('point', locator(selector, nth, contains));
+      } catch (err) {
+        // Exit 6 is the ONE outcome a caller may act on rather than report: the
+        // control is real but not where it is laid out. Everything else — a
+        // missing element (4), a genuine AX error (3), a spawn failure — stays
+        // fatal and propagates.
+        if ((err as { status?: number }).status !== EXIT_NOT_HITTABLE) throw err;
+        throw new AxNotHittable(
+          `axquery point(${what}): ` +
+            (String((err as { stderr?: string }).stderr ?? '').trim() || 'AX_NOT_HITTABLE'),
+        );
+      }
+      const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
+      if (parts.length !== 2 || parts.some((n) => !Number.isSafeInteger(n))) {
+        throw new Error(`axquery point(${what}) returned unparseable output: ${JSON.stringify(out)}`);
+      }
+      const [x, y] = parts as [number, number];
+      return { x, y };
+    },
   };
+}
+
+/** The argv tail both `frame` and `point` take. */
+function locator(selector: AxSelector, nth: number, contains?: string): string[] {
+  return contains === undefined ? [selector, String(nth)] : [selector, String(nth), contains];
+}
+
+/** How a lookup is named in an error message. */
+function label(selector: AxSelector, nth: number, contains?: string): string {
+  return `${selector}[${nth}]${contains === undefined ? '' : ` containing ${JSON.stringify(contains)}`}`;
 }
