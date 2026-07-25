@@ -65,6 +65,47 @@ async function waitUntil(
 const IMPOSSIBLE = Number.MAX_SAFE_INTEGER;
 
 /**
+ * Chords this run has already caught another application stealing, so the rest
+ * of the run stops paying for the discovery. Reset per process, never
+ * pre-populated: the real typing path is always tried first at least once.
+ */
+const intercepted = new Set<Chord>();
+
+/**
+ * Press `chord` and wait for the surface it opens, telling an INTERCEPTED
+ * keystroke apart from a broken surface.
+ *
+ * On macOS any application can register a chord as a global hot key, and the
+ * window server then eats it before the app under test is offered it. Two of
+ * MDReader's own shortcuts are claimed that way on the machine this leg runs on
+ * (⌘⇧L is Amphetamine's start/stop), so pressing them through the normal typing
+ * path produces nothing whatsoever — and a step that stopped there would report
+ * "the Constraint Explorer did not open", blaming the product for a keystroke it
+ * never received. So a chord that opens nothing is re-delivered straight to the
+ * app (see {@link PlatformDriver.chordDirect}); if THAT opens the surface, the
+ * step continues and SAYS SO in its own result line. If neither works, the
+ * surface really did not open, and the failure says that instead.
+ */
+async function openSurface(d: PlatformDriver, chord: Chord, cssClass: string, what: string): Promise<string> {
+  const present = async (): Promise<boolean> => (await d.countClass(cssClass)) >= 1;
+  if (!intercepted.has(chord)) {
+    await d.chord(chord);
+    if (await waitUntil(present, 5000)) return '';
+  }
+  if (d.chordDirect) {
+    await d.chordDirect(chord);
+    if (await waitUntil(present, 10_000)) {
+      intercepted.add(chord);
+      return ` (${chord} is claimed as a global hot key by another application on this machine, so it never reached the app; delivered to the app directly)`;
+    }
+  }
+  throw new Error(
+    `${chord} did not open ${what} (no .${cssClass} in the tree)` +
+      (d.chordDirect ? ' — and it did not open when the chord was delivered straight to the app either' : ''),
+  );
+}
+
+/**
  * Run the whole shared FLOW against `driver`. Window-channel steps a driver can't
  * assert (webview-only sessions) are registered PENDING with the driver's reason;
  * everything else is asserted rigorously. Stops at the first failure.
@@ -262,12 +303,9 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       const scopedText = required(d, 'scopedText');
       const clickIn = required(d, 'clickIn');
       await d.focus();
-      await d.chord('Mod+Shift+V');
       // FAIL CLOSED on the sheet itself: if it never opened, say that, rather
       // than let a later "no band" failure blame the wrong thing.
-      if (!(await waitUntil(async () => (await d.countClass('lens-sheet')) >= 1, 10_000))) {
-        throw new Error('⌘⇧V did not open the View As sheet (no .lens-sheet in the tree)');
-      }
+      const opened = await openSurface(d, 'Mod+Shift+V', 'lens-sheet', 'the View As sheet');
       const sheet = await scopedText('lens-sheet');
       if (!sheet.includes(step.schema)) {
         throw new Error(
@@ -306,22 +344,26 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
             'A lens that is not in force looks exactly like this.',
         );
       }
-      return `reading as "${step.schema}" — band reads ${JSON.stringify(band.replace(/\n/g, ' · ').slice(0, 120))}`;
+      return `reading as "${step.schema}" — band reads ${JSON.stringify(band.replace(/\n/g, ' · ').slice(0, 120))}${opened}`;
     }
 
     case 'inspectPassage': {
       const scopedText = required(d, 'scopedText');
-      const doubleClickIn = required(d, 'doubleClickIn');
+      const doubleClickText = required(d, 'doubleClickText');
       await d.focus();
-      await d.chord('Mod+Shift+I');
-      if (!(await waitUntil(async () => (await d.countClass('lens-rail')) >= 1, 10_000))) {
-        throw new Error('⌘⇧I did not expand the Semantic Inspector (no .lens-rail in the tree)');
+      // The rail is a TOGGLE, so it is opened only when it is not already open —
+      // pressing the chord at a rail that is showing would close it, and the
+      // step would then fail for the one reason that has nothing to do with the
+      // Inspector.
+      let opened = '';
+      if ((await d.countClass('lens-rail')) === 0) {
+        opened = await openSurface(d, 'Mod+Shift+I', 'lens-rail', 'the Semantic Inspector');
       }
       // A REAL text selection in the reader is what the Inspector reads a
       // passage from — a bare click produces none. FAULT: skip it, so the rail
       // stays on its "select a passage" placeholder and the assertion fires.
       if (!faulted(step.id)) {
-        await doubleClickIn('mdreader-block', 1);
+        await doubleClickText(step.selectText);
       }
       const claimRe = new RegExp(step.claimPattern);
       const citeRe = new RegExp(step.citationPattern);
@@ -340,7 +382,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
             `(rail: ${JSON.stringify(rail.replace(/\n/g, ' | ').slice(0, 240))})`,
         );
       }
-      return `passage inspected — ${claims} claim(s), /${step.claimPattern}/ cited to /${step.citationPattern}/`;
+      return `passage inspected — ${claims} claim(s), /${step.claimPattern}/ cited to /${step.citationPattern}/${opened}`;
     }
 
     case 'constraintJump': {
@@ -355,12 +397,10 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       // a test hook, so the whole cycle (open the sheet → click the citation →
       // read what got marked) is RETRIED rather than the timeout being widened
       // in the product. Each attempt is a genuine, complete jump.
+      let opened = '';
       for (let attempt = 1; attempt <= 5; attempt++) {
         await d.focus();
-        await d.chord('Mod+Shift+L');
-        if (!(await waitUntil(async () => (await d.countClass('lens-sheet--laws')) >= 1, 10_000))) {
-          throw new Error('⌘⇧L did not open the Constraint Explorer (no .lens-sheet--laws in the tree)');
-        }
+        opened = await openSurface(d, 'Mod+Shift+L', 'lens-sheet--laws', 'the Constraint Explorer');
         // The report must name a BROKEN law. "Every law holds" is a legitimate
         // outcome of the checker and a failure of this step's premise, so it is
         // called out as such instead of timing out on a missing button.
@@ -377,16 +417,20 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         // end-of-range assertion notices.
         const citing = faulted(step.id) ? 'broken-app.md' : step.jumpCiting;
         await clickIn('located__jump', citing);
-        // ONE read, immediately: the marked blocks' own text. Two reads would
-        // race the 1400ms window, and reading a count first would tell us how
-        // many blocks were marked without telling us WHICH lines.
-        await sleep(250);
+        // The mark lives for 1400ms from the moment the jump's OWN document is
+        // ready, and a cross-document jump has to load first — so this POLLS
+        // for the mark rather than sleeping a guessed interval, and reads the
+        // two facts about it the moment it appears. The count is read from the
+        // marked class itself, not inferred from how many lines of text came
+        // back: one block can render several text nodes, and counting those
+        // would report a truncated jump as a whole range.
+        await waitUntil(async () => (await d.countClass('mdreader-block--located')) > 0, 6000, 120);
+        blocks = await d.countClass('mdreader-block--located');
         located = await scopedText('mdreader-block--located');
-        blocks = located.split('\n').filter((line) => line.trim().length > 0).length;
         if (headRe.test(located) && tailRe.test(located) && blocks >= step.minLocatedBlocks) {
           return (
             `clicked the violation citing "${citing}" — the reader marked ${blocks} block(s) spanning ` +
-            `/${step.headPattern}/ … /${step.tailPattern}/`
+            `/${step.headPattern}/ … /${step.tailPattern}/${opened}`
           );
         }
         lastFailure =
@@ -405,16 +449,29 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
 
     case 'queryExplanation': {
       const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
       await d.focus();
-      await d.chord('Mod+Shift+K');
-      if (!(await waitUntil(async () => (await d.countClass('lens-sheet--explain')) >= 1, 10_000))) {
-        throw new Error('⌘⇧K did not open the Query Explanation (no .lens-sheet--explain in the tree)');
+      const opened = await openSurface(d, 'Mod+Shift+K', 'lens-sheet--explain', 'the Query Explanation');
+      // The sheet opens with an empty, UNFOCUSED query field, so the field is
+      // clicked before anything is typed — exactly what a reader does, and the
+      // difference between running a query and typing into nothing.
+      await clickIn('explain__input');
+      // The query is then genuinely typed and run.
+      //
+      // FAULT: don't type it and don't submit, so the sheet is opened and left
+      // on its "Enter a query to see how it would be ranked" placeholder — a
+      // ranking that was never produced, which is what a Query Explanation that
+      // has stopped answering looks like. (It used to run a term the corpus does
+      // not contain. That fault was NOT load-bearing and the leg proved it by
+      // going green under it: the offline embedder the harness launches the app
+      // with — `MDREADER_DEV_HASH_EMBED=1` — gives the semantic arm nearest
+      // neighbours for ANY vector, so nonsense still returns ten explained hits
+      // and `armsPattern` allows "Only the semantic arm matched" precisely
+      // because that is a legitimate ranking.)
+      if (!faulted(step.id)) {
+        await d.type(step.query);
+        await d.chord('Enter');
       }
-      // The sheet opens with an empty query, so the query is genuinely typed
-      // and run. FAULT: run a term the corpus does not contain, so there is a
-      // ranking to explain only if the search really answered.
-      await d.type(faulted(step.id) ? 'zzzznotinthecorpuszzzz' : step.query);
-      await d.chord('Enter');
       const armsRe = new RegExp(step.armsPattern);
       const chainRe = new RegExp(step.chainPattern);
       let sheet = '';
@@ -433,7 +490,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
       await d.chord('Escape');
-      return `"${step.query}" explained — ${hits} hit(s), arms + provenance chain reported`;
+      return `"${step.query}" explained — ${hits} hit(s), arms + provenance chain reported${opened}`;
     }
 
     case 'dragWindow': {
@@ -515,7 +572,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
  * method is a harness defect and must ERROR at the step, never let the step be
  * skipped or "pass" because nothing was driven.
  */
-function required<K extends 'scopedText' | 'clickIn' | 'doubleClickIn'>(
+function required<K extends 'scopedText' | 'clickIn' | 'doubleClickText'>(
   d: PlatformDriver,
   method: K,
 ): NonNullable<PlatformDriver[K]> {
