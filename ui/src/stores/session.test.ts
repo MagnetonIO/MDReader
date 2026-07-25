@@ -172,6 +172,9 @@ describe('settings', () => {
       sidebarCollapsed: true,
       outlineVisible: false,
       relatedRailOpen: true,
+      inspectorOpen: true,
+      lensSchema: 'decision_overlay',
+      reviewer: 'Ada',
     } as const;
     expect(sanitizeSettings(serializeSettings(snapshot))).toEqual(snapshot);
   });

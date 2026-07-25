@@ -19,6 +19,13 @@ export interface ReaderToolbarProps {
   onSetMode: (mode: EditorMode) => void;
   /** Whether a document is open (the toggles are inert otherwise). */
   canEdit: boolean;
+  /**
+   * Open the View As sheet. Omitted when no schema is registered for this
+   * workspace — there is nothing to view the corpus as, so no control appears.
+   */
+  onViewAs?: () => void;
+  /** The schema in force, or `null` for the plain reading. */
+  lensSchema?: string | null;
 }
 
 function crumbs(path: string, root: string | null): string[] {
@@ -39,6 +46,8 @@ export function ReaderToolbar({
   mode,
   onSetMode,
   canEdit,
+  onViewAs,
+  lensSchema = null,
 }: ReaderToolbarProps) {
   const parts = docRef ? crumbs(docRef.path, root) : [];
   const leaf = parts.length > 0 ? parts[parts.length - 1] : '';
@@ -55,6 +64,17 @@ export function ReaderToolbar({
         ))}
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
+
+      {onViewAs ? (
+        <button
+          type="button"
+          className={`icon-btn${lensSchema ? ' icon-btn--active' : ''}`}
+          onClick={onViewAs}
+          title="View the corpus as a registered schema (⌘⇧V)"
+        >
+          {lensSchema ? `As ${lensSchema}` : 'View as'}
+        </button>
+      ) : null}
 
       <button
         type="button"

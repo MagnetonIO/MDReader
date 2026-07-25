@@ -1,0 +1,1187 @@
+/*
+ * The semantic layer's visual language.
+ *
+ * MDReader is a reading app, so the surfaces that expose CatDB's semantics are
+ * built as a **critical apparatus** — the way a scholarly edition sets an
+ * editor's proposed readings beneath the text, with citations, rather than as a
+ * developer console bolted onto the side. That choice drives everything here.
+ *
+ * ONE type rule governs the whole layer, and it carries the meaning:
+ *
+ *     serif  — what a claim SAYS        (claims, law sentences: content)
+ *     mono   — what the machine RECORDED (ids, hashes, arrows, versions, spans)
+ *     sans   — what you can DO           (labels, verbs, controls)
+ *
+ * Colour is spent in exactly one place: the 2px rule down the left edge of a
+ * claim, carrying its review state. Everything else is the reading palette's
+ * own hairlines and greys, so the apparatus never out-shouts the prose. Both
+ * themes come free — every value below is a @mdreader/config token.
+ */
+
+/* --- the lens band ---------------------------------------------------- */
+
+/*
+ * The signature: one line across the head of the reading column naming the
+ * interpretation in force. It sits INSIDE the reading column, in the reading
+ * column's rhythm — because the point it makes is about the prose directly
+ * beneath it, which has not changed at all.
+ */
+.lens-band {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+  flex-wrap: wrap;
+}
+
+/* The lens mark: a short accent rule, the one piece of colour in the chrome. */
+.lens-band__mark {
+  width: 2px;
+  align-self: stretch;
+  min-height: 1em;
+  background: var(--color-accent);
+  border-radius: 1px;
+}
+
+.lens-band__schema {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text--1);
+  color: var(--color-fg);
+  border-bottom: 1px solid transparent;
+}
+
+.lens-band__schema:hover {
+  border-bottom-color: var(--color-border-strong);
+}
+
+.lens-band__schema:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.lens-band__counts {
+  color: var(--color-muted);
+}
+
+.lens-band__version {
+  font-family: var(--font-mono);
+  color: var(--color-faint);
+}
+
+/* An unassigned version is stated, never dressed up as a number. */
+.lens-band__version--absent {
+  font-style: italic;
+}
+
+.lens-band__spacer {
+  flex: 1;
+}
+
+.lens-band__untouched {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* --- the inspector rail ----------------------------------------------- */
+
+/*
+ * Integrated, not floating — the Related rail's idiom exactly: the page's own
+ * background, one hairline, no shadow, no raised panel. Wider than Related
+ * because a claim is a sentence, not a filename.
+ */
+.lens-rail {
+  width: 19.5rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.lens-rail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-2) var(--space-2) var(--space-3);
+}
+
+.lens-rail__title {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+.lens-rail__close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: var(--text-0);
+  line-height: 1;
+  padding: 2px var(--space-1);
+  border-radius: var(--radius-sm);
+}
+
+.lens-rail__close:hover {
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
+}
+
+.lens-rail__close:focus-visible,
+.lens-strip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.lens-rail__body {
+  overflow: auto;
+  padding: 0 var(--space-3) var(--space-4);
+  flex: 1;
+  min-height: 0;
+}
+
+.lens-rail__empty {
+  margin: var(--space-3) 0;
+  color: var(--color-faint);
+  font-size: var(--text--1);
+}
+
+/* Collapsed: a thin vertical strip flush with the page, matching Related's. */
+.lens-strip {
+  appearance: none;
+  width: 1.6rem;
+  min-width: 1.6rem;
+  border: none;
+  border-left: 1px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-bg);
+  color: var(--color-muted);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  padding: var(--space-3) 0;
+  transition: background 120ms ease;
+}
+
+.lens-strip:hover {
+  background: var(--color-surface);
+}
+
+.lens-strip__label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* --- inspector: scope + signature ------------------------------------- */
+
+.inspector__scope {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.inspector__signature {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text--1);
+  color: var(--color-faint);
+}
+
+.inspector__signer {
+  color: var(--color-fg);
+}
+
+/* The signing prompt. Reviews carry a name, and the app has none of its own —
+ * so it asks, plainly, and will not proceed on a blank. */
+.inspector__sign {
+  margin: 0 0 var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.inspector__sign-label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.inspector__sign-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.inspector__sign-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-ui);
+  font-size: var(--text--1);
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.inspector__sign-input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+/* --- claims ----------------------------------------------------------- */
+
+.claims {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The one place colour carries meaning: the state rule down the left edge. */
+.claim {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border-strong);
+}
+
+.claim--proposed {
+  border-left-color: var(--color-warning);
+}
+
+.claim--approved {
+  border-left-color: var(--color-accent);
+}
+
+.claim--rejected {
+  border-left-color: var(--color-danger);
+}
+
+.claim__standing {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+.claim__state--proposed {
+  color: var(--color-warning);
+}
+
+.claim__state--approved {
+  color: var(--color-accent);
+}
+
+.claim__state--rejected {
+  color: var(--color-danger);
+}
+
+/* Graph membership is a SEPARATE reading from the recorded state, so it gets
+ * its own token rather than being folded into the state chip. */
+.claim__graph {
+  color: var(--color-faint);
+}
+
+.claim__graph--in {
+  color: var(--color-muted);
+}
+
+/* The claim itself, in the reading face: it is content, not chrome. */
+.claim__sentence {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-reading-serif);
+  font-size: var(--text-0);
+  line-height: 1.45;
+  color: var(--color-fg);
+}
+
+.claim__fields {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text--1);
+}
+
+.claim__field {
+  display: flex;
+  gap: var(--space-2);
+  padding: 1px 0;
+}
+
+.claim__field dt {
+  flex: none;
+  min-width: 5.5rem;
+  color: var(--color-faint);
+}
+
+.claim__field dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Divergence and re-review notes: stated in full, never abbreviated to an icon
+ * the reader would have to decode. */
+.claim__note {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  font-size: var(--text--1);
+  line-height: 1.4;
+  color: var(--color-muted);
+}
+
+.claim__note--rereview {
+  border-left: 2px solid var(--color-warning);
+}
+
+.claim__hashes {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-faint);
+}
+
+/* Why the two digests cannot be held against each other. Set in the sans face
+ * with the rest of the prose — it is something the app is SAYING, not a value
+ * it recorded, and the type rule keeps that distinction visible. */
+.claim__hashes-why {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-faint);
+}
+
+/* The citation apparatus. */
+.claim__cite,
+.lens-mono {
+  font-family: var(--font-mono);
+}
+
+.claim__cite {
+  margin-top: var(--space-2);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--color-faint);
+  overflow-wrap: anywhere;
+}
+
+.claim__cite-link,
+.projected__cite,
+.located__jump {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+.claim__cite-link:hover,
+.projected__cite:hover,
+.located__jump:hover {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.claim__cite-link:focus-visible,
+.projected__cite:focus-visible,
+.located__jump:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The verbs. Quiet until reached for — ruling on a claim is deliberate. */
+.claim__rule {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.btn-quiet {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px var(--space-3);
+  font-family: var(--font-ui);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.btn-quiet:hover:not(:disabled) {
+  color: var(--color-fg);
+  border-color: var(--color-fg);
+}
+
+.btn-quiet:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.btn-quiet:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-quiet--approve:hover:not(:disabled) {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.btn-quiet--reject:hover:not(:disabled) {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.link-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: var(--text--1);
+  color: var(--color-accent);
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* --- the sheets ------------------------------------------------------- */
+
+.lens-sheet {
+  width: min(980px, 94vw);
+  max-height: 78vh;
+  overflow: auto;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px -24px rgba(0, 0, 0, 0.45);
+  padding: var(--space-5) var(--space-6) var(--space-6);
+}
+
+.lens-sheet--laws,
+.lens-sheet--explain {
+  width: min(820px, 94vw);
+}
+
+.lens-sheet__head {
+  margin-bottom: var(--space-5);
+}
+
+.lens-sheet__title {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-reading-serif);
+  font-size: var(--text-2);
+  color: var(--color-fg);
+}
+
+.lens-sheet__lede {
+  margin: 0;
+  max-width: 56ch;
+  font-size: var(--text--1);
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+.lens-sheet__empty {
+  margin: var(--space-4) 0;
+  font-size: var(--text--1);
+  color: var(--color-faint);
+}
+
+.lens-sheet__grid {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+@media (max-width: 700px) {
+  .lens-sheet__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+}
+
+/* --- the schema list -------------------------------------------------- */
+
+.lens-sheet__schemas {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-content: start;
+}
+
+.lens-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  appearance: none;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+
+.lens-choice:hover {
+  background: var(--color-surface);
+}
+
+.lens-choice:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.lens-choice--selected {
+  background: var(--color-surface);
+}
+
+/* The lens actually in force is marked by the same accent rule as the band. */
+.lens-choice--active {
+  border-left-color: var(--color-accent);
+}
+
+.lens-choice__name {
+  font-size: var(--text--1);
+  color: var(--color-fg);
+}
+
+.lens-choice__counts {
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+/* --- schema detail ---------------------------------------------------- */
+
+.lens-sheet__detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.lens-sheet__schema {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-0);
+  font-weight: 500;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+
+.lens-sheet__panes {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.pane-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-size: var(--text--1);
+  color: var(--color-faint);
+}
+
+.pane-tab:hover {
+  color: var(--color-fg);
+}
+
+.pane-tab--on {
+  color: var(--color-fg);
+  background: var(--color-surface);
+}
+
+.pane-tab:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* The two identities of a schema, kept visibly apart. */
+.catalog {
+  margin: 0 0 var(--space-5);
+  padding: var(--space-3);
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  font-size: var(--text--1);
+}
+
+.catalog__row {
+  display: flex;
+  gap: var(--space-3);
+  padding: 2px 0;
+}
+
+.catalog__row dt {
+  flex: none;
+  width: 5.5rem;
+  color: var(--color-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.catalog__row dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+
+.catalog__absent {
+  font-style: italic;
+  color: var(--color-faint);
+}
+
+.catalog__row--note dd {
+  color: var(--color-faint);
+  line-height: 1.4;
+}
+
+/* --- schema shape ----------------------------------------------------- */
+
+.shape__section {
+  margin-bottom: var(--space-5);
+}
+
+.shape__heading {
+  margin: 0 0 var(--space-2);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.shape__empty,
+.entity__none {
+  font-size: var(--text--1);
+  color: var(--color-faint);
+}
+
+.shape__entities,
+.shape__arrows,
+.shape__laws,
+.entity__attrs,
+.edge-group__list,
+.contents__objects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entity {
+  display: block;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.entity__name {
+  font-size: var(--text-0);
+  color: var(--color-fg);
+}
+
+.entity__attrs {
+  margin-top: var(--space-1);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.attr {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: var(--text--1);
+}
+
+.attr__name {
+  color: var(--color-muted);
+}
+
+.attr__type {
+  color: var(--color-faint);
+}
+
+.attr__opt {
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  font-style: italic;
+}
+
+.arrow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.arrow__name {
+  color: var(--color-fg);
+}
+
+.arrow__name::before {
+  content: '—';
+  color: var(--color-faint);
+  margin-right: 2px;
+}
+
+.arrow__name::after {
+  content: '→';
+  color: var(--color-faint);
+  margin-left: 2px;
+}
+
+/* --- laws ------------------------------------------------------------- */
+
+.law {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* The law in words, in the reading face — the version a person can check. */
+.law__sentence {
+  margin: 0;
+  font-family: var(--font-reading-serif);
+  font-size: var(--text-0);
+  line-height: 1.45;
+  color: var(--color-fg);
+}
+
+.law__paths {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.law__eq {
+  color: var(--color-accent);
+}
+
+/* The kernel's own rendering, kept so the translation above is auditable. */
+.law__kernel {
+  margin: var(--space-1) 0 0;
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  overflow-wrap: anywhere;
+}
+
+.shape__typeside {
+  margin: 0;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+/* --- projection contents ---------------------------------------------- */
+
+.contents__summary {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.projected {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text--1);
+}
+
+.projected__entity {
+  flex: none;
+  color: var(--color-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  min-width: 6rem;
+}
+
+.projected__value {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+
+.projected__cite {
+  flex: none;
+  font-size: 0.72rem;
+}
+
+.contents__edges {
+  margin-top: var(--space-5);
+}
+
+.edge-group {
+  margin-bottom: var(--space-3);
+}
+
+.edge-group__arrow {
+  font-size: var(--text--1);
+  color: var(--color-fg);
+}
+
+.edge-group__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin-top: var(--space-1);
+}
+
+.edge {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+.edge__to,
+.chain__to {
+  color: var(--color-border-strong);
+}
+
+/* Why there is no citation on an edge — said, rather than shown as a dead control. */
+.contents__note {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  font-size: var(--text--1);
+  line-height: 1.4;
+  color: var(--color-faint);
+}
+
+/* --- violations ------------------------------------------------------- */
+
+.violations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.violation {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-danger);
+}
+
+.violation__schema {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  margin-bottom: var(--space-1);
+}
+
+.violation__what {
+  margin: var(--space-2) 0;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.violation__objects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.located {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text--1);
+  padding: 2px 0;
+}
+
+.located__label {
+  flex: none;
+  min-width: 9.5rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+.located__entity {
+  color: var(--color-fg);
+}
+
+.located--primary .located__entity {
+  font-weight: 600;
+}
+
+.located__id,
+.located__hash,
+.located__none {
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+.located__jump {
+  font-size: 0.72rem;
+}
+
+/* --- query explanation ------------------------------------------------ */
+
+.explain__form {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.explain__input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-ui);
+  font-size: var(--text-0);
+  color: var(--color-fg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.explain__input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.explains {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.explain {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border);
+}
+
+.explain__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.explain__rank {
+  flex: none;
+  color: var(--color-faint);
+  font-size: var(--text--1);
+}
+
+.explain__title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-reading-serif);
+  font-size: var(--text-0);
+  color: var(--color-fg);
+}
+
+.explain__title:hover {
+  color: var(--color-accent);
+}
+
+.explain__title:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.explain__score {
+  flex: none;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.explain__path {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  overflow-wrap: anywhere;
+}
+
+.explain__arms {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.explain__ranks {
+  margin: var(--space-1) 0 var(--space-2);
+  font-size: var(--text--1);
+}
+
+.explain__ranks-row {
+  display: flex;
+  gap: var(--space-2);
+  padding: 1px 0;
+}
+
+.explain__ranks-row dt {
+  flex: none;
+  width: 3.5rem;
+  color: var(--color-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.explain__ranks-row dd {
+  margin: 0;
+  color: var(--color-muted);
+}
+
+.boosts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.boost {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 1px 0;
+  font-size: var(--text--1);
+}
+
+.boost__name {
+  flex: none;
+  width: 8.5rem;
+  color: var(--color-muted);
+}
+
+.boost__bar {
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  background: var(--color-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.boost__bar i {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+
+.boost__value {
+  flex: none;
+  width: 7.5rem;
+  text-align: right;
+  font-size: 0.72rem;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A boost that never fired gets no bar at all — a zero-width bar and
+ * "did not fire" would be two different claims about the same absence. */
+.boost--absent .boost__name,
+.boost--absent .boost__value {
+  color: var(--color-faint);
+  font-style: italic;
+}
+
+.boost--absent .boost__bar {
+  background: transparent;
+}
+
+.explain__final {
+  margin-top: var(--space-2);
+  font-size: var(--text--1);
+  color: var(--color-muted);
+}
+
+.explain__final strong {
+  color: var(--color-fg);
+}
+
+.explain__index,
+.explain__none {
+  margin-top: var(--space-1);
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-2);
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lens-band__schema,
+  .lens-strip,
+  .btn-quiet,
+  .claim__cite-link,
+  .projected__cite,
+  .located__jump {
+    transition: none;
+  }
+}

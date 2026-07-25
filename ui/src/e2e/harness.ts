@@ -118,6 +118,282 @@ function related(docPath: string) {
     }));
 }
 
+// --------------------------------------------------------------------------
+// the semantic surface (P7)
+// --------------------------------------------------------------------------
+//
+// A deliberately AWKWARD fixture: the states these panels exist to render
+// honestly are exactly the ones a tidy fixture would never produce. So one
+// schema is versioned and one is not; one claim is `proposed` while still
+// committed to the graph; one rejection's source has moved since it was ruled
+// on; one boost never fires; and one violation's path arrives nowhere.
+
+const DECISION_PROVENANCE = {
+  file: 'index.md',
+  start_line: 1,
+  end_line: 5,
+  content_hash: 'blake3:9f2c1a4e88b7d3c2ff01',
+  schema_version: '1',
+  extractor: 'mdreader.decision@1',
+  confidence: 0.82,
+  approved_by: null,
+};
+
+const SCHEMAS = [
+  {
+    name: 'decision_overlay',
+    version: 1,
+    checksum: 'blake3:9f2c1a4e88b7d3c2ff0142ab',
+    entities: ['Decision'],
+    arrow_count: 1,
+    attribute_count: 3,
+    equation_count: 1,
+    approval_required: true,
+    object_count: 2,
+    proposal_count: 3,
+  },
+  {
+    // No index has assigned this one a version yet — the panels must say so
+    // rather than showing `v0`.
+    name: 'architecture_overlay',
+    version: null,
+    checksum: null,
+    entities: ['Component', 'Dependency'],
+    arrow_count: 3,
+    attribute_count: 2,
+    equation_count: 1,
+    approval_required: true,
+    object_count: 0,
+    proposal_count: 0,
+  },
+];
+
+const SCHEMA_DETAILS: Record<string, unknown> = {
+  decision_overlay: {
+    name: 'decision_overlay',
+    version: 1,
+    checksum: 'blake3:9f2c1a4e88b7d3c2ff0142ab',
+    typeside: ['String', 'Date'],
+    entities: [
+      {
+        name: 'Decision',
+        attributes: [
+          { name: 'title', ty: 'String', nullable: false },
+          { name: 'status', ty: 'String', nullable: false },
+          { name: 'decided_on', ty: 'Date', nullable: true },
+        ],
+      },
+    ],
+    arrows: [{ name: 'supersedes', dom: 'Decision', cod: 'Decision' }],
+    equations: [
+      {
+        law: 'Decision.supersedes.supersedes = Decision.supersedes',
+        start: 'Decision',
+        lhs: ['supersedes', 'supersedes'],
+        rhs: ['supersedes'],
+      },
+    ],
+    approval_required: true,
+  },
+  architecture_overlay: {
+    name: 'architecture_overlay',
+    version: null,
+    checksum: null,
+    typeside: ['String'],
+    entities: [
+      { name: 'Component', attributes: [{ name: 'name', ty: 'String', nullable: false }] },
+      { name: 'Dependency', attributes: [{ name: 'kind', ty: 'String', nullable: true }] },
+    ],
+    arrows: [
+      { name: 'via', dom: 'Dependency', cod: 'Component' },
+      { name: 'exposes', dom: 'Component', cod: 'Component' },
+      { name: 'provider', dom: 'Dependency', cod: 'Component' },
+    ],
+    equations: [
+      {
+        law: 'Dependency.via.exposes = Dependency.provider',
+        start: 'Dependency',
+        lhs: ['via', 'exposes'],
+        rhs: ['provider'],
+      },
+    ],
+    approval_required: true,
+  },
+};
+
+const PROJECTIONS: Record<string, unknown> = {
+  decision_overlay: {
+    schema: 'decision_overlay',
+    objects: [
+      {
+        id: '11111111-2222-3333-4444-555555555555',
+        entity: 'decision_overlay.Decision',
+        value: '{"title":"Read markdown, not chrome","status":"accepted"}',
+        provenance: DECISION_PROVENANCE,
+      },
+      {
+        id: '66666666-2222-3333-4444-555555555555',
+        entity: 'decision_overlay.Decision',
+        value: '{"title":"Open files from the tree","status":"accepted"}',
+        provenance: { ...DECISION_PROVENANCE, start_line: 7, end_line: 9 },
+      },
+    ],
+    // An edge knows its arrow and its endpoints, and nothing else.
+    morphisms: [
+      {
+        arrow: 'decision_overlay.supersedes',
+        source: '66666666-2222-3333-4444-555555555555',
+        target: '11111111-2222-3333-4444-555555555555',
+      },
+    ],
+    truncated: false,
+  },
+  architecture_overlay: {
+    schema: 'architecture_overlay',
+    objects: [],
+    morphisms: [],
+    truncated: false,
+  },
+};
+
+/** The claims derived from a span of `index.md`, one per interesting state. */
+const SPAN_FACTS = [
+  {
+    fact_id: 'fact-proposed',
+    kind: 'object',
+    schema: 'decision_overlay',
+    name: 'decision_overlay.Decision',
+    value: '{"title":"Read markdown, not chrome","status":"accepted"}',
+    source_id: null,
+    target_id: null,
+    rule: 'D1',
+    extractor: 'mdreader.decision@1',
+    provenance: DECISION_PROVENANCE,
+    state: 'proposed',
+    reviewer: null,
+    in_graph: false,
+    reviewed_content_hash: null,
+    source_changed_since_review: false,
+  },
+  {
+    // Approved once, committed, then the source changed and the review reset.
+    // Both readings below are true, and both are rendered.
+    fact_id: 'fact-committed-but-proposed',
+    kind: 'object',
+    schema: 'decision_overlay',
+    name: 'decision_overlay.Decision',
+    value: '{"title":"Open files from the tree","status":"accepted"}',
+    source_id: null,
+    target_id: null,
+    rule: 'D1',
+    extractor: 'mdreader.decision@1',
+    provenance: { ...DECISION_PROVENANCE, content_hash: 'blake3:beef0001c0ffee02' },
+    state: 'proposed',
+    reviewer: 'A. Reader',
+    in_graph: true,
+    reviewed_content_hash: 'blake3:9f2c1a4e88b7d3c2ff01',
+    source_changed_since_review: false,
+  },
+  {
+    // A preserved rejection whose cited text has since moved.
+    fact_id: 'fact-rejected-stale',
+    kind: 'object',
+    schema: 'decision_overlay',
+    name: 'decision_overlay.Decision',
+    value: '{"title":"Press Cmd+P to jump","status":"draft"}',
+    source_id: null,
+    target_id: null,
+    rule: 'D2',
+    extractor: 'mdreader.decision@1',
+    provenance: { ...DECISION_PROVENANCE, confidence: null, content_hash: 'blake3:1234abcd5678ef90' },
+    state: 'rejected',
+    reviewer: 'A. Reader',
+    in_graph: false,
+    reviewed_content_hash: 'blake3:9f2c1a4e88b7d3c2ff01',
+    source_changed_since_review: true,
+  },
+  {
+    fact_id: 'fact-edge',
+    kind: 'morphism',
+    schema: 'decision_overlay',
+    name: 'decision_overlay.supersedes',
+    value: null,
+    source_id: '66666666-2222-3333-4444-555555555555',
+    target_id: '11111111-2222-3333-4444-555555555555',
+    rule: 'D3',
+    extractor: 'mdreader.decision@1',
+    provenance: DECISION_PROVENANCE,
+    state: 'proposed',
+    reviewer: null,
+    in_graph: false,
+    reviewed_content_hash: null,
+    source_changed_since_review: false,
+  },
+];
+
+const CONSTRAINT_REPORT = {
+  schemas_checked: 2,
+  violations: [
+    {
+      schema: 'architecture_overlay',
+      law: 'Dependency.via.exposes = Dependency.provider',
+      lhs_path: ['via', 'exposes'],
+      rhs_path: ['provider'],
+      subject: {
+        id: 'aaaaaaaa-2222-3333-4444-555555555555',
+        entity: 'architecture_overlay.Dependency',
+        source: {
+          file: 'docs/guide.md',
+          start_line: 5,
+          end_line: 7,
+          content_hash: 'blake3:cccc3333dddd4444',
+        },
+      },
+      lhs: null, // the composed path arrives nowhere — that IS the failure
+      rhs: {
+        id: 'bbbbbbbb-2222-3333-4444-555555555555',
+        entity: 'architecture_overlay.Component',
+        source: {
+          file: 'docs/reference.md',
+          start_line: 3,
+          end_line: 3,
+          content_hash: 'blake3:eeee5555ffff6666',
+        },
+      },
+    },
+  ],
+};
+
+/** `search`, with the full ranking breakdown attached to every hit. */
+function explainQuery(query: string) {
+  return search(query).map((hit, index) => ({
+    ...hit,
+    lex_rank: index + 1,
+    sem_rank: index === 0 ? 1 : null,
+    rrf_score: 0.0325 - index * 0.004,
+    score: 0.0421 - index * 0.004,
+    boosts: { title: 0.006, path: null, recency: 0.0036, graph: null },
+    explain: {
+      lex_rank: index + 1,
+      sem_rank: index === 0 ? 1 : null,
+      rrf_score: 0.0325 - index * 0.004,
+      // Two boosts never fired; they are absent, not zero.
+      boosts: { title: 0.006, path: null, recency: 0.0036, graph: null },
+      final_score: 0.0421 - index * 0.004,
+      index_version: 'idx-2026-07-24',
+      embedding_model: 'bge-small-en-v1.5',
+      provenance: {
+        chunk_id: hit.chunk_id,
+        section_id: `sect:${hit.file_path}`,
+        document_id: hit.document_id,
+        file_path: hit.file_path,
+        source_id: 'src-77777777-2222-3333',
+        source_root: '/mock/ws',
+      },
+    },
+  }));
+}
+
 /** The engine's wikilink resolution, mocked from a fixed link table. */
 function resolveWikilink(target: string, heading: string | null) {
   if (/^guide$/i.test(target.trim())) {
@@ -178,6 +454,62 @@ export function installTauriMocks(): void {
         return search((args as { query: string }).query);
       case 'related':
         return related((args as { docPath: string }).docPath);
+
+      // --- the semantic surface (P7) -------------------------------------
+      case 'list_schemas':
+        return SCHEMAS;
+      case 'describe_schema':
+        return SCHEMA_DETAILS[(args as { schema: string }).schema] ?? null;
+      case 'project_corpus':
+        return (
+          PROJECTIONS[(args as { schema: string }).schema] ?? {
+            schema: (args as { schema: string }).schema,
+            objects: [],
+            morphisms: [],
+            truncated: false,
+          }
+        );
+      case 'inspect_span': {
+        // Overlap semantics, as the real command has them: a claim is returned
+        // when its cited span intersects the selection.
+        const { query } = args as { query: { path: string; start_line: number; end_line: number } };
+        if (!query.path.endsWith('index.md')) return [];
+        return SPAN_FACTS.filter(
+          (fact) =>
+            fact.provenance.start_line <= query.end_line &&
+            fact.provenance.end_line >= query.start_line,
+        );
+      }
+      case 'approve_fact': {
+        const { factId, reviewer } = args as { factId: string; reviewer: string };
+        // The backend's own refusal, mirrored: a blank reviewer is not a reviewer.
+        if (reviewer.trim().length === 0) throw new Error('reviewer must not be blank');
+        const fact = SPAN_FACTS.find((candidate) => candidate.fact_id === factId);
+        if (fact) {
+          fact.state = 'approved';
+          fact.reviewer = reviewer;
+          fact.in_graph = fact.kind === 'object';
+          fact.source_changed_since_review = false;
+        }
+        return { fact_id: factId, promoted: fact?.kind === 'object' ? [factId] : [] };
+      }
+      case 'reject_fact': {
+        const { factId, reviewer } = args as { factId: string; reviewer: string };
+        if (reviewer.trim().length === 0) throw new Error('reviewer must not be blank');
+        const fact = SPAN_FACTS.find((candidate) => candidate.fact_id === factId);
+        const wasCommitted = fact?.in_graph ?? false;
+        if (fact) {
+          fact.state = 'rejected';
+          fact.reviewer = reviewer;
+          fact.in_graph = false;
+          fact.source_changed_since_review = false;
+        }
+        return { fact_id: factId, retracted: wasCommitted ? [factId] : [], cascaded: [] };
+      }
+      case 'check_constraints':
+        return CONSTRAINT_REPORT;
+      case 'explain_query':
+        return explainQuery((args as { query: string }).query);
       case 'read_doc': {
         const path = (args as { path: string }).path;
         return { content: CORPUS[path] ?? '# Missing\n', mtime: 1_700_000_000_000, hash: diskHash(path) };

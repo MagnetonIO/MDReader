@@ -12,6 +12,15 @@ import type { ParsedDoc } from '@mdreader/markdown';
 
 export interface LoadState {
   status: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * The path `doc` was actually loaded from. `status: 'ready'` on its own does
+   * NOT mean the rendered document is the one currently being asked about: a
+   * doc switch deliberately keeps the previous document mounted (spread) while
+   * the next one loads. A consumer that acts on the ACTIVE path — a provenance
+   * jump, say — has to be able to tell "the target has rendered" from "the
+   * target is still on its way", and this is what lets it.
+   */
+  path?: string;
   doc?: ParsedDoc;
   dir?: string;
   error?: string;
@@ -64,7 +73,7 @@ export function useDocLoader(deps: DocLoaderDeps): LoadState {
         const content = await read(path);
         const doc = await parse(content);
         if (cancelled) return;
-        setState({ status: 'ready', doc, dir: dirOf(path) });
+        setState({ status: 'ready', path, doc, dir: dirOf(path) });
         onMeta({ words: wordsOf(content) });
       } catch (cause) {
         if (cancelled) return;

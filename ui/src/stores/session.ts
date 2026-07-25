@@ -186,6 +186,18 @@ export function sanitizeSettings(raw: unknown): Partial<SettingsSnapshot> {
   if (typeof raw.sidebarCollapsed === 'boolean') out.sidebarCollapsed = raw.sidebarCollapsed;
   if (typeof raw.outlineVisible === 'boolean') out.outlineVisible = raw.outlineVisible;
   if (typeof raw.relatedRailOpen === 'boolean') out.relatedRailOpen = raw.relatedRailOpen;
+  if (typeof raw.inspectorOpen === 'boolean') out.inspectorOpen = raw.inspectorOpen;
+  // A lens is remembered by NAME only, and only when it is a real one: a blank
+  // string is not a schema, so it restores as the plain reading.
+  if (typeof raw.lensSchema === 'string' && raw.lensSchema.trim().length > 0) {
+    out.lensSchema = raw.lensSchema;
+  } else if (raw.lensSchema === null) {
+    out.lensSchema = null;
+  }
+  // A persisted reviewer is trimmed on the way in as well as on the way out, so
+  // a hand-edited settings.json cannot smuggle a whitespace "identity" into a
+  // review the backend would then refuse.
+  if (typeof raw.reviewer === 'string') out.reviewer = raw.reviewer.trim();
   return out;
 }
 
@@ -197,6 +209,9 @@ export function serializeSettings(snapshot: SettingsSnapshot): SettingsSnapshot 
     sidebarCollapsed: snapshot.sidebarCollapsed,
     outlineVisible: snapshot.outlineVisible,
     relatedRailOpen: snapshot.relatedRailOpen,
+    inspectorOpen: snapshot.inspectorOpen,
+    lensSchema: snapshot.lensSchema,
+    reviewer: snapshot.reviewer.trim(),
   };
 }
 
@@ -208,6 +223,9 @@ export const DEFAULT_SETTINGS: SettingsSnapshot = {
   sidebarCollapsed: false,
   outlineVisible: true,
   relatedRailOpen: false,
+  inspectorOpen: false,
+  lensSchema: null,
+  reviewer: '',
 };
 
 // --- helpers ---
