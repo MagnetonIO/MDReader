@@ -36,6 +36,16 @@ const CORPUS: Record<string, string> = {
 // which only ever compares hashes for equality.
 const DISK_VERSION: Record<string, number> = {};
 
+/**
+ * Every IPC command the shell actually issued, in order.
+ *
+ * Recorded so an e2e can assert an **absence** — that an inert control sent
+ * nothing — instead of settling for "the button looked disabled". A control that
+ * is merely styled as unavailable and a control that cannot submit are different
+ * claims, and only a read of what crossed the boundary tells them apart.
+ */
+const SENT: { cmd: string; args: unknown }[] = [];
+
 /** The current on-disk hash the read/save commands agree on for `path`. */
 function diskHash(path: string): string {
   return `h:${path}:${DISK_VERSION[path] ?? 0}`;
@@ -410,14 +420,31 @@ function resolveWikilink(target: string, heading: string | null) {
   return { status: 'unresolved', path: null, name: null, line: null, candidates: [] };
 }
 
+/** The window-side test hooks `e2e.html` exposes (dev-only, never shipped). */
+export interface E2EHooks {
+  /** Simulate an external edit landing on disk (bumps the file's hash). */
+  writeDisk: (path: string, content: string) => void;
+  /** Every command the shell has issued so far, oldest first. */
+  sent: () => { cmd: string; args: unknown }[];
+  /** Forget the command log (arm an "and nothing was sent" assertion). */
+  clearSent: () => void;
+}
+
 export function installTauriMocks(): void {
   // Test hook: let an e2e simulate an EXTERNAL edit landing on disk (bumping the
   // file's hash) so a subsequent save trips the guard — the watcher's own event
-  // channel isn't available under a pure IPC mock.
-  (window as unknown as { __E2E__?: { writeDisk: (path: string, content: string) => void } }).__E2E__ =
-    { writeDisk };
+  // channel isn't available under a pure IPC mock — and read back what the shell
+  // actually sent, so an absence can be asserted rather than assumed.
+  (window as unknown as { __E2E__?: E2EHooks }).__E2E__ = {
+    writeDisk,
+    sent: () => SENT.map((entry) => ({ ...entry })),
+    clearSent: () => {
+      SENT.length = 0;
+    },
+  };
   mockWindows('main');
   mockIPC((cmd, args) => {
+    SENT.push({ cmd, args });
     switch (cmd) {
       case 'pick_workspace_folder':
         return '/mock/ws';
