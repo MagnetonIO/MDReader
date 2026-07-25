@@ -249,6 +249,44 @@ body {
   text-align: center;
 }
 
+/* A folder we could not READ — deliberately NOT styled like the quiet, faint
+   empty state, because it is not a benign condition and the user has to act. */
+.filetree--error {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text--1);
+  line-height: var(--line-height-body);
+}
+
+.filetree__error-title {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.filetree__error-path {
+  color: var(--color-text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text--2);
+  overflow-wrap: anywhere;
+}
+
+.filetree__error-reason,
+.filetree__error-remedy {
+  color: var(--color-faint);
+  overflow-wrap: anywhere;
+}
+
+.filetree__error-remedy {
+  color: var(--color-text);
+}
+
+/* The status bar's file-count slot when the listing failed. */
+.statusbar__alert {
+  color: var(--color-danger);
+}
+
 /* --- recent ----------------------------------------------------------- */
 
 .recent {

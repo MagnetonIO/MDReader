@@ -1004,3 +1004,84 @@ test('Model still loading: the shell, the tree and reading are all live while th
   expect(sent).toContain('list_workspace_files');
   expect(sent.indexOf('list_workspace_files')).toBeLessThan(sent.indexOf('start_import'));
 });
+
+// --- an unreadable folder is not an empty folder -------------------------
+//
+// The twelfth instance in this project of a failure rendered as a benign empty
+// state, and the first thing a real user hits. A bundled `.app` that macOS has
+// not granted a protected folder gets `EPERM` on every `opendir`; the shell
+// showed "No markdown files in this folder yet." over a corpus of 49 files, and
+// the status bar showed no count at all. A terminal launch inherits the
+// terminal's own grants and lists fine, which is why this survived every
+// terminal-only check.
+//
+// `?unreadable` puts the mocked backend in exactly that condition and
+// `?emptyfolder` is its control — a folder read successfully that genuinely
+// holds nothing. The two must paint DIFFERENTLY, so both are asserted, apart.
+
+test('An unreadable folder says it could not be read, with the reason and the remedy — not "no files"', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?unreadable');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+
+  // The workspace IS open — this is not the "no folder" state.
+  await expect(page.locator('.source-switcher__name')).toHaveText('ws');
+
+  // Non-emptiness first: the failure panel is really painted.
+  const panel = page.locator('.filetree--error');
+  await expect(panel).toBeVisible();
+  await expect(panel).not.toBeEmpty();
+
+  // It states the fact, the folder, the OS's own reason, and the remedy.
+  await expect(panel.getByText('This folder could not be read.')).toBeVisible();
+  await expect(panel.locator('.filetree__error-path')).toHaveText('/mock/ws');
+  await expect(panel.getByText(/Operation not permitted/)).toBeVisible();
+  await expect(panel.getByText(/System Settings/)).toBeVisible();
+
+  // And it is announced, not merely drawn.
+  await expect(page.getByRole('alert')).toContainText('could not be read');
+
+  // THE REGRESSION: the empty-state sentence must be nowhere on the page.
+  await expect(page.getByText('No markdown files in this folder yet.')).toHaveCount(0);
+
+  // The status bar names it too, instead of falling silent.
+  const status = page.locator('.statusbar');
+  await expect(status.getByText('Folder unreadable')).toBeVisible();
+  const title = await status
+    .locator('span[title]')
+    .filter({ hasText: 'Folder unreadable' })
+    .getAttribute('title');
+  expect(title).toContain('Operation not permitted');
+  expect(title).toContain('System Settings');
+});
+
+test('A listing that has not answered yet says so — it does not pre-claim "no files"', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?listingpending');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+
+  // The folder IS adopted; the read simply has not come back. Observed live in
+  // the .app: this is the window macOS holds open while showing its consent
+  // prompt, and the app used to fill it with a false claim about the folder.
+  await expect(page.locator('.source-switcher__name')).toHaveText('ws');
+  await expect(page.locator('.filetree__empty')).toHaveText('Loading…');
+  await expect(page.getByText('No markdown files in this folder yet.')).toHaveCount(0);
+});
+
+test('A genuinely empty folder still says it is empty — the empty state survives the fix', async ({
+  page,
+}) => {
+  await page.goto('/e2e.html?emptyfolder');
+  await page.getByRole('button', { name: /^Open…$/ }).click();
+
+  // The workspace is open, and the tree is the EMPTY tree, not the error panel.
+  await expect(page.locator('.source-switcher__name')).toHaveText('ws');
+  await expect(page.getByText('No markdown files in this folder yet.')).toBeVisible();
+
+  // It was read successfully — so none of the failure surfaces appear.
+  await expect(page.locator('.filetree--error')).toHaveCount(0);
+  await expect(page.getByText('This folder could not be read.')).toHaveCount(0);
+  await expect(page.locator('.statusbar').getByText('Folder unreadable')).toHaveCount(0);
+});

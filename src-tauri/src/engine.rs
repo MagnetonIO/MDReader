@@ -577,6 +577,75 @@ pub struct WorkspaceListing {
     pub from_index: bool,
 }
 
+/// Why a workspace listing could not be produced.
+///
+/// Typed on purpose. `Unreadable` is the operating system **refusing to read**
+/// the folder — on macOS that is the privacy (TCC) layer withholding
+/// `~/Documents`, `~/Desktop` or `~/Downloads` from an app that holds no grant;
+/// elsewhere it is an ordinary mode denial. That is a categorically different
+/// fact from a folder we read perfectly well which simply holds no markdown,
+/// and the two must never render the same. Collapsing them is precisely what
+/// let a permission denial reach the user as "No markdown files in this folder
+/// yet." — an answer that is not merely unhelpful but false.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ListingError {
+    /// The folder could not be READ. Carries the folder, the OS's own words,
+    /// and what the user has to do about it.
+    Unreadable {
+        /// The folder the walk was refused on.
+        path: String,
+        /// The underlying OS error, verbatim.
+        reason: String,
+        /// The concrete grant the user must make, and where.
+        remedy: String,
+    },
+    /// Every other listing failure (no workspace open, a superseded epoch, an
+    /// index read that failed).
+    Failed {
+        /// The failure, as text.
+        message: String,
+    },
+}
+
+impl ListingError {
+    /// What the user must actually do to grant the access. Platform-specific
+    /// because the remedy is: on macOS the folder permission is a privacy
+    /// grant that only System Settings can give, and no amount of retrying
+    /// inside the app will produce it.
+    #[cfg(target_os = "macos")]
+    pub(crate) const REMEDY: &'static str =
+        "macOS is withholding this folder from MDReader. Open System Settings › Privacy & Security › Files and Folders, enable the folder for MDReader (or grant Full Disk Access), then choose the folder again.";
+    /// The non-macOS remedy: an ordinary filesystem permission.
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const REMEDY: &'static str =
+        "Your account does not have permission to read this folder. Adjust the folder's permissions, then choose the folder again.";
+
+    /// Classify an I/O failure that occurred while walking `path`. A
+    /// [`PermissionDenied`](std::io::ErrorKind::PermissionDenied) — `EPERM`
+    /// from macOS's privacy layer, `EACCES` from a unix mode — becomes
+    /// [`Unreadable`](Self::Unreadable); anything else stays generic.
+    fn from_walk(path: &Path, err: &std::io::Error) -> Self {
+        if err.kind() == std::io::ErrorKind::PermissionDenied {
+            Self::Unreadable {
+                path: path.display().to_string(),
+                reason: err.to_string(),
+                remedy: Self::REMEDY.to_string(),
+            }
+        } else {
+            Self::Failed {
+                message: format!("scan: {err}"),
+            }
+        }
+    }
+}
+
+impl From<String> for ListingError {
+    fn from(message: String) -> Self {
+        Self::Failed { message }
+    }
+}
+
 /// One candidate when a wikilink target is ambiguous.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WikiCandidate {
@@ -1026,7 +1095,7 @@ pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgr
 pub fn list_workspace_files(
     root: String,
     workspace: State<'_, WorkspaceState>,
-) -> Result<WorkspaceListing, String> {
+) -> Result<WorkspaceListing, ListingError> {
     list_workspace_files_guarded(&workspace, &root, || {})
 }
 
@@ -1038,7 +1107,7 @@ fn list_workspace_files_guarded(
     workspace: &WorkspaceState,
     root: &str,
     gate: impl FnOnce(),
-) -> Result<WorkspaceListing, String> {
+) -> Result<WorkspaceListing, ListingError> {
     // Capture the epoch ONCE — root + engine + status are one consistent snapshot.
     let epoch = workspace
         .current()
@@ -1068,7 +1137,7 @@ fn list_workspace_files_guarded(
     // previous workspace's listing.
     epoch
         .finish(workspace, listing)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|_| ListingError::from(StaleEpoch::message()))
 }
 
 /// Build sidebar rows from the index's documents, filtered to those under
@@ -1078,7 +1147,7 @@ fn index_listing(
     db: &EmbeddedCatDb,
     src_root: &Path,
     req_root: &Path,
-) -> Result<Vec<FileEntry>, String> {
+) -> Result<Vec<FileEntry>, ListingError> {
     let docs = db
         .store()
         .list_documents()
@@ -1100,13 +1169,19 @@ fn index_listing(
 /// the gitignore-respecting scan (the *kept* set) against the gitignore-off scan
 /// (all files, hidden/`.contextignore`/oversize still excluded) — so a file is
 /// `ignored` exactly when a gitignore rule dropped it.
-fn fs_listing(root: &Path) -> Result<Vec<FileEntry>, String> {
+///
+/// A walk the OS refuses returns [`ListingError::Unreadable`], never `Ok(vec![])`:
+/// "we walked this folder and it holds no markdown" and "we were not allowed to
+/// walk this folder" are different answers, and only the first one is an empty
+/// workspace. An empty `Ok` here is therefore always the genuine empty case.
+fn fs_listing(root: &Path) -> Result<Vec<FileEntry>, ListingError> {
     let kept: HashSet<String> = scan_root(root, &scan_options(true))
-        .map_err(|err| format!("scan: {err}"))?
+        .map_err(|err| ListingError::from_walk(root, &err))?
         .into_iter()
         .map(|file| file.rel)
         .collect();
-    let all = scan_root(root, &scan_options(false)).map_err(|err| format!("scan: {err}"))?;
+    let all =
+        scan_root(root, &scan_options(false)).map_err(|err| ListingError::from_walk(root, &err))?;
 
     let mut entries = Vec::new();
     for file in all {
@@ -1596,6 +1671,73 @@ mod tests {
 
         // A foreign root is a hard error.
         assert!(validate_import_root(&epoch, foreign.to_str().unwrap()).is_err());
+    }
+
+    /// The twelfth-instance guard: a folder the OS refuses to read reports
+    /// **as unreadable, with the reason**, while a folder that genuinely holds
+    /// no markdown still reports **as empty**. Two different outcomes, asserted
+    /// separately — because rendering the first as the second is a false
+    /// statement about the user's disk, and it is the first thing a real user
+    /// hits when macOS has not granted the app the folder.
+    ///
+    /// Revert-RED: in `fs_listing`, map the scan error with
+    /// `|err| ListingError::from_walk(root, &err)` instead
+    /// of `ListingError::from_walk` and the `Unreadable` match fails (the
+    /// denial degrades to the generic bucket that carries no remedy). Make
+    /// `fs_listing` return `Ok(Vec::new())` on error and the `expect_err`
+    /// fails — the denied folder comes back as an empty listing, which is the
+    /// shipped bug.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_folder_reports_why_and_an_empty_folder_still_reports_empty() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_g, granted) = workspace_dir();
+        let ws = WorkspaceState::granted(granted.clone());
+
+        // ---- the genuine empty case: readable, and it really holds nothing.
+        let empty = granted.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let listing = list_workspace_files_guarded(&ws, empty.to_str().unwrap(), || {})
+            .expect("a readable empty folder is not an error");
+        assert!(
+            listing.entries.is_empty(),
+            "it is reported as empty: {:?}",
+            listing.entries
+        );
+
+        // ---- the denial case: it HAS markdown, the OS just will not hand it over.
+        let locked = granted.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("real.md"), "# Real").unwrap();
+        let mut mode = fs::metadata(&locked).unwrap().permissions();
+        mode.set_mode(0o000);
+        fs::set_permissions(&locked, mode).unwrap();
+
+        let denied = list_workspace_files_guarded(&ws, locked.to_str().unwrap(), || {});
+        let mut mode = fs::metadata(&locked).unwrap().permissions();
+        mode.set_mode(0o700);
+        fs::set_permissions(&locked, mode).unwrap();
+
+        let err = denied.expect_err("a folder we cannot READ is never an empty listing");
+        match err {
+            ListingError::Unreadable {
+                path,
+                reason,
+                remedy,
+            } => {
+                assert!(path.contains("locked"), "it names the folder: {path}");
+                assert!(
+                    reason.to_lowercase().contains("permission denied"),
+                    "it carries the OS's own reason: {reason}"
+                );
+                assert!(
+                    !remedy.is_empty(),
+                    "and tells the user what to grant: {remedy}"
+                );
+            }
+            other => panic!("expected an unreadable folder, got {other:?}"),
+        }
     }
 
     #[test]

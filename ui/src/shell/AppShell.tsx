@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   listWorkspaceFiles,
+  listingFailureOf,
   onFsChanged,
   onWatchError,
   makeSearchAdapter,
@@ -94,6 +95,7 @@ export function AppShell() {
   const loading = useSourcesStore((state) => state.loading);
   const importState = useSourcesStore((state) => state.importState);
   const fromIndex = useSourcesStore((state) => state.fromIndex);
+  const listingError = useSourcesStore((state) => state.listingError);
 
   const theme = useSettingsStore((state) => state.theme);
   const readingFont = useSettingsStore((state) => state.readingFont);
@@ -184,8 +186,15 @@ export function AppShell() {
       const sources = useSourcesStore.getState();
       sources.setFiles(listing.files);
       sources.setFromIndex(listing.fromIndex);
-    } catch {
-      /* non-Tauri or unreadable — leave the list as-is */
+      sources.setListingError(null);
+    } catch (cause) {
+      if (openEpochRef.current !== epoch) return;
+      // A refresh that could not read the folder must SAY so. Leaving the old
+      // list up would present a stale tree as the live one; silently dropping
+      // it would present a denial as an empty folder. Name the failure instead.
+      const failure = listingFailureOf(cause);
+      if (failure) useSourcesStore.getState().setListingError(failure);
+      /* not a backend failure (e.g. no Tauri) — leave the list as-is */
     }
   }, []);
 
@@ -200,11 +209,23 @@ export function AppShell() {
         if (openEpochRef.current === epoch) {
           sources.setFiles(listing.files);
           sources.setFromIndex(listing.fromIndex);
+          sources.setListingError(null);
         }
-      } catch {
+      } catch (cause) {
         if (openEpochRef.current === epoch) {
+          // THE bug this guards: clearing `files` and stopping here rendered a
+          // folder the OS refused to read as "No markdown files in this folder
+          // yet." — a false statement about the user's disk. The list is still
+          // cleared (we have no listing), but the REASON travels with it so the
+          // sidebar and status bar can say the folder is unreadable and why.
           sources.setFiles([]);
           sources.setFromIndex(false);
+          sources.setListingError(
+            listingFailureOf(cause) ?? {
+              kind: 'failed',
+              message: cause instanceof Error ? cause.message : String(cause),
+            },
+          );
         }
       } finally {
         // Generation-aware clear: a stale listing can't clear a newer open's
@@ -1434,6 +1455,7 @@ export function AppShell() {
           recent={visibleRecent}
           activePath={activeTab?.docRef.path ?? null}
           loading={loading}
+          listingError={listingError}
           onPickFolder={onPickFolder}
           onOpenFile={openFile}
           onOpenRecent={openRef}
@@ -1510,6 +1532,7 @@ export function AppShell() {
         words={docWords}
         watcher={watcher}
         fileCount={files.length}
+        listingError={listingError}
         importState={importState}
         fromIndex={fromIndex}
         onRetryIndex={retryIndex}

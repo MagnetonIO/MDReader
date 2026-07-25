@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated bundle Info.plist by tauri-bundler (and used as-is
+  by `tauri dev` on macOS).
+
+  Why these keys exist at all: MDReader is NOT sandboxed, but macOS still gates
+  ~/Documents, ~/Desktop and ~/Downloads behind the privacy (TCC) layer. When
+  the app first opens a folder under one of them, the system raises the consent
+  prompt — and the string it shows the user is the matching
+  NS*FolderUsageDescription from this file. Without the key there is no sentence
+  to show, and the request is far more likely to be refused outright with EPERM
+  and no prompt at all, which leaves the user with no route to grant access from
+  inside the app.
+
+  Scope note: these are the three user folders a person actually keeps notes in,
+  and nothing more. No Full Disk Access, no NSSystemAdministrationUsageDescription,
+  no removable volumes. Each key only ever produces a prompt when the user has
+  themselves chosen a folder in that location.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>MDReader needs access to your Documents folder to list and read the markdown files in the workspace folder you choose.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>MDReader needs access to your Desktop folder to list and read the markdown files in the workspace folder you choose.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>MDReader needs access to your Downloads folder to list and read the markdown files in the workspace folder you choose.</string>
+</dict>
+</plist>

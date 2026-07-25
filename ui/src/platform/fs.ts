@@ -18,6 +18,7 @@ import {
   type FsChanged,
   type WatchError,
   type ImportProgress,
+  type ListingError,
   type WikiResolution as BindingWikiResolution,
   type SearchHitDto,
   type SearchBatch,
@@ -49,6 +50,55 @@ export interface WorkspaceFile {
 export interface WorkspaceListing {
   files: WorkspaceFile[];
   fromIndex: boolean;
+}
+
+/**
+ * Why a listing failed — the UI-side mirror of the backend's `ListingError`.
+ *
+ * `unreadable` is the OS refusing to read the folder (on macOS, the privacy
+ * layer withholding a protected folder from an app with no grant). It is kept
+ * separate from every other failure because it is the only one the *user* can
+ * fix, and because it must never be shown as an empty folder — the folder is
+ * not empty, we just cannot see into it.
+ */
+export type ListingFailure =
+  | { kind: 'unreadable'; path: string; reason: string; remedy: string }
+  | { kind: 'failed'; message: string };
+
+/** A listing failure carried on a thrown `Error`, so callers can name the cause. */
+export class ListingFailedError extends Error {
+  readonly failure: ListingFailure;
+
+  constructor(failure: ListingFailure) {
+    super(
+      failure.kind === 'unreadable'
+        ? `${failure.path} could not be read: ${failure.reason}`
+        : failure.message,
+    );
+    this.name = 'ListingFailedError';
+    this.failure = failure;
+  }
+}
+
+/** Narrow an unknown thrown value to its listing failure, if it carries one. */
+export function listingFailureOf(cause: unknown): ListingFailure | null {
+  return cause instanceof ListingFailedError ? cause.failure : null;
+}
+
+/** Normalise the backend's tagged error into the UI-side union. A payload that
+ *  is not the tagged shape (a mocked IPC, an older backend) degrades to
+ *  `failed` rather than being mistaken for a readable-but-empty folder. */
+function normalizeListingError(error: ListingError | string): ListingFailure {
+  if (typeof error === 'string') return { kind: 'failed', message: error };
+  if (error.kind === 'unreadable') {
+    return {
+      kind: 'unreadable',
+      path: error.path,
+      reason: error.reason,
+      remedy: error.remedy,
+    };
+  }
+  return { kind: 'failed', message: error.message };
 }
 
 /** The canonical grant plus the generation its watcher was armed under. */
@@ -147,11 +197,15 @@ export async function setWorkspace(root: string): Promise<string> {
 /**
  * List the markdown files under `root`, from the engine index once an import has
  * finished (gitignored files already dropped) or a live filesystem scan before
- * then (gitignored files flagged for dimming). Throws on backend error.
+ * then (gitignored files flagged for dimming).
+ *
+ * Throws a [`ListingFailedError`] on backend error, carrying the typed cause —
+ * in particular whether the folder could not be READ. Callers must never turn
+ * that throw into an empty file list: an unreadable folder is not an empty one.
  */
 export async function listWorkspaceFiles(root: string): Promise<WorkspaceListing> {
   const result = await commands.listWorkspaceFiles(root);
-  if (result.status === 'error') throw new Error(result.error);
+  if (result.status === 'error') throw new ListingFailedError(normalizeListingError(result.error));
   return {
     files: result.data.entries.map(normalizeFile),
     fromIndex: result.data.from_index,
