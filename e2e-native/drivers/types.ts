@@ -26,7 +26,11 @@
  * MUST throw on a genuine read error rather than return a false 0 / empty string.
  * A broken read must never masquerade as "not found / count 0", or an absence
  * assertion could false-pass. Only a successful read that genuinely found nothing
- * returns 0 / "".
+ * returns 0 / "". For the COUNTS that is stricter than "no AX/WebDriver error
+ * occurred": a driver must not return 0 from a read path that could not have
+ * counted anything in the first place (on macOS: an app publishing no web area,
+ * or no element classes at all — see `ax-helper.ts`), because `jumpToHit` reads
+ * exactly that 0 as "the palette is gone".
  */
 
 import type { Chord } from '../flows.ts';
