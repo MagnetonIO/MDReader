@@ -1,3 +1,7 @@
 [toolchain]
-channel = "stable"
+# Pinned, not "stable": rustfmt's output changes between releases, so an
+# unversioned channel means the CI `cargo fmt --check` gate breaks the first time
+# a runner image ships a newer toolchain — independent of any code change. Bump
+# this deliberately (and run `cargo fmt --all` in the same commit).
+channel = "1.94.0"
 components = ["rustfmt", "clippy"]
