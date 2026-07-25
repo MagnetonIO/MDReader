@@ -140,8 +140,22 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         return rows >= need;
       }, 15_000);
       if (!ok) {
+        // Say WHICH state the tree is actually in. The tree renders one of two
+        // shapes, and they mean opposite things: the `.filetree__empty`
+        // placeholder is the app TELLING us it has no workspace/no markdown to
+        // list (the grant genuinely failed — what this step exists to catch),
+        // whereas a container with neither rows nor placeholder is the app
+        // rendering something this read cannot see. Reading a bare 0 without
+        // that distinction is how a previous lane mistook an ungranted workspace
+        // for a broken read path (see docs/testing/gui-e2e.md).
+        const container = await diagnose(d, 'filetree');
+        const placeholder = await diagnose(d, 'filetree__empty');
         throw new Error(
-          `file tree not populated: ${rows} rows < required ${need} — the seeded workspace was not granted/listed.`,
+          `file tree not populated: ${rows} rows < required ${need} — the seeded workspace was not granted/listed. ` +
+            `Tree container: ${container}, "no files" placeholder: ${placeholder}` +
+            (placeholder === '1'
+              ? ' — the tree rendered its OWN empty state, so the app has no workspace (or no markdown in it).'
+              : ''),
         );
       }
       return `workspace granted — file tree populated with ${rows} rows (>= ${need})`;
@@ -513,6 +527,20 @@ function required<K extends 'scopedText' | 'clickIn' | 'doubleClickIn'>(
     );
   }
   return fn.bind(d) as NonNullable<PlatformDriver[K]>;
+}
+
+/**
+ * Count `cssClass` for a FAILURE MESSAGE. Only ever called on a path that is
+ * already failing, and it never feeds an assertion — so a read that cannot be
+ * performed is reported as the string `UNREADABLE` rather than allowed to
+ * replace the failure being explained. It is never turned into a 0.
+ */
+async function diagnose(d: PlatformDriver, cssClass: string): Promise<string> {
+  try {
+    return String(await d.countClass(cssClass));
+  } catch {
+    return 'UNREADABLE';
+  }
 }
 
 /** Format the optional frame-oracle corroboration for a step's detail line. */

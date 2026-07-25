@@ -11,6 +11,9 @@
 //
 //   axquery count    <pid> <cssClass>   — print the number of elements whose
 //                                          AXDOMClassList contains <cssClass>.
+//                                          Exits 5 rather than printing 0 when the
+//                                          class-list channel itself is not proven
+//                                          alive (see EXIT CODES).
 //   axquery text     <pid> [cssClass]   — print the text (AXValue/AXTitle/
 //                                          AXDescription) of every element, or,
 //                                          if <cssClass> is given, only of the
@@ -51,6 +54,20 @@
 //      from 3 so a caller can say "that control is not on screen" rather than
 //      "the AX read broke", and distinct from 0 so it can never be mistaken for
 //      a usable rectangle.
+//   5  `count` came out 0 while the CLASS-LIST CHANNEL ITSELF is not proven
+//      alive: the app publishes no `AXWebArea` at all, not one element in its
+//      whole tree carries a non-empty `AXDOMClassList`, or the walk could not
+//      see the whole tree (it loops, or is deeper than MAX_DEPTH). Every AX call
+//      succeeded, so this is not a
+//      3 — but a 0 from a read path that could not have counted anything is not
+//      evidence of absence, and `jumpToHit` asserts an absence (`.mdsearch`
+//      count == 0) on exactly this number. This is not hypothetical: with the
+//      login session LOCKED, macOS vends this app no window and no web area (its
+//      `AXWindows[0]` is the application element itself, whose children loop back
+//      to it), so every class count reads 0 while the app is running fine. See
+//      `docs/testing/gui-e2e.md`. `AX_UNREADABLE:` goes to stderr; the TS side
+//      retries briefly (the web area lands a beat after the window) and then
+//      THROWS. A NON-ZERO count needs no witness — it is its own proof.
 import ApplicationServices
 import Foundation
 
@@ -115,6 +132,35 @@ func frame(_ el: AXUIElement) throws -> CGRect? {
     return CGRect(origin: origin, size: size)
 }
 
+/// How deep any walk below will descend before it stops and says so.
+///
+/// The AX tree is not always a tree. macOS publishes a DEGENERATE, SELF-LOOPING
+/// one for an app whose windows it will not vend — observed here whenever the
+/// login session is locked: the application element's `AXChildren[0]` is the
+/// application element again, forever. An unguarded recursive walk follows that
+/// until the stack dies (`SIGSEGV`, "Thread stack size exceeded due to excessive
+/// recursion"), which is a crash where the caller deserves a diagnosis. The real
+/// tree is nothing like this deep: the app's whole shell measures 9 levels below
+/// the window, its menu bar 7, so 256 is two orders of margin.
+let MAX_DEPTH = 256
+
+/// Set when a walk had to stop short of the whole tree: it hit {@link MAX_DEPTH},
+/// or it reached an element that is its own ancestor. Either way it did not see
+/// everything, so a `count` of 0 taken under this flag is not evidence of
+/// absence.
+var treeTruncated = false
+
+/// Has `el` already been entered on the path from the root — i.e. does following
+/// it loop? The depth cap alone is not enough: a self-loop one level up from a
+/// big subtree (an application element that lists itself AND a menu bar) makes
+/// the walk re-enumerate that subtree once per level, which is 256 x the whole
+/// menu tree — minutes of work for an answer that is already meaningless. This
+/// cuts it at the first repeat instead. Cheap: the path is 9 deep in the real
+/// tree, and `CFEqual` on an AXUIElement is a local comparison.
+func loops(_ el: AXUIElement, _ path: [AXUIElement]) -> Bool {
+    path.contains { CFEqual($0, el) }
+}
+
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[2]) else {
     FileHandle.standardError.write(
@@ -129,48 +175,94 @@ do {
         guard args.count == 4 else { exit(2) }
         let cls = args[3]
         var count = 0
-        func walk(_ el: AXUIElement) throws {
-            if try classList(el).contains(cls) { count += 1 }
-            for child in try children(el) { try walk(child) }
+        // Two WITNESSES that the class-list channel is alive, gathered on the same
+        // walk: WebKit's content root, and any element at all publishing a
+        // non-empty class list. They cost nothing once found.
+        var webAreaSeen = false
+        var classListSeen = false
+        var path: [AXUIElement] = []
+        func walk(_ el: AXUIElement, _ depth: Int) throws {
+            if depth > MAX_DEPTH || loops(el, path) {
+                treeTruncated = true
+                return
+            }
+            let classes = try classList(el)
+            if !classes.isEmpty { classListSeen = true }
+            if classes.contains(cls) { count += 1 }
+            if !webAreaSeen, try role(el) == "AXWebArea" { webAreaSeen = true }
+            path.append(el)
+            for child in try children(el) { try walk(child, depth + 1) }
+            path.removeLast()
         }
-        try walk(app)
+        try walk(app, 0)
+        // FAIL CLOSED (exit 5): "no element carries this class" and "this process
+        // cannot see element classes at all" are different facts, and only the
+        // first one is an answer. Never print a 0 the caller would read as absence.
+        if count == 0 && !(webAreaSeen && classListSeen && !treeTruncated) {
+            FileHandle.standardError.write(
+                "AX_UNREADABLE: count(\(cls)) = 0 but the class-list channel is not proven alive "
+                    .appending("(AXWebArea seen: \(webAreaSeen), any AXDOMClassList seen: \(classListSeen), ")
+                    .appending("whole tree walked: \(!treeTruncated)) ")
+                    .appending("— refusing to report 0 as \"absent\"\n").data(using: .utf8)!)
+            exit(5)
+        }
         print(count)
 
     case "text":
         let scope = args.count > 3 ? args[3] : ""
         var lines: [String] = []
-        func collect(_ el: AXUIElement) throws {
+        var path: [AXUIElement] = []
+        func collect(_ el: AXUIElement, _ depth: Int) throws {
+            if depth > MAX_DEPTH || loops(el, path) {
+                treeTruncated = true
+                return
+            }
             let text = try nodeText(el)
             if !text.isEmpty { lines.append(text) }
-            for child in try children(el) { try collect(child) }
+            path.append(el)
+            for child in try children(el) { try collect(child, depth + 1) }
+            path.removeLast()
         }
         if scope.isEmpty {
-            try collect(app)
+            try collect(app, 0)
         } else {
             // Descend to each element whose class list contains `scope`, then gather
             // all text beneath it. Does not recurse past a match (a scope root
             // already yields its whole subtree).
-            func find(_ el: AXUIElement) throws {
+            func find(_ el: AXUIElement, _ depth: Int) throws {
+                if depth > MAX_DEPTH || loops(el, path) {
+                    treeTruncated = true
+                    return
+                }
                 if try classList(el).contains(scope) {
-                    try collect(el)
+                    try collect(el, depth)
                 } else {
-                    for child in try children(el) { try find(child) }
+                    path.append(el)
+                    for child in try children(el) { try find(child, depth + 1) }
+                    path.removeLast()
                 }
             }
-            try find(app)
+            try find(app, 0)
         }
         print(lines.joined(separator: "\n"))
 
     case "headings":
         var lines: [String] = []
-        func walk(_ el: AXUIElement) throws {
+        var path: [AXUIElement] = []
+        func walk(_ el: AXUIElement, _ depth: Int) throws {
+            if depth > MAX_DEPTH || loops(el, path) {
+                treeTruncated = true
+                return
+            }
             if try role(el) == "AXHeading" {
                 let text = try nodeText(el)
                 if !text.isEmpty { lines.append(text) }
             }
-            for child in try children(el) { try walk(child) }
+            path.append(el)
+            for child in try children(el) { try walk(child, depth + 1) }
+            path.removeLast()
         }
-        try walk(app)
+        try walk(app, 0)
         print(lines.joined(separator: "\n"))
 
     case "frame":
@@ -183,21 +275,35 @@ do {
         var matches: [AXUIElement] = []
         func subtreeText(_ el: AXUIElement) throws -> String {
             var lines: [String] = []
-            func collect(_ node: AXUIElement) throws {
+            var inner: [AXUIElement] = []
+            func collect(_ node: AXUIElement, _ depth: Int) throws {
+                if depth > MAX_DEPTH || loops(node, inner) {
+                    treeTruncated = true
+                    return
+                }
                 let text = try nodeText(node)
                 if !text.isEmpty { lines.append(text) }
-                for child in try children(node) { try collect(child) }
+                inner.append(node)
+                for child in try children(node) { try collect(child, depth + 1) }
+                inner.removeLast()
             }
-            try collect(el)
+            try collect(el, 0)
             return lines.joined(separator: " ")
         }
-        func walk(_ el: AXUIElement) throws {
+        var path: [AXUIElement] = []
+        func walk(_ el: AXUIElement, _ depth: Int) throws {
+            if depth > MAX_DEPTH || loops(el, path) {
+                treeTruncated = true
+                return
+            }
             if try classList(el).contains(cls) {
                 if try needle.isEmpty || subtreeText(el).contains(needle) { matches.append(el) }
             }
-            for child in try children(el) { try walk(child) }
+            path.append(el)
+            for child in try children(el) { try walk(child, depth + 1) }
+            path.removeLast()
         }
-        try walk(app)
+        try walk(app, 0)
         // FAIL CLOSED: no such element, or one the window server places
         // nowhere, is exit 4 — never a fabricated rectangle the caller would
         // then click.
