@@ -65,6 +65,15 @@ use crate::engine::{Epoch, StaleEpoch};
 pub struct SchemaSummary {
     /// Schema name (e.g. `decision_overlay`).
     pub name: String,
+    /// The engine's persisted version ordinal for this schema, counting from
+    /// 1 in order of first appearance — `None` before the index has been
+    /// opened, when the shape is known from the registration but no version
+    /// has been assigned to it yet.
+    pub version: Option<u32>,
+    /// `blake3:` checksum of the persisted schema. Two versions are identical
+    /// exactly when these match. `None` under the same condition as
+    /// [`Self::version`].
+    pub checksum: Option<String>,
     /// Its entities, sorted.
     pub entities: Vec<String>,
     /// How many generating arrows it declares.
@@ -209,6 +218,19 @@ pub struct InspectedFact {
     /// Whether the fact is *actually* committed to the overlay graph right
     /// now — read from storage, not inferred from [`Self::state`].
     pub in_graph: bool,
+    /// blake3 of the cited text **as it stood when the reviewer ruled on it**;
+    /// `None` while the fact is unreviewed.
+    pub reviewed_content_hash: Option<String>,
+    /// The cited text has changed since the review was made.
+    ///
+    /// Only ever true for a **preserved rejection**: a re-import keeps a
+    /// rejection rather than silently re-proposing the claim a human ruled
+    /// out, and raises this instead. Render it as an explicit affordance —
+    /// *"previously rejected; the source has since changed — review again?"* —
+    /// so un-rejecting stays a deliberate act. (An approval whose text changed
+    /// is reset to `proposed` outright, which clears the review, so this stays
+    /// false for it.)
+    pub source_changed_since_review: bool,
 }
 
 /// What approving a fact wrote.
@@ -285,6 +307,12 @@ pub struct SchemaEquationDto {
 pub struct SchemaDetail {
     /// Schema name.
     pub name: String,
+    /// The engine's persisted version ordinal; `None` before the index has
+    /// been opened (see [`SchemaSummary::version`]).
+    pub version: Option<u32>,
+    /// `blake3:` checksum of the persisted schema; `None` under the same
+    /// condition.
+    pub checksum: Option<String>,
     /// Typeside type names the attributes draw from, sorted.
     pub typeside: Vec<String>,
     /// Entities with their attributes.
@@ -406,27 +434,102 @@ pub struct SpanQuery {
 /// [`crate::engine`] composes the engine from, so introspecting it describes
 /// the schemas the engine actually validated.
 ///
-/// The engine exposes no accessor for its registered schemas, so this is the
-/// honest source available: one function, used by both the composition root
-/// and this introspection. If `catdb-engine` ever grows a
-/// `schemas()` accessor, this should read through it instead — that would
-/// remove the (currently structural) assumption that the two agree.
-fn registered_schemas() -> (Vec<Schema>, Vec<String>) {
+/// A schema the surfaces can describe: its kernel shape, plus the version
+/// identity the engine persisted for it.
+struct KnownSchema {
+    schema: Schema,
+    /// Persisted version ordinal and content checksum, once the engine has
+    /// stored this schema. `None` before the index has been opened.
+    version: Option<u32>,
+    checksum: Option<String>,
+    approval_required: bool,
+}
+
+/// The schemas this workspace can be viewed through.
+///
+/// The **shape** comes from what the engine persisted
+/// ([`EmbeddedCatDb::stored_schemas`], newest version per name, reconstructed
+/// through [`StoredSchema::schema`]) — so what the Schema View draws is the
+/// engine's own stored bytes, not a re-derivation that merely ought to match.
+/// Each carries its persisted version ordinal and content checksum.
+///
+/// Two things still come from the registration, because the schema catalog
+/// does not persist them:
+///
+/// * **Order.** Listing follows the domain's declaration order (`fs`, `md`,
+///   `kn`, `rx`, then the provenance cores, then the overlays) rather than the
+///   catalog's, because that order is the pipeline and the picker reads
+///   top-down. The catalog orders by name.
+/// * **`approval_required`.** It is a property of the *registration*
+///   ([`DomainRegistration::approval_required_schemas`]), not of the schema,
+///   and the stored spec envelope carries only the kernel schema body.
+///
+/// Before the engine is installed (no import yet) the shape falls back to the
+/// registration's own copy with no version — the schemas are genuinely known,
+/// they have simply not been versioned yet, and saying so beats inventing a
+/// number.
+///
+/// A schema the catalog holds but the live domain no longer registers is not
+/// listed: nothing here could answer `approval_required` for it honestly.
+fn known_schemas(db: Option<&EmbeddedCatDb>) -> Vec<KnownSchema> {
     let registration = mdreader_ingest::registration();
-    let approval = registration
+    let approval: Vec<String> = registration
         .approval_required_schemas
         .iter()
         .map(ToString::to_string)
         .collect();
-    (registration.schemas, approval)
+
+    // Newest persisted version per name. A read failure degrades to the
+    // registration shape rather than blanking the picker.
+    let mut latest: std::collections::HashMap<String, catdb_engine::StoredSchema> =
+        std::collections::HashMap::new();
+    for stored in db
+        .and_then(|db| db.stored_schemas().ok())
+        .unwrap_or_default()
+    {
+        let newer = latest
+            .get(&stored.name)
+            .is_none_or(|held| stored.version > held.version);
+        if newer {
+            latest.insert(stored.name.clone(), stored);
+        }
+    }
+
+    registration
+        .schemas
+        .into_iter()
+        .map(|declared| {
+            let name = declared.name.to_string();
+            let approval_required = approval.contains(&name);
+            match latest.get(&name).and_then(|stored| {
+                stored
+                    .schema()
+                    .ok()
+                    .map(|schema| (schema, stored.version, stored.checksum.clone()))
+            }) {
+                Some((schema, version, checksum)) => KnownSchema {
+                    schema,
+                    version: Some(version),
+                    checksum: Some(checksum),
+                    approval_required,
+                },
+                None => KnownSchema {
+                    schema: declared,
+                    version: None,
+                    checksum: None,
+                    approval_required,
+                },
+            }
+        })
+        .collect()
 }
 
 fn schema_summary(
-    schema: &Schema,
-    approval_required: bool,
+    known: &KnownSchema,
     engine: Option<&EmbeddedCatDb>,
     store: Option<&ProposalStore>,
 ) -> SchemaSummary {
+    let schema = &known.schema;
     let prefix = format!("{}.", schema.name);
     let object_count = engine
         .and_then(|db| db.store().objects_with_entity_prefix(&prefix).ok())
@@ -445,17 +548,21 @@ fn schema_summary(
         .unwrap_or(0);
     SchemaSummary {
         name: schema.name.to_string(),
+        version: known.version,
+        checksum: known.checksum.clone(),
         entities: schema.entities.iter().map(ToString::to_string).collect(),
         arrow_count: schema.arrows.len() as u32,
         attribute_count: schema.attributes.len() as u32,
         equation_count: schema.equations.len() as u32,
-        approval_required,
+        approval_required: known.approval_required,
         object_count,
         proposal_count,
     }
 }
 
-fn schema_detail(schema: &Schema, approval_required: bool) -> SchemaDetail {
+fn schema_detail(known: &KnownSchema) -> SchemaDetail {
+    let schema = &known.schema;
+    let approval_required = known.approval_required;
     let entities = schema
         .entities
         .iter()
@@ -475,6 +582,8 @@ fn schema_detail(schema: &Schema, approval_required: bool) -> SchemaDetail {
         .collect();
     SchemaDetail {
         name: schema.name.to_string(),
+        version: known.version,
+        checksum: known.checksum.clone(),
         typeside: schema
             .typeside
             .types
@@ -519,12 +628,14 @@ fn schema_detail(schema: &Schema, approval_required: bool) -> SchemaDetail {
 // View As
 // --------------------------------------------------------------------------
 
-/// Every schema registered into this workspace's engine, with live counts of
-/// what the graph and the proposal store hold for each.
+/// Every schema this workspace can be viewed through — persisted version and
+/// checksum included — with live counts of what the graph and the proposal
+/// store hold for each.
 ///
 /// Before the engine is installed (no import yet) the shape is still complete
-/// — the schemas are known from the registration — and the counts are `0`,
-/// which is the truth rather than a placeholder.
+/// — the schemas are known from the registration — while the version, the
+/// checksum, and the counts are absent or `0`, which is the truth rather than
+/// a placeholder. See [`known_schemas`].
 #[tauri::command]
 #[specta::specta]
 pub fn list_schemas(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<SchemaSummary>, String> {
@@ -536,19 +647,11 @@ fn list_schemas_guarded(
     gate: impl FnOnce(),
 ) -> Result<Vec<SchemaSummary>, String> {
     let epoch = current(state)?;
-    let (schemas, approval) = registered_schemas();
     let db = epoch.db();
     let store = epoch.proposals();
-    let summaries = schemas
+    let summaries = known_schemas(db.as_deref())
         .iter()
-        .map(|schema| {
-            schema_summary(
-                schema,
-                approval.iter().any(|name| *name == schema.name.to_string()),
-                db.as_deref(),
-                store.as_deref(),
-            )
-        })
+        .map(|known| schema_summary(known, db.as_deref(), store.as_deref()))
         .collect();
     gate();
     // EPOCH-GUARDED
@@ -581,10 +684,12 @@ fn project_corpus_guarded(
     gate: impl FnOnce(),
 ) -> Result<Projection, String> {
     let epoch = current(state)?;
-    let (schemas, _) = registered_schemas();
-    if !schemas.iter().any(|s| s.name.to_string() == schema) {
-        return Err(format!("no registered schema named `{schema}`"));
-    }
+    let db = epoch.db();
+    let schemas = known_schemas(db.as_deref());
+    let known = schemas
+        .iter()
+        .find(|known| known.schema.name.to_string() == schema)
+        .ok_or_else(|| format!("no registered schema named `{schema}`"))?;
     let prefix = format!("{schema}.");
     let mut projection = Projection {
         schema: schema.to_string(),
@@ -592,7 +697,7 @@ fn project_corpus_guarded(
         morphisms: Vec::new(),
         truncated: false,
     };
-    if let Some(db) = epoch.db() {
+    if let Some(db) = db {
         // Provenance and payload live in two different reads; join by id
         // rather than pick one and leave the other field empty.
         let mut headers = db
@@ -603,11 +708,11 @@ fn project_corpus_guarded(
         projection.truncated = headers.len() > limit as usize;
         headers.truncate(limit as usize);
         let mut values = std::collections::HashMap::new();
-        for entity in schemas
+        for entity in known
+            .schema
+            .entities
             .iter()
-            .find(|s| s.name.to_string() == schema)
-            .map(|s| s.entities.iter().map(|e| format!("{schema}.{e}")).collect())
-            .unwrap_or_else(Vec::new)
+            .map(|entity| format!("{schema}.{entity}"))
         {
             for (id, value) in db
                 .store()
@@ -658,7 +763,9 @@ fn project_corpus_guarded(
 // --------------------------------------------------------------------------
 
 /// Introspect one registered schema: entities with their attributes, arrows
-/// with domain and codomain, and the path equations it imposes.
+/// with domain and codomain, and the path equations it imposes — read back
+/// from what the engine persisted, and carrying that version's ordinal and
+/// checksum (see [`known_schemas`]).
 #[tauri::command]
 #[specta::specta]
 pub fn describe_schema(
@@ -674,12 +781,12 @@ fn describe_schema_guarded(
     gate: impl FnOnce(),
 ) -> Result<SchemaDetail, String> {
     let epoch = current(state)?;
-    let (schemas, approval) = registered_schemas();
+    let schemas = known_schemas(epoch.db().as_deref());
     let found = schemas
         .iter()
-        .find(|s| s.name.to_string() == schema)
+        .find(|known| known.schema.name.to_string() == schema)
         .ok_or_else(|| format!("no registered schema named `{schema}`"))?;
-    let detail = schema_detail(found, approval.iter().any(|name| *name == schema));
+    let detail = schema_detail(found);
     gate();
     // EPOCH-GUARDED
     epoch
@@ -927,6 +1034,8 @@ fn inspected(proposal: &StoredProposal, db: Option<&EmbeddedCatDb>) -> Inspected
         state: state_label(proposal),
         reviewer: proposal.review().reviewer.clone(),
         in_graph: db.is_some_and(|db| committed(db, proposal)),
+        reviewed_content_hash: proposal.reviewed_content_hash.clone(),
+        source_changed_since_review: proposal.source_changed_since_review(),
     }
 }
 
@@ -1089,6 +1198,59 @@ mod tests {
     // ----------------------------------------------------------------------
     // View As
     // ----------------------------------------------------------------------
+
+    /// The version and checksum are the ENGINE's, read back from what it
+    /// persisted — not a number this module made up, and not a re-derivation
+    /// that merely ought to agree.
+    ///
+    /// Asserted by looking the same schema up through
+    /// [`EmbeddedCatDb::stored_schemas`] and requiring an exact match on both
+    /// fields, so a summary can only carry a version the catalog actually
+    /// holds.
+    #[test]
+    fn schema_versions_and_checksums_come_from_the_engines_own_catalog() {
+        let harness = Harness::new();
+        let summaries = list_schemas_guarded(&harness.state, || {}).expect("list");
+        let stored = harness.db().stored_schemas().expect("stored schemas");
+        assert!(
+            !stored.is_empty(),
+            "opening the engine persisted the domain"
+        );
+
+        for summary in &summaries {
+            let newest = stored
+                .iter()
+                .filter(|s| s.name == summary.name)
+                .max_by_key(|s| s.version)
+                .unwrap_or_else(|| panic!("`{}` was persisted", summary.name));
+            assert_eq!(summary.version, Some(newest.version), "{}", summary.name);
+            assert_eq!(
+                summary.checksum.as_deref(),
+                Some(newest.checksum.as_str()),
+                "{}",
+                summary.name
+            );
+        }
+
+        // ...and the SHAPE is the persisted one too: the detail view is built
+        // from `StoredSchema::schema()`, so it must equal that reconstruction.
+        let detail =
+            describe_schema_guarded(&harness.state, "architecture_overlay", || {}).expect("detail");
+        let persisted = stored
+            .iter()
+            .filter(|s| s.name == "architecture_overlay")
+            .max_by_key(|s| s.version)
+            .expect("persisted")
+            .schema()
+            .expect("reconstructs");
+        assert_eq!(detail.version, Some(1));
+        let mut arrows: Vec<String> = detail.arrows.iter().map(|a| a.name.clone()).collect();
+        arrows.sort();
+        let mut expected: Vec<String> = persisted.arrows.keys().map(ToString::to_string).collect();
+        expected.sort();
+        assert_eq!(arrows, expected);
+        assert_eq!(detail.equations.len(), persisted.equations.len());
+    }
 
     /// The picker lists every registered schema, flags exactly the overlays as
     /// approval-required, and reports live counts from the two stores.
@@ -1428,6 +1590,13 @@ mod tests {
         assert_eq!(after.state, "rejected");
         assert_eq!(after.reviewer.as_deref(), Some("bob"));
         assert!(!after.in_graph);
+        // The rejection is stamped against the text it was a rejection OF, and
+        // nothing has changed under it yet.
+        assert_eq!(
+            after.reviewed_content_hash, after.provenance.content_hash,
+            "the review names the text it ruled on"
+        );
+        assert!(!after.source_changed_since_review);
         let projection = project_corpus_guarded(&harness.state, "architecture_overlay", 100, || {})
             .expect("project");
         assert!(projection.objects.is_empty());
@@ -1609,5 +1778,13 @@ mod tests {
         assert_eq!(summaries.len(), 10);
         assert!(summaries.iter().all(|s| s.object_count == 0));
         assert!(summaries.iter().all(|s| s.proposal_count == 0));
+        // Nothing has been persisted, so there is no version to report — and
+        // no number is invented to fill the field.
+        assert!(summaries.iter().all(|s| s.version.is_none()));
+        assert!(summaries.iter().all(|s| s.checksum.is_none()));
+        assert!(
+            summaries.iter().any(|s| s.approval_required),
+            "approval flags are a registration property and are known regardless"
+        );
     }
 }

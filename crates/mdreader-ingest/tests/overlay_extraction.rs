@@ -23,6 +23,7 @@ use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use mdreader_domain::extract::{architecture, decision, ApprovalState, Extraction, SourceDocument};
 use mdreader_ingest::proposals::{
     approve_and_promote, reject_and_retract, ProposalFilter, ProposalStore, StoredFact,
+    StoredProposal,
 };
 use uuid::Uuid;
 
@@ -864,8 +865,249 @@ fn a_reimport_of_an_unchanged_corpus_recognizes_every_fact_it_already_holds() {
     assert_eq!(first.len(), 32);
 }
 
-/// When the cited text itself changes under a fact's (deterministic) id, the
-/// review resets: a human accepted *that* text, and this is no longer it.
+/// Rewrite the prose under the `### Search API` heading. The heading — and so
+/// the fact's identity — is unchanged; the text it cites is not.
+fn edit_the_search_api_prose(workspace: &Workspace) {
+    let path = workspace.root.join("docs/arch/catdb-engine.md");
+    let text = std::fs::read_to_string(&path).expect("read");
+    let edited = text.replace(
+        "Hybrid retrieval over the indexed corpus.",
+        "Completely different prose about something else entirely.",
+    );
+    assert_ne!(edited, text, "the fixture prose must actually change");
+    std::fs::write(&path, edited).expect("write");
+}
+
+/// The `architecture_overlay.Interface` proposal for `Search API`.
+fn search_api_interface(workspace: &Workspace) -> StoredProposal {
+    workspace
+        .store
+        .list(&ProposalFilter {
+            source_path: Some("docs/arch/catdb-engine.md".into()),
+            ..ProposalFilter::default()
+        })
+        .expect("list")
+        .into_iter()
+        .find(|proposal| proposal.qualified() == "architecture_overlay.Interface")
+        .expect("Search API was proposed")
+}
+
+/// **A rejection is never silently undone.**
+///
+/// A human rejected this claim; a later edit to the prose it cites must not
+/// put it back in front of them as if nobody had ever ruled on it. In a corpus
+/// under active editing that would resurrect rejected noise on every reword —
+/// and with no trace that it had been rejected, which is precisely what an
+/// approval model exists to prevent.
+///
+/// The information is not discarded either: the reviewed hash still names the
+/// text that was rejected, so `source_changed_since_review` lets the Inspector
+/// offer an explicit "the source has since changed — review again?" instead of
+/// deciding that on the human's behalf.
+#[test]
+fn editing_the_cited_text_under_a_rejection_holds_it_and_flags_the_change() {
+    let workspace = workspace();
+    import(&workspace);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    let interface = search_api_interface(&workspace);
+    runtime
+        .block_on(reject_and_retract(
+            &workspace.store,
+            &workspace.engine,
+            interface.fact_id,
+            "bob",
+        ))
+        .expect("reject");
+    let rejected = workspace
+        .store
+        .get(interface.fact_id)
+        .expect("get")
+        .expect("there");
+    assert_eq!(rejected.state(), ApprovalState::Rejected);
+    assert_eq!(
+        rejected.reviewed_content_hash,
+        rejected.provenance().content_hash,
+        "the rejection is stamped against the text it was a rejection OF"
+    );
+    assert!(!rejected.source_changed_since_review());
+
+    edit_the_search_api_prose(&workspace);
+    import(&workspace);
+
+    let after = workspace
+        .store
+        .get(interface.fact_id)
+        .expect("get")
+        .expect("still there");
+    assert_eq!(
+        after.state(),
+        ApprovalState::Rejected,
+        "an edit to the source must NOT resurrect a rejected claim"
+    );
+    assert_eq!(
+        after.review().reviewer.as_deref(),
+        Some("bob"),
+        "and the record of who ruled it out survives"
+    );
+    assert!(
+        after.source_changed_since_review(),
+        "but the drift is surfaced, so re-review can be offered as a choice"
+    );
+    assert_eq!(
+        after.reviewed_content_hash,
+        rejected.provenance().content_hash,
+        "the flag names the OLD text — what the human actually rejected"
+    );
+    assert_ne!(
+        after.provenance().content_hash,
+        rejected.provenance().content_hash,
+        "...while the fact itself tracks the new text"
+    );
+
+    // Nothing reached the graph, on either import.
+    let (objects, morphisms) = overlay_in_graph(&workspace.engine);
+    assert!(objects.is_empty() && morphisms.is_empty());
+
+    // A further import with no edit leaves everything exactly as it stands —
+    // the held rejection is recognized, not re-decided.
+    import(&workspace);
+    let settled = workspace
+        .store
+        .get(interface.fact_id)
+        .expect("get")
+        .expect("there");
+    assert_eq!(settled, after);
+}
+
+/// Re-review is a deliberate act, and it works: approving a held rejection
+/// clears the flag and re-stamps the hash against the text now on disk.
+#[test]
+fn re_reviewing_a_held_rejection_clears_the_flag_and_restamps_the_hash() {
+    let workspace = workspace();
+    import(&workspace);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let interface = search_api_interface(&workspace);
+    runtime
+        .block_on(reject_and_retract(
+            &workspace.store,
+            &workspace.engine,
+            interface.fact_id,
+            "bob",
+        ))
+        .expect("reject");
+    edit_the_search_api_prose(&workspace);
+    import(&workspace);
+    assert!(workspace
+        .store
+        .get(interface.fact_id)
+        .expect("get")
+        .expect("there")
+        .source_changed_since_review());
+
+    runtime
+        .block_on(approve_and_promote(
+            &workspace.store,
+            &workspace.engine,
+            interface.fact_id,
+            "carol",
+        ))
+        .expect("a rejection may be reversed by a human");
+
+    let after = workspace
+        .store
+        .get(interface.fact_id)
+        .expect("get")
+        .expect("there");
+    assert_eq!(after.state(), ApprovalState::Approved);
+    assert_eq!(after.review().reviewer.as_deref(), Some("carol"));
+    assert!(
+        !after.source_changed_since_review(),
+        "carol ruled on the text that is there now"
+    );
+    assert_eq!(after.reviewed_content_hash, after.provenance().content_hash);
+    let (objects, _) = overlay_in_graph(&workspace.engine);
+    assert_eq!(objects.len(), 1, "and the deliberate approval landed");
+}
+
+/// The counters name what a re-import did to each review, so the three
+/// outcomes of a text change are distinguishable rather than lumped together.
+#[test]
+fn the_record_summary_counts_each_reconciliation_outcome_separately() {
+    let workspace = workspace();
+    import(&workspace);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    // One approved fact and one rejected fact, both cited to prose we are
+    // about to rewrite; everything else stays untouched.
+    let interface = search_api_interface(&workspace);
+    let component = workspace
+        .store
+        .list(&ProposalFilter {
+            source_path: Some("docs/arch/catdb-engine.md".into()),
+            ..ProposalFilter::default()
+        })
+        .expect("list")
+        .into_iter()
+        .find(|proposal| proposal.qualified() == "architecture_overlay.Component")
+        .expect("proposed");
+    runtime
+        .block_on(reject_and_retract(
+            &workspace.store,
+            &workspace.engine,
+            interface.fact_id,
+            "bob",
+        ))
+        .expect("reject");
+    runtime
+        .block_on(approve_and_promote(
+            &workspace.store,
+            &workspace.engine,
+            component.fact_id,
+            "alice",
+        ))
+        .expect("approve");
+
+    // Rewriting the `### Search API` prose changes the interface's own span
+    // AND the whole-file span the component is cited to.
+    edit_the_search_api_prose(&workspace);
+    let corpus: Vec<mdreader_domain::extract::SourceDocument> =
+        corpus_through_the_parser(&workspace.root);
+    let summary = workspace
+        .store
+        .record(&architecture::extract(&corpus))
+        .expect("record");
+
+    assert_eq!(summary.inserted, 0, "the corpus is already known");
+    assert_eq!(
+        summary.reproposed, 1,
+        "the approved component lost its approval"
+    );
+    assert_eq!(
+        summary.rejection_held, 1,
+        "the rejected interface kept its rejection"
+    );
+    assert!(
+        summary.refreshed >= 1,
+        "unreviewed facts moved with the text"
+    );
+    assert!(
+        summary.recognized >= 1,
+        "and the untouched files stood still"
+    );
+}
+
+/// When the cited text itself changes under an **approved** fact, the review
+/// resets: a human accepted *that* text, and this is no longer it.
 #[test]
 fn editing_the_cited_text_re_proposes_the_fact_it_supported() {
     let workspace = workspace();
@@ -875,16 +1117,7 @@ fn editing_the_cited_text_re_proposes_the_fact_it_supported() {
         .build()
         .expect("runtime");
 
-    let interface = workspace
-        .store
-        .list(&ProposalFilter {
-            source_path: Some("docs/arch/catdb-engine.md".into()),
-            ..ProposalFilter::default()
-        })
-        .expect("list")
-        .into_iter()
-        .find(|proposal| proposal.qualified() == "architecture_overlay.Interface")
-        .expect("Search API was proposed");
+    let interface = search_api_interface(&workspace);
     runtime
         .block_on(approve_and_promote(
             &workspace.store,
@@ -894,18 +1127,7 @@ fn editing_the_cited_text_re_proposes_the_fact_it_supported() {
         ))
         .expect("approve");
 
-    // Rewrite the prose *under* the `### Search API` heading. The heading (and
-    // so the fact's identity) is unchanged; the text it cites is not.
-    let path = workspace.root.join("docs/arch/catdb-engine.md");
-    let text = std::fs::read_to_string(&path).expect("read");
-    std::fs::write(
-        &path,
-        text.replace(
-            "Hybrid retrieval over the indexed corpus.",
-            "Completely different prose about something else entirely.",
-        ),
-    )
-    .expect("write");
+    edit_the_search_api_prose(&workspace);
     import(&workspace);
 
     let after = workspace
@@ -919,6 +1141,11 @@ fn editing_the_cited_text_re_proposes_the_fact_it_supported() {
         "the approval was for text that no longer exists"
     );
     assert_eq!(after.review().reviewer, None);
+    assert_eq!(
+        after.reviewed_content_hash, None,
+        "the cleared approval leaves no review hash behind to flag"
+    );
+    assert!(!after.source_changed_since_review());
 }
 
 /// A workspace with no proposal store configured extracts nothing — there

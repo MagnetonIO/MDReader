@@ -149,12 +149,14 @@ export const commands = {
 	 */
 	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
 	/**
-	 *  Every schema registered into this workspace's engine, with live counts of
-	 *  what the graph and the proposal store hold for each.
+	 *  Every schema this workspace can be viewed through — persisted version and
+	 *  checksum included — with live counts of what the graph and the proposal
+	 *  store hold for each.
 	 *
 	 *  Before the engine is installed (no import yet) the shape is still complete
-	 *  — the schemas are known from the registration — and the counts are `0`,
-	 *  which is the truth rather than a placeholder.
+	 *  — the schemas are known from the registration — while the version, the
+	 *  checksum, and the counts are absent or `0`, which is the truth rather than
+	 *  a placeholder. See [`known_schemas`].
 	 */
 	listSchemas: () => typedError<SchemaSummary[], string>(__TAURI_INVOKE("list_schemas")),
 	/**
@@ -169,7 +171,9 @@ export const commands = {
 	projectCorpus: (schema: string, limit: number) => typedError<Projection, string>(__TAURI_INVOKE("project_corpus", { schema, limit })),
 	/**
 	 *  Introspect one registered schema: entities with their attributes, arrows
-	 *  with domain and codomain, and the path equations it imposes.
+	 *  with domain and codomain, and the path equations it imposes — read back
+	 *  from what the engine persisted, and carrying that version's ordinal and
+	 *  checksum (see [`known_schemas`]).
 	 */
 	describeSchema: (schema: string) => typedError<SchemaDetail, string>(__TAURI_INVOKE("describe_schema", { schema })),
 	/**
@@ -411,6 +415,23 @@ export type InspectedFact = {
 	 *  now — read from storage, not inferred from [`Self::state`].
 	 */
 	in_graph: boolean,
+	/**
+	 *  blake3 of the cited text **as it stood when the reviewer ruled on it**;
+	 *  `None` while the fact is unreviewed.
+	 */
+	reviewed_content_hash: string | null,
+	/**
+	 *  The cited text has changed since the review was made.
+	 *
+	 *  Only ever true for a **preserved rejection**: a re-import keeps a
+	 *  rejection rather than silently re-proposing the claim a human ruled
+	 *  out, and raises this instead. Render it as an explicit affordance —
+	 *  *"previously rejected; the source has since changed — review again?"* —
+	 *  so un-rejecting stays a deliberate act. (An approval whose text changed
+	 *  is reset to `proposed` outright, which clears the review, so this stays
+	 *  false for it.)
+	 */
+	source_changed_since_review: boolean,
 };
 
 /**  Reply returned by [`ping`]. */
@@ -583,6 +604,16 @@ export type SchemaAttributeDto = {
 export type SchemaDetail = {
 	/**  Schema name. */
 	name: string,
+	/**
+	 *  The engine's persisted version ordinal; `None` before the index has
+	 *  been opened (see [`SchemaSummary::version`]).
+	 */
+	version: number | null,
+	/**
+	 *  `blake3:` checksum of the persisted schema; `None` under the same
+	 *  condition.
+	 */
+	checksum: string | null,
 	/**  Typeside type names the attributes draw from, sorted. */
 	typeside: string[],
 	/**  Entities with their attributes. */
@@ -619,6 +650,19 @@ export type SchemaEquationDto = {
 export type SchemaSummary = {
 	/**  Schema name (e.g. `decision_overlay`). */
 	name: string,
+	/**
+	 *  The engine's persisted version ordinal for this schema, counting from
+	 *  1 in order of first appearance — `None` before the index has been
+	 *  opened, when the shape is known from the registration but no version
+	 *  has been assigned to it yet.
+	 */
+	version: number | null,
+	/**
+	 *  `blake3:` checksum of the persisted schema. Two versions are identical
+	 *  exactly when these match. `None` under the same condition as
+	 *  [`Self::version`].
+	 */
+	checksum: string | null,
 	/**  Its entities, sorted. */
 	entities: string[],
 	/**  How many generating arrows it declares. */
