@@ -401,6 +401,57 @@ fn stream(
 }
 
 // --------------------------------------------------------------------------
+// explain_query (Query Explanation surface)
+// --------------------------------------------------------------------------
+
+/// One hybrid pass with the full score breakdown attached to every hit — the
+/// **Query Explanation** surface's read.
+///
+/// It is [`search`]'s second phase with `explain` forced on and no channel:
+/// the same engine call, the same [`ExplainDto`], surfaced as a plain
+/// request/response because an explanation panel has nothing to stream. Each
+/// hit carries its lexical and semantic ranks, the fused RRF score, every
+/// boost's recorded contribution, the final ordering key, the index version
+/// and embedding model the semantic arm used, and the
+/// chunk → section → document → file → source provenance chain.
+///
+/// Before the engine is installed (no import yet) the list is honestly empty.
+/// Epoch-guarded like [`search`].
+#[tauri::command]
+#[specta::specta]
+pub async fn explain_query(
+    query: String,
+    limit: u32,
+    workspace: State<'_, WorkspaceState>,
+) -> Result<Vec<SearchHitDto>, String> {
+    let epoch = workspace
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+
+    let Some(db) = epoch.db() else {
+        // EPOCH-GUARDED
+        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
+    };
+
+    let hits = run_phase(
+        &db,
+        &epoch.root,
+        &query,
+        SearchOptions {
+            limit,
+            lexical_only: false,
+            candidates: SearchOptions::default().candidates,
+            explain: true,
+        },
+    )
+    .await?;
+
+    // EPOCH-GUARDED: a switch mid-query means these hits belong to a previous
+    // workspace.
+    Ok(epoch.finish(&workspace, hits).unwrap_or_default())
+}
+
+// --------------------------------------------------------------------------
 // related
 // --------------------------------------------------------------------------
 
@@ -633,6 +684,83 @@ mod tests {
             ))
             .expect_err("unknown filter field is rejected");
         assert!(!err.is_empty(), "carries a schema-derived message");
+    }
+
+    /// The **Query Explanation** surface: every hit carries the full
+    /// breakdown — per-modality ranks, the fused RRF score, each boost's
+    /// recorded contribution, the final ordering key, and the
+    /// chunk → section → document → file provenance chain. Every field is the
+    /// engine's, none of it reconstructed here.
+    #[test]
+    fn explain_query_attaches_the_full_breakdown_and_provenance_chain() {
+        let corpus = TempDir::new().unwrap();
+        let root = fs::canonicalize(corpus.path()).unwrap();
+        fs::write(
+            root.join("guide.md"),
+            "# Guide\n\n## Storage engine\n\nThe storage engine persists chunks.\n",
+        )
+        .unwrap();
+
+        let db = engine();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(db.import(&root, ImportOptions::default()))
+            .expect("import");
+
+        // The same call `explain_query` makes, minus the epoch plumbing.
+        let hits = rt
+            .block_on(run_phase(
+                &db,
+                &root,
+                "storage engine",
+                SearchOptions {
+                    limit: 10,
+                    lexical_only: false,
+                    candidates: SearchOptions::default().candidates,
+                    explain: true,
+                },
+            ))
+            .expect("explained search");
+        let hit = hits.first().expect("the corpus matches");
+        let explain = hit
+            .explain
+            .as_ref()
+            .expect("explain was requested, so it must be present");
+        assert!(
+            explain.lex_rank.is_some() || explain.sem_rank.is_some(),
+            "a hit came from at least one modality"
+        );
+        assert_eq!(
+            explain.final_score,
+            explain.rrf_score
+                + explain.boosts.title
+                + explain.boosts.path
+                + explain.boosts.recency
+                + explain.boosts.graph,
+            "the ordering key is the recorded components, not a second number"
+        );
+        assert_eq!(explain.provenance.file_path, "guide.md");
+        assert_eq!(explain.provenance.chunk_id, hit.chunk_id);
+        assert_eq!(explain.provenance.document_id, hit.document_id);
+        assert!(explain.provenance.source_root.is_some());
+
+        // ...and without `explain` the field is absent rather than zeroed.
+        let plain = rt
+            .block_on(run_phase(
+                &db,
+                &root,
+                "storage engine",
+                SearchOptions {
+                    limit: 10,
+                    lexical_only: false,
+                    candidates: SearchOptions::default().candidates,
+                    explain: false,
+                },
+            ))
+            .expect("plain search");
+        assert!(plain.first().expect("a hit").explain.is_none());
     }
 
     /// related maps an absolute path back to the stored path and returns the

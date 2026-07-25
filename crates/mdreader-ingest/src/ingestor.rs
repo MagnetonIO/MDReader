@@ -74,6 +74,7 @@
 //! rows it derives from.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use catdb_engine::{
@@ -81,16 +82,24 @@ use catdb_engine::{
 };
 use catdb_ir::{CatOperation, Provenance};
 use catdb_storage::{ChunkRow, DocumentRow, LinkRow, SectionRow, StaleTarget};
+use mdreader_domain::extract::{architecture, decision, SourceDocument};
 use uuid::Uuid;
 
 use crate::parse::{parse_markdown_with_limit, ParsedDocument, CHUNK_TOKEN_LIMIT};
+use crate::proposals::ProposalStore;
 use crate::scan::{scan_root, ScanOptions, ScannedFile};
+use crate::source_view::source_document;
 
 /// The markdown ingest pipeline. Stateless; safe to share.
 #[derive(Debug)]
 pub struct MarkdownIngestor {
     /// Token limit at which sections split into multiple chunks.
     chunk_token_limit: u32,
+    /// Where overlay *proposals* are recorded, when the composition root wired
+    /// one up. `None` (the default) means overlay extraction does not run at
+    /// all — there would be nowhere to put its output, and the one place it
+    /// must never go is the authoritative graph.
+    proposals: Option<Arc<ProposalStore>>,
 }
 
 impl MarkdownIngestor {
@@ -99,6 +108,7 @@ impl MarkdownIngestor {
     pub fn new() -> Self {
         Self {
             chunk_token_limit: CHUNK_TOKEN_LIMIT,
+            proposals: None,
         }
     }
 
@@ -109,7 +119,24 @@ impl MarkdownIngestor {
     /// distinct `chunker_version` (the engine rotates the index version and
     /// forces a full re-chunk when it changes).
     pub fn with_chunk_token_limit(chunk_token_limit: u32) -> Self {
-        Self { chunk_token_limit }
+        Self {
+            chunk_token_limit,
+            proposals: None,
+        }
+    }
+
+    /// Run the overlay extractors at the end of each import and record what
+    /// they propose into `store`.
+    ///
+    /// Extraction produces **proposals**, and the engine refuses an unapproved
+    /// overlay fact at every write boundary — correctly. So nothing extracted
+    /// here reaches the operation log or the row store: it lands in the
+    /// proposal store, where a human can review it, and only
+    /// [`approve_and_promote`](crate::proposals::approve_and_promote) moves it
+    /// into the graph.
+    pub fn with_proposal_store(mut self, store: Arc<ProposalStore>) -> Self {
+        self.proposals = Some(store);
+        self
     }
 }
 
@@ -324,12 +351,36 @@ impl Ingestor for MarkdownIngestor {
         let mut seen: HashSet<Uuid> = HashSet::new();
         let files_total = files.len() as u64;
 
+        // The overlay extractors read the WHOLE corpus, not one file: `D3`
+        // may only assert `supersedes` once it can see the target is also a
+        // decision record, and `A4` resolves an interface name globally. So
+        // when extraction is wired up, every scanned file is adapted into the
+        // domain's `SourceDocument` view — including files this import
+        // otherwise short-circuits as unchanged, whose facts are still part of
+        // the corpus the cross-document rules reason over.
+        let extract_overlays = self.proposals.is_some();
+        let mut corpus: Vec<SourceDocument> = Vec::new();
+
         for file in &files {
             stats.files_scanned += 1;
             let bytes = std::fs::read(&file.abs)?;
             let content_hash = blake3_file(&bytes);
+            let text = String::from_utf8_lossy(&bytes);
+            let unchanged = stored_by_path
+                .get(&file.rel)
+                .is_some_and(|doc| doc.content_hash == content_hash && !req.rebuild);
+            // Parsed at most ONCE per file, and only when this import needs
+            // the tree — to sync a changed file, or to build the corpus view.
+            let parsed = (!unchanged || extract_overlays).then(|| {
+                parse_markdown_with_limit(&text, file_stem(&file.rel), self.chunk_token_limit)
+            });
+            if extract_overlays {
+                let parsed = parsed.as_ref().expect("parsed when extracting");
+                corpus.push(source_document(&file.rel, &text, parsed));
+            }
+
             match stored_by_path.get(&file.rel) {
-                Some(doc) if doc.content_hash == content_hash && !req.rebuild => {
+                Some(doc) if unchanged => {
                     seen.insert(doc.id);
                     stats.files_skipped_unchanged += 1;
                 }
@@ -338,16 +389,15 @@ impl Ingestor for MarkdownIngestor {
                     // A pending hash means a previous import died before its
                     // embeddings were committed: force-rebuild the file.
                     let force = req.rebuild || doc.content_hash.starts_with(PENDING_PREFIX);
-                    let text = String::from_utf8_lossy(&bytes);
                     sync_document(
                         ctx,
                         doc.id,
                         source_id,
                         file,
                         &text,
+                        parsed.as_ref().expect("parsed for a changed file"),
                         &content_hash,
                         force,
-                        self.chunk_token_limit,
                         &mut stats,
                     )
                     .await?;
@@ -363,16 +413,15 @@ impl Ingestor for MarkdownIngestor {
                             // renamed-but-unchanged content: run the full
                             // sync (which also updates the stored path)
                             // under the surviving document id.
-                            let text = String::from_utf8_lossy(&bytes);
                             sync_document(
                                 ctx,
                                 old.id,
                                 source_id,
                                 file,
                                 &text,
+                                parsed.as_ref().expect("parsed for a rebuilt file"),
                                 &content_hash,
                                 true,
-                                self.chunk_token_limit,
                                 &mut stats,
                             )
                             .await?;
@@ -383,16 +432,15 @@ impl Ingestor for MarkdownIngestor {
                     } else {
                         let doc_id = Uuid::new_v4();
                         seen.insert(doc_id);
-                        let text = String::from_utf8_lossy(&bytes);
                         sync_document(
                             ctx,
                             doc_id,
                             source_id,
                             file,
                             &text,
+                            parsed.as_ref().expect("parsed for a new file"),
                             &content_hash,
                             false,
-                            self.chunk_token_limit,
                             &mut stats,
                         )
                         .await?;
@@ -419,6 +467,23 @@ impl Ingestor for MarkdownIngestor {
         }
 
         stats.links_resolved = resolve_links(ctx, source_id).await?;
+
+        // Overlay extraction, LAST and OFF the engine's write path. Every
+        // fact it produces is a proposal, so it goes to the proposal store —
+        // never through `ctx.emit`/`ctx.apply_batch`, which is where the
+        // engine's approval check would (rightly) reject it. Promotion into
+        // the graph happens later, one reviewed fact at a time, through
+        // `Extraction::approved_operations`.
+        if let Some(store) = &self.proposals {
+            // Corpus order is part of extraction's output contract (the
+            // goldens pin it), and `scan_root` order is a filesystem detail.
+            corpus.sort_by(|left, right| left.path.cmp(&right.path));
+            for extraction in [decision::extract(&corpus), architecture::extract(&corpus)] {
+                store
+                    .record(&extraction)
+                    .map_err(|err| catdb_engine::EngineError::Ingest(err.to_string()))?;
+            }
+        }
         Ok(stats)
     }
 }
@@ -439,13 +504,11 @@ async fn sync_document(
     source_id: Uuid,
     file: &ScannedFile,
     source_text: &str,
+    parsed: &ParsedDocument,
     content_hash: &str,
     force: bool,
-    chunk_token_limit: u32,
     stats: &mut IngestStats,
 ) -> EngineResult<()> {
-    let parsed: ParsedDocument =
-        parse_markdown_with_limit(source_text, file_stem(&file.rel), chunk_token_limit);
     let stored_sections = ctx.sections_for_document(doc_id)?;
     // Prior chunks (read before any write can clear them), grouped by
     // section, so replaced or vanished chunks get retraction operations.

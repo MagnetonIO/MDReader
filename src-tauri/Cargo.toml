@@ -48,6 +48,12 @@ walkdir = "2.5.0"
 catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
 catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
+# Schema introspection (the View As / Schema View surfaces) and the kernel
+# provenance the Semantic Inspector renders. Read-only: nothing here builds a
+# fact, it only describes ones the engine and the extractors produced.
+catdb-core = { path = "../../../catdb/crates/catdb-core" }
+catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
+mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }
 # `time` for the model-load deadline (a never-finishing download must surface a
