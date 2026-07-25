@@ -58,8 +58,11 @@ export interface WorkspaceGrant {
 }
 
 /** Import phase for the StatusBar indicator. `loading` covers the one-time
- *  embedding-model construction/download that precedes the first import. */
-export type ImportPhase = 'idle' | 'loading' | 'importing' | 'done' | 'error';
+ *  embedding-model construction/download that precedes the first import;
+ *  `reembedding` is an import that is re-embedding the whole workspace because
+ *  the embedding model changed (a one-time cost the generic `importing` label
+ *  would understate). */
+export type ImportPhase = 'idle' | 'loading' | 'importing' | 'reembedding' | 'done' | 'error';
 
 /** A normalised import-progress snapshot (camelCased, never-null counts). */
 export interface ImportState {
@@ -91,7 +94,11 @@ function normalizeProgress(progress: ImportProgress): ImportState {
   const phase = progress.phase;
   return {
     phase:
-      phase === 'loading' || phase === 'importing' || phase === 'done' || phase === 'error'
+      phase === 'loading' ||
+      phase === 'importing' ||
+      phase === 'reembedding' ||
+      phase === 'done' ||
+      phase === 'error'
         ? phase
         : 'idle',
     filesDone: progress.files_done,

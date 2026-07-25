@@ -62,6 +62,10 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Index-version rows, so a test can manufacture the reported situation — a
+# workspace whose ACTIVE index was embedded by a different model — through the
+# storage lifecycle instead of a stand-in embedder.
+catdb-catalog = { path = "../../../catdb/crates/catdb-catalog" }
 # Serializes the provenance golden fixture the reader's TS golden test reads
 # (one line value crossing the Rust→TS boundary via a committed JSON file).
 serde_json = "1"
