@@ -8,13 +8,17 @@
  * unavailable", carries the reason the backend actually observed, and offers the
  * retry that re-attempts the load. */
 
-import type { ImportState } from '../platform/fs.js';
+import type { ImportState, ListingFailure } from '../platform/fs.js';
 import type { WatcherStatus } from '../stores/sources.js';
 
 export interface StatusBarProps {
   words: number | null;
   watcher: WatcherStatus;
   fileCount: number;
+  /** Why the listing failed, or `null`. When set, the file-count segment says
+   *  the folder is unreadable rather than falling silent — a blank count is
+   *  exactly how a permission denial used to pass for an empty workspace. */
+  listingError?: ListingFailure | null;
   /** Live index-build progress, or `null` before any import. */
   importState: ImportState | null;
   /** Whether the file list currently comes from the engine index. */
@@ -100,14 +104,31 @@ function indexIndicator(
   };
 }
 
+/** The file-count segment. A failed listing names itself; only a listing that
+ *  actually succeeded is allowed to report a count (or, at zero, stay quiet). */
+function fileCountSegment(
+  fileCount: number,
+  listingError: ListingFailure | null | undefined,
+): { text: string; title: string | undefined } {
+  if (listingError?.kind === 'unreadable') {
+    return { text: 'Folder unreadable', title: `${listingError.reason} — ${listingError.remedy}` };
+  }
+  if (listingError) {
+    return { text: 'File list unavailable', title: listingError.message };
+  }
+  return { text: fileCount > 0 ? `${fileCount.toLocaleString()} files` : '', title: undefined };
+}
+
 export function StatusBar({
   words,
   watcher,
   fileCount,
+  listingError,
   importState,
   fromIndex,
   onRetryIndex,
 }: StatusBarProps) {
+  const files = fileCountSegment(fileCount, listingError);
   const index = indexIndicator(importState, fromIndex);
   const phase = importState?.phase;
   // Two different retries, labelled as such: one re-runs an index build that
@@ -118,7 +139,9 @@ export function StatusBar({
     <footer className="statusbar" aria-label="Status">
       <span>{words === null ? '—' : `${words.toLocaleString()} words`}</span>
       <span className="statusbar__spacer" />
-      <span>{fileCount > 0 ? `${fileCount.toLocaleString()} files` : ''}</span>
+      <span className={files.title ? 'statusbar__alert' : undefined} title={files.title}>
+        {files.text}
+      </span>
       <span title="Filesystem watcher">
         <span className={`statusbar__dot statusbar__dot--${watcher === 'watching' ? 'watching' : watcher}`} />
         {WATCHER_LABEL[watcher]}

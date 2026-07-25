@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 
-import type { ImportState, WorkspaceFile } from '../platform/fs.js';
+import type { ImportState, ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type { DocRef, RecentDoc } from './types.js';
 
 export type WatcherStatus = 'idle' | 'watching' | 'error';
@@ -25,9 +25,16 @@ export interface SourcesState {
   importState: ImportState | null;
   /** Whether `files` came from the engine index (vs the fs fallback). */
   fromIndex: boolean;
+  /**
+   * Why the last listing failed, or `null` when it succeeded. Non-null with an
+   * empty `files` means the tree is empty *because we could not read it* — the
+   * sidebar must say so instead of claiming the folder holds no markdown.
+   */
+  listingError: ListingFailure | null;
 
   setRoot: (root: string | null) => void;
   setFiles: (files: WorkspaceFile[]) => void;
+  setListingError: (listingError: ListingFailure | null) => void;
   setLoading: (loading: boolean) => void;
   /** Record `docRef` as most-recent under workspace `root` (deduped by path). */
   addRecent: (docRef: DocRef, root: string | null) => void;
@@ -46,6 +53,7 @@ const initialState = {
   loading: false,
   importState: null as ImportState | null,
   fromIndex: false,
+  listingError: null as ListingFailure | null,
 };
 
 export const useSourcesStore = create<SourcesState>((set) => ({
@@ -53,6 +61,7 @@ export const useSourcesStore = create<SourcesState>((set) => ({
 
   setRoot: (root) => set({ root }),
   setFiles: (files) => set({ files }),
+  setListingError: (listingError) => set({ listingError }),
   setLoading: (loading) => set({ loading }),
   setImport: (importState) => set({ importState }),
   setFromIndex: (fromIndex) => set({ fromIndex }),

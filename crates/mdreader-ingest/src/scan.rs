@@ -77,8 +77,31 @@ fn repo_identity(
     synthetic.to_string()
 }
 
+/// Convert a walk error into an [`std::io::Error`] that KEEPS the operating
+/// system's own [`ErrorKind`](std::io::ErrorKind).
+///
+/// This is load-bearing. [`std::io::Error::other`] flattens every kind to
+/// [`Other`](std::io::ErrorKind::Other), which erased exactly the fact callers
+/// need: that the OS *refused* to read the folder (macOS privacy/TCC returns
+/// `EPERM`, a unix mode denial returns `EACCES`; both surface as
+/// [`PermissionDenied`](std::io::ErrorKind::PermissionDenied)). With the kind
+/// erased, a denied walk was indistinguishable from any other I/O failure, and
+/// the shell had nothing to tell the user apart from "empty".
+fn walk_error(err: ignore::Error) -> std::io::Error {
+    match err.io_error().map(std::io::Error::kind) {
+        Some(kind) => std::io::Error::new(kind, err.to_string()),
+        None => std::io::Error::other(err.to_string()),
+    }
+}
+
 /// Walk `root` and return every markdown file that passes the filters,
 /// sorted by relative path for deterministic imports.
+///
+/// A walk error is **never** downgraded to a short listing: the first one ends
+/// the scan and is returned, so a caller can never mistake "the OS refused us
+/// half of this tree" for "this tree is small". A root the OS will not open
+/// fails with [`PermissionDenied`](std::io::ErrorKind::PermissionDenied)
+/// rather than yielding zero files.
 pub fn scan_root(root: &Path, options: &ScanOptions) -> std::io::Result<Vec<ScannedFile>> {
     let synthetic = root
         .file_name()
@@ -100,7 +123,7 @@ pub fn scan_root(root: &Path, options: &ScanOptions) -> std::io::Result<Vec<Scan
     let mut cache: HashMap<PathBuf, Option<String>> = HashMap::new();
     let mut out = Vec::new();
     for entry in builder.build() {
-        let entry = entry.map_err(std::io::Error::other)?;
+        let entry = entry.map_err(walk_error)?;
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
@@ -210,6 +233,51 @@ mod tests {
         .unwrap();
         let rels: Vec<&str> = files.iter().map(|f| f.rel.as_str()).collect();
         assert_eq!(rels, vec!["small.md"]);
+    }
+
+    /// A root the OS will not let us read is reported as `PermissionDenied` —
+    /// NOT as an empty scan. The genuinely-empty root right beside it still
+    /// scans clean and returns zero files, so the two outcomes stay distinct.
+    ///
+    /// Revert-RED: put `std::io::Error::other` back in place of `walk_error`
+    /// and the `ErrorKind::PermissionDenied` assertion fails (kind becomes
+    /// `Other`). Make `scan_root` swallow walk errors (`continue` instead of
+    /// `?`) and the `is_err` assertion fails — the denied root comes back as
+    /// an empty `Ok(vec![])`, which is the bug.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_root_is_permission_denied_and_an_empty_root_is_empty() {
+        use std::io::ErrorKind;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // A root that genuinely holds no markdown: readable, just empty.
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let scanned = scan_root(&empty, &opts()).expect("a readable empty root scans clean");
+        assert!(scanned.is_empty(), "and reports zero files: {scanned:?}");
+
+        // A root that DOES hold markdown, which the OS then refuses to open.
+        let locked = dir.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        write(&locked, "a.md", "# A");
+        let mut mode = std::fs::metadata(&locked).unwrap().permissions();
+        mode.set_mode(0o000);
+        std::fs::set_permissions(&locked, mode).unwrap();
+
+        let denied = scan_root(&locked, &opts());
+        // Restore before asserting so a failure still leaves a removable tmpdir.
+        let mut mode = std::fs::metadata(&locked).unwrap().permissions();
+        mode.set_mode(0o700);
+        std::fs::set_permissions(&locked, mode).unwrap();
+
+        let err = denied.expect_err("a root the OS refuses is an error, never an empty listing");
+        assert_eq!(
+            err.kind(),
+            ErrorKind::PermissionDenied,
+            "and it keeps the OS's own kind so callers can name it: {err}"
+        );
     }
 
     #[test]

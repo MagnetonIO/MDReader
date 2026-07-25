@@ -70,7 +70,7 @@ export const commands = {
 	 *  in, marking gitignored files so the tree can dim them. `root` must be within
 	 *  the granted workspace.
 	 */
-	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, string>(__TAURI_INVOKE("list_workspace_files", { root })),
+	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, ListingError>(__TAURI_INVOKE("list_workspace_files", { root })),
 	/**
 	 *  Open (or reuse) the workspace index and run an incremental import, streaming
 	 *  coarse progress on `on_event` (`loading` → `importing` → `done`, or
@@ -626,6 +626,38 @@ export type InspectedFact = {
 	 */
 	source_changed_since_review: boolean,
 };
+
+/**
+ *  Why a workspace listing could not be produced.
+ *
+ *  Typed on purpose. `Unreadable` is the operating system **refusing to read**
+ *  the folder — on macOS that is the privacy (TCC) layer withholding
+ *  `~/Documents`, `~/Desktop` or `~/Downloads` from an app that holds no grant;
+ *  elsewhere it is an ordinary mode denial. That is a categorically different
+ *  fact from a folder we read perfectly well which simply holds no markdown,
+ *  and the two must never render the same. Collapsing them is precisely what
+ *  let a permission denial reach the user as "No markdown files in this folder
+ *  yet." — an answer that is not merely unhelpful but false.
+ */
+export type ListingError =
+/**
+ *  The folder could not be READ. Carries the folder, the OS's own words,
+ *  and what the user has to do about it.
+ */
+{ kind: "unreadable";
+/**  The folder the walk was refused on. */
+path: string;
+/**  The underlying OS error, verbatim. */
+reason: string;
+/**  The concrete grant the user must make, and where. */
+remedy: string } |
+/**
+ *  Every other listing failure (no workspace open, a superseded epoch, an
+ *  index read that failed).
+ */
+{ kind: "failed";
+/**  The failure, as text. */
+message: string };
 
 /**  A source concept and where it lands. */
 export type MappedConceptDto = {

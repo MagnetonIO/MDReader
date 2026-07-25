@@ -85,6 +85,48 @@ const MODEL_UNAVAILABLE =
 const MODEL_LOADING =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('modelloading');
 
+/**
+ * Whether this run stands in for a workspace whose folder the OS will not let
+ * the app READ — on macOS, a protected folder (`~/Documents`, `~/Desktop`,
+ * `~/Downloads`) opened by an app that holds no privacy grant, where every
+ * `opendir` comes back `EPERM`.
+ *
+ * This is the shipped bug's exact condition, and the reason it was invisible: a
+ * terminal launch inherits the terminal's grants and lists fine, so only the
+ * bundled `.app` ever hits it. The backend now answers with the typed
+ * `ListingError::Unreadable`, and the spec drives this flag to prove the shell
+ * renders that as an unreadable folder — NOT as a folder with no markdown.
+ */
+const UNREADABLE_FOLDER =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('unreadable');
+
+/**
+ * Whether this run stands in for a workspace folder that is perfectly readable
+ * and genuinely holds no markdown. The control for {@link UNREADABLE_FOLDER}:
+ * the empty state must survive the fix, so the two outcomes are asserted apart.
+ */
+const EMPTY_FOLDER =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('emptyfolder');
+
+/**
+ * Whether this run stands in for a listing that has NOT answered yet — the
+ * window in which macOS is holding its privacy prompt open, because the
+ * `opendir` behind the listing blocks until the user answers. Observed live in
+ * the shipping `.app`: the sidebar claimed "No markdown files in this folder
+ * yet." while the consent sheet was still on screen and nothing had been read.
+ */
+const LISTING_PENDING =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).has('listingpending');
+
+/** The OS's own words when macOS's privacy layer withholds a folder. */
+const UNREADABLE_REASON =
+  'IO error for operation on /mock/ws: Operation not permitted (os error 1)';
+
+/** The remedy the backend ships for macOS — a System Settings grant. */
+const UNREADABLE_REMEDY =
+  'macOS is withholding this folder from MDReader. Open System Settings › Privacy & Security › Files and Folders, enable the folder for MDReader (or grant Full Disk Access), then choose the folder again.';
+
 /** The reason the (mocked) backend observed — the real one is a load timeout. */
 const MODEL_FAILURE_REASON = 'timed out after 120s (the first run downloads the model)';
 
@@ -530,6 +572,21 @@ export function installTauriMocks(): void {
       case 'set_workspace':
         return (args as { root: string }).root;
       case 'list_workspace_files':
+        // The OS refused the walk. Thrown as a plain (non-`Error`) value so it
+        // travels the generated `typedError` path exactly as a real backend
+        // rejection does, carrying the tagged `ListingError::Unreadable`.
+        if (UNREADABLE_FOLDER) {
+          throw {
+            kind: 'unreadable',
+            path: '/mock/ws',
+            reason: UNREADABLE_REASON,
+            remedy: UNREADABLE_REMEDY,
+          };
+        }
+        // Read fine; there simply is no markdown here.
+        if (EMPTY_FOLDER) return { entries: [], from_index: false };
+        // Still blocked on the OS — no answer, and therefore nothing to claim.
+        if (LISTING_PENDING) return new Promise(() => {});
         // Post-import the shell re-lists from the index; the mock corpus stands
         // in for both, flagged as index-backed so the tree renders identically.
         // With no model there is no index, so the listing is the live fs scan —
