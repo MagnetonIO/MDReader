@@ -59,6 +59,9 @@ const FRAME_DIFF_MIN = 0.005;
  *  fire the app's shortcuts). */
 const CMD = 16;
 
+/** XCUIKeyModifierFlags.shift (1 << 1) — the `Mod+Shift+…` semantic chords. */
+const SHIFT = 2;
+
 /** A capture anomaly (blank / wrong-size / undecodable frame) — distinct from a
  *  genuine below-threshold diff. Retried; if it persists the step FAILS. */
 class FrameAnomaly extends Error {}
@@ -80,6 +83,11 @@ export class Mac2Adapter implements PlatformDriver {
   readonly name = 'macOS (appium-mac2-driver / XCUITest)';
   readonly windowOps = true;
   readonly frameOracle = true;
+  // The AX bridge gives both primitives the semantic steps need: an element's
+  // screen rectangle (so a specific in-webview control can be clicked through
+  // `macos: click`, which WKWebView's absent WebDriver bridge otherwise makes
+  // impossible) and the text under one class.
+  readonly semanticOps = true;
 
   private readonly b: WebdriverIO.Browser;
   private readonly bundleId: string;
@@ -158,12 +166,47 @@ export class Mac2Adapter implements PlatformDriver {
         ? [{ key: '\r' }]
         : chord === 'Escape'
           ? [{ key: String.fromCharCode(27) }]
-          : [{ key: chord.split('+').pop()!.toLowerCase(), modifierFlags: CMD }];
+          : [
+              {
+                key: chord.split('+').pop()!.toLowerCase(),
+                modifierFlags: chord.includes('Shift') ? CMD | SHIFT : CMD,
+              },
+            ];
     await this.b.execute('macos: keys', { keys });
   }
 
   async type(text: string): Promise<void> {
     await this.b.execute('macos: keys', { keys: [...text].map((c) => ({ key: c })) });
+  }
+
+  // ---- P7 semantic surfaces: read + click inside the webview ----
+
+  async scopedText(cssClass: string): Promise<string> {
+    return this.ax.text(cssClass);
+  }
+
+  async clickIn(cssClass: string, contains?: string): Promise<void> {
+    // `ax.frame` THROWS when no such element exists (axquery exits 4), so a
+    // control that is not on screen can never become a click at a guessed
+    // point — the step fails naming what it could not find.
+    const rect = this.ax.frame(cssClass, 0, contains);
+    await this.b.execute('macos: click', {
+      x: Math.round(rect.x + rect.w / 2),
+      y: Math.round(rect.y + rect.h / 2),
+    });
+    await sleep(350);
+  }
+
+  async doubleClickIn(cssClass: string, nth: number): Promise<void> {
+    const rect = this.ax.frame(cssClass, nth);
+    // A double-click selects a word. That is a REAL DOM selection — which is
+    // what the Semantic Inspector reads a passage from; a single click leaves
+    // the selection collapsed and yields nothing.
+    await this.b.execute('macos: doubleClick', {
+      x: Math.round(rect.x + rect.w / 2),
+      y: Math.round(rect.y + Math.min(rect.h / 2, 12)),
+    });
+    await sleep(350);
   }
 
   // ---- NATIVE window (mac2 execute-methods + XCUITest geometry) ----

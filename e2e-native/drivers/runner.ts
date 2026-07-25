@@ -24,7 +24,7 @@
  * Node built-ins only.
  */
 
-import { FLOW, FLOW_CONFIG, type Chord, type Step } from '../flows.ts';
+import { FLOW, FLOW_CONFIG, SEMANTIC_KINDS, type Chord, type Step } from '../flows.ts';
 import { faulted, type FlowResult, type PlatformDriver, type StepResult } from './types.ts';
 
 /** A minimal logger the runner writes progress to (console by default). */
@@ -83,6 +83,16 @@ export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog):
       const detail = driver.windowPendingReason ?? 'native window not drivable via this session';
       results.push({ id: step.id, title: step.title, channel: step.channel, status: 'pending', detail, ms: 0 });
       log.pending(`[window] ${step.title} — ${detail}`);
+      continue;
+    }
+
+    // Same explicit-boundary rule for the semantic surfaces: a driver that
+    // cannot drive them says so once, and the step is registered PENDING with
+    // that reason. It is never quietly dropped from the run.
+    if (SEMANTIC_KINDS.includes(step.kind) && !driver.semanticOps) {
+      const detail = driver.semanticPendingReason ?? 'the semantic surfaces are not drivable via this session';
+      results.push({ id: step.id, title: step.title, channel: step.channel, status: 'pending', detail, ms: 0 });
+      log.pending(`[dom] ${step.title} — ${detail}`);
       continue;
     }
 
@@ -232,6 +242,186 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       return `Enter landed on the hit — palette gone, heading /${step.headingPattern}/ + provenance /${step.provenancePattern}/ in reader${frameNote(frac)}`;
     }
 
+    // ---- P7 W5: the semantic surfaces ------------------------------------
+
+    case 'viewAs': {
+      const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
+      await d.focus();
+      await d.chord('Mod+Shift+V');
+      // FAIL CLOSED on the sheet itself: if it never opened, say that, rather
+      // than let a later "no band" failure blame the wrong thing.
+      if (!(await waitUntil(async () => (await d.countClass('lens-sheet')) >= 1, 10_000))) {
+        throw new Error('⌘⇧V did not open the View As sheet (no .lens-sheet in the tree)');
+      }
+      const sheet = await scopedText('lens-sheet');
+      if (!sheet.includes(step.schema)) {
+        throw new Error(
+          `the View As sheet does not list "${step.schema}" — it cannot be adopted. ` +
+            `Sheet text: ${JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240))}`,
+        );
+      }
+      // Select the schema's row, then adopt it. FAULT: adopt "Plain reading"
+      // instead — the sheet interaction still happens, so only an assertion on
+      // the END state (the band) can tell the difference.
+      await clickIn('lens-choice', faulted(step.id) ? 'Plain reading' : step.schema);
+      await sleep(300);
+      if ((await d.countClass('lens-sheet')) >= 1) {
+        try {
+          await clickIn('btn-quiet', 'Read as this');
+        } catch {
+          // "Plain reading" adopts on the first click and closes the sheet, so
+          // there is no adopt button to press. Not an error.
+        }
+      }
+      await d.chord('Escape');
+      // THE assertion: the band the reader shows, naming the interpretation now
+      // in force AND how many objects it holds. Reading the sheet would only
+      // prove the picker listed something.
+      const re = new RegExp(step.bandPattern);
+      let band = '';
+      const ok = await waitUntil(async () => {
+        if ((await d.countClass('lens-band')) === 0) return false;
+        band = await scopedText('lens-band');
+        return re.test(band);
+      }, 15_000);
+      if (!ok) {
+        throw new Error(
+          `the lens band never reported /${re.source}/ after adopting "${step.schema}" ` +
+            `(band: ${JSON.stringify(band.replace(/\n/g, ' | ').slice(0, 240))}). ` +
+            'A lens that is not in force looks exactly like this.',
+        );
+      }
+      return `reading as "${step.schema}" — band reads ${JSON.stringify(band.replace(/\n/g, ' · ').slice(0, 120))}`;
+    }
+
+    case 'inspectPassage': {
+      const scopedText = required(d, 'scopedText');
+      const doubleClickIn = required(d, 'doubleClickIn');
+      await d.focus();
+      await d.chord('Mod+Shift+I');
+      if (!(await waitUntil(async () => (await d.countClass('lens-rail')) >= 1, 10_000))) {
+        throw new Error('⌘⇧I did not expand the Semantic Inspector (no .lens-rail in the tree)');
+      }
+      // A REAL text selection in the reader is what the Inspector reads a
+      // passage from — a bare click produces none. FAULT: skip it, so the rail
+      // stays on its "select a passage" placeholder and the assertion fires.
+      if (!faulted(step.id)) {
+        await doubleClickIn('mdreader-block', 1);
+      }
+      const claimRe = new RegExp(step.claimPattern);
+      const citeRe = new RegExp(step.citationPattern);
+      let rail = '';
+      let claims = 0;
+      const ok = await waitUntil(async () => {
+        claims = await d.countClass('claim');
+        rail = await scopedText('lens-rail');
+        return claims >= 1 && claimRe.test(rail) && citeRe.test(rail);
+      }, 15_000);
+      if (!ok) {
+        throw new Error(
+          `the Inspector reported nothing for the selected passage: ${claims} claim row(s), ` +
+            `/${claimRe.source}/ ${claimRe.test(rail) ? 'shown' : 'MISSING'}, ` +
+            `citation /${citeRe.source}/ ${citeRe.test(rail) ? 'shown' : 'MISSING'} ` +
+            `(rail: ${JSON.stringify(rail.replace(/\n/g, ' | ').slice(0, 240))})`,
+        );
+      }
+      return `passage inspected — ${claims} claim(s), /${step.claimPattern}/ cited to /${step.citationPattern}/`;
+    }
+
+    case 'constraintJump': {
+      const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
+      const headRe = new RegExp(step.headPattern);
+      const tailRe = new RegExp(step.tailPattern);
+      let lastFailure = '';
+      let located = '';
+      let blocks = 0;
+      // The reader marks the located range for 1400ms. That is a UX choice, not
+      // a test hook, so the whole cycle (open the sheet → click the citation →
+      // read what got marked) is RETRIED rather than the timeout being widened
+      // in the product. Each attempt is a genuine, complete jump.
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await d.focus();
+        await d.chord('Mod+Shift+L');
+        if (!(await waitUntil(async () => (await d.countClass('lens-sheet--laws')) >= 1, 10_000))) {
+          throw new Error('⌘⇧L did not open the Constraint Explorer (no .lens-sheet--laws in the tree)');
+        }
+        // The report must name a BROKEN law. "Every law holds" is a legitimate
+        // outcome of the checker and a failure of this step's premise, so it is
+        // called out as such instead of timing out on a missing button.
+        const sheet = await scopedText('lens-sheet--laws');
+        if (!new RegExp(step.lawPattern).test(sheet) || (await d.countClass('violation')) === 0) {
+          throw new Error(
+            `the Constraint Explorer reports no violation matching /${step.lawPattern}/ — the seeded ` +
+              `corpus must contain one for this step to mean anything. Sheet: ` +
+              JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240)),
+          );
+        }
+        // FAULT: click the SUBJECT's single-line citation instead of the
+        // multi-line endpoint — the jump still happens, and only the
+        // end-of-range assertion notices.
+        const citing = faulted(step.id) ? 'broken-app.md' : step.jumpCiting;
+        await clickIn('located__jump', citing);
+        // ONE read, immediately: the marked blocks' own text. Two reads would
+        // race the 1400ms window, and reading a count first would tell us how
+        // many blocks were marked without telling us WHICH lines.
+        await sleep(250);
+        located = await scopedText('mdreader-block--located');
+        blocks = located.split('\n').filter((line) => line.trim().length > 0).length;
+        if (headRe.test(located) && tailRe.test(located) && blocks >= step.minLocatedBlocks) {
+          return (
+            `clicked the violation citing "${citing}" — the reader marked ${blocks} block(s) spanning ` +
+            `/${step.headPattern}/ … /${step.tailPattern}/`
+          );
+        }
+        lastFailure =
+          `head /${headRe.source}/ ${headRe.test(located) ? 'marked' : 'MISSING'}, ` +
+          `tail /${tailRe.source}/ ${tailRe.test(located) ? 'marked' : 'MISSING'}, ` +
+          `${blocks} marked block(s) (needed >= ${step.minLocatedBlocks})`;
+        await d.chord('Escape');
+        await sleep(400);
+      }
+      throw new Error(
+        `the jump did not land on the WHOLE cited range: ${lastFailure}. ` +
+          'A span truncated to its opening line looks exactly like this. ' +
+          `Marked text: ${JSON.stringify(located.replace(/\n/g, ' | ').slice(0, 240))}`,
+      );
+    }
+
+    case 'queryExplanation': {
+      const scopedText = required(d, 'scopedText');
+      await d.focus();
+      await d.chord('Mod+Shift+K');
+      if (!(await waitUntil(async () => (await d.countClass('lens-sheet--explain')) >= 1, 10_000))) {
+        throw new Error('⌘⇧K did not open the Query Explanation (no .lens-sheet--explain in the tree)');
+      }
+      // The sheet opens with an empty query, so the query is genuinely typed
+      // and run. FAULT: run a term the corpus does not contain, so there is a
+      // ranking to explain only if the search really answered.
+      await d.type(faulted(step.id) ? 'zzzznotinthecorpuszzzz' : step.query);
+      await d.chord('Enter');
+      const armsRe = new RegExp(step.armsPattern);
+      const chainRe = new RegExp(step.chainPattern);
+      let sheet = '';
+      let hits = 0;
+      const ok = await waitUntil(async () => {
+        hits = await d.countClass('explain');
+        sheet = await scopedText('lens-sheet--explain');
+        return hits >= 1 && armsRe.test(sheet) && chainRe.test(sheet);
+      }, 20_000);
+      if (!ok) {
+        throw new Error(
+          `the query "${step.query}" was not explained: ${hits} explained hit(s), ` +
+            `arms /${armsRe.source}/ ${armsRe.test(sheet) ? 'shown' : 'MISSING'}, ` +
+            `chain /${chainRe.source}/ ${chainRe.test(sheet) ? 'shown' : 'MISSING'} ` +
+            `(sheet: ${JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240))})`,
+        );
+      }
+      await d.chord('Escape');
+      return `"${step.query}" explained — ${hits} hit(s), arms + provenance chain reported`;
+    }
+
     case 'dragWindow': {
       await d.focus();
       // (1) POSITIVE: a genuine drag started ON the titlebar moves the window by
@@ -302,6 +492,27 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       throw new Error(`unhandled step ${JSON.stringify(_exhaustive)}`);
     }
   }
+}
+
+/**
+ * Bind an OPTIONAL driver primitive, failing CLOSED when it is absent.
+ *
+ * A driver that advertises `semanticOps` must actually provide them; a missing
+ * method is a harness defect and must ERROR at the step, never let the step be
+ * skipped or "pass" because nothing was driven.
+ */
+function required<K extends 'scopedText' | 'clickIn' | 'doubleClickIn'>(
+  d: PlatformDriver,
+  method: K,
+): NonNullable<PlatformDriver[K]> {
+  const fn = d[method];
+  if (typeof fn !== 'function') {
+    throw new Error(
+      `${d.name} advertises semanticOps but implements no ${method}() — the step cannot be driven, ` +
+        'and a step that cannot be driven must fail, not pass.',
+    );
+  }
+  return fn.bind(d) as NonNullable<PlatformDriver[K]>;
 }
 
 /** Format the optional frame-oracle corroboration for a step's detail line. */

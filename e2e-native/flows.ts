@@ -111,6 +111,84 @@ export const SELECTORS = {
     textPattern: 'A calm place to read your markdown',
     description: 'the welcome placeholder',
   },
+
+  // ---- P7 W5: the five semantic surfaces (the "showcase" UI) ----
+
+  /** The in-column lens band — present only while an interpretation is in force. */
+  lensBand: {
+    css: '.lens-band',
+    role: 'group',
+    name: 'Active lens',
+    description: 'the active-lens band',
+  },
+  /** The View As sheet. NOTE: the lens sheets set `role=dialog` + `aria-label`
+   *  but NOT `aria-modal`, so {@link paletteDialog} deliberately does not match
+   *  them. */
+  lensSheet: {
+    css: '[role="dialog"][aria-label="View as"]',
+    role: 'dialog',
+    name: 'View as',
+    description: 'the View As sheet',
+  },
+  /** One schema row inside the View As sheet. */
+  lensChoice: {
+    css: '.lens-choice',
+    role: 'button',
+    description: 'a registered-schema row',
+  },
+  /** The expanded Semantic Inspector rail. */
+  inspectorRail: {
+    css: '.lens-rail',
+    role: 'complementary',
+    name: 'Semantic inspector',
+    description: 'the semantic inspector rail',
+  },
+  /** One reviewable claim in the Inspector. */
+  claim: {
+    css: '.claim',
+    description: 'an inspected claim',
+  },
+  /** The Constraint Explorer sheet. */
+  constraintSheet: {
+    css: '.lens-sheet--laws',
+    role: 'dialog',
+    name: 'Constraint explorer',
+    description: 'the constraint explorer',
+  },
+  /** A click-to-source button on a located violation endpoint. */
+  violationJump: {
+    css: '.located__jump',
+    role: 'button',
+    description: 'a violation click-to-source button',
+  },
+  /** The Query Explanation sheet. */
+  explainSheet: {
+    css: '.lens-sheet--explain',
+    role: 'dialog',
+    name: 'Query explanation',
+    description: 'the query explanation',
+  },
+  /** The Query Explanation's query field. */
+  explainInput: {
+    css: '.explain__input',
+    role: 'searchbox',
+    name: 'Query to explain',
+    description: 'the explain query field',
+  },
+  /** One explained hit. */
+  explainedHit: {
+    css: '.explain',
+    description: 'an explained search hit',
+  },
+  /** A rendered block the reader currently marks as the located range. THE
+   *  end-of-chain oracle for click-to-source: the pulse itself is an inline
+   *  background no class-based reader can see, so `markdown-reader` also stamps
+   *  this class on every block the range covers. A jump whose end line was
+   *  dropped marks the first block only. */
+  locatedBlock: {
+    css: '.mdreader-block--located',
+    description: 'a block inside the located source range',
+  },
 } as const satisfies Record<string, DomSelector>;
 
 export type SelectorName = keyof typeof SELECTORS;
@@ -121,7 +199,19 @@ export type SelectorName = keyof typeof SELECTORS;
  * Consumers translate it to their platform (System Events `command down` vs.
  * WebdriverIO `['Meta', 'k']`).
  */
-export type Chord = 'Mod+P' | 'Mod+K' | 'Enter' | 'Escape';
+export type Chord =
+  | 'Mod+P'
+  | 'Mod+K'
+  | 'Enter'
+  | 'Escape'
+  /** View as… — opens the lens sheet. */
+  | 'Mod+Shift+V'
+  /** Toggle the semantic inspector rail. */
+  | 'Mod+Shift+I'
+  /** Where the laws break — the Constraint Explorer. */
+  | 'Mod+Shift+L'
+  /** Explain a search — the Query Explanation. */
+  | 'Mod+Shift+K';
 
 /** Which layer a step exercises — see the module doc-comment. */
 export type Channel = 'dom' | 'window';
@@ -191,6 +281,77 @@ export type Step =
        *  that exists ONLY in the target document, so seeing it in the reader
        *  proves the jump landed on the right doc at the right content. */
       readonly provenancePattern: string;
+    }
+  | {
+      /** **P7 W5.** Switch the interpretation through the real *View As* sheet
+       *  and assert the switch took effect where the user sees it: the lens
+       *  band naming {@link schema} and reporting how many objects that
+       *  interpretation holds. Asserting the sheet listed the schema would only
+       *  test the picker. */
+      readonly kind: 'viewAs';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      /** The registered schema to read the corpus as. */
+      readonly schema: string;
+      /** Regex source the lens band's text must match once the lens is on —
+       *  includes the object count, so an empty interpretation cannot pass. */
+      readonly bandPattern: string;
+    }
+  | {
+      /** **P7 W5.** Select a passage in the reader and assert the Semantic
+       *  Inspector reports what was derived FROM THOSE LINES — the claim's own
+       *  sentence and its citation back to the file and range. */
+      readonly kind: 'inspectPassage';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      /** Regex source the rail's text must match (a claim's rendered sentence). */
+      readonly claimPattern: string;
+      /** Regex source for the claim's citation back to the source. */
+      readonly citationPattern: string;
+    }
+  | {
+      /** **P7 W5.** Open the Constraint Explorer, click a violation's
+       *  click-to-source button, and assert the reader landed on the WHOLE
+       *  cited range.
+       *
+       *  This is the regression that shipped and was fixed: the located span
+       *  reached `onJump` intact and was then truncated to its first line. So
+       *  the assertion is deliberately at the END of the chain — the blocks the
+       *  reader actually marks — and demands text from BOTH ends of the range.
+       *  A truncated jump marks the opening block only, and {@link tailPattern}
+       *  is missing. */
+      readonly kind: 'constraintJump';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      /** Regex source the constraint sheet must match (the broken law). */
+      readonly lawPattern: string;
+      /** Substring identifying WHICH jump button to click, by what it cites. */
+      readonly jumpCiting: string;
+      /** Regex source for text at the START of the cited range. */
+      readonly headPattern: string;
+      /** Regex source for text at the END of the cited range — the assertion a
+       *  truncated span fails. */
+      readonly tailPattern: string;
+      /** Minimum number of blocks the range must mark (> 1: a single-block
+       *  answer is what truncation looks like). */
+      readonly minLocatedBlocks: number;
+    }
+  | {
+      /** **P7 W5.** Run a query through the Query Explanation sheet and assert
+       *  the ranking is actually explained: which arms matched, and the
+       *  chunk → section → document → file provenance chain. */
+      readonly kind: 'queryExplanation';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      readonly query: string;
+      /** Regex source for the arms sentence. */
+      readonly armsPattern: string;
+      /** Regex source for the provenance chain. */
+      readonly chainPattern: string;
     }
   | {
       /** Prove the native titlebar is genuinely, and *locally*, draggable. Two
@@ -307,6 +468,70 @@ export const FLOW: readonly Step[] = [
     headingPattern: 'Storage',
     provenancePattern: 'Storage is pluggable',
   },
+  // ---- P7 W5: the decisive scenario, driven through the shipping UI --------
+  // The Rust half (`mdreader-ingest/tests/decisive_scenario.rs`) proves the
+  // claim against the engine. These steps prove the same corpus is READABLE
+  // that way in the app a user actually runs: the interpretation switches, a
+  // passage reports what was derived from it, a broken law lands on the exact
+  // lines it came from, and a ranking explains itself. The corpus is seeded
+  // with its `architecture_overlay` claims already REVIEWED (see
+  // `runners/macos.ts`), because a law can only break over facts a human let
+  // into the graph.
+  {
+    kind: 'openDoc',
+    id: 'open-arch-doc',
+    title: 'Open the architecture document the broken law comes from',
+    channel: 'dom',
+    // `fixtures/corpus/docs/arch/broken-app.md`, H1 "broken-app".
+    query: 'broken-app',
+    headingPattern: 'broken-app',
+  },
+  {
+    kind: 'viewAs',
+    id: 'view-as',
+    title: 'View As switches the interpretation — the lens band says so',
+    channel: 'dom',
+    schema: 'architecture_overlay',
+    // 12 committed objects for this corpus; the count is read live, so the
+    // pattern only insists it is a real, non-zero number.
+    bandPattern: 'architecture_overlay[\\s\\S]*[1-9]\\d* in the graph',
+  },
+  {
+    kind: 'inspectPassage',
+    id: 'inspect-passage',
+    title: 'The Semantic Inspector reports what was derived from the passage',
+    channel: 'dom',
+    // broken-app.md yields a whole-file `Component` claim, approved by the
+    // seeded reviewer, so the rail must show the claim AND that it is in force.
+    claimPattern: 'Component',
+    citationPattern: 'broken-app\\.md:\\d+',
+  },
+  {
+    kind: 'constraintJump',
+    id: 'constraint-jump',
+    title: 'A broken law jumps to the WHOLE range it came from',
+    channel: 'dom',
+    lawPattern: 'Dependency',
+    // The violation's right-hand endpoint is the `catdb-core` component, cited
+    // to the whole of its document — a genuinely multi-line, multi-block range,
+    // and a different document from the one on screen, so the jump crosses
+    // documents as well as spanning lines.
+    jumpCiting: 'catdb-core.md',
+    headPattern: 'The categorical kernel',
+    // The last section of that file. Only reachable if the range's END survived
+    // the trip from the sheet to the reader.
+    tailPattern: 'Undecidable in general',
+    minLocatedBlocks: 2,
+  },
+  {
+    kind: 'queryExplanation',
+    id: 'query-explanation',
+    title: 'A ranking explains itself, arms and provenance chain',
+    channel: 'dom',
+    query: 'hybrid retrieval',
+    armsPattern: '(Both arms matched|Only the (lexical|semantic) arm matched)',
+    chainPattern: 'chunk[\\s\\S]*section[\\s\\S]*document',
+  },
   {
     kind: 'dragWindow',
     id: 'drag-window',
@@ -330,6 +555,17 @@ export const FLOW: readonly Step[] = [
     channel: 'window',
   },
 ] as const;
+
+/** The step kinds that drive the P7 semantic surfaces. A driver that cannot
+ *  assert them registers them PENDING with a reason (see `drivers/types.ts`),
+ *  the same explicit-boundary rule the native-window steps follow — never a
+ *  silent skip. */
+export const SEMANTIC_KINDS: readonly Step['kind'][] = [
+  'viewAs',
+  'inspectPassage',
+  'constraintJump',
+  'queryExplanation',
+];
 
 /** Steps that operate on the webview DOM (the WebdriverIO suite's domain). */
 export const DOM_STEPS: readonly Step[] = FLOW.filter((s) => s.channel === 'dom');

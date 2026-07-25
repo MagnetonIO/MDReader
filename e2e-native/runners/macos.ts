@@ -48,6 +48,24 @@ const APPIUM_BASE = `http://127.0.0.1:${APPIUM_PORT}`;
 
 const FAULT = process.env.MDREADER_SMOKE_FAULT ?? '';
 
+/**
+ * The reviewer the seeded overlay claims are signed by, and the schema whose
+ * claims are reviewed.
+ *
+ * The P7 semantic steps read an interpretation that is populated, and an
+ * overlay fact only reaches the graph when a human approves it — the engine
+ * rejects an unapproved one on every write path. Performing ~30 approvals
+ * through the Inspector before each run would make the interesting steps
+ * hostage to the longest one, so the review state is seeded the same way the
+ * workspace grant is: out of band, through the REAL approval call with a real
+ * reviewer name (`examples/seed_reviewed_workspace.rs`). Nothing about the
+ * product's approval gate is relaxed, and the flow still drives the Inspector
+ * itself — over claims that have been ruled on, which is what the graph the
+ * Constraint Explorer checks is made of.
+ */
+const REVIEWER = 'matthew.long';
+const REVIEWED_SCHEMA = 'architecture_overlay';
+
 interface Options {
   app: string;
   binary: string;
@@ -165,6 +183,32 @@ async function main(): Promise<number> {
   const seedPath = await seedWorkspace(opts.identifier, opts.corpus);
   console.log(`seeded:    ${seedPath}`);
 
+  // Seed the REVIEW state into the very workspace the app is about to open, so
+  // the semantic surfaces have an interpretation to show and a law to break.
+  // Fails the run outright if it cannot: a GUI pass over an empty graph would
+  // prove less than it claims.
+  try {
+    const seeded = execFileSync(
+      'cargo',
+      [
+        'run', '--quiet',
+        '-p', 'mdreader-ingest',
+        '--example', 'seed_reviewed_workspace',
+        '--no-default-features',
+        '--',
+        opts.corpus,
+        appConfigDir(opts.identifier),
+        REVIEWER,
+        REVIEWED_SCHEMA,
+      ],
+      { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    for (const line of seeded.trimEnd().split('\n')) console.log(`review:    ${line}`);
+  } catch (err) {
+    console.error(`\nFAIL: could not seed the reviewed workspace: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+
   const axBin = buildSwiftHelper(opts.artifacts, 'axquery');
   console.log(`axquery:   ${axBin}\n`);
 
@@ -200,11 +244,21 @@ async function main(): Promise<number> {
     port: APPIUM_PORT,
     path: '/',
     logLevel: 'error',
+    // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+    // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+    // not seconds, and WebdriverIO's default session timeout aborts the POST
+    // while the build is still going — which surfaces as an opaque
+    // "operation was aborted due to timeout" and no run at all. Warm runs are
+    // still ~3s; this only has to be longer than a cold build.
+    connectionRetryTimeout: 600_000,
     capabilities: {
       platformName: 'mac',
       'appium:automationName': 'mac2',
       'appium:bundleId': opts.identifier,
       'appium:noReset': true,
+      // Same reasoning on the server side of the handshake.
+      'appium:newCommandTimeout': 600,
+      'appium:showServerLogs': true,
     } as WebdriverIO.Capabilities,
   });
 

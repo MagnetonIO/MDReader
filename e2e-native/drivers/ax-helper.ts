@@ -34,6 +34,14 @@ export function buildSwiftHelper(artifacts: string, name: string): string {
   return bin;
 }
 
+/** A screen rectangle in global, top-left-origin coordinates. */
+export interface AxRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /** The fail-closed AX read surface over a compiled `axquery` binary + a pid. */
 export interface Ax {
   /** Number of elements whose `AXDOMClassList` contains `cssClass`. */
@@ -42,6 +50,15 @@ export interface Ax {
   text(cssClass?: string): string;
   /** Text of every rendered heading (AXHeading). */
   headings(): string;
+  /**
+   * Screen rectangle of the `nth` (0-based, document order) element carrying
+   * `cssClass` whose own subtree text contains `contains` (when given) — what
+   * lets the harness CLICK one specific control inside the webview, where
+   * WebDriver cannot reach, addressed by what it SAYS rather than by an ordinal
+   * that shifts. THROWS when there is no such element (axquery exits 4): a
+   * missing control must never be answered with a rectangle nobody rendered.
+   */
+  frame(cssClass: string, nth: number, contains?: string): AxRect;
 }
 
 /**
@@ -65,5 +82,21 @@ export function makeAx(bin: string, pid: number): Ax {
     },
     text: (cssClass) => run('text', cssClass ? [cssClass] : []),
     headings: () => run('headings'),
+    frame: (cssClass, nth, contains) => {
+      // A nonzero exit (4 = no such element, 3 = a real AX error) throws out of
+      // `execFileSync`, which is exactly what we want: the caller must not get
+      // a point to click.
+      const label = `${cssClass}[${nth}]${contains === undefined ? '' : ` containing ${JSON.stringify(contains)}`}`;
+      const out = run('frame', contains === undefined ? [cssClass, String(nth)] : [cssClass, String(nth), contains]);
+      const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
+      if (parts.length !== 4 || parts.some((n) => !Number.isSafeInteger(n))) {
+        throw new Error(`axquery frame(${label}) returned unparseable output: ${JSON.stringify(out)}`);
+      }
+      const [x, y, w, h] = parts as [number, number, number, number];
+      if (w <= 0 || h <= 0) {
+        throw new Error(`axquery frame(${label}) is not a clickable rectangle: ${w}x${h} at (${x},${y})`);
+      }
+      return { x, y, w, h };
+    },
   };
 }

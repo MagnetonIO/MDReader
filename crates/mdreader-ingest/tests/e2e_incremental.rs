@@ -435,9 +435,17 @@ async fn chunker_version_bump_reprocesses_unchanged_files() {
 
 #[tokio::test]
 async fn fixtures_corpus_imports_cleanly() {
-    // The real fixture corpus (45 markdown files): a full import must
+    // The real fixture corpus (49 markdown files): a full import must
     // succeed, resolve links, satisfy the md schema equations, and answer a
     // search with correct provenance.
+    //
+    // `docs/arch/` was added for the GUI harness's semantic steps and holds a
+    // deliberately INCONSISTENT architecture (`broken-app` depends on an
+    // interface another component exposes). That does not make the corpus
+    // incoherent here: the equation check below reads the COMMITTED graph, this
+    // engine is opened without a proposal store, and so no overlay fact is ever
+    // extracted or approved into it. The violation only exists once a human
+    // approves the claims — which is exactly what the GUI harness seeds.
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../fixtures/corpus");
     let db_dir = tempfile::tempdir().unwrap();
     let engine = open(&db_dir.path().join("catdb.db"));
@@ -449,9 +457,9 @@ async fn fixtures_corpus_imports_cleanly() {
     // Exact values for the committed fixture corpus: any change to the
     // corpus or the chunker shows up here deliberately (and the latter
     // requires a CHUNKER_VERSION bump).
-    assert_eq!(report.files_scanned, 45);
-    assert_eq!(report.chunks_embedded, 3117);
-    assert_eq!(report.links_resolved, 107);
+    assert_eq!(report.files_scanned, 49);
+    assert_eq!(report.chunks_embedded, 3130);
+    assert_eq!(report.links_resolved, 110);
 
     let check = engine.check_equations().await.unwrap();
     assert!(
