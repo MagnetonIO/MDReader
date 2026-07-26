@@ -9,9 +9,8 @@
  *
  * It owns the fiddly macOS session lifecycle so `scripts/macos-smoke.sh` is a
  * one-liner:
- *   - kills any stray `mdreader-app` AND any stale WebDriverAgentMac host +
- *     `xcodebuild` (a reused WDA host wedges new sessions for minutes — forcing a
- *     fresh WDA per run keeps session creation ~3s and deterministic);
+ *   - owns only the app process it launches; it never searches for or terminates
+ *     another MDReader process;
  *   - registers the bundle with LaunchServices so the session can attach by id;
  *   - wipes the plugin-store + engine index and RE-SEEDS the fixture workspace;
  *   - compiles the `axquery` helper;
@@ -28,13 +27,13 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
-import { FLOW_CONFIG } from '../flows.ts';
-import { appConfigDir, clearSeed, seedWorkspace } from '../seed.ts';
+import { E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
+import { appConfigDir, clearSeed, e2eProfile, seedWorkspace, type E2EProfile } from '../seed.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
 import { consoleLog, runFlow } from '../drivers/runner.ts';
@@ -71,7 +70,7 @@ interface Options {
   binary: string;
   corpus: string;
   artifacts: string;
-  identifier: string;
+  profile: E2EProfile;
   keep: boolean;
 }
 
@@ -80,13 +79,13 @@ function parseArgs(argv: string[]): Options {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const app = resolve(get('--app') ?? join(REPO_ROOT, 'target/release/bundle/macos/MDReader.app'));
+  const app = resolve(get('--app') ?? join(REPO_ROOT, 'target/release/bundle/macos', `${E2E_PRODUCT_NAME}.app`));
   return {
     app,
     binary: join(app, 'Contents/MacOS/mdreader-app'),
     corpus: resolve(get('--corpus') ?? join(REPO_ROOT, FLOW_CONFIG.corpusRelPath)),
     artifacts: resolve(get('--artifacts') ?? join(REPO_ROOT, 'target/e2e-artifacts/macos')),
-    identifier: FLOW_CONFIG.bundleIdentifier,
+    profile: e2eProfile(),
     keep: argv.includes('--keep'),
   };
 }
@@ -98,28 +97,6 @@ function quietExec(cmd: string, args: string[]): void {
     execFileSync(cmd, args, { stdio: 'ignore' });
   } catch {
     /* best-effort */
-  }
-}
-
-function anyInstanceRunning(): boolean {
-  try {
-    return execFileSync('pgrep', ['-x', 'mdreader-app'], { encoding: 'utf8' }).trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
-/** Kill any stray app AND any stale WebDriverAgentMac host + its xcodebuild, so
- *  the next session builds a fresh WDA (a reused host wedges session creation). */
-async function resetEnvironment(): Promise<void> {
-  quietExec('pkill', ['-x', 'mdreader-app']);
-  quietExec('pkill', ['-f', 'WebDriverAgentRunner-Runner']);
-  quietExec('pkill', ['-f', 'xcodebuild build-for-testing test-without-building']);
-  // Give the OS a moment to release the app + WDA's port.
-  await sleep(1500);
-  if (anyInstanceRunning()) {
-    quietExec('pkill', ['-9', '-x', 'mdreader-app']);
-    await sleep(500);
   }
 }
 
@@ -161,7 +138,7 @@ async function main(): Promise<number> {
 
   if (!existsSync(opts.binary)) {
     console.error(`\nFAIL: app binary not found: ${opts.binary}`);
-    console.error('Build it first: pnpm --filter @mdreader/app tauri build --bundles app');
+    console.error('Build it first: pnpm --filter @mdreader/app tauri build --bundles app --config src-tauri/tauri.e2e.conf.json');
     return 1;
   }
   if (!existsSync(opts.corpus)) {
@@ -174,13 +151,10 @@ async function main(): Promise<number> {
   // Register the bundle so the mac2 session can attach to it by bundle id.
   quietExec('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', opts.app]);
 
-  await resetEnvironment();
-
   // Fresh state: wipe the plugin-store + engine index, then re-seed the fixture
   // workspace so the app re-grants + re-indexes from scratch on launch.
-  await clearSeed(opts.identifier);
-  rmSync(join(appConfigDir(opts.identifier), 'workspaces'), { recursive: true, force: true });
-  const seedPath = await seedWorkspace(opts.identifier, opts.corpus);
+  await clearSeed(opts.profile);
+  const seedPath = await seedWorkspace(opts.profile, opts.corpus);
   console.log(`seeded:    ${seedPath}`);
 
   // Seed the REVIEW state into the very workspace the app is about to open, so
@@ -197,7 +171,7 @@ async function main(): Promise<number> {
         '--no-default-features',
         '--',
         opts.corpus,
-        appConfigDir(opts.identifier),
+        appConfigDir(opts.profile),
         REVIEWER,
         REVIEWED_SCHEMA,
       ],
@@ -231,59 +205,48 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  // Resolve the running pid (the spawned child IS the app; confirm via pgrep so a
-  // relaunch/forked helper can't fool the AX reads).
-  let pid = child.pid;
-  for (let i = 0; i < 20; i++) {
-    await sleep(400);
-    try {
-      pid = Number(execFileSync('pgrep', ['-x', 'mdreader-app'], { encoding: 'utf8' }).trim().split('\n')[0]);
-      break;
-    } catch {
-      /* not up yet */
-    }
-  }
-
-  const browser = await remote({
-    hostname: '127.0.0.1',
-    port: APPIUM_PORT,
-    path: '/',
-    logLevel: 'error',
-    // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
-    // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
-    // not seconds, and WebdriverIO's default session timeout aborts the POST
-    // while the build is still going — which surfaces as an opaque
-    // "operation was aborted due to timeout" and no run at all. Warm runs are
-    // still ~3s; this only has to be longer than a cold build.
-    connectionRetryTimeout: 600_000,
-    capabilities: {
-      platformName: 'mac',
-      'appium:automationName': 'mac2',
-      'appium:bundleId': opts.identifier,
-      'appium:noReset': true,
-      // Same reasoning on the server side of the handshake.
-      'appium:newCommandTimeout': 600,
-      'appium:showServerLogs': true,
-    } as WebdriverIO.Capabilities,
-  });
-
-  const adapter = new Mac2Adapter({
-    browser,
-    bundleId: opts.identifier,
-    pid,
-    axBin,
-    keyBin,
-    artifacts: opts.artifacts,
-  });
-
   let result;
   try {
-    result = await runFlow(adapter, consoleLog);
+    const browser = await remote({
+      hostname: '127.0.0.1',
+      port: APPIUM_PORT,
+      path: '/',
+      logLevel: 'error',
+      // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+      // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+      // not seconds, and WebdriverIO's default session timeout aborts the POST
+      // while the build is still going — which surfaces as an opaque
+      // "operation was aborted due to timeout" and no run at all. Warm runs are
+      // still ~3s; this only has to be longer than a cold build.
+      connectionRetryTimeout: 600_000,
+      capabilities: {
+        platformName: 'mac',
+        'appium:automationName': 'mac2',
+        'appium:bundleId': opts.profile.identifier,
+        'appium:noReset': true,
+        // Same reasoning on the server side of the handshake.
+        'appium:newCommandTimeout': 600,
+        'appium:showServerLogs': true,
+      } as WebdriverIO.Capabilities,
+    });
+
+    const adapter = new Mac2Adapter({
+      browser,
+      bundleId: opts.profile.identifier,
+      pid: child.pid,
+      axBin,
+      keyBin,
+      artifacts: opts.artifacts,
+    });
+    try {
+      result = await runFlow(adapter, consoleLog);
+    } finally {
+      await adapter.dispose();
+    }
   } finally {
-    await adapter.dispose();
     // The close step already ended the app on success; otherwise tidy up unless
     // asked to keep it. Then release the Appium server if we own it.
-    if (!opts.keep) quietExec('pkill', ['-x', 'mdreader-app']);
+    if (!opts.keep && child.exitCode === null && !child.killed) child.kill('SIGTERM');
     appium?.kill();
   }
 

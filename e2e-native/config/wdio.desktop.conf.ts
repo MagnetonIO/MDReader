@@ -22,12 +22,13 @@ import { fileURLToPath } from 'node:url';
 
 import { FLOW_CONFIG } from '../flows.ts';
 import { desktopCapabilities } from '../capabilities.ts';
-import { clearSeed, seedWorkspace } from '../seed.ts';
+import { clearSeed, e2eProfile, seedWorkspace } from '../seed.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = resolve(HERE, '..');
 const REPO_ROOT = resolve(E2E_ROOT, '..', '..', '..');
 const CORPUS = join(REPO_ROOT, FLOW_CONFIG.corpusRelPath);
+const E2E_PROFILE = e2eProfile();
 
 let tauriDriver: ChildProcess | undefined;
 
@@ -50,8 +51,8 @@ export const config: WebdriverIO.Config = {
 
   // Seed the workspace so the app grants the fixture corpus on launch.
   onPrepare: async () => {
-    await clearSeed(FLOW_CONFIG.bundleIdentifier);
-    await seedWorkspace(FLOW_CONFIG.bundleIdentifier, CORPUS);
+    await clearSeed(E2E_PROFILE);
+    await seedWorkspace(E2E_PROFILE, CORPUS);
   },
 
   // tauri-driver must be running before the WebDriver session connects. It inherits

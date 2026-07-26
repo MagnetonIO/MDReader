@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { FLOW_CONFIG } from './flows.ts';
+import { E2E_BUNDLE_IDENTIFIER, FLOW_CONFIG } from './flows.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
@@ -105,7 +105,7 @@ export const androidCapabilities: WebdriverIO.Capabilities = {
   'appium:automationName': 'UiAutomator2',
   'appium:deviceName': process.env.MDREADER_ANDROID_DEVICE ?? 'emulator-5554',
   'appium:app': process.env.MDREADER_ANDROID_APP,
-  'appium:appPackage': process.env.MDREADER_ANDROID_PACKAGE ?? 'dev.mdreader.app',
+  'appium:appPackage': process.env.MDREADER_ANDROID_PACKAGE ?? E2E_BUNDLE_IDENTIFIER,
   // The Tauri/mobile webview is a Chrome-backed WebView; UiAutomator2 exposes it
   // as a WEBVIEW_<pkg> context the adapter switches into.
   'appium:autoWebview': false,

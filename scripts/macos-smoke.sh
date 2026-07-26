@@ -10,10 +10,10 @@
 # the red-X close ends the process. The webview UI is read through WebKit's
 # Accessibility tree (WKWebView exposes no WebDriver bridge).
 #
-# The Node runner owns the Appium session lifecycle: it kills any stale
-# WebDriverAgentMac host (a reused host wedges new sessions), re-seeds the fixture
-# workspace, launches the app, and — if no Appium server is already listening on
-# :4723 — spawns one from the local APPIUM_HOME and tears it down afterwards.
+# The Node runner owns the Appium session lifecycle: it re-seeds only the isolated
+# E2E profile, launches its E2E bundle, and — if no Appium server is already
+# listening on :4723 — spawns one from the local APPIUM_HOME and tears it down
+# afterwards. It never terminates an existing MDReader process.
 #
 # Exits non-zero on any failed step. macOS only (WKWebView has no WebDriver, so
 # this is the only leg that exercises the real app on a Mac).
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$REPO_ROOT/target/release/bundle/macos/MDReader.app"
+APP="$REPO_ROOT/target/release/bundle/macos/MDReader E2E.app"
 E2E_DIR="$REPO_ROOT/apps/mdreader/e2e-native"
 export APPIUM_HOME="$E2E_DIR/.appium"
 
@@ -53,9 +53,9 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if [[ "$SKIP_BUILD" -eq 0 || ! -d "$APP" ]]; then
-  echo "==> Building MDReader.app (release, app bundle only)…"
+  echo "==> Building MDReader E2E.app (release, app bundle only)…"
   pnpm --filter '@mdreader/app...' run build
-  pnpm --filter @mdreader/app tauri build --bundles app
+  pnpm --filter @mdreader/app tauri build --bundles app --config src-tauri/tauri.e2e.conf.json
 else
   echo "==> Reusing existing app: $APP"
 fi
