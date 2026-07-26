@@ -394,8 +394,7 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
     let policy = ExecutionPolicy::default()
         .materialize(SourceId::new(GitSource::ID), Duration::from_secs(300));
     let mut executor = Executor::new(policy);
-    let answer = executor
-        .execute(&sources, &query)
+    let answer = federation_support::execute_query(&mut executor, &sources, &query)
         .expect("the federated read runs");
 
     // -- 3. Complete and non-empty, before anything else ---------------------
@@ -839,8 +838,7 @@ fn the_scenarios_own_guards_are_not_vacuous() {
     let federation = Federation::new(sources.clone(), &prover()).expect("declares");
     let query = federation.scope("").expect("scope validates");
     let mut executor = Executor::new(ExecutionPolicy::default());
-    let answer = executor
-        .execute(&sources, &query)
+    let answer = federation_support::execute_query(&mut executor, &sources, &query)
         .expect("two sources can still answer");
     match answer.completeness() {
         Completeness::Complete => {
@@ -898,8 +896,7 @@ fn the_scenarios_own_guards_are_not_vacuous() {
     let federation = Federation::new(sources.clone(), &prover()).expect("declares");
     let query = federation.scope("").expect("scope validates");
     let mut executor = Executor::new(ExecutionPolicy::default());
-    let answer = executor
-        .execute(&sources, &query)
+    let answer = federation_support::execute_query(&mut executor, &sources, &query)
         .expect("all three answer");
     assert_eq!(answer.completeness(), Completeness::Complete);
     let documents = federation.assemble_from(&answer).expect("attributes");
