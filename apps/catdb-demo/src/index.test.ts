@@ -40,4 +40,24 @@ describe('public demo Worker route set', () => {
       expect(source).not.toContain(forbidden);
     }
   });
+
+  it('pins compatible image inputs and bakes an actual read-only workspace digest', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const dockerfile = await readFile(
+      new URL('../../../Dockerfile.catdb-demo', import.meta.url),
+      'utf8',
+    );
+    expect(dockerfile).toMatch(
+      /^FROM rust:1\.94\.0-bookworm@sha256:[0-9a-f]{64} AS builder$/m,
+    );
+    expect(dockerfile).toMatch(
+      /^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}$/m,
+    );
+    expect(dockerfile).toContain('cargo fetch --locked');
+    expect(dockerfile).toContain('cargo build --locked --offline');
+    expect(dockerfile).toContain('/image/metadata/workspace.sha256');
+    expect(dockerfile).toContain('find /image -type f -exec chmod 0444');
+    expect(dockerfile).toContain('USER 10001:10001');
+    expect(dockerfile).not.toMatch(/^FROM [^@\n]+$/m);
+  });
 });
