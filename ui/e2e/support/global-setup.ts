@@ -10,15 +10,29 @@
  * independent of the Rust toolchain (see `catdb-server.ts`).
  */
 
-import { cleanWorkspace, rmManifest, startServer, stopServer } from './catdb-server.js';
+import {
+  cleanWorkspace,
+  newManifestPath,
+  rmManifest,
+  startServer,
+  stopServer,
+} from './catdb-server.js';
 
 export default async function globalSetup(): Promise<() => Promise<void>> {
-  // A stale manifest from an earlier run must never be read as this run's
-  // result: absent is the honest state until this boot records one.
+  // Publish a manifest path unique to THIS invocation before anything writes
+  // one. Playwright carries `process.env` from here into the worker processes,
+  // so the specs resolve the same path — and two overlapping runs can no longer
+  // land on each other's file (see `manifestPath`).
+  process.env.MDREADER_E2E_MANIFEST = newManifestPath();
+  // A stale manifest must never be read as this run's result: absent is the
+  // honest state until this boot records one.
   await rmManifest();
   await startServer();
   return async () => {
     await stopServer();
     await cleanWorkspace();
+    // The path was minted for this run alone, so leaving it behind is litter,
+    // not evidence — a failed boot has already been reported by then.
+    await rmManifest();
   };
 }

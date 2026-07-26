@@ -34,6 +34,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
+import { createServer } from 'node:net';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -55,9 +56,32 @@ export const repoRoot = path.resolve(here, '../../../../..');
  */
 export const catdbPort = Number(process.env.MDREADER_E2E_CATDB_PORT ?? 8788);
 
-/** Where the boot result is left for the specs (and for the teardown). */
+/**
+ * Where this run's boot result is left for the specs.
+ *
+ * Keyed to the INVOCATION, not to the port. Keyed to the port, two overlapping
+ * runs share one file: the second run's `catdb serve` fails to bind, and its
+ * `{ ok: false }` lands on top of the first run's healthy manifest — so the
+ * FIRST run's specs fail, for a reason that has nothing to do with them. That is
+ * still fail-closed, but it fails the wrong run and reads as a mystery.
+ *
+ * `global-setup.ts` mints the path and publishes it here; Playwright carries
+ * `process.env` from the global setup into the worker processes, which is how
+ * the specs find it. The port-keyed name remains only as the fallback for a spec
+ * run without that setup — where the manifest will be absent anyway, and absent
+ * is correctly read as "the boot never happened".
+ */
 export function manifestPath(): string {
-  return path.join(tmpdir(), `mdreader-e2e-real-engine-${catdbPort}.json`);
+  return (
+    process.env.MDREADER_E2E_MANIFEST ??
+    path.join(tmpdir(), `mdreader-e2e-real-engine-${catdbPort}.json`)
+  );
+}
+
+/** A manifest path unique to this invocation (see {@link manifestPath}). */
+export function newManifestPath(): string {
+  const token = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  return path.join(tmpdir(), `mdreader-e2e-real-engine-${token}.json`);
 }
 
 /** What the global setup learned, good or bad. */
@@ -129,6 +153,25 @@ interface ProbeHit {
   explain?: { embedding_model?: string; provenance: { source_root?: string } };
 }
 
+/**
+ * Whether anything already holds {@link catdbPort}.
+ *
+ * Checked BEFORE anything is built or written, because the port is fixed by
+ * default: `vite.config.ts` and this file are separate processes, so they agree
+ * on a proxy target only by both reading the same variable with the same
+ * default. That makes an overlapping run a real possibility, and the operator
+ * deserves to be told which knob fixes it rather than reading a bind error out
+ * of a spawn log.
+ */
+async function portIsFree(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    probe.listen(catdbPort, '127.0.0.1');
+  });
+}
+
 /** The live handle the teardown needs. */
 let child: ChildProcess | null = null;
 let workspaceDir: string | null = null;
@@ -160,6 +203,18 @@ export async function startServer(): Promise<void> {
   const origin = `http://127.0.0.1:${catdbPort}`;
   const log: string[] = [];
   try {
+    // 0. Is the port ours to take? A second run on one machine would otherwise
+    //    fail to bind halfway through and report it as a spawn log.
+    if (!(await portIsFree())) {
+      throw new Error(
+        `127.0.0.1:${catdbPort} is already in use, so this run cannot start its own ` +
+          'catdb-server. Another Playwright run is probably still going, or a stray `catdb ' +
+          'serve` is holding the port. Set MDREADER_E2E_CATDB_PORT to a free port to run two ' +
+          'suites concurrently — the Vite proxy in vite.config.ts reads the same variable, so ' +
+          'both processes must see it.',
+      );
+    }
+
     // 1. The binary. Built here rather than assumed, so a stale or missing
     //    target directory is a named failure and not a mystery.
     await run('cargo', ['build', '-p', 'mdreader-ingest', '--bin', 'catdb'], {
