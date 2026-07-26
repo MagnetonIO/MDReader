@@ -1,0 +1,21 @@
+{
+  "name": "@catdb/demo-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cf:types": "wrangler types && wrangler types --check",
+    "cf:dry-run": "wrangler deploy --dry-run --env staging"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "@mdreader/config": "workspace:*",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "4.114.0"
+  }
+}

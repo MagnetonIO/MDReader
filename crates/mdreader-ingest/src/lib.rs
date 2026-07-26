@@ -11,6 +11,7 @@
 
 #![deny(missing_docs)]
 
+pub mod deployment;
 mod ingestor;
 mod parse;
 pub mod proposals;

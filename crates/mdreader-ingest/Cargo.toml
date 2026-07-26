@@ -17,18 +17,28 @@ workspace = true
 name = "catdb"
 path = "src/bin/catdb.rs"
 
+[[bin]]
+name = "catdb-demo-server"
+path = "src/bin/catdb-demo-server.rs"
+
 [features]
 # Passthrough to catdb-cli (and transitively catdb-embed): compiles the
 # fastembed/ORT provider. Default-on so the shipped `catdb` binary embeds
 # locally; `--no-default-features` builds stay genuinely ORT-free.
 default = ["local-embed"]
 local-embed = ["catdb-cli/local-embed"]
+# Integration latch: Task 13B deliberately leaves this unavailable until the
+# reviewed Task 3 catalog-revision authority is merged and can verify the
+# deployment pin against the opened workspace.
+authoritative-catalog = []
 
 [dependencies]
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
 catdb-storage = { path = "../../../../catdb/crates/catdb-storage" }
 catdb-cli = { path = "../../../../catdb/crates/catdb-cli", default-features = false }
+catdb-server = { path = "../../../../catdb/crates/catdb-server" }
+catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 # Kernel value types (`Object`, `MorphismInstance`, `Provenance`) — the
 # proposal store persists them verbatim, so a promoted fact carries the exact
 # provenance extraction recorded. The app depending on the platform kernel is
@@ -41,6 +51,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 blake3 = "1"
+axum = "0.7"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
 comrak = "0.54"
 ignore = "0.4"
 # The proposal store's backing database — reviewable claims live BESIDE the
