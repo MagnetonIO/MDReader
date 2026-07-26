@@ -23,6 +23,8 @@ export function useSchemas(
   adapter: SemanticsAdapter,
   workspaceKey: string | null,
   enabled: boolean,
+  /** Advances when the active workspace's semantic engine can answer again. */
+  ready: boolean,
 ): SchemaListing {
   const [schemas, setSchemas] = useState<SchemaSummary[]>([]);
   const [nonce, setNonce] = useState(0);
@@ -47,7 +49,7 @@ export function useSchemas(
         // absence is the answer, so it is not reported as a failure.
         setSchemas([]);
       });
-  }, [adapter, workspaceKey, enabled, nonce]);
+  }, [adapter, workspaceKey, enabled, ready, nonce]);
 
   const reload = useCallback(() => setNonce((value) => value + 1), []);
   return { schemas, reload };

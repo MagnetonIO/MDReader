@@ -530,7 +530,12 @@ export function AppShell() {
   const semantics = useMemo(makeSemanticsAdapter, []);
   // The registered schemas drive the toolbar's View As control and the lens
   // band. Only read inside a Tauri shell — there is no engine on the website.
-  const { schemas, reload: reloadSchemas } = useSchemas(semantics, root, isTauri());
+  const { schemas, reload: reloadSchemas } = useSchemas(
+    semantics,
+    root,
+    isTauri(),
+    importState?.phase === 'done',
+  );
   const activeLens = useMemo(
     () => schemas.find((schema) => schema.name === lensSchema) ?? null,
     [schemas, lensSchema],
