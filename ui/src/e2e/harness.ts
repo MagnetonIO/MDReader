@@ -21,9 +21,15 @@
  * the model is still being fetched/deserialized, so `start_import` has not
  * answered and will not for as long as the load takes. See
  * {@link MODEL_LOADING}.
+ *
+ * Loading it with `?realengine` answers from a GENUINELY RUNNING catdb-server
+ * instead of from any of the above — no fixture is consulted at all. See
+ * {@link REAL_ENGINE} and `./real-engine.ts`.
  */
 
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
+
+import { answerFromRealEngine } from './real-engine.js';
 
 const CORPUS: Record<string, string> = {
   '/mock/ws/index.md':
@@ -118,6 +124,24 @@ const EMPTY_FOLDER =
 const LISTING_PENDING =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).has('listingpending');
+
+/**
+ * Whether this run answers from a REAL ENGINE rather than from the fixture
+ * below: a live `catdb-server` over a real SQLite workspace indexed from a real
+ * corpus, reached over same-origin HTTP (see `./real-engine.ts`).
+ *
+ * This is not one more fixture state — it replaces the fixture wholesale. Every
+ * other flag on this page describes a backend CONDITION we want to stand in for;
+ * this one says the backend is not standing in for anything.
+ *
+ * It is deliberately all-or-nothing. A mode that answered what it could from the
+ * server and quietly filled the rest in from the corpus above would report
+ * success for a path it never exercised, which is worse than having no
+ * real-engine mode at all: commands `/v1` does not serve REJECT (see
+ * `unsupported`), so a spec that touches one fails naming it.
+ */
+const REAL_ENGINE =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('realengine');
 
 /** The OS's own words when macOS's privacy layer withholds a folder. */
 const UNREADABLE_REASON =
@@ -557,13 +581,32 @@ export function installTauriMocks(): void {
   // channel isn't available under a pure IPC mock — and read back what the shell
   // actually sent, so an absence can be asserted rather than assumed.
   (window as unknown as { __E2E__?: E2EHooks }).__E2E__ = {
-    writeDisk,
+    writeDisk: (path, content) => {
+      // There is no mock disk in real-engine mode, and pretending otherwise
+      // would silently make a save-guard assertion vacuous.
+      if (REAL_ENGINE) {
+        throw new Error('__E2E__.writeDisk is a MOCKED-mode hook; there is no mock disk to write');
+      }
+      writeDisk(path, content);
+    },
     sent: () => SENT.map((entry) => ({ ...entry })),
     clearSent: () => {
       SENT.length = 0;
     },
   };
   mockWindows('main');
+
+  // Real-engine mode: every answer comes off the wire. The command log is kept
+  // (a spec can still assert what crossed the boundary), but no branch below is
+  // reachable — there is no fixture path to fall back to.
+  if (REAL_ENGINE) {
+    mockIPC((cmd, args) => {
+      SENT.push({ cmd, args });
+      return answerFromRealEngine(cmd, args);
+    });
+    return;
+  }
+
   mockIPC((cmd, args) => {
     SENT.push({ cmd, args });
     switch (cmd) {
