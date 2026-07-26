@@ -29,7 +29,7 @@ fn prover() -> EggProver {
 /// Every corpus-reading test goes through this: the non-destructive premise is
 /// not one test's job, it is a property of every read, so it is checked on
 /// every read.
-fn assemble(scope: &str) -> Vec<Document> {
+async fn assemble(scope: &str) -> Vec<Document> {
     let root = corpus();
     let before = tree_digest(&root);
     let fs = FilesystemSource::new(&root);
@@ -37,8 +37,10 @@ fn assemble(scope: &str) -> Vec<Document> {
     let front = FrontmatterSource::new(&root);
     let federation =
         Federation::new(vec![&fs, &git, &front], &prover()).expect("the federation declares");
+    let context = federation_support::read_context();
     let documents = federation
-        .assemble(&federation.scope(scope).expect("scope validates"))
+        .assemble(&federation.scope(scope).expect("scope validates"), &context)
+        .await
         .expect("the corpus assembles");
     assert_eq!(
         before,
@@ -48,8 +50,9 @@ fn assemble(scope: &str) -> Vec<Document> {
     documents
 }
 
-fn one(scope: &str, path: &str) -> Document {
+async fn one(scope: &str, path: &str) -> Document {
     assemble(scope)
+        .await
         .into_iter()
         .find(|document| document.path() == path)
         .unwrap_or_else(|| panic!("no document for `{path}`"))
@@ -72,10 +75,10 @@ fn answered_by(document: &Document, field: &str) -> String {
 
 /// One document, six fields, four different physical origins — and the
 /// document can say which source answered each one, by name.
-#[test]
-fn a_document_from_the_corpus_names_the_source_that_answered_every_field() {
+#[tokio::test]
+async fn a_document_from_the_corpus_names_the_source_that_answered_every_field() {
     let rel = "docs/reference/headings-duplicate.md";
-    let document = one("path:docs/**", rel);
+    let document = one("path:docs/**", rel).await;
 
     let sourced: Vec<(&str, String)> = ["path", "title", "author", "modifiedAt", "size", "body"]
         .into_iter()
@@ -119,9 +122,9 @@ fn a_document_from_the_corpus_names_the_source_that_answered_every_field() {
 
 /// The same file seen by three adapters is ONE document — and the three rows
 /// are still there, verbatim, each linked by its own identity claim.
-#[test]
-fn one_file_seen_by_three_adapters_is_one_document_with_three_intact_observations() {
-    let document = one("path:docs/**", "docs/reference/headings-duplicate.md");
+#[tokio::test]
+async fn one_file_seen_by_three_adapters_is_one_document_with_three_intact_observations() {
+    let document = one("path:docs/**", "docs/reference/headings-duplicate.md").await;
 
     let mut sources: Vec<&str> = document
         .observations()
@@ -180,9 +183,9 @@ fn one_file_seen_by_three_adapters_is_one_document_with_three_intact_observation
 
 /// A document with BOTH a YAML `title:` and a different first H1 takes the
 /// declared winner — the YAML field.
-#[test]
-fn a_yaml_title_wins_over_a_differing_first_h1() {
-    let document = one("path:docs/**", "docs/reference/headings-duplicate.md");
+#[tokio::test]
+async fn a_yaml_title_wins_over_a_differing_first_h1() {
+    let document = one("path:docs/**", "docs/reference/headings-duplicate.md").await;
     assert_eq!(document.text("title"), Some("Duplicate Headings"));
     assert_ne!(
         document.text("title"),
@@ -194,19 +197,19 @@ fn a_yaml_title_wins_over_a_differing_first_h1() {
 
 /// A document with no YAML `title:` falls back to its first H1 — the second
 /// half of the same adapter-declared chain.
-#[test]
-fn a_document_with_no_yaml_title_falls_back_to_its_first_h1() {
-    let document = one("path:docs/**", "docs/arch/catdb-core.md");
+#[tokio::test]
+async fn a_document_with_no_yaml_title_falls_back_to_its_first_h1() {
+    let document = one("path:docs/**", "docs/arch/catdb-core.md").await;
     assert_eq!(document.text("title"), Some("catdb-core"));
     assert_eq!(answered_by(&document, "title"), "frontmatter");
 }
 
 /// `author` is the cross-source case: a declared YAML author outranks the
 /// commit author, and the loser is recorded rather than forgotten.
-#[test]
-fn a_declared_yaml_author_outranks_the_commit_author() {
+#[tokio::test]
+async fn a_declared_yaml_author_outranks_the_commit_author() {
     let rel = "frontmatter/typical.md";
-    let document = one("path:frontmatter/typical.md", rel);
+    let document = one("path:frontmatter/typical.md", rel).await;
     assert_eq!(document.text("author"), Some("M. Long"));
     assert_eq!(answered_by(&document, "author"), "frontmatter");
 
@@ -230,10 +233,10 @@ fn a_declared_yaml_author_outranks_the_commit_author() {
 
 /// Where no YAML author was declared, the commit author answers — and the
 /// record says the higher-precedence source was silent.
-#[test]
-fn the_commit_author_answers_where_the_document_declared_none() {
+#[tokio::test]
+async fn the_commit_author_answers_where_the_document_declared_none() {
     let rel = "docs/arch/catdb-core.md";
-    let document = one("path:docs/arch/**", rel);
+    let document = one("path:docs/arch/**", rel).await;
     assert_eq!(answered_by(&document, "author"), "git");
     assert_eq!(
         document.text("author"),
@@ -254,10 +257,10 @@ fn the_commit_author_answers_where_the_document_declared_none() {
 /// `modifiedAt` is answered by both sources and the declared order decides:
 /// the filesystem mtime wins over the commit timestamp, which is genuinely a
 /// different number.
-#[test]
-fn the_filesystem_mtime_outranks_the_commit_timestamp() {
+#[tokio::test]
+async fn the_filesystem_mtime_outranks_the_commit_timestamp() {
     let rel = "docs/arch/catdb-core.md";
-    let document = one("path:docs/arch/**", rel);
+    let document = one("path:docs/arch/**", rel).await;
     let root = corpus();
     assert_eq!(answered_by(&document, "modifiedAt"), "filesystem");
     assert_eq!(
@@ -290,9 +293,9 @@ fn the_filesystem_mtime_outranks_the_commit_timestamp() {
 
 /// A field no source can supply is ABSENT. Not empty, not the filename, not
 /// the epoch.
-#[test]
-fn a_title_no_source_can_supply_is_absent_rather_than_defaulted() {
-    let document = one("path:edge-cases/empty.md", "edge-cases/empty.md");
+#[tokio::test]
+async fn a_title_no_source_can_supply_is_absent_rather_than_defaulted() {
+    let document = one("path:edge-cases/empty.md", "edge-cases/empty.md").await;
     let title = document.field("title").expect("title is declared");
     assert!(title.is_absent(), "{}", title.explain());
     assert_eq!(document.value("title"), None);
@@ -320,8 +323,8 @@ fn a_title_no_source_can_supply_is_absent_rather_than_defaulted() {
 /// An author neither the document nor git declares is absent, with both
 /// providers named. `author` has no fallback anywhere in the chain: that is a
 /// fact to represent, not a gap to fill.
-#[test]
-fn an_author_neither_source_can_supply_is_absent_with_both_providers_named() {
+#[tokio::test]
+async fn an_author_neither_source_can_supply_is_absent_with_both_providers_named() {
     let repo = federation_support::git_fixture();
     let root = repo.path();
     let before = tree_digest(root);
@@ -331,8 +334,10 @@ fn an_author_neither_source_can_supply_is_absent_with_both_providers_named() {
     let git = GitSource::open(root);
     let front = FrontmatterSource::new(root);
     let federation = Federation::new(vec![&fs, &git, &front], &prover()).expect("declares");
+    let context = federation_support::read_context();
     let documents = federation
-        .assemble(&federation.scope("").expect("scope validates"))
+        .assemble(&federation.scope("").expect("scope validates"), &context)
+        .await
         .expect("the fixture assembles");
 
     // `docs/staged.md` is in the index but has never been committed, so git
@@ -405,9 +410,9 @@ fn an_author_neither_source_can_supply_is_absent_with_both_providers_named() {
 
 /// A document one source cannot see at all is not the same as one it saw and
 /// had nothing for, and the record keeps them apart.
-#[test]
-fn a_source_that_never_saw_the_document_says_so_distinctly() {
-    let document = one("path:assets/**", "assets/logo.png");
+#[tokio::test]
+async fn a_source_that_never_saw_the_document_says_so_distinctly() {
+    let document = one("path:assets/**", "assets/logo.png").await;
     let title = document.field("title").expect("title is declared");
     assert_eq!(title.verdicts[0].1, ProviderVerdict::DidNotSeeDocument);
     assert!(title.is_absent());
@@ -421,8 +426,8 @@ fn a_source_that_never_saw_the_document_says_so_distinctly() {
 /// A source that is not here declares itself unavailable, is never read, and
 /// its providers are recorded as never asked — which is a different thing from
 /// having nothing to say.
-#[test]
-fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() {
+#[tokio::test]
+async fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() {
     let tree = federation_support::tree(&[(
         "note.md",
         "---\ntitle: Outside Any Repository\n---\n\n# Note\n\nbody\n",
@@ -445,8 +450,10 @@ fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() {
     assert_eq!(unavailable, ["git"]);
     assert!(federation.unavailable()[0].1.contains("git work tree"));
 
+    let context = federation_support::read_context();
     let documents = federation
-        .assemble(&federation.scope("").expect("scope validates"))
+        .assemble(&federation.scope("").expect("scope validates"), &context)
+        .await
         .expect("a federation with an unavailable source still assembles");
     let note = &documents[0];
     let author = note.field("author").expect("author is declared");
@@ -468,8 +475,8 @@ fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() {
 
 /// A source that cannot complete a read fails the whole assembly. A silently
 /// shorter answer is indistinguishable from a correct one.
-#[test]
-fn a_malformed_source_fails_the_assembly_rather_than_shrinking_it() {
+#[tokio::test]
+async fn a_malformed_source_fails_the_assembly_rather_than_shrinking_it() {
     let root = corpus();
     let before = tree_digest(&root);
     let fs = FilesystemSource::new(&root);
@@ -477,8 +484,9 @@ fn a_malformed_source_fails_the_assembly_rather_than_shrinking_it() {
     let front = FrontmatterSource::new(&root);
     let federation = Federation::new(vec![&fs, &git, &front], &prover()).expect("declares");
     let scope = federation.scope("path:frontmatter/**").expect("scope");
+    let context = federation_support::read_context();
 
-    match federation.assemble(&scope) {
+    match federation.assemble(&scope, &context).await {
         Ok(documents) => panic!(
             "expected a typed refusal, got {} documents — a malformed frontmatter block must \
              not be quietly skipped",
@@ -520,10 +528,10 @@ fn a_scope_may_only_narrow_the_natural_key() {
 
 /// Two federations over the same unchanged corpus produce the same documents,
 /// the same attributions and the same identity claims.
-#[test]
-fn assembling_twice_over_an_unchanged_corpus_gives_the_same_answer() {
-    let first = assemble("path:docs/guides/**");
-    let second = assemble("path:docs/guides/**");
+#[tokio::test]
+async fn assembling_twice_over_an_unchanged_corpus_gives_the_same_answer() {
+    let first = assemble("path:docs/guides/**").await;
+    let second = assemble("path:docs/guides/**").await;
     assert!(!first.is_empty());
     assert_eq!(first, second);
 }
@@ -537,8 +545,8 @@ fn assembling_twice_over_an_unchanged_corpus_gives_the_same_answer() {
 /// execution report, `assemble_from` for callers who do, and a difference
 /// between them would mean the reported execution describes something other
 /// than the documents in hand.
-#[test]
-fn attributing_the_executors_answer_gives_the_same_documents_as_reading_directly() {
+#[tokio::test]
+async fn attributing_the_executors_answer_gives_the_same_documents_as_reading_directly() {
     let root = corpus();
     let fs = FilesystemSource::new(&root);
     let git = GitSource::open(&root);
@@ -547,10 +555,18 @@ fn attributing_the_executors_answer_gives_the_same_documents_as_reading_directly
     let federation = Federation::new(sources.clone(), &prover()).expect("declares");
     let scope = federation.scope("path:docs/guides/**").expect("scope");
 
-    let mut executor = Executor::new(ExecutionPolicy::default());
-    let answer = executor.execute(&sources, &scope).expect("the query runs");
+    let executor = Executor::new(ExecutionPolicy::default());
+    let execution_context = federation_support::read_context();
+    let answer = executor
+        .execute(&sources, &scope, &execution_context)
+        .await
+        .expect("the query runs");
     let attributed = federation.assemble_from(&answer).expect("attributes");
-    let read_here = federation.assemble(&scope).expect("assembles");
+    let context = federation_support::read_context();
+    let read_here = federation
+        .assemble(&scope, &context)
+        .await
+        .expect("assembles");
 
     assert!(!attributed.is_empty());
     assert_eq!(attributed, read_here);
@@ -570,7 +586,8 @@ fn an_answer_that_does_not_cover_this_federations_sources_is_refused() {
     let scope = federation.scope("path:docs/guides/**").expect("scope");
 
     let mut executor = Executor::new(ExecutionPolicy::default());
-    let mut answer = executor.execute(&sources, &scope).expect("the query runs");
+    let mut answer =
+        federation_support::execute_query(&mut executor, &sources, &scope).expect("the query runs");
     // The rows are all still there; only git's account of itself is gone.
     answer
         .reports
@@ -603,7 +620,8 @@ fn rows_from_a_source_the_answer_says_refused_are_refused_rather_than_attributed
     let scope = federation.scope("path:docs/guides/**").expect("scope");
 
     let mut executor = Executor::new(ExecutionPolicy::default());
-    let mut answer = executor.execute(&sources, &scope).expect("the query runs");
+    let mut answer =
+        federation_support::execute_query(&mut executor, &sources, &scope).expect("the query runs");
     // git's rows stay in the answer while its report becomes a refusal.
     for report in &mut answer.reports {
         if report.source == SourceId::new("git") {

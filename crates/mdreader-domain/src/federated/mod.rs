@@ -56,7 +56,7 @@ pub use schema::{document_schema, qualified_entity, ATTRIBUTES, ENTITY, SCHEMA};
 use std::collections::{BTreeMap, BTreeSet};
 
 use catdb_connectors::{
-    federate, read, Availability, DataSource, SourceError, SourceId, SourceRow,
+    federate, read, Availability, DataSource, ReadContext, SourceError, SourceId, SourceRow,
 };
 use catdb_core::{
     apply_chain, coverage, AttrName, IdentityRefusal, IdentityRule, MappingCoverage, MappingError,
@@ -472,8 +472,15 @@ impl<'a> Federation<'a> {
     /// file that cannot be stat'd) fails the whole assembly rather than
     /// shrinking it: a silently shorter answer is indistinguishable from a
     /// correct one.
-    pub fn assemble(&self, scope: &EntityQuery) -> Result<Vec<Document>, FederationError> {
-        let readings = self.read_all(scope)?;
+    ///
+    /// `context` carries the caller's single cancellation signal, deadline,
+    /// and work and response-byte budgets across every source page.
+    pub async fn assemble(
+        &self,
+        scope: &EntityQuery,
+        context: &ReadContext,
+    ) -> Result<Vec<Document>, FederationError> {
+        let readings = self.read_all(scope, context).await?;
         self.documents(&readings)
     }
 
@@ -524,7 +531,11 @@ impl<'a> Federation<'a> {
     }
 
     /// Read each source once, keeping its rows by key.
-    fn read_all(&self, scope: &EntityQuery) -> Result<Vec<Reading<'_>>, FederationError> {
+    async fn read_all(
+        &self,
+        scope: &EntityQuery,
+        context: &ReadContext,
+    ) -> Result<Vec<Reading<'_>>, FederationError> {
         let mut readings = Vec::new();
         for binding in &self.bindings {
             let mut reading = Reading {
@@ -541,7 +552,11 @@ impl<'a> Federation<'a> {
                     reading.reason = reason.clone();
                 }
                 Availability::Available => {
-                    for row in read(binding.source, scope)?.rows {
+                    let authorized_fields = binding.source.capabilities().observed();
+                    for row in read(binding.source, scope, &authorized_fields, context)
+                        .await?
+                        .rows
+                    {
                         reading.take(row)?;
                     }
                 }
