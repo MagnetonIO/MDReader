@@ -6,10 +6,18 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$expectedStore = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
 $storeName = $env:WINDOWS_CERT_STORE
+$storeOwned = $env:WINDOWS_CERT_STORE_OWNED
 $thumbprint = $env:WINDOWS_CERT_THUMBPRINT
-if ($storeName -ne $expectedStore -or $storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
+if (
+  $env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
+  $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]+$'
+) {
+  throw 'Windows release run identity is invalid'
+}
+$expectedStorePattern =
+  "^MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-[0-9A-F]{32}$"
+if ($storeOwned -ne 'true' -or $storeName -notmatch $expectedStorePattern) {
   throw 'Windows signing store is not the exact per-run owned store'
 }
 if ($thumbprint -notmatch '^[0-9A-F]{40}$') {

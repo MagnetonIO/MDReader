@@ -192,10 +192,39 @@ function exactStepOrder(
   }
 }
 
+function scalarContainsSecretsContext(value: string): boolean {
+  let cursor = 0;
+  for (;;) {
+    const start = value.indexOf('${{', cursor);
+    if (start < 0) return false;
+    let inString = false;
+    let end = start + 3;
+    for (; end < value.length; end += 1) {
+      if (value[end] === "'") {
+        if (inString && value[end + 1] === "'") {
+          end += 1;
+        } else {
+          inString = !inString;
+        }
+        continue;
+      }
+      if (!inString && value.startsWith('}}', end)) break;
+    }
+    const expression = value.slice(start + 3, end);
+    if (/\bsecrets\b/i.test(expression)) return true;
+    if (end >= value.length) return false;
+    cursor = end + 2;
+  }
+}
+
 function containsSecretsContext(value: unknown): boolean {
-  const serialized = JSON.stringify(value) ?? '';
-  for (const expression of serialized.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
-    if (/\bsecrets\b/i.test(expression[1] ?? '')) return true;
+  if (typeof value === 'string') return scalarContainsSecretsContext(value);
+  if (Array.isArray(value)) return value.some(containsSecretsContext);
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).some(
+      ([key, nested]) =>
+        scalarContainsSecretsContext(key) || containsSecretsContext(nested),
+    );
   }
   return false;
 }
@@ -287,6 +316,7 @@ function assertExactStepMetadata(jobs: Mapping): void {
     'build/generate-release-config-linux',
     'build/import-macos-cert',
     'build/import-windows-cert',
+    'build/cleanup-windows-cert',
     'build/bundle-direct-release-macos',
     'build/bundle-direct-release-windows',
     'build/bundle-direct-release-linux',
@@ -899,11 +929,15 @@ try {
     buildSteps,
     'import-windows-cert',
     `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-$storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+$storeNonce = [byte[]]::new(16)
+[Security.Cryptography.RandomNumberGenerator]::Fill($storeNonce)
+$storeNonceHex = [Convert]::ToHexString($storeNonce)
+$storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$storeNonceHex"
 $storePath = "Cert:\\CurrentUser\\$storeName"
-if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
+if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+-[0-9A-F]{32}$') {
   throw "Windows per-run certificate store name is invalid"
 }
+"store_name=$storeName" >> $env:GITHUB_OUTPUT
 $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
 $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
 $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
@@ -915,7 +949,7 @@ try {
   $expectedThumbprint = "\${{ steps.inspect-windows-cert.outputs.thumbprint }}"
   if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
   New-Item -Path Cert:\\CurrentUser -Name $storeName -ErrorAction Stop | Out-Null
-  "store_name=$storeName" >> $env:GITHUB_OUTPUT
+  "store_owned=true" >> $env:GITHUB_OUTPUT
   [IO.File]::WriteAllBytes($path, $bytes)
   $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation $storePath -ErrorAction Stop)
   $importedThumbprints = @($imported | ForEach-Object Thumbprint | Sort-Object -Unique)
@@ -1069,47 +1103,24 @@ done
   const windowsCleanup = exactExecutable(
     buildSteps,
     'cleanup-windows-cert',
-    `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-$expectedStoreName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-$ownedStoreName = "\${{ steps.import-windows-cert.outputs.store_name }}"
-if (-not [string]::IsNullOrWhiteSpace($ownedStoreName) -and $ownedStoreName -ne $expectedStoreName) {
-  throw "Windows per-run certificate store ownership mismatch"
-}
-if ($expectedStoreName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
-  throw "Windows per-run certificate store identity is invalid"
-}
-$storePath = "Cert:\\CurrentUser\\$expectedStoreName"
-if (Test-Path -LiteralPath $storePath) {
-  $certificates = @(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop)
-  foreach ($certificate in $certificates) {
-    $certificatePath = Join-Path $storePath $certificate.Thumbprint
-    $ownedCertificate = Get-Item -LiteralPath $certificatePath -ErrorAction Stop
-    if ($ownedCertificate.Thumbprint -ne $certificate.Thumbprint) {
-      throw "Windows per-run certificate store identity mismatch"
-    }
-    Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop
-  }
-  if (@(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop).Count -ne 0) {
-    throw "Windows certificate residue remains in the per-run store"
-  }
-  Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop
-}
-if (Test-Path -LiteralPath $storePath) {
-  throw "Windows per-run certificate store residue remains after cleanup"
-}
-if (Test-Path $path) { Remove-Item $path -Force -ErrorAction Stop }
-if (Test-Path $path) {
-  throw "Windows signing file residue remains after cleanup"
-}`,
+    '& scripts/release/cleanup-windows-cert-store.ps1',
     'release workflow is missing fail-closed Windows certificate cleanup',
     "always() && matrix.platform == 'windows'",
   );
   if (windowsCleanup.shell !== 'pwsh') {
     throw new Error('Windows certificate cleanup must use the reviewed PowerShell boundary');
   }
-  requireNoEnvironment(
+  exactEnvironment(
     windowsCleanup,
-    'Windows certificate cleanup must not receive credentials',
+    {
+      WINDOWS_CERT_STORE:
+        '${{ steps.import-windows-cert.outputs.store_name }}',
+      WINDOWS_CERT_STORE_OWNED:
+        '${{ steps.import-windows-cert.outputs.store_owned }}',
+      WINDOWS_CERTIFICATE_PATH:
+        '${{ runner.temp }}\\mdreader-release.pfx',
+    },
+    'Windows certificate cleanup environment is not an exact ownership capability',
   );
   const windowsBundle = exactExecutable(
     buildSteps,
@@ -1127,6 +1138,8 @@ if (Test-Path $path) {
         COMMON_CREDENTIALS.TAURI_SIGNING_PRIVATE_KEY_PASSWORD,
       WINDOWS_CERT_STORE:
         '${{ steps.import-windows-cert.outputs.store_name }}',
+      WINDOWS_CERT_STORE_OWNED:
+        '${{ steps.import-windows-cert.outputs.store_owned }}',
       WINDOWS_CERT_THUMBPRINT:
         '${{ steps.inspect-windows-cert.outputs.thumbprint }}',
     },

@@ -276,11 +276,15 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-          $storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $storeNonce = [byte[]]::new(16)
+          [Security.Cryptography.RandomNumberGenerator]::Fill($storeNonce)
+          $storeNonceHex = [Convert]::ToHexString($storeNonce)
+          $storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$storeNonceHex"
           $storePath = "Cert:\CurrentUser\$storeName"
-          if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
+          if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+-[0-9A-F]{32}$') {
             throw "Windows per-run certificate store name is invalid"
           }
+          "store_name=$storeName" >> $env:GITHUB_OUTPUT
           $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
@@ -292,7 +296,7 @@ jobs:
             $expectedThumbprint = "${{ steps.inspect-windows-cert.outputs.thumbprint }}"
             if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
             New-Item -Path Cert:\CurrentUser -Name $storeName -ErrorAction Stop | Out-Null
-            "store_name=$storeName" >> $env:GITHUB_OUTPUT
+            "store_owned=true" >> $env:GITHUB_OUTPUT
             [IO.File]::WriteAllBytes($path, $bytes)
             $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation $storePath -ErrorAction Stop)
             $importedThumbprints = @($imported | ForEach-Object Thumbprint | Sort-Object -Unique)
@@ -320,6 +324,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERT_STORE: ${{ steps.import-windows-cert.outputs.store_name }}
+          WINDOWS_CERT_STORE_OWNED: ${{ steps.import-windows-cert.outputs.store_owned }}
           WINDOWS_CERT_THUMBPRINT: ${{ steps.inspect-windows-cert.outputs.thumbprint }}
         run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Bundle and sign Linux updater
@@ -370,39 +375,11 @@ jobs:
         id: cleanup-windows-cert
         if: always() && matrix.platform == 'windows'
         shell: pwsh
-        run: |
-          $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-          $expectedStoreName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
-          $ownedStoreName = "${{ steps.import-windows-cert.outputs.store_name }}"
-          if (-not [string]::IsNullOrWhiteSpace($ownedStoreName) -and $ownedStoreName -ne $expectedStoreName) {
-            throw "Windows per-run certificate store ownership mismatch"
-          }
-          if ($expectedStoreName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
-            throw "Windows per-run certificate store identity is invalid"
-          }
-          $storePath = "Cert:\CurrentUser\$expectedStoreName"
-          if (Test-Path -LiteralPath $storePath) {
-            $certificates = @(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop)
-            foreach ($certificate in $certificates) {
-              $certificatePath = Join-Path $storePath $certificate.Thumbprint
-              $ownedCertificate = Get-Item -LiteralPath $certificatePath -ErrorAction Stop
-              if ($ownedCertificate.Thumbprint -ne $certificate.Thumbprint) {
-                throw "Windows per-run certificate store identity mismatch"
-              }
-              Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop
-            }
-            if (@(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop).Count -ne 0) {
-              throw "Windows certificate residue remains in the per-run store"
-            }
-            Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop
-          }
-          if (Test-Path -LiteralPath $storePath) {
-            throw "Windows per-run certificate store residue remains after cleanup"
-          }
-          if (Test-Path $path) { Remove-Item $path -Force -ErrorAction Stop }
-          if (Test-Path $path) {
-            throw "Windows signing file residue remains after cleanup"
-          }
+        env:
+          WINDOWS_CERT_STORE: ${{ steps.import-windows-cert.outputs.store_name }}
+          WINDOWS_CERT_STORE_OWNED: ${{ steps.import-windows-cert.outputs.store_owned }}
+          WINDOWS_CERTIFICATE_PATH: ${{ runner.temp }}\mdreader-release.pfx
+        run: '& scripts/release/cleanup-windows-cert-store.ps1'
       - name: Verify attestation and seal bundle without credentials
         id: verify-direct-release
         run: scripts/release/verify-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
