@@ -7,6 +7,9 @@ repository.workspace = true
 description = "MDReader desktop shell (Tauri 2)"
 publish = false
 
+[features]
+direct-updater = ["dep:tauri-plugin-updater"]
+
 [lib]
 # The `_lib` suffix keeps the library name distinct from the binary so the two
 # don't collide on Windows (see rust-lang/cargo#8519). The binary is the thin
@@ -24,11 +27,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["specta"] }
 serde = { workspace = true }
+serde_json = { workspace = true }
 specta = "=2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tauri-plugin-store = "2.4.4"
 tauri-plugin-dialog = "2.7.2"
+tauri-plugin-updater = { version = "2.10.1", optional = true }
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
 # Advisory `flock` on the save target so the hash-check → temp-write → rename
@@ -70,9 +75,6 @@ tempfile = "3"
 # workspace whose ACTIVE index was embedded by a different model — through the
 # storage lifecycle instead of a stand-in embedder.
 catdb-catalog = { path = "../../../catdb/crates/catdb-catalog" }
-# Serializes the provenance golden fixture the reader's TS golden test reads
-# (one line value crossing the Rust→TS boundary via a committed JSON file).
-serde_json = "1"
 # Parses `commands.rs` into an AST so the structural test can assert the public
 # `save_doc` command body is EXACTLY one bare call to the guarded core (a grep can
 # be defeated by a method-chain like `save_doc_guarded(..).inspect(..)`).

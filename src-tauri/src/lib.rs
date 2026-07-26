@@ -137,6 +137,14 @@ pub fn run() {
             Ok(())
         });
 
+    // The updater is a direct-distribution capability, not part of normal dev,
+    // E2E, store, or mobile builds. Release CI is the only caller that enables
+    // `direct-updater`, after injecting a validated endpoint/public-key overlay.
+    #[cfg(feature = "direct-updater")]
+    {
+        tauri_builder = tauri_builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
     // Only macOS needs the custom menu: it is the platform whose default menu
     // binds ⌘W to Close Window. Other platforms keep their (harmless) defaults.
     #[cfg(target_os = "macos")]

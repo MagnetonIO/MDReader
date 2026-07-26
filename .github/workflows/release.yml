@@ -1,0 +1,348 @@
+name: mdreader-direct-release
+
+on:
+  push:
+    tags:
+      - 'mdreader-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact workspace semantic version
+        required: true
+        type: string
+      dry_run:
+        description: Build and verify without publishing to R2
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mdreader-stable-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
+      published_at: ${{ steps.metadata.outputs.published_at }}
+      dry_run: ${{ steps.metadata.outputs.dry_run }}
+    steps:
+      - name: Checkout the exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.13.1'
+          cache: pnpm
+      - name: Enable pinned package manager
+        run: corepack enable
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Pin version, source, time, and publication mode
+        id: metadata
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#mdreader-v}"
+            DRY_RUN=false
+          else
+            VERSION="$DISPATCH_VERSION"
+            DRY_RUN="${DISPATCH_DRY_RUN:-true}"
+          fi
+          WORKSPACE_VERSION="$(pnpm exec tsx -e "import { readWorkspaceVersion } from './scripts/release/release-config.ts'; process.stdout.write(readWorkspaceVersion('./Cargo.toml'))")"
+          [[ "$VERSION" == "$WORKSPACE_VERSION" ]] || {
+            echo "release version does not match Cargo workspace version" >&2
+            exit 1
+          }
+          {
+            echo "version=$VERSION"
+            echo "source_commit=$GITHUB_SHA"
+            echo "published_at=$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
+            echo "dry_run=$DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+      - name: Validate release workflow contract
+        run: pnpm exec tsx scripts/release/check-workflow.ts .github/workflows/release.yml
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-14
+            target: universal-apple-darwin
+            bundles: dmg
+          - platform: windows
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout the exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.13.1'
+          cache: pnpm
+      - name: Enable pinned package manager
+        run: corepack enable
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            rpm \
+            libfuse2
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust release targets
+        run: |
+          if [[ "${{ matrix.platform }}" == "macos" ]]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          else
+            rustup target add "${{ matrix.target }}"
+          fi
+      - name: Require every signer and updater credential
+        id: require-release-secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.MDREADER_APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: pnpm exec tsx scripts/release/require-secrets.ts "${{ matrix.platform }}"
+      - name: Import macOS Developer ID certificate
+        if: matrix.platform == 'macos'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.MDREADER_APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/mdreader-release.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/mdreader-release.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+      - name: Import Windows Authenticode certificate
+        id: import-windows-cert
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
+          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificates = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\CurrentUser\My)
+          $signers = @($certificates | Where-Object { $_.HasPrivateKey })
+          if ($signers.Count -ne 1) { throw "expected exactly one Windows signing certificate with a private key, found $($signers.Count)" }
+          "thumbprint=$($signers[0].Thumbprint)" >> $env:GITHUB_OUTPUT
+      - name: Generate validated direct-release configuration
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
+          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-windows-cert.outputs.thumbprint }}
+        run: |
+          ARGS=()
+          if [[ "${{ matrix.platform }}" == "macos" ]]; then
+            ARGS+=(--macos-signing-identity "$APPLE_SIGNING_IDENTITY")
+          elif [[ "${{ matrix.platform }}" == "windows" ]]; then
+            ARGS+=(--windows-thumbprint "$WINDOWS_CERT_THUMBPRINT")
+          fi
+          pnpm exec tsx scripts/release/release-cli.ts config \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output "$RUNNER_TEMP/mdreader-release-config.json" \
+            "${ARGS[@]}"
+      - name: Build signed direct release and updater artifacts
+        id: build-direct-release
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
+        run: |
+          pnpm --filter '@mdreader/app...' run build
+          pnpm --filter @mdreader/app tauri build \
+            --target "${{ matrix.target }}" \
+            --bundles "${{ matrix.bundles }}" \
+            --features direct-updater \
+            --config "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Verify macOS Developer ID signature
+        id: macos-verify-signature
+        if: matrix.platform == 'macos'
+        run: |
+          APP_PATH="$(find target/${{ matrix.target }}/release/bundle -type d -name 'MDReader.app' -print -quit)"
+          [[ -n "$APP_PATH" ]] || { echo 'MDReader.app missing' >&2; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+      - name: Verify notarization and stapling
+        id: macos-verify-notarization
+        if: matrix.platform == 'macos'
+        run: |
+          DMG_PATH="$(find target/${{ matrix.target }}/release/bundle -type f -name '*.dmg' -print -quit)"
+          [[ -n "$DMG_PATH" ]] || { echo 'signed DMG missing' >&2; exit 1; }
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+      - name: Verify Windows Authenticode signature
+        id: windows-verify-signature
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem "target/${{ matrix.target }}/release/bundle" -Recurse -Filter '*.exe'
+          if ($installers.Count -ne 1) { throw "expected exactly one NSIS installer, found $($installers.Count)" }
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
+          if ($signature.Status -ne 'Valid') { throw "invalid Authenticode status: $($signature.Status)" }
+      - name: Verify Linux package matrix
+        id: linux-verify-packages
+        if: matrix.platform == 'linux'
+        run: |
+          BUNDLE_ROOT="target/${{ matrix.target }}/release/bundle"
+          mapfile -t APPIMAGES < <(find "$BUNDLE_ROOT" -type f -name '*.AppImage')
+          mapfile -t DEBS < <(find "$BUNDLE_ROOT" -type f -name '*.deb')
+          mapfile -t RPMS < <(find "$BUNDLE_ROOT" -type f -name '*.rpm')
+          [[ "${#APPIMAGES[@]}" -eq 1 && "${#DEBS[@]}" -eq 1 && "${#RPMS[@]}" -eq 1 ]] || {
+            echo 'incomplete Linux package matrix' >&2
+            exit 1
+          }
+          chmod +x "${APPIMAGES[0]}"
+          "${APPIMAGES[0]}" --appimage-extract >/dev/null
+          dpkg-deb --info "${DEBS[0]}" >/dev/null
+          rpm -qpi "${RPMS[0]}" >/dev/null
+      - name: Stage immutable names and exact checksums
+        id: stage-release
+        run: |
+          pnpm exec tsx scripts/release/release-cli.ts stage \
+            --platform "${{ matrix.platform }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --published-at "${{ needs.prepare.outputs.published_at }}" \
+            --bundle-root "target/${{ matrix.target }}/release/bundle" \
+            --output-root target/release-stage
+      - name: Generate and inspect SPDX 2.3 SBOMs
+        id: generate-sbom
+        run: |
+          mapfile -t SBOMS < <(find target/release-stage -type f -name '*.spdx.json')
+          [[ "${#SBOMS[@]}" -gt 0 ]] || { echo 'no SBOM documents generated' >&2; exit 1; }
+          for SBOM in "${SBOMS[@]}"; do
+            pnpm exec tsx -e "const d=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if(d.spdxVersion!=='SPDX-2.3') throw new Error('invalid SPDX document')" "$SBOM"
+          done
+      - name: Validate staged checksums and updater signatures
+        id: validate-staged-release
+        run: |
+          test -s "target/release-stage/fragment-${{ matrix.platform }}.json"
+          if [[ "${{ matrix.platform }}" == "macos" ]]; then EXPECTED=2
+          elif [[ "${{ matrix.platform }}" == "windows" ]]; then EXPECTED=2
+          else EXPECTED=4
+          fi
+          ACTUAL="$(pnpm exec tsx -e "const d=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if(d.artifacts.some((a)=>!a.sha256||!a.sbomSha256||(a.kind==='updater'&&!a.signature))) throw new Error('incomplete checksum, SBOM, or signature metadata'); process.stdout.write(String(d.artifacts.length))" "target/release-stage/fragment-${{ matrix.platform }}.json")"
+          [[ "$ACTUAL" == "$EXPECTED" ]] || { echo 'partial staged platform matrix' >&2; exit 1; }
+      - name: Hand off only the verified platform release
+        id: upload-staged-release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-release-${{ matrix.platform }}
+          path: target/release-stage
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the exact release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.13.1'
+          cache: pnpm
+      - name: Enable pinned package manager
+        run: corepack enable
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download every verified platform release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: mdreader-release-*
+          path: target/release-aggregate
+          merge-multiple: true
+      - name: Assemble the one immutable release manifest
+        id: assemble-manifest
+        run: |
+          pnpm exec tsx scripts/release/release-cli.ts assemble \
+            --root target/release-aggregate \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --published-at "${{ needs.prepare.outputs.published_at }}"
+      - name: Reverify the aggregate and publication order
+        id: validate-release
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: |
+          pnpm exec tsx scripts/release/release-cli.ts validate \
+            --root target/release-aggregate \
+            --manifest "target/release-aggregate/releases/v${{ needs.prepare.outputs.version }}/manifest.json" \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}"
+      - name: Dry-run or publish versioned objects, then manifests and pointers
+        id: publish-r2
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MDREADER_R2_ACCESS_KEY_ID: ${{ secrets.MDREADER_R2_ACCESS_KEY_ID }}
+          MDREADER_R2_SECRET_ACCESS_KEY: ${{ secrets.MDREADER_R2_SECRET_ACCESS_KEY }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          RELEASE_BUCKET: ${{ vars.MDREADER_RELEASE_BUCKET }}
+        run: |
+          if [[ "${{ needs.prepare.outputs.dry_run }}" == "true" ]]; then
+            MODE=--dry-run
+          else
+            MODE=--publish
+          fi
+          pnpm exec tsx scripts/release/release-cli.ts publish \
+            --root target/release-aggregate \
+            --manifest "target/release-aggregate/releases/v${{ needs.prepare.outputs.version }}/manifest.json" \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --bucket "$RELEASE_BUCKET" \
+            "$MODE"
