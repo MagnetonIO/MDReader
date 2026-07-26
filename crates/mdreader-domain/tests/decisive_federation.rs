@@ -871,8 +871,16 @@ fn the_scenarios_own_guards_are_not_vacuous() {
     let documents = federation.assemble_from(&answer).expect("attributes");
     let note = document(&documents, "note.md");
     let author = note.field("author").expect("declared");
-    match &author.verdicts[1].1 {
-        ProviderVerdict::NotAsked { reason } => assert!(
+    assert_eq!(
+        record(note, "author"),
+        [
+            ("frontmatter.author".to_string(), "observed".to_string()),
+            ("git.author".to_string(), "not-asked".to_string()),
+        ],
+        "a source the executor never ran must be on the record as never asked"
+    );
+    match author.verdicts.get(1).map(|(_, verdict)| verdict) {
+        Some(ProviderVerdict::NotAsked { reason }) => assert!(
             reason.contains("git work tree"),
             "the verdict must carry the executor's own reason: {reason}"
         ),
