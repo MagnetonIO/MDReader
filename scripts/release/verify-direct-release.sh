@@ -11,23 +11,13 @@ VERSION="$(
     "import { readWorkspaceVersion } from './scripts/release/release-config.ts'; process.stdout.write(readWorkspaceVersion('./Cargo.toml'))"
 )"
 
-pnpm exec tsx scripts/release/release-cli.ts attest-build \
-  --config "$CONFIG" \
-  --attestation "$ATTESTATION" \
-  --target "$TARGET" \
-  --bundles "$BUNDLES"
-pnpm --filter '@mdreader/app...' run build
-pnpm --filter @mdreader/app tauri build \
-  --target "$TARGET" \
-  --bundles "$BUNDLES" \
-  --features direct-updater \
-  --config "$CONFIG"
 pnpm exec tsx scripts/release/release-cli.ts verify-build-attestation \
   --config "$CONFIG" \
   --attestation "$ATTESTATION" \
   --version "$VERSION" \
   --target "$TARGET" \
   --bundles "$BUNDLES"
+
 pnpm exec tsx scripts/release/release-cli.ts seal-build \
   --bundle-root "target/$TARGET/release/bundle" \
   --config "$CONFIG" \

@@ -216,8 +216,8 @@ export async function validateReleaseDirectory(
 
 /**
  * Produce the only allowed publication order. Versioned artifacts, SBOMs, and
- * signatures come first; the immutable manifest follows; the mutable channel
- * pointer advances last.
+ * signatures come first; the immutable manifest follows; the stable manifest
+ * pointer advances next; the updater pointer is the final commit point.
  */
 export function publicationPlan(verified: VerifiedRelease): PublicationEntry[] {
   if (verified[VERIFIED_RELEASE] !== true) {
@@ -305,22 +305,6 @@ export function publicationPlan(verified: VerifiedRelease): PublicationEntry[] {
   }
   const updaterPlatforms = Object.fromEntries(updaterEntries);
   add({
-    kind: 'updater-manifest',
-    key: 'channels/stable/updater.json',
-    immutable: false,
-    localPath: null,
-    contents: `${JSON.stringify(
-      {
-        version: stable.version,
-        notes: '',
-        pub_date: stable.artifacts[0]!.publishedAt,
-        platforms: updaterPlatforms,
-      },
-      null,
-      2,
-    )}\n`,
-  });
-  add({
     kind: 'pointer',
     key: 'channels/stable/manifest.json',
     immutable: false,
@@ -332,6 +316,22 @@ export function publicationPlan(verified: VerifiedRelease): PublicationEntry[] {
         manifestUrl: `https://downloads.mdreader.dev/${manifestKey}`,
         manifestSha256: manifestChecksum,
         sourceCommit: manifest.sourceCommit,
+      },
+      null,
+      2,
+    )}\n`,
+  });
+  add({
+    kind: 'updater-manifest',
+    key: 'channels/stable/updater.json',
+    immutable: false,
+    localPath: null,
+    contents: `${JSON.stringify(
+      {
+        version: stable.version,
+        notes: '',
+        pub_date: stable.artifacts[0]!.publishedAt,
+        platforms: updaterPlatforms,
       },
       null,
       2,

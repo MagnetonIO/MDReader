@@ -21,13 +21,11 @@ import {
   sealReleaseBundle,
   verifyReleaseBuildAttestation,
 } from './release-build-attestation';
-import {
-  createR2Client,
-  publishReleaseEntries,
-  putR2ReleaseEntry,
-  readR2Object,
-} from './r2-publisher';
 import { assertGlibcCompatibility } from './platform-compat';
+import {
+  createSealedPublicationPlan,
+  sealedPublicationPlanSha256,
+} from './sealed-publication';
 import {
   stagePlatformArtifacts,
 } from './stage-release';
@@ -256,47 +254,37 @@ async function plan(args: string[]): Promise<{
 async function publish(args: string[]): Promise<void> {
   const { entries } = await plan(args);
   const live = args.includes('--publish');
-  if (!live && !args.includes('--dry-run')) {
-    throw new Error('choose exactly one of --dry-run or --publish');
-  }
-  if (live && args.includes('--dry-run')) {
-    throw new Error('choose exactly one of --dry-run or --publish');
-  }
-  if (!live) {
-    for (const entry of entries) process.stdout.write(`DRY RUN ${entry.kind} ${entry.key}\n`);
-    return;
-  }
-
-  const accountId = requireEnvironment('CLOUDFLARE_ACCOUNT_ID');
-  const accessKeyId = requireEnvironment('MDREADER_R2_ACCESS_KEY_ID');
-  const secretAccessKey = requireEnvironment('MDREADER_R2_SECRET_ACCESS_KEY');
-  const bucket = option(args, '--bucket')!;
-  if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(bucket)) throw new Error('invalid R2 bucket name');
-  const client = createR2Client({ accountId, accessKeyId, secretAccessKey });
-  try {
-    await publishReleaseEntries(
-      entries,
-      async (entry) =>
-        entry.localPath === null
-          ? Buffer.from(entry.contents ?? '', 'utf8')
-          : await readFile(entry.localPath),
-      {
-        read: (key) => readR2Object(client, bucket, key),
-        put: async (entry, body, expectedEtag) => {
-          process.stdout.write(`publishing ${entry.kind} ${entry.key}\n`);
-          await putR2ReleaseEntry(
-            client,
-            bucket,
-            entry,
-            body,
-            expectedEtag,
-          );
-        },
-      },
+  if (live) {
+    throw new Error(
+      'live publication requires the sealed no-child-process publisher',
     );
-  } finally {
-    client.destroy();
   }
+  if (!args.includes('--dry-run')) {
+    throw new Error('dry-run publication requires --dry-run');
+  }
+  for (const entry of entries) {
+    process.stdout.write(`DRY RUN ${entry.kind} ${entry.key}\n`);
+  }
+}
+
+async function sealPublication(args: string[]): Promise<void> {
+  const { entries } = await plan(args);
+  const sourceCommit = option(args, '--source-commit')!;
+  const version = option(args, '--version')!;
+  const output = resolve(option(args, '--output')!);
+  const sealed = await createSealedPublicationPlan(
+    entries,
+    sourceCommit,
+    version,
+    async (entry) =>
+      entry.localPath === null
+        ? Buffer.from(entry.contents ?? '', 'utf8')
+        : await readFile(entry.localPath),
+  );
+  const contents = `${JSON.stringify(sealed, null, 2)}\n`;
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output, contents, { mode: 0o600 });
+  process.stdout.write(`${sealedPublicationPlanSha256(contents)}\n`);
 }
 
 async function main(): Promise<void> {
@@ -313,8 +301,9 @@ async function main(): Promise<void> {
     process.stdout.write(`verified publication plan: ${result.entries.length} objects\n`);
     return;
   }
+  if (command === 'seal-publication') return sealPublication(args);
   if (command === 'publish') return publish(args);
-  throw new Error('usage: release-cli.ts <config|stage|assemble|verify-linux-abi|validate|publish> [options]');
+  throw new Error('usage: release-cli.ts <config|stage|assemble|verify-linux-abi|validate|seal-publication|publish> [options]');
 }
 
 main().catch((error: unknown) => {

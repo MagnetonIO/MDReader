@@ -10,11 +10,6 @@ on:
         description: Exact workspace semantic version
         required: true
         type: string
-      dry_run:
-        description: Build and verify without publishing to R2
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -34,12 +29,36 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       source_commit: ${{ steps.metadata.outputs.source_commit }}
       published_at: ${{ steps.metadata.outputs.published_at }}
-      dry_run: ${{ steps.metadata.outputs.dry_run }}
+      publish_requested: ${{ steps.metadata.outputs.publish_requested }}
     steps:
-      - name: Checkout the exact release source
+      - name: Checkout the exact release source and main history
+        id: checkout-release-source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Refuse an unapproved source revision
+        id: authorize-release-source
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            [[ "$GITHUB_REF" =~ ^refs/tags/mdreader-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo "release tag is not an exact stable semantic version" >&2
+              exit 1
+            }
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+              echo "release tag source is not contained in origin/main" >&2
+              exit 1
+            }
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+              echo "manual release verification must run from main" >&2
+              exit 1
+            }
+          else
+            echo "unsupported release event $GITHUB_EVENT_NAME" >&2
+            exit 1
+          fi
       - name: Install Node 22
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -49,18 +68,17 @@ jobs:
         run: corepack enable
       - name: Install locked workspace dependencies
         run: pnpm install --frozen-lockfile
-      - name: Pin version, source, time, and publication mode
+      - name: Pin version, source, time, and publication request
         id: metadata
         env:
           DISPATCH_VERSION: ${{ inputs.version }}
-          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             VERSION="${GITHUB_REF_NAME#mdreader-v}"
-            DRY_RUN=false
+            PUBLISH_REQUESTED=true
           else
             VERSION="$DISPATCH_VERSION"
-            DRY_RUN="${DISPATCH_DRY_RUN:-true}"
+            PUBLISH_REQUESTED=false
           fi
           WORKSPACE_VERSION="$(pnpm exec tsx -e "import { readWorkspaceVersion } from './scripts/release/release-config.ts'; process.stdout.write(readWorkspaceVersion('./Cargo.toml'))")"
           [[ "$VERSION" == "$WORKSPACE_VERSION" ]] || {
@@ -71,32 +89,37 @@ jobs:
             echo "version=$VERSION"
             echo "source_commit=$GITHUB_SHA"
             echo "published_at=$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
-            echo "dry_run=$DRY_RUN"
+            echo "publish_requested=$PUBLISH_REQUESTED"
           } >> "$GITHUB_OUTPUT"
       - name: Validate release workflow contract
         run: pnpm exec tsx scripts/release/check-workflow.ts .github/workflows/release.yml
 
   build:
     needs: prepare
+    environment: ${{ matrix.environment }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos
             os: macos-14
+            environment: mdreader-production-macos
             target: universal-apple-darwin
             bundles: dmg
           - platform: windows
             os: windows-2025
+            environment: mdreader-production-windows
             target: x86_64-pc-windows-msvc
             bundles: nsis
           - platform: linux
             os: ubuntu-24.04
+            environment: mdreader-production-linux
             target: x86_64-unknown-linux-gnu
             bundles: appimage,deb,rpm
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout the exact release source
+        id: checkout-build-source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -132,8 +155,9 @@ jobs:
           else
             rustup target add "${{ matrix.target }}"
           fi
-      - name: Require every signer and updater credential
-        id: require-release-secrets
+      - name: Require macOS release credentials with shell builtins
+        id: require-release-secrets-macos
+        if: matrix.platform == 'macos'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
@@ -144,10 +168,71 @@ jobs:
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
+        run: scripts/release/require-release-secrets.sh macos
+      - name: Require Windows release credentials with shell builtins
+        id: require-release-secrets-windows
+        if: matrix.platform == 'windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
-        run: pnpm exec tsx scripts/release/require-secrets.ts "${{ matrix.platform }}"
-      - name: Import macOS Developer ID certificate
+        run: scripts/release/require-release-secrets.sh windows
+      - name: Require Linux release credentials with shell builtins
+        id: require-release-secrets-linux
+        if: matrix.platform == 'linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: scripts/release/require-release-secrets.sh linux
+      - name: Inspect Windows certificate thumbprint without persistence
+        id: inspect-windows-cert
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE),
+            $password,
+            $flags
+          )
+          try {
+            if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+            "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+          } finally {
+            $certificate.Dispose()
+          }
+      - name: Generate validated macOS direct-release configuration
+        id: generate-release-config-macos
+        if: matrix.platform == 'macos'
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
+        run: scripts/release/generate-direct-release-config.sh macos "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Generate validated Windows direct-release configuration
+        id: generate-release-config-windows
+        if: matrix.platform == 'windows'
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERT_THUMBPRINT: ${{ steps.inspect-windows-cert.outputs.thumbprint }}
+        run: scripts/release/generate-direct-release-config.sh windows "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Generate validated Linux direct-release configuration
+        id: generate-release-config-linux
+        if: matrix.platform == 'linux'
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: scripts/release/generate-direct-release-config.sh linux "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Build frontend and Rust binary without private credentials
+        id: prepare-direct-release
+        run: scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"
+      - name: Import macOS Developer ID certificate for bundling
+        id: import-macos-cert
         if: matrix.platform == 'macos'
         env:
           APPLE_CERTIFICATE: ${{ secrets.MDREADER_APPLE_CERTIFICATE }}
@@ -162,7 +247,7 @@ jobs:
           security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
-      - name: Import Windows Authenticode certificate
+      - name: Import Windows Authenticode certificate for bundling
         id: import-windows-cert
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -171,28 +256,61 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
+          $beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
+          @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object Thumbprint) | Set-Content $beforePath
           [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $certificates = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\CurrentUser\My)
-          $signers = @($certificates | Where-Object { $_.HasPrivateKey })
-          if ($signers.Count -ne 1) { throw "expected exactly one Windows signing certificate with a private key, found $($signers.Count)" }
-          "thumbprint=$($signers[0].Thumbprint)" >> $env:GITHUB_OUTPUT
-      - name: Generate validated direct-release configuration
-        id: generate-release-config
-        env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
-          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-windows-cert.outputs.thumbprint }}
-        run: scripts/release/generate-direct-release-config.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Build signed direct release and updater artifacts
-        id: build-direct-release
+          $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\CurrentUser\My)
+          $certificate = @($imported | Where-Object Thumbprint -eq "${{ steps.inspect-windows-cert.outputs.thumbprint }}")
+          if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
+          if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+      - name: Bundle, sign, and notarize macOS release
+        id: bundle-direct-release-macos
+        if: matrix.platform == 'macos'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
-        run: scripts/release/build-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
+        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Bundle and sign Windows release
+        id: bundle-direct-release-windows
+        if: matrix.platform == 'windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Bundle and sign Linux updater
+        id: bundle-direct-release-linux
+        if: matrix.platform == 'linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Remove macOS signing material
+        id: cleanup-macos-cert
+        if: always() && matrix.platform == 'macos'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/mdreader-release.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/mdreader-release.p12"
+      - name: Remove Windows signing material
+        id: cleanup-windows-cert
+        if: always() && matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
+          if (Test-Path $beforePath) {
+            $before = @(Get-Content $beforePath)
+            Get-ChildItem Cert:\CurrentUser\My |
+              Where-Object { $before -notcontains $_.Thumbprint } |
+              ForEach-Object { Remove-Item $_.PSPath -Force -ErrorAction SilentlyContinue }
+          }
+          Remove-Item (Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx') -Force -ErrorAction SilentlyContinue
+          Remove-Item $beforePath -Force -ErrorAction SilentlyContinue
+      - name: Verify attestation and seal bundle without credentials
+        id: verify-direct-release
+        run: scripts/release/verify-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
       - name: Verify macOS Developer ID signature
         id: macos-verify-signature
         if: matrix.platform == 'macos'
@@ -236,11 +354,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  aggregate:
     needs: [prepare, build]
     runs-on: ubuntu-24.04
+    outputs:
+      publish_plan_sha256: ${{ steps.seal-publication.outputs.publish_plan_sha256 }}
+      publisher_sha256: ${{ steps.bundle-publisher.outputs.publisher_sha256 }}
     steps:
       - name: Checkout the exact release source
+        id: checkout-aggregate-source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -254,6 +376,7 @@ jobs:
       - name: Install locked workspace dependencies
         run: pnpm install --frozen-lockfile
       - name: Download every verified platform release
+        id: download-staged-releases
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: mdreader-release-*
@@ -269,7 +392,7 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --source-commit "${{ needs.prepare.outputs.source_commit }}" \
             --published-at "${{ needs.prepare.outputs.published_at }}"
-      - name: Reverify the aggregate and publication order
+      - name: Reverify the aggregate before sealing publication
         id: validate-release
         env:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
@@ -278,23 +401,47 @@ jobs:
             --root target/release-aggregate \
             --manifest "target/release-aggregate/releases/v${{ needs.prepare.outputs.version }}/manifest.json" \
             --source-commit "${{ needs.prepare.outputs.source_commit }}"
-      - name: Dry-run or publish versioned objects, then manifests and pointers
+      - name: Seal the body-complete verified publication plan
+        id: seal-publication
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: |
+          PLAN_SHA256="$(pnpm exec tsx scripts/release/release-cli.ts seal-publication \
+            --root target/release-aggregate \
+            --manifest "target/release-aggregate/releases/v${{ needs.prepare.outputs.version }}/manifest.json" \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output target/release-publish/sealed-publication-plan.json)"
+          echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"
+      - name: Bundle the no-child-process R2 publisher
+        id: bundle-publisher
+        run: scripts/release/build-sealed-publisher.sh target/release-publish/publish-sealed-plan.mjs
+      - name: Hand off only the sealed plan and reviewed publisher
+        id: upload-publish-plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-sealed-publication-${{ needs.prepare.outputs.source_commit }}
+          path: target/release-publish
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [prepare, aggregate]
+    if: needs.prepare.outputs.publish_requested == 'true'
+    environment: mdreader-production-publication
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the sealed verified publication capability
+        id: download-publish-plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-sealed-publication-${{ needs.prepare.outputs.source_commit }}
+          path: target/release-publish
+      - name: Publish only the approved sealed plan
         id: publish-r2
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           MDREADER_R2_ACCESS_KEY_ID: ${{ secrets.MDREADER_R2_ACCESS_KEY_ID }}
           MDREADER_R2_SECRET_ACCESS_KEY: ${{ secrets.MDREADER_R2_SECRET_ACCESS_KEY }}
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           RELEASE_BUCKET: ${{ vars.MDREADER_RELEASE_BUCKET }}
-        run: |
-          if [[ "${{ needs.prepare.outputs.dry_run }}" == "true" ]]; then
-            MODE=--dry-run
-          else
-            MODE=--publish
-          fi
-          pnpm exec tsx scripts/release/release-cli.ts publish \
-            --root target/release-aggregate \
-            --manifest "target/release-aggregate/releases/v${{ needs.prepare.outputs.version }}/manifest.json" \
-            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
-            --bucket "$RELEASE_BUCKET" \
-            "$MODE"
+        run: exec node target/release-publish/publish-sealed-plan.mjs --plan target/release-publish/sealed-publication-plan.json --plan-sha256 "${{ needs.aggregate.outputs.publish_plan_sha256 }}" --publisher-sha256 "${{ needs.aggregate.outputs.publisher_sha256 }}" --source-commit "${{ needs.prepare.outputs.source_commit }}" --version "${{ needs.prepare.outputs.version }}" --bucket "$RELEASE_BUCKET"

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-const SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const STABLE_SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const PUBLIC_KEY = /^[A-Za-z0-9+/]+={0,2}$/;
 const WINDOWS_THUMBPRINT = /^[0-9A-F]{40}$/;
 
@@ -24,6 +24,9 @@ export interface ReleaseConfigInput {
 export interface DirectReleaseConfig {
   identifier: 'dev.mdreader.app';
   version: string;
+  build: {
+    beforeBuildCommand: '';
+  };
   bundle: {
     createUpdaterArtifacts: true;
     macOS?: {
@@ -55,8 +58,10 @@ export function readWorkspaceVersion(cargoTomlPath: string): string {
   const nextSection = remainder.search(/^\s*\[/m);
   const section = nextSection < 0 ? remainder : remainder.slice(0, nextSection);
   const version = section?.match(/^\s*version\s*=\s*"([^"]+)"\s*$/m)?.[1];
-  if (!version || !SEMVER.test(version)) {
-    throw new Error('Cargo workspace.package.version must be a semantic version');
+  if (!version || !STABLE_SEMVER.test(version)) {
+    throw new Error(
+      'Cargo workspace.package.version must be a stable semantic version',
+    );
   }
   if (version === '0.0.0') throw new Error('Cargo workspace version cannot be 0.0.0');
   return version;
@@ -73,7 +78,9 @@ export function readTauriIdentifier(tauriConfigPath: string): string {
 }
 
 export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseConfig {
-  if (!SEMVER.test(input.version)) throw new Error('release version must be semantic');
+  if (!STABLE_SEMVER.test(input.version)) {
+    throw new Error('release version must be a stable semantic version');
+  }
   if (input.version !== input.workspaceVersion) {
     throw new Error(
       `release version ${input.version} must equal workspace version ${input.workspaceVersion}`,
@@ -138,6 +145,12 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
   return {
     identifier: 'dev.mdreader.app',
     version: input.version,
+    build: {
+      // The release workflow builds the frontend and Rust binary before any
+      // private signing credential enters the environment. The privileged
+      // Tauri invocation is bundle-only and must never rerun application code.
+      beforeBuildCommand: '',
+    },
     bundle: {
       createUpdaterArtifacts: true,
       ...(input.macosSigningIdentity

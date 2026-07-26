@@ -123,6 +123,18 @@ async function walk(root: string): Promise<string[]> {
   return output;
 }
 
+async function requireEmptyStageRoot(root: string): Promise<void> {
+  try {
+    if ((await readdir(root)).length !== 0) {
+      throw new Error(
+        'release staging root must be empty before platform staging to prevent aggregate collisions',
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
 function sha256(body: Uint8Array | string): string {
   return createHash('sha256').update(body).digest('hex');
 }
@@ -268,6 +280,7 @@ export async function stagePlatformArtifacts(
     },
   );
   const files = await walk(input.bundleRoot);
+  await requireEmptyStageRoot(input.outputRoot);
   const destination = join(input.outputRoot, 'releases', `v${input.version}`);
   await mkdir(destination, { recursive: true });
   const { architecture, minimumOs } = platformDetails(input.platform);
