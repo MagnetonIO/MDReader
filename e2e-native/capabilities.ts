@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { E2E_BUNDLE_IDENTIFIER, FLOW_CONFIG } from './flows.ts';
+import { E2E_BUNDLE_IDENTIFIER, E2E_PROCESS_NAME, FLOW_CONFIG } from './flows.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
@@ -31,7 +31,7 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..');
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
  *  what tauri-driver launches. */
 export function desktopAppBinary(): string {
-  const base = join(REPO_ROOT, 'target', 'release', 'mdreader-app');
+  const base = join(REPO_ROOT, 'target', 'release', E2E_PROCESS_NAME);
   return process.platform === 'win32' ? `${base}.exe` : base;
 }
 

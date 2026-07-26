@@ -408,6 +408,8 @@ export interface FlowConfig {
 export const E2E_BUNDLE_IDENTIFIER = 'dev.mdreader.app.e2e';
 /** Visible product name for the isolated native E2E bundle. */
 export const E2E_PRODUCT_NAME = 'MDReader E2E';
+/** Tauri's exact non-production executable name for the isolated build. */
+export const E2E_PROCESS_NAME = 'mdreader-e2e';
 
 export const FLOW_CONFIG: FlowConfig = {
   corpusRelPath: 'fixtures/corpus',

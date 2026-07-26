@@ -17,8 +17,8 @@
  */
 
 import { homedir, tmpdir } from 'node:os';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { lstat, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
@@ -79,6 +79,61 @@ function isStrictDescendant(path: string, parent: string): boolean {
   return relation !== '' && relation !== '..' && !relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(relation);
 }
 
+function isMissing(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+async function nearestExistingAncestor(path: string): Promise<string> {
+  let current = resolve(path);
+  while (true) {
+    try {
+      await lstat(current);
+      return current;
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      const parent = dirname(current);
+      if (parent === current) throw new Error(`refusing destructive seed operation without a validated E2E profile: no existing ancestor for ${path}`);
+      current = parent;
+    }
+  }
+}
+
+/** Resolve an existing ancestor so comparisons use the filesystem's real path. */
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  const existing = await nearestExistingAncestor(absolute);
+  return resolve(await realpath(existing), relative(existing, absolute));
+}
+
+/** Reject symlinks below a trusted root while allowing platform-owned root aliases. */
+async function assertNoSymlinksBelow(path: string, root: string): Promise<void> {
+  const boundary = resolve(root);
+  let current = resolve(path);
+  while (current !== boundary) {
+    if (!isStrictDescendant(current, boundary)) {
+      throw new Error('refusing destructive seed operation without a validated E2E profile');
+    }
+    try {
+      if ((await lstat(current)).isSymbolicLink()) {
+        throw new Error('refusing destructive seed operation without a validated E2E profile: symlinked state path');
+      }
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    current = dirname(current);
+  }
+}
+
+async function assertNotSymlink(path: string): Promise<void> {
+  try {
+    if ((await lstat(path)).isSymbolicLink()) {
+      throw new Error('refusing destructive seed operation without a validated E2E profile: symlinked state target');
+    }
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+}
+
 /**
  * Produce the only profile destructive seed helpers accept. Production runs use
  * the E2E bundle's OS config directory; unit tests may use a `mkdtemp` directory
@@ -107,6 +162,26 @@ export function assertE2EProfile(profile: E2EProfile): asserts profile is E2EPro
   if (configDir !== expected && !testOwned) {
     throw new Error('refusing destructive seed operation without a validated E2E profile');
   }
+}
+
+/** Canonical E2E state directory, validated again immediately before mutation. */
+async function validatedConfigDir(profile: E2EProfile): Promise<string> {
+  assertE2EProfile(profile);
+  const rawConfigDir = resolve(profile.configDir);
+  const rawExpected = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const rawTemporary = resolve(tmpdir());
+  if (rawConfigDir === rawExpected) await assertNoSymlinksBelow(rawConfigDir, dirname(rawExpected));
+  else if (isStrictDescendant(rawConfigDir, rawTemporary)) await assertNoSymlinksBelow(rawConfigDir, rawTemporary);
+  else throw new Error('refusing destructive seed operation without a validated E2E profile');
+
+  const configDir = await canonicalPath(rawConfigDir);
+  const expected = await canonicalPath(rawExpected);
+  const temporary = await canonicalPath(rawTemporary);
+  const testOwned = isStrictDescendant(configDir, temporary) && basename(configDir).startsWith('mdreader-e2e-');
+  if (configDir !== expected && !testOwned) {
+    throw new Error('refusing destructive seed operation without a validated E2E profile');
+  }
+  return configDir;
 }
 
 /** Validated E2E config directory. */
@@ -141,9 +216,10 @@ export function buildSessionSeed(rootAbs: string): Record<string, unknown> {
  * absent. Returns the path written, for logging.
  */
 export async function seedWorkspace(profile: E2EProfile, rootAbs: string): Promise<string> {
-  assertE2EProfile(profile);
-  const path = sessionStorePath(profile);
-  await mkdir(appConfigDir(profile), { recursive: true });
+  const dir = await validatedConfigDir(profile);
+  const path = join(dir, 'session.json');
+  await assertNotSymlink(path);
+  await mkdir(dir, { recursive: true });
   await writeFile(path, JSON.stringify(buildSessionSeed(rootAbs), null, 2), 'utf8');
   return path;
 }
@@ -154,13 +230,17 @@ export async function seedWorkspace(profile: E2EProfile, rootAbs: string): Promi
  * Ignores files that are not there.
  */
 export async function clearSeed(profile: E2EProfile): Promise<void> {
-  assertE2EProfile(profile);
-  const dir = appConfigDir(profile);
-  for (const file of STORE_FILES) await rm(join(dir, file), { force: true });
+  const dir = await validatedConfigDir(profile);
+  for (const file of STORE_FILES) {
+    const path = join(dir, file);
+    await assertNotSymlink(path);
+    await rm(path, { force: true });
+  }
 }
 
 /** Remove only the validated E2E profile's engine workspace state. */
 export async function clearWorkspaceIndex(profile: E2EProfile): Promise<void> {
-  assertE2EProfile(profile);
-  await rm(join(appConfigDir(profile), 'workspaces'), { recursive: true, force: true });
+  const path = join(await validatedConfigDir(profile), 'workspaces');
+  await assertNotSymlink(path);
+  await rm(path, { recursive: true, force: true });
 }

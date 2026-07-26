@@ -30,8 +30,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
-import { E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
+import { E2E_PROCESS_NAME, E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
 import { appConfigDir, clearSeed, clearWorkspaceIndex, createE2EProfile, seedWorkspace, type E2EProfile } from '../seed.ts';
+import { withOwnedProcesses } from '../lifecycle.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
 import { consoleLog, runFlow } from '../drivers/runner.ts';
@@ -80,7 +81,7 @@ function parseArgs(argv: string[]): Options {
   const app = resolve(get('--app') ?? join(REPO_ROOT, 'target/release/bundle/macos/MDReader E2E.app'));
   return {
     app,
-    binary: join(app, 'Contents/MacOS/mdreader-app'),
+    binary: join(app, 'Contents/MacOS', E2E_PROCESS_NAME),
     corpus: resolve(get('--corpus') ?? join(REPO_ROOT, FLOW_CONFIG.corpusRelPath)),
     artifacts: resolve(get('--artifacts') ?? join(REPO_ROOT, 'target/e2e-artifacts/macos')),
     profile: createE2EProfile(),
@@ -109,10 +110,6 @@ function assertE2EBundle(app: string, profile: E2EProfile): void {
   if (actual !== profile.identifier) {
     throw new Error(`refusing to seed or launch ${app}: expected E2E bundle ${profile.identifier}, found ${actual || '(missing)'}`);
   }
-}
-
-function terminateLaunchedProcess(child: ChildProcess): void {
-  if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
 }
 
 async function appiumReachable(): Promise<boolean> {
@@ -229,50 +226,46 @@ async function main(): Promise<number> {
 
   // The exact process we spawned is the only process this runner may terminate.
   const pid = child.pid;
-  await sleep(500);
+  let adapter: Mac2Adapter | undefined;
+  let browser: Awaited<ReturnType<typeof remote>> | undefined;
+  const result = await withOwnedProcesses(child, appium, opts.keep, async () => {
+    await sleep(500);
+    browser = await remote({
+      hostname: '127.0.0.1',
+      port: APPIUM_PORT,
+      path: '/',
+      logLevel: 'error',
+      // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+      // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+      // not seconds, and WebdriverIO's default session timeout aborts the POST
+      // while the build is still going — which surfaces as an opaque
+      // "operation was aborted due to timeout" and no run at all. Warm runs are
+      // still ~3s; this only has to be longer than a cold build.
+      connectionRetryTimeout: 600_000,
+      capabilities: {
+        platformName: 'mac',
+        'appium:automationName': 'mac2',
+        'appium:bundleId': opts.profile.identifier,
+        'appium:noReset': true,
+        // Same reasoning on the server side of the handshake.
+        'appium:newCommandTimeout': 600,
+        'appium:showServerLogs': true,
+      } as WebdriverIO.Capabilities,
+    });
 
-  const browser = await remote({
-    hostname: '127.0.0.1',
-    port: APPIUM_PORT,
-    path: '/',
-    logLevel: 'error',
-    // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
-    // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
-    // not seconds, and WebdriverIO's default session timeout aborts the POST
-    // while the build is still going — which surfaces as an opaque
-    // "operation was aborted due to timeout" and no run at all. Warm runs are
-    // still ~3s; this only has to be longer than a cold build.
-    connectionRetryTimeout: 600_000,
-    capabilities: {
-      platformName: 'mac',
-      'appium:automationName': 'mac2',
-      'appium:bundleId': opts.profile.identifier,
-      'appium:noReset': true,
-      // Same reasoning on the server side of the handshake.
-      'appium:newCommandTimeout': 600,
-      'appium:showServerLogs': true,
-    } as WebdriverIO.Capabilities,
+    adapter = new Mac2Adapter({
+      browser,
+      bundleId: opts.profile.identifier,
+      pid,
+      axBin,
+      keyBin,
+      artifacts: opts.artifacts,
+    });
+    return runFlow(adapter, consoleLog);
+  }, async () => {
+    if (adapter) await adapter.dispose();
+    else await browser?.deleteSession();
   });
-
-  const adapter = new Mac2Adapter({
-    browser,
-    bundleId: opts.profile.identifier,
-    pid,
-    axBin,
-    keyBin,
-    artifacts: opts.artifacts,
-  });
-
-  let result;
-  try {
-    result = await runFlow(adapter, consoleLog);
-  } finally {
-    await adapter.dispose();
-    // The close step already ended the app on success; otherwise terminate only
-    // the process launched above. Never target a shared executable name.
-    if (!opts.keep) terminateLaunchedProcess(child);
-    appium?.kill();
-  }
 
   const summary = { ok: result.ok, failedAt: result.failedAt, artifacts: opts.artifacts, results: result.results };
   writeFileSync(join(opts.artifacts, 'result.json'), JSON.stringify(summary, null, 2));
