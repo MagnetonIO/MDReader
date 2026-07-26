@@ -137,6 +137,39 @@ Reciprocal rank fusion combines both result lists into one ranking.
     );
 }
 
+/// A fresh CLI process must register sqlite-vec before Auto inspects a
+/// workspace that already contains a real `vec0` table. The import, search,
+/// and query calls below are three separate child processes; replacing either
+/// Auto call with an explicit hash embedder would stop exercising the
+/// production metadata-inspection boundary this regression protects.
+#[test]
+fn default_auto_reopens_a_real_vector_workspace_in_new_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    corpus(&vault);
+    let db = dir.path().join("catdb.db");
+    let vault_arg = vault.to_str().unwrap();
+    let db_arg = db.to_str().unwrap();
+
+    catdb(&["import", vault_arg, "--db", db_arg, "--embedder", "hash"]);
+
+    let search = catdb(&["search", MARKER, "--db", db_arg, "--json"]);
+    let search_rows: serde_json::Value =
+        serde_json::from_str(&search).expect("default-Auto search returns JSON");
+    assert!(
+        search_rows.as_array().is_some_and(|rows| !rows.is_empty()),
+        "default-Auto search must serve the imported vector workspace"
+    );
+
+    let query = catdb(&["query", MARKER, "--db", db_arg, "--json"]);
+    let query_rows: serde_json::Value =
+        serde_json::from_str(&query).expect("default-Auto query returns JSON");
+    assert!(
+        query_rows.as_array().is_some_and(|rows| !rows.is_empty()),
+        "default-Auto query must serve the imported vector workspace"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Parsing the human-readable CLI output
 // ---------------------------------------------------------------------------
