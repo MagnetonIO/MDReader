@@ -195,6 +195,44 @@ export function validateReleaseWorkflow(input: unknown): void {
   );
   requireExactExecutableStep(
     build,
+    'generate-release-config',
+    'scripts/release/generate-direct-release-config.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"',
+    'release workflow is missing the reviewed direct release config generation',
+  );
+  requireExactExecutableStep(
+    build,
+    'build-direct-release',
+    'scripts/release/build-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"',
+    'release workflow is missing the attested Tauri build',
+  );
+  const buildSteps = list(build.steps, 'jobs.build.steps').map((entry) =>
+    mapping(entry, 'jobs.build.steps[]'),
+  );
+  const configIndex = buildSteps.findIndex(
+    (step) => step.id === 'generate-release-config',
+  );
+  const stageIndex = buildSteps.findIndex((step) => step.id === 'stage-release');
+  const allowedBuildWindow = new Set([
+    'build-direct-release',
+    'macos-verify-signature',
+    'macos-verify-notarization',
+    'windows-verify-signature',
+    'linux-verify-packages',
+    'install-syft',
+  ]);
+  if (
+    configIndex < 0 ||
+    stageIndex <= configIndex ||
+    buildSteps
+      .slice(configIndex + 1, stageIndex)
+      .some((step) => !allowedBuildWindow.has(String(step.id)))
+  ) {
+    throw new Error(
+      'release config build window contains an unreviewed mutation step',
+    );
+  }
+  requireExactExecutableStep(
+    build,
     'macos-verify-signature',
     'scripts/release/verify-macos-signature.sh "target/${{ matrix.target }}/release/bundle"',
     'release workflow is missing executable macOS signature verification',
@@ -230,7 +268,7 @@ export function validateReleaseWorkflow(input: unknown): void {
   requireExactExecutableStep(
     build,
     'stage-release',
-    'scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}"',
+    'scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"',
     'release workflow is missing executable checksum staging',
   );
   requireExactExecutableStep(

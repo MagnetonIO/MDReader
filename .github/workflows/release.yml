@@ -183,17 +183,7 @@ jobs:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
           WINDOWS_CERT_THUMBPRINT: ${{ steps.import-windows-cert.outputs.thumbprint }}
-        run: |
-          ARGS=()
-          if [[ "${{ matrix.platform }}" == "macos" ]]; then
-            ARGS+=(--macos-signing-identity "$APPLE_SIGNING_IDENTITY")
-          elif [[ "${{ matrix.platform }}" == "windows" ]]; then
-            ARGS+=(--windows-thumbprint "$WINDOWS_CERT_THUMBPRINT")
-          fi
-          pnpm exec tsx scripts/release/release-cli.ts config \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --output "$RUNNER_TEMP/mdreader-release-config.json" \
-            "${ARGS[@]}"
+        run: scripts/release/generate-direct-release-config.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Build signed direct release and updater artifacts
         id: build-direct-release
         env:
@@ -202,13 +192,7 @@ jobs:
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
-        run: |
-          pnpm --filter '@mdreader/app...' run build
-          pnpm --filter @mdreader/app tauri build \
-            --target "${{ matrix.target }}" \
-            --bundles "${{ matrix.bundles }}" \
-            --features direct-updater \
-            --config "$RUNNER_TEMP/mdreader-release-config.json"
+        run: scripts/release/build-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"
       - name: Verify macOS Developer ID signature
         id: macos-verify-signature
         if: matrix.platform == 'macos'
@@ -236,7 +220,7 @@ jobs:
         env:
           SYFT_BIN: ${{ steps.install-syft.outputs.cmd }}
           MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
-        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}"
+        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"
       - name: Inspect artifact-specific SPDX 2.3 SBOMs
         id: generate-sbom
         run: scripts/release/inspect-sboms.sh target/release-stage

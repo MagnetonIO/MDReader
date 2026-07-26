@@ -17,6 +17,10 @@ import {
   type PublicationEntry,
 } from './release-pipeline';
 import {
+  attestReleaseBuildConfig,
+  verifyReleaseBuildAttestation,
+} from './release-build-attestation';
+import {
   createR2Client,
   publishReleaseEntries,
   putR2ReleaseEntry,
@@ -86,11 +90,39 @@ async function stage(args: string[]): Promise<void> {
     publishedAt: option(args, '--published-at')!,
     bundleRoot: resolve(option(args, '--bundle-root')!),
     outputRoot: resolve(option(args, '--output-root')!),
-    updaterPublicKey: requireEnvironment('MDREADER_UPDATER_PUBLIC_KEY'),
+    releaseConfigPath: resolve(option(args, '--release-config')!),
+    buildAttestationPath: resolve(option(args, '--build-attestation')!),
+    buildTarget: option(args, '--build-target')!,
+    buildBundles: option(args, '--build-bundles')!,
   });
   process.stdout.write(
     `staged ${platform}: ${fragment.artifacts.length} verified artifact records\n`,
   );
+}
+
+async function attestBuild(args: string[]): Promise<void> {
+  const attestation = await attestReleaseBuildConfig(
+    resolve(option(args, '--config')!),
+    resolve(option(args, '--attestation')!),
+    option(args, '--target')!,
+    option(args, '--bundles')!,
+  );
+  process.stdout.write(
+    `release build config attested: ${attestation.releaseConfigSha256}\n`,
+  );
+}
+
+async function verifyBuild(args: string[]): Promise<void> {
+  await verifyReleaseBuildAttestation(
+    resolve(option(args, '--config')!),
+    resolve(option(args, '--attestation')!),
+    {
+      version: option(args, '--version')!,
+      target: option(args, '--target')!,
+      bundles: option(args, '--bundles')!,
+    },
+  );
+  process.stdout.write('release build attestation verified\n');
 }
 
 async function assemble(args: string[]): Promise<void> {
@@ -108,6 +140,7 @@ async function assemble(args: string[]): Promise<void> {
           version: string;
           sourceCommit: string;
           updaterPublicKeySha256: string;
+          releaseConfigSha256: string;
           artifacts: unknown[];
         };
       } catch {
@@ -118,6 +151,27 @@ async function assemble(args: string[]): Promise<void> {
   for (const fragment of fragments) {
     if (fragment.version !== version || fragment.sourceCommit !== sourceCommit) {
       throw new Error('platform fragment version/source commit mismatch');
+    }
+    if (
+      !/^[0-9a-f]{64}$/.test(fragment.releaseConfigSha256) ||
+      fragment.artifacts.some((artifact) => {
+        if (
+          typeof artifact !== 'object' ||
+          artifact === null ||
+          Array.isArray(artifact)
+        ) {
+          return true;
+        }
+        const record = artifact as Record<string, unknown>;
+        return (
+          record.releaseConfigSha256 !== fragment.releaseConfigSha256 ||
+          record.updaterPublicKeySha256 !== fragment.updaterPublicKeySha256
+        );
+      })
+    ) {
+      throw new Error(
+        'platform fragment artifacts do not match the attested release build config',
+      );
     }
   }
   const updaterPublicKeySha256 = updaterPublicKeyFingerprint(
@@ -231,6 +285,8 @@ async function publish(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === 'config') return writeConfig(args);
+  if (command === 'attest-build') return attestBuild(args);
+  if (command === 'verify-build-attestation') return verifyBuild(args);
   if (command === 'stage') return stage(args);
   if (command === 'assemble') return assemble(args);
   if (command === 'verify-linux-abi') return verifyLinuxAbi(args);

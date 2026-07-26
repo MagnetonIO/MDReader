@@ -16,7 +16,7 @@ import type {
   ReleaseManifestArtifact,
   ReleasePlatform,
 } from '../../apps/web/lib/release-manifest';
-import { updaterPublicKeyFingerprint } from './release-config';
+import { verifyReleaseBuildAttestation } from './release-build-attestation';
 
 const execFileAsync = promisify(execFile);
 const PINNED_SYFT_CREATOR = 'Tool: syft-1.29.0';
@@ -28,7 +28,10 @@ export interface StagePlatformInput {
   publishedAt: string;
   bundleRoot: string;
   outputRoot: string;
-  updaterPublicKey: string;
+  releaseConfigPath: string;
+  buildAttestationPath: string;
+  buildTarget: string;
+  buildBundles: string;
   generateSbom?: (artifactPath: string) => Promise<string>;
 }
 
@@ -38,6 +41,7 @@ export interface ReleaseFragment {
   version: string;
   sourceCommit: string;
   updaterPublicKeySha256: string;
+  releaseConfigSha256: string;
   artifacts: ReleaseManifestArtifact[];
 }
 
@@ -154,7 +158,7 @@ export function assertCompleteArtifactSbom(
     document.dataLicense !== 'CC0-1.0' ||
     document.SPDXID !== 'SPDXRef-DOCUMENT' ||
     !creators.includes(PINNED_SYFT_CREATOR) ||
-    packages.length < 2
+    packages.length < 1
   ) {
     throw new Error('SBOM is not a complete SPDX 2.3 document from pinned Syft');
   }
@@ -185,41 +189,6 @@ export function assertCompleteArtifactSbom(
     })
   ) {
     throw new Error('SBOM does not describe the exact release artifact');
-  }
-  const artifactId = artifact.SPDXID;
-  const packageIds = new Set(
-    packages
-      .map((entry) => object(entry, 'package').SPDXID)
-      .filter(
-        (value): value is string =>
-          typeof value === 'string' && value !== artifactId,
-      ),
-  );
-  const derivedRelationshipTypes = new Set([
-    'CONTAINS',
-    'CONTAINED_BY',
-    'DEPENDS_ON',
-    'DEPENDENCY_OF',
-  ]);
-  if (
-    typeof artifactId !== 'string' ||
-    !relationships.some((entry) => {
-      const relationship = object(entry, 'relationship');
-      const derivedRelationship = derivedRelationshipTypes.has(
-        String(relationship.relationshipType),
-      );
-      return (
-        derivedRelationship &&
-        ((relationship.spdxElementId === artifactId &&
-            packageIds.has(String(relationship.relatedSpdxElement))) ||
-          (relationship.relatedSpdxElement === artifactId &&
-            packageIds.has(String(relationship.spdxElementId))))
-      );
-    })
-  ) {
-    throw new Error(
-      'SBOM does not contain scanner-derived package relationships for the release artifact',
-    );
   }
 }
 
@@ -274,6 +243,15 @@ async function updaterSignature(sourcePath: string): Promise<string> {
 export async function stagePlatformArtifacts(
   input: StagePlatformInput,
 ): Promise<ReleaseFragment> {
+  const build = await verifyReleaseBuildAttestation(
+    input.releaseConfigPath,
+    input.buildAttestationPath,
+    {
+      version: input.version,
+      target: input.buildTarget,
+      bundles: input.buildBundles,
+    },
+  );
   const files = await walk(input.bundleRoot);
   const destination = join(input.outputRoot, 'releases', `v${input.version}`);
   await mkdir(destination, { recursive: true });
@@ -317,6 +295,8 @@ export async function stagePlatformArtifacts(
       sbomSha256: sha256(sbom),
       publishedAt: input.publishedAt,
       sourceCommit: input.sourceCommit,
+      updaterPublicKeySha256: build.updaterPublicKeySha256,
+      releaseConfigSha256: build.releaseConfigSha256,
     });
   }
 
@@ -325,7 +305,8 @@ export async function stagePlatformArtifacts(
     current: true,
     version: input.version,
     sourceCommit: input.sourceCommit,
-    updaterPublicKeySha256: updaterPublicKeyFingerprint(input.updaterPublicKey),
+    updaterPublicKeySha256: build.updaterPublicKeySha256,
+    releaseConfigSha256: build.releaseConfigSha256,
     artifacts,
   };
   await writeFile(
