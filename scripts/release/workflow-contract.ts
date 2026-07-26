@@ -6,6 +6,8 @@ const UPLOAD =
   'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02';
 const DOWNLOAD =
   'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093';
+const SETUP_NODE =
+  'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020';
 const SYFT =
   'anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b';
 const UPDATER_PUBLIC_KEY = '${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}';
@@ -43,6 +45,22 @@ function exactMapping(
     expectedKeys.some(
       (key) => JSON.stringify(actual[key]) !== JSON.stringify(expected[key]),
     )
+  ) {
+    throw new Error(message);
+  }
+}
+
+function exactKeys(
+  value: unknown,
+  expected: string[],
+  path: string,
+  message: string,
+): void {
+  const actual = Object.keys(mapping(value, path)).sort();
+  const wanted = [...expected].sort();
+  if (
+    actual.length !== wanted.length ||
+    actual.some((key, index) => key !== wanted[index])
   ) {
     throw new Error(message);
   }
@@ -87,7 +105,7 @@ function exactExecutable(
   if (
     typeof step.run !== 'string' ||
     step.run.trim() !== command ||
-    (condition !== undefined && step.if !== condition)
+    step.if !== condition
   ) {
     throw new Error(message);
   }
@@ -102,7 +120,13 @@ function exactAction(
   message: string,
 ): Mapping {
   const step = stepById(entries, id, message);
-  if (step.uses !== action) throw new Error(message);
+  if (
+    step.uses !== action ||
+    step.run !== undefined ||
+    step.if !== undefined
+  ) {
+    throw new Error(message);
+  }
   exactMapping(step.with, inputs, `step ${id}.with`, message);
   return step;
 }
@@ -149,6 +173,173 @@ function exactWindow(
     actual.some((id, index) => id !== expected[index])
   ) {
     throw new Error(message);
+  }
+}
+
+function exactStepOrder(
+  entries: Mapping[],
+  expected: string[],
+  message: string,
+): void {
+  const actual = entries.map((step) =>
+    typeof step.id === 'string' ? step.id : '<missing-id>',
+  );
+  if (
+    actual.length !== expected.length ||
+    actual.some((id, index) => id !== expected[index])
+  ) {
+    throw new Error(message);
+  }
+}
+
+function assertGlobalSecretAllowlist(workflow: Mapping, jobs: Mapping): void {
+  const secretExpression = /\$\{\{\s*secrets(?:\.|\[)/;
+  const workflowMetadata = Object.fromEntries(
+    Object.entries(workflow).filter(([name]) => name !== 'jobs'),
+  );
+  if (secretExpression.test(JSON.stringify(workflowMetadata))) {
+    throw new Error('release workflow contains a secret outside the global secret allowlist');
+  }
+
+  const allowedSteps = new Set([
+    'build/require-release-secrets-macos',
+    'build/require-release-secrets-windows',
+    'build/require-release-secrets-linux',
+    'build/inspect-windows-cert',
+    'build/generate-release-config-macos',
+    'build/generate-release-config-windows',
+    'build/generate-release-config-linux',
+    'build/import-macos-cert',
+    'build/import-windows-cert',
+    'build/bundle-direct-release-macos',
+    'build/bundle-direct-release-windows',
+    'build/bundle-direct-release-linux',
+    'build/stage-release',
+    'aggregate/assemble-manifest',
+    'aggregate/validate-release',
+    'aggregate/seal-publication',
+    'publish/publish-r2',
+  ]);
+
+  for (const [jobName, jobValue] of Object.entries(jobs)) {
+    const job = mapping(jobValue, `jobs.${jobName}`);
+    const metadata = Object.fromEntries(
+      Object.entries(job).filter(([name]) => name !== 'steps'),
+    );
+    if (secretExpression.test(JSON.stringify(metadata))) {
+      throw new Error(
+        `release job ${jobName} contains a secret outside the global secret allowlist`,
+      );
+    }
+    for (const step of steps(job, `jobs.${jobName}`)) {
+      const stepMetadata = Object.fromEntries(
+        Object.entries(step).filter(([name]) => name !== 'env'),
+      );
+      if (secretExpression.test(JSON.stringify(stepMetadata))) {
+        throw new Error(
+          `release step ${jobName}/${String(step.id)} contains an unreviewed secret outside the global secret allowlist`,
+        );
+      }
+      if (
+        secretExpression.test(JSON.stringify(step.env)) &&
+        !allowedSteps.has(`${jobName}/${String(step.id)}`)
+      ) {
+        throw new Error(
+          `release step ${jobName}/${String(step.id)} contains an unreviewed secret`,
+        );
+      }
+    }
+  }
+}
+
+function assertExactStepMetadata(jobs: Mapping): void {
+  const allowedKeys = new Set([
+    'name',
+    'id',
+    'uses',
+    'with',
+    'run',
+    'if',
+    'env',
+    'shell',
+  ]);
+  const powershellSteps = new Set([
+    'build/inspect-windows-cert',
+    'build/import-windows-cert',
+    'build/cleanup-windows-cert',
+    'build/windows-verify-signature',
+  ]);
+  const environmentSteps = new Set([
+    'prepare/metadata',
+    'build/require-release-secrets-macos',
+    'build/require-release-secrets-windows',
+    'build/require-release-secrets-linux',
+    'build/inspect-windows-cert',
+    'build/generate-release-config-macos',
+    'build/generate-release-config-windows',
+    'build/generate-release-config-linux',
+    'build/import-macos-cert',
+    'build/import-windows-cert',
+    'build/bundle-direct-release-macos',
+    'build/bundle-direct-release-windows',
+    'build/bundle-direct-release-linux',
+    'build/stage-release',
+    'aggregate/assemble-manifest',
+    'aggregate/validate-release',
+    'aggregate/seal-publication',
+    'publish/publish-r2',
+  ]);
+
+  for (const [jobName, jobValue] of Object.entries(jobs)) {
+    for (const step of steps(mapping(jobValue, `jobs.${jobName}`), `jobs.${jobName}`)) {
+      const identity = `${jobName}/${String(step.id)}`;
+      if (
+        typeof step.id !== 'string' ||
+        typeof step.name !== 'string' ||
+        step.name.trim() === '' ||
+        Object.keys(step).some((key) => !allowedKeys.has(key)) ||
+        (typeof step.run === 'string') === (typeof step.uses === 'string')
+      ) {
+        throw new Error(`release step ${identity} has unreviewed step metadata`);
+      }
+      if (
+        (powershellSteps.has(identity) && step.shell !== 'pwsh') ||
+        (!powershellSteps.has(identity) && step.shell !== undefined)
+      ) {
+        throw new Error(`release step ${identity} has an unreviewed shell`);
+      }
+      if (
+        !environmentSteps.has(identity) &&
+        step.env !== undefined
+      ) {
+        throw new Error(`release step ${identity} has unreviewed step metadata`);
+      }
+    }
+  }
+}
+
+function assertArtifactProducerAllowlist(jobs: Mapping): void {
+  const matching: string[] = [];
+  for (const [jobName, jobValue] of Object.entries(jobs)) {
+    for (const step of steps(mapping(jobValue, `jobs.${jobName}`), `jobs.${jobName}`)) {
+      if (step.uses !== UPLOAD) continue;
+      const inputs = mapping(step.with, `jobs.${jobName}.${String(step.id)}.with`);
+      if (
+        typeof inputs.name === 'string' &&
+        (inputs.name === 'mdreader-release-${{ matrix.platform }}' ||
+          inputs.name.startsWith('mdreader-release-'))
+      ) {
+        matching.push(`${jobName}/${String(step.id)}`);
+      }
+    }
+  }
+  if (
+    matching.length !== 1 ||
+    matching[0] !== 'build/upload-staged-release'
+  ) {
+    throw new Error(
+      'release artifacts must have exactly one reviewed artifact producer',
+    );
   }
 }
 
@@ -254,6 +445,21 @@ const WINDOWS_CREDENTIALS = {
  */
 export function validateReleaseWorkflow(input: unknown): void {
   const workflow = mapping(input, 'workflow');
+  exactKeys(
+    workflow,
+    ['name', 'on', 'permissions', 'concurrency', 'defaults', 'jobs'],
+    'workflow',
+    'release workflow must keep the exact workflow metadata',
+  );
+  if (workflow.name !== 'mdreader-direct-release') {
+    throw new Error('release workflow must keep the exact workflow metadata');
+  }
+  exactMapping(
+    workflow.defaults,
+    { run: { shell: 'bash' } },
+    'workflow.defaults',
+    'release workflow must keep the exact workflow shell',
+  );
   exactMapping(
     workflow.permissions,
     { contents: 'read' },
@@ -271,6 +477,12 @@ export function validateReleaseWorkflow(input: unknown): void {
   );
 
   const triggers = mapping(workflow.on, 'workflow.on');
+  exactKeys(
+    triggers,
+    ['push', 'workflow_dispatch'],
+    'workflow.on',
+    'release workflow must keep the exact workflow triggers',
+  );
   exactMapping(
     mapping(triggers.push, 'workflow.on.push'),
     { tags: ['mdreader-v*'] },
@@ -295,10 +507,53 @@ export function validateReleaseWorkflow(input: unknown): void {
   );
 
   const jobs = mapping(workflow.jobs, 'workflow.jobs');
+  exactKeys(
+    jobs,
+    ['prepare', 'build', 'aggregate', 'publish'],
+    'workflow.jobs',
+    'release workflow contains unreviewed top-level release jobs',
+  );
   const prepare = mapping(jobs.prepare, 'jobs.prepare');
   const build = mapping(jobs.build, 'jobs.build');
   const aggregate = mapping(jobs.aggregate, 'jobs.aggregate');
   const publish = mapping(jobs.publish, 'jobs.publish');
+  exactKeys(
+    prepare,
+    ['runs-on', 'outputs', 'steps'],
+    'jobs.prepare',
+    'prepare job metadata is not exact',
+  );
+  exactKeys(
+    build,
+    ['needs', 'environment', 'strategy', 'runs-on', 'steps'],
+    'jobs.build',
+    'build job metadata is not exact',
+  );
+  exactKeys(
+    aggregate,
+    ['needs', 'runs-on', 'outputs', 'steps'],
+    'jobs.aggregate',
+    'aggregate job metadata is not exact',
+  );
+  exactKeys(
+    publish,
+    ['needs', 'if', 'environment', 'runs-on', 'steps'],
+    'jobs.publish',
+    'publish job metadata is not exact',
+  );
+  if (
+    prepare['runs-on'] !== 'ubuntu-24.04' ||
+    build['runs-on'] !== '${{ matrix.os }}' ||
+    aggregate['runs-on'] !== 'ubuntu-24.04' ||
+    publish['runs-on'] !== 'ubuntu-24.04'
+  ) {
+    throw new Error('release job metadata has an unreviewed runner');
+  }
+  if (prepare.environment !== undefined || aggregate.environment !== undefined) {
+    throw new Error(
+      'only reviewed signing and publication jobs may bind protected environments',
+    );
+  }
 
   exactMapping(
     prepare.outputs,
@@ -307,11 +562,27 @@ export function validateReleaseWorkflow(input: unknown): void {
       source_commit: '${{ steps.metadata.outputs.source_commit }}',
       published_at: '${{ steps.metadata.outputs.published_at }}',
       publish_requested: '${{ steps.metadata.outputs.publish_requested }}',
+      publisher_sha256:
+        '${{ steps.authorize-publisher-bundle.outputs.publisher_sha256 }}',
     },
     'jobs.prepare.outputs',
     'release prepare outputs are not exact',
   );
   const prepareSteps = uniqueSteps(prepare, 'jobs.prepare');
+  exactStepOrder(
+    prepareSteps,
+    [
+      'checkout-release-source',
+      'authorize-release-source',
+      'setup-node-prepare',
+      'enable-corepack-prepare',
+      'install-dependencies-prepare',
+      'authorize-publisher-bundle',
+      'metadata',
+      'validate-workflow-contract',
+    ],
+    'prepare job must keep its complete ordered step set with no unreviewed step',
+  );
   exactAction(
     prepareSteps,
     'checkout-release-source',
@@ -325,7 +596,47 @@ export function validateReleaseWorkflow(input: unknown): void {
     AUTHORIZE_SOURCE,
     'release workflow is missing the reviewed source authorization command',
   );
-  void authorize;
+  requireNoEnvironment(
+    authorize,
+    'release source authorization contains an unreviewed secret outside the global secret allowlist',
+  );
+  exactAction(
+    prepareSteps,
+    'setup-node-prepare',
+    SETUP_NODE,
+    { 'node-version': '22.13.1', cache: 'pnpm' },
+    'prepare job must use the exact reviewed Node setup',
+  );
+  const prepareCorepack = exactExecutable(
+    prepareSteps,
+    'enable-corepack-prepare',
+    'corepack enable',
+    'prepare job must use the exact reviewed package-manager setup',
+  );
+  requireNoEnvironment(
+    prepareCorepack,
+    'prepare package-manager setup must not receive credentials',
+  );
+  const prepareInstall = exactExecutable(
+    prepareSteps,
+    'install-dependencies-prepare',
+    'pnpm install --frozen-lockfile',
+    'prepare job must install the exact locked workspace',
+  );
+  requireNoEnvironment(
+    prepareInstall,
+    'prepare dependency installation must not receive credentials',
+  );
+  const authorizePublisher = exactExecutable(
+    prepareSteps,
+    'authorize-publisher-bundle',
+    'scripts/release/build-sealed-publisher.sh "$RUNNER_TEMP/mdreader-authorized-publisher.mjs"',
+    'prepare job must independently authorize the reviewed publisher bundle',
+  );
+  requireNoEnvironment(
+    authorizePublisher,
+    'independent publisher authorization must not receive credentials',
+  );
   const metadata = exactExecutable(
     prepareSteps,
     'metadata',
@@ -337,12 +648,37 @@ export function validateReleaseWorkflow(input: unknown): void {
     { DISPATCH_VERSION: '${{ inputs.version }}' },
     'release metadata environment is not least privilege',
   );
+  const workflowCheck = exactExecutable(
+    prepareSteps,
+    'validate-workflow-contract',
+    'pnpm exec tsx scripts/release/check-workflow.ts .github/workflows/release.yml',
+    'prepare job must execute the reviewed workflow contract',
+  );
+  requireNoEnvironment(
+    workflowCheck,
+    'workflow contract validation must not receive credentials',
+  );
 
   if (build.environment !== '${{ matrix.environment }}') {
     throw new Error('release build must bind the exact protected signing environment');
   }
   const strategy = mapping(build.strategy, 'jobs.build.strategy');
+  exactKeys(
+    strategy,
+    ['fail-fast', 'matrix'],
+    'jobs.build.strategy',
+    'release matrix job metadata is not exact',
+  );
+  if (strategy['fail-fast'] !== false) {
+    throw new Error('release matrix job metadata is not exact');
+  }
   const matrix = mapping(strategy.matrix, 'jobs.build.strategy.matrix');
+  exactKeys(
+    matrix,
+    ['include'],
+    'jobs.build.strategy.matrix',
+    'release matrix job metadata is not exact',
+  );
   const rows = list(matrix.include, 'jobs.build.strategy.matrix.include').map(
     (entry) => mapping(entry, 'matrix.include[]'),
   );
@@ -378,12 +714,81 @@ export function validateReleaseWorkflow(input: unknown): void {
 
   exactNeeds(build, ['prepare'], 'build');
   const buildSteps = uniqueSteps(build, 'jobs.build');
-  exactAction(
+  const buildCheckout = exactAction(
     buildSteps,
     'checkout-build-source',
     CHECKOUT,
     { 'persist-credentials': false },
     'release build requires the exact source checkout boundary',
+  );
+  requireNoEnvironment(
+    buildCheckout,
+    'release source checkout must not receive credentials',
+  );
+  const buildNode = exactAction(
+    buildSteps,
+    'setup-node-build',
+    SETUP_NODE,
+    { 'node-version': '22.13.1', cache: 'pnpm' },
+    'build job must use the exact reviewed Node setup',
+  );
+  requireNoEnvironment(buildNode, 'build Node setup must not receive credentials');
+  const buildCorepack = exactExecutable(
+    buildSteps,
+    'enable-corepack-build',
+    'corepack enable',
+    'build job must use the exact reviewed package-manager setup',
+  );
+  requireNoEnvironment(
+    buildCorepack,
+    'build package-manager setup must not receive credentials',
+  );
+  const linuxDependencies = exactExecutable(
+    buildSteps,
+    'install-linux-packaging',
+    `sudo apt-get update
+sudo apt-get install -y \\
+  libwebkit2gtk-4.1-dev \\
+  libgtk-3-dev \\
+  librsvg2-dev \\
+  libsoup-3.0-dev \\
+  libjavascriptcoregtk-4.1-dev \\
+  libayatana-appindicator3-dev \\
+  libxdo-dev \\
+  libssl-dev \\
+  build-essential \\
+  rpm \\
+  libfuse2`,
+    'build job must install the exact reviewed Linux packaging dependencies',
+    "matrix.platform == 'linux'",
+  );
+  requireNoEnvironment(
+    linuxDependencies,
+    'Linux dependency installation must not receive credentials',
+  );
+  const buildInstall = exactExecutable(
+    buildSteps,
+    'install-dependencies-build',
+    'pnpm install --frozen-lockfile',
+    'build job must install the exact locked workspace',
+  );
+  requireNoEnvironment(
+    buildInstall,
+    'build dependency installation must not receive credentials',
+  );
+  const rustTargets = exactExecutable(
+    buildSteps,
+    'install-rust-targets',
+    `if [[ "\${{ matrix.platform }}" == "macos" ]]; then
+  rustup target add aarch64-apple-darwin x86_64-apple-darwin
+else
+  rustup target add "\${{ matrix.target }}"
+fi`,
+    'build job must install the exact reviewed Rust targets',
+  );
+  requireNoEnvironment(
+    rustTargets,
+    'Rust target installation must not receive credentials',
   );
   const macPresence = exactExecutable(
     buildSteps,
@@ -422,14 +827,28 @@ export function validateReleaseWorkflow(input: unknown): void {
     'Linux credential environment is not exact least privilege',
   );
 
-  const macImport = stepById(
+  const macImport = exactExecutable(
     buildSteps,
     'import-macos-cert',
+    `CERTIFICATE_PATH="$RUNNER_TEMP/mdreader-release.p12"
+KEYCHAIN_PATH="$RUNNER_TEMP/mdreader-release.keychain-db"
+SEARCH_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list.txt"
+security list-keychains -d user |
+  sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' > "$SEARCH_LIST_PATH"
+ORIGINAL_KEYCHAINS=()
+while IFS= read -r keychain; do
+  [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+done < "$SEARCH_LIST_PATH"
+printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+security list-keychains -d user -s "\${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN_PATH"
+security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"`,
     'release workflow is missing macOS certificate import',
+    "matrix.platform == 'macos'",
   );
-  if (macImport.if !== "matrix.platform == 'macos'") {
-    throw new Error('macOS certificate import has an invalid condition');
-  }
   exactEnvironment(
     macImport,
     {
@@ -438,15 +857,26 @@ export function validateReleaseWorkflow(input: unknown): void {
     },
     'macOS certificate import environment is not exact least privilege',
   );
-  const windowsInspect = stepById(
+  const windowsInspect = exactExecutable(
     buildSteps,
     'inspect-windows-cert',
+    `$password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+$flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+  [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE),
+  $password,
+  $flags
+)
+try {
+  if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+  "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+} finally {
+  $certificate.Dispose()
+}`,
     'release workflow is missing ephemeral Windows certificate inspection',
+    "matrix.platform == 'windows'",
   );
-  if (
-    windowsInspect.if !== "matrix.platform == 'windows'" ||
-    windowsInspect.shell !== 'pwsh'
-  ) {
+  if (windowsInspect.shell !== 'pwsh') {
     throw new Error('Windows certificate inspection has an invalid execution boundary');
   }
   exactEnvironment(
@@ -462,14 +892,33 @@ export function validateReleaseWorkflow(input: unknown): void {
     buildSteps,
     'import-windows-cert',
     `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-$beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
-@(Get-ChildItem Cert:\\CurrentUser\\My | ForEach-Object Thumbprint) | Set-Content $beforePath
-[IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+$trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
+$bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
 $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-$imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\\CurrentUser\\My)
-$certificate = @($imported | Where-Object Thumbprint -eq "\${{ steps.inspect-windows-cert.outputs.thumbprint }}")
-if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
-if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }`,
+$flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+$collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+try {
+  $collection.Import($bytes, $password, $flags)
+  $thumbprints = @($collection | ForEach-Object Thumbprint | Sort-Object -Unique)
+  if ($thumbprints.Count -eq 0) { throw "Windows PFX contains no certificates" }
+  $expectedThumbprint = "\${{ steps.inspect-windows-cert.outputs.thumbprint }}"
+  if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
+  $preexisting = @(Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $thumbprints -contains $_.Thumbprint })
+  if ($preexisting.Count -ne 0) { throw "refusing to import a preexisting Windows certificate identity" }
+  @($thumbprints | ForEach-Object { "$_\`tCert:\\CurrentUser\\My\\$_" }) |
+    Set-Content $trackedPath -ErrorAction Stop
+  [IO.File]::WriteAllBytes($path, $bytes)
+  $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\\CurrentUser\\My -ErrorAction Stop)
+  $importedThumbprints = @($imported | ForEach-Object Thumbprint | Sort-Object -Unique)
+  if (Compare-Object $thumbprints $importedThumbprints) { throw "Windows import did not persist the exact PFX certificate set" }
+  @($imported | ForEach-Object { "$($_.Thumbprint)\`tCert:\\CurrentUser\\My\\$($_.Thumbprint)" }) |
+    Set-Content $trackedPath -ErrorAction Stop
+  $certificate = @($imported | Where-Object Thumbprint -eq $expectedThumbprint)
+  if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
+  if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+} finally {
+  $collection | ForEach-Object Dispose
+}`,
     'release workflow is missing Windows certificate import',
     "matrix.platform == 'windows'",
   );
@@ -570,8 +1019,39 @@ if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no
   const macCleanup = exactExecutable(
     buildSteps,
     'cleanup-macos-cert',
-    `security delete-keychain "$RUNNER_TEMP/mdreader-release.keychain-db" 2>/dev/null || true
-rm -f "$RUNNER_TEMP/mdreader-release.p12"`,
+    `CERTIFICATE_PATH="$RUNNER_TEMP/mdreader-release.p12"
+KEYCHAIN_PATH="$RUNNER_TEMP/mdreader-release.keychain-db"
+SEARCH_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list.txt"
+RESTORED_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list-restored.txt"
+CLEANUP_FAILED=0
+if [[ -f "$SEARCH_LIST_PATH" ]]; then
+  ORIGINAL_KEYCHAINS=()
+  while IFS= read -r keychain; do
+    [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+  done < "$SEARCH_LIST_PATH"
+  security list-keychains -d user -s "\${ORIGINAL_KEYCHAINS[@]}" || CLEANUP_FAILED=1
+  security list-keychains -d user |
+    sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' > "$RESTORED_LIST_PATH" || CLEANUP_FAILED=1
+  if ! cmp -s "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH"; then
+    echo "macOS keychain search list restore residue remains" >&2
+    CLEANUP_FAILED=1
+  fi
+fi
+if [[ -e "$KEYCHAIN_PATH" ]] && ! security delete-keychain "$KEYCHAIN_PATH"; then
+  CLEANUP_FAILED=1
+fi
+if [[ -e "$KEYCHAIN_PATH" ]]; then
+  echo "macOS signing keychain residue remains" >&2
+  CLEANUP_FAILED=1
+fi
+rm -f "$CERTIFICATE_PATH" "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH" || CLEANUP_FAILED=1
+for path in "$CERTIFICATE_PATH" "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH"; do
+  if [[ -e "$path" ]]; then
+    echo "macOS signing file residue remains at $path" >&2
+    CLEANUP_FAILED=1
+  fi
+done
+[[ "$CLEANUP_FAILED" -eq 0 ]]`,
     'release workflow is missing fail-closed macOS certificate cleanup',
     "always() && matrix.platform == 'macos'",
   );
@@ -582,15 +1062,34 @@ rm -f "$RUNNER_TEMP/mdreader-release.p12"`,
   const windowsCleanup = exactExecutable(
     buildSteps,
     'cleanup-windows-cert',
-    `$beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
-if (Test-Path $beforePath) {
-  $before = @(Get-Content $beforePath)
-  Get-ChildItem Cert:\\CurrentUser\\My |
-    Where-Object { $before -notcontains $_.Thumbprint } |
-    ForEach-Object { Remove-Item $_.PSPath -Force -ErrorAction SilentlyContinue }
+    `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
+$trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
+$tracked = @()
+if (Test-Path $trackedPath) {
+  $tracked = @(Get-Content $trackedPath -ErrorAction Stop | ForEach-Object {
+    $parts = $_ -split "\`t", 2
+    if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9A-F]{40}$') {
+      throw "Windows imported certificate tracking is malformed"
+    }
+    [PSCustomObject]@{ Thumbprint = $parts[0]; Path = $parts[1] }
+  })
+  foreach ($entry in $tracked) {
+    if (Test-Path -LiteralPath $entry.Path) {
+      $certificate = Get-Item -LiteralPath $entry.Path -ErrorAction Stop
+      if ($certificate.Thumbprint -ne $entry.Thumbprint) {
+        throw "Windows imported certificate tracking identity mismatch"
+      }
+      Remove-Item -LiteralPath $entry.Path -DeleteKey -Force -ErrorAction Stop
+    }
+  }
+  $residue = @($tracked | Where-Object { Test-Path -LiteralPath $_.Path })
+  if ($residue.Count -ne 0) { throw "Windows certificate residue remains after cleanup" }
 }
-Remove-Item (Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx') -Force -ErrorAction SilentlyContinue
-Remove-Item $beforePath -Force -ErrorAction SilentlyContinue`,
+if (Test-Path $path) { Remove-Item $path -Force -ErrorAction Stop }
+if (Test-Path $trackedPath) { Remove-Item $trackedPath -Force -ErrorAction Stop }
+if ((Test-Path $path) -or (Test-Path $trackedPath)) {
+  throw "Windows signing file residue remains after cleanup"
+}`,
     'release workflow is missing fail-closed Windows certificate cleanup',
     "always() && matrix.platform == 'windows'",
   );
@@ -765,6 +1264,43 @@ Remove-Item $beforePath -Force -ErrorAction SilentlyContinue`,
     ],
     'release config build window contains an unreviewed mutation step',
   );
+  exactStepOrder(
+    buildSteps,
+    [
+      'checkout-build-source',
+      'setup-node-build',
+      'enable-corepack-build',
+      'install-linux-packaging',
+      'install-dependencies-build',
+      'install-rust-targets',
+      'require-release-secrets-macos',
+      'require-release-secrets-windows',
+      'require-release-secrets-linux',
+      'inspect-windows-cert',
+      'generate-release-config-macos',
+      'generate-release-config-windows',
+      'generate-release-config-linux',
+      'prepare-direct-release',
+      'import-macos-cert',
+      'import-windows-cert',
+      'bundle-direct-release-macos',
+      'bundle-direct-release-windows',
+      'bundle-direct-release-linux',
+      'cleanup-macos-cert',
+      'cleanup-windows-cert',
+      'verify-direct-release',
+      'macos-verify-signature',
+      'macos-verify-notarization',
+      'windows-verify-signature',
+      'linux-verify-packages',
+      'install-syft',
+      'stage-release',
+      'generate-sbom',
+      'validate-staged-release',
+      'upload-staged-release',
+    ],
+    'build job must keep its complete ordered step set; release config build window contains an unreviewed step',
+  );
 
   exactNeeds(aggregate, ['prepare', 'build'], 'aggregate');
   if (aggregate.environment !== undefined) {
@@ -775,31 +1311,69 @@ Remove-Item $beforePath -Force -ErrorAction SilentlyContinue`,
     {
       publish_plan_sha256:
         '${{ steps.seal-publication.outputs.publish_plan_sha256 }}',
-      publisher_sha256:
-        '${{ steps.bundle-publisher.outputs.publisher_sha256 }}',
     },
     'jobs.aggregate.outputs',
     'release aggregate outputs are not exact',
   );
   const aggregateSteps = uniqueSteps(aggregate, 'jobs.aggregate');
-  exactAction(
+  const aggregateCheckout = exactAction(
     aggregateSteps,
     'checkout-aggregate-source',
     CHECKOUT,
     { 'persist-credentials': false },
     'release aggregate requires the exact source checkout boundary',
   );
-  exactAction(
-    aggregateSteps,
-    'download-staged-releases',
-    DOWNLOAD,
-    {
-      pattern: 'mdreader-release-*',
-      path: 'target/release-aggregate',
-      'merge-multiple': true,
-    },
-    'release workflow is missing the exact verified platform download action',
+  requireNoEnvironment(
+    aggregateCheckout,
+    'aggregate source checkout must not receive credentials',
   );
+  const aggregateNode = exactAction(
+    aggregateSteps,
+    'setup-node-aggregate',
+    SETUP_NODE,
+    { 'node-version': '22.13.1', cache: 'pnpm' },
+    'aggregate job must use the exact reviewed Node setup',
+  );
+  requireNoEnvironment(
+    aggregateNode,
+    'aggregate Node setup must not receive credentials',
+  );
+  const aggregateCorepack = exactExecutable(
+    aggregateSteps,
+    'enable-corepack-aggregate',
+    'corepack enable',
+    'aggregate job must use the exact reviewed package-manager setup',
+  );
+  requireNoEnvironment(
+    aggregateCorepack,
+    'aggregate package-manager setup must not receive credentials',
+  );
+  const aggregateInstall = exactExecutable(
+    aggregateSteps,
+    'install-dependencies-aggregate',
+    'pnpm install --frozen-lockfile',
+    'aggregate job must install the exact locked workspace',
+  );
+  requireNoEnvironment(
+    aggregateInstall,
+    'aggregate dependency installation must not receive credentials',
+  );
+  for (const platform of ['macos', 'windows', 'linux']) {
+    const download = exactAction(
+      aggregateSteps,
+      `download-staged-release-${platform}`,
+      DOWNLOAD,
+      {
+        name: `mdreader-release-${platform}`,
+        path: 'target/release-aggregate',
+      },
+      `release workflow is missing the exact verified ${platform} download action`,
+    );
+    requireNoEnvironment(
+      download,
+      `${platform} release download must not receive credentials`,
+    );
+  }
   const assemble = exactExecutable(
     aggregateSteps,
     'assemble-manifest',
@@ -856,6 +1430,19 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
     publisherBundle,
     'publisher build must not receive publication credentials',
   );
+  const publisherAuthority = exactExecutable(
+    aggregateSteps,
+    'verify-publisher-authority',
+    `[[ "\${{ steps.bundle-publisher.outputs.publisher_sha256 }}" == "\${{ needs.prepare.outputs.publisher_sha256 }}" ]] || {
+  echo "publisher bundle differs from the independently authorized source build" >&2
+  exit 1
+}`,
+    'aggregate job must prove independent publisher authorization from prepare',
+  );
+  requireNoEnvironment(
+    publisherAuthority,
+    'publisher authority verification must not receive credentials',
+  );
   exactAction(
     aggregateSteps,
     'upload-publish-plan',
@@ -869,21 +1456,25 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
     },
     'release workflow is missing the exact sealed publication upload action',
   );
-  exactWindow(
+  exactStepOrder(
     aggregateSteps,
-    'download-staged-releases',
-    'upload-publish-plan',
     [
-      'download-staged-releases',
+      'checkout-aggregate-source',
+      'setup-node-aggregate',
+      'enable-corepack-aggregate',
+      'install-dependencies-aggregate',
+      'download-staged-release-macos',
+      'download-staged-release-windows',
+      'download-staged-release-linux',
       'assemble-manifest',
       'validate-release',
       'seal-publication',
       'bundle-publisher',
+      'verify-publisher-authority',
       'upload-publish-plan',
     ],
-    'aggregate verification and sealing window contains an unreviewed step',
+    'aggregate verification must keep its complete ordered step set with no unreviewed step or publisher source mutation',
   );
-
   exactNeeds(publish, ['prepare', 'aggregate'], 'publish');
   if (
     publish.environment !== 'mdreader-production-publication' ||
@@ -910,6 +1501,11 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
       );
     }
   }
+  exactStepOrder(
+    publishSteps,
+    ['download-publish-plan', 'publish-r2'],
+    'protected publication job must keep its complete ordered step set with no unreviewed publish step',
+  );
   if (publishSteps.length !== 2) {
     throw new Error('protected publication job contains an unreviewed step');
   }
@@ -927,8 +1523,8 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
   const publisher = exactExecutable(
     publishSteps,
     'publish-r2',
-    'exec node target/release-publish/publish-sealed-plan.mjs --plan target/release-publish/sealed-publication-plan.json --plan-sha256 "${{ needs.aggregate.outputs.publish_plan_sha256 }}" --publisher-sha256 "${{ needs.aggregate.outputs.publisher_sha256 }}" --source-commit "${{ needs.prepare.outputs.source_commit }}" --version "${{ needs.prepare.outputs.version }}" --bucket "$RELEASE_BUCKET"',
-    'release workflow is missing the reviewed sealed R2 publication command',
+    'exec node target/release-publish/publish-sealed-plan.mjs --plan target/release-publish/sealed-publication-plan.json --plan-sha256 "${{ needs.aggregate.outputs.publish_plan_sha256 }}" --publisher-sha256 "${{ needs.prepare.outputs.publisher_sha256 }}" --source-commit "${{ needs.prepare.outputs.source_commit }}" --version "${{ needs.prepare.outputs.version }}" --bucket "$RELEASE_BUCKET"',
+    'release workflow is missing independent publisher authorization from prepare',
   );
   exactEnvironment(
     publisher,
@@ -943,5 +1539,8 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
     'R2 publisher environment is not exact least privilege',
   );
 
+  assertGlobalSecretAllowlist(workflow, jobs);
+  assertExactStepMetadata(jobs);
+  assertArtifactProducerAllowlist(jobs);
   assertPinnedActions(jobs);
 }

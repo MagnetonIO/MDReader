@@ -30,6 +30,7 @@ jobs:
       source_commit: ${{ steps.metadata.outputs.source_commit }}
       published_at: ${{ steps.metadata.outputs.published_at }}
       publish_requested: ${{ steps.metadata.outputs.publish_requested }}
+      publisher_sha256: ${{ steps.authorize-publisher-bundle.outputs.publisher_sha256 }}
     steps:
       - name: Checkout the exact release source and main history
         id: checkout-release-source
@@ -60,14 +61,20 @@ jobs:
             exit 1
           fi
       - name: Install Node 22
+        id: setup-node-prepare
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.13.1'
           cache: pnpm
       - name: Enable pinned package manager
+        id: enable-corepack-prepare
         run: corepack enable
       - name: Install locked workspace dependencies
+        id: install-dependencies-prepare
         run: pnpm install --frozen-lockfile
+      - name: Authorize the reviewed publisher bundle independently
+        id: authorize-publisher-bundle
+        run: scripts/release/build-sealed-publisher.sh "$RUNNER_TEMP/mdreader-authorized-publisher.mjs"
       - name: Pin version, source, time, and publication request
         id: metadata
         env:
@@ -92,6 +99,7 @@ jobs:
             echo "publish_requested=$PUBLISH_REQUESTED"
           } >> "$GITHUB_OUTPUT"
       - name: Validate release workflow contract
+        id: validate-workflow-contract
         run: pnpm exec tsx scripts/release/check-workflow.ts .github/workflows/release.yml
 
   build:
@@ -124,13 +132,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Node 22
+        id: setup-node-build
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.13.1'
           cache: pnpm
       - name: Enable pinned package manager
+        id: enable-corepack-build
         run: corepack enable
       - name: Install Linux packaging dependencies
+        id: install-linux-packaging
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
@@ -147,8 +158,10 @@ jobs:
             rpm \
             libfuse2
       - name: Install locked workspace dependencies
+        id: install-dependencies-build
         run: pnpm install --frozen-lockfile
       - name: Install Rust release targets
+        id: install-rust-targets
         run: |
           if [[ "${{ matrix.platform }}" == "macos" ]]; then
             rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -240,12 +253,19 @@ jobs:
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/mdreader-release.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/mdreader-release.keychain-db"
+          SEARCH_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list.txt"
+          security list-keychains -d user |
+            sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' > "$SEARCH_LIST_PATH"
+          ORIGINAL_KEYCHAINS=()
+          while IFS= read -r keychain; do
+            [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+          done < "$SEARCH_LIST_PATH"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
       - name: Import Windows Authenticode certificate for bundling
         id: import-windows-cert
@@ -256,14 +276,33 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-          $beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
-          @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object Thumbprint) | Set-Content $beforePath
-          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\CurrentUser\My)
-          $certificate = @($imported | Where-Object Thumbprint -eq "${{ steps.inspect-windows-cert.outputs.thumbprint }}")
-          if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
-          if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+          $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+          $collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+          try {
+            $collection.Import($bytes, $password, $flags)
+            $thumbprints = @($collection | ForEach-Object Thumbprint | Sort-Object -Unique)
+            if ($thumbprints.Count -eq 0) { throw "Windows PFX contains no certificates" }
+            $expectedThumbprint = "${{ steps.inspect-windows-cert.outputs.thumbprint }}"
+            if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
+            $preexisting = @(Get-ChildItem Cert:\CurrentUser\My | Where-Object { $thumbprints -contains $_.Thumbprint })
+            if ($preexisting.Count -ne 0) { throw "refusing to import a preexisting Windows certificate identity" }
+            @($thumbprints | ForEach-Object { "$_`tCert:\CurrentUser\My\$_" }) |
+              Set-Content $trackedPath -ErrorAction Stop
+            [IO.File]::WriteAllBytes($path, $bytes)
+            $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\CurrentUser\My -ErrorAction Stop)
+            $importedThumbprints = @($imported | ForEach-Object Thumbprint | Sort-Object -Unique)
+            if (Compare-Object $thumbprints $importedThumbprints) { throw "Windows import did not persist the exact PFX certificate set" }
+            @($imported | ForEach-Object { "$($_.Thumbprint)`tCert:\CurrentUser\My\$($_.Thumbprint)" }) |
+              Set-Content $trackedPath -ErrorAction Stop
+            $certificate = @($imported | Where-Object Thumbprint -eq $expectedThumbprint)
+            if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
+            if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
+          } finally {
+            $collection | ForEach-Object Dispose
+          }
       - name: Bundle, sign, and notarize macOS release
         id: bundle-direct-release-macos
         if: matrix.platform == 'macos'
@@ -292,22 +331,72 @@ jobs:
         id: cleanup-macos-cert
         if: always() && matrix.platform == 'macos'
         run: |
-          security delete-keychain "$RUNNER_TEMP/mdreader-release.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/mdreader-release.p12"
+          CERTIFICATE_PATH="$RUNNER_TEMP/mdreader-release.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/mdreader-release.keychain-db"
+          SEARCH_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list.txt"
+          RESTORED_LIST_PATH="$RUNNER_TEMP/mdreader-keychain-search-list-restored.txt"
+          CLEANUP_FAILED=0
+          if [[ -f "$SEARCH_LIST_PATH" ]]; then
+            ORIGINAL_KEYCHAINS=()
+            while IFS= read -r keychain; do
+              [[ -n "$keychain" ]] && ORIGINAL_KEYCHAINS+=("$keychain")
+            done < "$SEARCH_LIST_PATH"
+            security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" || CLEANUP_FAILED=1
+            security list-keychains -d user |
+              sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' > "$RESTORED_LIST_PATH" || CLEANUP_FAILED=1
+            if ! cmp -s "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH"; then
+              echo "macOS keychain search list restore residue remains" >&2
+              CLEANUP_FAILED=1
+            fi
+          fi
+          if [[ -e "$KEYCHAIN_PATH" ]] && ! security delete-keychain "$KEYCHAIN_PATH"; then
+            CLEANUP_FAILED=1
+          fi
+          if [[ -e "$KEYCHAIN_PATH" ]]; then
+            echo "macOS signing keychain residue remains" >&2
+            CLEANUP_FAILED=1
+          fi
+          rm -f "$CERTIFICATE_PATH" "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH" || CLEANUP_FAILED=1
+          for path in "$CERTIFICATE_PATH" "$SEARCH_LIST_PATH" "$RESTORED_LIST_PATH"; do
+            if [[ -e "$path" ]]; then
+              echo "macOS signing file residue remains at $path" >&2
+              CLEANUP_FAILED=1
+            fi
+          done
+          [[ "$CLEANUP_FAILED" -eq 0 ]]
       - name: Remove Windows signing material
         id: cleanup-windows-cert
         if: always() && matrix.platform == 'windows'
         shell: pwsh
         run: |
-          $beforePath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-before.txt'
-          if (Test-Path $beforePath) {
-            $before = @(Get-Content $beforePath)
-            Get-ChildItem Cert:\CurrentUser\My |
-              Where-Object { $before -notcontains $_.Thumbprint } |
-              ForEach-Object { Remove-Item $_.PSPath -Force -ErrorAction SilentlyContinue }
+          $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
+          $trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
+          $tracked = @()
+          if (Test-Path $trackedPath) {
+            $tracked = @(Get-Content $trackedPath -ErrorAction Stop | ForEach-Object {
+              $parts = $_ -split "`t", 2
+              if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9A-F]{40}$') {
+                throw "Windows imported certificate tracking is malformed"
+              }
+              [PSCustomObject]@{ Thumbprint = $parts[0]; Path = $parts[1] }
+            })
+            foreach ($entry in $tracked) {
+              if (Test-Path -LiteralPath $entry.Path) {
+                $certificate = Get-Item -LiteralPath $entry.Path -ErrorAction Stop
+                if ($certificate.Thumbprint -ne $entry.Thumbprint) {
+                  throw "Windows imported certificate tracking identity mismatch"
+                }
+                Remove-Item -LiteralPath $entry.Path -DeleteKey -Force -ErrorAction Stop
+              }
+            }
+            $residue = @($tracked | Where-Object { Test-Path -LiteralPath $_.Path })
+            if ($residue.Count -ne 0) { throw "Windows certificate residue remains after cleanup" }
           }
-          Remove-Item (Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx') -Force -ErrorAction SilentlyContinue
-          Remove-Item $beforePath -Force -ErrorAction SilentlyContinue
+          if (Test-Path $path) { Remove-Item $path -Force -ErrorAction Stop }
+          if (Test-Path $trackedPath) { Remove-Item $trackedPath -Force -ErrorAction Stop }
+          if ((Test-Path $path) -or (Test-Path $trackedPath)) {
+            throw "Windows signing file residue remains after cleanup"
+          }
       - name: Verify attestation and seal bundle without credentials
         id: verify-direct-release
         run: scripts/release/verify-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
@@ -359,7 +448,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       publish_plan_sha256: ${{ steps.seal-publication.outputs.publish_plan_sha256 }}
-      publisher_sha256: ${{ steps.bundle-publisher.outputs.publisher_sha256 }}
     steps:
       - name: Checkout the exact release source
         id: checkout-aggregate-source
@@ -367,21 +455,35 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Node 22
+        id: setup-node-aggregate
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22.13.1'
           cache: pnpm
       - name: Enable pinned package manager
+        id: enable-corepack-aggregate
         run: corepack enable
       - name: Install locked workspace dependencies
+        id: install-dependencies-aggregate
         run: pnpm install --frozen-lockfile
-      - name: Download every verified platform release
-        id: download-staged-releases
+      - name: Download the verified macOS release
+        id: download-staged-release-macos
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: mdreader-release-*
+          name: mdreader-release-macos
           path: target/release-aggregate
-          merge-multiple: true
+      - name: Download the verified Windows release
+        id: download-staged-release-windows
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-release-windows
+          path: target/release-aggregate
+      - name: Download the verified Linux release
+        id: download-staged-release-linux
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-release-linux
+          path: target/release-aggregate
       - name: Assemble the one immutable release manifest
         id: assemble-manifest
         env:
@@ -416,6 +518,13 @@ jobs:
       - name: Bundle the no-child-process R2 publisher
         id: bundle-publisher
         run: scripts/release/build-sealed-publisher.sh target/release-publish/publish-sealed-plan.mjs
+      - name: Match the publisher to the independently reviewed bundle
+        id: verify-publisher-authority
+        run: |
+          [[ "${{ steps.bundle-publisher.outputs.publisher_sha256 }}" == "${{ needs.prepare.outputs.publisher_sha256 }}" ]] || {
+            echo "publisher bundle differs from the independently authorized source build" >&2
+            exit 1
+          }
       - name: Hand off only the sealed plan and reviewed publisher
         id: upload-publish-plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -444,4 +553,4 @@ jobs:
           MDREADER_R2_ACCESS_KEY_ID: ${{ secrets.MDREADER_R2_ACCESS_KEY_ID }}
           MDREADER_R2_SECRET_ACCESS_KEY: ${{ secrets.MDREADER_R2_SECRET_ACCESS_KEY }}
           RELEASE_BUCKET: ${{ vars.MDREADER_RELEASE_BUCKET }}
-        run: exec node target/release-publish/publish-sealed-plan.mjs --plan target/release-publish/sealed-publication-plan.json --plan-sha256 "${{ needs.aggregate.outputs.publish_plan_sha256 }}" --publisher-sha256 "${{ needs.aggregate.outputs.publisher_sha256 }}" --source-commit "${{ needs.prepare.outputs.source_commit }}" --version "${{ needs.prepare.outputs.version }}" --bucket "$RELEASE_BUCKET"
+        run: exec node target/release-publish/publish-sealed-plan.mjs --plan target/release-publish/sealed-publication-plan.json --plan-sha256 "${{ needs.aggregate.outputs.publish_plan_sha256 }}" --publisher-sha256 "${{ needs.prepare.outputs.publisher_sha256 }}" --source-commit "${{ needs.prepare.outputs.source_commit }}" --version "${{ needs.prepare.outputs.version }}" --bucket "$RELEASE_BUCKET"
