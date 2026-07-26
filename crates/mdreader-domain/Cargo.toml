@@ -10,6 +10,11 @@ workspace = true
 
 [dependencies]
 catdb-core = { path = "../../../../catdb/crates/catdb-core" }
+# The three read-only adapters (filesystem, git, frontmatter) the federated
+# `Document` concept is declared over. The platform ships the sources; the
+# concept that binds them into one entity is the app's domain.
+catdb-connectors = { path = "../../../../catdb/crates/catdb-connectors" }
+catdb-query = { path = "../../../../catdb/crates/catdb-query" }
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
 catdb-validation = { path = "../../../../catdb/crates/catdb-validation" }
 catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
