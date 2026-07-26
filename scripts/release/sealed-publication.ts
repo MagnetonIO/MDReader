@@ -23,8 +23,10 @@ const KINDS = new Set<PublicationKind>([
 ]);
 const MAX_ENTRIES = 64;
 const MAX_KEY_BYTES = 512;
-const MAX_ENTRY_BYTES = 1024 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 4 * MAX_ENTRY_BYTES;
+// The privileged Node publisher parses one body-complete base64 plan. Keep
+// decoded bodies within a bounded fraction of its default heap.
+const MAX_ENTRY_BYTES = 128 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 
 export interface SealedPublicationEntry {
   kind: PublicationKind;

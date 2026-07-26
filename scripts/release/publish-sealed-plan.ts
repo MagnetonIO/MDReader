@@ -4,16 +4,12 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { publishReleaseEntries } from './publication-policy';
 import {
-  publishReleaseEntries,
-  type ConditionalReleaseStore,
-  type R2ObjectState,
-} from './publication-policy';
-import type { PublicationEntry } from './release-pipeline';
-import {
-  createSignedR2Request,
-  type R2Credentials,
-} from './r2-sigv4';
+  assertPublisherMemoryEnvelope,
+  readBoundedFile,
+  R2FetchStore,
+} from './sealed-r2-store';
 import {
   parseSealedPublicationPlan,
   sealedPublicationPlanSha256,
@@ -34,74 +30,6 @@ function environment(name: string): string {
   return value;
 }
 
-class R2FetchStore implements ConditionalReleaseStore {
-  constructor(
-    private readonly credentials: R2Credentials,
-    private readonly bucket: string,
-  ) {}
-
-  async read(key: string): Promise<R2ObjectState | null> {
-    const request = createSignedR2Request(
-      this.credentials,
-      this.bucket,
-      'GET',
-      key,
-      new Uint8Array(),
-      {},
-    );
-    const response = await fetch(request.url, request.init);
-    if (response.status === 404) return null;
-    if (!response.ok) {
-      throw new Error(`R2 read failed for ${key}: HTTP ${response.status}`);
-    }
-    const etag = response.headers.get('etag');
-    if (!etag) throw new Error(`R2 object ${key} has no ETag`);
-    return {
-      etag,
-      body: new Uint8Array(await response.arrayBuffer()),
-    };
-  }
-
-  async put(
-    entry: PublicationEntry,
-    body: Uint8Array,
-    expectedEtag?: string | null,
-  ): Promise<void> {
-    if (!entry.immutable && expectedEtag === undefined) {
-      throw new Error(
-        `mutable release pointer ${entry.key} requires an ETag condition`,
-      );
-    }
-    const headers: Record<string, string> = {
-      'content-type': entry.key.endsWith('.json')
-        ? 'application/json'
-        : entry.key.endsWith('.sig')
-          ? 'text/plain; charset=utf-8'
-          : 'application/octet-stream',
-      'cache-control': entry.immutable
-        ? 'public, max-age=31536000, immutable'
-        : 'no-cache',
-      ...(entry.immutable || expectedEtag === null
-        ? { 'if-none-match': '*' }
-        : expectedEtag
-          ? { 'if-match': expectedEtag }
-          : {}),
-    };
-    const request = createSignedR2Request(
-      this.credentials,
-      this.bucket,
-      'PUT',
-      entry.key,
-      body,
-      headers,
-    );
-    const response = await fetch(request.url, request.init);
-    if (!response.ok) {
-      throw new Error(`R2 write failed for ${entry.key}: HTTP ${response.status}`);
-    }
-  }
-}
-
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const planPath = resolve(option(args, '--plan'));
@@ -119,6 +47,7 @@ async function main(): Promise<void> {
   if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(bucket)) {
     throw new Error('invalid R2 bucket name');
   }
+  assertPublisherMemoryEnvelope();
 
   const publisherContents = await readFile(fileURLToPath(import.meta.url));
   if (
@@ -126,13 +55,14 @@ async function main(): Promise<void> {
   ) {
     throw new Error('sealed publisher does not match the approved SHA-256');
   }
-  const contents = await readFile(planPath);
+  let contents = await readBoundedFile(planPath);
   if (sealedPublicationPlanSha256(contents) !== expectedSha256) {
     throw new Error('sealed publication plan does not match the approved SHA-256');
   }
-  const plan = parseSealedPublicationPlan(
-    JSON.parse(contents.toString('utf8')) as unknown,
-  );
+  let parsed: unknown = JSON.parse(Buffer.from(contents).toString('utf8'));
+  contents = new Uint8Array();
+  const plan = parseSealedPublicationPlan(parsed);
+  parsed = null;
   if (
     plan.sourceCommit !== expectedSourceCommit ||
     plan.version !== expectedVersion
@@ -145,13 +75,10 @@ async function main(): Promise<void> {
     key: entry.key,
     immutable: entry.immutable,
     localPath: null,
-    contents: Buffer.from(entry.bodyBase64, 'base64').toString('base64'),
+    contents: null,
   }));
-  const bodies = new Map(
-    plan.entries.map((entry) => [
-      entry.key,
-      Buffer.from(entry.bodyBase64, 'base64'),
-    ]),
+  const sealedEntries = new Map(
+    plan.entries.map((entry) => [entry.key, entry]),
   );
   const store = new R2FetchStore({
     accountId: environment('CLOUDFLARE_ACCOUNT_ID'),
@@ -160,9 +87,17 @@ async function main(): Promise<void> {
   }, bucket);
   await publishReleaseEntries(
     entries,
-    async (entry) => bodies.get(entry.key)!,
+    async (entry) => {
+      const sealed = sealedEntries.get(entry.key);
+      if (!sealed) {
+        throw new Error(`sealed publication body is missing for ${entry.key}`);
+      }
+      const encoded = sealed.bodyBase64;
+      sealed.bodyBase64 = '';
+      return Buffer.from(encoded, 'base64');
+    },
     {
-      read: (key) => store.read(key),
+      read: (entry, desiredBytes) => store.read(entry, desiredBytes),
       put: async (entry, body, expectedEtag) => {
         process.stdout.write(`publishing ${entry.kind} ${entry.key}\n`);
         await store.put(entry, body, expectedEtag);

@@ -19,6 +19,7 @@ export interface ReleaseConfigInput {
   macosSigningIdentity?: string;
   windowsCertificateThumbprint?: string;
   windowsInstallerHooks?: string;
+  windowsSignCommand?: string;
 }
 
 export interface DirectReleaseConfig {
@@ -34,8 +35,17 @@ export interface DirectReleaseConfig {
       signingIdentity: string;
     };
     windows?: {
-      certificateThumbprint: string;
       digestAlgorithm: 'sha256';
+      signCommand: {
+        cmd: 'pwsh';
+        args: [
+          '-NoProfile',
+          '-NonInteractive',
+          '-File',
+          string,
+          '%1',
+        ];
+      };
       nsis: {
         installerHooks: string;
       };
@@ -137,9 +147,24 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
   if (
     input.windowsCertificateThumbprint !== undefined &&
     (!input.windowsInstallerHooks ||
-      !input.windowsInstallerHooks.endsWith('scripts/release/windows-minimum.nsh'))
+      !input.windowsInstallerHooks.endsWith('scripts/release/windows-minimum.nsh') ||
+      !input.windowsSignCommand ||
+      !input.windowsSignCommand.endsWith(
+        'scripts/release/sign-windows-from-store.ps1',
+      ))
   ) {
-    throw new Error('Windows direct releases require the reviewed minimum-OS installer hook');
+    throw new Error(
+      'Windows direct releases require the reviewed installer hook and per-run-store signing command',
+    );
+  }
+  if (
+    input.windowsCertificateThumbprint === undefined &&
+    (input.windowsInstallerHooks !== undefined ||
+      input.windowsSignCommand !== undefined)
+  ) {
+    throw new Error(
+      'Windows release signing inputs must be supplied as one exact set',
+    );
   }
 
   return {
@@ -164,8 +189,17 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
       ...(input.windowsCertificateThumbprint
         ? {
             windows: {
-              certificateThumbprint: input.windowsCertificateThumbprint,
               digestAlgorithm: 'sha256' as const,
+              signCommand: {
+                cmd: 'pwsh' as const,
+                args: [
+                  '-NoProfile',
+                  '-NonInteractive',
+                  '-File',
+                  input.windowsSignCommand!,
+                  '%1',
+                ],
+              },
               nsis: {
                 installerHooks: input.windowsInstallerHooks!,
               },

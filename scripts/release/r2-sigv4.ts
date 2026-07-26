@@ -21,10 +21,20 @@ function awsEncode(value: string): string {
 }
 
 function objectUrl(accountId: string, bucket: string, key: string): URL {
+  if (!/^[0-9a-f]{32}$/.test(accountId)) {
+    throw new Error('Cloudflare account ID must be exactly 32 lowercase hexadecimal characters');
+  }
   const path = [bucket, ...key.split('/')].map(awsEncode).join('/');
-  return new URL(
+  const url = new URL(
     `https://${accountId}.r2.cloudflarestorage.com/${path}`,
   );
+  if (
+    url.origin !==
+    `https://${accountId}.r2.cloudflarestorage.com`
+  ) {
+    throw new Error('Cloudflare account ID produced an unexpected R2 origin');
+  }
+  return url;
 }
 
 export function createSignedR2Request(

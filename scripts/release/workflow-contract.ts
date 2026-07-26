@@ -192,12 +192,19 @@ function exactStepOrder(
   }
 }
 
+function containsSecretsContext(value: unknown): boolean {
+  const serialized = JSON.stringify(value) ?? '';
+  for (const expression of serialized.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+    if (/\bsecrets\b/i.test(expression[1] ?? '')) return true;
+  }
+  return false;
+}
+
 function assertGlobalSecretAllowlist(workflow: Mapping, jobs: Mapping): void {
-  const secretExpression = /\$\{\{\s*secrets(?:\.|\[)/;
   const workflowMetadata = Object.fromEntries(
     Object.entries(workflow).filter(([name]) => name !== 'jobs'),
   );
-  if (secretExpression.test(JSON.stringify(workflowMetadata))) {
+  if (containsSecretsContext(workflowMetadata)) {
     throw new Error('release workflow contains a secret outside the global secret allowlist');
   }
 
@@ -226,7 +233,7 @@ function assertGlobalSecretAllowlist(workflow: Mapping, jobs: Mapping): void {
     const metadata = Object.fromEntries(
       Object.entries(job).filter(([name]) => name !== 'steps'),
     );
-    if (secretExpression.test(JSON.stringify(metadata))) {
+    if (containsSecretsContext(metadata)) {
       throw new Error(
         `release job ${jobName} contains a secret outside the global secret allowlist`,
       );
@@ -235,13 +242,13 @@ function assertGlobalSecretAllowlist(workflow: Mapping, jobs: Mapping): void {
       const stepMetadata = Object.fromEntries(
         Object.entries(step).filter(([name]) => name !== 'env'),
       );
-      if (secretExpression.test(JSON.stringify(stepMetadata))) {
+      if (containsSecretsContext(stepMetadata)) {
         throw new Error(
           `release step ${jobName}/${String(step.id)} contains an unreviewed secret outside the global secret allowlist`,
         );
       }
       if (
-        secretExpression.test(JSON.stringify(step.env)) &&
+        containsSecretsContext(step.env) &&
         !allowedSteps.has(`${jobName}/${String(step.id)}`)
       ) {
         throw new Error(
@@ -892,7 +899,11 @@ try {
     buildSteps,
     'import-windows-cert',
     `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-$trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
+$storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+$storePath = "Cert:\\CurrentUser\\$storeName"
+if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
+  throw "Windows per-run certificate store name is invalid"
+}
 $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
 $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
 $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
@@ -903,16 +914,12 @@ try {
   if ($thumbprints.Count -eq 0) { throw "Windows PFX contains no certificates" }
   $expectedThumbprint = "\${{ steps.inspect-windows-cert.outputs.thumbprint }}"
   if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
-  $preexisting = @(Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $thumbprints -contains $_.Thumbprint })
-  if ($preexisting.Count -ne 0) { throw "refusing to import a preexisting Windows certificate identity" }
-  @($thumbprints | ForEach-Object { "$_\`tCert:\\CurrentUser\\My\\$_" }) |
-    Set-Content $trackedPath -ErrorAction Stop
+  New-Item -Path Cert:\\CurrentUser -Name $storeName -ErrorAction Stop | Out-Null
+  "store_name=$storeName" >> $env:GITHUB_OUTPUT
   [IO.File]::WriteAllBytes($path, $bytes)
-  $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation Cert:\\CurrentUser\\My -ErrorAction Stop)
+  $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation $storePath -ErrorAction Stop)
   $importedThumbprints = @($imported | ForEach-Object Thumbprint | Sort-Object -Unique)
   if (Compare-Object $thumbprints $importedThumbprints) { throw "Windows import did not persist the exact PFX certificate set" }
-  @($imported | ForEach-Object { "$($_.Thumbprint)\`tCert:\\CurrentUser\\My\\$($_.Thumbprint)" }) |
-    Set-Content $trackedPath -ErrorAction Stop
   $certificate = @($imported | Where-Object Thumbprint -eq $expectedThumbprint)
   if ($certificate.Count -ne 1) { throw "persisted Windows signing certificate does not match inspected thumbprint" }
   if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
@@ -1063,31 +1070,35 @@ done
     buildSteps,
     'cleanup-windows-cert',
     `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
-$trackedPath = Join-Path $env:RUNNER_TEMP 'mdreader-release-cert-imported.tsv'
-$tracked = @()
-if (Test-Path $trackedPath) {
-  $tracked = @(Get-Content $trackedPath -ErrorAction Stop | ForEach-Object {
-    $parts = $_ -split "\`t", 2
-    if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9A-F]{40}$') {
-      throw "Windows imported certificate tracking is malformed"
+$expectedStoreName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+$ownedStoreName = "\${{ steps.import-windows-cert.outputs.store_name }}"
+if (-not [string]::IsNullOrWhiteSpace($ownedStoreName) -and $ownedStoreName -ne $expectedStoreName) {
+  throw "Windows per-run certificate store ownership mismatch"
+}
+if ($expectedStoreName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+$') {
+  throw "Windows per-run certificate store identity is invalid"
+}
+$storePath = "Cert:\\CurrentUser\\$expectedStoreName"
+if (Test-Path -LiteralPath $storePath) {
+  $certificates = @(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop)
+  foreach ($certificate in $certificates) {
+    $certificatePath = Join-Path $storePath $certificate.Thumbprint
+    $ownedCertificate = Get-Item -LiteralPath $certificatePath -ErrorAction Stop
+    if ($ownedCertificate.Thumbprint -ne $certificate.Thumbprint) {
+      throw "Windows per-run certificate store identity mismatch"
     }
-    [PSCustomObject]@{ Thumbprint = $parts[0]; Path = $parts[1] }
-  })
-  foreach ($entry in $tracked) {
-    if (Test-Path -LiteralPath $entry.Path) {
-      $certificate = Get-Item -LiteralPath $entry.Path -ErrorAction Stop
-      if ($certificate.Thumbprint -ne $entry.Thumbprint) {
-        throw "Windows imported certificate tracking identity mismatch"
-      }
-      Remove-Item -LiteralPath $entry.Path -DeleteKey -Force -ErrorAction Stop
-    }
+    Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop
   }
-  $residue = @($tracked | Where-Object { Test-Path -LiteralPath $_.Path })
-  if ($residue.Count -ne 0) { throw "Windows certificate residue remains after cleanup" }
+  if (@(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop).Count -ne 0) {
+    throw "Windows certificate residue remains in the per-run store"
+  }
+  Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop
+}
+if (Test-Path -LiteralPath $storePath) {
+  throw "Windows per-run certificate store residue remains after cleanup"
 }
 if (Test-Path $path) { Remove-Item $path -Force -ErrorAction Stop }
-if (Test-Path $trackedPath) { Remove-Item $trackedPath -Force -ErrorAction Stop }
-if ((Test-Path $path) -or (Test-Path $trackedPath)) {
+if (Test-Path $path) {
   throw "Windows signing file residue remains after cleanup"
 }`,
     'release workflow is missing fail-closed Windows certificate cleanup',
@@ -1114,6 +1125,10 @@ if ((Test-Path $path) -or (Test-Path $trackedPath)) {
         COMMON_CREDENTIALS.TAURI_SIGNING_PRIVATE_KEY,
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         COMMON_CREDENTIALS.TAURI_SIGNING_PRIVATE_KEY_PASSWORD,
+      WINDOWS_CERT_STORE:
+        '${{ steps.import-windows-cert.outputs.store_name }}',
+      WINDOWS_CERT_THUMBPRINT:
+        '${{ steps.inspect-windows-cert.outputs.thumbprint }}',
     },
     'Windows signer environment is not exact least privilege',
   );
@@ -1487,14 +1502,14 @@ echo "publish_plan_sha256=$PLAN_SHA256" >> "$GITHUB_OUTPUT"`,
   const publishMetadata = Object.fromEntries(
     Object.entries(publish).filter(([name]) => name !== 'steps'),
   );
-  if (/\$\{\{\s*secrets(?:\.|\[)/.test(JSON.stringify(publishMetadata))) {
+  if (containsSecretsContext(publishMetadata)) {
     throw new Error('release publish job must not expose ambient secret material');
   }
   const publishSteps = uniqueSteps(publish, 'jobs.publish');
   for (const step of publishSteps) {
     if (
       step.id !== 'publish-r2' &&
-      /\$\{\{\s*secrets(?:\.|\[)/.test(JSON.stringify(step))
+      containsSecretsContext(step)
     ) {
       throw new Error(
         'unreviewed publish step must not receive secret material or publication credentials',

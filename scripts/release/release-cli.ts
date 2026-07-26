@@ -66,6 +66,9 @@ async function writeConfig(args: string[]): Promise<void> {
     windowsInstallerHooks: option(args, '--windows-thumbprint', false)
       ? join(ROOT, 'scripts', 'release', 'windows-minimum.nsh')
       : undefined,
+    windowsSignCommand: option(args, '--windows-thumbprint', false)
+      ? join(ROOT, 'scripts', 'release', 'sign-windows-from-store.ps1')
+      : undefined,
   });
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });

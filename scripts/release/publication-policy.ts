@@ -6,7 +6,10 @@ export interface R2ObjectState {
 }
 
 export interface ConditionalReleaseStore {
-  read(key: string): Promise<R2ObjectState | null>;
+  read(
+    entry: PublicationEntry,
+    desiredBytes: number,
+  ): Promise<R2ObjectState | null>;
   put(
     entry: PublicationEntry,
     body: Uint8Array,
@@ -83,7 +86,7 @@ export async function publishReleaseEntries(
   for (const entry of entries) {
     const body = await loadBody(entry);
     desired.set(entry.key, body);
-    const state = await store.read(entry.key);
+    const state = await store.read(entry, body.byteLength);
 
     if (entry.immutable) {
       if (state && !bytesEqual(state.body, body)) {
