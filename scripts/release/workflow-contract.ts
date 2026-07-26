@@ -20,6 +20,19 @@ function stepIds(job: Mapping): Set<string> {
   );
 }
 
+function requireUniqueStepIds(job: Mapping, jobName: string): void {
+  const seen = new Set<string>();
+  for (const step of list(job.steps, `${jobName}.steps`).map((entry) =>
+    mapping(entry, `${jobName}.steps[]`),
+  )) {
+    if (typeof step.id !== 'string') continue;
+    if (seen.has(step.id)) {
+      throw new Error(`${jobName} step ${step.id} must exist exactly once`);
+    }
+    seen.add(step.id);
+  }
+}
+
 function requireStep(ids: Set<string>, id: string, message: string): void {
   if (!ids.has(id)) throw new Error(message);
 }
@@ -130,6 +143,8 @@ export function validateReleaseWorkflow(input: unknown): void {
   const prepare = mapping(jobs.prepare, 'jobs.prepare');
   const build = mapping(jobs.build, 'jobs.build');
   const publish = mapping(jobs.publish, 'jobs.publish');
+  requireUniqueStepIds(build, 'release build');
+  requireUniqueStepIds(publish, 'release publish');
   requireSharedUpdaterKey(
     [build, publish],
     [
@@ -211,21 +226,33 @@ export function validateReleaseWorkflow(input: unknown): void {
   const configIndex = buildSteps.findIndex(
     (step) => step.id === 'generate-release-config',
   );
-  const stageIndex = buildSteps.findIndex((step) => step.id === 'stage-release');
-  const allowedBuildWindow = new Set([
+  const uploadIndex = buildSteps.findIndex(
+    (step) => step.id === 'upload-staged-release',
+  );
+  const reviewedBuildWindow = [
+    'generate-release-config',
     'build-direct-release',
     'macos-verify-signature',
     'macos-verify-notarization',
     'windows-verify-signature',
     'linux-verify-packages',
     'install-syft',
-  ]);
+    'stage-release',
+    'generate-sbom',
+    'validate-staged-release',
+    'upload-staged-release',
+  ];
+  const actualBuildWindow =
+    configIndex >= 0 && uploadIndex >= configIndex
+      ? buildSteps
+          .slice(configIndex, uploadIndex + 1)
+          .map((step) => String(step.id))
+      : [];
   if (
-    configIndex < 0 ||
-    stageIndex <= configIndex ||
-    buildSteps
-      .slice(configIndex + 1, stageIndex)
-      .some((step) => !allowedBuildWindow.has(String(step.id)))
+    actualBuildWindow.length !== reviewedBuildWindow.length ||
+    actualBuildWindow.some(
+      (id, index) => id !== reviewedBuildWindow[index],
+    )
   ) {
     throw new Error(
       'release config build window contains an unreviewed mutation step',
@@ -286,14 +313,106 @@ export function validateReleaseWorkflow(input: unknown): void {
     mapping(entry, 'publish.steps[]'),
   );
   const index = (id: string) => publishSteps.findIndex((step) => step.id === id);
+  const assembleIndex = index('assemble-manifest');
+  const validateIndex = index('validate-release');
+  const publishIndex = index('publish-r2');
+  const reviewedPublishWindow = [
+    'assemble-manifest',
+    'validate-release',
+    'publish-r2',
+  ];
+  const actualPublishWindow =
+    assembleIndex >= 0 && publishIndex >= assembleIndex
+      ? publishSteps
+          .slice(assembleIndex, publishIndex + 1)
+          .map((step) => String(step.id))
+      : [];
   if (
-    index('assemble-manifest') < 0 ||
-    index('validate-release') < 0 ||
-    index('publish-r2') < 0 ||
-    !(index('assemble-manifest') < index('validate-release') &&
-      index('validate-release') < index('publish-r2'))
+    validateIndex < 0 ||
+    actualPublishWindow.length !== reviewedPublishWindow.length ||
+    actualPublishWindow.some(
+      (id, windowIndex) => id !== reviewedPublishWindow[windowIndex],
+    )
   ) {
     throw new Error('release workflow must enforce aggregate verification before publication');
+  }
+  requireExactExecutableStep(
+    publish,
+    'assemble-manifest',
+    `pnpm exec tsx scripts/release/release-cli.ts assemble \\
+  --root target/release-aggregate \\
+  --version "\${{ needs.prepare.outputs.version }}" \\
+  --source-commit "\${{ needs.prepare.outputs.source_commit }}" \\
+  --published-at "\${{ needs.prepare.outputs.published_at }}"`,
+    'release workflow is missing the reviewed aggregate assembly command',
+  );
+  requireExactExecutableStep(
+    publish,
+    'validate-release',
+    `pnpm exec tsx scripts/release/release-cli.ts validate \\
+  --root target/release-aggregate \\
+  --manifest "target/release-aggregate/releases/v\${{ needs.prepare.outputs.version }}/manifest.json" \\
+  --source-commit "\${{ needs.prepare.outputs.source_commit }}"`,
+    'release workflow is missing the reviewed aggregate validation command',
+  );
+  requireExactExecutableStep(
+    publish,
+    'publish-r2',
+    `if [[ "\${{ needs.prepare.outputs.dry_run }}" == "true" ]]; then
+  MODE=--dry-run
+else
+  MODE=--publish
+fi
+pnpm exec tsx scripts/release/release-cli.ts publish \\
+  --root target/release-aggregate \\
+  --manifest "target/release-aggregate/releases/v\${{ needs.prepare.outputs.version }}/manifest.json" \\
+  --source-commit "\${{ needs.prepare.outputs.source_commit }}" \\
+  --bucket "$RELEASE_BUCKET" \\
+  "$MODE"`,
+    'release workflow is missing the reviewed R2 publication command',
+  );
+
+  const reviewedPublicKeySteps = new Set([
+    'assemble-manifest',
+    'validate-release',
+  ]);
+  const updaterPublicKeySecret =
+    '${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}';
+  const secretContext = /\$\{\{\s*secrets(?:\.|\[)/;
+  const publishJobMetadata = Object.fromEntries(
+    Object.entries(publish).filter(([name]) => name !== 'steps'),
+  );
+  if (secretContext.test(JSON.stringify(publishJobMetadata))) {
+    throw new Error(
+      'release publish job must not expose secret material outside reviewed steps',
+    );
+  }
+  for (const step of publishSteps) {
+    if (step.id === 'publish-r2') continue;
+    let serialized = JSON.stringify(step);
+    if (reviewedPublicKeySteps.has(String(step.id))) {
+      const environment = mapping(step.env, `step ${String(step.id)}.env`);
+      if (
+        Object.keys(environment).length !== 1 ||
+        environment.MDREADER_UPDATER_PUBLIC_KEY !== updaterPublicKeySecret
+      ) {
+        throw new Error(
+          'reviewed verification step must receive only the updater public key',
+        );
+      }
+      serialized = serialized.replace(updaterPublicKeySecret, '');
+    }
+    if (
+      secretContext.test(serialized) ||
+      (typeof step.run === 'string' &&
+        /scripts\/release\/release-cli\.ts\s+publish\b|\b--publish\b/.test(
+          step.run,
+        ))
+    ) {
+      throw new Error(
+        'unreviewed publish step must not receive secret material or publication credentials or execute publication',
+      );
+    }
   }
 
   for (const job of Object.values(jobs).map((entry) => mapping(entry, 'jobs[]'))) {
