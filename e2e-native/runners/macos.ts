@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
 import { E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
+import { assertE2EBundle } from '../bundle.ts';
 import { appConfigDir, clearSeed, e2eProfile, seedWorkspace, type E2EProfile } from '../seed.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
@@ -139,6 +140,12 @@ async function main(): Promise<number> {
   if (!existsSync(opts.binary)) {
     console.error(`\nFAIL: app binary not found: ${opts.binary}`);
     console.error('Build it first: pnpm --filter @mdreader/app tauri build --bundles app --config src-tauri/tauri.e2e.conf.json');
+    return 1;
+  }
+  try {
+    assertE2EBundle(opts.app);
+  } catch (err) {
+    console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
   if (!existsSync(opts.corpus)) {

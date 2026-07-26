@@ -17,8 +17,8 @@
  */
 
 import { homedir, tmpdir } from 'node:os';
-import { basename, join, relative, resolve } from 'node:path';
-import { existsSync, lstatSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
@@ -78,6 +78,19 @@ function isStrictDescendant(path: string, parent: string): boolean {
   return relation !== '' && !relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && relation !== '..' && !relation.startsWith('/');
 }
 
+/** Resolve every existing ancestor, preserving only the missing tail. */
+function canonicalizeExistingPath(path: string): string {
+  let existing = resolve(path);
+  const missingTail: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) throw new Error('could not resolve a safe E2E profile path');
+    missingTail.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(realpathSync(existing), ...missingTail);
+}
+
 /**
  * Construct the only profile destructive native helpers accept. Tests may pass a
  * `mkdtemp(join(tmpdir(), 'mdreader-e2e-'))` directory; production runs use the
@@ -96,14 +109,11 @@ export function assertE2EProfile(profile: E2EProfile): asserts profile is E2EPro
     throw new Error('refusing destructive seed operation without a validated E2E profile');
   }
 
-  const configDir = resolve(candidate.configDir);
-  const defaultDir = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
-  const testRoot = resolve(tmpdir());
+  const configDir = canonicalizeExistingPath(candidate.configDir);
+  const defaultDir = canonicalizeExistingPath(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const testRoot = canonicalizeExistingPath(tmpdir());
   const testOwned = isStrictDescendant(configDir, testRoot) && basename(configDir).startsWith('mdreader-e2e-');
-  if (
-    (configDir !== defaultDir && !testOwned) ||
-    (existsSync(configDir) && lstatSync(configDir).isSymbolicLink())
-  ) {
+  if (configDir !== defaultDir && !testOwned) {
     throw new Error('refusing destructive seed operation without a validated E2E profile');
   }
 }
@@ -111,7 +121,7 @@ export function assertE2EProfile(profile: E2EProfile): asserts profile is E2EPro
 /** Absolute path of the seeded `session.json` for a validated E2E profile. */
 export function appConfigDir(profile: E2EProfile): string {
   assertE2EProfile(profile);
-  return resolve(profile.configDir);
+  return canonicalizeExistingPath(profile.configDir);
 }
 
 /** Absolute path of the seeded `session.json` for a validated E2E profile. */

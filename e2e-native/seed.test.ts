@@ -54,6 +54,18 @@ test('e2eProfile refuses a test-named symlink to the home directory', async () =
   }
 });
 
+test('e2eProfile refuses an E2E-looking descendant of a home-directory symlink', async () => {
+  const ancestor = join(tmpdir(), `mdreader-e2e-ancestor-${process.pid}`);
+  const configDir = join(ancestor, 'mdreader-e2e-profile');
+  await symlink(homedir(), ancestor);
+
+  try {
+    assert.throws(() => e2eProfile(configDir), /validated E2E profile/);
+  } finally {
+    await rm(ancestor, { recursive: true, force: true });
+  }
+});
+
 test('clearSeed clears the store files in a test-owned E2E profile only', async () => {
   const configDir = await temporaryE2EConfig();
   const profile = { identifier: E2E_BUNDLE_IDENTIFIER, configDir } as never;
