@@ -404,9 +404,14 @@ export interface FlowConfig {
   readonly indexTimeoutMs: number;
 }
 
+/** The only Tauri identity native E2E is allowed to seed or launch. */
+export const E2E_BUNDLE_IDENTIFIER = 'dev.mdreader.app.e2e';
+/** Visible product name for the isolated native E2E bundle. */
+export const E2E_PRODUCT_NAME = 'MDReader E2E';
+
 export const FLOW_CONFIG: FlowConfig = {
   corpusRelPath: 'fixtures/corpus',
-  bundleIdentifier: 'dev.mdreader.app',
+  bundleIdentifier: E2E_BUNDLE_IDENTIFIER,
   indexTimeoutMs: 30_000,
 };
 

@@ -143,10 +143,10 @@ jobs:
       # Build the workspace deps (@mdreader/ui, @mdreader/markdown) then the app
       # bundle. The app binary tauri-driver launches lands at
       # target/release/mdreader-app[.exe].
-      - name: Build MDReader app
+      - name: Build isolated MDReader E2E app
         run: |
           pnpm --filter "@mdreader/app..." run build
-          pnpm --filter @mdreader/app tauri build --bundles app
+          pnpm --filter @mdreader/app tauri build --bundles app --config src-tauri/tauri.e2e.conf.json
 
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked
@@ -163,6 +163,10 @@ jobs:
       - name: Typecheck the GUI suite
         working-directory: apps/mdreader/e2e-native
         run: pnpm run typecheck
+
+      - name: Verify native E2E seed isolation
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run test:seed
 
       - name: Run desktop e2e (Linux, headed under xvfb)
         if: runner.os == 'Linux'

@@ -16,9 +16,13 @@
  * and writes the store's flat `{ "<key>": <value> }` shape. Node built-ins only.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+
+import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
+
+export { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 /** The store key `persistence.ts` reads the session under (`store.get('session')`). */
 const SESSION_KEY = 'session';
@@ -52,7 +56,7 @@ const STORE_FILES = ['session.json', 'settings.json'] as const;
  * On macOS app_config_dir and app_data_dir coincide, so the same path serves the
  * engine's index dir too — handy but incidental.
  */
-export function appConfigDir(identifier: string): string {
+function platformConfigDir(identifier: string): string {
   const home = homedir();
   switch (process.platform) {
     case 'darwin':
@@ -64,9 +68,56 @@ export function appConfigDir(identifier: string): string {
   }
 }
 
-/** Absolute path of the seeded `session.json` for `identifier`. */
-export function sessionStorePath(identifier: string): string {
-  return join(appConfigDir(identifier), 'session.json');
+/** A profile accepted by the native harness's fail-closed cleanup boundary. */
+export interface E2EProfile {
+  readonly identifier: typeof E2E_BUNDLE_IDENTIFIER;
+  readonly configDir: string;
+}
+
+function isStrictDescendant(path: string, parent: string): boolean {
+  const relation = relative(parent, path);
+  return relation !== '' && relation !== '..' && !relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(relation);
+}
+
+/**
+ * Produce the only profile destructive seed helpers accept. Production runs use
+ * the E2E bundle's OS config directory; unit tests may use a `mkdtemp` directory
+ * below the OS temp root whose name begins with `mdreader-e2e-`.
+ */
+export function createE2EProfile(
+  identifier: string = E2E_BUNDLE_IDENTIFIER,
+  configDir: string = platformConfigDir(E2E_BUNDLE_IDENTIFIER),
+): E2EProfile {
+  const profile = { identifier, configDir: resolve(configDir) } as E2EProfile;
+  assertE2EProfile(profile);
+  return profile;
+}
+
+/** Refuse non-E2E identities and broad paths before any state mutation. */
+export function assertE2EProfile(profile: E2EProfile): asserts profile is E2EProfile {
+  const candidate = profile as { identifier?: unknown; configDir?: unknown };
+  if (candidate.identifier !== E2E_BUNDLE_IDENTIFIER || typeof candidate.configDir !== 'string') {
+    throw new Error('refusing destructive seed operation without a validated E2E profile');
+  }
+
+  const configDir = resolve(candidate.configDir);
+  const expected = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const temporary = resolve(tmpdir());
+  const testOwned = isStrictDescendant(configDir, temporary) && basename(configDir).startsWith('mdreader-e2e-');
+  if (configDir !== expected && !testOwned) {
+    throw new Error('refusing destructive seed operation without a validated E2E profile');
+  }
+}
+
+/** Validated E2E config directory. */
+export function appConfigDir(profile: E2EProfile): string {
+  assertE2EProfile(profile);
+  return resolve(profile.configDir);
+}
+
+/** Absolute path of the seeded `session.json` for a validated E2E profile. */
+export function sessionStorePath(profile: E2EProfile): string {
+  return join(appConfigDir(profile), 'session.json');
 }
 
 /** The tauri-plugin-store payload that grants `rootAbs` on next launch. */
@@ -89,9 +140,10 @@ export function buildSessionSeed(rootAbs: string): Record<string, unknown> {
  * Write the seed so the next launch grants `rootAbs`. Creates the config dir if
  * absent. Returns the path written, for logging.
  */
-export async function seedWorkspace(identifier: string, rootAbs: string): Promise<string> {
-  const path = sessionStorePath(identifier);
-  await mkdir(appConfigDir(identifier), { recursive: true });
+export async function seedWorkspace(profile: E2EProfile, rootAbs: string): Promise<string> {
+  assertE2EProfile(profile);
+  const path = sessionStorePath(profile);
+  await mkdir(appConfigDir(profile), { recursive: true });
   await writeFile(path, JSON.stringify(buildSessionSeed(rootAbs), null, 2), 'utf8');
   return path;
 }
@@ -101,7 +153,14 @@ export async function seedWorkspace(identifier: string, rootAbs: string): Promis
  * leftover tabs/root, and no leftover UI state (see {@link STORE_FILES}).
  * Ignores files that are not there.
  */
-export async function clearSeed(identifier: string): Promise<void> {
-  const dir = appConfigDir(identifier);
+export async function clearSeed(profile: E2EProfile): Promise<void> {
+  assertE2EProfile(profile);
+  const dir = appConfigDir(profile);
   for (const file of STORE_FILES) await rm(join(dir, file), { force: true });
+}
+
+/** Remove only the validated E2E profile's engine workspace state. */
+export async function clearWorkspaceIndex(profile: E2EProfile): Promise<void> {
+  assertE2EProfile(profile);
+  await rm(join(appConfigDir(profile), 'workspaces'), { recursive: true, force: true });
 }

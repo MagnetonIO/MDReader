@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { FLOW_CONFIG } from './flows.ts';
+import { E2E_BUNDLE_IDENTIFIER, FLOW_CONFIG } from './flows.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
@@ -89,7 +89,7 @@ export const iosCapabilities: WebdriverIO.Capabilities = {
   'appium:platformVersion': process.env.MDREADER_IOS_VERSION ?? '18.2',
   // P6 supplies one of these (a built .app for the simulator, or the installed id):
   'appium:app': process.env.MDREADER_IOS_APP,
-  'appium:bundleId': process.env.MDREADER_IOS_BUNDLE_ID ?? FLOW_CONFIG.bundleIdentifier,
+  'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
   // Let the driver expose the webview context (we switch to it in the adapter).
   'appium:autoWebview': false,
   'appium:includeSafariInWebviews': false,
@@ -105,7 +105,7 @@ export const androidCapabilities: WebdriverIO.Capabilities = {
   'appium:automationName': 'UiAutomator2',
   'appium:deviceName': process.env.MDREADER_ANDROID_DEVICE ?? 'emulator-5554',
   'appium:app': process.env.MDREADER_ANDROID_APP,
-  'appium:appPackage': process.env.MDREADER_ANDROID_PACKAGE ?? 'dev.mdreader.app',
+  'appium:appPackage': E2E_BUNDLE_IDENTIFIER,
   // The Tauri/mobile webview is a Chrome-backed WebView; UiAutomator2 exposes it
   // as a WEBVIEW_<pkg> context the adapter switches into.
   'appium:autoWebview': false,

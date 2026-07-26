@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MDReader E2E",
+  "identifier": "dev.mdreader.app.e2e",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}

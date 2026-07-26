@@ -2,7 +2,7 @@
 #
 # Milestone PT — macOS GUI smoke entry point (UNIFIED Appium/mac2 harness).
 #
-# Builds (or reuses) the MDReader .app, then runs the macOS leg of the unified
+# Builds (or reuses) the isolated MDReader E2E .app, then runs the macOS leg of the unified
 # harness (apps/mdreader/e2e-native/runners/macos.ts), which drives the REAL
 # window through an appium-mac2-driver (XCUITest) WebDriver session and asserts the
 # shared FLOW — including the two assertions a "process booted" check can't make:
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$REPO_ROOT/target/release/bundle/macos/MDReader.app"
+APP="$REPO_ROOT/target/release/bundle/macos/MDReader E2E.app"
 E2E_DIR="$REPO_ROOT/apps/mdreader/e2e-native"
 export APPIUM_HOME="$E2E_DIR/.appium"
 
@@ -53,9 +53,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if [[ "$SKIP_BUILD" -eq 0 || ! -d "$APP" ]]; then
-  echo "==> Building MDReader.app (release, app bundle only)…"
-  pnpm --filter '@mdreader/app...' run build
-  pnpm --filter @mdreader/app tauri build --bundles app
+  echo "==> Building MDReader E2E.app (release, app bundle only)…"
+  pnpm --dir "$E2E_DIR" run build:e2e
 else
   echo "==> Reusing existing app: $APP"
 fi
