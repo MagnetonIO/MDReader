@@ -4,6 +4,7 @@
 
 import { FocusIcon, PanelLeft, ThemeIcon, TypeIcon } from './icons.js';
 import type { ReadingFont, Theme } from '../stores/settings.js';
+import { UpdateControl } from './UpdateControl.js';
 
 export interface TitlebarProps {
   isMac: boolean;
@@ -47,6 +48,7 @@ export function Titlebar({
       </button>
       <span className="titlebar__title" data-tauri-drag-region>MDReader</span>
       <span className="titlebar__spacer" data-tauri-drag-region />
+      <UpdateControl />
 
       <button
         type="button"

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,9 +21,9 @@ import {
   putR2ReleaseEntry,
   readR2StablePointer,
 } from './r2-publisher';
+import { assertGlibcCompatibility } from './platform-compat';
 import {
   stagePlatformArtifacts,
-  type SbomPackage,
 } from './stage-release';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -45,45 +44,6 @@ function requireEnvironment(name: string): string {
   return value;
 }
 
-function packagesFromValue(value: unknown, output: Map<string, SbomPackage>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) packagesFromValue(item, output);
-    return;
-  }
-  if (typeof value !== 'object' || value === null) return;
-  const object = value as Record<string, unknown>;
-  if (typeof object.name === 'string' && typeof object.version === 'string') {
-    output.set(`${object.name}@${object.version}`, {
-      name: object.name,
-      version: object.version,
-    });
-  }
-  for (const child of Object.values(object)) packagesFromValue(child, output);
-}
-
-function dependencyPackages(): SbomPackage[] {
-  const output = new Map<string, SbomPackage>();
-  const cargo = JSON.parse(
-    execFileSync(
-      'cargo',
-      ['metadata', '--format-version', '1', '--locked'],
-      { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    ),
-  ) as { packages: Array<{ name: string; version: string }> };
-  for (const pkg of cargo.packages) {
-    output.set(`${pkg.name}@${pkg.version}`, { name: pkg.name, version: pkg.version });
-  }
-  const pnpm = JSON.parse(
-    execFileSync(
-      'pnpm',
-      ['list', '--recursive', '--json', '--depth', 'Infinity'],
-      { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    ),
-  ) as unknown;
-  packagesFromValue(pnpm, output);
-  return [...output.values()];
-}
-
 async function writeConfig(args: string[]): Promise<void> {
   const version = option(args, '--version')!;
   const output = resolve(option(args, '--output')!);
@@ -99,6 +59,9 @@ async function writeConfig(args: string[]): Promise<void> {
       'https://downloads.mdreader.dev/channels/stable/updater.json',
     macosSigningIdentity: option(args, '--macos-signing-identity', false),
     windowsCertificateThumbprint: option(args, '--windows-thumbprint', false),
+    windowsInstallerHooks: option(args, '--windows-thumbprint', false)
+      ? join(ROOT, 'scripts', 'release', 'windows-minimum.nsh')
+      : undefined,
   });
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
@@ -122,7 +85,6 @@ async function stage(args: string[]): Promise<void> {
     publishedAt: option(args, '--published-at')!,
     bundleRoot: resolve(option(args, '--bundle-root')!),
     outputRoot: resolve(option(args, '--output-root')!),
-    packages: dependencyPackages(),
   });
   process.stdout.write(
     `staged ${platform}: ${fragment.artifacts.length} verified artifact records\n`,
@@ -173,6 +135,16 @@ async function assemble(args: string[]): Promise<void> {
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`);
   process.stdout.write(`immutable release manifest assembled: ${output}\n`);
+}
+
+async function verifyLinuxAbi(args: string[]): Promise<void> {
+  const reportPath = resolve(option(args, '--report')!);
+  const maximum = option(args, '--max-glibc')!;
+  const required = assertGlibcCompatibility(
+    await readFile(reportPath, 'utf8'),
+    maximum,
+  );
+  process.stdout.write(`verified Linux payload requires at most GLIBC ${required}\n`);
 }
 
 async function plan(args: string[]): Promise<{
@@ -251,13 +223,14 @@ async function main(): Promise<void> {
   if (command === 'config') return writeConfig(args);
   if (command === 'stage') return stage(args);
   if (command === 'assemble') return assemble(args);
+  if (command === 'verify-linux-abi') return verifyLinuxAbi(args);
   if (command === 'validate') {
     const result = await plan(args);
     process.stdout.write(`verified publication plan: ${result.entries.length} objects\n`);
     return;
   }
   if (command === 'publish') return publish(args);
-  throw new Error('usage: release-cli.ts <config|stage|assemble|validate|publish> [options]');
+  throw new Error('usage: release-cli.ts <config|stage|assemble|verify-linux-abi|validate|publish> [options]');
 }
 
 main().catch((error: unknown) => {

@@ -10,6 +10,7 @@ import {
   type ReleaseManifest,
   type ReleaseManifestArtifact,
 } from '../../apps/web/lib/release-manifest';
+import { assertCompleteArtifactSbom } from './stage-release';
 
 const VERIFIED_RELEASE = Symbol('verified-release');
 const execFileAsync = promisify(execFile);
@@ -88,7 +89,12 @@ async function assertFile(
   }
 }
 
-async function assertSbom(path: string, checksum: string): Promise<void> {
+async function assertSbom(
+  path: string,
+  checksum: string,
+  artifactFilename: string,
+  artifactChecksum: string,
+): Promise<void> {
   await assertFile(path, 'SBOM', null, checksum);
   let body: unknown;
   try {
@@ -98,9 +104,10 @@ async function assertSbom(path: string, checksum: string): Promise<void> {
   }
   if (typeof body !== 'object' || body === null) throw new Error(`SBOM has no document: ${path}`);
   const object = body as Record<string, unknown>;
-  if (object.spdxVersion !== 'SPDX-2.3' && object.bomFormat !== 'CycloneDX') {
-    throw new Error(`SBOM must be SPDX 2.3 or CycloneDX: ${path}`);
+  if (object.spdxVersion !== 'SPDX-2.3') {
+    throw new Error(`SBOM must be SPDX 2.3: ${path}`);
   }
+  assertCompleteArtifactSbom(body, artifactFilename, artifactChecksum);
 }
 
 export async function verifyUpdaterSignature(
@@ -169,7 +176,12 @@ export async function validateReleaseDirectory(
       const artifactPath = join(directory, urlFilename(artifact.url));
       const sbomPath = join(directory, urlFilename(artifact.sbomUrl));
       await assertFile(artifactPath, `${artifact.platform} ${artifact.kind} artifact`, artifact.bytes, artifact.sha256);
-      await assertSbom(sbomPath, artifact.sbomSha256);
+      await assertSbom(
+        sbomPath,
+        artifact.sbomSha256,
+        urlFilename(artifact.url),
+        artifact.sha256,
+      );
       if (artifact.kind === 'updater') {
         const signaturePath = `${artifactPath}.sig`;
         let detached;

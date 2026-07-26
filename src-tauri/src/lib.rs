@@ -6,11 +6,15 @@
 //! and the `export_bindings` test, guaranteeing the committed
 //! `apps/mdreader/ui/src/bindings.ts` always matches the live command surface.
 
+#[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
+compile_error!("the direct updater cannot be compiled into the isolated E2E application");
+
 mod commands;
 mod engine;
 mod mapping;
 mod overlay;
 mod search;
+mod updater;
 
 use commands::{WatcherState, WorkspaceState};
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -62,6 +66,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mapping::compose_mappings,
             mapping::diff_schema_versions,
             mapping::inspect_migration,
+            updater::updater_available,
+            updater::check_for_update,
+            updater::install_update,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
 }
@@ -140,7 +147,7 @@ pub fn run() {
     // The updater is a direct-distribution capability, not part of normal dev,
     // E2E, store, or mobile builds. Release CI is the only caller that enables
     // `direct-updater`, after injecting a validated endpoint/public-key overlay.
-    #[cfg(feature = "direct-updater")]
+    #[cfg(all(feature = "direct-updater", not(mobile)))]
     {
         tauri_builder = tauri_builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -225,6 +232,7 @@ mod tests {
             ("search.rs", include_str!("search.rs")),
             ("overlay.rs", include_str!("overlay.rs")),
             ("mapping.rs", include_str!("mapping.rs")),
+            ("updater.rs", include_str!("updater.rs")),
         ] {
             let file: syn::File = syn::parse_str(source).expect("module parses");
             for item in &file.items {

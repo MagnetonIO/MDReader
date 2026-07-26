@@ -9,6 +9,7 @@ publish = false
 
 [features]
 direct-updater = ["dep:tauri-plugin-updater"]
+e2e-build = []
 
 [lib]
 # The `_lib` suffix keeps the library name distinct from the binary so the two
@@ -71,6 +72,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+tauri = { version = "2", features = ["test"] }
 # Index-version rows, so a test can manufacture the reported situation — a
 # workspace whose ACTIVE index was embedded by a different model — through the
 # storage lifecycle instead of a stand-in embedder.

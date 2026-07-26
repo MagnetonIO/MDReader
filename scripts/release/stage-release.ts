@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import {
   copyFile,
   mkdir,
@@ -8,6 +9,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
+import { promisify } from 'node:util';
 
 import type {
   ReleaseArtifactKind,
@@ -15,10 +17,8 @@ import type {
   ReleasePlatform,
 } from '../../apps/web/lib/release-manifest';
 
-export interface SbomPackage {
-  name: string;
-  version: string;
-}
+const execFileAsync = promisify(execFile);
+const PINNED_SYFT_CREATOR = 'Tool: syft-1.29.0';
 
 export interface StagePlatformInput {
   platform: ReleasePlatform;
@@ -27,7 +27,7 @@ export interface StagePlatformInput {
   publishedAt: string;
   bundleRoot: string;
   outputRoot: string;
-  packages: SbomPackage[];
+  generateSbom?: (artifactPath: string) => Promise<string>;
 }
 
 export interface ReleaseFragment {
@@ -122,7 +122,7 @@ function platformDetails(platform: ReleasePlatform): {
 } {
   if (platform === 'macos') return { architecture: 'universal', minimumOs: 'macOS 12.0' };
   if (platform === 'windows') {
-    return { architecture: 'x86_64', minimumOs: 'Windows 10 1809' };
+    return { architecture: 'x86_64', minimumOs: 'Windows 10' };
   }
   return { architecture: 'x86_64', minimumOs: 'glibc 2.31' };
 }
@@ -131,61 +131,121 @@ function spdxId(value: string): string {
   return `SPDXRef-${value.replace(/[^A-Za-z0-9.-]/g, '-')}`;
 }
 
-function createSpdx(
+function object(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`SBOM has no complete SPDX ${label}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+export function assertCompleteArtifactSbom(
+  input: unknown,
+  filename: string,
+  artifactSha256: string,
+): void {
+  const document = object(input, 'document');
+  const creation = object(document.creationInfo, 'creationInfo');
+  const creators = Array.isArray(creation.creators) ? creation.creators : [];
+  const packages = Array.isArray(document.packages) ? document.packages : [];
+  const relationships = Array.isArray(document.relationships)
+    ? document.relationships
+    : [];
+  if (
+    document.spdxVersion !== 'SPDX-2.3' ||
+    document.dataLicense !== 'CC0-1.0' ||
+    document.SPDXID !== 'SPDXRef-DOCUMENT' ||
+    !creators.includes(PINNED_SYFT_CREATOR) ||
+    packages.length < 2
+  ) {
+    throw new Error('SBOM is not a complete SPDX 2.3 document from pinned Syft');
+  }
+  const artifact = packages
+    .map((entry) => object(entry, 'package'))
+    .find((entry) => entry.name === filename);
+  const checksums = Array.isArray(artifact?.checksums) ? artifact.checksums : [];
+  if (
+    !artifact ||
+    !checksums.some((entry) => {
+      const checksum = object(entry, 'checksum');
+      return (
+        checksum.algorithm === 'SHA256' &&
+        checksum.checksumValue === artifactSha256
+      );
+    })
+  ) {
+    throw new Error('SBOM does not bind the exact release artifact checksum');
+  }
+  if (
+    !relationships.some((entry) => {
+      const relationship = object(entry, 'relationship');
+      return (
+        relationship.spdxElementId === 'SPDXRef-DOCUMENT' &&
+        relationship.relationshipType === 'DESCRIBES' &&
+        relationship.relatedSpdxElement === artifact.SPDXID
+      );
+    })
+  ) {
+    throw new Error('SBOM does not describe the exact release artifact');
+  }
+}
+
+async function createSpdx(
+  artifactPath: string,
   filename: string,
   artifactSha256: string,
   input: StagePlatformInput,
-): string {
+): Promise<string> {
+  const raw =
+    input.generateSbom !== undefined
+      ? await input.generateSbom(artifactPath)
+      : (
+          await execFileAsync(
+            process.env.SYFT_BIN || 'syft',
+            ['scan', artifactPath, '-o', 'spdx-json'],
+            { maxBuffer: 64 * 1024 * 1024 },
+          )
+        ).stdout;
+  let document: Record<string, unknown>;
+  try {
+    document = object(JSON.parse(raw), 'document');
+  } catch {
+    throw new Error(`pinned Syft did not emit valid SPDX JSON for ${filename}`);
+  }
+  const creation = object(document.creationInfo, 'creationInfo');
+  const creators = Array.isArray(creation.creators) ? creation.creators : [];
+  if (!creators.includes(PINNED_SYFT_CREATOR)) {
+    throw new Error(`SBOM for ${filename} was not produced by pinned Syft 1.29.0`);
+  }
+  const discovered = Array.isArray(document.packages) ? document.packages : [];
+  if (discovered.length === 0) {
+    throw new Error(`pinned Syft found no packages in ${filename}`);
+  }
   const artifactId = spdxId(`Package-${filename}`);
-  const dependencies = [...input.packages]
-    .sort((left, right) => `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`))
-    .map((pkg) => ({
-      SPDXID: spdxId(`Package-${pkg.name}-${pkg.version}`),
-      name: pkg.name,
-      versionInfo: pkg.version,
+  document.name = `${filename} SBOM`;
+  document.documentNamespace = `https://mdreader.dev/spdx/${input.sourceCommit}/${encodeURIComponent(filename)}`;
+  document.packages = [
+    {
+      SPDXID: artifactId,
+      name: filename,
+      versionInfo: input.version,
       downloadLocation: 'NOASSERTION',
       filesAnalyzed: false,
+      checksums: [{ algorithm: 'SHA256', checksumValue: artifactSha256 }],
       licenseConcluded: 'NOASSERTION',
       licenseDeclared: 'NOASSERTION',
       copyrightText: 'NOASSERTION',
-    }));
-  const document = {
-    spdxVersion: 'SPDX-2.3',
-    dataLicense: 'CC0-1.0',
-    SPDXID: 'SPDXRef-DOCUMENT',
-    name: `${filename} SBOM`,
-    documentNamespace: `https://mdreader.dev/spdx/${input.sourceCommit}/${encodeURIComponent(filename)}`,
-    creationInfo: {
-      created: input.publishedAt,
-      creators: ['Organization: Magneton Labs, LLC', 'Tool: mdreader-release-pipeline-1.0.0'],
     },
-    packages: [
-      {
-        SPDXID: artifactId,
-        name: filename,
-        versionInfo: input.version,
-        downloadLocation: 'NOASSERTION',
-        filesAnalyzed: false,
-        checksums: [{ algorithm: 'SHA256', checksumValue: artifactSha256 }],
-        licenseConcluded: 'NOASSERTION',
-        licenseDeclared: 'NOASSERTION',
-        copyrightText: 'NOASSERTION',
-      },
-      ...dependencies,
-    ],
-    relationships: [
-      {
-        spdxElementId: 'SPDXRef-DOCUMENT',
-        relationshipType: 'DESCRIBES',
-        relatedSpdxElement: artifactId,
-      },
-      ...dependencies.map((dependency) => ({
-        spdxElementId: artifactId,
-        relationshipType: 'DEPENDS_ON',
-        relatedSpdxElement: dependency.SPDXID,
-      })),
-    ],
-  };
+    ...discovered,
+  ];
+  document.relationships = [
+    {
+      spdxElementId: 'SPDXRef-DOCUMENT',
+      relationshipType: 'DESCRIBES',
+      relatedSpdxElement: artifactId,
+    },
+    ...(Array.isArray(document.relationships) ? document.relationships : []),
+  ];
+  assertCompleteArtifactSbom(document, filename, artifactSha256);
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
@@ -230,7 +290,7 @@ export async function stagePlatformArtifacts(
     await copyFile(source, target);
     const body = await readFile(target);
     const checksum = sha256(body);
-    const sbom = createSpdx(filename, checksum, input);
+    const sbom = await createSpdx(target, filename, checksum, input);
     const sbomFilename = `${filename}.spdx.json`;
     const sbomPath = join(destination, sbomFilename);
     await writeFile(sbomPath, sbom);

@@ -282,6 +282,13 @@ export const commands = {
 	 *  explicitly NOT making. Render the notes.
 	 */
 	inspectMigration: (mapping: string) => typedError<MigrationPlanDto, string>(__TAURI_INVOKE("inspect_migration", { mapping })),
+	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
+	checkForUpdate: () => typedError<{
+	version: string,
+	currentVersion: string,
+	notes: string | null,
+} | null, string>(__TAURI_INVOKE("check_for_update")),
+	installUpdate: (expectedVersion: string) => typedError<null, string>(__TAURI_INVOKE("install_update", { expectedVersion })),
 };
 
 /** Events */
@@ -1258,6 +1265,12 @@ export type SpanQuery = {
 	start_line: number,
 	/**  Last line of the selection (1-based, inclusive). */
 	end_line: number,
+};
+
+export type UpdateInfo = {
+	version: string,
+	currentVersion: string,
+	notes: string | null,
 };
 
 /**  An object named by a violation. */

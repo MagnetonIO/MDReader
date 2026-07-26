@@ -13,18 +13,24 @@ export interface ReleaseConfigInput {
   updaterEndpoint: string;
   macosSigningIdentity?: string;
   windowsCertificateThumbprint?: string;
+  windowsInstallerHooks?: string;
 }
 
 export interface DirectReleaseConfig {
+  identifier: 'dev.mdreader.app';
   version: string;
   bundle: {
     createUpdaterArtifacts: true;
     macOS?: {
+      minimumSystemVersion: '12.0';
       signingIdentity: string;
     };
     windows?: {
       certificateThumbprint: string;
       digestAlgorithm: 'sha256';
+      nsis: {
+        installerHooks: string;
+      };
       timestampUrl: string;
     };
   };
@@ -94,6 +100,14 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
     throw new Error('updater endpoint must be an HTTPS URL without credentials, query, or fragment');
   }
   if (
+    endpoint.origin !== 'https://downloads.mdreader.dev' ||
+    endpoint.pathname !== '/channels/stable/updater.json'
+  ) {
+    throw new Error(
+      'direct releases require the canonical updater endpoint on downloads.mdreader.dev',
+    );
+  }
+  if (
     input.macosSigningIdentity !== undefined &&
     input.macosSigningIdentity.trim().length === 0
   ) {
@@ -105,19 +119,35 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
   ) {
     throw new Error('Windows certificate thumbprint must be an uppercase SHA-1 fingerprint');
   }
+  if (
+    input.windowsCertificateThumbprint !== undefined &&
+    (!input.windowsInstallerHooks ||
+      !input.windowsInstallerHooks.endsWith('scripts/release/windows-minimum.nsh'))
+  ) {
+    throw new Error('Windows direct releases require the reviewed minimum-OS installer hook');
+  }
 
   return {
+    identifier: 'dev.mdreader.app',
     version: input.version,
     bundle: {
       createUpdaterArtifacts: true,
       ...(input.macosSigningIdentity
-        ? { macOS: { signingIdentity: input.macosSigningIdentity } }
+        ? {
+            macOS: {
+              minimumSystemVersion: '12.0',
+              signingIdentity: input.macosSigningIdentity,
+            },
+          }
         : {}),
       ...(input.windowsCertificateThumbprint
         ? {
             windows: {
               certificateThumbprint: input.windowsCertificateThumbprint,
               digestAlgorithm: 'sha256' as const,
+              nsis: {
+                installerHooks: input.windowsInstallerHooks!,
+              },
               timestampUrl: 'http://timestamp.digicert.com',
             },
           }

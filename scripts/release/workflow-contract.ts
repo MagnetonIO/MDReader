@@ -29,12 +29,38 @@ function requireExecutableStep(
   id: string,
   required: RegExp[],
   message: string,
+  expectedCondition?: string,
 ): void {
   const step = list(job.steps, 'job.steps')
     .map((entry) => mapping(entry, 'job.steps[]'))
     .find((entry) => entry.id === id);
   const command = typeof step?.run === 'string' ? step.run : '';
-  if (!step || required.some((pattern) => !pattern.test(command))) {
+  if (
+    !step ||
+    required.some((pattern) => !pattern.test(command)) ||
+    (expectedCondition !== undefined && step.if !== expectedCondition)
+  ) {
+    throw new Error(message);
+  }
+}
+
+function requireActionStep(
+  job: Mapping,
+  id: string,
+  action: string,
+  inputName: string,
+  inputValue: string,
+  message: string,
+): void {
+  const step = list(job.steps, 'job.steps')
+    .map((entry) => mapping(entry, 'job.steps[]'))
+    .find((entry) => entry.id === id);
+  const withValues = step ? mapping(step.with, `step ${id}.with`) : {};
+  if (
+    !step ||
+    step.uses !== action ||
+    withValues[inputName] !== inputValue
+  ) {
     throw new Error(message);
   }
 }
@@ -119,33 +145,51 @@ export function validateReleaseWorkflow(input: unknown): void {
   requireStep(buildIds, 'macos-verify-notarization', 'release workflow is missing macOS notarization verification');
   requireStep(buildIds, 'windows-verify-signature', 'release workflow is missing Windows signing verification');
   requireStep(buildIds, 'linux-verify-packages', 'release workflow is missing Linux package verification');
+  requireStep(buildIds, 'install-syft', 'release workflow is missing pinned Syft installation');
   requireStep(buildIds, 'generate-sbom', 'release workflow is missing SBOM generation');
   requireStep(buildIds, 'stage-release', 'release workflow is missing checksum and staging verification');
   requireStep(buildIds, 'validate-staged-release', 'release workflow is missing updater signature validation');
   requireStep(buildIds, 'upload-staged-release', 'release workflow is missing verified artifact handoff');
+  requireActionStep(
+    build,
+    'install-syft',
+    'anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b',
+    'syft-version',
+    'v1.29.0',
+    'release workflow must install the pinned Syft scanner',
+  );
   requireExecutableStep(
     build,
     'macos-verify-signature',
     [/codesign\s+--verify/, /spctl\s+--assess/],
     'release workflow is missing executable macOS signature verification',
+    "matrix.platform == 'macos'",
   );
   requireExecutableStep(
     build,
     'macos-verify-notarization',
     [/stapler\s+validate/, /spctl\s+--assess/],
     'release workflow is missing executable macOS notarization verification',
+    "matrix.platform == 'macos'",
   );
   requireExecutableStep(
     build,
     'windows-verify-signature',
     [/Get-AuthenticodeSignature/, /Status\s+-ne\s+'Valid'/],
     'release workflow is missing executable Windows signing verification',
+    "matrix.platform == 'windows'",
   );
   requireExecutableStep(
     build,
     'linux-verify-packages',
-    [/--appimage-extract/, /dpkg-deb\s+--info/, /rpm\s+-qpi/],
+    [
+      /--appimage-extract/,
+      /dpkg-deb\s+--info/,
+      /rpm\s+-qpi/,
+      /release-cli\.ts\s+verify-linux-abi/,
+    ],
     'release workflow is missing executable Linux package verification',
+    "matrix.platform == 'linux'",
   );
   requireExecutableStep(
     build,

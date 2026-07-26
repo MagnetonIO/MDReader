@@ -89,6 +89,19 @@ body {
   flex: 1;
 }
 
+.update-control {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--color-muted);
+  font-size: var(--text--1);
+  white-space: nowrap;
+}
+
+.update-control [role='alert'] {
+  color: var(--color-danger);
+}
+
 /* --- generic icon buttons -------------------------------------------- */
 
 .icon-btn {
