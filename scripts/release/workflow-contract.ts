@@ -305,6 +305,9 @@ function assertExactStepMetadata(jobs: Mapping): void {
     'build/cleanup-windows-cert',
     'build/windows-verify-signature',
   ]);
+  const bashSteps = new Set([
+    'build/verify-release-input-attestation',
+  ]);
   const environmentSteps = new Set([
     'prepare/metadata',
     'build/require-release-secrets-macos',
@@ -314,6 +317,7 @@ function assertExactStepMetadata(jobs: Mapping): void {
     'build/generate-release-config-macos',
     'build/generate-release-config-windows',
     'build/generate-release-config-linux',
+    'build/verify-release-input-attestation',
     'build/import-macos-cert',
     'build/import-windows-cert',
     'build/cleanup-windows-cert',
@@ -341,7 +345,10 @@ function assertExactStepMetadata(jobs: Mapping): void {
       }
       if (
         (powershellSteps.has(identity) && step.shell !== 'pwsh') ||
-        (!powershellSteps.has(identity) && step.shell !== undefined)
+        (bashSteps.has(identity) && step.shell !== 'bash') ||
+        (!powershellSteps.has(identity) &&
+          !bashSteps.has(identity) &&
+          step.shell !== undefined)
       ) {
         throw new Error(`release step ${identity} has an unreviewed shell`);
       }
@@ -928,12 +935,23 @@ try {
   const windowsImport = exactExecutable(
     buildSteps,
     'import-windows-cert',
-    `$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
+    `$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+try {
+  $isAdministrator = [Security.Principal.WindowsPrincipal]::new(
+    $identity
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} finally {
+  $identity.Dispose()
+}
+if (-not $isAdministrator) {
+  throw "Windows LocalMachine certificate store requires an Administrator runner"
+}
+$path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
 $storeNonce = [byte[]]::new(16)
 [Security.Cryptography.RandomNumberGenerator]::Fill($storeNonce)
 $storeNonceHex = [Convert]::ToHexString($storeNonce)
 $storeName = "MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$storeNonceHex"
-$storePath = "Cert:\\CurrentUser\\$storeName"
+$storePath = "Cert:\\LocalMachine\\$storeName"
 if ($storeName -notmatch '^MDReaderRelease-[0-9]+-[0-9]+-[0-9A-F]{32}$') {
   throw "Windows per-run certificate store name is invalid"
 }
@@ -946,9 +964,9 @@ try {
   $collection.Import($bytes, $password, $flags)
   $thumbprints = @($collection | ForEach-Object Thumbprint | Sort-Object -Unique)
   if ($thumbprints.Count -eq 0) { throw "Windows PFX contains no certificates" }
-  $expectedThumbprint = "\${{ steps.inspect-windows-cert.outputs.thumbprint }}"
+  $expectedThumbprint = $env:WINDOWS_CERT_THUMBPRINT
   if ($thumbprints -notcontains $expectedThumbprint) { throw "Windows PFX does not contain the inspected signing certificate" }
-  New-Item -Path Cert:\\CurrentUser -Name $storeName -ErrorAction Stop | Out-Null
+  New-Item -Path Cert:\\LocalMachine -Name $storeName -ItemType Store -ErrorAction Stop | Out-Null
   "store_owned=true" >> $env:GITHUB_OUTPUT
   [IO.File]::WriteAllBytes($path, $bytes)
   $imported = @(Import-PfxCertificate -FilePath $path -Password $password -CertStoreLocation $storePath -ErrorAction Stop)
@@ -974,6 +992,8 @@ try {
       WINDOWS_CERTIFICATE: WINDOWS_CREDENTIALS.WINDOWS_CERTIFICATE,
       WINDOWS_CERTIFICATE_PASSWORD:
         WINDOWS_CREDENTIALS.WINDOWS_CERTIFICATE_PASSWORD,
+      WINDOWS_CERT_THUMBPRINT:
+        '${{ steps.inspect-windows-cert.outputs.thumbprint }}',
     },
     'Windows certificate import environment is not exact least privilege',
   );
@@ -1025,15 +1045,203 @@ try {
     'Linux release config environment is not exact least privilege',
   );
 
+  const attestBuild = exactExecutable(
+    buildSteps,
+    'attest-direct-release',
+    `pnpm exec tsx scripts/release/release-cli.ts attest-build \\
+  --config "$RUNNER_TEMP/mdreader-release-config.json" \\
+  --attestation "$RUNNER_TEMP/mdreader-release-attestation.json" \\
+  --target "\${{ matrix.target }}" \\
+  --bundles "\${{ matrix.bundles }}"
+ATTESTATION_SHA256="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$RUNNER_TEMP/mdreader-release-attestation.json")"
+[[ "$ATTESTATION_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "release build attestation digest is invalid" >&2
+  exit 1
+}
+echo "attestation_sha256=$ATTESTATION_SHA256" >> "$GITHUB_OUTPUT"`,
+    'release workflow is missing the immutable pre-build attestation boundary',
+  );
+  requireNoEnvironment(
+    attestBuild,
+    'pre-build release attestation must not receive signing credentials',
+  );
+
   const prepareBuild = exactExecutable(
     buildSteps,
     'prepare-direct-release',
-    'scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json"',
+    'scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"',
     'release workflow is missing the unprivileged frontend and Rust build',
   );
   requireNoEnvironment(
     prepareBuild,
     'unprivileged release build must not receive signing credentials',
+  );
+
+  const releaseInputAttestation = exactExecutable(
+    buildSteps,
+    'verify-release-input-attestation',
+    `node <<'NODE'
+const { createHash } = require('node:crypto');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+
+const SHA256 = /^[0-9a-f]{64}$/;
+const hash = (body) => createHash('sha256').update(body).digest('hex');
+const fail = (message) => {
+  throw new Error(message);
+};
+const required = (name) => {
+  const value = process.env[name];
+  if (typeof value !== 'string' || value.length === 0) {
+    fail(\`release input verifier is missing \${name}\`);
+  }
+  return value;
+};
+const parseJson = (body, description) => {
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    fail(\`\${description} is not valid JSON\`);
+  }
+};
+
+const expectedAttestationSha256 = required(
+  'EXPECTED_BUILD_ATTESTATION_SHA256',
+);
+if (!SHA256.test(expectedAttestationSha256)) {
+  fail('immutable release build attestation digest is invalid');
+}
+const attestationBytes = readFileSync(
+  required('BUILD_ATTESTATION_PATH'),
+);
+if (hash(attestationBytes) !== expectedAttestationSha256) {
+  fail(
+    'release build attestation changed after the immutable pre-build boundary',
+  );
+}
+const attestation = parseJson(
+  attestationBytes,
+  'release build attestation',
+);
+const expectedVersion = required('EXPECTED_RELEASE_VERSION');
+const expectedTarget = required('EXPECTED_RELEASE_TARGET');
+const expectedBundles = required('EXPECTED_RELEASE_BUNDLES');
+const expectedPlatform = required('EXPECTED_RELEASE_PLATFORM');
+if (
+  attestation.schemaVersion !== 1 ||
+  attestation.version !== expectedVersion ||
+  attestation.target !== expectedTarget ||
+  attestation.bundles !== expectedBundles ||
+  !SHA256.test(attestation.releaseConfigSha256) ||
+  !SHA256.test(attestation.updaterPublicKeySha256) ||
+  !['macos', 'windows', 'linux'].includes(expectedPlatform)
+) {
+  fail(
+    'release build attestation does not match the expected version, target, bundles, or digests',
+  );
+}
+const configBytes = readFileSync(required('RELEASE_CONFIG_PATH'));
+if (hash(configBytes) !== attestation.releaseConfigSha256) {
+  fail(
+    'release config bytes do not match the immutable build attestation',
+  );
+}
+const config = parseJson(configBytes, 'release config');
+const updater = config?.plugins?.updater;
+if (
+  config?.identifier !== 'dev.mdreader.app' ||
+  config?.version !== expectedVersion ||
+  config?.build?.beforeBuildCommand !== '' ||
+  config?.bundle?.createUpdaterArtifacts !== true ||
+  !Array.isArray(updater?.endpoints) ||
+  updater.endpoints.length !== 1 ||
+  updater.endpoints[0] !==
+    'https://downloads.mdreader.dev/channels/stable/updater.json' ||
+  typeof updater.pubkey !== 'string' ||
+  hash(Buffer.from(updater.pubkey, 'utf8')) !==
+    attestation.updaterPublicKeySha256
+) {
+  fail(
+    'release config does not match the attested version and updater identity',
+  );
+}
+const windows = config.bundle.windows;
+const macos = config.bundle.macOS;
+if (expectedPlatform === 'windows') {
+  const args = windows?.signCommand?.args;
+  const expectedSignerPath = resolve(required('WINDOWS_SIGNER_PATH'));
+  if (
+    !SHA256.test(attestation.windowsSignerSha256) ||
+    macos !== undefined ||
+    windows?.digestAlgorithm !== 'sha256' ||
+    windows?.timestampUrl !== 'http://timestamp.digicert.com' ||
+    windows?.signCommand?.cmd !== 'pwsh' ||
+    !Array.isArray(args) ||
+    args.length !== 5 ||
+    args[0] !== '-NoProfile' ||
+    args[1] !== '-NonInteractive' ||
+    args[2] !== '-File' ||
+    args[4] !== '%1' ||
+    resolve(String(args[3])).toLowerCase() !==
+      expectedSignerPath.toLowerCase()
+  ) {
+    fail(
+      'Windows release config does not name the exact reviewed signer',
+    );
+  }
+  if (
+    hash(readFileSync(expectedSignerPath)) !==
+    attestation.windowsSignerSha256
+  ) {
+    fail(
+      'Windows signer bytes do not match the immutable build attestation',
+    );
+  }
+} else {
+  if (
+    windows !== undefined ||
+    attestation.windowsSignerSha256 !== null
+  ) {
+    fail(
+      'non-Windows release inputs contain an unexpected Windows signer',
+    );
+  }
+  if (
+    expectedPlatform === 'macos' &&
+    (macos?.minimumSystemVersion !== '12.0' ||
+      typeof macos.signingIdentity !== 'string' ||
+      macos.signingIdentity.length === 0)
+  ) {
+    fail('macOS release config is missing its reviewed bundle identity');
+  }
+  if (expectedPlatform === 'linux' && macos !== undefined) {
+    fail('Linux release config contains an unexpected macOS identity');
+  }
+}
+NODE`,
+    'release workflow is missing the immutable cross-platform post-build release-input verifier',
+  );
+  exactEnvironment(
+    releaseInputAttestation,
+    {
+      EXPECTED_BUILD_ATTESTATION_SHA256:
+        '${{ steps.attest-direct-release.outputs.attestation_sha256 }}',
+      RELEASE_CONFIG_PATH:
+        '${{ runner.temp }}/mdreader-release-config.json',
+      BUILD_ATTESTATION_PATH:
+        '${{ runner.temp }}/mdreader-release-attestation.json',
+      EXPECTED_RELEASE_VERSION:
+        '${{ needs.prepare.outputs.version }}',
+      EXPECTED_RELEASE_TARGET:
+        '${{ matrix.target }}',
+      EXPECTED_RELEASE_BUNDLES:
+        '${{ matrix.bundles }}',
+      EXPECTED_RELEASE_PLATFORM:
+        '${{ matrix.platform }}',
+      WINDOWS_SIGNER_PATH:
+        '${{ github.workspace }}/scripts/release/sign-windows-from-store.ps1',
+    },
+    'release input attestation environment is not exact or immutable',
   );
 
   const macBundle = exactExecutable(
@@ -1103,7 +1311,79 @@ done
   const windowsCleanup = exactExecutable(
     buildSteps,
     'cleanup-windows-cert',
-    '& scripts/release/cleanup-windows-cert-store.ps1',
+    `$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$storeName = $env:WINDOWS_CERT_STORE
+$storeOwned = $env:WINDOWS_CERT_STORE_OWNED
+$certificatePath = $env:WINDOWS_CERTIFICATE_PATH
+
+if ([string]::IsNullOrWhiteSpace($certificatePath)) {
+  throw 'Windows signing certificate path is missing'
+}
+if (
+  $env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
+  $env:GITHUB_RUN_ATTEMPT -notmatch '^[0-9]+$'
+) {
+  throw 'Windows release run identity is invalid'
+}
+
+$expectedStorePattern =
+  "^MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-[0-9A-F]{32}$"
+
+try {
+  if ([string]::IsNullOrWhiteSpace($storeName)) {
+    if (-not [string]::IsNullOrWhiteSpace($storeOwned)) {
+      throw 'Windows certificate-store ownership is present without a store capability'
+    }
+  } else {
+    if ($storeName -notmatch $expectedStorePattern) {
+      throw 'Windows certificate-store capability is invalid'
+    }
+    $storePath = "Cert:\\LocalMachine\\$storeName"
+    if ([string]::IsNullOrWhiteSpace($storeOwned)) {
+      if (Test-Path -LiteralPath $storePath) {
+        throw 'refusing to delete an unproven Windows certificate store'
+      }
+    } elseif ($storeOwned -eq 'true') {
+      if (-not (Test-Path -LiteralPath $storePath)) {
+        throw 'owned Windows certificate store is missing'
+      }
+      $certificates = @(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop)
+      foreach ($certificate in $certificates) {
+        if ($certificate.Thumbprint -notmatch '^[0-9A-F]{40}$') {
+          throw 'Windows owned certificate identity is invalid'
+        }
+        $ownedCertificatePath = "$storePath\\$($certificate.Thumbprint)"
+        $ownedCertificate = Get-Item -LiteralPath $ownedCertificatePath -ErrorAction Stop
+        if ($ownedCertificate.Thumbprint -ne $certificate.Thumbprint) {
+          throw 'Windows owned certificate identity mismatch'
+        }
+        Remove-Item \`
+          -LiteralPath $ownedCertificatePath \`
+          -DeleteKey \`
+          -Force \`
+          -ErrorAction Stop
+      }
+      if (@(Get-ChildItem -LiteralPath $storePath -ErrorAction Stop).Count -ne 0) {
+        throw 'Windows certificate residue remains in the owned store'
+      }
+      Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop
+      if (Test-Path -LiteralPath $storePath) {
+        throw 'Windows owned certificate-store residue remains after cleanup'
+      }
+    } else {
+      throw 'Windows certificate-store ownership proof is invalid'
+    }
+  }
+} finally {
+  if (Test-Path -LiteralPath $certificatePath) {
+    Remove-Item -LiteralPath $certificatePath -Force -ErrorAction Stop
+  }
+  if (Test-Path -LiteralPath $certificatePath) {
+    throw 'Windows signing file residue remains after cleanup'
+  }
+}`,
     'release workflow is missing fail-closed Windows certificate cleanup',
     "always() && matrix.platform == 'windows'",
   );
@@ -1271,7 +1551,9 @@ done
       'generate-release-config-macos',
       'generate-release-config-windows',
       'generate-release-config-linux',
+      'attest-direct-release',
       'prepare-direct-release',
+      'verify-release-input-attestation',
       'import-macos-cert',
       'import-windows-cert',
       'bundle-direct-release-macos',
@@ -1308,7 +1590,9 @@ done
       'generate-release-config-macos',
       'generate-release-config-windows',
       'generate-release-config-linux',
+      'attest-direct-release',
       'prepare-direct-release',
+      'verify-release-input-attestation',
       'import-macos-cert',
       'import-windows-cert',
       'bundle-direct-release-macos',

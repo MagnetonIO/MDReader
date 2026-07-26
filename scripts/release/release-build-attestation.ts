@@ -6,7 +6,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 import { updaterPublicKeyFingerprint } from './release-config';
 
@@ -22,6 +22,7 @@ export interface ReleaseBuildAttestation {
   bundles: string;
   releaseConfigSha256: string;
   updaterPublicKeySha256: string;
+  windowsSignerSha256: string | null;
 }
 
 interface ReleaseBundleEntry {
@@ -38,6 +39,7 @@ interface ReleaseBundleSeal {
   bundles: string;
   releaseConfigSha256: string;
   updaterPublicKeySha256: string;
+  windowsSignerSha256: string | null;
   files: ReleaseBundleEntry[];
 }
 
@@ -48,6 +50,7 @@ function sha256(body: Uint8Array): string {
 function releaseConfigKey(input: unknown): {
   version: string;
   updaterPublicKey: string;
+  windowsSignerPath?: string;
 } {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     throw new Error('release build config must be a JSON object');
@@ -55,7 +58,15 @@ function releaseConfigKey(input: unknown): {
   const config = input as {
     identifier?: unknown;
     version?: unknown;
-    bundle?: { createUpdaterArtifacts?: unknown };
+    bundle?: {
+      createUpdaterArtifacts?: unknown;
+      windows?: {
+        signCommand?: {
+          cmd?: unknown;
+          args?: unknown;
+        };
+      };
+    };
     plugins?: { updater?: { endpoints?: unknown; pubkey?: unknown } };
   };
   if (
@@ -76,9 +87,33 @@ function releaseConfigKey(input: unknown): {
       'release build config does not contain the reviewed direct updater identity',
     );
   }
+  const signCommand = config.bundle?.windows?.signCommand;
+  let windowsSignerPath: string | undefined;
+  if (signCommand !== undefined) {
+    if (
+      signCommand.cmd !== 'pwsh' ||
+      !Array.isArray(signCommand.args) ||
+      signCommand.args.length !== 5 ||
+      signCommand.args[0] !== '-NoProfile' ||
+      signCommand.args[1] !== '-NonInteractive' ||
+      signCommand.args[2] !== '-File' ||
+      typeof signCommand.args[3] !== 'string' ||
+      !isAbsolute(signCommand.args[3]) ||
+      !/[\\/]scripts[\\/]release[\\/]sign-windows-from-store\.ps1$/.test(
+        signCommand.args[3],
+      ) ||
+      signCommand.args[4] !== '%1'
+    ) {
+      throw new Error(
+        'release build config does not contain the reviewed Windows signer path',
+      );
+    }
+    windowsSignerPath = signCommand.args[3];
+  }
   return {
     version: config.version,
     updaterPublicKey: config.plugins.updater.pubkey,
+    windowsSignerPath,
   };
 }
 
@@ -90,6 +125,9 @@ export async function attestReleaseBuildConfig(
 ): Promise<ReleaseBuildAttestation> {
   const body = await readFile(configPath);
   const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')));
+  const windowsSignerSha256 = parsed.windowsSignerPath
+    ? sha256(await readFile(parsed.windowsSignerPath))
+    : null;
   const attestation: ReleaseBuildAttestation = {
     schemaVersion: 1,
     version: parsed.version,
@@ -99,6 +137,7 @@ export async function attestReleaseBuildConfig(
     updaterPublicKeySha256: updaterPublicKeyFingerprint(
       parsed.updaterPublicKey,
     ),
+    windowsSignerSha256,
   };
   await writeFile(outputPath, `${JSON.stringify(attestation, null, 2)}\n`, {
     mode: 0o600,
@@ -122,6 +161,9 @@ export async function verifyReleaseBuildAttestation(
     throw new Error('release build attestation is not valid JSON');
   }
   const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')));
+  const windowsSignerSha256 = parsed.windowsSignerPath
+    ? sha256(await readFile(parsed.windowsSignerPath))
+    : null;
   if (
     attestation.schemaVersion !== 1 ||
     attestation.version !== expected.version ||
@@ -129,13 +171,16 @@ export async function verifyReleaseBuildAttestation(
     attestation.bundles !== expected.bundles ||
     !SHA256.test(attestation.releaseConfigSha256) ||
     !SHA256.test(attestation.updaterPublicKeySha256) ||
+    (attestation.windowsSignerSha256 !== null &&
+      !SHA256.test(attestation.windowsSignerSha256)) ||
     attestation.releaseConfigSha256 !== sha256(body) ||
     attestation.updaterPublicKeySha256 !==
       updaterPublicKeyFingerprint(parsed.updaterPublicKey) ||
+    attestation.windowsSignerSha256 !== windowsSignerSha256 ||
     parsed.version !== expected.version
   ) {
     throw new Error(
-      'release build attestation does not match the exact config consumed by the Tauri build',
+      'release build attestation does not match the exact config consumed by the Tauri build or the exact Windows signer bytes',
     );
   }
   return attestation;
@@ -197,6 +242,7 @@ export async function sealReleaseBundle(
     bundles: expected.bundles,
     releaseConfigSha256: attestation.releaseConfigSha256,
     updaterPublicKeySha256: attestation.updaterPublicKeySha256,
+    windowsSignerSha256: attestation.windowsSignerSha256,
     files,
   };
   await writeFile(outputPath, `${JSON.stringify(seal, null, 2)}\n`, {
@@ -229,6 +275,7 @@ export async function verifyReleaseBundleSeal(
     seal.bundles !== expected.bundles ||
     seal.releaseConfigSha256 !== attestation.releaseConfigSha256 ||
     seal.updaterPublicKeySha256 !== attestation.updaterPublicKeySha256 ||
+    seal.windowsSignerSha256 !== attestation.windowsSignerSha256 ||
     JSON.stringify(seal.files) !== JSON.stringify(files)
   ) {
     throw new Error(

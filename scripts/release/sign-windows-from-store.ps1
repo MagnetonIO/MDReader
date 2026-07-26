@@ -27,7 +27,7 @@ if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
   throw "Windows signing target does not exist: $Path"
 }
 
-$certificatePath = "Cert:\CurrentUser\$storeName\$thumbprint"
+$certificatePath = "Cert:\LocalMachine\$storeName\$thumbprint"
 $certificate = Get-Item -LiteralPath $certificatePath -ErrorAction Stop
 if ($certificate.Thumbprint -ne $thumbprint -or -not $certificate.HasPrivateKey) {
   throw 'Windows per-run signing certificate identity or private key is invalid'
@@ -40,6 +40,7 @@ if (-not [IO.Path]::IsPathFullyQualified($signToolPath)) {
 }
 & $signToolPath sign `
   /sha1 $thumbprint `
+  /sm `
   /s $storeName `
   /fd SHA256 `
   /tr 'http://timestamp.digicert.com' `
