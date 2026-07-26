@@ -1,11 +1,10 @@
 import { Container, getContainer } from '@cloudflare/containers';
+import { forwardPublicRequest } from './bounds';
 import { acceptsPublicRequest } from './routes';
 
 export interface Env {
   CATDB_DEMO: DurableObjectNamespace<CatDbDemoContainer>;
 }
-
-const MAX_BODY_BYTES = 64 * 1024;
 
 export class CatDbDemoContainer extends Container<Env> {
   override defaultPort = 8080;
@@ -20,13 +19,8 @@ export default {
         { status: 404 },
       );
     }
-    const length = Number(request.headers.get('content-length') ?? '0');
-    if (!Number.isSafeInteger(length) || length > MAX_BODY_BYTES) {
-      return Response.json(
-        { error: 'request_too_large', message: 'The request exceeds the demo limit.' },
-        { status: 413 },
-      );
-    }
-    return getContainer(env.CATDB_DEMO, 'immutable-demo-v1').fetch(request);
+    return forwardPublicRequest(request, (bounded) =>
+      getContainer(env.CATDB_DEMO, 'immutable-demo-v1').fetch(bounded),
+    );
   },
 } satisfies ExportedHandler<Env>;

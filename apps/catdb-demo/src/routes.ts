@@ -1,5 +1,5 @@
 const POST_PATHS = new Set(['/v1/search', '/v1/read', '/v1/related']);
-const GET_PATHS = new Set(['/v1/sources', '/v1/documents', '/v1/runtime']);
+const GET_PATHS = new Set(['/v1/sources', '/v1/documents']);
 
 export function acceptsPublicRequest(request: Request): boolean {
   const url = new URL(request.url);
