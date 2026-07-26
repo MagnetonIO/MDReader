@@ -1273,6 +1273,10 @@ mod tests {
                 "document_overlay",
                 "decision_overlay",
                 "architecture_overlay",
+                // The federated `Document` concept. It is NOT approval-required:
+                // it records which source answered each field, rather than
+                // proposing an interpretation a human rules on.
+                "document",
             ]
         );
         let approval: Vec<&str> = summaries
@@ -1775,7 +1779,7 @@ mod tests {
             .unwrap()
             .is_empty());
         let summaries = list_schemas_guarded(&state, || {}).expect("list");
-        assert_eq!(summaries.len(), 10);
+        assert_eq!(summaries.len(), 11);
         assert!(summaries.iter().all(|s| s.object_count == 0));
         assert!(summaries.iter().all(|s| s.proposal_count == 0));
         // Nothing has been persisted, so there is no version to report — and
