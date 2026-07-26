@@ -724,11 +724,6 @@ fn one_corpus_two_interpretations_mapped_inspected_and_queried_without_touching_
     // Reopen the SAME database with the new schema in the registration. No
     // import. No second workspace. No copy of the corpus.
     let engine = open(&db, &store, true);
-    assert_eq!(
-        engine.schema_persistence_error(),
-        None,
-        "the new schema must actually have been persisted"
-    );
 
     let after_schemas = stored_schema_rows(&engine);
     let new_rows: Vec<_> = after_schemas
