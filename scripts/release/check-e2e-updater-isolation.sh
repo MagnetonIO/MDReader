@@ -24,4 +24,19 @@ cargo tree -p mdreader-app --features direct-updater |
     exit 1
   }
 
+CONFLICT_LOG="$(mktemp)"
+trap 'rm -f "$CONFLICT_LOG"' EXIT
+if cargo check -p mdreader-app --no-default-features --features e2e-build,direct-updater \
+  >"$CONFLICT_LOG" 2>&1; then
+  echo 'forbidden E2E/direct-updater combination unexpectedly compiled' >&2
+  exit 1
+fi
+grep -q \
+  'the direct updater cannot be compiled into the isolated E2E application' \
+  "$CONFLICT_LOG" || {
+    echo 'forbidden feature combination failed for an unrelated reason' >&2
+    cat "$CONFLICT_LOG" >&2
+    exit 1
+  }
+
 echo 'E2E updater isolation verified'

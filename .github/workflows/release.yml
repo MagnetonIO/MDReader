@@ -178,6 +178,7 @@ jobs:
           if ($signers.Count -ne 1) { throw "expected exactly one Windows signing certificate with a private key, found $($signers.Count)" }
           "thumbprint=$($signers[0].Thumbprint)" >> $env:GITHUB_OUTPUT
       - name: Generate validated direct-release configuration
+        id: generate-release-config
         env:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
@@ -211,50 +212,20 @@ jobs:
       - name: Verify macOS Developer ID signature
         id: macos-verify-signature
         if: matrix.platform == 'macos'
-        run: |
-          APP_PATH="$(find target/${{ matrix.target }}/release/bundle -type d -name 'MDReader.app' -print -quit)"
-          [[ -n "$APP_PATH" ]] || { echo 'MDReader.app missing' >&2; exit 1; }
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-          spctl --assess --type execute --verbose=2 "$APP_PATH"
+        run: scripts/release/verify-macos-signature.sh "target/${{ matrix.target }}/release/bundle"
       - name: Verify notarization and stapling
         id: macos-verify-notarization
         if: matrix.platform == 'macos'
-        run: |
-          DMG_PATH="$(find target/${{ matrix.target }}/release/bundle -type f -name '*.dmg' -print -quit)"
-          [[ -n "$DMG_PATH" ]] || { echo 'signed DMG missing' >&2; exit 1; }
-          xcrun stapler validate "$DMG_PATH"
-          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+        run: scripts/release/verify-macos-notarization.sh "target/${{ matrix.target }}/release/bundle"
       - name: Verify Windows Authenticode signature
         id: windows-verify-signature
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: |
-          $installers = Get-ChildItem "target/${{ matrix.target }}/release/bundle" -Recurse -Filter '*.exe'
-          if ($installers.Count -ne 1) { throw "expected exactly one NSIS installer, found $($installers.Count)" }
-          $signature = Get-AuthenticodeSignature $installers[0].FullName
-          if ($signature.Status -ne 'Valid') { throw "invalid Authenticode status: $($signature.Status)" }
+        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "target/${{ matrix.target }}/release/bundle"
       - name: Verify Linux package matrix
         id: linux-verify-packages
         if: matrix.platform == 'linux'
-        run: |
-          BUNDLE_ROOT="target/${{ matrix.target }}/release/bundle"
-          mapfile -t APPIMAGES < <(find "$BUNDLE_ROOT" -type f -name '*.AppImage')
-          mapfile -t DEBS < <(find "$BUNDLE_ROOT" -type f -name '*.deb')
-          mapfile -t RPMS < <(find "$BUNDLE_ROOT" -type f -name '*.rpm')
-          [[ "${#APPIMAGES[@]}" -eq 1 && "${#DEBS[@]}" -eq 1 && "${#RPMS[@]}" -eq 1 ]] || {
-            echo 'incomplete Linux package matrix' >&2
-            exit 1
-          }
-          chmod +x "${APPIMAGES[0]}"
-          "${APPIMAGES[0]}" --appimage-extract >/dev/null
-          find squashfs-root -type f -exec sh -c \
-            'readelf --version-info "$1" 2>/dev/null || true' _ {} \; \
-            > "$RUNNER_TEMP/mdreader-readelf.txt"
-          pnpm exec tsx scripts/release/release-cli.ts verify-linux-abi \
-            --report "$RUNNER_TEMP/mdreader-readelf.txt" \
-            --max-glibc 2.31
-          dpkg-deb --info "${DEBS[0]}" >/dev/null
-          rpm -qpi "${RPMS[0]}" >/dev/null
+        run: scripts/release/verify-linux-packages.sh "target/${{ matrix.target }}/release/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
       - name: Install pinned Syft SBOM scanner
         id: install-syft
         uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
@@ -264,32 +235,14 @@ jobs:
         id: stage-release
         env:
           SYFT_BIN: ${{ steps.install-syft.outputs.cmd }}
-        run: |
-          pnpm exec tsx scripts/release/release-cli.ts stage \
-            --platform "${{ matrix.platform }}" \
-            --version "${{ needs.prepare.outputs.version }}" \
-            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
-            --published-at "${{ needs.prepare.outputs.published_at }}" \
-            --bundle-root "target/${{ matrix.target }}/release/bundle" \
-            --output-root target/release-stage
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}"
       - name: Inspect artifact-specific SPDX 2.3 SBOMs
         id: generate-sbom
-        run: |
-          mapfile -t SBOMS < <(find target/release-stage -type f -name '*.spdx.json')
-          [[ "${#SBOMS[@]}" -gt 0 ]] || { echo 'no SBOM documents generated' >&2; exit 1; }
-          for SBOM in "${SBOMS[@]}"; do
-            pnpm exec tsx -e "const d=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if(d.spdxVersion!=='SPDX-2.3') throw new Error('invalid SPDX document')" "$SBOM"
-          done
+        run: scripts/release/inspect-sboms.sh target/release-stage
       - name: Validate staged checksums and updater signatures
         id: validate-staged-release
-        run: |
-          test -s "target/release-stage/fragment-${{ matrix.platform }}.json"
-          if [[ "${{ matrix.platform }}" == "macos" ]]; then EXPECTED=2
-          elif [[ "${{ matrix.platform }}" == "windows" ]]; then EXPECTED=2
-          else EXPECTED=4
-          fi
-          ACTUAL="$(pnpm exec tsx -e "const d=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if(d.artifacts.some((a)=>!a.sha256||!a.sbomSha256||(a.kind==='updater'&&!a.signature))) throw new Error('incomplete checksum, SBOM, or signature metadata'); process.stdout.write(String(d.artifacts.length))" "target/release-stage/fragment-${{ matrix.platform }}.json")"
-          [[ "$ACTUAL" == "$EXPECTED" ]] || { echo 'partial staged platform matrix' >&2; exit 1; }
+        run: scripts/release/validate-staged-platform.sh "${{ matrix.platform }}" target/release-stage
       - name: Hand off only the verified platform release
         id: upload-staged-release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -324,6 +277,8 @@ jobs:
           merge-multiple: true
       - name: Assemble the one immutable release manifest
         id: assemble-manifest
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
         run: |
           pnpm exec tsx scripts/release/release-cli.ts assemble \
             --root target/release-aggregate \

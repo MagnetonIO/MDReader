@@ -9,6 +9,7 @@ import {
   createReleaseConfig,
   readTauriIdentifier,
   readWorkspaceVersion,
+  updaterPublicKeyFingerprint,
 } from './release-config';
 import {
   publicationPlan,
@@ -16,10 +17,10 @@ import {
   type PublicationEntry,
 } from './release-pipeline';
 import {
-  assertForwardStableVersion,
   createR2Client,
+  publishReleaseEntries,
   putR2ReleaseEntry,
-  readR2StablePointer,
+  readR2Object,
 } from './r2-publisher';
 import { assertGlibcCompatibility } from './platform-compat';
 import {
@@ -85,6 +86,7 @@ async function stage(args: string[]): Promise<void> {
     publishedAt: option(args, '--published-at')!,
     bundleRoot: resolve(option(args, '--bundle-root')!),
     outputRoot: resolve(option(args, '--output-root')!),
+    updaterPublicKey: requireEnvironment('MDREADER_UPDATER_PUBLIC_KEY'),
   });
   process.stdout.write(
     `staged ${platform}: ${fragment.artifacts.length} verified artifact records\n`,
@@ -105,6 +107,7 @@ async function assemble(args: string[]): Promise<void> {
           current: true;
           version: string;
           sourceCommit: string;
+          updaterPublicKeySha256: string;
           artifacts: unknown[];
         };
       } catch {
@@ -117,10 +120,24 @@ async function assemble(args: string[]): Promise<void> {
       throw new Error('platform fragment version/source commit mismatch');
     }
   }
+  const updaterPublicKeySha256 = updaterPublicKeyFingerprint(
+    requireEnvironment('MDREADER_UPDATER_PUBLIC_KEY'),
+  );
+  if (
+    fragments.some(
+      (fragment) =>
+        fragment.updaterPublicKeySha256 !== updaterPublicKeySha256,
+    )
+  ) {
+    throw new Error(
+      'platform fragment updater key fingerprint does not match the configured updater key',
+    );
+  }
   const manifest = parseReleaseManifest({
     schemaVersion: 1,
     generatedAt,
     sourceCommit,
+    updaterPublicKeySha256,
     releases: [
       {
         channel: 'stable',
@@ -186,33 +203,26 @@ async function publish(args: string[]): Promise<void> {
   if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(bucket)) throw new Error('invalid R2 bucket name');
   const client = createR2Client({ accountId, accessKeyId, secretAccessKey });
   try {
-    const pointerEtags = new Map<string, string | null>();
-    for (const entry of entries.filter((candidate) => !candidate.immutable)) {
-      if (entry.contents === null) {
-        throw new Error(`mutable pointer ${entry.key} has no contents`);
-      }
-      const next = JSON.parse(entry.contents) as { version?: unknown };
-      if (typeof next.version !== 'string') {
-        throw new Error(`mutable pointer ${entry.key} has no semantic version`);
-      }
-      const current = await readR2StablePointer(client, bucket, entry.key);
-      assertForwardStableVersion(current?.version ?? null, next.version);
-      pointerEtags.set(entry.key, current?.etag ?? null);
-    }
-    for (const entry of entries) {
-      const body =
+    await publishReleaseEntries(
+      entries,
+      async (entry) =>
         entry.localPath === null
-          ? entry.contents ?? ''
-          : await readFile(entry.localPath);
-      process.stdout.write(`publishing ${entry.kind} ${entry.key}\n`);
-      await putR2ReleaseEntry(
-        client,
-        bucket,
-        entry,
-        body,
-        entry.immutable ? undefined : pointerEtags.get(entry.key),
-      );
-    }
+          ? Buffer.from(entry.contents ?? '', 'utf8')
+          : await readFile(entry.localPath),
+      {
+        read: (key) => readR2Object(client, bucket, key),
+        put: async (entry, body, expectedEtag) => {
+          process.stdout.write(`publishing ${entry.kind} ${entry.key}\n`);
+          await putR2ReleaseEntry(
+            client,
+            bucket,
+            entry,
+            body,
+            expectedEtag,
+          );
+        },
+      },
+    );
   } finally {
     client.destroy();
   }

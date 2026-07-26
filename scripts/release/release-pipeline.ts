@@ -11,6 +11,7 @@ import {
   type ReleaseManifestArtifact,
 } from '../../apps/web/lib/release-manifest';
 import { assertCompleteArtifactSbom } from './stage-release';
+import { updaterPublicKeyFingerprint } from './release-config';
 
 const VERIFIED_RELEASE = Symbol('verified-release');
 const execFileAsync = promisify(execFile);
@@ -167,6 +168,14 @@ export async function validateReleaseDirectory(
   if (manifest.sourceCommit !== expectedSourceCommit) {
     throw new Error(
       `manifest source commit ${manifest.sourceCommit} does not match ${expectedSourceCommit}`,
+    );
+  }
+  if (
+    manifest.updaterPublicKeySha256 !==
+    updaterPublicKeyFingerprint(updaterPublicKey)
+  ) {
+    throw new Error(
+      'manifest embedded updater key fingerprint does not match the configured updater key',
     );
   }
 

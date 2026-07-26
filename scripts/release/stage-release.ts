@@ -16,6 +16,7 @@ import type {
   ReleaseManifestArtifact,
   ReleasePlatform,
 } from '../../apps/web/lib/release-manifest';
+import { updaterPublicKeyFingerprint } from './release-config';
 
 const execFileAsync = promisify(execFile);
 const PINNED_SYFT_CREATOR = 'Tool: syft-1.29.0';
@@ -27,6 +28,7 @@ export interface StagePlatformInput {
   publishedAt: string;
   bundleRoot: string;
   outputRoot: string;
+  updaterPublicKey: string;
   generateSbom?: (artifactPath: string) => Promise<string>;
 }
 
@@ -35,6 +37,7 @@ export interface ReleaseFragment {
   current: true;
   version: string;
   sourceCommit: string;
+  updaterPublicKeySha256: string;
   artifacts: ReleaseManifestArtifact[];
 }
 
@@ -127,10 +130,6 @@ function platformDetails(platform: ReleasePlatform): {
   return { architecture: 'x86_64', minimumOs: 'glibc 2.31' };
 }
 
-function spdxId(value: string): string {
-  return `SPDXRef-${value.replace(/[^A-Za-z0-9.-]/g, '-')}`;
-}
-
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`SBOM has no complete SPDX ${label}`);
@@ -187,6 +186,41 @@ export function assertCompleteArtifactSbom(
   ) {
     throw new Error('SBOM does not describe the exact release artifact');
   }
+  const artifactId = artifact.SPDXID;
+  const packageIds = new Set(
+    packages
+      .map((entry) => object(entry, 'package').SPDXID)
+      .filter(
+        (value): value is string =>
+          typeof value === 'string' && value !== artifactId,
+      ),
+  );
+  const derivedRelationshipTypes = new Set([
+    'CONTAINS',
+    'CONTAINED_BY',
+    'DEPENDS_ON',
+    'DEPENDENCY_OF',
+  ]);
+  if (
+    typeof artifactId !== 'string' ||
+    !relationships.some((entry) => {
+      const relationship = object(entry, 'relationship');
+      const derivedRelationship = derivedRelationshipTypes.has(
+        String(relationship.relationshipType),
+      );
+      return (
+        derivedRelationship &&
+        ((relationship.spdxElementId === artifactId &&
+            packageIds.has(String(relationship.relatedSpdxElement))) ||
+          (relationship.relatedSpdxElement === artifactId &&
+            packageIds.has(String(relationship.spdxElementId))))
+      );
+    })
+  ) {
+    throw new Error(
+      'SBOM does not contain scanner-derived package relationships for the release artifact',
+    );
+  }
 }
 
 async function createSpdx(
@@ -216,35 +250,6 @@ async function createSpdx(
   if (!creators.includes(PINNED_SYFT_CREATOR)) {
     throw new Error(`SBOM for ${filename} was not produced by pinned Syft 1.29.0`);
   }
-  const discovered = Array.isArray(document.packages) ? document.packages : [];
-  if (discovered.length === 0) {
-    throw new Error(`pinned Syft found no packages in ${filename}`);
-  }
-  const artifactId = spdxId(`Package-${filename}`);
-  document.name = `${filename} SBOM`;
-  document.documentNamespace = `https://mdreader.dev/spdx/${input.sourceCommit}/${encodeURIComponent(filename)}`;
-  document.packages = [
-    {
-      SPDXID: artifactId,
-      name: filename,
-      versionInfo: input.version,
-      downloadLocation: 'NOASSERTION',
-      filesAnalyzed: false,
-      checksums: [{ algorithm: 'SHA256', checksumValue: artifactSha256 }],
-      licenseConcluded: 'NOASSERTION',
-      licenseDeclared: 'NOASSERTION',
-      copyrightText: 'NOASSERTION',
-    },
-    ...discovered,
-  ];
-  document.relationships = [
-    {
-      spdxElementId: 'SPDXRef-DOCUMENT',
-      relationshipType: 'DESCRIBES',
-      relatedSpdxElement: artifactId,
-    },
-    ...(Array.isArray(document.relationships) ? document.relationships : []),
-  ];
   assertCompleteArtifactSbom(document, filename, artifactSha256);
   return `${JSON.stringify(document, null, 2)}\n`;
 }
@@ -320,6 +325,7 @@ export async function stagePlatformArtifacts(
     current: true,
     version: input.version,
     sourceCommit: input.sourceCommit,
+    updaterPublicKeySha256: updaterPublicKeyFingerprint(input.updaterPublicKey),
     artifacts,
   };
   await writeFile(

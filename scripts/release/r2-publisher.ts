@@ -16,6 +16,21 @@ export interface R2PublisherCredentials {
 export interface StablePointerState {
   version: string;
   etag: string;
+  body: string;
+}
+
+export interface R2ObjectState {
+  etag: string;
+  body: Uint8Array;
+}
+
+export interface ConditionalReleaseStore {
+  read(key: string): Promise<R2ObjectState | null>;
+  put(
+    entry: PublicationEntry,
+    body: Uint8Array,
+    expectedEtag?: string | null,
+  ): Promise<void>;
 }
 
 export function createR2Client(
@@ -147,7 +162,7 @@ export async function readR2StablePointer(
       throw new Error(`stable pointer ${key} has no semantic version`);
     }
     parsedSemver(parsed.version);
-    return { version: parsed.version, etag: response.ETag };
+    return { version: parsed.version, etag: response.ETag, body };
   } catch (error) {
     const candidate = error as {
       name?: string;
@@ -161,6 +176,122 @@ export async function readR2StablePointer(
       return null;
     }
     throw error;
+  }
+}
+
+export async function readR2Object(
+  client: S3Client,
+  bucket: string,
+  key: string,
+): Promise<R2ObjectState | null> {
+  try {
+    const response = await client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    if (!response.ETag) throw new Error(`release object ${key} has no ETag`);
+    const body = await response.Body?.transformToByteArray();
+    if (!body) throw new Error(`release object ${key} has no body`);
+    return { etag: response.ETag, body };
+  } catch (error) {
+    const candidate = error as {
+      name?: string;
+      $metadata?: { httpStatusCode?: number };
+    };
+    if (
+      candidate.name === 'NoSuchKey' ||
+      candidate.name === 'NotFound' ||
+      candidate.$metadata?.httpStatusCode === 404
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return Buffer.from(left).equals(Buffer.from(right));
+}
+
+function pointerVersion(entry: PublicationEntry, body: Uint8Array): string {
+  let parsed: { version?: unknown };
+  try {
+    parsed = JSON.parse(Buffer.from(body).toString('utf8')) as {
+      version?: unknown;
+    };
+  } catch {
+    throw new Error(`mutable pointer ${entry.key} is not canonical JSON`);
+  }
+  if (typeof parsed.version !== 'string') {
+    throw new Error(`mutable pointer ${entry.key} has no semantic version`);
+  }
+  parsedSemver(parsed.version);
+  return parsed.version;
+}
+
+/**
+ * Publish a verified plan as a crash-resumable transaction over immutable
+ * create-only objects and two ETag-guarded stable pointers.
+ *
+ * A retry may skip an existing object only when its bytes are exactly the
+ * canonical bytes derived from the verified plan. This binds same-version
+ * repair to the immutable manifest, source commit, checksums, signatures, and
+ * pointer bodies rather than treating the version string as sufficient.
+ */
+export async function publishReleaseEntries(
+  entries: PublicationEntry[],
+  loadBody: (entry: PublicationEntry) => Promise<Uint8Array>,
+  store: ConditionalReleaseStore,
+): Promise<void> {
+  const desired = new Map<string, Uint8Array>();
+  const expectedEtags = new Map<string, string | null>();
+  const skip = new Set<string>();
+
+  for (const entry of entries) {
+    const body = await loadBody(entry);
+    desired.set(entry.key, body);
+    const state = await store.read(entry.key);
+
+    if (entry.immutable) {
+      if (state && !bytesEqual(state.body, body)) {
+        throw new Error(
+          `immutable release object ${entry.key} already exists with different bytes`,
+        );
+      }
+      if (state) skip.add(entry.key);
+      continue;
+    }
+
+    const nextVersion = pointerVersion(entry, body);
+    if (!state) {
+      expectedEtags.set(entry.key, null);
+      continue;
+    }
+    const currentVersion = pointerVersion(entry, state.body);
+    const order = compareSemver(nextVersion, currentVersion);
+    if (order < 0) {
+      throw new Error(
+        `stable release must move forward: current ${currentVersion}, requested ${nextVersion}`,
+      );
+    }
+    if (order === 0) {
+      if (!bytesEqual(state.body, body)) {
+        throw new Error(
+          `same-version pointer ${entry.key} does not match the exact canonical release body`,
+        );
+      }
+      skip.add(entry.key);
+      continue;
+    }
+    expectedEtags.set(entry.key, state.etag);
+  }
+
+  for (const entry of entries) {
+    if (skip.has(entry.key)) continue;
+    await store.put(
+      entry,
+      desired.get(entry.key)!,
+      entry.immutable ? undefined : expectedEtags.get(entry.key),
+    );
   }
 }
 

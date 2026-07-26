@@ -24,10 +24,10 @@ function requireStep(ids: Set<string>, id: string, message: string): void {
   if (!ids.has(id)) throw new Error(message);
 }
 
-function requireExecutableStep(
+function requireExactExecutableStep(
   job: Mapping,
   id: string,
-  required: RegExp[],
+  expectedCommand: string,
   message: string,
   expectedCondition?: string,
 ): void {
@@ -37,7 +37,7 @@ function requireExecutableStep(
   const command = typeof step?.run === 'string' ? step.run : '';
   if (
     !step ||
-    required.some((pattern) => !pattern.test(command)) ||
+    command.trim() !== expectedCommand ||
     (expectedCondition !== undefined && step.if !== expectedCondition)
   ) {
     throw new Error(message);
@@ -78,6 +78,30 @@ function includesBundles(entry: Mapping, required: string[]): boolean {
   );
 }
 
+function requireSharedUpdaterKey(
+  jobs: Mapping[],
+  stepIdsToCheck: string[],
+): void {
+  const expected = '${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}';
+  const steps = jobs.flatMap((job) =>
+    list(job.steps, 'job.steps').map((entry) => mapping(entry, 'job.steps[]')),
+  );
+  for (const id of stepIdsToCheck) {
+    const matches = steps.filter((step) => step.id === id);
+    if (matches.length !== 1) {
+      throw new Error(
+        `${id === 'stage-release' ? 'release checksum step' : 'release step'} ${id} must exist exactly once`,
+      );
+    }
+    const environment = mapping(matches[0]!.env, `step ${id}.env`);
+    if (environment.MDREADER_UPDATER_PUBLIC_KEY !== expected) {
+      throw new Error(
+        `release step ${id} must use the one reviewed updater key`,
+      );
+    }
+  }
+}
+
 /**
  * Static fail-closed contract for the executable release workflow. This is not
  * a substitute for live platform gates; it prevents deleting their stages or
@@ -106,6 +130,17 @@ export function validateReleaseWorkflow(input: unknown): void {
   const prepare = mapping(jobs.prepare, 'jobs.prepare');
   const build = mapping(jobs.build, 'jobs.build');
   const publish = mapping(jobs.publish, 'jobs.publish');
+  requireSharedUpdaterKey(
+    [build, publish],
+    [
+      'require-release-secrets',
+      'generate-release-config',
+      'stage-release',
+      'assemble-manifest',
+      'validate-release',
+      'publish-r2',
+    ],
+  );
   void prepare;
 
   const strategy = mapping(build.strategy, 'jobs.build.strategy');
@@ -158,55 +193,50 @@ export function validateReleaseWorkflow(input: unknown): void {
     'v1.29.0',
     'release workflow must install the pinned Syft scanner',
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'macos-verify-signature',
-    [/codesign\s+--verify/, /spctl\s+--assess/],
+    'scripts/release/verify-macos-signature.sh "target/${{ matrix.target }}/release/bundle"',
     'release workflow is missing executable macOS signature verification',
     "matrix.platform == 'macos'",
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'macos-verify-notarization',
-    [/stapler\s+validate/, /spctl\s+--assess/],
+    'scripts/release/verify-macos-notarization.sh "target/${{ matrix.target }}/release/bundle"',
     'release workflow is missing executable macOS notarization verification',
     "matrix.platform == 'macos'",
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'windows-verify-signature',
-    [/Get-AuthenticodeSignature/, /Status\s+-ne\s+'Valid'/],
+    'scripts/release/verify-windows-signature.ps1 -BundleRoot "target/${{ matrix.target }}/release/bundle"',
     'release workflow is missing executable Windows signing verification',
     "matrix.platform == 'windows'",
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'linux-verify-packages',
-    [
-      /--appimage-extract/,
-      /dpkg-deb\s+--info/,
-      /rpm\s+-qpi/,
-      /release-cli\.ts\s+verify-linux-abi/,
-    ],
+    'scripts/release/verify-linux-packages.sh "target/${{ matrix.target }}/release/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"',
     'release workflow is missing executable Linux package verification',
     "matrix.platform == 'linux'",
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'generate-sbom',
-    [/spdxVersion/, /SBOM/],
+    'scripts/release/inspect-sboms.sh target/release-stage',
     'release workflow is missing executable SBOM generation',
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'stage-release',
-    [/release-cli\.ts\s+stage/, /--source-commit/],
+    'scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}"',
     'release workflow is missing executable checksum staging',
   );
-  requireExecutableStep(
+  requireExactExecutableStep(
     build,
     'validate-staged-release',
-    [/signature/, /sha256|checksum/i],
+    'scripts/release/validate-staged-platform.sh "${{ matrix.platform }}" target/release-stage',
     'release workflow is missing executable updater signature validation',
   );
 

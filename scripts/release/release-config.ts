@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const PUBLIC_KEY = /^[A-Za-z0-9+/]+={0,2}$/;
 const WINDOWS_THUMBPRINT = /^[0-9A-F]{40}$/;
+
+export function updaterPublicKeyFingerprint(publicKey: string): string {
+  return createHash('sha256').update(publicKey, 'utf8').digest('hex');
+}
 
 export interface ReleaseConfigInput {
   version: string;
@@ -85,6 +90,8 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
     throw new Error('updater public key must be a non-empty base64 key');
   }
   let endpoint: URL;
+  const canonicalUpdaterEndpoint =
+    'https://downloads.mdreader.dev/channels/stable/updater.json';
   try {
     endpoint = new URL(input.updaterEndpoint);
   } catch {
@@ -101,7 +108,8 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
   }
   if (
     endpoint.origin !== 'https://downloads.mdreader.dev' ||
-    endpoint.pathname !== '/channels/stable/updater.json'
+    endpoint.pathname !== '/channels/stable/updater.json' ||
+    input.updaterEndpoint !== canonicalUpdaterEndpoint
   ) {
     throw new Error(
       'direct releases require the canonical updater endpoint on downloads.mdreader.dev',
@@ -155,7 +163,7 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
     },
     plugins: {
       updater: {
-        endpoints: [endpoint.toString()],
+        endpoints: [canonicalUpdaterEndpoint],
         pubkey: input.updaterPublicKey,
       },
     },
