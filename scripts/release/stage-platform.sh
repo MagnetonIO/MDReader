@@ -9,6 +9,7 @@ TARGET="${5:?target is required}"
 BUNDLES="${6:?bundles are required}"
 RELEASE_CONFIG="${7:?release config is required}"
 BUILD_ATTESTATION="${8:?build attestation is required}"
+BUNDLE_SEAL="${9:?bundle seal is required}"
 
 pnpm exec tsx scripts/release/release-cli.ts stage \
   --platform "$PLATFORM" \
@@ -19,5 +20,6 @@ pnpm exec tsx scripts/release/release-cli.ts stage \
   --output-root target/release-stage \
   --release-config "$RELEASE_CONFIG" \
   --build-attestation "$BUILD_ATTESTATION" \
+  --bundle-seal "$BUNDLE_SEAL" \
   --build-target "$TARGET" \
   --build-bundles "$BUNDLES"

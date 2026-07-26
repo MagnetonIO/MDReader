@@ -18,6 +18,7 @@ import {
 } from './release-pipeline';
 import {
   attestReleaseBuildConfig,
+  sealReleaseBundle,
   verifyReleaseBuildAttestation,
 } from './release-build-attestation';
 import {
@@ -92,12 +93,28 @@ async function stage(args: string[]): Promise<void> {
     outputRoot: resolve(option(args, '--output-root')!),
     releaseConfigPath: resolve(option(args, '--release-config')!),
     buildAttestationPath: resolve(option(args, '--build-attestation')!),
+    bundleSealPath: resolve(option(args, '--bundle-seal')!),
     buildTarget: option(args, '--build-target')!,
     buildBundles: option(args, '--build-bundles')!,
   });
   process.stdout.write(
     `staged ${platform}: ${fragment.artifacts.length} verified artifact records\n`,
   );
+}
+
+async function sealBuild(args: string[]): Promise<void> {
+  await sealReleaseBundle(
+    resolve(option(args, '--bundle-root')!),
+    resolve(option(args, '--config')!),
+    resolve(option(args, '--attestation')!),
+    resolve(option(args, '--seal')!),
+    {
+      version: option(args, '--version')!,
+      target: option(args, '--target')!,
+      bundles: option(args, '--bundles')!,
+    },
+  );
+  process.stdout.write('release bundle sealed\n');
 }
 
 async function attestBuild(args: string[]): Promise<void> {
@@ -286,6 +303,7 @@ async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === 'config') return writeConfig(args);
   if (command === 'attest-build') return attestBuild(args);
+  if (command === 'seal-build') return sealBuild(args);
   if (command === 'verify-build-attestation') return verifyBuild(args);
   if (command === 'stage') return stage(args);
   if (command === 'assemble') return assemble(args);

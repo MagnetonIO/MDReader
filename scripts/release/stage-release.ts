@@ -16,7 +16,10 @@ import type {
   ReleaseManifestArtifact,
   ReleasePlatform,
 } from '../../apps/web/lib/release-manifest';
-import { verifyReleaseBuildAttestation } from './release-build-attestation';
+import {
+  verifyReleaseBuildAttestation,
+  verifyReleaseBundleSeal,
+} from './release-build-attestation';
 
 const execFileAsync = promisify(execFile);
 const PINNED_SYFT_CREATOR = 'Tool: syft-1.29.0';
@@ -30,6 +33,7 @@ export interface StagePlatformInput {
   outputRoot: string;
   releaseConfigPath: string;
   buildAttestationPath: string;
+  bundleSealPath: string;
   buildTarget: string;
   buildBundles: string;
   generateSbom?: (artifactPath: string) => Promise<string>;
@@ -252,6 +256,17 @@ export async function stagePlatformArtifacts(
       bundles: input.buildBundles,
     },
   );
+  await verifyReleaseBundleSeal(
+    input.bundleRoot,
+    input.releaseConfigPath,
+    input.buildAttestationPath,
+    input.bundleSealPath,
+    {
+      version: input.version,
+      target: input.buildTarget,
+      bundles: input.buildBundles,
+    },
+  );
   const files = await walk(input.bundleRoot);
   const destination = join(input.outputRoot, 'releases', `v${input.version}`);
   await mkdir(destination, { recursive: true });
@@ -299,6 +314,18 @@ export async function stagePlatformArtifacts(
       releaseConfigSha256: build.releaseConfigSha256,
     });
   }
+
+  await verifyReleaseBundleSeal(
+    input.bundleRoot,
+    input.releaseConfigPath,
+    input.buildAttestationPath,
+    input.bundleSealPath,
+    {
+      version: input.version,
+      target: input.buildTarget,
+      bundles: input.buildBundles,
+    },
+  );
 
   const fragment: ReleaseFragment = {
     channel: 'stable',

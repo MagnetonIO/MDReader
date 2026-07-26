@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import {
+  readFile,
+  readlink,
+  readdir,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 
 import { updaterPublicKeyFingerprint } from './release-config';
 
@@ -15,6 +22,23 @@ export interface ReleaseBuildAttestation {
   bundles: string;
   releaseConfigSha256: string;
   updaterPublicKeySha256: string;
+}
+
+interface ReleaseBundleEntry {
+  path: string;
+  kind: 'file' | 'symlink';
+  bytes: number;
+  sha256: string;
+}
+
+interface ReleaseBundleSeal {
+  schemaVersion: 1;
+  version: string;
+  target: string;
+  bundles: string;
+  releaseConfigSha256: string;
+  updaterPublicKeySha256: string;
+  files: ReleaseBundleEntry[];
 }
 
 function sha256(body: Uint8Array): string {
@@ -115,4 +139,100 @@ export async function verifyReleaseBuildAttestation(
     );
   }
   return attestation;
+}
+
+async function bundleInventory(
+  root: string,
+  directory = root,
+): Promise<ReleaseBundleEntry[]> {
+  const output: ReleaseBundleEntry[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    const relativePath = relative(root, path).split(sep).join('/');
+    if (entry.isDirectory()) {
+      output.push(...(await bundleInventory(root, path)));
+    } else if (entry.isFile()) {
+      const body = await readFile(path);
+      output.push({
+        path: relativePath,
+        kind: 'file',
+        bytes: (await stat(path)).size,
+        sha256: sha256(body),
+      });
+    } else if (entry.isSymbolicLink()) {
+      const target = Buffer.from(await readlink(path), 'utf8');
+      output.push({
+        path: relativePath,
+        kind: 'symlink',
+        bytes: target.byteLength,
+        sha256: sha256(target),
+      });
+    } else {
+      throw new Error(`unsupported release bundle entry ${relativePath}`);
+    }
+  }
+  return output.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export async function sealReleaseBundle(
+  bundleRoot: string,
+  configPath: string,
+  attestationPath: string,
+  outputPath: string,
+  expected: { version: string; target: string; bundles: string },
+): Promise<void> {
+  const attestation = await verifyReleaseBuildAttestation(
+    configPath,
+    attestationPath,
+    expected,
+  );
+  const files = await bundleInventory(bundleRoot);
+  if (files.length === 0) {
+    throw new Error('attested Tauri build produced an empty bundle directory');
+  }
+  const seal: ReleaseBundleSeal = {
+    schemaVersion: 1,
+    version: expected.version,
+    target: expected.target,
+    bundles: expected.bundles,
+    releaseConfigSha256: attestation.releaseConfigSha256,
+    updaterPublicKeySha256: attestation.updaterPublicKeySha256,
+    files,
+  };
+  await writeFile(outputPath, `${JSON.stringify(seal, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
+export async function verifyReleaseBundleSeal(
+  bundleRoot: string,
+  configPath: string,
+  attestationPath: string,
+  sealPath: string,
+  expected: { version: string; target: string; bundles: string },
+): Promise<void> {
+  const [attestation, encodedSeal, files] = await Promise.all([
+    verifyReleaseBuildAttestation(configPath, attestationPath, expected),
+    readFile(sealPath, 'utf8'),
+    bundleInventory(bundleRoot),
+  ]);
+  let seal: ReleaseBundleSeal;
+  try {
+    seal = JSON.parse(encodedSeal) as ReleaseBundleSeal;
+  } catch {
+    throw new Error('release bundle seal is not valid JSON');
+  }
+  if (
+    seal.schemaVersion !== 1 ||
+    seal.version !== expected.version ||
+    seal.target !== expected.target ||
+    seal.bundles !== expected.bundles ||
+    seal.releaseConfigSha256 !== attestation.releaseConfigSha256 ||
+    seal.updaterPublicKeySha256 !== attestation.updaterPublicKeySha256 ||
+    JSON.stringify(seal.files) !== JSON.stringify(files)
+  ) {
+    throw new Error(
+      'sealed Tauri bundle does not match the exact artifacts produced by the attested build',
+    );
+  }
 }
