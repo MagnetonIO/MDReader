@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
 
 import type { SchemaSummary, SemanticsAdapter } from '../../platform/semantics.js';
@@ -27,71 +27,88 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function adapterWithListSchemas(
+  listSchemas: SemanticsAdapter['listSchemas'],
+): SemanticsAdapter {
+  return {
+    listSchemas,
+    projectCorpus: async () => {
+      throw new Error('projectCorpus is outside this schema-listing test');
+    },
+    describeSchema: async () => {
+      throw new Error('describeSchema is outside this schema-listing test');
+    },
+    inspectSpan: async () => {
+      throw new Error('inspectSpan is outside this schema-listing test');
+    },
+    approveFact: async () => {
+      throw new Error('approveFact is outside this schema-listing test');
+    },
+    rejectFact: async () => {
+      throw new Error('rejectFact is outside this schema-listing test');
+    },
+    checkConstraints: async () => {
+      throw new Error('checkConstraints is outside this schema-listing test');
+    },
+    explainQuery: async () => {
+      throw new Error('explainQuery is outside this schema-listing test');
+    },
+  };
+}
+
 describe('useSchemas', () => {
-  test('reloads a restored lens after readiness and discards a retired workspace result', async () => {
+  test('reloads the restored lens with its schema and counts when that workspace becomes ready', async () => {
     // Removing readiness from the hook's dependencies recreates the persisted-lens
     // bug: this lens stays selected, but its count remains zero after indexing.
-    const retiredWorkspace = deferred<SchemaSummary[]>();
     const listSchemas = vi
       .fn<SemanticsAdapter['listSchemas']>()
       .mockResolvedValueOnce([])
-      .mockImplementationOnce(() => retiredWorkspace.promise)
-      .mockImplementationOnce(async () => [READY_SCHEMA]);
-    const adapter: SemanticsAdapter = {
-      listSchemas,
-      projectCorpus: async () => {
-        throw new Error('projectCorpus is outside this schema-listing test');
-      },
-      describeSchema: async () => {
-        throw new Error('describeSchema is outside this schema-listing test');
-      },
-      inspectSpan: async () => {
-        throw new Error('inspectSpan is outside this schema-listing test');
-      },
-      approveFact: async () => {
-        throw new Error('approveFact is outside this schema-listing test');
-      },
-      rejectFact: async () => {
-        throw new Error('rejectFact is outside this schema-listing test');
-      },
-      checkConstraints: async () => {
-        throw new Error('checkConstraints is outside this schema-listing test');
-      },
-      explainQuery: async () => {
-        throw new Error('explainQuery is outside this schema-listing test');
-      },
-    };
-
+      .mockResolvedValueOnce([READY_SCHEMA]);
+    const adapter = adapterWithListSchemas(listSchemas);
     const { result, rerender } = renderHook(
       ({ workspaceKey, importPhase }) => {
         const listing = useSchemas(adapter, workspaceKey, true, importPhase === 'done');
         const restored = listing.schemas.find((schema) => schema.name === PERSISTED_LENS) ?? null;
-        return restored === null
-          ? { schemas: 0, graphObjects: 0, claims: 0 }
-          : {
-              schemas: listing.schemas.length,
-              graphObjects: restored.objectCount,
-              claims: restored.proposalCount,
-            };
+        return { schemas: listing.schemas, restored };
       },
       {
         initialProps: {
-          workspaceKey: '/workspace/retired',
+          workspaceKey: '/workspace/restored',
           importPhase: 'loading' as 'loading' | 'done',
         },
       },
     );
 
-    await waitFor(() => expect(result.current).toEqual({ schemas: 0, graphObjects: 0, claims: 0 }));
+    await waitFor(() => expect(result.current).toEqual({ schemas: [], restored: null }));
 
-    rerender({ workspaceKey: '/workspace/retired', importPhase: 'done' });
-    await waitFor(() => expect(listSchemas).toHaveBeenCalledTimes(2));
+    rerender({ workspaceKey: '/workspace/restored', importPhase: 'done' });
+    await waitFor(() => expect(result.current.restored).toEqual(READY_SCHEMA));
+    expect(result.current.schemas).toEqual([READY_SCHEMA]);
+    expect(result.current.restored).toMatchObject({
+      objectCount: 7,
+      proposalCount: 3,
+    });
+  });
 
-    rerender({ workspaceKey: '/workspace/current', importPhase: 'done' });
-    await waitFor(() => expect(result.current).toEqual({ schemas: 1, graphObjects: 7, claims: 3 }));
+  test('discards a late schema result from a retired workspace generation', async () => {
+    const retiredWorkspace = deferred<SchemaSummary[]>();
+    const listSchemas = vi
+      .fn<SemanticsAdapter['listSchemas']>()
+      .mockImplementationOnce(() => retiredWorkspace.promise)
+      .mockResolvedValueOnce([READY_SCHEMA]);
+    const adapter = adapterWithListSchemas(listSchemas);
+    const { result, rerender } = renderHook(
+      ({ workspaceKey }) => useSchemas(adapter, workspaceKey, true, true),
+      { initialProps: { workspaceKey: '/workspace/retired' } },
+    );
 
-    retiredWorkspace.resolve([]);
-    await Promise.resolve();
-    expect(result.current).toEqual({ schemas: 1, graphObjects: 7, claims: 3 });
+    rerender({ workspaceKey: '/workspace/current' });
+    await waitFor(() => expect(result.current.schemas).toEqual([READY_SCHEMA]));
+
+    await act(async () => {
+      retiredWorkspace.resolve([]);
+      await retiredWorkspace.promise;
+    });
+    expect(result.current.schemas).toEqual([READY_SCHEMA]);
   });
 });
