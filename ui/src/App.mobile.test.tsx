@@ -68,6 +68,10 @@ describe('compile-time mobile composition', () => {
       expect(screen.queryByLabelText(forbidden)).toBeNull();
     }
     expect(screen.getAllByText('Unavailable on mobile until secure sign-in is supported')).toHaveLength(2);
+    expect(
+      screen.getByText('Unavailable until a durable mobile folder grant is implemented'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add folder' })).toBeNull();
     expect(screen.getByLabelText('Server URL')).toBeTruthy();
     expect(screen.getByLabelText('Session reference')).toBeTruthy();
   });
