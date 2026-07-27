@@ -19,8 +19,9 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::file_lock::AdvisoryFileLock;
+use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 1;
+pub(crate) const LIBRARY_VERSION: u32 = 2;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -287,11 +288,19 @@ impl NativePath {
 pub(crate) struct LibrarySource {
     pub(crate) id: String,
     path: NativePath,
+    identity: SourceRootIdentity,
 }
 
 impl LibrarySource {
     pub(crate) fn path(&self) -> Result<PathBuf, LibraryError> {
         self.path.restore()
+    }
+
+    fn root(&self) -> Result<SourceRoot, LibraryError> {
+        Ok(SourceRoot {
+            path: self.path()?,
+            identity: self.identity.clone(),
+        })
     }
 }
 
@@ -323,10 +332,12 @@ impl LibraryRegistry {
     }
 
     pub(crate) fn path_for(&self, source_id: &str) -> Option<PathBuf> {
-        self.sources
-            .iter()
-            .find(|source| source.id == source_id)
+        self.source_for(source_id)
             .and_then(|source| source.path().ok())
+    }
+
+    fn source_for(&self, source_id: &str) -> Option<&LibrarySource> {
+        self.sources.iter().find(|source| source.id == source_id)
     }
 
     #[cfg(test)]
@@ -343,6 +354,10 @@ impl LibraryRegistry {
                 message: "library root is not a directory".to_string(),
             });
         }
+        let admitted =
+            SourceRoot::capture(canonical.clone()).map_err(|error| LibraryError::InvalidRoot {
+                message: error.to_string(),
+            })?;
         let native = NativePath::capture(&canonical);
         let source_id = native.source_id();
         if self.sources.iter().any(|source| source.id == source_id) {
@@ -356,17 +371,19 @@ impl LibraryRegistry {
         let source = LibrarySource {
             id: source_id,
             path: native,
+            identity: admitted.identity,
         };
         self.sources.push(source.clone());
         Ok(source)
     }
 
     pub(crate) fn source_state(&self, source_id: &str) -> Result<LibrarySourceState, LibraryError> {
-        let path = self
-            .path_for(source_id)
+        let source = self
+            .source_for(source_id)
             .ok_or_else(|| LibraryError::SourceNotFound {
                 source_id: source_id.to_string(),
             })?;
+        let path = source.path()?;
         let canonical = match fs::canonicalize(&path) {
             Ok(canonical) => canonical,
             Err(error) => return Ok(classify_probe_error(error)),
@@ -374,6 +391,11 @@ impl LibraryRegistry {
         if canonical != path {
             return Ok(LibrarySourceState::Unreadable {
                 reason: "the folder identity changed since it was added".to_string(),
+            });
+        }
+        if let Err(error) = source.root()?.verify() {
+            return Ok(LibrarySourceState::Unreadable {
+                reason: error.to_string(),
             });
         }
         match fs::metadata(&canonical) {
@@ -391,14 +413,14 @@ impl LibraryRegistry {
     /// Resolve an available member to its exact native path for a grant/watch
     /// command. This is the only activation lookup: DTO display text is never
     /// converted back into filesystem authority.
-    pub(crate) fn activation_path(&self, source_id: &str) -> Result<PathBuf, LibraryError> {
-        let path = self
-            .path_for(source_id)
+    pub(crate) fn activation_root(&self, source_id: &str) -> Result<SourceRoot, LibraryError> {
+        let source = self
+            .source_for(source_id)
             .ok_or_else(|| LibraryError::SourceNotFound {
                 source_id: source_id.to_string(),
             })?;
         match self.source_state(source_id)? {
-            LibrarySourceState::Available => Ok(path),
+            LibrarySourceState::Available => source.root(),
             LibrarySourceState::Missing { reason } => Err(LibraryError::SourceUnavailable {
                 source_id: source_id.to_string(),
                 reason: format!("missing: {reason}"),
@@ -414,10 +436,15 @@ impl LibraryRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn activation_path(&self, source_id: &str) -> Result<PathBuf, LibraryError> {
+        self.activation_root(source_id).map(|root| root.path)
+    }
+
     pub(crate) fn forget(
         &mut self,
         source_id: &str,
-        active_root: Option<&Path>,
+        active_root: Option<&SourceRoot>,
     ) -> Result<(), LibraryError> {
         let index = self
             .sources
@@ -426,8 +453,8 @@ impl LibraryRegistry {
             .ok_or_else(|| LibraryError::SourceNotFound {
                 source_id: source_id.to_string(),
             })?;
-        let source_path = self.sources[index].path()?;
-        if active_root.is_some_and(|root| root == source_path) {
+        let source_root = self.sources[index].root()?;
+        if active_root.is_some_and(|root| root == &source_root) {
             return Err(LibraryError::ActiveSource {
                 source_id: source_id.to_string(),
             });
@@ -442,18 +469,20 @@ impl LibraryRegistry {
     pub(crate) fn mark_active(
         &mut self,
         source_id: &str,
-        active_root: Option<&Path>,
+        active_root: Option<&SourceRoot>,
     ) -> Result<(), LibraryError> {
-        let source_path = self
-            .path_for(source_id)
-            .ok_or_else(|| LibraryError::SourceNotFound {
-                source_id: source_id.to_string(),
-            })?;
-        if active_root != Some(source_path.as_path()) {
+        let source_root = self.activation_root(source_id)?;
+        if active_root != Some(&source_root) {
             return Err(LibraryError::GrantMismatch {
                 source_id: source_id.to_string(),
             });
         }
+        source_root
+            .verify()
+            .map_err(|error| LibraryError::SourceUnavailable {
+                source_id: source_id.to_string(),
+                reason: error.to_string(),
+            })?;
         self.active_source_id = Some(source_id.to_string());
         Ok(())
     }
@@ -461,7 +490,7 @@ impl LibraryRegistry {
     pub(crate) fn snapshot(
         &self,
         app_data: &Path,
-        active_root: Option<&Path>,
+        active_root: Option<&SourceRoot>,
     ) -> Result<LibrarySnapshot, LibraryError> {
         let mut sources = Vec::with_capacity(self.sources.len());
         for source in &self.sources {
@@ -476,12 +505,14 @@ impl LibraryRegistry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 state: self.source_state(&source.id)?.into(),
-                index_state: if crate::engine::db_path_under(app_data, &path).is_file() {
+                index_state: if crate::engine::db_path_under(app_data, &source.root()?).is_file() {
                     LibraryIndexState::Present
                 } else {
                     LibraryIndexState::NotCreated
                 },
-                active: active_root == Some(path.as_path()),
+                active: active_root.is_some_and(|active| {
+                    active.path == path && active.identity == source.identity
+                }),
                 restore_candidate: self.active_source_id.as_deref() == Some(source.id.as_str()),
             });
         }
@@ -544,16 +575,24 @@ impl LibraryRegistry {
                 })
             }
         };
+        #[derive(Deserialize)]
+        struct VersionProbe {
+            version: u32,
+        }
+        let version: VersionProbe =
+            serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
+                message: format!("cannot parse library registry: {error}"),
+            })?;
+        if version.version != LIBRARY_VERSION {
+            return Err(LibraryError::UnsupportedVersion {
+                found: version.version,
+                expected: LIBRARY_VERSION,
+            });
+        }
         let stored: StoredLibrary =
             serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
                 message: format!("cannot parse library registry: {error}"),
             })?;
-        if stored.version != LIBRARY_VERSION {
-            return Err(LibraryError::UnsupportedVersion {
-                found: stored.version,
-                expected: LIBRARY_VERSION,
-            });
-        }
         if stored.sources.len() > MAX_LIBRARY_SOURCES {
             return Err(LibraryError::CorruptRegistry {
                 message: "library registry exceeds its source bound".to_string(),
@@ -678,8 +717,8 @@ fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
     Ok((app_data.join("library.json"), app_data))
 }
 
-fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<PathBuf> {
-    workspace.current().map(|epoch| epoch.root.clone())
+fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
+    workspace.current().map(|epoch| epoch.source_root())
 }
 
 fn lock_library(state: &LibraryState) -> Result<std::sync::MutexGuard<'_, ()>, LibraryError> {
@@ -700,7 +739,7 @@ pub(crate) fn list_library_sources(
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
-    LibraryStore::new(path).read(|registry| registry.snapshot(&app_data, active.as_deref()))
+    LibraryStore::new(path).read(|registry| registry.snapshot(&app_data, active.as_ref()))
 }
 
 /// Open the real native folder picker and persist its canonical native path.
@@ -735,7 +774,7 @@ pub(crate) async fn pick_and_add_library_source(
             Err(LibraryError::DuplicateRoot { source_id }) => (source_id, false),
             Err(error) => return Err(error),
         };
-        let snapshot = registry.snapshot(&app_data, active.as_deref())?;
+        let snapshot = registry.snapshot(&app_data, active.as_ref())?;
         Ok(PickedLibrarySource {
             source: snapshot
                 .sources
@@ -785,7 +824,7 @@ pub(crate) fn watch_library_source(
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
-        let native_root = registry.activation_path(&source_id)?;
+        let native_root = registry.activation_root(&source_id)?;
         crate::commands::watch_workspace_path_exact(&app, &native_root, &workspace, &watcher)
             .map_err(|message| LibraryError::OpenFailed { source_id, message })
     })
@@ -805,7 +844,7 @@ pub(crate) fn grant_library_source(
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
-        let native_root = registry.activation_path(&source_id)?;
+        let native_root = registry.activation_root(&source_id)?;
         crate::commands::grant_workspace_path_exact(&native_root, &workspace)
             .map(|root| root.to_string_lossy().into_owned())
             .map_err(|message| LibraryError::OpenFailed { source_id, message })
@@ -827,8 +866,8 @@ pub(crate) fn mark_library_source_active(
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
     LibraryStore::new(path).update(|registry| {
-        registry.mark_active(&source_id, active.as_deref())?;
-        registry.snapshot(&app_data, active.as_deref())
+        registry.mark_active(&source_id, active.as_ref())?;
+        registry.snapshot(&app_data, active.as_ref())
     })
 }
 
@@ -846,8 +885,8 @@ pub(crate) fn forget_library_source(
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
     LibraryStore::new(path).update(|registry| {
-        registry.forget(&source_id, active.as_deref())?;
-        registry.snapshot(&app_data, active.as_deref())
+        registry.forget(&source_id, active.as_ref())?;
+        registry.snapshot(&app_data, active.as_ref())
     })
 }
 
@@ -881,11 +920,17 @@ mod tests {
         classify_probe_error, LibraryError, LibraryIndexState, LibraryRegistry, LibrarySourceState,
         LibraryStore, NativePath, LIBRARY_VERSION,
     };
+    use mdreader_ingest::SourceRoot;
 
     fn mkdir(parent: &Path, name: &str) -> PathBuf {
         let path = parent.join(name);
         fs::create_dir(&path).expect("create source directory");
         path
+    }
+
+    fn bound_root(path: &Path) -> SourceRoot {
+        SourceRoot::capture(fs::canonicalize(path).expect("canonical source root"))
+            .expect("capture source root identity")
     }
 
     #[test]
@@ -950,6 +995,44 @@ mod tests {
     }
 
     #[test]
+    fn a_different_directory_at_the_same_canonical_path_is_not_the_admitted_source() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        fs::write(root.join("original.md"), "# original").expect("write admitted document");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let registry_path = temp.path().join("library.json");
+        registry
+            .save_to(&registry_path)
+            .expect("persist admitted identity");
+        let registry =
+            LibraryRegistry::load_from(&registry_path).expect("restore admitted identity");
+
+        let moved = temp.path().join("moved-original");
+        fs::rename(&root, &moved).expect("move admitted filesystem object");
+        fs::create_dir(&root).expect("create replacement at the stored path");
+        fs::write(root.join("replacement.md"), "# replacement").expect("write replacement");
+
+        let state = registry
+            .source_state(&source.id)
+            .expect("identity mismatch is a source state");
+        assert!(
+            matches!(state, LibrarySourceState::Unreadable { ref reason }
+                if !reason.is_empty() && reason.contains("identity")),
+            "the replacement must be a typed, non-empty refusal: {state:?}"
+        );
+        assert!(matches!(
+            registry.activation_path(&source.id),
+            Err(LibraryError::SourceUnavailable { ref reason, .. })
+                if !reason.is_empty() && reason.contains("identity")
+        ));
+        assert_eq!(
+            fs::read_to_string(moved.join("original.md")).expect("original object remains"),
+            "# original"
+        );
+    }
+
+    #[test]
     fn active_source_cannot_be_forgotten_and_forget_never_deletes_user_or_index_data() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
@@ -960,10 +1043,11 @@ mod tests {
         let mut registry = LibraryRegistry::empty();
         let source = registry.add_root(&root).expect("add root");
         let canonical = fs::canonicalize(&root).expect("canonical root");
+        let active = bound_root(&canonical);
 
         assert_eq!(
             registry
-                .forget(&source.id, Some(&canonical))
+                .forget(&source.id, Some(&active))
                 .expect_err("active forget must fail"),
             LibraryError::ActiveSource {
                 source_id: source.id.clone()
@@ -1039,6 +1123,38 @@ mod tests {
             LibraryRegistry::load_from(&file),
             Err(LibraryError::UnsupportedVersion { .. })
         ));
+
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&root).expect("add source");
+        registry.save_to(&file).expect("save current registry");
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).expect("read registry")).expect("parse json");
+        body["sources"][0]
+            .as_object_mut()
+            .expect("source object")
+            .remove("identity");
+        fs::write(&file, serde_json::to_vec_pretty(&body).expect("encode"))
+            .expect("write identity-less registry");
+        assert!(matches!(
+            LibraryRegistry::load_from(&file),
+            Err(LibraryError::CorruptRegistry { ref message })
+                if message.contains("identity")
+        ));
+
+        body["version"] = serde_json::json!(LIBRARY_VERSION - 1);
+        fs::write(
+            &file,
+            serde_json::to_vec_pretty(&body).expect("encode old version"),
+        )
+        .expect("write old registry");
+        assert_eq!(
+            LibraryRegistry::load_from(&file).expect_err("old version must fail"),
+            LibraryError::UnsupportedVersion {
+                found: LIBRARY_VERSION - 1,
+                expected: LIBRARY_VERSION,
+            }
+        );
     }
 
     #[test]
@@ -1050,29 +1166,31 @@ mod tests {
         let mut registry = LibraryRegistry::empty();
         let source = registry.add_root(&root).expect("add root");
         let canonical = fs::canonicalize(&root).expect("canonical root");
+        let canonical_root = bound_root(&canonical);
+        let other_root = bound_root(&other);
 
         assert!(matches!(
-            registry.mark_active(&source.id, Some(&other)),
+            registry.mark_active(&source.id, Some(&other_root)),
             Err(LibraryError::GrantMismatch { .. })
         ));
         assert!(registry.restore_source_id().is_none());
 
         registry
-            .mark_active(&source.id, Some(&canonical))
+            .mark_active(&source.id, Some(&canonical_root))
             .expect("matching grant may become restore candidate");
         let before = registry
-            .snapshot(&app_data, Some(&canonical))
+            .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot before index");
         let row = &before.sources[0];
         assert!(row.active);
         assert!(row.restore_candidate);
         assert_eq!(row.index_state, LibraryIndexState::NotCreated);
 
-        let db = crate::engine::db_path_under(&app_data, &canonical);
+        let db = crate::engine::db_path_under(&app_data, &canonical_root);
         fs::create_dir_all(db.parent().expect("db parent")).expect("create index directory");
         fs::write(db, b"existing index").expect("write index");
         let after = registry
-            .snapshot(&app_data, Some(&canonical))
+            .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot after index");
         assert_eq!(after.sources[0].index_state, LibraryIndexState::Present);
     }
@@ -1085,6 +1203,7 @@ mod tests {
         let mut registry = LibraryRegistry::empty();
         let source = registry.add_root(&root).expect("add member");
         let canonical = fs::canonicalize(&root).expect("canonical root");
+        let canonical_root = bound_root(&canonical);
 
         assert_eq!(
             registry
@@ -1094,7 +1213,7 @@ mod tests {
         );
         registry.save_to(&file).expect("initial save");
         registry
-            .mark_active(&source.id, Some(&canonical))
+            .mark_active(&source.id, Some(&canonical_root))
             .expect("mark active");
         registry.save_to(&file).expect("replace existing registry");
         assert_eq!(
@@ -1123,8 +1242,9 @@ mod tests {
         let mut registry = LibraryRegistry::empty();
         let source = registry.add_root(&root).expect("add member");
         let admitted = fs::canonicalize(&root).expect("canonical admitted root");
+        let admitted_root = bound_root(&admitted);
         registry
-            .mark_active(&source.id, Some(&admitted))
+            .mark_active(&source.id, Some(&admitted_root))
             .expect("record restore candidate");
 
         fs::remove_dir(&root).expect("remove admitted directory");
@@ -1151,7 +1271,7 @@ mod tests {
 
         let replacement = fs::canonicalize(&target).expect("canonical replacement");
         assert!(
-            !crate::engine::db_path_under(&app_data, &replacement).exists(),
+            !crate::engine::db_path_under(&app_data, &bound_root(&replacement)).exists(),
             "refusing substitution must not create an index for the target"
         );
         assert_eq!(

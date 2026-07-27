@@ -383,9 +383,11 @@ async fn search_over(
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
 
     let Some(db) = epoch.db() else {
         // No engine yet (import not finished): honestly empty (guarded).
+        epoch.validate_root()?;
         // EPOCH-GUARDED
         return Ok(epoch
             .finish(workspace, SearchResults::empty())
@@ -403,6 +405,7 @@ async fn search_over(
 
     // Phase 1 — the lexical (FTS) arm alone. A typed-filter error surfaces here
     // (same parse both phases), so we never stream a partial for a bad query.
+    epoch.validate_root()?;
     let lexical = run_phase(&db, &src_root, query, options.engine_options(true)).await?;
     stream(
         &epoch,
@@ -411,7 +414,7 @@ async fn search_over(
         "lexical",
         &lexical,
         unavailable.as_deref(),
-    );
+    )?;
 
     // Phase 2 — the full hybrid pass, unless the caller asked lexical-only or the
     // semantic arm cannot run (in which case the lexical list IS the answer, and
@@ -419,6 +422,7 @@ async fn search_over(
     let final_hits = if options.lexical_only || unavailable.is_some() {
         lexical
     } else {
+        epoch.validate_root()?;
         run_phase(&db, &src_root, query, options.engine_options(false)).await?
     };
     stream(
@@ -428,12 +432,13 @@ async fn search_over(
         "final",
         &final_hits,
         unavailable.as_deref(),
-    );
+    )?;
 
     let results = SearchResults {
         hits: final_hits,
         semantic_unavailable: unavailable,
     };
+    epoch.validate_root()?;
     // EPOCH-GUARDED: a switch mid-search means these hits belong to a previous
     // workspace — return an empty list (silently-clean), never the stale hits
     // and never a spurious error the palette would show as a filter failure. The
@@ -488,7 +493,8 @@ fn stream(
     phase: &str,
     hits: &[SearchHitDto],
     semantic_unavailable: Option<&str>,
-) {
+) -> Result<(), String> {
+    epoch.validate_root()?;
     let generation = epoch.generation as u32;
     // EPOCH-GUARDED: only stream while this epoch is the current era.
     if epoch.finish(workspace, ()).is_ok() {
@@ -499,6 +505,7 @@ fn stream(
             semantic_unavailable: semantic_unavailable.map(str::to_string),
         });
     }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -533,8 +540,10 @@ pub async fn explain_query(
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
 
     let Some(db) = epoch.db() else {
+        epoch.validate_root()?;
         // EPOCH-GUARDED
         return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
     };
@@ -557,6 +566,7 @@ pub async fn explain_query(
         },
     )
     .await?;
+    epoch.validate_root()?;
 
     // EPOCH-GUARDED: a switch mid-query means these hits belong to a previous
     // workspace.
@@ -585,8 +595,10 @@ pub async fn related(
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
 
     let Some(db) = epoch.db() else {
+        epoch.validate_root()?;
         // EPOCH-GUARDED
         return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
     };
@@ -613,6 +625,7 @@ pub async fn related(
         // Unknown document (e.g. not yet indexed): empty, not an error.
         None => Vec::new(),
     };
+    epoch.validate_root()?;
 
     // EPOCH-GUARDED: a switch mid-lookup yields an empty rail (silently-clean),
     // never a previous workspace's related list nor a spurious error.
@@ -649,6 +662,57 @@ mod tests {
     fn basename_takes_the_final_component() {
         assert_eq!(basename("notes/deep/page.md"), "page.md");
         assert_eq!(basename("page.md"), "page.md");
+    }
+
+    #[test]
+    fn search_refuses_a_replacement_root_instead_of_returning_empty_results() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("create root");
+        let root = fs::canonicalize(root).expect("canonical root");
+        let workspace = WorkspaceState::granted(root.clone());
+        let epoch = workspace.current().expect("active epoch");
+
+        fs::rename(&root, temp.path().join("moved-original")).expect("move admitted root");
+        fs::create_dir(&root).expect("create replacement root");
+        fs::write(root.join("replacement.md"), "# replacement").expect("write replacement");
+
+        let mut streamed = false;
+        let stream_error = stream(
+            &epoch,
+            &workspace,
+            &mut |_| streamed = true,
+            "lexical",
+            &[],
+            None,
+        )
+        .expect_err("a changed root must be refused at the streaming boundary");
+        assert!(
+            !streamed,
+            "identity failure must occur before emitting a batch"
+        );
+        assert!(!stream_error.is_empty() && stream_error.contains("identity"));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = runtime
+            .block_on(search_over(
+                &workspace,
+                "replacement",
+                &SearchQuery {
+                    limit: 10,
+                    lexical_only: true,
+                    explain: false,
+                },
+                |_| {},
+            ))
+            .expect_err("search must refuse the replacement root");
+        assert!(
+            !error.is_empty() && error.contains("identity"),
+            "root substitution must be explicit, never an empty search: {error}"
+        );
     }
 
     /// hit_dto reconstructs the absolute path under the source root and carries

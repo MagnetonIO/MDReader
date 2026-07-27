@@ -37,7 +37,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -50,6 +50,8 @@ use specta::Type;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
+
+use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
 /// Debounce window for the workspace watcher. Collapses editor save-storms (a
 /// single logical edit often lands as several `write` syscalls) into one event.
@@ -121,10 +123,22 @@ impl WorkspaceState {
     /// new current era; any epoch captured before this call is now stale. Returns
     /// the new epoch.
     pub(crate) fn switch(&self, root: PathBuf) -> Result<Arc<crate::engine::Epoch>, String> {
+        let root = SourceRoot::capture(root).map_err(|error| error.to_string())?;
+        self.switch_bound(root)
+    }
+
+    /// Install a root whose identity was captured by the owning admission path.
+    /// Revalidation occurs while the epoch slot is held, immediately before
+    /// publication, so a replacement cannot slip between capture and commit.
+    pub(crate) fn switch_bound(
+        &self,
+        root: SourceRoot,
+    ) -> Result<Arc<crate::engine::Epoch>, String> {
         let mut slot = self
             .current
             .lock()
             .map_err(|_| "workspace state poisoned".to_string())?;
+        root.verify().map_err(|error| error.to_string())?;
         let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
         let epoch = crate::engine::Epoch::new(root, generation);
         *slot = Some(Arc::clone(&epoch));
@@ -250,18 +264,12 @@ pub fn set_workspace(
 /// aliases: its input is already canonical, so a different result means the
 /// directory was substituted after validation.
 pub(crate) fn grant_workspace_path_exact(
-    expected_root: &Path,
+    expected_root: &SourceRoot,
     state: &WorkspaceState,
 ) -> Result<PathBuf, String> {
-    let real = canonical_dir_path(expected_root)?;
-    if real != expected_root {
-        return Err(format!(
-            "workspace root identity changed since library admission: {}",
-            expected_root.display()
-        ));
-    }
-    state.switch(real.clone())?;
-    Ok(real)
+    let root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
+    state.switch_bound(root.clone())?;
+    Ok(root.path)
 }
 
 // --------------------------------------------------------------------------
@@ -331,9 +339,11 @@ fn read_doc_guarded(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
     // TOCTOU: the read below runs after this containment check (accepted — see the
     // module-level "TOCTOU" note; local single-user reader).
     let real = resolve_doc(&epoch.root, Path::new(path))?;
+    epoch.validate_root()?;
 
     let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
     let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -350,6 +360,7 @@ fn read_doc_guarded(
     };
 
     gate();
+    epoch.validate_root()?;
     // EPOCH-GUARDED: a switch during the read supersedes this epoch — discard the
     // (old-root) bytes rather than surfacing them under the new workspace.
     epoch
@@ -572,9 +583,11 @@ fn save_doc_guarded(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
     // TOCTOU: the read/write below run after this containment check (accepted —
     // see the module-level "TOCTOU" note; local single-user reader).
     let real = resolve_doc(&epoch.root, Path::new(path))?;
+    epoch.validate_root()?;
 
     // Serialize the ENTIRE check → temp-write → rename window against other
     // cooperating writers (a second `save_doc`, the engine) with an exclusive
@@ -590,6 +603,7 @@ fn save_doc_guarded(
     let current_hash = hash_on_disk(&real)?;
     if !force && current_hash != expected_hash {
         before_finish();
+        epoch.validate_root()?;
         // EPOCH-GUARDED
         return epoch
             .finish(state, SaveOutcome::conflict(current_hash))
@@ -605,6 +619,10 @@ fn save_doc_guarded(
     let tmp = stage_temp(dir, bytes)?;
 
     before_rename();
+    if let Err(error) = epoch.validate_root() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
 
     // Re-verify under the lock, right before the swap: a write that raced in
     // between our check and now (a non-cooperating external writer) changes the
@@ -614,6 +632,7 @@ fn save_doc_guarded(
         if now_hash != current_hash {
             let _ = std::fs::remove_file(&tmp);
             before_finish();
+            epoch.validate_root()?;
             // EPOCH-GUARDED
             return epoch
                 .finish(state, SaveOutcome::conflict(now_hash))
@@ -630,6 +649,7 @@ fn save_doc_guarded(
     let outcome = SaveOutcome::saved(new_hash, mtime);
 
     before_finish();
+    epoch.validate_root()?;
     // EPOCH-GUARDED: a switch during the save supersedes this epoch — the write
     // landed on the (still-correct) old-workspace path, but its provenance must
     // not be handed to the new workspace, so discard the outcome.
@@ -713,8 +733,15 @@ pub struct WorkspaceGrant {
 
 /// Holds the live workspace watcher. Parking the debouncer here keeps it alive;
 /// replacing it (switching folders) drops the previous one, stopping that watch.
+struct ActiveWatcher {
+    _debouncer: Debouncer<RecommendedWatcher>,
+    _root: SourceRoot,
+    _generation: u64,
+}
+
+/// The live watcher and the exact root object it was armed against.
 #[derive(Default)]
-pub struct WatcherState(pub Mutex<Option<Debouncer<RecommendedWatcher>>>);
+pub struct WatcherState(Mutex<Option<ActiveWatcher>>);
 
 /// Begin watching `root` recursively, emitting a debounced
 /// `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
@@ -748,7 +775,7 @@ pub(crate) fn watch_workspace_path(
     workspace: &WorkspaceState,
     state: &WatcherState,
 ) -> Result<WorkspaceGrant, String> {
-    watch_workspace_path_checked(app, root, workspace, state, false)
+    watch_workspace_path_checked(app, root, workspace, state, None)
 }
 
 /// Library-only watcher path: the registry supplies an already-canonical root,
@@ -756,11 +783,17 @@ pub(crate) fn watch_workspace_path(
 /// the watcher or epoch changes.
 pub(crate) fn watch_workspace_path_exact(
     app: &AppHandle,
-    expected_root: &Path,
+    expected_root: &SourceRoot,
     workspace: &WorkspaceState,
     state: &WatcherState,
 ) -> Result<WorkspaceGrant, String> {
-    watch_workspace_path_checked(app, expected_root, workspace, state, true)
+    watch_workspace_path_checked(
+        app,
+        &expected_root.path,
+        workspace,
+        state,
+        Some(&expected_root.identity),
+    )
 }
 
 fn watch_workspace_path_checked(
@@ -768,22 +801,40 @@ fn watch_workspace_path_checked(
     root: &Path,
     workspace: &WorkspaceState,
     state: &WatcherState,
-    require_exact_identity: bool,
+    expected_identity: Option<&SourceRootIdentity>,
 ) -> Result<WorkspaceGrant, String> {
+    let source_root = prepare_source_root(root, expected_identity)?;
+    let event_root = source_root.clone();
     let emit_app = app.clone();
     // The generation the watcher is armed under — filled by `commit_workspace`
     // (under the lock, matching the new epoch exactly) and read by the emit
     // closure so every event is tagged with the era it belongs to.
     let armed_gen = Arc::new(AtomicU64::new(0));
     let gen_for_closure = Arc::clone(&armed_gen);
-    let (granted, generation) = watch_and_commit_path_checked(
-        root,
+    let declined = Arc::new(AtomicBool::new(false));
+    let declined_for_closure = Arc::clone(&declined);
+    let (granted, generation) = watch_and_commit_bound(
+        source_root,
         workspace,
         state,
         &armed_gen,
-        require_exact_identity,
+        || {},
+        || {},
+        || {},
         move |result: DebounceEventResult| {
             let generation = gen_for_closure.load(Ordering::Acquire) as u32;
+            if declined_for_closure.load(Ordering::Acquire) {
+                return;
+            }
+            if let Err(error) = event_root.verify() {
+                declined_for_closure.store(true, Ordering::Release);
+                let _ = WatchError {
+                    message: error.to_string(),
+                    generation,
+                }
+                .emit(&emit_app);
+                return;
+            }
             match result {
                 Ok(events) => {
                     for event in events {
@@ -844,38 +895,112 @@ fn watch_and_commit_path<F: DebounceEventHandler>(
     armed_gen: &AtomicU64,
     on_event: F,
 ) -> Result<(PathBuf, u32), String> {
-    watch_and_commit_path_checked(root, workspace, watcher, armed_gen, false, on_event)
+    let source_root = prepare_source_root(root, None)?;
+    watch_and_commit_bound(
+        source_root,
+        workspace,
+        watcher,
+        armed_gen,
+        || {},
+        || {},
+        || {},
+        on_event,
+    )
 }
 
 #[cfg(test)]
 fn watch_and_commit_path_exact<F: DebounceEventHandler>(
-    expected_root: &Path,
+    expected_root: &SourceRoot,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     armed_gen: &AtomicU64,
     on_event: F,
 ) -> Result<(PathBuf, u32), String> {
-    watch_and_commit_path_checked(expected_root, workspace, watcher, armed_gen, true, on_event)
+    watch_and_commit_path_exact_with_hooks(
+        expected_root,
+        workspace,
+        watcher,
+        armed_gen,
+        || {},
+        || {},
+        || {},
+        on_event,
+    )
 }
 
-fn watch_and_commit_path_checked<F: DebounceEventHandler>(
-    root: &Path,
+#[cfg(test)]
+// The three independent hooks are deterministic seams for the validation,
+// watcher-arm, and publication race windows.
+#[allow(clippy::too_many_arguments)]
+fn watch_and_commit_path_exact_with_hooks<
+    F: DebounceEventHandler,
+    V: FnOnce(),
+    A: FnOnce(),
+    P: FnOnce(),
+>(
+    expected_root: &SourceRoot,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     armed_gen: &AtomicU64,
-    require_exact_identity: bool,
+    after_validation: V,
+    after_watcher_arm: A,
+    before_epoch_publication: P,
     on_event: F,
 ) -> Result<(PathBuf, u32), String> {
+    let source_root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
+    watch_and_commit_bound(
+        source_root,
+        workspace,
+        watcher,
+        armed_gen,
+        after_validation,
+        after_watcher_arm,
+        before_epoch_publication,
+        on_event,
+    )
+}
+
+fn prepare_source_root(
+    root: &Path,
+    expected_identity: Option<&SourceRootIdentity>,
+) -> Result<SourceRoot, String> {
     // A workspace SWITCH targets a NEW root that is not inside the old grant, so
     // resolve it independently: this command is the one that ESTABLISHES the grant.
     let new_root = canonical_dir_path(root)?;
-    if require_exact_identity && new_root != root {
+    if expected_identity.is_some() && new_root != root {
         return Err(format!(
             "workspace root identity changed since library admission: {}",
             root.display()
         ));
     }
+    match expected_identity {
+        Some(identity) => {
+            identity
+                .verify(&new_root)
+                .map_err(|error| error.to_string())?;
+            Ok(SourceRoot {
+                path: new_root,
+                identity: identity.clone(),
+            })
+        }
+        None => SourceRoot::capture(new_root).map_err(|error| error.to_string()),
+    }
+}
 
+// The three independent hooks are deterministic seams for the validation,
+// watcher-arm, and publication race windows.
+#[allow(clippy::too_many_arguments)]
+fn watch_and_commit_bound<F: DebounceEventHandler>(
+    new_root: SourceRoot,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    armed_gen: &AtomicU64,
+    after_validation: impl FnOnce(),
+    after_watcher_arm: impl FnOnce(),
+    before_epoch_publication: impl FnOnce(),
+    on_event: F,
+) -> Result<(PathBuf, u32), String> {
+    after_validation();
     // Build + arm the new watcher into a LOCAL, holding NO state lock across
     // construction. A failure here changes nothing — the previous grant + watcher
     // stay live, so the caller simply stays on the old workspace.
@@ -883,11 +1008,18 @@ fn watch_and_commit_path_checked<F: DebounceEventHandler>(
         .map_err(|err| format!("watcher init failed: {err}"))?;
     debouncer
         .watcher()
-        .watch(&new_root, RecursiveMode::Recursive)
-        .map_err(|err| format!("watch {} failed: {err}", root.display()))?;
+        .watch(&new_root.path, RecursiveMode::Recursive)
+        .map_err(|err| format!("watch {} failed: {err}", new_root.path.display()))?;
 
-    let generation = commit_workspace(workspace, watcher, new_root.clone(), debouncer, armed_gen)?;
-    Ok((new_root, generation))
+    after_watcher_arm();
+    // The watcher may have armed after the path was substituted. Revalidate the
+    // opened object now, then once more inside the atomic publication section.
+    new_root.verify().map_err(|error| error.to_string())?;
+    before_epoch_publication();
+
+    let granted_path = new_root.path.clone();
+    let generation = commit_workspace(workspace, watcher, new_root, debouncer, armed_gen)?;
+    Ok((granted_path, generation))
 }
 
 /// Swap in a fresh [`Epoch`](crate::engine::Epoch) for `new_root` and `debouncer`
@@ -903,7 +1035,7 @@ fn watch_and_commit_path_checked<F: DebounceEventHandler>(
 fn commit_workspace(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
-    new_root: PathBuf,
+    new_root: SourceRoot,
     debouncer: Debouncer<RecommendedWatcher>,
     armed_gen: &AtomicU64,
 ) -> Result<u32, String> {
@@ -915,13 +1047,18 @@ fn commit_workspace(
         .current
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
+    new_root.verify().map_err(|error| error.to_string())?;
     // Both locks held — neither write below can fail, so the swap is atomic. The
     // watcher's armed generation is published to match the new epoch exactly, so
     // its events are tagged with the era they belong to.
     let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
     armed_gen.store(generation, Ordering::Release);
-    *epoch_slot = Some(crate::engine::Epoch::new(new_root, generation));
-    *watcher_slot = Some(debouncer);
+    *epoch_slot = Some(crate::engine::Epoch::new(new_root.clone(), generation));
+    *watcher_slot = Some(ActiveWatcher {
+        _debouncer: debouncer,
+        _root: new_root,
+        _generation: generation,
+    });
     Ok(generation as u32)
 }
 
@@ -930,13 +1067,16 @@ mod tests {
     use super::{
         canonical_dir, commit_rename, grant_workspace_path_exact, read_doc_guarded, resolve_dir,
         resolve_doc, resolve_within, save_doc_guarded, watch_and_commit,
-        watch_and_commit_path_exact, DebounceEventResult, WatcherState, WorkspaceState,
+        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks, DebounceEventResult,
+        WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    use mdreader_ingest::SourceRoot;
 
     /// blake3 hex of `bytes` — the same digest `read_doc`/`save_doc` compute, so a
     /// test can anchor an `expected_hash` to a file's real contents.
@@ -1199,6 +1339,23 @@ mod tests {
         assert_eq!(generation as u64, ws.generation());
         assert_eq!(armed_gen.load(Ordering::Acquire), ws.generation());
         assert!(generation >= 2, "advanced past the initial grant");
+        let epoch = ws.current().expect("active epoch");
+        let watcher_slot = watcher.0.lock().expect("watcher state");
+        let active_watcher = watcher_slot.as_ref().expect("live watcher");
+        assert_eq!(active_watcher._root.identity, epoch.root_identity);
+        assert_eq!(active_watcher._generation, epoch.generation);
+    }
+
+    #[test]
+    fn a_new_generation_preserves_the_mandatory_root_identity() {
+        let (_dir, root) = workspace();
+        let ws = WorkspaceState::granted(root.clone());
+        let first = ws.current().expect("first epoch");
+        let second = ws.switch(root).expect("second epoch");
+
+        assert!(second.generation > first.generation);
+        assert_eq!(second.root_identity, first.root_identity);
+        assert!(second.validate_root().is_ok());
     }
 
     #[cfg(unix)]
@@ -1217,13 +1374,15 @@ mod tests {
         let prior = fs::canonicalize(prior).expect("canonical prior");
         let admitted = fs::canonicalize(admitted).expect("canonical admitted");
         let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let admitted_root =
+            SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
         let workspace = WorkspaceState::granted(prior.clone());
         let before = workspace.current().expect("prior epoch");
 
         fs::remove_dir(&admitted).expect("remove admitted root");
         symlink(&replacement, &admitted).expect("substitute symlink");
 
-        let error = grant_workspace_path_exact(&admitted, &workspace)
+        let error = grant_workspace_path_exact(&admitted_root, &workspace)
             .expect_err("changed canonical identity must not be granted");
         assert!(error.contains("identity changed"));
         let after = workspace.current().expect("prior epoch remains");
@@ -1231,9 +1390,42 @@ mod tests {
         assert_eq!(after.root, prior);
         assert_eq!(after.generation, before.generation);
         assert!(
-            !crate::engine::db_path_under(&temp.path().join("app-data"), &replacement).exists(),
+            !crate::engine::db_path_under(
+                &temp.path().join("app-data"),
+                &SourceRoot::capture(replacement.clone()).expect("capture replacement identity")
+            )
+            .exists(),
             "a refused target never reaches index creation"
         );
+    }
+
+    #[test]
+    fn degraded_exact_grant_refuses_a_different_object_at_the_same_path() {
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let expected = SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let before = workspace.current().expect("prior epoch");
+
+        fs::rename(&admitted, temp.path().join("moved-admitted"))
+            .expect("move admitted filesystem object");
+        fs::create_dir(&admitted).expect("create replacement at exact path");
+
+        let error = grant_workspace_path_exact(&expected, &workspace)
+            .expect_err("degraded grant must refuse replacement identity");
+        assert!(!error.is_empty() && error.contains("identity"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.root_identity, before.root_identity);
     }
 
     #[cfg(unix)]
@@ -1252,6 +1444,8 @@ mod tests {
         let prior = fs::canonicalize(prior).expect("canonical prior");
         let admitted = fs::canonicalize(admitted).expect("canonical admitted");
         let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let admitted_root =
+            SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
         let workspace = WorkspaceState::granted(prior.clone());
         let watcher = WatcherState(Mutex::new(None));
         let armed_gen = AtomicU64::new(0);
@@ -1271,7 +1465,7 @@ mod tests {
         symlink(&replacement, &admitted).expect("substitute symlink");
 
         let error = watch_and_commit_path_exact(
-            &admitted,
+            &admitted_root,
             &workspace,
             &watcher,
             &armed_gen,
@@ -1286,8 +1480,204 @@ mod tests {
         assert_eq!(armed_gen.load(Ordering::Acquire), before_armed);
         assert!(watcher.0.lock().expect("watcher lock").is_some());
         assert!(
-            !crate::engine::db_path_under(&temp.path().join("app-data"), &replacement).exists(),
+            !crate::engine::db_path_under(
+                &temp.path().join("app-data"),
+                &SourceRoot::capture(replacement.clone()).expect("capture replacement identity")
+            )
+            .exists(),
             "a refused target never reaches index creation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_watch_revalidates_after_validation_before_arming() {
+        use std::os::unix::fs::symlink;
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        fs::create_dir_all(&replacement).expect("replacement root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let expected = SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
+        let moved = temp.path().join("moved-admitted");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let watcher = WatcherState::default();
+        let armed_gen = AtomicU64::new(0);
+        watch_and_commit(
+            prior.to_str().expect("utf8 prior"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm prior watcher");
+        let before = workspace.current().expect("prior epoch");
+        let before_generation = armed_gen.load(Ordering::Acquire);
+
+        let error = watch_and_commit_path_exact_with_hooks(
+            &expected,
+            &workspace,
+            &watcher,
+            &armed_gen,
+            || {
+                fs::rename(&admitted, &moved).expect("move admitted object");
+                symlink(&replacement, &admitted).expect("install replacement symlink");
+            },
+            || {},
+            || {},
+            |_result: DebounceEventResult| {},
+        )
+        .expect_err("post-validation substitution must be refused");
+
+        assert!(!error.is_empty() && error.contains("identity"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(armed_gen.load(Ordering::Acquire), before_generation);
+        let watcher_slot = watcher.0.lock().expect("watcher state");
+        assert_eq!(
+            watcher_slot
+                .as_ref()
+                .expect("prior watcher remains")
+                ._root
+                .identity,
+            before.root_identity
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_watch_revalidates_after_watcher_creation() {
+        use std::os::unix::fs::symlink;
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        fs::create_dir_all(&replacement).expect("replacement root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let expected = SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
+        let moved = temp.path().join("moved-admitted");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let watcher = WatcherState::default();
+        let armed_gen = AtomicU64::new(0);
+        watch_and_commit(
+            prior.to_str().expect("utf8 prior"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm prior watcher");
+        let before = workspace.current().expect("prior epoch");
+        let before_generation = armed_gen.load(Ordering::Acquire);
+
+        let error = watch_and_commit_path_exact_with_hooks(
+            &expected,
+            &workspace,
+            &watcher,
+            &armed_gen,
+            || {},
+            || {
+                fs::rename(&admitted, &moved).expect("move watched object");
+                symlink(&replacement, &admitted).expect("install replacement symlink");
+            },
+            || {
+                fs::remove_file(&admitted).expect("remove temporary symlink");
+                fs::rename(&moved, &admitted).expect("restore admitted object");
+            },
+            |_result: DebounceEventResult| {},
+        )
+        .expect_err("post-watcher substitution must be refused");
+
+        assert!(!error.is_empty() && error.contains("identity"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(armed_gen.load(Ordering::Acquire), before_generation);
+        let watcher_slot = watcher.0.lock().expect("watcher state");
+        assert_eq!(
+            watcher_slot
+                .as_ref()
+                .expect("prior watcher remains")
+                ._root
+                .identity,
+            before.root_identity
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_watch_revalidates_immediately_before_epoch_publication() {
+        use std::os::unix::fs::symlink;
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        fs::create_dir_all(&replacement).expect("replacement root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let expected = SourceRoot::capture(admitted.clone()).expect("capture admitted identity");
+        let moved = temp.path().join("moved-admitted");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let watcher = WatcherState::default();
+        let armed_gen = AtomicU64::new(0);
+        watch_and_commit(
+            prior.to_str().expect("utf8 prior"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm prior watcher");
+        let before = workspace.current().expect("prior epoch");
+        let before_generation = armed_gen.load(Ordering::Acquire);
+
+        let error = watch_and_commit_path_exact_with_hooks(
+            &expected,
+            &workspace,
+            &watcher,
+            &armed_gen,
+            || {},
+            || {},
+            || {
+                fs::rename(&admitted, &moved).expect("move watched object");
+                symlink(&replacement, &admitted).expect("install replacement symlink");
+            },
+            |_result: DebounceEventResult| {},
+        )
+        .expect_err("pre-publication substitution must be refused");
+
+        assert!(!error.is_empty() && error.contains("identity"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(armed_gen.load(Ordering::Acquire), before_generation);
+        let watcher_slot = watcher.0.lock().expect("watcher state");
+        assert_eq!(
+            watcher_slot
+                .as_ref()
+                .expect("prior watcher remains")
+                ._root
+                .identity,
+            before.root_identity
         );
     }
 
@@ -1311,6 +1701,67 @@ mod tests {
         });
         assert!(stale.is_err(), "stale read discarded");
         assert_eq!(ws.root().unwrap(), root_b);
+    }
+
+    fn replaced_docs_workspace() -> (TempDir, WorkspaceState, PathBuf, PathBuf) {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("create root");
+        fs::write(root.join("note.md"), "# original").expect("write original");
+        let root = fs::canonicalize(root).expect("canonical root");
+        let ws = WorkspaceState::granted(root.clone());
+
+        let moved = temp.path().join("moved-original");
+        fs::rename(&root, &moved).expect("move admitted root");
+        fs::create_dir(&root).expect("create replacement root");
+        let replacement = root.join("note.md");
+        fs::write(&replacement, "# replacement").expect("write replacement");
+        (temp, ws, moved, replacement)
+    }
+
+    #[test]
+    fn read_refuses_a_replacement_at_the_active_root_path() {
+        let (_temp, ws, moved, replacement) = replaced_docs_workspace();
+        let read_error = read_doc_guarded(
+            &ws,
+            replacement.to_str().expect("utf8 replacement path"),
+            || {},
+        )
+        .expect_err("read must refuse replacement root");
+        assert!(!read_error.is_empty() && read_error.contains("identity"));
+        assert_eq!(
+            fs::read_to_string(&replacement).expect("replacement untouched"),
+            "# replacement"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("note.md")).expect("original untouched"),
+            "# original"
+        );
+    }
+
+    #[test]
+    fn save_refuses_a_replacement_at_the_active_root_path() {
+        let (_temp, ws, moved, replacement) = replaced_docs_workspace();
+        let save_error = save_doc_guarded(
+            &ws,
+            replacement.to_str().expect("utf8 replacement path"),
+            "# must not land",
+            &hash_of(b"# replacement"),
+            false,
+            commit_rename,
+            || {},
+            || {},
+        )
+        .expect_err("save must refuse replacement root");
+        assert!(!save_error.is_empty() && save_error.contains("identity"));
+        assert_eq!(
+            fs::read_to_string(&replacement).expect("replacement untouched"),
+            "# replacement"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("note.md")).expect("original untouched"),
+            "# original"
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! ## Where the database lives
 //!
 //! Not inside the user's notes. Each workspace's index is a private SQLite file
-//! at `<app-data-dir>/workspaces/<blake3(canonical root)>/catdb.db`, so a corpus
+//! at `<app-data-dir>/workspaces/<blake3(native root + object identity)>/catdb.db`, so a corpus
 //! is never littered with an engine sidecar and two aliases of one folder share
 //! one index. [`read_doc`](crate::commands::read_doc) still reads straight off
 //! disk — the index is for *finding*, never the source of truth for *content*.
@@ -103,6 +103,7 @@ use catdb_storage::DocumentRow;
 use mdreader_ingest::{registration_with_proposals, scan_root, ProposalStore, ScanOptions};
 
 use crate::commands::{mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState};
+use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
 /// Default per-file size ceiling the ingest scan honors (mirrors the engine's
 /// `ImportOptions` default of 2 MiB); the fs-fallback listing uses the same
@@ -269,6 +270,8 @@ fn model_info_for(hash_embed: bool) -> ModelInfo {
 pub struct Epoch {
     /// Canonical granted root (the workspace the engine keys and imports on).
     pub(crate) root: PathBuf,
+    /// Stable filesystem-object identity captured from the admitted root.
+    pub(crate) root_identity: SourceRootIdentity,
     /// Monotonic era number (advances on every switch); for logs/observability —
     /// `Arc::ptr_eq` is the authoritative identity.
     pub(crate) generation: u64,
@@ -296,9 +299,10 @@ pub struct Epoch {
 impl Epoch {
     /// A fresh epoch for `root` at `generation`, with no engine yet and an idle
     /// status.
-    pub(crate) fn new(root: PathBuf, generation: u64) -> Arc<Self> {
+    pub(crate) fn new(root: SourceRoot, generation: u64) -> Arc<Self> {
         Arc::new(Self {
-            root,
+            root: root.path,
+            root_identity: root.identity,
             generation,
             engine: OnceLock::new(),
             embedder: OnceLock::new(),
@@ -306,6 +310,22 @@ impl Epoch {
             status: Mutex::new(ImportProgress::default()),
             active: Mutex::new(false),
         })
+    }
+
+    /// Refuse this epoch when its canonical path no longer names the admitted
+    /// filesystem object or has become a symlink/reparse point.
+    pub(crate) fn validate_root(&self) -> Result<(), String> {
+        self.root_identity
+            .verify(&self.root)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Clone the path/identity pair as one authority value.
+    pub(crate) fn source_root(&self) -> SourceRoot {
+        SourceRoot {
+            path: self.root.clone(),
+            identity: self.root_identity.clone(),
+        }
     }
 
     /// This epoch's current import status.
@@ -706,42 +726,14 @@ impl WikiResolution {
 // Engine lifecycle helpers
 // --------------------------------------------------------------------------
 
-/// The private index path for `canonical_root` under `base` (the app data dir):
-/// `base/workspaces/<blake3(root)>/catdb.db`. Pure so it is unit-testable and so
-/// the same root always maps to the same file.
-pub(crate) fn db_path_under(base: &Path, canonical_root: &Path) -> PathBuf {
-    // Preserve the historical digest (and therefore every existing index
-    // location) for ordinary UTF-8 roots. Only roots that cannot be represented
-    // losslessly as UTF-8 take the native-unit branch; a domain separator keeps
-    // those identities distinct from every historical text digest.
-    let hash = if let Some(root) = canonical_root.to_str() {
-        blake3::hash(root.as_bytes())
-    } else {
-        let mut hasher = blake3::Hasher::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            hasher.update(b"mdreader-unix-native-root-v1\0");
-            hasher.update(canonical_root.as_os_str().as_bytes());
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            hasher.update(b"mdreader-windows-native-root-v1\0");
-            for unit in canonical_root.as_os_str().encode_wide() {
-                hasher.update(&unit.to_le_bytes());
-            }
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            hasher.update(b"mdreader-platform-native-root-v1\0");
-            hasher.update(canonical_root.to_string_lossy().as_bytes());
-        }
-        hasher.finalize()
-    }
-    .to_hex()
-    .to_string();
-    base.join("workspaces").join(hash).join("catdb.db")
+/// The private index path for `root` under `base` (the app data dir):
+/// `base/workspaces/<blake3(native-path + object-identity)>/catdb.db`.
+///
+/// Requiring a [`SourceRoot`] prevents path-only callers from opening an index.
+/// A replacement directory at the same canonical path receives a different key
+/// and therefore can never inherit the admitted object's indexed rows.
+pub(crate) fn db_path_under(base: &Path, root: &SourceRoot) -> PathBuf {
+    mdreader_ingest::workspace_index_path(base, root)
 }
 
 /// The overlay **proposal** store for the index at `db_path`: a sibling file,
@@ -847,7 +839,11 @@ fn ensure_index(
         .path()
         .app_data_dir()
         .map_err(|err| format!("no app data dir: {err}"))?;
-    open_index_at(epoch, workspace, &db_path_under(&base, &epoch.root))
+    open_index_at(
+        epoch,
+        workspace,
+        &db_path_under(&base, &epoch.source_root()),
+    )
 }
 
 /// [`ensure_index`] with the database path already resolved — the app-handle-free
@@ -857,6 +853,7 @@ fn open_index_at(
     workspace: &WorkspaceState,
     db_path: &Path,
 ) -> Result<Option<OpenIndex>, String> {
+    epoch.validate_root()?;
     // Fast path: this epoch's engine is already installed (with its embedder).
     if let (Some(db), Some(embedder)) = (epoch.engine.get(), epoch.embedder.get()) {
         return Ok(Some((Arc::clone(db), Arc::clone(embedder))));
@@ -864,6 +861,7 @@ fn open_index_at(
 
     let embedder = Arc::new(DeferredEmbedder::loading(configured_model_info()));
     let (db, proposals) = open_engine(db_path, Arc::clone(&embedder) as Arc<dyn Embedder>)?;
+    epoch.validate_root()?;
 
     // EPOCH-GUARDED commit point: a switch during the open supersedes this epoch
     // — drop the freshly-opened index rather than install into a dead era.
@@ -961,6 +959,7 @@ fn publish(
 /// path is a hard error; the engine always imports the epoch's own grant, never
 /// an arbitrary caller-supplied path, so one workspace maps to exactly one index.
 fn validate_import_root(epoch: &Epoch, root: &str) -> Result<(), String> {
+    epoch.validate_root()?;
     let candidate = resolve_request_root(epoch, root)?;
     if !candidate.starts_with(&epoch.root) {
         return Err(format!("path escapes the workspace: {root}"));
@@ -1081,6 +1080,7 @@ pub async fn start_import(
             .unwrap_or_else(|_| epoch.status()));
     }
 
+    epoch.validate_root()?;
     let total = scan_count(&epoch.root);
     publish(
         &epoch,
@@ -1091,7 +1091,9 @@ pub async fn start_import(
 
     // The engine serializes imports internally (single-writer); a concurrent
     // call simply queues, so re-firing on a rapid re-grant is safe.
+    epoch.validate_root()?;
     let outcome = db.import(&epoch.root, ImportOptions::default()).await;
+    epoch.validate_root()?;
     let final_status = match outcome {
         Ok(report) => ImportProgress::done(&report),
         Err(err) => ImportProgress::failed(total, err.to_string()),
@@ -1150,6 +1152,7 @@ fn list_workspace_files_guarded(
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
     // TOCTOU: the reads below run after this containment check (accepted — see
     // the commands module's "TOCTOU" note; local single-user reader).
     let root_path = resolve_request_root(&epoch, root)?;
@@ -1170,6 +1173,7 @@ fn list_workspace_files_guarded(
     };
 
     gate();
+    epoch.validate_root()?;
     // EPOCH-GUARDED (both paths funnel through the ONE choke-point): a switch
     // during the read supersedes this epoch — discard rather than surface a
     // previous workspace's listing.
@@ -1300,11 +1304,13 @@ fn resolve_wikilink_guarded(
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
     wikilink_guard(&epoch, from_doc)?;
 
     let resolution = resolve_against(&epoch, target, heading)?;
 
     gate();
+    epoch.validate_root()?;
     // EPOCH-GUARDED: a switch during resolution supersedes this epoch — its result
     // is discarded to `unresolved` (silently-clean) rather than surfacing a
     // previous workspace's document.
@@ -1503,19 +1509,42 @@ mod tests {
         }
     }
 
+    fn synthetic_root(path: PathBuf, device: u64, inode: u64) -> SourceRoot {
+        SourceRoot {
+            path,
+            identity: SourceRootIdentity::Unix { device, inode },
+        }
+    }
+
     #[test]
     fn db_path_is_deterministic_and_isolated_from_the_corpus() {
         let base = Path::new("/data");
-        let root = Path::new("/Users/me/notes");
-        let a = db_path_under(base, root);
-        let b = db_path_under(base, root);
+        let root = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 11);
+        let a = db_path_under(base, &root);
+        let b = db_path_under(base, &root);
         assert_eq!(a, b, "same root maps to the same db file");
         assert!(a.starts_with("/data/workspaces"));
         assert!(a.ends_with("catdb.db"));
         // A different root maps somewhere else — never inside the corpus.
-        let other = db_path_under(base, Path::new("/Users/me/other"));
+        let other = db_path_under(
+            base,
+            &synthetic_root(PathBuf::from("/Users/me/other"), 7, 12),
+        );
         assert_ne!(a, other);
-        assert!(!a.starts_with(root));
+        assert!(!a.starts_with(&root.path));
+    }
+
+    #[test]
+    fn the_root_key_requires_object_identity_not_only_the_canonical_path() {
+        let base = Path::new("/data");
+        let admitted = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 11);
+        let replacement = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 12);
+
+        assert_ne!(
+            db_path_under(base, &admitted),
+            db_path_under(base, &replacement),
+            "a replacement at the same path must not inherit the admitted index"
+        );
     }
 
     #[cfg(unix)]
@@ -1525,9 +1554,17 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let base = Path::new("/data");
-        let first = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xff]));
-        let second = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xfe]));
-        assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+        let first = synthetic_root(
+            PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xff])),
+            7,
+            11,
+        );
+        let second = synthetic_root(
+            PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xfe])),
+            7,
+            12,
+        );
+        assert_eq!(first.path.to_string_lossy(), second.path.to_string_lossy());
         assert_ne!(db_path_under(base, &first), db_path_under(base, &second));
     }
 
@@ -1712,7 +1749,10 @@ mod tests {
     fn import_root_rejects_a_foreign_path_and_accepts_the_grant() {
         let (_g, granted) = workspace_dir();
         let (_f, foreign) = workspace_dir();
-        let epoch = Epoch::new(granted.clone(), 1);
+        let epoch = Epoch::new(
+            SourceRoot::capture(granted.clone()).expect("capture granted root"),
+            1,
+        );
 
         // The granted root is accepted, as is a contained subdirectory.
         assert!(validate_import_root(&epoch, granted.to_str().unwrap()).is_ok());
@@ -1722,6 +1762,57 @@ mod tests {
 
         // A foreign root is a hard error.
         assert!(validate_import_root(&epoch, foreign.to_str().unwrap()).is_err());
+    }
+
+    fn replaced_workspace() -> (TempDir, PathBuf, PathBuf, WorkspaceState) {
+        let temp = TempDir::new().expect("tempdir");
+        let granted = temp.path().join("notes");
+        fs::create_dir(&granted).expect("create granted root");
+        fs::write(granted.join("original.md"), "# original").expect("write original");
+        let granted = fs::canonicalize(granted).expect("canonical granted root");
+        let ws = WorkspaceState::granted(granted.clone());
+
+        let moved = temp.path().join("moved-original");
+        fs::rename(&granted, &moved).expect("move granted filesystem object");
+        fs::create_dir(&granted).expect("create replacement at exact path");
+        fs::write(granted.join("replacement.md"), "# replacement").expect("write replacement");
+        (temp, granted, moved, ws)
+    }
+
+    #[test]
+    fn import_refuses_a_replacement_at_the_active_epochs_exact_path() {
+        let (_temp, granted, moved, ws) = replaced_workspace();
+        let epoch = ws.current().expect("active epoch");
+        let import_error = validate_import_root(&epoch, granted.to_str().expect("utf8 path"))
+            .expect_err("import must reject the replacement root");
+        assert!(
+            !import_error.is_empty() && import_error.contains("identity"),
+            "import refusal must be explicit: {import_error}"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("original.md")).expect("original object remains"),
+            "# original"
+        );
+    }
+
+    #[test]
+    fn listing_refuses_a_replacement_instead_of_reading_or_rendering_it_as_empty() {
+        let (_temp, granted, moved, ws) = replaced_workspace();
+        let listing_error =
+            list_workspace_files_guarded(&ws, granted.to_str().expect("utf8 path"), || {})
+                .expect_err("listing must reject the replacement root");
+        assert!(
+            matches!(
+                &listing_error,
+                ListingError::Failed { message }
+                    if !message.is_empty() && message.contains("identity")
+            ),
+            "listing refusal must not be rendered as an empty workspace: {listing_error:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("original.md")).expect("original object remains"),
+            "# original"
+        );
     }
 
     #[cfg(unix)]
@@ -1735,7 +1826,16 @@ mod tests {
         // epoch may originate on any Unix filesystem. This helper performs no
         // I/O for the exact-root case, so exercise the native identity directly.
         let native_root = PathBuf::from("/").join(native);
-        let epoch = Epoch::new(native_root.clone(), 1);
+        let epoch = Epoch::new(
+            SourceRoot {
+                path: native_root.clone(),
+                identity: SourceRootIdentity::Unix {
+                    device: 0,
+                    inode: 0,
+                },
+            },
+            1,
+        );
         let display = native_root.to_string_lossy();
 
         assert_eq!(
@@ -1816,7 +1916,10 @@ mod tests {
     fn wikilink_guard_rejects_a_foreign_origin_document() {
         let (_g, granted) = workspace_dir();
         let (_f, foreign) = workspace_dir();
-        let epoch = Epoch::new(granted.clone(), 1);
+        let epoch = Epoch::new(
+            SourceRoot::capture(granted.clone()).expect("capture granted root"),
+            1,
+        );
 
         // An origin document inside the grant (and the empty origin) are accepted.
         let inside = granted.join("note.md");
@@ -1893,7 +1996,10 @@ mod tests {
     #[test]
     fn active_import_is_coalesced_per_epoch() {
         let (_g, granted) = workspace_dir();
-        let epoch = Epoch::new(granted, 1);
+        let epoch = Epoch::new(
+            SourceRoot::capture(granted).expect("capture granted root"),
+            1,
+        );
 
         // The first claim wins; a second for the SAME epoch coalesces (false →
         // the caller returns the live status instead of spawning a duplicate).

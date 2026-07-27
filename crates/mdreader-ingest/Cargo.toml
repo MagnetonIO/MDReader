@@ -49,6 +49,9 @@ ignore = "0.4"
 # catdb-storage-sqlite, one layer down.
 rusqlite = { version = "0.37", features = ["bundled"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 catdb-catalog = { path = "../../../../catdb/crates/catdb-catalog" }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }

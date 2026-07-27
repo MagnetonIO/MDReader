@@ -960,9 +960,11 @@ pub async fn check_constraints(
 // --------------------------------------------------------------------------
 
 fn current(state: &WorkspaceState) -> Result<Arc<Epoch>, String> {
-    state
+    let epoch = state
         .current()
-        .ok_or_else(|| "no workspace has been opened".to_string())
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
+    Ok(epoch)
 }
 
 /// Everything a review command must resolve *before* it touches either store:

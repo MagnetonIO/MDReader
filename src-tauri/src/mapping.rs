@@ -1213,7 +1213,9 @@ fn plan_dto(requested: &str, plan: &MigrationPlan) -> MigrationPlanDto {
 // --------------------------------------------------------------------------
 
 fn current(state: &WorkspaceState) -> Result<Arc<Epoch>, String> {
-    state
+    let epoch = state
         .current()
-        .ok_or_else(|| "no workspace has been opened".to_string())
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
+    Ok(epoch)
 }

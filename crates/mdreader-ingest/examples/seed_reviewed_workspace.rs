@@ -35,23 +35,7 @@ use std::sync::Arc;
 use catdb_embed::HashEmbedder;
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use mdreader_ingest::proposals::{approve_and_promote, ProposalFilter, ProposalStore, StoredFact};
-use mdreader_ingest::registration_with_proposals;
-
-/// Where the desktop app keeps the private index for `canonical_root`:
-/// `<app-data-dir>/workspaces/<blake3(canonical root)>/catdb.db`.
-///
-/// This mirrors `mdreader_app::engine::db_path_under`, which is `pub(crate)`
-/// in the Tauri crate and unreachable from here (the app depends on this crate,
-/// not the reverse). Drift is not silent: if the two ever disagree, the app
-/// opens a different, un-reviewed workspace and the GUI flow's Constraint
-/// Explorer step fails immediately with "reports no violation" rather than
-/// passing over an empty interpretation.
-fn app_db_path(app_data: &std::path::Path, canonical_root: &std::path::Path) -> PathBuf {
-    let hash = blake3::hash(canonical_root.to_string_lossy().as_bytes())
-        .to_hex()
-        .to_string();
-    app_data.join("workspaces").join(hash).join("catdb.db")
-}
+use mdreader_ingest::{registration_with_proposals, workspace_index_path, SourceRoot};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -61,7 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .canonicalize()?;
     let app_data = PathBuf::from(args.next().ok_or("missing <app-data-dir>")?);
-    let db = app_db_path(&app_data, &corpus);
+    let source_root = SourceRoot::capture(corpus.clone())?;
+    let db = workspace_index_path(&app_data, &source_root);
     let reviewer = args.next().ok_or("missing <reviewer>")?;
     if reviewer.trim().is_empty() {
         return Err("the reviewer must be a real, non-blank name".into());
