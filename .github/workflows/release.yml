@@ -154,11 +154,11 @@ jobs:
           path: ${{ runner.temp }}/mdreader-release-support
           if-no-files-found: error
           retention-days: 1
-      - name: Install Node 22
+      - name: Install Node 24 LTS
         id: setup-node-prepare
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.13.1'
+          node-version: '24.18.0'
           cache: pnpm
       - name: Enable pinned package manager
         id: enable-corepack-prepare
@@ -224,11 +224,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Install Node 22
+      - name: Install Node 24 LTS
         id: setup-node-build
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.13.1'
+          node-version: '24.18.0'
           cache: pnpm
       - name: Enable pinned package manager
         id: enable-corepack-build
@@ -308,6 +308,8 @@ jobs:
           NODE
       - name: Build frontend and Rust binary without private credentials
         id: prepare-direct-release
+        env:
+          MDREADER_RELEASE_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Verify immutable compile inputs after application build
         id: verify-unsigned-build
@@ -494,11 +496,11 @@ jobs:
             native_integrity: 'sha512-2VRNWl84FOH0m2giiDkO2h0QXlcMJeX+zJDpI5kDIQAx6s+geF3v48F4DXfJez4GS/FdoDGnPnw1C2iYGbQ7bQ=='
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install pinned Node runtime
+      - name: Install Node 24 LTS
         id: setup-node-bundle
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.13.1'
+          node-version: '24.18.0'
       - name: Download the one hash-addressed unsigned handoff
         id: download-unsigned-handoff
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -819,6 +821,161 @@ jobs:
             [...handoff.files].sort((left, right) => left.path.localeCompare(right.path)),
             'unsigned handoff',
           );
+          const executable = readFileSync(
+            join(unsignedPayload, 'target', target, 'release', tuple[2]),
+          );
+          const expectedIdentity = Buffer.from([
+            'MDREADER_RELEASE_IDENTITY_V1',
+            'productName=MDReader',
+            'bundleIdentifier=dev.mdreader.app',
+            `sourceCommit=${required('EXPECTED_SOURCE_COMMIT')}`,
+            '',
+          ].join('\0'));
+          const assertIdentity = (body) => {
+            if (body.indexOf(expectedIdentity) < 0) {
+              throw new Error(
+                'reviewed executable has the wrong MDReader product, bundle, or source identity',
+              );
+            }
+          };
+          const assertPe = (body) => {
+            if (body.length < 64 || body[0] !== 0x4d || body[1] !== 0x5a) {
+              throw new Error('reviewed executable format is not PE32+ x86_64');
+            }
+            const header = body.readUInt32LE(0x3c);
+            if (
+              header < 64 ||
+              header > body.length - 24 ||
+              body.toString('binary', header, header + 4) !== 'PE\0\0'
+            ) {
+              throw new Error('reviewed executable format is not PE32+ x86_64');
+            }
+            const coff = header + 4;
+            const sections = body.readUInt16LE(coff + 2);
+            const optionalBytes = body.readUInt16LE(coff + 16);
+            const optional = coff + 20;
+            const sectionTable = optional + optionalBytes;
+            if (
+              body.readUInt16LE(coff) !== 0x8664 ||
+              sections < 1 ||
+              sections > 96 ||
+              optionalBytes < 112 ||
+              sectionTable + sections * 40 > body.length ||
+              body.readUInt16LE(optional) !== 0x20b ||
+              (body.readUInt16LE(coff + 18) & 0x0002) === 0
+            ) {
+              throw new Error('reviewed executable format is not PE32+ x86_64');
+            }
+            const executableSection = Array.from(
+              { length: sections },
+              (_, index) => body.readUInt32LE(sectionTable + index * 40 + 36),
+            ).some(
+              (flags) =>
+                (flags & 0x00000020) !== 0 && (flags & 0x20000000) !== 0,
+            );
+            if (!executableSection) {
+              throw new Error('reviewed PE executable has no executable code section');
+            }
+            assertIdentity(body);
+          };
+          const assertElf = (body) => {
+            if (
+              body.length < 64 ||
+              !body.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
+              body[4] !== 2 ||
+              body[5] !== 1 ||
+              body[6] !== 1 ||
+              ![2, 3].includes(body.readUInt16LE(16)) ||
+              body.readUInt16LE(18) !== 62 ||
+              body.readUInt32LE(20) !== 1 ||
+              body.readUInt16LE(52) !== 64
+            ) {
+              throw new Error('reviewed executable format is not ELF64 x86_64');
+            }
+            const programOffset = Number(body.readBigUInt64LE(32));
+            const programEntrySize = body.readUInt16LE(54);
+            const programCount = body.readUInt16LE(56);
+            if (
+              !Number.isSafeInteger(programOffset) ||
+              programOffset < 64 ||
+              programEntrySize < 56 ||
+              programCount < 1 ||
+              programOffset + programEntrySize * programCount > body.length
+            ) {
+              throw new Error('reviewed ELF executable has no valid program headers');
+            }
+            const executableLoad = Array.from(
+              { length: programCount },
+              (_, index) => programOffset + index * programEntrySize,
+            ).some(
+              (entry) =>
+                body.readUInt32LE(entry) === 1 &&
+                (body.readUInt32LE(entry + 4) & 1) !== 0,
+            );
+            if (!executableLoad) {
+              throw new Error('reviewed ELF executable has no executable load segment');
+            }
+            assertIdentity(body);
+          };
+          const assertUniversalMachO = (body) => {
+            if (
+              body.length < 48 ||
+              body.readUInt32BE(0) !== 0xcafebabe ||
+              body.readUInt32BE(4) !== 2
+            ) {
+              throw new Error(
+                'reviewed universal Mach-O must contain arm64 and x86_64 slices',
+              );
+            }
+            const architectures = new Set();
+            const ranges = [];
+            for (let index = 0; index < 2; index += 1) {
+              const entry = 8 + index * 20;
+              const cpu = body.readUInt32BE(entry);
+              const architecture =
+                cpu === 0x0100000c
+                  ? 'arm64'
+                  : cpu === 0x01000007
+                    ? 'x86_64'
+                    : null;
+              const offset = body.readUInt32BE(entry + 8);
+              const size = body.readUInt32BE(entry + 12);
+              if (
+                architecture === null ||
+                architectures.has(architecture) ||
+                offset < 48 ||
+                size < 40 ||
+                offset > body.length - size ||
+                body.readUInt32LE(offset) !== 0xfeedfacf ||
+                body.readUInt32LE(offset + 4) !== cpu ||
+                body.readUInt32LE(offset + 12) !== 2 ||
+                body.readUInt32LE(offset + 16) < 1 ||
+                body.readUInt32LE(offset + 20) < 8 ||
+                32 + body.readUInt32LE(offset + 20) > size
+              ) {
+                throw new Error(
+                  'reviewed universal Mach-O must contain arm64 and x86_64 executable slices',
+                );
+              }
+              assertIdentity(body.subarray(offset, offset + size));
+              architectures.add(architecture);
+              ranges.push([offset, offset + size]);
+            }
+            ranges.sort((left, right) => left[0] - right[0]);
+            if (
+              ranges[0][1] > ranges[1][0] ||
+              !architectures.has('arm64') ||
+              !architectures.has('x86_64')
+            ) {
+              throw new Error(
+                'reviewed universal Mach-O must contain arm64 and x86_64 slices',
+              );
+            }
+          };
+          if (platform === 'windows') assertPe(executable);
+          else if (platform === 'macos') assertUniversalMachO(executable);
+          else if (platform === 'linux') assertElf(executable);
+          else throw new Error('reviewed executable platform is unsupported');
 
           const supportSha = required('EXPECTED_SUPPORT_SHA256');
           const supportRoot = join(
@@ -1693,11 +1850,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Install Node 22
+      - name: Install Node 24 LTS
         id: setup-node-verify
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.13.1'
+          node-version: '24.18.0'
           cache: pnpm
       - name: Enable pinned package manager
         id: enable-corepack-verify
@@ -1732,6 +1889,9 @@ jobs:
         id: linux-verify-packages
         if: matrix.platform == 'linux'
         run: scripts/release/verify-linux-packages.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
+      - name: Verify every final package contains the reviewed MDReader executable
+        id: verify-final-package-binaries
+        run: scripts/release/verify-final-packages.sh "${{ matrix.platform }}" "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "$RUNNER_TEMP/mdreader-final-package-binaries.json"
       - name: Install pinned Syft SBOM scanner
         id: install-syft
         uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
@@ -1769,11 +1929,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Install Node 22
+      - name: Install Node 24 LTS
         id: setup-node-aggregate
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22.13.1'
+          node-version: '24.18.0'
           cache: pnpm
       - name: Enable pinned package manager
         id: enable-corepack-aggregate
@@ -1855,6 +2015,11 @@ jobs:
     environment: mdreader-v1-release-20260726-publication
     runs-on: ubuntu-24.04
     steps:
+      - name: Install Node 24 LTS
+        id: setup-node-publish
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
       - name: Download the sealed verified publication capability
         id: download-publish-plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

@@ -78,6 +78,7 @@ const STEP_IDS: Record<string, string[]> = {
     'macos-verify-notarization',
     'windows-verify-signature',
     'linux-verify-packages',
+    'verify-final-package-binaries',
     'install-syft',
     'stage-release',
     'generate-sbom',
@@ -99,7 +100,7 @@ const STEP_IDS: Record<string, string[]> = {
     'verify-publisher-authority',
     'upload-publish-plan',
   ],
-  publish: ['download-publish-plan', 'publish-r2'],
+  publish: ['setup-node-publish', 'download-publish-plan', 'publish-r2'],
 };
 
 const CONDITIONS: Record<string, string> = {
@@ -157,7 +158,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'prepare/setup-node-prepare': {
     uses: SETUP_NODE,
-    with: { 'node-version': '22.13.1', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0', cache: 'pnpm' },
   },
   'build-unsigned/checkout-build-source': {
     uses: CHECKOUT,
@@ -165,7 +166,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'build-unsigned/setup-node-build': {
     uses: SETUP_NODE,
-    with: { 'node-version': '22.13.1', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0', cache: 'pnpm' },
   },
   'build-unsigned/upload-unsigned-handoff': {
     uses: UPLOAD,
@@ -178,7 +179,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'bundle-sign/setup-node-bundle': {
     uses: SETUP_NODE,
-    with: { 'node-version': '22.13.1' },
+    with: { 'node-version': '24.18.0' },
   },
   'bundle-sign/download-unsigned-handoff': {
     uses: DOWNLOAD,
@@ -210,7 +211,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'verify/setup-node-verify': {
     uses: SETUP_NODE,
-    with: { 'node-version': '22.13.1', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0', cache: 'pnpm' },
   },
   'verify/download-credentialed-output': {
     uses: DOWNLOAD,
@@ -239,7 +240,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'aggregate/setup-node-aggregate': {
     uses: SETUP_NODE,
-    with: { 'node-version': '22.13.1', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0', cache: 'pnpm' },
   },
   ...Object.fromEntries(
     ['macos', 'windows', 'linux'].map((platform) => [
@@ -268,6 +269,10 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
       name: 'mdreader-sealed-publication-${{ needs.prepare.outputs.source_commit }}',
       path: 'target/release-publish',
     },
+  },
+  'publish/setup-node-publish': {
+    uses: SETUP_NODE,
+    with: { 'node-version': '24.18.0' },
   },
 };
 
@@ -730,6 +735,14 @@ function validateUnsigned(
     ],
     'unsigned build attestation is incomplete',
   );
+  same(
+    steps.get('prepare-direct-release')!.env,
+    {
+      MDREADER_RELEASE_SOURCE_COMMIT:
+        '${{ needs.prepare.outputs.source_commit }}',
+    },
+    'shipping executable is not compiled with the exact reviewed source commit',
+  );
   requireRun(
     steps,
     'seal-unsigned-handoff',
@@ -816,6 +829,12 @@ function validateBundle(
       'EXPECTED_RUNTIME_MANIFEST_SHA256',
       'unexpected handoff path',
       'Node runtime inventory mismatch',
+      'MDREADER_RELEASE_IDENTITY_V1',
+      'productName=MDReader',
+      'bundleIdentifier=dev.mdreader.app',
+      'reviewed executable format is not PE32+ x86_64',
+      'reviewed executable format is not ELF64 x86_64',
+      'reviewed universal Mach-O must contain arm64 and x86_64',
       "join(tauriRoot, 'Cargo.toml')",
       '[features]\\ndirect-updater = []',
       "join(tauriRoot, 'tauri.conf.json')",
@@ -961,6 +980,18 @@ function validateVerify(
     'linux-verify-packages',
     ['verify-linux-packages.sh', 'mdreader-credentialed-output/bundle'],
     'Linux package verification is incomplete',
+  );
+  requireRun(
+    steps,
+    'verify-final-package-binaries',
+    [
+      'verify-final-packages.sh',
+      'mdreader-credentialed-output/bundle',
+      'needs.prepare.outputs.source_commit',
+      'matrix.target',
+      'mdreader-final-package-binaries.json',
+    ],
+    'final packages are not bound to the reviewed MDReader executable identity',
   );
   requireRun(
     steps,
