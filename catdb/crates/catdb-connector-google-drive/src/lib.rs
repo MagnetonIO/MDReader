@@ -9,10 +9,10 @@
 
 #![deny(missing_docs)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -42,8 +42,14 @@ const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/au
 const MAX_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONFIGURED_SELECTIONS: usize = 512;
 const MAX_SELECTION_ID_BYTES: usize = 256;
+const MAX_RESOURCE_KEY_BYTES: usize = 512;
+const MAX_RESOURCE_KEY_HEADER_BYTES: usize = 8 * 1024;
 const MAX_CHANGE_EVENTS: usize = 1_000;
 const MAX_EMPTY_PROVIDER_PAGES: usize = 32;
+const MAX_RECURSION_DEPTH: usize = 32;
+const MAX_TRAVERSAL_ITEMS: usize = 100_000;
+const MAX_ACTIVE_TRAVERSALS: usize = 128;
+const ACCESS_TOKEN_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const CURSOR_VERSION: u8 = 1;
 const QUERY_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-query-cursor\0";
 const CHANGE_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-change-cursor\0";
@@ -80,11 +86,17 @@ pub enum DriveSelection {
     File {
         /// Stable Google Drive file id.
         id: String,
+        /// Picker resource key for a link-shared item.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource_key: Option<String>,
     },
-    /// A Picker-selected folder whose visible direct children are listed.
+    /// A Picker-selected folder whose visible descendants are listed.
     Folder {
         /// Stable Google Drive folder id.
         id: String,
+        /// Picker resource key for a link-shared item.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource_key: Option<String>,
     },
 }
 
@@ -100,22 +112,78 @@ impl fmt::Debug for DriveSelection {
 impl DriveSelection {
     /// Select one file.
     pub fn file(id: impl Into<String>) -> Self {
-        Self::File { id: id.into() }
+        Self::File {
+            id: id.into(),
+            resource_key: None,
+        }
     }
 
     /// Select one folder.
     pub fn folder(id: impl Into<String>) -> Self {
-        Self::Folder { id: id.into() }
+        Self::Folder {
+            id: id.into(),
+            resource_key: None,
+        }
+    }
+
+    /// Select one link-shared file with its Picker resource key.
+    pub fn file_with_resource_key(
+        id: impl Into<String>,
+        resource_key: impl Into<String>,
+    ) -> Result<Self, DriveConnectorError> {
+        Self::with_resource_key(id, resource_key, true)
+    }
+
+    /// Select one link-shared folder with its Picker resource key.
+    pub fn folder_with_resource_key(
+        id: impl Into<String>,
+        resource_key: impl Into<String>,
+    ) -> Result<Self, DriveConnectorError> {
+        Self::with_resource_key(id, resource_key, false)
+    }
+
+    fn with_resource_key(
+        id: impl Into<String>,
+        resource_key: impl Into<String>,
+        file: bool,
+    ) -> Result<Self, DriveConnectorError> {
+        let id = id.into();
+        let resource_key = resource_key.into();
+        validate_drive_id("selection", &id)?;
+        validate_resource_key(&resource_key)?;
+        Ok(if file {
+            Self::File {
+                id,
+                resource_key: Some(resource_key),
+            }
+        } else {
+            Self::Folder {
+                id,
+                resource_key: Some(resource_key),
+            }
+        })
     }
 
     fn id(&self) -> &str {
         match self {
-            Self::File { id } | Self::Folder { id } => id,
+            Self::File { id, .. } | Self::Folder { id, .. } => id,
+        }
+    }
+
+    fn resource_key(&self) -> Option<&str> {
+        match self {
+            Self::File { resource_key, .. } | Self::Folder { resource_key, .. } => {
+                resource_key.as_deref()
+            }
         }
     }
 
     fn validate(&self) -> Result<(), DriveConnectorError> {
-        validate_drive_id("selection", self.id())
+        validate_drive_id("selection", self.id())?;
+        if let Some(resource_key) = self.resource_key() {
+            validate_resource_key(resource_key)?;
+        }
+        Ok(())
     }
 }
 
@@ -205,6 +273,25 @@ impl DriveSourceConfig {
                 });
             }
         }
+        let resource_key_header_bytes = self
+            .selections
+            .iter()
+            .filter_map(|selection| {
+                selection
+                    .resource_key()
+                    .map(|key| selection.id().len() + 1 + key.len())
+            })
+            .try_fold(0usize, |total, entry| {
+                total.checked_add(entry.saturating_add(1))
+            })
+            .ok_or(DriveConnectorError::InvalidConfiguration {
+                field: "selections",
+            })?;
+        if resource_key_header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(DriveConnectorError::InvalidConfiguration {
+                field: "selections",
+            });
+        }
         if let Some(drive_id) = &self.shared_drive_id {
             validate_drive_id("shared_drive_id", drive_id)?;
         }
@@ -266,6 +353,74 @@ impl fmt::Debug for DriveAccessToken {
     }
 }
 
+/// Runtime-only access token and its provider expiry.
+pub struct DriveAccessGrant {
+    token: DriveAccessToken,
+    expires_at: Option<SystemTime>,
+}
+
+impl DriveAccessGrant {
+    /// Bind an access token to its expiry, when the provider supplied one.
+    pub fn new(
+        token: DriveAccessToken,
+        expires_at: Option<SystemTime>,
+    ) -> Result<Self, DriveConnectorError> {
+        if expires_at.is_some_and(|expiry| expiry.duration_since(UNIX_EPOCH).is_err()) {
+            return Err(DriveConnectorError::InvalidSecret);
+        }
+        Ok(Self { token, expires_at })
+    }
+
+    fn is_expired(&self) -> bool {
+        match self.expires_at {
+            None => false,
+            Some(expiry) => expiry
+                .duration_since(SystemTime::now())
+                .map_or(true, |remaining| remaining <= ACCESS_TOKEN_EXPIRY_SKEW),
+        }
+    }
+}
+
+impl fmt::Debug for DriveAccessGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveAccessGrant")
+            .field("token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Runtime-only refresh credential resolved from application-owned storage.
+pub struct DriveRefreshCredential(Zeroizing<String>);
+
+impl DriveRefreshCredential {
+    /// Construct a bounded refresh credential that never enters source specs.
+    pub fn new(credential: impl Into<String>) -> Result<Self, DriveConnectorError> {
+        let credential = credential.into();
+        if credential.is_empty()
+            || credential.len() > 16 * 1024
+            || credential.chars().any(char::is_control)
+        {
+            return Err(DriveConnectorError::InvalidSecret);
+        }
+        Ok(Self(Zeroizing::new(credential)))
+    }
+
+    /// Borrow the credential only inside a resolver's HTTPS token exchange.
+    ///
+    /// Callers must not serialize, persist, or log this value.
+    pub fn expose_for_exchange(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for DriveRefreshCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DriveRefreshCredential([redacted])")
+    }
+}
+
 /// Stable 256-bit key authenticating opaque Drive cursors.
 pub struct DriveCursorKey([u8; 32]);
 
@@ -294,18 +449,45 @@ impl fmt::Debug for DriveCursorKey {
 
 /// Runtime-only Drive token and cursor key.
 pub struct DriveRuntimeSecrets {
-    token: DriveAccessToken,
+    grant: DriveAccessGrant,
+    refresh_credential: Option<DriveRefreshCredential>,
     cursor_key: DriveCursorKey,
 }
 
 impl DriveRuntimeSecrets {
     /// Bind OAuth credentials to a stable cursor key.
     pub fn new(token: DriveAccessToken, cursor_key: DriveCursorKey) -> Self {
-        Self { token, cursor_key }
+        Self {
+            grant: DriveAccessGrant {
+                token,
+                expires_at: None,
+            },
+            refresh_credential: None,
+            cursor_key,
+        }
     }
 
-    fn into_parts(self) -> (DriveAccessToken, DriveCursorKey) {
-        (self.token, self.cursor_key)
+    /// Bind an expiring access grant and refresh credential to a cursor key.
+    pub fn refreshable(
+        grant: DriveAccessGrant,
+        refresh_credential: DriveRefreshCredential,
+        cursor_key: DriveCursorKey,
+    ) -> Self {
+        Self {
+            grant,
+            refresh_credential: Some(refresh_credential),
+            cursor_key,
+        }
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        DriveAccessGrant,
+        Option<DriveRefreshCredential>,
+        DriveCursorKey,
+    ) {
+        (self.grant, self.refresh_credential, self.cursor_key)
     }
 }
 
@@ -333,6 +515,15 @@ pub trait DriveSecretResolver: Send + Sync {
         &self,
         reference: &DriveSecretReference,
     ) -> Result<DriveRuntimeSecrets, DriveConnectorError>;
+
+    /// Exchange a runtime-only refresh credential for a new access grant.
+    async fn refresh(
+        &self,
+        _reference: &DriveSecretReference,
+        _credential: &DriveRefreshCredential,
+    ) -> Result<DriveAccessGrant, DriveConnectorError> {
+        Err(DriveConnectorError::InvalidSecret)
+    }
 }
 
 /// OAuth Authorization Code with PKCE state owned by one native login attempt.
@@ -401,7 +592,9 @@ impl DriveOAuthPkce {
             .append_pair("code_challenge", &self.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &self.state)
-            .append_pair("access_type", "offline");
+            .append_pair("access_type", "offline")
+            .append_pair("prompt", "consent")
+            .append_pair("trigger_onepick", "true");
         Ok(url.into())
     }
 
@@ -440,7 +633,9 @@ pub enum DriveHttpMethod {
 pub struct DriveHttpRequest {
     method: DriveHttpMethod,
     path: String,
+    headers: BTreeMap<String, String>,
     bearer_token: Arc<str>,
+    credential_generation: u64,
 }
 
 impl DriveHttpRequest {
@@ -453,6 +648,18 @@ impl DriveHttpRequest {
     pub fn path(&self) -> &str {
         &self.path
     }
+
+    /// Read one non-secret provider request header case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+
+    /// Runtime credential generation used for bounded retry diagnostics.
+    pub fn credential_generation(&self) -> u64 {
+        self.credential_generation
+    }
 }
 
 impl fmt::Debug for DriveHttpRequest {
@@ -461,7 +668,9 @@ impl fmt::Debug for DriveHttpRequest {
             .debug_struct("DriveHttpRequest")
             .field("method", &self.method)
             .field("path", &redacted_path(&self.path))
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
             .field("bearer_token", &"[redacted]")
+            .field("credential_generation", &self.credential_generation)
             .finish()
     }
 }
@@ -561,10 +770,14 @@ impl DriveTransport for ReqwestDriveTransport {
         if url.scheme() != "https" || url.host_str() != Some("www.googleapis.com") {
             return Err(DriveTransportError::InvalidResponse);
         }
-        let response = self
+        let mut builder = self
             .client
             .get(url)
-            .bearer_auth(request.bearer_token.as_ref())
+            .bearer_auth(request.bearer_token.as_ref());
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+        let response = builder
             .send()
             .await
             .map_err(|_| DriveTransportError::Failed)?;
@@ -606,6 +819,24 @@ pub enum DriveAvailability {
 /// Opaque authenticated Drive changes position.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DriveChangeCursor(Vec<u8>);
+
+impl DriveChangeCursor {
+    /// Restore bounded opaque change state from application-managed storage.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, SourceError> {
+        if bytes.len() > catdb_connectors::MAX_SOURCE_CURSOR_BYTES {
+            return Err(SourceError::CursorTooLarge {
+                actual: bytes.len(),
+                maximum: catdb_connectors::MAX_SOURCE_CURSOR_BYTES,
+            });
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Opaque authenticated bytes suitable for application-managed storage.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 impl fmt::Debug for DriveChangeCursor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -695,13 +926,29 @@ struct QueryCursorPayload {
     schema_version: String,
     plan_digest: String,
     query_id: Uuid,
-    selected_file_index: usize,
-    folder_page_token: Option<String>,
+    traversal_id: Uuid,
+    generation: u64,
 }
 
-struct QueryPosition {
+struct FolderTraversal {
+    id: String,
+    depth: usize,
+    page_token: Option<String>,
+}
+
+struct QueryTraversal {
+    traversal_id: Uuid,
+    generation: u64,
+    expires_at: Instant,
     selected_file_index: usize,
-    folder_page_token: Option<String>,
+    selected_folder_index: usize,
+    folders: VecDeque<FolderTraversal>,
+    seen_ids: BTreeSet<String>,
+}
+
+struct DriveMembership {
+    tracked_folders: BTreeSet<String>,
+    resource_keys: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -719,15 +966,29 @@ struct CursorEnvelope<T> {
     authentication_tag: Vec<u8>,
 }
 
+struct StoredAccessGrant {
+    grant: DriveAccessGrant,
+    generation: u64,
+}
+
+struct DriveCredentialState {
+    access: RwLock<StoredAccessGrant>,
+    refresh_credential: Option<DriveRefreshCredential>,
+    resolver: Option<Arc<dyn DriveSecretResolver>>,
+    refresh_lock: tokio::sync::Mutex<()>,
+}
+
 /// Read-only Drive source over selected items.
 pub struct DriveSource {
     spec: PinnedDriveSourceSpec,
     model: SourceModel,
     source_spec: serde_json::Value,
     source_spec_digest: String,
-    token: DriveAccessToken,
+    credentials: DriveCredentialState,
     cursor_key: DriveCursorKey,
     transport: Arc<dyn DriveTransport>,
+    traversals: Mutex<BTreeMap<Uuid, QueryTraversal>>,
+    membership: Mutex<DriveMembership>,
 }
 
 impl fmt::Debug for DriveSource {
@@ -745,17 +1006,40 @@ impl DriveSource {
     /// Resolve credentials and open with the production HTTPS transport.
     pub async fn open_pinned(
         spec: PinnedDriveSourceSpec,
-        resolver: &dyn DriveSecretResolver,
+        resolver: Arc<dyn DriveSecretResolver>,
+    ) -> Result<Self, DriveConnectorError> {
+        Self::open_with_resolver_and_transport(
+            spec,
+            resolver,
+            Arc::new(ReqwestDriveTransport::new()?),
+        )
+        .await
+    }
+
+    /// Resolve credentials and open with an injected bounded transport.
+    pub async fn open_with_resolver_and_transport(
+        spec: PinnedDriveSourceSpec,
+        resolver: Arc<dyn DriveSecretResolver>,
+        transport: Arc<dyn DriveTransport>,
     ) -> Result<Self, DriveConnectorError> {
         spec.config.validate()?;
         let secrets = resolver.resolve(&spec.config.credential_reference).await?;
-        Self::open_with_transport(spec, secrets, Arc::new(ReqwestDriveTransport::new()?))
+        Self::construct(spec, secrets, Some(resolver), transport)
     }
 
     /// Open a pinned source with injected runtime dependencies.
     pub fn open_with_transport(
         spec: PinnedDriveSourceSpec,
         secrets: DriveRuntimeSecrets,
+        transport: Arc<dyn DriveTransport>,
+    ) -> Result<Self, DriveConnectorError> {
+        Self::construct(spec, secrets, None, transport)
+    }
+
+    fn construct(
+        spec: PinnedDriveSourceSpec,
+        secrets: DriveRuntimeSecrets,
+        resolver: Option<Arc<dyn DriveSecretResolver>>,
         transport: Arc<dyn DriveTransport>,
     ) -> Result<Self, DriveConnectorError> {
         spec.config.validate()?;
@@ -778,15 +1062,38 @@ impl DriveSource {
                 field: "source_spec",
             })?;
         let source_spec_digest = digest(&spec)?;
-        let (token, cursor_key) = secrets.into_parts();
+        let (grant, refresh_credential, cursor_key) = secrets.into_parts();
+        let mut tracked_folders = BTreeSet::new();
+        let mut resource_keys = BTreeMap::new();
+        for selection in &spec.config.selections {
+            if matches!(selection, DriveSelection::Folder { .. }) {
+                tracked_folders.insert(selection.id().to_string());
+            }
+            if let Some(resource_key) = selection.resource_key() {
+                resource_keys.insert(selection.id().to_string(), resource_key.to_string());
+            }
+        }
         Ok(Self {
             spec,
             model,
             source_spec,
             source_spec_digest,
-            token,
+            credentials: DriveCredentialState {
+                access: RwLock::new(StoredAccessGrant {
+                    grant,
+                    generation: 0,
+                }),
+                refresh_credential,
+                resolver,
+                refresh_lock: tokio::sync::Mutex::new(()),
+            },
             cursor_key,
             transport,
+            traversals: Mutex::new(BTreeMap::new()),
+            membership: Mutex::new(DriveMembership {
+                tracked_folders,
+                resource_keys,
+            }),
         })
     }
 
@@ -809,7 +1116,7 @@ impl DriveSource {
         let mut physical_bytes = 0usize;
         let response = self
             .send(
-                self.request(self.change_start_path()),
+                self.request(self.change_start_path())?,
                 context,
                 &mut physical_bytes,
             )
@@ -841,7 +1148,7 @@ impl DriveSource {
         let mut physical_bytes = 0usize;
         let response = self
             .send(
-                self.request(self.change_list_path(&token, context.page_size())),
+                self.request(self.change_list_path(&token, context.page_size()))?,
                 context,
                 &mut physical_bytes,
             )
@@ -867,6 +1174,9 @@ impl DriveSource {
                 return Err(self.malformed("changeType"));
             }
             if change.removed {
+                if self.is_tracked_folder_id(&change.file_id)? {
+                    return Ok(DriveChangeOutcome::RebuildRequired);
+                }
                 if known.contains_key(&change.file_id) {
                     events.push(DriveChangeEvent::Deleted {
                         file_id: change.file_id,
@@ -879,11 +1189,17 @@ impl DriveSource {
             if file.id != change.file_id {
                 return Err(self.malformed("change.fileId"));
             }
+            if file.mime_type == "application/vnd.google-apps.folder" {
+                return Ok(DriveChangeOutcome::RebuildRequired);
+            }
+            let tracked = self.is_tracked(&file)?;
             if file.trashed {
                 if known.contains_key(&file.id) {
                     events.push(DriveChangeEvent::Deleted { file_id: file.id });
                 }
-            } else if self.is_tracked(&file, known.contains_key(&file.id)) {
+            } else if known.contains_key(&file.id) && !tracked {
+                events.push(DriveChangeEvent::Deleted { file_id: file.id });
+            } else if tracked {
                 if known
                     .get(&file.id)
                     .is_some_and(|revision| revision.matches(&file))
@@ -924,15 +1240,67 @@ impl DriveSource {
         })
     }
 
-    fn request(&self, path: String) -> DriveHttpRequest {
-        DriveHttpRequest {
+    fn request(&self, path: String) -> Result<DriveHttpRequest, SourceError> {
+        let access = self
+            .credentials
+            .access
+            .read()
+            .map_err(|_| SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            })?;
+        Ok(DriveHttpRequest {
             method: DriveHttpMethod::Get,
             path,
-            bearer_token: Arc::from(self.token.as_str()),
-        }
+            headers: self.resource_key_headers()?,
+            bearer_token: Arc::from(access.grant.token.as_str()),
+            credential_generation: access.generation,
+        })
+    }
+
+    fn reauthorize_request(
+        &self,
+        request: &DriveHttpRequest,
+    ) -> Result<DriveHttpRequest, SourceError> {
+        let access = self
+            .credentials
+            .access
+            .read()
+            .map_err(|_| SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            })?;
+        Ok(DriveHttpRequest {
+            method: request.method,
+            path: request.path.clone(),
+            headers: request.headers.clone(),
+            bearer_token: Arc::from(access.grant.token.as_str()),
+            credential_generation: access.generation,
+        })
     }
 
     async fn send(
+        &self,
+        mut request: DriveHttpRequest,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+    ) -> Result<DriveHttpResponse, SourceError> {
+        if self.access_token_expired()? {
+            self.refresh_credentials(request.credential_generation, false, context)
+                .await?;
+            request = self.reauthorize_request(&request)?;
+        }
+        let response = self
+            .send_once(request.clone(), context, physical_bytes)
+            .await?;
+        if response.status != 401 {
+            return Ok(response);
+        }
+        self.refresh_credentials(request.credential_generation, true, context)
+            .await?;
+        let retry = self.reauthorize_request(&request)?;
+        self.send_once(retry, context, physical_bytes).await
+    }
+
+    async fn send_once(
         &self,
         request: DriveHttpRequest,
         context: &ReadContext,
@@ -965,6 +1333,118 @@ impl DriveSource {
         Ok(response)
     }
 
+    fn access_token_expired(&self) -> Result<bool, SourceError> {
+        self.credentials
+            .access
+            .read()
+            .map(|access| access.grant.is_expired())
+            .map_err(|_| SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            })
+    }
+
+    async fn refresh_credentials(
+        &self,
+        observed_generation: u64,
+        forced: bool,
+        context: &ReadContext,
+    ) -> Result<(), SourceError> {
+        let resolver =
+            self.credentials
+                .resolver
+                .as_ref()
+                .ok_or_else(|| SourceError::Authentication {
+                    source_id: self.model.id().clone(),
+                })?;
+        let refresh_credential = self
+            .credentials
+            .refresh_credential
+            .as_ref()
+            .ok_or_else(|| SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            })?;
+        let deadline = tokio::time::Instant::from_std(context.deadline());
+        let refresh_guard = tokio::select! {
+            biased;
+            _ = context.cancellation().cancelled() => return Err(SourceError::Cancelled),
+            result = tokio::time::timeout_at(deadline, self.credentials.refresh_lock.lock()) => {
+                result.map_err(|_| SourceError::DeadlineExceeded)?
+            }
+        };
+        {
+            let access =
+                self.credentials
+                    .access
+                    .read()
+                    .map_err(|_| SourceError::Authentication {
+                        source_id: self.model.id().clone(),
+                    })?;
+            if access.generation != observed_generation || (!forced && !access.grant.is_expired()) {
+                drop(refresh_guard);
+                return Ok(());
+            }
+        }
+        let refreshed = tokio::select! {
+            biased;
+            _ = context.cancellation().cancelled() => return Err(SourceError::Cancelled),
+            result = tokio::time::timeout_at(
+                deadline,
+                resolver.refresh(&self.spec.config.credential_reference, refresh_credential),
+            ) => {
+                result
+                    .map_err(|_| SourceError::DeadlineExceeded)?
+                    .map_err(|_| SourceError::Authentication {
+                        source_id: self.model.id().clone(),
+                    })?
+            }
+        };
+        if refreshed.is_expired() {
+            return Err(SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            });
+        }
+        let mut access =
+            self.credentials
+                .access
+                .write()
+                .map_err(|_| SourceError::Authentication {
+                    source_id: self.model.id().clone(),
+                })?;
+        access.generation =
+            access
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| SourceError::Authentication {
+                    source_id: self.model.id().clone(),
+                })?;
+        access.grant = refreshed;
+        drop(refresh_guard);
+        Ok(())
+    }
+
+    fn resource_key_headers(&self) -> Result<BTreeMap<String, String>, SourceError> {
+        let membership = self.membership.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        let value = membership
+            .resource_keys
+            .iter()
+            .map(|(id, key)| format!("{id}/{key}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        if value.len() > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive resource-key header",
+            });
+        }
+        Ok(if value.is_empty() {
+            BTreeMap::new()
+        } else {
+            BTreeMap::from([("x-goog-drive-resource-keys".to_string(), value)])
+        })
+    }
+
     fn map_http_failure(&self, response: &DriveHttpResponse) -> SourceError {
         match response.status {
             401 | 403 => SourceError::Authentication {
@@ -983,14 +1463,20 @@ impl DriveSource {
         }
     }
 
-    fn list_path(&self, page_token: Option<&str>, page_size: usize) -> String {
+    fn list_path(&self, folder_id: &str, page_token: Option<&str>, page_size: usize) -> String {
         let mut params = vec![
             (
                 "fields",
-                "files(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed),nextPageToken,incompleteSearch".to_string(),
+                "files(id,name,mimeType,modifiedTime,size,md5Checksum,resourceKey,parents,trashed),nextPageToken,incompleteSearch".to_string(),
             ),
             ("pageSize", page_size.to_string()),
-            ("q", self.folder_selection_query()),
+            (
+                "q",
+                format!(
+                    "trashed = false and '{}' in parents",
+                    escape_query_literal(folder_id)
+                ),
+            ),
             ("spaces", "drive".to_string()),
             ("supportsAllDrives", "true".to_string()),
         ];
@@ -1005,29 +1491,14 @@ impl DriveSource {
         encoded_path("/drive/v3/files", params)
     }
 
-    fn folder_selection_query(&self) -> String {
-        let clauses = self
-            .spec
-            .config
-            .selections
-            .iter()
-            .filter_map(|selection| match selection {
-                DriveSelection::File { .. } => None,
-                DriveSelection::Folder { id } => {
-                    Some(format!("'{}' in parents", escape_query_literal(id)))
-                }
-            })
-            .collect::<Vec<_>>();
-        format!("trashed = false and ({})", clauses.join(" or "))
-    }
-
     fn metadata_path(&self, file_id: &str) -> String {
         encoded_path(
             &format!("/drive/v3/files/{}", encode_path_segment(file_id)),
             vec![
                 (
                     "fields",
-                    "id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed".to_string(),
+                    "id,name,mimeType,modifiedTime,size,md5Checksum,resourceKey,parents,trashed"
+                        .to_string(),
                 ),
                 ("supportsAllDrives", "true".to_string()),
             ],
@@ -1066,7 +1537,7 @@ impl DriveSource {
             ("pageSize", page_size.to_string()),
             (
                 "fields",
-                "changes(changeType,removed,fileId,file(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed)),nextPageToken,newStartPageToken".to_string(),
+                "changes(changeType,removed,fileId,file(id,name,mimeType,modifiedTime,size,md5Checksum,resourceKey,parents,trashed)),nextPageToken,newStartPageToken".to_string(),
             ),
             ("spaces", "drive".to_string()),
             ("supportsAllDrives", "true".to_string()),
@@ -1078,17 +1549,32 @@ impl DriveSource {
         encoded_path("/drive/v3/changes", params)
     }
 
-    fn is_tracked(&self, file: &DriveFile, already_known: bool) -> bool {
-        already_known
-            || self
-                .spec
-                .config
-                .selections
-                .iter()
-                .any(|selection| match selection {
-                    DriveSelection::File { id } => id == &file.id,
-                    DriveSelection::Folder { id } => file.parents.iter().any(|parent| parent == id),
-                })
+    fn is_tracked(&self, file: &DriveFile) -> Result<bool, SourceError> {
+        if self
+            .spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| matches!(selection, DriveSelection::File { id, .. } if id == &file.id))
+        {
+            return Ok(true);
+        }
+        let membership = self.membership.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        Ok(file
+            .parents
+            .iter()
+            .any(|parent| membership.tracked_folders.contains(parent)))
+    }
+
+    fn is_tracked_folder_id(&self, file_id: &str) -> Result<bool, SourceError> {
+        self.membership
+            .lock()
+            .map(|membership| membership.tracked_folders.contains(file_id))
+            .map_err(|_| SourceError::Transport {
+                source_id: self.model.id().clone(),
+            })
     }
 
     fn validate_plan(&self, plan: &SourcePlan) -> Result<(), SourceError> {
@@ -1116,15 +1602,9 @@ impl DriveSource {
         &self,
         plan: &SourcePlan,
         query_id: Uuid,
-        selected_file_index: usize,
-        folder_page_token: Option<String>,
+        traversal_id: Uuid,
+        generation: u64,
     ) -> Result<SourceCursor, SourceError> {
-        if let Some(page_token) = &folder_page_token {
-            validate_provider_token(page_token)?;
-        }
-        if selected_file_index > self.selected_file_ids().len() {
-            return Err(SourceError::InvalidCursor);
-        }
         let payload = QueryCursorPayload {
             version: CURSOR_VERSION,
             connector: "catdb-google-drive-source/v1".to_string(),
@@ -1132,8 +1612,8 @@ impl DriveSource {
             schema_version: self.spec.schema_version.clone(),
             plan_digest: plan_digest(plan)?,
             query_id,
-            selected_file_index,
-            folder_page_token,
+            traversal_id,
+            generation,
         };
         let authentication_tag = self.authenticate(QUERY_CURSOR_DOMAIN, &payload)?;
         let bytes = serde_json::to_vec(&CursorEnvelope {
@@ -1149,7 +1629,7 @@ impl DriveSource {
         plan: &SourcePlan,
         cursor: &SourceCursor,
         query_id: Uuid,
-    ) -> Result<QueryPosition, SourceError> {
+    ) -> Result<(Uuid, u64), SourceError> {
         let envelope: CursorEnvelope<QueryCursorPayload> =
             serde_json::from_slice(cursor.as_bytes()).map_err(|_| SourceError::InvalidCursor)?;
         if !self.verify(
@@ -1165,21 +1645,7 @@ impl DriveSource {
         {
             return Err(SourceError::InvalidCursor);
         }
-        if envelope.payload.selected_file_index > self.selected_file_ids().len() {
-            return Err(SourceError::InvalidCursor);
-        }
-        if let Some(page_token) = &envelope.payload.folder_page_token {
-            validate_provider_token(page_token)?;
-            if envelope.payload.selected_file_index != self.selected_file_ids().len()
-                || !self.has_folder_selections()
-            {
-                return Err(SourceError::InvalidCursor);
-            }
-        }
-        Ok(QueryPosition {
-            selected_file_index: envelope.payload.selected_file_index,
-            folder_page_token: envelope.payload.folder_page_token,
-        })
+        Ok((envelope.payload.traversal_id, envelope.payload.generation))
     }
 
     fn selected_file_ids(&self) -> Vec<&str> {
@@ -1188,18 +1654,116 @@ impl DriveSource {
             .selections
             .iter()
             .filter_map(|selection| match selection {
-                DriveSelection::File { id } => Some(id.as_str()),
+                DriveSelection::File { id, .. } => Some(id.as_str()),
                 DriveSelection::Folder { .. } => None,
             })
             .collect()
     }
 
-    fn has_folder_selections(&self) -> bool {
+    fn selected_folder_ids(&self) -> Vec<&str> {
         self.spec
             .config
             .selections
             .iter()
-            .any(|selection| matches!(selection, DriveSelection::Folder { .. }))
+            .filter_map(|selection| match selection {
+                DriveSelection::Folder { id, .. } => Some(id.as_str()),
+                DriveSelection::File { .. } => None,
+            })
+            .collect()
+    }
+
+    fn begin_query_traversal(
+        &self,
+        query_id: Uuid,
+        expires_at: Instant,
+    ) -> Result<QueryTraversal, SourceError> {
+        let mut traversals = self.traversals.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        let now = Instant::now();
+        traversals.retain(|_, traversal| traversal.expires_at > now);
+        if traversals.contains_key(&query_id) {
+            return Err(SourceError::InvalidCursor);
+        }
+        if traversals.len() >= MAX_ACTIVE_TRAVERSALS {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "active Drive traversals",
+            });
+        }
+        Ok(QueryTraversal {
+            traversal_id: Uuid::new_v4(),
+            generation: 0,
+            expires_at,
+            selected_file_index: 0,
+            selected_folder_index: 0,
+            folders: VecDeque::new(),
+            seen_ids: BTreeSet::new(),
+        })
+    }
+
+    fn resume_query_traversal(
+        &self,
+        query_id: Uuid,
+        traversal_id: Uuid,
+        generation: u64,
+    ) -> Result<QueryTraversal, SourceError> {
+        let mut traversals = self.traversals.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        let traversal = traversals
+            .remove(&query_id)
+            .ok_or(SourceError::InvalidCursor)?;
+        if traversal.traversal_id != traversal_id || traversal.generation != generation {
+            return Err(SourceError::InvalidCursor);
+        }
+        if traversal.expires_at <= Instant::now() {
+            return Err(SourceError::DeadlineExceeded);
+        }
+        Ok(traversal)
+    }
+
+    fn save_query_traversal(
+        &self,
+        query_id: Uuid,
+        traversal: QueryTraversal,
+    ) -> Result<(), SourceError> {
+        let mut traversals = self.traversals.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        if traversals.insert(query_id, traversal).is_some() {
+            return Err(SourceError::InvalidCursor);
+        }
+        Ok(())
+    }
+
+    fn record_tracked_folder(&self, file: &DriveFile) -> Result<(), SourceError> {
+        let mut membership = self.membership.lock().map_err(|_| SourceError::Transport {
+            source_id: self.model.id().clone(),
+        })?;
+        membership.tracked_folders.insert(file.id.clone());
+        if let Some(resource_key) = &file.resource_key {
+            membership
+                .resource_keys
+                .insert(file.id.clone(), resource_key.clone());
+        }
+        let header_bytes = membership
+            .resource_keys
+            .iter()
+            .try_fold(0usize, |total, (id, key)| {
+                total.checked_add(id.len() + 1 + key.len() + 1)
+            })
+            .ok_or(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive resource-key header",
+            })?;
+        if header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive resource-key header",
+            });
+        }
+        Ok(())
     }
 
     fn encode_change_cursor(&self, page_token: &str) -> Result<DriveChangeCursor, SourceError> {
@@ -1292,7 +1856,7 @@ impl DriveSource {
         if needs_body {
             if let Some(path) = self.body_path(&file) {
                 let body = self
-                    .send(self.request(path), context, physical_bytes)
+                    .send(self.request(path)?, context, physical_bytes)
                     .await?;
                 if body.status != 200 {
                     return Err(self.map_http_failure(&body));
@@ -1377,31 +1941,37 @@ impl DataSource for DriveSource {
         if page_size == 0 {
             return Err(SourceError::RowBudgetExceeded);
         }
-        let mut position = cursor
-            .map(|cursor| self.decode_query_cursor(plan, cursor, context.query_id()))
-            .transpose()?
-            .unwrap_or(QueryPosition {
-                selected_file_index: 0,
-                folder_page_token: None,
-            });
+        let mut traversal = if let Some(cursor) = cursor {
+            let (traversal_id, generation) =
+                self.decode_query_cursor(plan, cursor, context.query_id())?;
+            self.resume_query_traversal(context.query_id(), traversal_id, generation)?
+        } else {
+            self.begin_query_traversal(context.query_id(), context.deadline())?
+        };
         let mut physical_bytes = 0usize;
         let selected_file_ids = self.selected_file_ids();
+        let selected_folder_ids = self.selected_folder_ids();
         let mut scanned = 0usize;
         let mut rows = Vec::with_capacity(page_size);
-        while position.selected_file_index < selected_file_ids.len() && scanned < page_size {
+        while traversal.selected_file_index < selected_file_ids.len() && scanned < page_size {
             context.check()?;
-            let expected_id = selected_file_ids[position.selected_file_index];
+            let expected_id = selected_file_ids[traversal.selected_file_index];
             let response = self
                 .send(
-                    self.request(self.metadata_path(expected_id)),
+                    self.request(self.metadata_path(expected_id))?,
                     context,
                     &mut physical_bytes,
                 )
                 .await?;
             scanned += 1;
-            position.selected_file_index += 1;
+            traversal.selected_file_index += 1;
             if response.status == 404 {
-                continue;
+                return Err(SourceError::Read {
+                    source_id: self.model.id().clone(),
+                    path: "selected Drive item".to_string(),
+                    detail: "provider returned 404; deletion and lost authorization are ambiguous"
+                        .to_string(),
+                });
             }
             if response.status != 200 {
                 return Err(self.map_http_failure(&response));
@@ -1411,6 +1981,10 @@ impl DataSource for DriveSource {
             if file.id != expected_id {
                 return Err(self.malformed("selected file identity"));
             }
+            if file.mime_type == "application/vnd.google-apps.folder" {
+                return Err(self.malformed("selected file kind"));
+            }
+            traversal.seen_ids.insert(file.id.clone());
             if let Some(row) = self
                 .observe_file(file, plan, context, &mut physical_bytes)
                 .await?
@@ -1419,20 +1993,41 @@ impl DataSource for DriveSource {
             }
         }
 
-        let selected_files_exhausted = position.selected_file_index == selected_file_ids.len();
         let mut empty_provider_pages = 0usize;
-        let mut folders_exhausted = !self.has_folder_selections();
-        while selected_files_exhausted && !folders_exhausted && scanned < page_size {
+        while traversal.selected_file_index == selected_file_ids.len() && scanned < page_size {
             context.check()?;
+            while traversal.folders.is_empty()
+                && traversal.selected_folder_index < selected_folder_ids.len()
+            {
+                let root = selected_folder_ids[traversal.selected_folder_index];
+                traversal.selected_folder_index += 1;
+                if traversal.seen_ids.insert(root.to_string()) {
+                    traversal.folders.push_back(FolderTraversal {
+                        id: root.to_string(),
+                        depth: 0,
+                        page_token: None,
+                    });
+                }
+            }
+            let Some(current) = traversal.folders.front() else {
+                break;
+            };
+            let folder_id = current.id.clone();
+            let folder_depth = current.depth;
+            let provider_page_token = current.page_token.clone();
             let remaining = page_size - scanned;
             let response = self
                 .send(
-                    self.request(self.list_path(position.folder_page_token.as_deref(), remaining)),
+                    self.request(self.list_path(
+                        &folder_id,
+                        provider_page_token.as_deref(),
+                        remaining,
+                    ))?,
                     context,
                     &mut physical_bytes,
                 )
                 .await?;
-            if response.status == 400 && position.folder_page_token.is_some() {
+            if response.status == 400 && provider_page_token.is_some() {
                 return Err(SourceError::InvalidCursor);
             }
             if response.status != 200 {
@@ -1451,8 +2046,52 @@ impl DataSource for DriveSource {
                     resource: "Drive page rows",
                 });
             }
+            if let Some(next_page_token) = &list.next_page_token {
+                validate_provider_token(next_page_token)?;
+            }
             scanned += list.files.len();
             for file in list.files {
+                context.check()?;
+                file.validate(self.model.id())?;
+                if !file.parents.iter().any(|parent| parent == &folder_id) {
+                    return Err(self.malformed("parents"));
+                }
+                if !traversal.seen_ids.insert(file.id.clone()) {
+                    continue;
+                }
+                if traversal.seen_ids.len() > MAX_TRAVERSAL_ITEMS {
+                    return Err(SourceError::ResourceLimit {
+                        source_id: self.model.id().clone(),
+                        resource: "Drive traversal items",
+                    });
+                }
+                if file.mime_type == "application/vnd.google-apps.folder" {
+                    let depth = folder_depth
+                        .checked_add(1)
+                        .ok_or(SourceError::ResourceLimit {
+                            source_id: self.model.id().clone(),
+                            resource: "Drive recursion depth",
+                        })?;
+                    if depth > MAX_RECURSION_DEPTH {
+                        return Err(SourceError::ResourceLimit {
+                            source_id: self.model.id().clone(),
+                            resource: "Drive recursion depth",
+                        });
+                    }
+                    self.record_tracked_folder(&file)?;
+                    traversal.folders.push_back(FolderTraversal {
+                        id: file.id,
+                        depth,
+                        page_token: None,
+                    });
+                    if traversal.folders.len() > MAX_TRAVERSAL_ITEMS {
+                        return Err(SourceError::ResourceLimit {
+                            source_id: self.model.id().clone(),
+                            resource: "Drive folder queue",
+                        });
+                    }
+                    continue;
+                }
                 if let Some(row) = self
                     .observe_file(file, plan, context, &mut physical_bytes)
                     .await?
@@ -1460,9 +2099,16 @@ impl DataSource for DriveSource {
                     rows.push(row);
                 }
             }
-            position.folder_page_token = list.next_page_token;
-            folders_exhausted = position.folder_page_token.is_none();
-            if scanned == 0 && !folders_exhausted {
+            if let Some(next_page_token) = list.next_page_token {
+                let current = traversal
+                    .folders
+                    .front_mut()
+                    .ok_or(SourceError::InvalidCursor)?;
+                current.page_token = Some(next_page_token);
+            } else {
+                traversal.folders.pop_front();
+            }
+            if scanned == 0 {
                 empty_provider_pages += 1;
                 if empty_provider_pages > MAX_EMPTY_PROVIDER_PAGES {
                     return Err(SourceError::ResourceLimit {
@@ -1475,17 +2121,25 @@ impl DataSource for DriveSource {
             break;
         }
 
-        let has_more = position.selected_file_index < selected_file_ids.len() || !folders_exhausted;
+        let has_more = traversal.selected_file_index < selected_file_ids.len()
+            || traversal.selected_folder_index < selected_folder_ids.len()
+            || !traversal.folders.is_empty();
         let next_cursor = if has_more {
             if scanned == 0 {
                 return Err(SourceError::InvalidCursor);
             }
-            Some(self.encode_query_cursor(
+            traversal.generation = traversal
+                .generation
+                .checked_add(1)
+                .ok_or(SourceError::InvalidCursor)?;
+            let next = self.encode_query_cursor(
                 plan,
                 context.query_id(),
-                position.selected_file_index,
-                position.folder_page_token,
-            )?)
+                traversal.traversal_id,
+                traversal.generation,
+            )?;
+            self.save_query_traversal(context.query_id(), traversal)?;
+            Some(next)
         } else {
             None
         };
@@ -1519,6 +2173,7 @@ struct DriveFile {
     modified_time: String,
     size: Option<String>,
     md5_checksum: Option<String>,
+    resource_key: Option<String>,
     #[serde(default)]
     parents: Vec<String>,
     #[serde(default)]
@@ -1560,6 +2215,15 @@ impl DriveFile {
             .is_some_and(|checksum| checksum.is_empty() || checksum.len() > 512)
         {
             return Err(malformed_source(source_id, "md5Checksum"));
+        }
+        if self.resource_key.as_ref().is_some_and(|resource_key| {
+            resource_key.is_empty()
+                || resource_key.len() > MAX_RESOURCE_KEY_BYTES
+                || !resource_key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        }) {
+            return Err(malformed_source(source_id, "resourceKey"));
         }
         Ok(())
     }
@@ -1646,6 +2310,20 @@ fn validate_drive_id(field: &'static str, id: &str) -> Result<(), DriveConnector
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err(DriveConnectorError::InvalidConfiguration { field });
+    }
+    Ok(())
+}
+
+fn validate_resource_key(resource_key: &str) -> Result<(), DriveConnectorError> {
+    if resource_key.is_empty()
+        || resource_key.len() > MAX_RESOURCE_KEY_BYTES
+        || !resource_key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(DriveConnectorError::InvalidConfiguration {
+            field: "resource_key",
+        });
     }
     Ok(())
 }
@@ -1783,4 +2461,153 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod cursor_binding_tests {
+    use super::*;
+    use catdb_query::EntityTarget;
+
+    struct NeverTransport;
+
+    #[async_trait]
+    impl DriveTransport for NeverTransport {
+        async fn send(
+            &self,
+            _request: DriveHttpRequest,
+        ) -> Result<DriveHttpResponse, DriveTransportError> {
+            Err(DriveTransportError::Failed)
+        }
+    }
+
+    fn source(schema_version: &str) -> DriveSource {
+        let config = DriveSourceConfig::new(
+            "drive-library",
+            "drive",
+            "Document",
+            vec![DriveSelection::folder("selected-folder")],
+            DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+        )
+        .unwrap();
+        DriveSource::open_with_transport(
+            PinnedDriveSourceSpec::new(config, schema_version).unwrap(),
+            DriveRuntimeSecrets::new(
+                DriveAccessToken::new("fixture-access-token").unwrap(),
+                DriveCursorKey::new([0x41; 32]),
+            ),
+            Arc::new(NeverTransport),
+        )
+        .unwrap()
+    }
+
+    fn query_plan(source: &DriveSource, field: &str) -> SourcePlan {
+        source
+            .compile(
+                &EntityQuery {
+                    target: EntityTarget::Entity("drive.Document".to_string()),
+                    filters: Vec::new(),
+                },
+                &[field.to_string()],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn query_cursor_binding_rejects_each_independent_dimension() {
+        let mut source = source("drive-schema-v1");
+        let query_id = Uuid::new_v4();
+        let plan = query_plan(&source, "id");
+        let cursor = source
+            .encode_query_cursor(&plan, query_id, Uuid::new_v4(), 1)
+            .unwrap();
+
+        assert_eq!(
+            source.decode_query_cursor(&query_plan(&source, "name"), &cursor, query_id),
+            Err(SourceError::InvalidCursor)
+        );
+        assert_eq!(
+            source.decode_query_cursor(&plan, &cursor, Uuid::new_v4()),
+            Err(SourceError::InvalidCursor)
+        );
+
+        let original_digest = source.source_spec_digest.clone();
+        source.source_spec_digest = "different-source-spec".to_string();
+        assert_eq!(
+            source.decode_query_cursor(&plan, &cursor, query_id),
+            Err(SourceError::InvalidCursor)
+        );
+        source.source_spec_digest = original_digest;
+
+        source.spec.schema_version = "drive-schema-v2".to_string();
+        assert_eq!(
+            source.decode_query_cursor(&plan, &cursor, query_id),
+            Err(SourceError::InvalidCursor)
+        );
+
+        source.spec.schema_version = "drive-schema-v1".to_string();
+        let payload = QueryCursorPayload {
+            version: CURSOR_VERSION,
+            connector: "not-a-query-cursor".to_string(),
+            source_spec_digest: source.source_spec_digest.clone(),
+            schema_version: source.spec.schema_version.clone(),
+            plan_digest: plan_digest(&plan).unwrap(),
+            query_id,
+            traversal_id: Uuid::new_v4(),
+            generation: 1,
+        };
+        let authentication_tag = source.authenticate(QUERY_CURSOR_DOMAIN, &payload).unwrap();
+        let wrong_kind = SourceCursor::new(
+            serde_json::to_vec(&CursorEnvelope {
+                payload,
+                authentication_tag,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            source.decode_query_cursor(&plan, &wrong_kind, query_id),
+            Err(SourceError::InvalidCursor)
+        );
+    }
+
+    #[test]
+    fn change_cursor_binding_rejects_source_schema_and_kind_independently() {
+        let mut source = source("drive-schema-v1");
+        let cursor = source.encode_change_cursor("changes-100").unwrap();
+
+        let original_digest = source.source_spec_digest.clone();
+        source.source_spec_digest = "different-source-spec".to_string();
+        assert_eq!(
+            source.decode_change_cursor(&cursor),
+            Err(SourceError::InvalidCursor)
+        );
+        source.source_spec_digest = original_digest;
+
+        source.spec.schema_version = "drive-schema-v2".to_string();
+        assert_eq!(
+            source.decode_change_cursor(&cursor),
+            Err(SourceError::InvalidCursor)
+        );
+
+        source.spec.schema_version = "drive-schema-v1".to_string();
+        let payload = ChangeCursorPayload {
+            version: CURSOR_VERSION,
+            connector: "not-a-change-cursor".to_string(),
+            source_spec_digest: source.source_spec_digest.clone(),
+            schema_version: source.spec.schema_version.clone(),
+            page_token: "changes-100".to_string(),
+        };
+        let authentication_tag = source.authenticate(CHANGE_CURSOR_DOMAIN, &payload).unwrap();
+        let wrong_kind = DriveChangeCursor(
+            serde_json::to_vec(&CursorEnvelope {
+                payload,
+                authentication_tag,
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            source.decode_change_cursor(&wrong_kind),
+            Err(SourceError::InvalidCursor)
+        );
+    }
 }

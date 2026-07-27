@@ -238,6 +238,7 @@ struct RefreshingResolver {
     resolve_count: Arc<AtomicUsize>,
     refresh_count: Arc<AtomicUsize>,
     refresh_mode: RefreshMode,
+    initial_expired: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +254,13 @@ impl RefreshingResolver {
             resolve_count: Arc::new(AtomicUsize::new(0)),
             refresh_count: Arc::new(AtomicUsize::new(0)),
             refresh_mode,
+            initial_expired: false,
         }
+    }
+
+    fn with_expired_access(mut self) -> Self {
+        self.initial_expired = true;
+        self
     }
 }
 
@@ -264,10 +271,15 @@ impl DriveSecretResolver for RefreshingResolver {
         _reference: &DriveSecretReference,
     ) -> Result<DriveRuntimeSecrets, DriveConnectorError> {
         self.resolve_count.fetch_add(1, Ordering::SeqCst);
+        let expires_at = if self.initial_expired {
+            SystemTime::now() - Duration::from_secs(1)
+        } else {
+            SystemTime::now() + Duration::from_secs(3_600)
+        };
         Ok(DriveRuntimeSecrets::refreshable(
             DriveAccessGrant::new(
                 DriveAccessToken::new("initial-access-token")?,
-                Some(SystemTime::now() + Duration::from_secs(3_600)),
+                Some(expires_at),
             )?,
             DriveRefreshCredential::new("runtime-refresh-token")?,
             DriveCursorKey::new([0x41; 32]),
@@ -289,6 +301,37 @@ impl DriveSecretResolver for RefreshingResolver {
             RefreshMode::Pending => std::future::pending().await,
         }
     }
+}
+
+#[tokio::test]
+async fn concurrent_expired_access_uses_one_bounded_refresh_exchange() {
+    let transport = ScriptedTransport::new([
+        response(200, listing(serde_json::json!([]), None, false)),
+        response(200, listing(serde_json::json!([]), None, false)),
+    ]);
+    let resolver = RefreshingResolver::new(RefreshMode::Succeeds).with_expired_access();
+    let (source, transport, resolver) = refreshable_source(transport, resolver).await;
+    let first = context(2, 2, 4_096);
+    let second = context(2, 2, 4_096);
+    let first_plan = plan(&source, &["id"]);
+    let second_plan = plan(&source, &["id"]);
+
+    let (left, right) = tokio::join!(
+        source.execute_page(&first_plan, None, &first),
+        source.execute_page(&second_plan, None, &second),
+    );
+
+    left.unwrap();
+    right.unwrap();
+    assert_eq!(resolver.refresh_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        transport
+            .requests()
+            .iter()
+            .map(DriveHttpRequest::credential_generation)
+            .collect::<Vec<_>>(),
+        vec![1, 1]
+    );
 }
 
 async fn refreshable_source(
@@ -522,7 +565,7 @@ async fn selected_file_ids_use_files_get_instead_of_an_unsupported_list_query_te
     assert_eq!(page.rows[0].key, "selected-file");
     assert_eq!(
         transport.requests()[0].path(),
-        "/drive/v3/files/selected-file?fields=id%2Cname%2CmimeType%2CmodifiedTime%2Csize%2Cmd5Checksum%2Cparents%2Ctrashed&supportsAllDrives=true"
+        "/drive/v3/files/selected-file?fields=id%2Cname%2CmimeType%2CmodifiedTime%2Csize%2Cmd5Checksum%2CresourceKey%2Cparents%2Ctrashed&supportsAllDrives=true"
     );
     assert!(!transport.requests()[0].path().contains("q=id"));
     assert!(!format!("{:?}", transport.requests()[0]).contains("selected-file"));
@@ -617,6 +660,71 @@ async fn selected_folders_are_walked_recursively_and_membership_is_rechecked() {
             )
             .await,
         Err(SourceError::Malformed { attr, .. }) if attr == "parents"
+    ));
+}
+
+#[tokio::test]
+async fn recursive_walk_deduplicates_cycles_and_refuses_excessive_depth() {
+    let cycle = listing(
+        serde_json::json!([{
+            "id":"selected-folder",
+            "name":"Cycle",
+            "mimeType":"application/vnd.google-apps.folder",
+            "modifiedTime":"2026-07-20T12:34:56Z",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        None,
+        false,
+    );
+    let (cyclic, cyclic_transport) =
+        source(ScriptedTransport::new([response(200, cycle)]), config());
+    let answer = read(
+        &cyclic,
+        &query(),
+        &["id".to_string()],
+        &context(4, 4, 64 * 1024),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer.scanned, 1);
+    assert!(answer.rows.is_empty());
+    assert_eq!(cyclic_transport.requests().len(), 1);
+
+    let mut steps = Vec::new();
+    for depth in 0..=32 {
+        let parent = if depth == 0 {
+            "selected-folder".to_string()
+        } else {
+            format!("folder-{}", depth - 1)
+        };
+        steps.push(response(
+            200,
+            listing(
+                serde_json::json!([{
+                    "id":format!("folder-{depth}"),
+                    "name":format!("Folder {depth}"),
+                    "mimeType":"application/vnd.google-apps.folder",
+                    "modifiedTime":"2026-07-20T12:34:56Z",
+                    "parents":[parent],
+                    "trashed":false
+                }]),
+                None,
+                false,
+            ),
+        ));
+    }
+    let (too_deep, _) = source(ScriptedTransport::new(steps), config());
+    assert!(matches!(
+        read(
+            &too_deep,
+            &query(),
+            &["id".to_string()],
+            &context(100, 100, 256 * 1024),
+        )
+        .await,
+        Err(SourceError::ResourceLimit { resource, .. })
+            if resource == "Drive recursion depth"
     ));
 }
 
@@ -782,7 +890,8 @@ async fn picker_resource_keys_follow_selected_and_discovered_link_shared_items()
         nested_transport.requests()[0].header("x-goog-drive-resource-keys"),
         Some("selected-folder/root-key")
     );
-    let nested_header = nested_transport.requests()[1]
+    let nested_requests = nested_transport.requests();
+    let nested_header = nested_requests[1]
         .header("x-goog-drive-resource-keys")
         .unwrap();
     assert!(nested_header.contains("selected-folder/root-key"));
@@ -870,7 +979,10 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
         Some("opaque-next"),
         false,
     );
-    let transport = ScriptedTransport::new([response(200, body)]);
+    let transport = ScriptedTransport::new([
+        response(200, body),
+        response(200, listing(serde_json::json!([]), None, false)),
+    ]);
     let (first_source, _) = source(transport, config());
     let query_id = uuid::Uuid::new_v4();
     let page = first_source
@@ -888,9 +1000,9 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
         config(),
     )
     .0;
-    assert!(same_source
+    assert!(first_source
         .execute_page(
-            &plan(&same_source, &["id"]),
+            &plan(&first_source, &["id"]),
             Some(&cursor),
             &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
         )

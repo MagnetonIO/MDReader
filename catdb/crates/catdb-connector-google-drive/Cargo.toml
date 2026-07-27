@@ -24,7 +24,7 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 thiserror = { workspace = true }
 time = { version = "0.3", features = ["parsing"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 url = "2"
 uuid = { workspace = true }
 zeroize = "1"
