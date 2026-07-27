@@ -10,7 +10,11 @@ import {
 
 import { commands, type MobileEnterpriseError } from '../bindings';
 import type { EnterpriseServerConfig } from './source-policy';
-import type { MobileDocumentIdentity } from './offline-cache';
+import type {
+  MobileDocumentIdentity,
+  MobileSourceIdentity,
+} from './offline-cache';
+import { sameMobileDocumentIdentity } from './offline-cache';
 import {
   mobileProvenanceOf,
   type MobileDocumentProvenance,
@@ -280,6 +284,7 @@ function sourceIdFor(
 function documentOf(
   response: EntityQueryResponse,
   workspaceId: string,
+  source: Extract<MobileSourceIdentity, { kind: 'enterprise-catdb' }>,
   row: EntityRow,
 ): MobileLibraryDocument | null {
   const rowRecord = record(row);
@@ -310,30 +315,14 @@ function documentOf(
   ) {
     return null;
   }
-  const sourceId = sourceIdFor(response, pathObservation.sourceVersionId);
-  if (!sourceId) return null;
   return {
-    source: { kind: 'enterprise-catdb', id: sourceId },
+    source,
     sourceRoot: { id: workspaceId, version: response.pins.catalog_revision_id },
     document: { id: recordKey, path },
     name: basename(path),
     title,
     size,
   };
-}
-
-function sameIdentity(
-  expected: MobileDocumentIdentity,
-  actual: MobileDocumentIdentity,
-): boolean {
-  return (
-    expected.source.kind === actual.source.kind &&
-    expected.source.id === actual.source.id &&
-    expected.sourceRoot.id === actual.sourceRoot.id &&
-    expected.sourceRoot.version === actual.sourceRoot.version &&
-    expected.document.id === actual.document.id &&
-    expected.document.path === actual.document.path
-  );
 }
 
 function listRequest(workspaceId: string): EntityQueryRequest {
@@ -357,7 +346,6 @@ function readRequest(document: MobileLibraryDocument): EntityQueryRequest {
     select: [...READ_FIELDS],
     filters: [{ field: 'path', operator: 'eq', value: document.document.path }],
     order_by: [],
-    source_ids: [document.source.id],
     page_size: 2,
     limit: 2,
     require_complete: true,
@@ -421,11 +409,17 @@ export function createEnterpriseMobileSourceAdapter(
     baseUrl: NATIVE_TRANSPORT_ORIGIN,
     fetch: fetcher ? boundedFetch(fetcher) : nativeFetch(config),
   });
-  let workspaceId: string | null = null;
+  let admitted:
+    | {
+        workspaceId: string;
+        source: Extract<MobileSourceIdentity, { kind: 'enterprise-catdb' }>;
+      }
+    | null = null;
 
   return {
     async listDocuments() {
       try {
+        admitted = null;
         const session = validSession(await client.session());
         if (!session) {
           return {
@@ -445,7 +439,13 @@ export function createEnterpriseMobileSourceAdapter(
             message: 'Choose an Enterprise session restricted to one workspace.',
           };
         }
-        workspaceId = session.workspace_ids[0]!;
+        const workspaceId = session.workspace_ids[0]!;
+        const source = {
+          kind: 'enterprise-catdb' as const,
+          id: session.deployment_id,
+          connectionId: config.connectionId,
+          deploymentId: session.deployment_id,
+        };
         const response = validQueryResponse(await client.entityQuery(listRequest(workspaceId)));
         if (
           !response ||
@@ -460,7 +460,7 @@ export function createEnterpriseMobileSourceAdapter(
         }
         const documents: MobileLibraryDocument[] = [];
         for (const row of response.rows) {
-          const document = documentOf(response, workspaceId, row);
+          const document = documentOf(response, workspaceId, source, row);
           if (!document) {
             return {
               status: 'invalid-response',
@@ -469,6 +469,7 @@ export function createEnterpriseMobileSourceAdapter(
           }
           documents.push(document);
         }
+        admitted = { workspaceId, source };
         return {
           status: 'ready',
           label: 'Enterprise Document library',
@@ -481,10 +482,24 @@ export function createEnterpriseMobileSourceAdapter(
 
     async readDocument(document) {
       try {
-        if (workspaceId !== null && workspaceId !== document.sourceRoot.id) {
+        if (
+          !admitted ||
+          admitted.workspaceId !== document.sourceRoot.id ||
+          !sameMobileDocumentIdentity(
+            document,
+            {
+              ...document,
+              source: admitted.source,
+              sourceRoot: {
+                ...document.sourceRoot,
+                id: admitted.workspaceId,
+              },
+            },
+          )
+        ) {
           throw new MobileSourceReadError(
             'identity-mismatch',
-            'The Enterprise workspace identity changed during the read.',
+            'The admitted Enterprise service identity changed during the read.',
           );
         }
         const response = validQueryResponse(await client.entityQuery(readRequest(document)));
@@ -501,7 +516,12 @@ export function createEnterpriseMobileSourceAdapter(
           );
         }
         const row = response.rows[0]!;
-        const actual = documentOf(response, document.sourceRoot.id, row);
+        const actual = documentOf(
+          response,
+          document.sourceRoot.id,
+          admitted.source,
+          row,
+        );
         const body =
           typeof row.fields.body === 'string' && row.fields.body.length <= 2 * 1024 * 1024
             ? row.fields.body
@@ -520,7 +540,7 @@ export function createEnterpriseMobileSourceAdapter(
             'The Enterprise server returned an invalid semantic response.',
           );
         }
-        if (!sameIdentity(document, actual)) {
+        if (!sameMobileDocumentIdentity(document, actual)) {
           throw new MobileSourceReadError(
             'identity-mismatch',
             'The Enterprise document identity changed during the read.',
@@ -528,12 +548,12 @@ export function createEnterpriseMobileSourceAdapter(
         }
         const bodySource = sourceIdFor(response, bodyObservation.sourceVersionId);
         if (
-          bodySource !== document.source.id ||
+          bodySource === null ||
           bodyObservation.recordKey !== document.document.id
         ) {
           throw new MobileSourceReadError(
             'identity-mismatch',
-            'The Enterprise document provider changed during the read.',
+            'The Enterprise document provider identity is invalid.',
           );
         }
         const provenance = mobileProvenanceOf(

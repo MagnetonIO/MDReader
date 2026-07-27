@@ -60,7 +60,8 @@ function cachedEntry(overrides: Record<string, unknown> = {}) {
         source: { kind: 'device-folder', id: 'library-source-7' },
         sourceRoot: { id: 'root-notes', version: 'grant-7' },
         document: { id: 'cached-note-1', path: '/notes/cached.md' },
-        revision: 'blake3:abc123',
+        revision:
+          'sha256:fc0a64e86f5318d1c8afa0a035068c48cb060e11c80ec2703c30cd090a435d98',
         observedAt: now - 2_000,
         cachedAt: now - 1_000,
         expiresAt: now + 60_000,
@@ -99,7 +100,9 @@ describe('mobile offline document fallback', () => {
     expect(await screen.findByText('Cached note', { selector: 'h1' })).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('Offline copy');
     expect(screen.getByRole('status').textContent).toContain('library-source-7');
-    expect(screen.getByRole('status').textContent).toContain('blake3:abc123');
+    expect(screen.getByRole('status').textContent).toContain(
+      'sha256:fc0a64e86f5318d1c8afa0a035068c48cb060e11c80ec2703c30cd090a435d98',
+    );
     expect(screen.getByRole('status').textContent).toMatch(/not a complete library/i);
   });
 
@@ -114,7 +117,9 @@ describe('mobile offline document fallback', () => {
         onModeChange={() => undefined}
       />,
     );
-    expect((await screen.findByRole('status')).textContent).toMatch(/offline copy expired/i);
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/offline copy expired/i),
+    );
     expired.unmount();
 
     fixtures.cache = cachedEntry({ content: 42 });
@@ -212,7 +217,8 @@ describe('mobile offline document fallback', () => {
         {
           ...cachedEntry().entries[0],
           document: { id: 'cached-note-2', path: '/notes/second.md' },
-          revision: 'blake3:second',
+          revision:
+            'sha256:15e6c308055a050ce1feb9da3b733d3c8775baa3a20fde4b7f333b263324daff',
           content: '# Second cached note',
           bytes: 20,
           cachedAt: now,

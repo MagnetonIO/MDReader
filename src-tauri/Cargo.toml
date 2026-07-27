@@ -27,6 +27,7 @@ workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = { workspace = true }
 
 [dependencies]
 tauri = { version = "2", features = ["specta"] }

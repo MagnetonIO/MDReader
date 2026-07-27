@@ -342,7 +342,7 @@ describe('compile-time mobile composition', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Evidence' }));
     expect(screen.getByRole('main', { name: 'Semantic Inspector' })).toBeTruthy();
-    expect(screen.getByText('enterprise-source-1')).toBeTruthy();
+    expect(screen.getByText('deployment-1')).toBeTruthy();
     expect(screen.getByText('schema-9')).toBeTruthy();
     expect(screen.getByText('mapping-4')).toBeTruthy();
     expect(screen.getByText('policy-2')).toBeTruthy();
