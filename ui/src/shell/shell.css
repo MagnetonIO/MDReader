@@ -1050,6 +1050,93 @@ body {
   color: var(--color-text);
 }
 
+.cloud-library {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 44%;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.cloud-library__heading,
+.cloud-library__source > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.cloud-library__heading > span {
+  color: var(--color-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cloud-library__heading button,
+.cloud-library__source button {
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+}
+
+.cloud-library input {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--text--1);
+}
+
+.cloud-library__source {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.cloud-library__source strong {
+  color: var(--color-fg);
+  font-size: var(--text--1);
+}
+
+.cloud-library__source small,
+.cloud-library__source p,
+.cloud-library__error {
+  margin: 0;
+  color: var(--color-faint);
+  font-size: 0.68rem;
+}
+
+.cloud-library__error {
+  color: var(--color-danger);
+}
+
+.cloud-library__source ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cloud-library__source li button {
+  width: 100%;
+  overflow: hidden;
+  padding: 4px 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-library__source li button:hover {
+  color: var(--color-accent);
+}
+
 /* The status bar's file-count slot when the listing failed. */
 .statusbar__alert {
   color: var(--color-danger);
@@ -1269,6 +1356,40 @@ body {
   flex: 1;
 }
 
+.cloud-reader__toolbar {
+  gap: var(--space-3);
+  font-size: var(--text--1);
+}
+
+.cloud-reader__toolbar a,
+.cloud-reader__toolbar button {
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  text-decoration: none;
+}
+
+.cloud-reader__state {
+  color: var(--color-faint);
+}
+
+.cloud-reader__policy {
+  margin: 0;
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-faint);
+  font-size: var(--text--1);
+}
+
+.cloud-reader__inspector {
+  width: min(330px, 34vw);
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
 .reader-host {
   flex: 1;
   min-width: 0;
@@ -1299,6 +1420,10 @@ body {
 
 .shell__reader-row--related-open {
   grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.shell__reader-row--cloud-open {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 /* --- related rail ----------------------------------------------------- */
@@ -1652,6 +1777,7 @@ body {
 .shell--focus .reader-toolbar,
 .shell--focus .outline-rail,
 .shell--focus .related-rail,
+.shell--focus .cloud-reader__inspector,
 .shell--focus .related-rail__toggle--collapsed,
 .shell--focus .lens-rail,
 .shell--focus .lens-strip,
@@ -1663,7 +1789,8 @@ body {
 /* With the rails hidden, drop their columns entirely so the reader reclaims the
  * full width and centers — even when a rail was left open before entering focus. */
 .shell--focus .shell__reader-row,
-.shell--focus .shell__reader-row--related-open {
+.shell--focus .shell__reader-row--related-open,
+.shell--focus .shell__reader-row--cloud-open {
   grid-template-columns: minmax(0, 1fr);
 }
 

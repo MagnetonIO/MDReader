@@ -1309,6 +1309,9 @@ mod tests {
                 // it records which source answered each field, rather than
                 // proposing an interpretation a human rules on.
                 "document",
+                // The multi-source Library document schema. It is likewise
+                // mechanical and read-only, not an approval-gated overlay.
+                "library",
             ]
         );
         let approval: Vec<&str> = summaries
@@ -1811,7 +1814,7 @@ mod tests {
             .unwrap()
             .is_empty());
         let summaries = list_schemas_guarded(&state, || {}).expect("list");
-        assert_eq!(summaries.len(), 11);
+        assert_eq!(summaries.len(), 12);
         assert!(summaries.iter().all(|s| s.object_count == 0));
         assert!(summaries.iter().all(|s| s.proposal_count == 0));
         // Nothing has been persisted, so there is no version to report — and

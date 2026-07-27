@@ -129,9 +129,19 @@ pub(crate) struct LibrarySourceDto {
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct LibraryCloudSourceDto {
+    pub id: String,
+    pub provider: crate::cloud_accounts::CloudProvider,
+    pub name: String,
+    pub enabled: bool,
+    pub contract: LibrarySourceContract,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct LibrarySnapshot {
     pub version: u32,
     pub sources: Vec<LibrarySourceDto>,
+    pub cloud_sources: Vec<LibraryCloudSourceDto>,
     pub cleanup: LibraryCleanupStatus,
 }
 
@@ -279,31 +289,31 @@ fn new_source_id() -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum LibraryIndexPolicy {
     Managed,
     ReadThrough,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LibrarySourceCapabilities {
-    read: bool,
-    write: bool,
-    search: bool,
-    watch: bool,
-    open_original: bool,
-    download: bool,
+    pub read: bool,
+    pub write: bool,
+    pub search: bool,
+    pub watch: bool,
+    pub open_original: bool,
+    pub download: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LibrarySourceContract {
-    connector_version: String,
-    capabilities: LibrarySourceCapabilities,
-    mapping_version: String,
-    index_policy: LibraryIndexPolicy,
+    pub connector_version: String,
+    pub capabilities: LibrarySourceCapabilities,
+    pub mapping_version: String,
+    pub index_policy: LibraryIndexPolicy,
 }
 
 impl LibrarySourceContract {
@@ -763,9 +773,27 @@ impl LibraryRegistry {
                 restore_candidate: self.active_source_id.as_deref() == Some(source.id.as_str()),
             });
         }
+        let cloud_sources = self
+            .sources
+            .iter()
+            .filter_map(LibrarySource::cloud)
+            .map(|source| {
+                Ok(LibraryCloudSourceDto {
+                    id: source.id().to_string(),
+                    provider: source.provider(),
+                    name: source.label().to_string(),
+                    enabled: source.enabled(),
+                    contract: source
+                        .contract()
+                        .cloned()
+                        .ok_or(LibraryError::CorruptRegistry)?,
+                })
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
         Ok(LibrarySnapshot {
             version: LIBRARY_VERSION,
             sources,
+            cloud_sources,
             cleanup: self.cleanup_status(),
         })
     }

@@ -30,6 +30,7 @@ const SOURCE: LibrarySourceDto = {
 const SNAPSHOT: LibrarySnapshot = {
   version: 4,
   sources: [SOURCE],
+  cloud_sources: [],
   cleanup: { kind: 'complete' },
 };
 const DIAGNOSTICS: DiagnosticInfo = {
@@ -50,6 +51,7 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
     forgetSource: vi.fn(async () => ({
       version: 4,
       sources: [],
+      cloud_sources: [],
       cleanup: { kind: 'complete' as const },
     })),
     diagnosticsInfo: vi.fn(async () => DIAGNOSTICS),
@@ -82,6 +84,8 @@ function cloudResponse(
       catalog_version: 'catalog-v5',
       schema_version: 'mdreader.Document/v1',
       schema_checksum: 'a'.repeat(64),
+      source_schema_version: 'provider-schema-v1',
+      source_schema_checksum: 'e'.repeat(64),
       mapping_version: 'mdreader.Document.cloud-mapping/v1',
       mapping_checksum: 'b'.repeat(64),
       connector_version: `${provider}/v1`,
@@ -494,7 +498,7 @@ describe('Settings sheet', () => {
     );
 
     await act(async () => {
-      release({ version: 4, sources: [], cleanup: { kind: 'complete' } });
+      release({ version: 4, sources: [], cloud_sources: [], cleanup: { kind: 'complete' } });
       await pending;
     });
   });
@@ -517,6 +521,7 @@ describe('Settings sheet', () => {
       listSources: vi.fn(async () => ({
         version: 4,
         sources: [active, missing],
+        cloud_sources: [],
         cleanup: { kind: 'complete' as const },
       })),
     });
@@ -615,6 +620,7 @@ describe('Settings sheet', () => {
       listSources: vi.fn(async () => ({
         version: 4,
         sources: [],
+        cloud_sources: [],
         cleanup: { kind: 'pending' as const, source_count: 2 },
       })),
     });

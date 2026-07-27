@@ -469,6 +469,8 @@ export type CloudVersionPins = {
 	catalog_version: string,
 	schema_version: string,
 	schema_checksum: string,
+	source_schema_version: string,
+	source_schema_checksum: string,
 	mapping_version: string,
 	mapping_checksum: string,
 	connector_version: string,
@@ -911,14 +913,41 @@ export type LibraryCleanupReason = "managed-state-unavailable" | "rollback-faile
 
 export type LibraryCleanupStatus = { kind: "complete" } | { kind: "pending"; source_count: number };
 
+export type LibraryCloudSourceDto = {
+	id: string,
+	provider: CloudProvider,
+	name: string,
+	enabled: boolean,
+	contract: LibrarySourceContract,
+};
+
 export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+
+export type LibraryIndexPolicy = "managed" | "read-through";
 
 export type LibraryIndexState = "present" | "not-created" | "unknown";
 
 export type LibrarySnapshot = {
 	version: number,
 	sources: LibrarySourceDto[],
+	cloud_sources: LibraryCloudSourceDto[],
 	cleanup: LibraryCleanupStatus,
+};
+
+export type LibrarySourceCapabilities = {
+	read: boolean,
+	write: boolean,
+	search: boolean,
+	watch: boolean,
+	open_original: boolean,
+	download: boolean,
+};
+
+export type LibrarySourceContract = {
+	connector_version: string,
+	capabilities: LibrarySourceCapabilities,
+	mapping_version: string,
+	index_policy: LibraryIndexPolicy,
 };
 
 export type LibrarySourceDto = {

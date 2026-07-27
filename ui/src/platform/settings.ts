@@ -8,6 +8,7 @@
 
 import {
   commands,
+  type CloudDocumentRow,
   type CloudDocumentQueryResponse,
   type CloudFilterInput,
   type CloudProvider,
@@ -28,6 +29,7 @@ import {
 
 export type {
   CloudProvider,
+  CloudDocumentRow,
   CloudDocumentQueryResponse,
   CloudFilterInput,
   CloudSourceDto,

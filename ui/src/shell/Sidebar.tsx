@@ -3,6 +3,12 @@
  * reading column. */
 
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
+import type {
+  CloudDocumentQueryResponse,
+  CloudDocumentRow,
+  CloudProvider,
+  CloudSourceDto,
+} from '../bindings.js';
 import { FolderIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
@@ -21,6 +27,18 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocRef) => void;
   isIgnored?: (path: string) => boolean;
+  cloudSources?: CloudSourceDto[];
+  cloudDocuments?: Partial<Record<CloudProvider, CloudDocumentQueryResponse>>;
+  cloudSearch?: string;
+  cloudLoading?: boolean;
+  cloudError?: string | null;
+  onCloudSearch?: (value: string) => void;
+  onOpenCloud?: (
+    source: CloudSourceDto,
+    response: CloudDocumentQueryResponse,
+    row: CloudDocumentRow,
+  ) => void;
+  onRefreshCloud?: () => void;
 }
 
 function basename(path: string): string {
@@ -66,7 +84,19 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
+  cloudSources = [],
+  cloudDocuments = {},
+  cloudSearch = '',
+  cloudLoading = false,
+  cloudError = null,
+  onCloudSearch,
+  onOpenCloud,
+  onRefreshCloud,
 }: SidebarProps) {
+  const connectedSources = cloudSources.filter(
+    (source) => source.connection !== 'disconnected',
+  );
+  const search = cloudSearch.trim().toLocaleLowerCase();
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -108,6 +138,85 @@ export function Sidebar({
           </p>
         </div>
       )}
+
+      {connectedSources.length > 0 ? (
+        <nav className="cloud-library" aria-label="Connected Library sources">
+          <div className="cloud-library__heading">
+            <span>Connected</span>
+            {onRefreshCloud ? (
+              <button type="button" onClick={onRefreshCloud} disabled={cloudLoading}>
+                {cloudLoading ? 'Reading…' : 'Refresh'}
+              </button>
+            ) : null}
+          </div>
+          {onCloudSearch ? (
+            <input
+              type="search"
+              value={cloudSearch}
+              onChange={(event) => onCloudSearch(event.currentTarget.value)}
+              placeholder="Search connected documents"
+              aria-label="Search connected Library documents"
+            />
+          ) : null}
+          {cloudError ? <p className="cloud-library__error">{cloudError}</p> : null}
+          {connectedSources.map((source) => {
+            const response = cloudDocuments[source.provider];
+            const rows =
+              response?.rows.filter((row) => {
+                if (!search) return true;
+                const fields =
+                  row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields)
+                    ? (row.fields as Record<string, unknown>)
+                    : {};
+                const title = typeof fields.title === 'string' ? fields.title : row.record_key;
+                return title.toLocaleLowerCase().includes(search);
+              }) ?? [];
+            return (
+              <section className="cloud-library__source" key={source.id}>
+                <div>
+                  <strong>{source.label}</strong>
+                  <small>
+                    {source.enabled ? 'Read-through · not locally indexed' : 'Paused in Settings'}
+                  </small>
+                </div>
+                {source.connection === 'reauthorize' ? (
+                  <p>Sign in again from Settings to read this source.</p>
+                ) : !source.enabled ? null : response ? (
+                  rows.length > 0 ? (
+                    <ul>
+                      {rows.map((row) => {
+                        const fields =
+                          row.fields &&
+                          typeof row.fields === 'object' &&
+                          !Array.isArray(row.fields)
+                            ? (row.fields as Record<string, unknown>)
+                            : {};
+                        const title =
+                          typeof fields.title === 'string' ? fields.title : row.record_key;
+                        return (
+                          <li key={`${row.source_id}:${row.record_key}`}>
+                            <button
+                              type="button"
+                              aria-label={`Open ${title} from ${source.label}`}
+                              onClick={() => onOpenCloud?.(source, response, row)}
+                            >
+                              {title}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p>{search ? 'No connected documents match.' : 'No documents found.'}</p>
+                  )
+                ) : (
+                  <p>{cloudLoading ? 'Reading provider…' : 'Refresh to read this source.'}</p>
+                )}
+              </section>
+            );
+          })}
+        </nav>
+      ) : null}
 
       {recent.length > 0 ? (
         <nav className="recent" aria-label="Recent documents">

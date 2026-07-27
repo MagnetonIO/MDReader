@@ -106,7 +106,7 @@ export interface FederatedDocument {
 
 /** The exact catalogued schema identity pinned by a federated response. */
 export interface PersistedSchemaSummary extends Omit<SchemaSummary, 'version' | 'checksum'> {
-  version: number;
+  version: number | string;
   checksum: string;
 }
 

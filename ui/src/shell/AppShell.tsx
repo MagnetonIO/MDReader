@@ -45,7 +45,11 @@ import {
   pickAndAddLibrarySource,
   reconcileLibraryRestore,
   recordDiagnosticEventNonBlocking,
+  settingsBackend,
   watchLibrarySource,
+  type CloudDocumentQueryResponse,
+  type CloudDocumentRow,
+  type CloudSourceDto,
   type LibrarySourceDto,
 } from '../platform/settings.js';
 import { createReindexer } from './reindex.js';
@@ -61,6 +65,7 @@ import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
+import { CloudLibraryPane } from './CloudLibraryPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
@@ -122,6 +127,19 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cloudDocument, setCloudDocument] = useState<{
+    source: CloudSourceDto;
+    row: CloudDocumentRow;
+  } | null>(null);
+  const [cloudSources, setCloudSources] = useState<CloudSourceDto[]>([]);
+  const [cloudDocuments, setCloudDocuments] = useState<
+    Partial<Record<CloudSourceDto['provider'], CloudDocumentQueryResponse>>
+  >({});
+  const [cloudSearch, setCloudSearch] = useState('');
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const cloudRefreshGeneration = useRef(0);
+  const cloudRefreshRequests = useRef<string[]>([]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -150,6 +168,87 @@ export function AppShell() {
   // selection, and the panel must not empty itself out from under the ruling.
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
+
+  const refreshCloudLibrary = useCallback(async () => {
+    if (!settingsBackend.listCloudSources || !settingsBackend.queryCloudDocuments) return;
+    const generation = cloudRefreshGeneration.current + 1;
+    cloudRefreshGeneration.current = generation;
+    if (settingsBackend.cancelCloudDocumentQuery) {
+      await Promise.allSettled(
+        cloudRefreshRequests.current.map((requestId) =>
+          settingsBackend.cancelCloudDocumentQuery!(requestId),
+        ),
+      );
+    }
+    setCloudLoading(true);
+    setCloudError(null);
+    try {
+      const snapshot = await settingsBackend.listCloudSources();
+      if (cloudRefreshGeneration.current !== generation) return;
+      setCloudSources(snapshot.sources);
+      const readable = snapshot.sources.filter(
+        (source) => source.connection === 'connected' && source.enabled,
+      );
+      const readableRequestIds = readable.map(
+        (source) => `library:${source.provider}:${globalThis.crypto.randomUUID()}`,
+      );
+      cloudRefreshRequests.current = readableRequestIds;
+      const answers = await Promise.allSettled(
+        readable.map(async (source, index) => ({
+          provider: source.provider,
+          response: await settingsBackend.queryCloudDocuments!(
+            source.provider,
+            [],
+            ['path', 'title', 'modifiedAt', 'size'],
+            readableRequestIds[index]!,
+          ),
+        })),
+      );
+      if (cloudRefreshGeneration.current !== generation) return;
+      const next: Partial<
+        Record<CloudSourceDto['provider'], CloudDocumentQueryResponse>
+      > = {};
+      let failures = 0;
+      for (const answer of answers) {
+        if (answer.status === 'fulfilled') {
+          next[answer.value.provider] = answer.value.response;
+        } else {
+          failures += 1;
+        }
+      }
+      setCloudDocuments(next);
+      if (failures > 0) {
+        setCloudError(
+          failures === 1
+            ? 'One connected source could not be read.'
+            : `${failures} connected sources could not be read.`,
+        );
+      }
+    } catch {
+      if (cloudRefreshGeneration.current === generation) {
+        setCloudError('Connected sources could not be read.');
+      }
+    } finally {
+      if (cloudRefreshGeneration.current === generation) {
+        cloudRefreshRequests.current = [];
+        setCloudLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void refreshCloudLibrary();
+    return () => {
+      cloudRefreshGeneration.current += 1;
+      if (settingsBackend.cancelCloudDocumentQuery) {
+        for (const requestId of cloudRefreshRequests.current) {
+          void settingsBackend.cancelCloudDocumentQuery(requestId);
+        }
+      }
+      cloudRefreshRequests.current = [];
+    };
+  }, [refreshCloudLibrary]);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -587,6 +686,7 @@ export function AppShell() {
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
+    setCloudDocument(null);
     const root = useSourcesStore.getState().root;
     useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
@@ -603,6 +703,7 @@ export function AppShell() {
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
   const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
+    if (!opts.background) setCloudDocument(null);
     const root = useSourcesStore.getState().root;
     const ref = { path: file.path, name: file.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
@@ -614,6 +715,7 @@ export function AppShell() {
   // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
   // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
+    if (!opts.background) setCloudDocument(null);
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
@@ -632,6 +734,7 @@ export function AppShell() {
   }, []);
 
   const onNavigate = useCallback((ref: DocRef) => {
+    setCloudDocument(null);
     const root = useSourcesStore.getState().root;
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
@@ -687,6 +790,7 @@ export function AppShell() {
   // range or reports that it could not, and never approximates.
   const jumpToSpan = useCallback(
     (absPath: string, name: string, startLine: number, endLine: number) => {
+      setCloudDocument(null);
       const workspaceRoot = useSourcesStore.getState().root;
       const ref = { path: absPath, name };
       useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
@@ -1674,6 +1778,16 @@ export function AppShell() {
           onOpenFile={openFile}
           onOpenRecent={openRef}
           isIgnored={isIgnored}
+          cloudSources={cloudSources}
+          cloudDocuments={cloudDocuments}
+          cloudSearch={cloudSearch}
+          cloudLoading={cloudLoading}
+          cloudError={cloudError}
+          onCloudSearch={setCloudSearch}
+          onOpenCloud={(source, response, row) =>
+            setCloudDocument({ source, row })
+          }
+          onRefreshCloud={() => void refreshCloudLibrary()}
         />
 
         <main className="shell__main">
@@ -1681,9 +1795,26 @@ export function AppShell() {
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
+            }${cloudDocument ? ' shell__reader-row--cloud-open' : ''
             }`}
           >
-            <ReaderPane
+            {cloudDocument ? (
+              <CloudLibraryPane
+                source={cloudDocument.source}
+                row={cloudDocument.row}
+                query={async (provider, filters, fields, requestId) => {
+                  if (!settingsBackend.queryCloudDocuments) {
+                    throw new Error('Cloud document queries are unavailable.');
+                  }
+                  return settingsBackend.queryCloudDocuments(provider, filters, fields, requestId);
+                }}
+                cancel={async (requestId) =>
+                  settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false
+                }
+              />
+            ) : (
+            <>
+              <ReaderPane
               tab={activeTab ?? null}
               root={root}
               files={files}
@@ -1714,7 +1845,7 @@ export function AppShell() {
                   />
                 ) : null
               }
-            />
+              />
             {/* The apparatus sits nearest the text, navigation outside it. */}
             {activeTab ? (
               <InspectorRail
@@ -1742,6 +1873,8 @@ export function AppShell() {
                 workspaceKey={root}
               />
             ) : null}
+            </>
+            )}
           </div>
         </main>
       </div>
@@ -1778,8 +1911,23 @@ export function AppShell() {
           watcher={watcher}
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
+          onOpenCloudDocument={(source, response, row) => {
+            setCloudSources((current) => {
+              const withoutSource = current.filter((candidate) => candidate.id !== source.id);
+              return [...withoutSource, source];
+            });
+            setCloudDocuments((current) => ({
+              ...current,
+              [source.provider]: response,
+            }));
+            setCloudDocument({ source, row });
+            setSettingsOpen(false);
+          }}
           onSourceIntent={beginSourceIntent}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            void refreshCloudLibrary();
+          }}
         />
       ) : null}
       {lensSheetOpen ? (

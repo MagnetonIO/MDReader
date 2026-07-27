@@ -10,8 +10,10 @@ import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
   settingsBackend,
+  type CloudDocumentRow,
   type CloudDocumentQueryResponse,
   type CloudProvider,
+  type CloudSourceDto,
   type CloudSourcesView,
   type DiagnosticInfo,
   type DiagnosticLevel,
@@ -32,6 +34,11 @@ export interface SettingsSheetProps {
   watcher: WatcherStatus;
   importState: ImportState | null;
   onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
+  onOpenCloudDocument?: (
+    source: CloudSourceDto,
+    response: CloudDocumentQueryResponse,
+    row: CloudDocumentRow,
+  ) => void;
   onSourceIntent?: () => void;
   onClose: () => void;
 }
@@ -181,6 +188,7 @@ export function SettingsSheet({
   watcher,
   importState,
   onActivateSource,
+  onOpenCloudDocument,
   onSourceIntent = () => {},
   onClose,
 }: SettingsSheetProps) {
@@ -408,8 +416,9 @@ export function SettingsSheet({
   );
 
   const openCloudDocument = useCallback(
-    (provider: CloudProvider, recordKey: string) => {
+    (source: CloudSourceDto, recordKey: string) => {
       if (!backend.queryCloudDocuments) return;
+      const provider = source.provider;
       const requestId = `read:${provider}:${globalThis.crypto.randomUUID()}`;
       const previous = cloudRequestIds.current[provider];
       cloudRequestIds.current[provider] = requestId;
@@ -433,14 +442,17 @@ export function SettingsSheet({
             }
           }
         },
-        (response) =>
+        (response) => {
           setOpenCloudDocuments((current) => ({
             ...current,
             [provider]: response,
-          })),
+          }));
+          const row = response.rows.find((candidate) => candidate.record_key === recordKey);
+          if (row) onOpenCloudDocument?.(source, response, row);
+        },
       );
     },
-    [backend, run],
+    [backend, onOpenCloudDocument, run],
   );
 
   const setLevel = useCallback(
@@ -809,7 +821,7 @@ export function SettingsSheet({
                                         className="cloud-source__document"
                                         disabled={busy !== null}
                                         onClick={() =>
-                                          openCloudDocument(source.provider, row.record_key)
+                                          openCloudDocument(source, row.record_key)
                                         }
                                       >
                                         <span>
