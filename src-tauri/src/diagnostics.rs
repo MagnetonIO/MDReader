@@ -3,16 +3,17 @@
 //! The event vocabulary is intentionally closed: callers can report lifecycle
 //! phases, numeric counts, opaque source digests, and typed error codes, but
 //! there is no field for document text, query text, credentials, tokens, or a
-//! filesystem path. Export applies a second defensive redaction pass so even a
-//! legacy/corrupt line cannot leak those values into a support bundle.
+//! filesystem path. Export reparses bounded records against the exact schema
+//! and reconstructs canonical output, so legacy/corrupt bytes are never copied
+//! into a support bundle.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
@@ -22,6 +23,9 @@ use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::SourceRoot;
 
 const DIAGNOSTIC_SETTINGS_VERSION: u32 = 1;
+const DIAGNOSTIC_RECORD_SCHEMA: &str = "mdreader.diagnostics";
+const DIAGNOSTIC_RECORD_VERSION: u32 = 1;
+const MAX_DIAGNOSTIC_RECORD_BYTES: usize = 4 * 1_024;
 pub(crate) const MAX_LOG_BYTES: usize = 256 * 1_024;
 pub(crate) const LOG_RETENTION: usize = 3;
 pub(crate) const MAX_EXPORT_BYTES: usize = 512 * 1_024;
@@ -77,6 +81,7 @@ pub(crate) enum DiagnosticErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(deny_unknown_fields)]
 pub(crate) enum DiagnosticEvent {
     ApplicationStarted,
     Workspace {
@@ -179,13 +184,95 @@ impl std::fmt::Display for DiagnosticError {
 
 impl std::error::Error for DiagnosticError {}
 
-#[derive(Debug, Serialize)]
-struct DiagnosticRecord<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticRecord {
+    schema: String,
+    schema_version: u32,
     timestamp_ms: u64,
-    app: &'static str,
-    version: &'static str,
-    platform: &'static str,
-    event: &'a DiagnosticEvent,
+    app: String,
+    app_version: String,
+    platform: String,
+    event: DiagnosticEvent,
+}
+
+impl DiagnosticRecord {
+    fn validate(&self) -> Result<(), DiagnosticError> {
+        if self.schema != DIAGNOSTIC_RECORD_SCHEMA {
+            return Err(DiagnosticError::InvalidEvent {
+                message: "unsupported diagnostic record schema".to_string(),
+            });
+        }
+        if self.schema_version != DIAGNOSTIC_RECORD_VERSION {
+            return Err(DiagnosticError::InvalidEvent {
+                message: "unsupported diagnostic record version".to_string(),
+            });
+        }
+        if self.app != "MDReader" || self.app_version != env!("CARGO_PKG_VERSION") {
+            return Err(DiagnosticError::InvalidEvent {
+                message: "diagnostic record application identity does not match".to_string(),
+            });
+        }
+        if self.platform != std::env::consts::OS {
+            return Err(DiagnosticError::InvalidEvent {
+                message: "diagnostic record platform does not match".to_string(),
+            });
+        }
+        self.event.validate()
+    }
+}
+
+fn parse_diagnostic_record(line: &[u8]) -> Result<DiagnosticRecord, ()> {
+    let raw: serde_json::Value = serde_json::from_slice(line).map_err(|_| ())?;
+    let object = raw.as_object().ok_or(())?;
+    if !has_exact_keys(
+        object,
+        &[
+            "schema",
+            "schema_version",
+            "timestamp_ms",
+            "app",
+            "app_version",
+            "platform",
+            "event",
+        ],
+    ) {
+        return Err(());
+    }
+    let event = object
+        .get("event")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(())?;
+    let expected_event_keys: &[&str] = match event
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(())?
+    {
+        "application-started" => &["kind"],
+        "workspace" => &["kind", "source_id", "active"],
+        "watcher" => &["kind", "source_id", "state", "error"],
+        "index" => &[
+            "kind",
+            "source_id",
+            "phase",
+            "files_done",
+            "files_total",
+            "chunks",
+            "error",
+        ],
+        "error" => &["kind", "code"],
+        _ => return Err(()),
+    };
+    if !has_exact_keys(event, expected_event_keys) {
+        return Err(());
+    }
+    let record: DiagnosticRecord = serde_json::from_value(raw).map_err(|_| ())?;
+    record.validate().map_err(|_| ())?;
+    Ok(record)
+}
+
+fn has_exact_keys(object: &serde_json::Map<String, serde_json::Value>, expected: &[&str]) -> bool {
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -218,12 +305,60 @@ pub(crate) struct DiagnosticExport {
     pub bytes_written: u32,
 }
 
-#[derive(Default)]
-pub(crate) struct DiagnosticsState(Mutex<()>);
+pub(crate) struct DiagnosticsState {
+    log: DiagnosticLog,
+}
+
+impl DiagnosticsState {
+    pub(crate) fn new(directory: PathBuf) -> Self {
+        Self {
+            log: DiagnosticLog::new(directory),
+        }
+    }
+
+    fn info(&self) -> Result<DiagnosticInfo, DiagnosticError> {
+        diagnostic_info(&self.log)
+    }
+
+    fn set_level(&self, level: DiagnosticLevel) -> Result<DiagnosticInfo, DiagnosticError> {
+        self.log.set_level(level)?;
+        diagnostic_info(&self.log)
+    }
+
+    fn append(&self, event: DiagnosticEvent) -> Result<(), DiagnosticError> {
+        self.log.append(event)
+    }
+
+    fn export_to(&self, destination: &Path) -> Result<(), DiagnosticError> {
+        self.log.export_to(destination)
+    }
+
+    fn clear(&self, confirmed: bool) -> Result<DiagnosticInfo, DiagnosticError> {
+        let level = self.log.clear(confirmed)?;
+        Ok(diagnostic_info_with_level(&self.log, level))
+    }
+
+    fn reveal_with(
+        &self,
+        reveal: impl FnOnce(&Path) -> Result<(), DiagnosticError>,
+    ) -> Result<(), DiagnosticError> {
+        let (_guard, _lease, authority) = self
+            .log
+            .acquire_transaction(DiagnosticTransaction::Reveal)?;
+        let reveal_result = reveal(self.log.directory());
+        authority
+            .verify()
+            .map_err(|error| DiagnosticError::RevealFailed {
+                message: format!("diagnostic directory changed during reveal: {error}"),
+            })?;
+        reveal_result
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticLog {
     directory: PathBuf,
+    authority: Result<SourceRoot, String>,
     max_log_bytes: usize,
     retention: usize,
     max_export_bytes: usize,
@@ -235,6 +370,7 @@ enum DiagnosticTransaction {
     Write,
     Export,
     Clear,
+    Reveal,
 }
 
 impl DiagnosticTransaction {
@@ -243,6 +379,7 @@ impl DiagnosticTransaction {
             Self::Write => DiagnosticError::WriteFailed { message },
             Self::Export => DiagnosticError::ExportFailed { message },
             Self::Clear => DiagnosticError::ClearFailed { message },
+            Self::Reveal => DiagnosticError::RevealFailed { message },
         }
     }
 }
@@ -258,8 +395,11 @@ impl DiagnosticLog {
         retention: usize,
         max_export_bytes: usize,
     ) -> Self {
+        let directory = directory.as_ref().to_path_buf();
+        let authority = initialize_directory_authority(&directory);
         Self {
-            directory: directory.as_ref().to_path_buf(),
+            directory,
+            authority,
             max_log_bytes: max_log_bytes.max(1),
             retention: retention.max(1),
             max_export_bytes: max_export_bytes.max(1),
@@ -280,12 +420,12 @@ impl DiagnosticLog {
             .lock
             .lock()
             .map_err(|_| transaction.error("diagnostic log lock is poisoned".to_string()))?;
-        fs::create_dir_all(&self.directory).map_err(|error| {
-            transaction.error(format!("cannot create diagnostic directory: {error}"))
-        })?;
-        let authority = SourceRoot::capture(self.directory.clone()).map_err(|error| {
+        let authority = self.authority.as_ref().map_err(|error| {
             transaction.error(format!("cannot open diagnostic directory: {error}"))
         })?;
+        authority
+            .verify()
+            .map_err(|error| transaction.error(format!("diagnostic directory changed: {error}")))?;
         let lock_file = authority
             .open_lock_relative(Path::new("diagnostics.lock"))
             .map_err(|error| {
@@ -299,7 +439,7 @@ impl DiagnosticLog {
         authority
             .verify()
             .map_err(|error| transaction.error(format!("diagnostic directory changed: {error}")))?;
-        Ok((guard, lease, authority))
+        Ok((guard, lease, authority.clone()))
     }
 
     fn log_relative(&self, slot: usize) -> PathBuf {
@@ -401,23 +541,25 @@ impl DiagnosticLog {
             return Ok(());
         }
         let record = DiagnosticRecord {
+            schema: DIAGNOSTIC_RECORD_SCHEMA.to_string(),
+            schema_version: DIAGNOSTIC_RECORD_VERSION,
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis()
                 .try_into()
                 .unwrap_or(u64::MAX),
-            app: "MDReader",
-            version: env!("CARGO_PKG_VERSION"),
-            platform: std::env::consts::OS,
-            event: &event,
+            app: "MDReader".to_string(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: std::env::consts::OS.to_string(),
+            event,
         };
         let mut line =
             serde_json::to_string(&record).map_err(|error| DiagnosticError::WriteFailed {
                 message: format!("cannot encode diagnostic event: {error}"),
             })?;
         line.push('\n');
-        if line.len() > self.max_log_bytes {
+        if line.len() > MAX_DIAGNOSTIC_RECORD_BYTES || line.len() > self.max_log_bytes {
             return Err(DiagnosticError::InvalidEvent {
                 message: "diagnostic event exceeds the local log bound".to_string(),
             });
@@ -499,11 +641,33 @@ impl DiagnosticLog {
     pub(crate) fn export_to(&self, destination: &Path) -> Result<(), DiagnosticError> {
         let (_guard, _lease, authority) =
             self.acquire_transaction(DiagnosticTransaction::Export)?;
-        let mut bundle =
-            b"MDReader local diagnostics bundle v1\nNo document or query contents are collected.\n\n"
-                .to_vec();
+        const HEADER: &[u8] = b"MDReader local diagnostics bundle v1\n\
+            Records are reconstructed from the closed diagnostic schema; invalid input is omitted.\n\n";
+        const SUMMARY_RESERVE: usize = 96;
+        if HEADER.len().saturating_add(SUMMARY_RESERVE) > self.max_export_bytes {
+            return Err(DiagnosticError::ExportFailed {
+                message: "diagnostic export bound is too small for the structured bundle"
+                    .to_string(),
+            });
+        }
+        let mut canonical_records = Vec::new();
+        let mut omitted_records = 0_u64;
+        let mut omitted_files = 0_u64;
         for slot in (0..self.retention).rev() {
             let relative = self.log_relative(slot);
+            let Some(metadata) =
+                authority
+                    .metadata_optional_relative(&relative)
+                    .map_err(|error| DiagnosticError::ExportFailed {
+                        message: format!("cannot inspect diagnostic log for export: {error}"),
+                    })?
+            else {
+                continue;
+            };
+            if metadata.len() > self.max_log_bytes as u64 {
+                omitted_files = omitted_files.saturating_add(1);
+                continue;
+            }
             let Some(mut file) =
                 authority
                     .open_optional_file_relative(&relative)
@@ -513,26 +677,68 @@ impl DiagnosticLog {
             else {
                 continue;
             };
-            let remaining = self.max_export_bytes.saturating_sub(bundle.len());
-            if remaining == 0 {
-                break;
-            }
-            let mut chunk = Vec::new();
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
             Read::by_ref(&mut file)
-                .take(remaining as u64)
-                .read_to_end(&mut chunk)
+                .take(self.max_log_bytes as u64 + 1)
+                .read_to_end(&mut bytes)
                 .map_err(|error| DiagnosticError::ExportFailed {
                     message: format!("cannot read diagnostic export: {error}"),
                 })?;
-            let redacted = redact_text(&String::from_utf8_lossy(&chunk));
-            let remaining = self.max_export_bytes.saturating_sub(bundle.len());
-            bundle.extend_from_slice(
-                redacted
-                    .as_bytes()
-                    .get(..remaining.min(redacted.len()))
-                    .unwrap_or_default(),
-            );
+            if bytes.len() > self.max_log_bytes {
+                omitted_files = omitted_files.saturating_add(1);
+                continue;
+            }
+            let mut line_start = 0;
+            for line_end in bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
+            {
+                let mut line = &bytes[line_start..line_end];
+                line_start = line_end + 1;
+                if line.last() == Some(&b'\r') {
+                    line = &line[..line.len() - 1];
+                }
+                let record = (line.len() <= MAX_DIAGNOSTIC_RECORD_BYTES)
+                    .then(|| parse_diagnostic_record(line))
+                    .transpose();
+                let Ok(Some(record)) = record else {
+                    omitted_records = omitted_records.saturating_add(1);
+                    continue;
+                };
+                let mut canonical =
+                    serde_json::to_vec(&record).map_err(|error| DiagnosticError::ExportFailed {
+                        message: format!("cannot encode diagnostic export record: {error}"),
+                    })?;
+                canonical.push(b'\n');
+                if canonical.len() > MAX_DIAGNOSTIC_RECORD_BYTES {
+                    omitted_records = omitted_records.saturating_add(1);
+                    continue;
+                }
+                canonical_records.push(canonical);
+            }
+            if line_start != bytes.len() {
+                omitted_records = omitted_records.saturating_add(1);
+            }
         }
+        let mut bundle = HEADER.to_vec();
+        for canonical in canonical_records {
+            if bundle
+                .len()
+                .saturating_add(canonical.len())
+                .saturating_add(SUMMARY_RESERVE)
+                > self.max_export_bytes
+            {
+                omitted_records = omitted_records.saturating_add(1);
+                continue;
+            }
+            bundle.extend_from_slice(&canonical);
+        }
+        let summary = format!(
+            "\nOmitted records: {omitted_records}\n\
+             Omitted oversized files: {omitted_files}\n"
+        );
+        bundle.extend_from_slice(summary.as_bytes());
         authority
             .verify()
             .map_err(|error| DiagnosticError::ExportFailed {
@@ -578,21 +784,47 @@ impl DiagnosticLog {
     }
 }
 
-fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, DiagnosticError> {
+fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, String> {
+    let mut cursor = directory;
+    let mut missing = Vec::<OsString>::new();
+    let mut authority = loop {
+        match fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                break SourceRoot::capture(cursor.to_path_buf())
+                    .map_err(|error| error.to_string())?
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = cursor
+                    .file_name()
+                    .ok_or_else(|| "diagnostic directory has no existing ancestor".to_string())?;
+                missing.push(name.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| {
+                    "diagnostic directory has no existing parent authority".to_string()
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect diagnostic directory {}: {error}",
+                    cursor.display()
+                ))
+            }
+        }
+    };
+    for component in missing.iter().rev() {
+        authority = authority
+            .create_or_capture_directory_relative(Path::new(component))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(authority)
+}
+
+pub(crate) fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, DiagnosticError> {
     app.path()
         .app_data_dir()
         .map(|directory| directory.join("diagnostics"))
         .map_err(|error| DiagnosticError::WriteFailed {
             message: format!("cannot resolve diagnostic directory: {error}"),
         })
-}
-
-fn lock_diagnostics(
-    state: &DiagnosticsState,
-) -> Result<std::sync::MutexGuard<'_, ()>, DiagnosticError> {
-    state.0.lock().map_err(|_| DiagnosticError::WriteFailed {
-        message: "diagnostic state lock is poisoned".to_string(),
-    })
 }
 
 fn diagnostic_info(log: &DiagnosticLog) -> Result<DiagnosticInfo, DiagnosticError> {
@@ -613,25 +845,19 @@ fn diagnostic_info_with_level(log: &DiagnosticLog, level: DiagnosticLevel) -> Di
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn diagnostics_info(
-    app: AppHandle,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<DiagnosticInfo, DiagnosticError> {
-    let _guard = lock_diagnostics(&state)?;
-    diagnostic_info(&DiagnosticLog::new(diagnostics_directory(&app)?))
+    state.info()
 }
 
 /// Persist the local verbosity level; no telemetry or upload side effect exists.
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn set_diagnostics_level(
-    app: AppHandle,
     level: DiagnosticLevel,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<DiagnosticInfo, DiagnosticError> {
-    let _guard = lock_diagnostics(&state)?;
-    let log = DiagnosticLog::new(diagnostics_directory(&app)?);
-    log.set_level(level)?;
-    diagnostic_info(&log)
+    state.set_level(level)
 }
 
 /// Append one closed-vocabulary lifecycle event. Product call sites issue this
@@ -640,34 +866,28 @@ pub(crate) fn set_diagnostics_level(
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn record_diagnostic_event(
-    app: AppHandle,
     event: DiagnosticEvent,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), DiagnosticError> {
-    let _guard = lock_diagnostics(&state)?;
-    DiagnosticLog::new(diagnostics_directory(&app)?).append(event)
+    state.append(event)
 }
 
 /// Open the diagnostics directory using the platform's supported opener API.
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn reveal_diagnostics(
-    app: AppHandle,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), DiagnosticError> {
-    let _guard = lock_diagnostics(&state)?;
-    let directory = diagnostics_directory(&app)?;
-    fs::create_dir_all(&directory).map_err(|error| DiagnosticError::RevealFailed {
-        message: format!("cannot create diagnostic directory: {error}"),
-    })?;
-    tauri_plugin_opener::open_path(&directory, None::<&str>).map_err(|error| {
-        DiagnosticError::RevealFailed {
-            message: format!("cannot reveal diagnostic directory: {error}"),
-        }
+    state.reveal_with(|directory| {
+        tauri_plugin_opener::open_path(directory, None::<&str>).map_err(|error| {
+            DiagnosticError::RevealFailed {
+                message: format!("cannot reveal diagnostic directory: {error}"),
+            }
+        })
     })
 }
 
-/// Ask for a local destination and write a redacted, hard-bounded text bundle.
+/// Ask for a local destination and write a schema-validated, bounded bundle.
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn export_diagnostics(
@@ -689,8 +909,7 @@ pub(crate) async fn export_diagnostics(
         });
     };
 
-    let _guard = lock_diagnostics(&state)?;
-    DiagnosticLog::new(diagnostics_directory(&app)?).export_to(&destination)?;
+    state.export_to(&destination)?;
     let bytes_written = fs::metadata(&destination)
         .map_err(|error| DiagnosticError::ExportFailed {
             message: format!("cannot inspect diagnostic export: {error}"),
@@ -709,17 +928,13 @@ pub(crate) async fn export_diagnostics(
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn clear_diagnostics(
-    app: AppHandle,
     confirmed: bool,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<DiagnosticInfo, DiagnosticError> {
     if !confirmed {
         return Err(DiagnosticError::ConfirmationRequired);
     }
-    let _guard = lock_diagnostics(&state)?;
-    let log = DiagnosticLog::new(diagnostics_directory(&app)?);
-    let level = log.clear(confirmed)?;
-    Ok(diagnostic_info_with_level(&log, level))
+    state.clear(confirmed)
 }
 
 fn atomic_write_relative(authority: &SourceRoot, path: &Path, body: &[u8]) -> Result<(), String> {
@@ -763,41 +978,11 @@ fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
         .map_err(|error| error.error)
 }
 
-/// Defense in depth for exporting pre-Task-9A or hand-edited log files.
-pub(crate) fn redact_text(input: &str) -> String {
-    let lower = input.to_ascii_lowercase();
-    if [
-        "token",
-        "password",
-        "credential",
-        "authorization",
-        "api_key",
-        "api-key",
-        "query",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-    {
-        return "<redacted-sensitive-line>\n".to_string();
-    }
-
-    static PATH_PATTERN: OnceLock<Regex> = OnceLock::new();
-    let pattern = PATH_PATTERN.get_or_init(|| {
-        Regex::new(
-            r#"(?x)
-            (?:/[^\s"'<>/]+){2,}
-            |
-            [A-Za-z]:\\(?:[^\s"'<>\\]+\\)+[^\s"'<>\\]*
-            "#,
-        )
-        .expect("constant diagnostic path redaction regex")
-    });
-    pattern.replace_all(input, "<redacted-path>").into_owned()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
+    use std::io::Write;
     use std::path::Path;
     use std::sync::{mpsc, Arc};
     use std::thread;
@@ -808,8 +993,8 @@ mod tests {
     use crate::file_lock::AdvisoryFileLock;
 
     use super::{
-        redact_text, DiagnosticError, DiagnosticEvent, DiagnosticIndexPhase, DiagnosticLevel,
-        DiagnosticLog, MAX_EXPORT_BYTES,
+        DiagnosticError, DiagnosticEvent, DiagnosticIndexPhase, DiagnosticLevel, DiagnosticLog,
+        DiagnosticsState, MAX_EXPORT_BYTES,
     };
 
     fn assert_sidecar_blocks(
@@ -836,28 +1021,6 @@ mod tests {
             .join()
             .expect("join contending operation")
             .expect("operation succeeds after release");
-    }
-
-    #[test]
-    fn redaction_removes_credentials_queries_and_raw_full_paths() {
-        let input = concat!(
-            "token=sk-secret query=select * from private ",
-            "password=hunter2 /Users/alice/Secret/notes.md ",
-            r#"C:\Users\alice\Secret\notes.md"#
-        );
-        let redacted = redact_text(input);
-        for forbidden in [
-            "sk-secret",
-            "select",
-            "hunter2",
-            "/Users/alice",
-            r#"C:\Users\alice"#,
-        ] {
-            assert!(
-                !redacted.contains(forbidden),
-                "redaction leaked {forbidden:?}: {redacted}"
-            );
-        }
     }
 
     #[test]
@@ -908,7 +1071,7 @@ mod tests {
     }
 
     #[test]
-    fn export_is_redacted_and_hard_bounded_even_with_a_hostile_legacy_log() {
+    fn export_omits_hostile_legacy_bytes_and_remains_hard_bounded() {
         let temp = tempdir().expect("tempdir");
         let logs = temp.path().join("logs");
         fs::create_dir(&logs).expect("create logs");
@@ -1200,6 +1363,212 @@ mod tests {
         assert!(
             !outside.join("mdreader.log").exists(),
             "a substituted directory receives no diagnostic bytes"
+        );
+    }
+
+    #[test]
+    fn a_real_directory_replacement_after_capture_is_refused_for_every_operation() {
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create admitted diagnostics directory");
+        let log = DiagnosticLog::new(&logs);
+        log.append(DiagnosticEvent::ApplicationStarted)
+            .expect("capture diagnostics authority");
+        let admitted = temp.path().join("admitted");
+        fs::rename(&logs, &admitted).expect("retire admitted directory");
+        fs::create_dir(&logs).expect("install replacement directory");
+        let export = temp.path().join("bundle.txt");
+
+        assert!(matches!(
+            log.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(matches!(
+            log.level(),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(matches!(
+            log.export_to(&export),
+            Err(DiagnosticError::ExportFailed { .. })
+        ));
+        assert!(matches!(
+            log.clear(true),
+            Err(DiagnosticError::ClearFailed { .. })
+        ));
+        assert!(
+            !logs.join("mdreader.log").exists(),
+            "the replacement directory receives no diagnostic bytes"
+        );
+        assert!(
+            !export.exists(),
+            "a refused export publishes no support bundle"
+        );
+    }
+
+    #[test]
+    fn a_real_directory_replacement_before_first_operation_is_refused() {
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create admitted diagnostics directory");
+        let log = DiagnosticLog::new(&logs);
+        fs::rename(&logs, temp.path().join("admitted"))
+            .expect("retire admitted directory before first operation");
+        fs::create_dir(&logs).expect("install replacement directory");
+
+        assert!(matches!(
+            log.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(
+            !logs.join("mdreader.log").exists(),
+            "the replacement directory receives no diagnostic bytes"
+        );
+    }
+
+    #[test]
+    fn an_absent_nested_diagnostics_directory_is_initialized_once() {
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("app-data").join("diagnostics");
+        let state = DiagnosticsState::new(logs.clone());
+
+        state
+            .append(DiagnosticEvent::ApplicationStarted)
+            .expect("initialize and append diagnostics");
+
+        assert!(logs.is_dir());
+        assert!(logs.join("mdreader.log").is_file());
+    }
+
+    #[test]
+    fn process_state_shares_one_directory_authority_across_command_operations() {
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create admitted diagnostics directory");
+        let state = DiagnosticsState::new(logs.clone());
+        state
+            .append(DiagnosticEvent::ApplicationStarted)
+            .expect("first command captures process authority");
+        fs::rename(&logs, temp.path().join("admitted")).expect("retire admitted directory");
+        fs::create_dir(&logs).expect("install replacement directory");
+        let export = temp.path().join("bundle.txt");
+
+        assert!(matches!(
+            state.info(),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(matches!(
+            state.set_level(DiagnosticLevel::Verbose),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(matches!(
+            state.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(matches!(
+            state.export_to(&export),
+            Err(DiagnosticError::ExportFailed { .. })
+        ));
+        assert!(matches!(
+            state.clear(true),
+            Err(DiagnosticError::ClearFailed { .. })
+        ));
+        let reveal_called = Cell::new(false);
+        assert!(matches!(
+            state.reveal_with(|_| {
+                reveal_called.set(true);
+                Ok(())
+            }),
+            Err(DiagnosticError::RevealFailed { .. })
+        ));
+        assert!(
+            !reveal_called.get(),
+            "the platform opener is not called for a replaced directory"
+        );
+        assert!(
+            !logs.join("mdreader.log").exists(),
+            "no command recaptures the replacement directory"
+        );
+    }
+
+    #[test]
+    fn export_rebuilds_only_valid_structured_records_and_counts_omissions() {
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create logs");
+        let log = DiagnosticLog::with_limits(&logs, 32 * 1_024, 3, 64 * 1_024);
+        log.append(DiagnosticEvent::ApplicationStarted)
+            .expect("append one valid structured record");
+        let mut active = fs::OpenOptions::new()
+            .append(true)
+            .open(logs.join("mdreader.log"))
+            .expect("open active log for hostile legacy input");
+        writeln!(
+            active,
+            "The blue lantern waits beneath the cedar after the private meeting."
+        )
+        .expect("append arbitrary private sentence");
+        writeln!(
+            active,
+            r#"{{"schema":"mdreader.diagnostics","schema_version":1,"timestamp_ms":7,"app":"MDReader","app_version":"{}","platform":"{}","event":{{"kind":"application-started","document":"Acquisition terms for Northstar"}}}}"#,
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        )
+        .expect("append valid-looking record with arbitrary content");
+        writeln!(
+            active,
+            r#"{{"schema":"other.diagnostics","schema_version":1,"timestamp_ms":8,"app":"MDReader","app_version":"{}","platform":"{}","event":{{"kind":"application-started"}}}}"#,
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        )
+        .expect("append unsupported schema");
+        writeln!(
+            active,
+            r#"{{"schema":"mdreader.diagnostics","schema_version":2,"timestamp_ms":9,"app":"MDReader","app_version":"{}","platform":"{}","event":{{"kind":"application-started"}}}}"#,
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        )
+        .expect("append unsupported schema version");
+        writeln!(
+            active,
+            r#"{{"schema":"mdreader.diagnostics","schema_version":1,"timestamp_ms":10,"app":"MDReader","app_version":"blue-lantern-private-build","platform":"{}","event":{{"kind":"application-started"}}}}"#,
+            std::env::consts::OS
+        )
+        .expect("append unsupported application version");
+        writeln!(active, "{{\"timestamp_ms\":").expect("append malformed json");
+        writeln!(active, "{}", "z".repeat(5_000)).expect("append oversized line");
+        write!(active, "{{\"timestamp_ms\":42").expect("append truncated line");
+        active.flush().expect("flush hostile input");
+        let export = temp.path().join("bundle.txt");
+
+        log.export_to(&export).expect("export diagnostics");
+
+        let body = fs::read_to_string(export).expect("read structured export");
+        for forbidden in [
+            "blue lantern",
+            "private meeting",
+            "blue-lantern-private-build",
+            "Acquisition terms",
+            "Northstar",
+            &"z".repeat(128),
+            "{\"timestamp_ms\":42",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "export emitted non-allowlisted input: {forbidden:?}"
+            );
+        }
+        let records: Vec<_> = body.lines().filter(|line| line.starts_with('{')).collect();
+        assert_eq!(
+            records.len(),
+            1,
+            "only the valid application-started record is exported"
+        );
+        let record: serde_json::Value =
+            serde_json::from_str(records[0]).expect("canonical record is valid json");
+        assert_eq!(record["event"]["kind"], "application-started");
+        assert!(
+            body.contains("Omitted records: 8"),
+            "every invalid, oversized, or truncated input is accounted for"
         );
     }
 }

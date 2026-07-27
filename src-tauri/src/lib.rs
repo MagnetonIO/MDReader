@@ -22,6 +22,7 @@ mod updater;
 use commands::{WatcherState, WorkspaceState};
 use diagnostics::DiagnosticsState;
 use library::LibraryState;
+use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
@@ -155,9 +156,11 @@ pub fn run() {
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
         .manage(LibraryState::default())
-        .manage(DiagnosticsState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            let diagnostics =
+                DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
+            app.manage(diagnostics);
             builder.mount_events(app);
             Ok(())
         });

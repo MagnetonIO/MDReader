@@ -99,7 +99,7 @@ export const commands = {
 	recordDiagnosticEvent: (event: DiagnosticEvent) => typedError<null, DiagnosticError>(__TAURI_INVOKE("record_diagnostic_event", { event })),
 	/**  Open the diagnostics directory using the platform's supported opener API. */
 	revealDiagnostics: () => typedError<null, DiagnosticError>(__TAURI_INVOKE("reveal_diagnostics")),
-	/**  Ask for a local destination and write a redacted, hard-bounded text bundle. */
+	/**  Ask for a local destination and write a schema-validated, bounded bundle. */
 	exportDiagnostics: () => typedError<DiagnosticExport, DiagnosticError>(__TAURI_INVOKE("export_diagnostics")),
 	/**
 	 *  Remove only the three named diagnostic log files. The backend repeats the

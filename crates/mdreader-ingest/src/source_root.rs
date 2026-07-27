@@ -177,6 +177,69 @@ impl SourceRoot {
         }
     }
 
+    /// Create or open one source-relative directory without following a
+    /// symlink/reparse component, then retain the opened child's identity.
+    ///
+    /// Creation and opening are performed relative to the already-retained
+    /// parent handle. A competing creator may win the initially absent name,
+    /// but it cannot redirect the operation outside `self`; the exact real
+    /// directory opened at that name becomes the returned authority.
+    pub fn create_or_capture_directory_relative(
+        &self,
+        relative: &Path,
+    ) -> Result<Self, SourceRootError> {
+        validate_relative(relative, false)?;
+        self.verify()?;
+
+        #[cfg(unix)]
+        let opened = {
+            use rustix::fs::{mkdirat, Mode};
+
+            let (parent, name) = open_unix_parent(self, relative)?;
+            match mkdirat(&parent, &name, Mode::RUSR | Mode::WUSR | Mode::XUSR) {
+                Ok(()) => {}
+                Err(error) if error == rustix::io::Errno::EXIST => {}
+                Err(error) => {
+                    return Err(unix_source_error(self.path.join(relative), error));
+                }
+            }
+            open_unix_relative(self, relative, true)?
+        };
+
+        #[cfg(windows)]
+        let opened = {
+            use windows_sys::Wdk::Storage::FileSystem::{
+                FILE_DIRECTORY_FILE, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
+                FILE_SYNCHRONOUS_IO_NONALERT,
+            };
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+            };
+
+            let (parent, name) = open_windows_parent(self, relative)?;
+            open_windows_child(
+                self,
+                &parent,
+                &name,
+                FILE_GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN_IF,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                relative,
+            )?
+        };
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = relative;
+            return Err(SourceRootError::UnsupportedPlatform);
+        }
+
+        self.verify()?;
+        let child = source_root_from_opened_directory(self.path.join(relative), opened)?;
+        child.verify()?;
+        Ok(child)
+    }
+
     /// Read metadata for a regular file through the retained source authority.
     pub fn metadata_relative(&self, relative: &Path) -> Result<fs::Metadata, SourceRootError> {
         self.open_file_relative(relative)?
@@ -823,6 +886,51 @@ fn capture_authority(path: &Path) -> Result<(SourceRootIdentity, fs::File), Sour
         let _ = path;
         Err(SourceRootError::UnsupportedPlatform)
     }
+}
+
+fn source_root_from_opened_directory(
+    path: PathBuf,
+    opened: fs::File,
+) -> Result<SourceRoot, SourceRootError> {
+    let metadata = opened
+        .metadata()
+        .map_err(|error| SourceRootError::IdentityUnavailable {
+            path: path.clone(),
+            reason: error.to_string(),
+        })?;
+    if !metadata.is_dir() {
+        return Err(SourceRootError::NotDirectory { path });
+    }
+
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        SourceRootIdentity::Unix {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    };
+
+    #[cfg(windows)]
+    let identity = {
+        use std::os::windows::fs::MetadataExt;
+        if is_windows_reparse_point(metadata.file_attributes()) {
+            return Err(SourceRootError::SymlinkOrReparse { path });
+        }
+        windows_identity(&path, &opened)?
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = opened;
+        return Err(SourceRootError::UnsupportedPlatform);
+    }
+
+    Ok(SourceRoot {
+        path,
+        identity,
+        handle: Arc::new(opened),
+    })
 }
 
 fn validate_relative(path: &Path, allow_empty: bool) -> Result<(), SourceRootError> {
@@ -1728,5 +1836,44 @@ mod tests {
             fs::read_to_string(outside.join("note.md")).expect("outside remains readable"),
             "# outside"
         );
+    }
+
+    #[test]
+    fn an_absent_child_directory_is_created_and_returned_as_retained_authority() {
+        let temp = tempdir().expect("tempdir");
+        let parent_path = fs::canonicalize(temp.path()).expect("canonical parent");
+        let parent = SourceRoot::capture(parent_path).expect("capture parent");
+
+        let child = parent
+            .create_or_capture_directory_relative(Path::new("diagnostics"))
+            .expect("create diagnostics authority");
+
+        assert!(child.path.is_dir());
+        child.verify().expect("created authority remains current");
+        assert_eq!(
+            parent
+                .create_or_capture_directory_relative(Path::new("diagnostics"))
+                .expect("capture existing diagnostics authority")
+                .identity,
+            child.identity
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_directory_creation_refuses_a_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).expect("create outside");
+        symlink(&outside, temp.path().join("diagnostics")).expect("install child symlink");
+        let parent_path = fs::canonicalize(temp.path()).expect("canonical parent");
+        let parent = SourceRoot::capture(parent_path).expect("capture parent");
+
+        assert!(matches!(
+            parent.create_or_capture_directory_relative(Path::new("diagnostics")),
+            Err(SourceRootError::SymlinkOrReparse { .. })
+        ));
     }
 }
