@@ -2217,6 +2217,101 @@ mod tests {
     }
 
     #[test]
+    fn version_one_path_is_only_a_candidate_until_the_original_object_is_native_repicked() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let native = NativePath::capture(&canonical);
+        let path_id = native.source_id();
+        let v1 = serde_json::json!({
+            "version": 1,
+            "active_source_id": path_id,
+            "sources": [{
+                "id": path_id,
+                "path": native,
+            }],
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&v1).expect("encode V1 registry"),
+        )
+        .expect("write V1 registry");
+
+        let mut registry =
+            LibraryRegistry::load_from(&registry_path).expect("record recovery candidate");
+        assert!(
+            registry.sources().is_empty(),
+            "a path-only row must not become live membership"
+        );
+
+        let admitted = registry
+            .add_root(&canonical)
+            .expect("the native picker re-admits the retained object");
+        assert_eq!(registry.sources().len(), 1);
+        assert_ne!(
+            admitted.id, path_id,
+            "the path-derived V1 identifier is never reused as authority"
+        );
+    }
+
+    #[test]
+    fn version_one_same_path_replacement_never_inherits_live_membership_or_managed_rows() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let native = NativePath::capture(&canonical);
+        let path_id = native.source_id();
+        let v1 = serde_json::json!({
+            "version": 1,
+            "active_source_id": path_id,
+            "sources": [{
+                "id": path_id,
+                "path": native,
+            }],
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&v1).expect("encode V1 registry"),
+        )
+        .expect("write V1 registry");
+        let legacy = legacy_v1_workspace_path(&app_data, &canonical);
+        fs::create_dir_all(&legacy).expect("create V1 workspace");
+        fs::write(legacy.join("catdb.db"), b"original index").expect("write original index");
+
+        let original = temp.path().join("retained-original");
+        fs::rename(&root, &original).expect("retain original object elsewhere");
+        fs::create_dir(&root).expect("create replacement at historical path");
+
+        let mut registry =
+            LibraryRegistry::load_from(&registry_path).expect("record recovery candidate");
+        assert!(
+            registry.sources().is_empty(),
+            "migration must not capture the replacement object"
+        );
+        let replacement = registry
+            .add_root(&root)
+            .expect("native picker admits replacement as a new source");
+        assert_eq!(registry.sources().len(), 1);
+        assert_ne!(replacement.id, path_id);
+        assert!(
+            !crate::engine::db_path_under(
+                &app_data,
+                &registry
+                    .activation_root(&replacement.id)
+                    .expect("replacement is admitted")
+            )
+            .exists(),
+            "replacement starts with no inherited CatDB state"
+        );
+    }
+
+    #[test]
     fn unavailable_v1_membership_fails_closed_until_native_identity_can_be_rebound() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
@@ -2972,5 +3067,67 @@ mod tests {
             !registry_path.exists(),
             "the command boundary creates no membership or registry authority"
         );
+    }
+
+    #[test]
+    fn canonical_outsider_with_renderer_reproducible_legacy_tables_needs_native_repick() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let outsider = mkdir(temp.path(), "existing-outsider");
+        let canonical = fs::canonicalize(&outsider).expect("canonical outsider");
+        create_legacy_catdb_index(
+            &super::v1_workspace_dir(&app_data, &canonical).join("catdb.db"),
+        );
+
+        assert_eq!(
+            super::reconcile_library_restore_at(
+                registry_path.clone(),
+                app_data.clone(),
+                Some(canonical.to_string_lossy().into_owned())
+            ),
+            Err(LibraryError::NeedsNativeRepick)
+        );
+        assert!(
+            !registry_path.exists(),
+            "renderer-reproducible SQLite names never publish membership"
+        );
+        assert!(
+            !crate::engine::db_path_under(
+                &app_data,
+                &SourceRoot::capture(canonical).expect("capture outsider only for assertion")
+            )
+            .exists(),
+            "refusal creates no identity-keyed managed workspace"
+        );
+    }
+
+    #[test]
+    fn library_transport_never_serializes_free_form_native_or_secret_context() {
+        let sentinel =
+            "/Users/private-user/secret.md token=blue-lantern postgres://name:pass@host/db $1";
+        let error = LibraryError::CorruptRegistry {
+            message: sentinel.to_string(),
+        };
+        let availability = super::LibraryAvailability::Unreadable {
+            reason: sentinel.to_string(),
+        };
+
+        for rendered in [
+            format!("{error:?}"),
+            error.to_string(),
+            serde_json::to_string(&error).expect("serialize library error"),
+            format!("{availability:?}"),
+            serde_json::to_string(&availability).expect("serialize availability"),
+        ] {
+            assert!(
+                !rendered.contains(sentinel),
+                "transport representation exposed sentinel: {rendered}"
+            );
+            assert!(!rendered.contains("postgres://"));
+            assert!(!rendered.contains("blue-lantern"));
+            assert!(!rendered.contains("secret.md"));
+        }
     }
 }
