@@ -2216,13 +2216,11 @@ impl DriveFile {
         {
             return Err(malformed_source(source_id, "md5Checksum"));
         }
-        if self.resource_key.as_ref().is_some_and(|resource_key| {
-            resource_key.is_empty()
-                || resource_key.len() > MAX_RESOURCE_KEY_BYTES
-                || !resource_key
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        }) {
+        if self
+            .resource_key
+            .as_ref()
+            .is_some_and(|resource_key| !resource_key_bytes_are_valid(resource_key))
+        {
             return Err(malformed_source(source_id, "resourceKey"));
         }
         Ok(())
@@ -2315,17 +2313,20 @@ fn validate_drive_id(field: &'static str, id: &str) -> Result<(), DriveConnector
 }
 
 fn validate_resource_key(resource_key: &str) -> Result<(), DriveConnectorError> {
-    if resource_key.is_empty()
-        || resource_key.len() > MAX_RESOURCE_KEY_BYTES
-        || !resource_key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
+    if !resource_key_bytes_are_valid(resource_key) {
         return Err(DriveConnectorError::InvalidConfiguration {
             field: "resource_key",
         });
     }
     Ok(())
+}
+
+fn resource_key_bytes_are_valid(resource_key: &str) -> bool {
+    !resource_key.is_empty()
+        && resource_key.len() <= MAX_RESOURCE_KEY_BYTES
+        && resource_key
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b',' | b'/'))
 }
 
 fn validate_drive_id_source(
