@@ -28,6 +28,8 @@ const IDS = {
   source2: '00000000-0000-0000-0000-000000000011',
   sourceVersion2: '00000000-0000-0000-0000-000000000012',
   mapping2: '00000000-0000-0000-0000-000000000013',
+  physical: '00000000-0000-0000-0000-000000000014',
+  physical2: '00000000-0000-0000-0000-000000000015',
 } as const;
 
 const session = {
@@ -60,7 +62,7 @@ function queryResponse(
       catalog_resolver_id: IDS.resolver,
       catalog_revision_id: IDS.catalog,
       schema_version_id: IDS.schema,
-      physical_schema_version_ids: [],
+      physical_schema_version_ids: [IDS.physical],
       mapping_version_ids: [IDS.mapping],
       source_version_ids: [IDS.sourceVersion],
       policy_version_ids: [IDS.policy],
@@ -94,6 +96,50 @@ function queryResponse(
     completeness: { state: 'complete' },
     ...overrides,
   };
+}
+
+function addSecondProvider(response: EntityQueryResponse): void {
+  response.pins.physical_schema_version_ids.push(IDS.physical2);
+  response.pins.mapping_version_ids.push(IDS.mapping2);
+  response.pins.source_version_ids.push(IDS.sourceVersion2);
+  response.sources.push({
+    source_id: IDS.source2,
+    source_version_id: IDS.sourceVersion2,
+    scanned: 1,
+    returned: 1,
+    freshness_ms: 1,
+    outcome: 'ran',
+  });
+  for (const [field, fieldProvenance] of Object.entries(response.rows[0]!.provenance)) {
+    if (field === 'body') {
+      fieldProvenance.considered[0] = {
+        source_version_id: IDS.sourceVersion,
+        record_key: 'document-1',
+        mapping_version_id: IDS.mapping,
+        observed_at_ms: 1_234,
+        state: { state: 'field_unseen' },
+      };
+      fieldProvenance.considered.push({
+        source_version_id: IDS.sourceVersion2,
+        record_key: 'document-1',
+        mapping_version_id: IDS.mapping2,
+        observed_at_ms: 1_234,
+        state: {
+          state: 'observed_value',
+          value: response.rows[0]!.fields[field],
+        },
+      });
+      fieldProvenance.selected = 1;
+    } else {
+      fieldProvenance.considered.push({
+        source_version_id: IDS.sourceVersion2,
+        record_key: 'document-1',
+        mapping_version_id: IDS.mapping2,
+        observed_at_ms: 1_234,
+        state: { state: 'field_unseen' },
+      });
+    }
+  }
 }
 
 function response(body: unknown, status = 200): Response {
@@ -311,32 +357,7 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
       size: 19,
       body: '# Federated content',
     });
-    read.pins.source_version_ids.push(IDS.sourceVersion2);
-    read.pins.mapping_version_ids.push(IDS.mapping2);
-    read.sources.push({
-      source_id: IDS.source2,
-      source_version_id: IDS.sourceVersion2,
-      scanned: 1,
-      returned: 1,
-      freshness_ms: 1,
-      outcome: 'ran',
-    });
-    read.rows[0]!.provenance.body = {
-      field: 'body',
-      selected: 0,
-      considered: [
-        {
-          source_version_id: IDS.sourceVersion2,
-          record_key: 'document-1',
-          mapping_version_id: IDS.mapping2,
-          observed_at_ms: 1_234,
-          state: {
-            state: 'observed_value',
-            value: '# Federated content',
-          },
-        },
-      ],
-    };
+    addSecondProvider(read);
     const fetcher = sequence(response(session), response(listing), response(read));
     const adapter = createEnterpriseMobileSourceAdapter(config, fetcher);
     const listed = await adapter.listDocuments();
@@ -358,6 +379,122 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
     const readBody = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
     expect(readBody).not.toHaveProperty('source_ids');
+  });
+
+  test('rejects a pinned source that is omitted from source reports and field provenance', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const read = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+      body: '# Semantic architecture',
+    });
+    read.pins.physical_schema_version_ids.push(IDS.physical2);
+    read.pins.mapping_version_ids.push(IDS.mapping2);
+    read.pins.source_version_ids.push(IDS.sourceVersion2);
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing), response(read)),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'invalid-response',
+    });
+  });
+
+  test('rejects duplicate provider observations that omit another reported source', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const read = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+      body: '# Semantic architecture',
+    });
+    addSecondProvider(read);
+    const bodyProvenance = read.rows[0]!.provenance.body;
+    if (!bodyProvenance) throw new Error('fixture body provenance is missing');
+    const selected = structuredClone(bodyProvenance.considered[1]!);
+    bodyProvenance.considered = [selected, structuredClone(selected)];
+    bodyProvenance.selected = 0;
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing), response(read)),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'invalid-response',
+    });
+  });
+
+  test('rejects field observations reordered relative to pinned source order', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const read = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+      body: '# Semantic architecture',
+    });
+    addSecondProvider(read);
+    const bodyProvenance = read.rows[0]!.provenance.body;
+    if (!bodyProvenance) throw new Error('fixture body provenance is missing');
+    bodyProvenance.considered.reverse();
+    bodyProvenance.selected = 0;
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing), response(read)),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'invalid-response',
+    });
+  });
+
+  test('rejects source reports reordered relative to pinned source order', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const read = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+      body: '# Semantic architecture',
+    });
+    addSecondProvider(read);
+    read.sources.reverse();
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing), response(read)),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'invalid-response',
+    });
   });
 
   test('preserves a titleless Markdown document and an empty body as valid data', async () => {

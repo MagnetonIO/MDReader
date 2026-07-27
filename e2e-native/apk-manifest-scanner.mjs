@@ -1,8 +1,16 @@
 import { spawn } from 'node:child_process';
 
-const [apk, member, maximumText] = process.argv.slice(2);
+const [apk, member, maximumText, aggregateMaximumText] = process.argv.slice(2);
 const maximum = Number(maximumText);
-if (!apk || !member || !Number.isSafeInteger(maximum) || maximum <= 0) {
+const aggregateMaximum = Number(aggregateMaximumText);
+if (
+  !apk ||
+  !member ||
+  !Number.isSafeInteger(maximum) ||
+  maximum <= 0 ||
+  !Number.isSafeInteger(aggregateMaximum) ||
+  aggregateMaximum <= 0
+) {
   process.stderr.write('invalid Android native-library scanner arguments\n');
   process.exit(2);
 }
@@ -68,6 +76,10 @@ unzip.stdout.on('data', (chunk) => {
     fail('Android native library stream exceeds the artifact safety bound');
     return;
   }
+  if (total > aggregateMaximum) {
+    fail('Android aggregate native library stream exceeds the artifact safety bound');
+    return;
+  }
   scan(chunk);
 });
 
@@ -87,5 +99,10 @@ unzip.on('close', (status) => {
     process.exitCode = 2;
     return;
   }
-  if (manifest !== null) process.stdout.write(manifest);
+  process.stdout.write(
+    JSON.stringify({
+      streamed_bytes: total,
+      manifest_base64: manifest === null ? null : manifest.toString('base64'),
+    }),
+  );
 });

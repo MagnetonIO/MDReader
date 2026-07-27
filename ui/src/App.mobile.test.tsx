@@ -187,7 +187,7 @@ function installEnterpriseLibrary(): void {
               catalog_resolver_id: 'resolver-1',
               catalog_revision_id: 'catalog-17',
               schema_version_id: 'schema-9',
-              physical_schema_version_ids: [],
+              physical_schema_version_ids: ['physical-schema-3'],
               mapping_version_ids: ['mapping-4'],
               source_version_ids: ['enterprise-source-version-1'],
               policy_version_ids: ['policy-2'],

@@ -77,17 +77,27 @@ export function mobileProvenanceOf(
   ) {
     return null;
   }
-  const sourceVersions = new Set(pins.source_version_ids);
-  const mappingVersions = new Set(pins.mapping_version_ids);
-  const visibleSourceVersions = new Set<string>();
-  for (const sourceValue of candidate.sources) {
+  const physicalSchemaVersions = pins.physical_schema_version_ids;
+  const mappingVersions = pins.mapping_version_ids;
+  const sourceVersions = pins.source_version_ids;
+  const policyVersions = pins.policy_version_ids;
+  if (
+    sourceVersions.length === 0 ||
+    sourceVersions.length !== candidate.sources.length ||
+    mappingVersions.length !== candidate.sources.length ||
+    physicalSchemaVersions.length !== candidate.sources.length ||
+    policyVersions.length === 0 ||
+    new Set(sourceVersions).size !== sourceVersions.length
+  ) {
+    return null;
+  }
+  for (const [sourceIndex, sourceValue] of candidate.sources.entries()) {
     const source = record(sourceValue);
     if (
       !source ||
       !text(source.source_id) ||
       !text(source.source_version_id) ||
-      !sourceVersions.has(source.source_version_id) ||
-      visibleSourceVersions.has(source.source_version_id) ||
+      source.source_version_id !== sourceVersions[sourceIndex] ||
       !nonNegative(source.scanned) ||
       !nonNegative(source.returned) ||
       (source.freshness_ms !== null &&
@@ -97,7 +107,6 @@ export function mobileProvenanceOf(
     ) {
       return null;
     }
-    visibleSourceVersions.add(source.source_version_id);
   }
   for (const [fieldName, provenanceValue] of Object.entries(fields)) {
     const provenance = record(provenanceValue);
@@ -105,6 +114,7 @@ export function mobileProvenanceOf(
       !text(fieldName, 4_096) ||
       provenance?.field !== fieldName ||
       !Array.isArray(provenance.considered) ||
+      provenance.considered.length !== candidate.sources.length ||
       provenance.considered.length > MAX_OBSERVATIONS_PER_FIELD
     ) {
       return null;
@@ -120,15 +130,14 @@ export function mobileProvenanceOf(
     ) {
       return null;
     }
-    for (const observationValue of provenance.considered) {
+    for (const [sourceIndex, observationValue] of provenance.considered.entries()) {
       const observation = record(observationValue);
       if (
         !observation ||
         !text(observation.source_version_id) ||
-        !sourceVersions.has(observation.source_version_id) ||
-        !visibleSourceVersions.has(observation.source_version_id) ||
+        observation.source_version_id !== sourceVersions[sourceIndex] ||
         !text(observation.mapping_version_id) ||
-        !mappingVersions.has(observation.mapping_version_id) ||
+        observation.mapping_version_id !== mappingVersions[sourceIndex] ||
         !text(observation.record_key) ||
         (expectedRecordKey !== undefined &&
           observation.record_key !== expectedRecordKey) ||

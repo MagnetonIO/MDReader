@@ -38,6 +38,8 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..');
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
 const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
 const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
+const MAX_ANDROID_TOTAL_NATIVE_LIBRARY_BYTES = 1024 * 1024 * 1024;
+const MAX_ANDROID_NATIVE_LIBRARIES = 64;
 const MAX_ANDROID_CENTRAL_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const APK_MANIFEST_SCANNER = join(HERE, 'apk-manifest-scanner.mjs');
 
@@ -106,7 +108,13 @@ function readExactly(handle: number, bytes: Buffer, position: number): void {
   }
 }
 
-function declaredZipMemberSize(apk: string, member: string): number {
+interface AndroidArchiveInspection {
+  manifestCount: number;
+  hasDex: boolean;
+  nativeLibraries: Array<{ name: string; declaredSize: number }>;
+}
+
+function inspectAndroidArchive(apk: string): AndroidArchiveInspection {
   const handle = openSync(apk, 'r');
   try {
     const size = fstatSync(handle).size;
@@ -146,7 +154,10 @@ function declaredZipMemberSize(apk: string, member: string): number {
 
     const header = Buffer.alloc(46);
     let offset = centralOffset;
-    let declared: number | undefined;
+    let manifestCount = 0;
+    let hasDex = false;
+    const nativeLibraries: AndroidArchiveInspection['nativeLibraries'] = [];
+    const nativeLibraryNames = new Set<string>();
     for (let index = 0; index < entries; index += 1) {
       if (offset + header.length > centralOffset + centralSize) {
         throw new Error('APK ZIP central directory is truncated');
@@ -165,15 +176,25 @@ function declaredZipMemberSize(apk: string, member: string): number {
       }
       const nameBytes = Buffer.alloc(nameLength);
       readExactly(handle, nameBytes, offset + header.length);
-      if (nameBytes.toString('utf8') === member) {
-        if (declared !== undefined) throw new Error(`APK contains duplicate native library ${member}`);
-        if (uncompressedSize === 0xffffffff) throw new Error('ZIP64 APK member is unsupported');
-        declared = uncompressedSize;
+      const name = nameBytes.toString('utf8');
+      if (name === 'AndroidManifest.xml') manifestCount += 1;
+      if (/^classes(?:\d+)?\.dex$/.test(name)) hasDex = true;
+      if (/^lib\/x86_64\/[^/]+\.so$/.test(name)) {
+        if (nativeLibraryNames.has(name)) {
+          throw new Error(`APK contains duplicate native library ${name}`);
+        }
+        if (uncompressedSize === 0xffffffff) {
+          throw new Error('ZIP64 APK member is unsupported');
+        }
+        nativeLibraryNames.add(name);
+        nativeLibraries.push({ name, declaredSize: uncompressedSize });
       }
       offset += recordLength;
     }
-    if (declared === undefined) throw new Error(`APK native library is missing: ${member}`);
-    return declared;
+    if (offset !== centralOffset + centralSize) {
+      throw new Error('APK ZIP central directory is invalid');
+    }
+    return { manifestCount, hasDex, nativeLibraries };
   } finally {
     closeSync(handle);
   }
@@ -184,23 +205,55 @@ function validateZipMemberBuildManifest(
   member: string,
   expectedCommit: string,
   maximumBytes: number,
-): E2eBuildManifest | null {
-  const declaredSize = declaredZipMemberSize(apk, member);
-  if (declaredSize > maximumBytes) {
-    throw new Error('Android declared native library exceeds the artifact safety bound');
-  }
-  const manifestBytes = execFileSync(
+  remainingAggregateBytes: number,
+): { manifest: E2eBuildManifest | null; streamedBytes: number } {
+  const scanBytes = execFileSync(
     process.execPath,
-    [APK_MANIFEST_SCANNER, apk, member, String(maximumBytes)],
+    [
+      APK_MANIFEST_SCANNER,
+      apk,
+      member,
+      String(maximumBytes),
+      String(remainingAggregateBytes),
+    ],
     {
       encoding: null,
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 64 * 1024,
     },
   );
-  return manifestBytes.length === 0
-    ? null
-    : validateEmbeddedBuildManifest(manifestBytes, expectedCommit);
+  let scan: unknown;
+  try {
+    scan = JSON.parse(scanBytes.toString('utf8'));
+  } catch {
+    throw new Error('Android native library scanner returned an invalid result');
+  }
+  const scanRecord =
+    typeof scan === 'object' && scan !== null
+      ? (scan as Record<string, unknown>)
+      : null;
+  const streamedBytes = scanRecord?.streamed_bytes;
+  const encodedManifest = scanRecord?.manifest_base64;
+  if (
+    !scanRecord ||
+    typeof streamedBytes !== 'number' ||
+    !Number.isSafeInteger(streamedBytes) ||
+    streamedBytes < 0 ||
+    streamedBytes > maximumBytes ||
+    streamedBytes > remainingAggregateBytes ||
+    !(encodedManifest === null || typeof encodedManifest === 'string')
+  ) {
+    throw new Error('Android native library scanner returned an invalid result');
+  }
+  const manifestBytes =
+    encodedManifest === null ? null : Buffer.from(encodedManifest, 'base64');
+  return {
+    manifest:
+      manifestBytes === null
+        ? null
+        : validateEmbeddedBuildManifest(manifestBytes, expectedCommit),
+    streamedBytes,
+  };
 }
 
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
@@ -364,9 +417,16 @@ export function validateAndroidApk(
   artifact: string | undefined,
   sourceCommit = expectedSourceCommit(),
   maximumNativeLibraryBytes = MAX_ANDROID_NATIVE_LIBRARY_BYTES,
+  maximumTotalNativeLibraryBytes = MAX_ANDROID_TOTAL_NATIVE_LIBRARY_BYTES,
 ): string {
   if (!Number.isSafeInteger(maximumNativeLibraryBytes) || maximumNativeLibraryBytes <= 0) {
     throw new Error('Android native library safety bound must be a positive integer');
+  }
+  if (
+    !Number.isSafeInteger(maximumTotalNativeLibraryBytes) ||
+    maximumTotalNativeLibraryBytes <= 0
+  ) {
+    throw new Error('Android aggregate native library safety bound must be a positive integer');
   }
   const apk = requiredAbsoluteArtifact('MDREADER_ANDROID_APP', artifact);
   let metadata;
@@ -424,31 +484,42 @@ export function validateAndroidApk(
         `expected ${E2E_BUNDLE_IDENTIFIER}; found ${identifier || '(missing application id)'}`,
       );
     }
-    const files = execFileSync('apkanalyzer', ['files', 'list', apk], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    if (!/(^|\n)\/?AndroidManifest\.xml(\n|$)/.test(files)) {
+    const archive = inspectAndroidArchive(apk);
+    if (archive.manifestCount !== 1) {
       throw new Error('compiled AndroidManifest.xml is missing');
     }
-    if (!/(^|\n)\/?classes(?:\d+)?\.dex(\n|$)/.test(files)) {
+    if (!archive.hasDex) {
       throw new Error('compiled DEX application code is missing');
     }
-    if (!/(^|\n)\/?lib\/x86_64\/[^/\n]+\.so(\n|$)/.test(files)) {
+    if (archive.nativeLibraries.length === 0) {
       throw new Error('x86_64 emulator native library is missing');
     }
-    const nativeLibraries = files
-      .split(/\r?\n/)
-      .map((file) => file.replace(/^\//, ''))
-      .filter((file) => /^lib\/x86_64\/[^/]+\.so$/.test(file));
-    const manifests = nativeLibraries.flatMap((file) => {
-      const manifest = validateZipMemberBuildManifest(
+    if (archive.nativeLibraries.length > MAX_ANDROID_NATIVE_LIBRARIES) {
+      throw new Error('Android native library count exceeds the artifact safety bound');
+    }
+    let aggregateDeclaredBytes = 0;
+    for (const library of archive.nativeLibraries) {
+      if (library.declaredSize > maximumNativeLibraryBytes) {
+        throw new Error('Android declared native library exceeds the artifact safety bound');
+      }
+      aggregateDeclaredBytes += library.declaredSize;
+      if (aggregateDeclaredBytes > maximumTotalNativeLibraryBytes) {
+        throw new Error(
+          'Android aggregate declared native library bytes exceed the artifact safety bound',
+        );
+      }
+    }
+    let remainingAggregateBytes = maximumTotalNativeLibraryBytes;
+    const manifests = archive.nativeLibraries.flatMap((library) => {
+      const scan = validateZipMemberBuildManifest(
         apk,
-        file,
+        library.name,
         sourceCommit,
         maximumNativeLibraryBytes,
+        remainingAggregateBytes,
       );
-      return manifest ? [manifest] : [];
+      remainingAggregateBytes -= scan.streamedBytes;
+      return scan.manifest ? [scan.manifest] : [];
     });
     if (manifests.length !== 1) {
       throw new Error(`expected one native library with an E2E build manifest; found ${manifests.length}`);

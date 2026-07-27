@@ -32,7 +32,7 @@ const provenance = {
     catalog_resolver_id: 'resolver-1',
     catalog_revision_id: 'catalog-1',
     schema_version_id: 'schema-1',
-    physical_schema_version_ids: ['physical-1'],
+    physical_schema_version_ids: ['physical-1', 'physical-2'],
     source_version_ids: ['source-version-1', 'source-version-2'],
     mapping_version_ids: ['mapping-1', 'mapping-2'],
     policy_version_ids: ['policy-1'],

@@ -34,7 +34,10 @@ function buildManifest(sourceCommit = SOURCE_COMMIT): string {
 
 const exec = promisify(execFile);
 
-async function fakeAndroidArtifact(nativeLibrary: Buffer): Promise<{
+async function fakeAndroidArtifact(
+  nativeLibrary: Buffer,
+  extraNativeLibraries: ReadonlyArray<readonly [string, Buffer]> = [],
+): Promise<{
   apk: string;
   root: string;
   tools: string;
@@ -51,6 +54,9 @@ async function fakeAndroidArtifact(nativeLibrary: Buffer): Promise<{
   );
   await writeFile(join(payload, 'classes.dex'), Buffer.from('dex\n035\0'));
   await writeFile(join(payload, 'lib', 'x86_64', 'libmdreader_app_lib.so'), nativeLibrary);
+  for (const [name, bytes] of extraNativeLibraries) {
+    await writeFile(join(payload, 'lib', 'x86_64', name), bytes);
+  }
   await exec('/usr/bin/zip', ['-qr', apk, '.'], { cwd: payload });
   const analyzer = join(tools, 'apkanalyzer');
   await writeFile(
@@ -259,6 +265,92 @@ test('Android validation stops an actual native-library stream at the bound', as
           ) => string
         )(artifact.apk, SOURCE_COMMIT, 1_024),
       /native library stream exceeds the artifact safety bound/i,
+    );
+  } finally {
+    process.env.PATH = previousPath;
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects too many x86_64 native libraries before scanning them', async () => {
+  const extraLibraries = Array.from(
+    { length: 64 },
+    (_, index) => [`libdependency_${index}.so`, Buffer.alloc(0)] as const,
+  );
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    extraLibraries,
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${artifact.tools}:${previousPath ?? ''}`;
+  try {
+    assert.throws(
+      () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /native library count exceeds the artifact safety bound/i,
+    );
+  } finally {
+    process.env.PATH = previousPath;
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects aggregate declared native-library bytes', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [['libdependency.so', Buffer.from('dependency')]],
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${artifact.tools}:${previousPath ?? ''}`;
+  try {
+    await setDeclaredSize(
+      artifact.apk,
+      'lib/x86_64/libmdreader_app_lib.so',
+      700,
+    );
+    await setDeclaredSize(artifact.apk, 'lib/x86_64/libdependency.so', 700);
+    assert.throws(
+      () =>
+        (
+          validateAndroidApk as unknown as (
+            apk: string,
+            commit: string,
+            maxNativeLibraryBytes: number,
+            maxTotalNativeLibraryBytes: number,
+          ) => string
+        )(artifact.apk, SOURCE_COMMIT, 1_024, 1_200),
+      /aggregate declared native library bytes exceed the artifact safety bound/i,
+    );
+  } finally {
+    process.env.PATH = previousPath;
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation stops aggregate native-library streams at one invocation-wide bound', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.concat([Buffer.from(buildManifest()), Buffer.alloc(700, 0x61)]),
+    [['libdependency.so', Buffer.alloc(800, 0x62)]],
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${artifact.tools}:${previousPath ?? ''}`;
+  try {
+    await setDeclaredSize(
+      artifact.apk,
+      'lib/x86_64/libmdreader_app_lib.so',
+      500,
+    );
+    await setDeclaredSize(artifact.apk, 'lib/x86_64/libdependency.so', 500);
+    assert.throws(
+      () =>
+        (
+          validateAndroidApk as unknown as (
+            apk: string,
+            commit: string,
+            maxNativeLibraryBytes: number,
+            maxTotalNativeLibraryBytes: number,
+          ) => string
+        )(artifact.apk, SOURCE_COMMIT, 2_048, 1_300),
+      /aggregate native library stream exceeds the artifact safety bound/i,
     );
   } finally {
     process.env.PATH = previousPath;
