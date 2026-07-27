@@ -145,3 +145,71 @@ test('source fingerprints detect an mtime-only touch as well as bytes and member
   assert.deepEqual(Object.keys(added), ['added.md', 'note.md']);
   await rm(root, { recursive: true, force: true });
 });
+
+test('source fingerprints include empty-directory membership', async () => {
+  const root = await temporaryE2EConfig();
+  const empty = join(root, 'kept-empty');
+  await mkdir(empty);
+  try {
+    const withEmpty = await fingerprintSourceTree(root);
+    assert.equal(withEmpty['kept-empty/']?.kind, 'directory');
+
+    await rm(empty, { recursive: true });
+    const removed = await fingerprintSourceTree(root);
+    assert.notDeepEqual(removed, withEmpty);
+    assert.equal(removed['kept-empty/'], undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed native setup still finalizes a fresh run-scoped integrity result', async () => {
+  const root = await temporaryE2EConfig();
+  const artifacts = await temporaryE2EConfig();
+  await writeFile(join(root, 'note.md'), '# unchanged');
+  await writeFile(join(artifacts, 'source-fingerprint-after.json'), 'stale-after');
+  await writeFile(join(artifacts, 'result.json'), 'stale-result');
+
+  try {
+    const seedModule = await import('./seed.ts');
+    const runWithArtifacts = (
+      seedModule as unknown as {
+        withNativeRunArtifacts: (
+          base: string,
+          source: string,
+          run: (runArtifacts: string) => Promise<unknown>,
+        ) => Promise<{ artifacts: string; ok: boolean; failedAt: string | null }>;
+      }
+    ).withNativeRunArtifacts;
+    assert.equal(typeof runWithArtifacts, 'function');
+
+    const result = await runWithArtifacts(artifacts, root, async () => {
+      throw new Error('session creation failed');
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failedAt, 'harness-error');
+    assert.notEqual(result.artifacts, artifacts);
+    assert.equal(
+      typeof JSON.parse(
+        await readFile(join(result.artifacts, 'source-fingerprint-before.json'), 'utf8'),
+      ),
+      'object',
+    );
+    assert.equal(
+      typeof JSON.parse(
+        await readFile(join(result.artifacts, 'source-fingerprint-after.json'), 'utf8'),
+      ),
+      'object',
+    );
+    const recorded = JSON.parse(await readFile(join(result.artifacts, 'result.json'), 'utf8')) as {
+      ok: boolean;
+      error: string;
+    };
+    assert.equal(recorded.ok, false);
+    assert.match(recorded.error, /session creation failed/);
+    assert.equal(await readFile(join(artifacts, 'result.json'), 'utf8'), 'stale-result');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(artifacts, { recursive: true, force: true });
+  }
+});

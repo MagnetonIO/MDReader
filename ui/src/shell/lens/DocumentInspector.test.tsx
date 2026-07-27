@@ -153,3 +153,67 @@ it('drops a late answer after the active workspace changes', async () => {
   pending[0]!(answer);
   await waitFor(() => expect(screen.queryByText('A title')).toBeNull());
 });
+
+it('retires and cancels a request when the same root advances to a new generation', async () => {
+  const pending: Array<(value: FederatedDocument) => void> = [];
+  const query = vi.fn(
+    () =>
+      new Promise<FederatedDocument>((done) => {
+        pending.push(done);
+      }),
+  );
+  const cancel = vi.fn(async () => {});
+  const rendered = render(
+    <DocumentInspector
+      {...{
+        path: '/same/a.md',
+        query,
+        cancel,
+        workspaceKey: '/same',
+        workspaceGeneration: 7,
+      }}
+    />,
+  );
+
+  rendered.rerender(
+    <DocumentInspector
+      {...{
+        path: '/same/a.md',
+        query,
+        cancel,
+        workspaceKey: '/same',
+        workspaceGeneration: 8,
+      }}
+    />,
+  );
+
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(cancel).toHaveBeenCalled());
+  pending[0]!(answer);
+  await waitFor(() => expect(screen.queryByText('A title')).toBeNull());
+});
+
+it('implements the tab and tabpanel relationships plus arrow-key navigation', async () => {
+  render(
+    <DocumentInspector
+      path="/library/notes/a.md"
+      query={vi.fn().mockResolvedValue(answer)}
+      workspaceKey="/library"
+    />,
+  );
+  await screen.findByText('A title');
+
+  const result = screen.getByRole('tab', { name: 'Result' });
+  const sources = screen.getByRole('tab', { name: 'Sources' });
+  const panel = screen.getByRole('tabpanel');
+  expect(result.getAttribute('aria-controls')).toBe(panel.id);
+  expect(panel.getAttribute('aria-labelledby')).toBe(result.id);
+  expect(result.tabIndex).toBe(0);
+  expect(sources.tabIndex).toBe(-1);
+
+  result.focus();
+  fireEvent.keyDown(result, { key: 'ArrowRight' });
+  expect(document.activeElement).toBe(sources);
+  expect(sources.getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(sources.id);
+});

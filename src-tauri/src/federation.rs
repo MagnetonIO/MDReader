@@ -292,8 +292,13 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    use super::query_federated_document_guarded;
+    use catdb_embed::{Embedder, HashEmbedder};
+    use catdb_engine::EngineConfig;
+
+    use super::{query_federated_document, query_federated_document_guarded};
     use crate::commands::WorkspaceState;
 
     fn git(root: &Path, args: &[&str]) {
@@ -356,11 +361,24 @@ mod tests {
         directory
     }
 
+    fn catalogued_state(root: &Path) -> WorkspaceState {
+        let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
+        let mut config = EngineConfig::in_memory(embedder).with_actor("federation-product-test");
+        config.domains = vec![mdreader_ingest::registration()];
+        let db = Arc::new(catdb_engine::EmbeddedCatDb::open(config).expect("open engine"));
+        let state = WorkspaceState::granted(root.to_path_buf());
+        state
+            .current()
+            .expect("active epoch")
+            .install_engine_for_test(db);
+        state
+    }
+
     #[tokio::test]
     async fn one_native_query_returns_three_source_reports_and_per_field_attribution() {
         let directory = committed_workspace();
         let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
-        let state = WorkspaceState::granted(root.clone());
+        let state = catalogued_state(&root);
         let document = root.join("a file.md");
         let before = fingerprint(&root);
 
@@ -434,7 +452,7 @@ mod tests {
         let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
         let replacement_root =
             std::fs::canonicalize(replacement.path()).expect("canonical replacement workspace");
-        let state = WorkspaceState::granted(root.clone());
+        let state = catalogued_state(&root);
         let document = root.join("a file.md");
 
         let error = query_federated_document_guarded(
@@ -456,6 +474,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_query_discards_an_answer_when_the_same_library_reopens() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let document = root.join("a file.md");
+
+        let error = query_federated_document_guarded(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            || {
+                state
+                    .switch(root.clone())
+                    .expect("reopen the same workspace as a new epoch");
+            },
+        )
+        .await
+        .expect_err("same-root reopen must revoke the captured generation");
+
+        assert!(
+            error.contains("workspace changed during the operation"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn native_query_accepts_the_markdown_extension_used_by_the_reader() {
         let directory = committed_workspace();
         let old = directory.path().join("a file.md");
@@ -467,7 +510,7 @@ mod tests {
             &["commit", "-qm", "use markdown extension"],
         );
         let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
-        let state = WorkspaceState::granted(root.clone());
+        let state = catalogued_state(&root);
 
         let answer = query_federated_document_guarded(
             &state,
@@ -478,5 +521,196 @@ mod tests {
         .expect("reader-supported .markdown document");
 
         assert_eq!(answer.document.path, "a file.markdown");
+    }
+
+    #[tokio::test]
+    async fn native_query_requires_the_catalogued_schema_version_and_checksum() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = WorkspaceState::granted(root.clone());
+        let document = root.join("a file.md");
+
+        let error = query_federated_document_guarded(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            || {},
+        )
+        .await
+        .expect_err("an unversioned registration is not native schema acceptance");
+
+        assert!(
+            error.contains("persisted") && error.contains("checksum"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_response_keeps_json_values_typed_instead_of_json_in_strings() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let document = root.join("a file.md");
+
+        let answer = query_federated_document_guarded(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            || {},
+        )
+        .await
+        .expect("federated document query");
+        let wire = serde_json::to_value(answer).expect("serialize wire response");
+        let title = wire["document"]["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .find(|field| field["name"] == "title")
+            .expect("title field");
+        assert_eq!(title["value"], serde_json::json!("Declared title"));
+        assert_eq!(
+            title["providers"][0]["value"],
+            serde_json::json!("Declared title")
+        );
+        let modified = wire["document"]["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .find(|field| field["name"] == "modifiedAt")
+            .expect("modified field");
+        assert!(
+            modified["value"].is_number(),
+            "timestamps remain JSON numbers: {}",
+            modified["value"]
+        );
+    }
+
+    #[tokio::test]
+    async fn native_response_bounds_the_duplicated_serialized_payload() {
+        let directory = committed_workspace();
+        let document = directory.path().join("a file.md");
+        let body = "x".repeat(2_500_000);
+        std::fs::write(
+            &document,
+            format!("---\ntitle: Declared title\nauthor: Ada\n---\n# Heading\n\n{body}"),
+        )
+        .expect("write large bounded source");
+        git(directory.path(), &["add", "-A"]);
+        git(directory.path(), &["commit", "-qm", "large source"]);
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+
+        let result = query_federated_document_guarded(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            || {},
+        )
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("wire duplication must have its own serialized-output bound"),
+        };
+
+        assert!(error.contains("response byte budget"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn product_queries_do_not_claim_a_cross_command_git_cache_they_cannot_reuse() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let document = root.join("a file.md");
+
+        let answer = query_federated_document_guarded(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            || {},
+        )
+        .await
+        .expect("federated document query");
+
+        assert!(
+            answer
+                .sources
+                .iter()
+                .all(|source| source.execution.as_deref() == Some("virtual")),
+            "a command-local executor cannot advertise a five-minute reusable cache: {:?}",
+            answer
+                .sources
+                .iter()
+                .map(|source| (&source.source, &source.execution))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn generated_tauri_wrapper_executes_on_the_runtime_without_nested_block_on() {
+        let app = tauri::test::mock_builder()
+            .manage(WorkspaceState::default())
+            .manage(super::FederationRuntime::default())
+            .invoke_handler(tauri::generate_handler![query_federated_document])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock application");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build mock webview");
+        let response = tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "query_federated_document".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(any(windows, target_os = "android")) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .expect("test URL"),
+                body: serde_json::json!({
+                    "path": "/missing.md",
+                    "invocation": "wrapper-boundary-test"
+                })
+                .into(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        );
+        let error = response.expect_err("no workspace is a typed command error");
+        assert!(
+            error.to_string().contains("no workspace has been opened"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_cancels_superseded_invocations_and_bounds_global_work() {
+        let runtime = super::FederationRuntime::with_limit(1);
+        let first = runtime.begin(7, "inspector");
+        let first_permit = runtime.acquire(&first).await.expect("first permit");
+
+        let replacement = runtime.begin(8, "inspector");
+        assert!(
+            first.cancellation().is_cancelled(),
+            "a same-root generation change cancels backend work, not only UI publication"
+        );
+        assert_eq!(
+            runtime.active_count(),
+            1,
+            "one invocation cannot accumulate retired 30-second jobs"
+        );
+
+        let other = runtime.begin(8, "other-inspector");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), runtime.acquire(&other))
+                .await
+                .is_err(),
+            "the process-wide permit bounds source jobs across invocations"
+        );
+        drop(first_permit);
+        let _other_permit = runtime
+            .acquire(&other)
+            .await
+            .expect("permit becomes available");
+        runtime.finish(&replacement);
+        runtime.finish(&other);
     }
 }
