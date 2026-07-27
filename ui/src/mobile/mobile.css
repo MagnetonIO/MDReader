@@ -16,7 +16,8 @@
   font-family: var(--font-ui);
 }
 
-:root[data-theme="dark"] .mobile-shell {
+:root[data-theme="dark"] .mobile-shell,
+.mobile-shell[data-system-theme="dark"] {
   --mobile-bg: #0e141b;
   --mobile-surface: #17202a;
   --mobile-fg: #edf3f8;
@@ -104,7 +105,12 @@
 }
 
 .mobile-document small {
+  display: block;
   color: var(--mobile-muted);
+}
+
+.mobile-document strong {
+  display: block;
 }
 
 .mobile-nav {
@@ -267,6 +273,36 @@
 
 .mobile-reader__inspector {
   padding: 1rem;
+}
+
+.mobile-reader__inspector h2 {
+  margin-top: 0;
+}
+
+.mobile-evidence {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.mobile-evidence > div {
+  padding: 0.8rem;
+  overflow-wrap: anywhere;
+  background: var(--mobile-bg);
+  border: 1px solid var(--mobile-border);
+  border-radius: 0.75rem;
+}
+
+.mobile-evidence dt {
+  color: var(--mobile-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mobile-evidence dd {
+  margin: 0.25rem 0 0;
 }
 
 @media (min-width: 768px) {

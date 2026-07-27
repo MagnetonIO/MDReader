@@ -97,3 +97,29 @@ export async function saveEnterpriseServerConfig(config: EnterpriseServerConfig)
   await store.set(SERVER_CONFIG_KEY, config);
   await store.save();
 }
+
+/**
+ * Load and revalidate the saved server boundary. A hand-edited or stale store
+ * entry is never promoted into an authenticated adapter.
+ */
+export async function loadEnterpriseServerConfig(): Promise<EnterpriseServerConfig | null> {
+  try {
+    const store = await load('mobile-sources.json', { autoSave: false });
+    const raw = await store.get(SERVER_CONFIG_KEY);
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as Record<string, unknown>;
+    if (
+      typeof candidate.serverUrl !== 'string' ||
+      typeof candidate.sessionReference !== 'string'
+    ) {
+      return null;
+    }
+    const validated = validateEnterpriseServerConfig(
+      candidate.serverUrl,
+      candidate.sessionReference,
+    );
+    return validated.status === 'ok' ? validated.config : null;
+  } catch {
+    return null;
+  }
+}
