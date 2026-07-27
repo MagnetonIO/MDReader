@@ -107,10 +107,19 @@ function validateWindowsSegment(segment, context) {
   }
 }
 
+function validatePortableAsciiSegment(segment, label) {
+  if (!/^[\u0020-\u007e]+$/u.test(segment)) {
+    fail(`contains a non-ASCII ${label} segment`);
+  }
+  if (segment.includes('~')) {
+    fail(`${label} segment is outside the portable ASCII filename policy`);
+  }
+}
+
 function portablePathKey(path) {
   return path
     .split('/')
-    .map((segment) => segment.normalize('NFD').toLowerCase())
+    .map((segment) => segment.toLowerCase())
     .join('/');
 }
 
@@ -140,6 +149,7 @@ function canonicalArchivePath(rawName, kind) {
     fail(`contains a parent path segment: ${rawName}`);
   }
   for (const segment of segments) {
+    validatePortableAsciiSegment(segment, 'archive path');
     validateWindowsSegment(segment, `member path ${rawName}`);
   }
   const path = segments.join('/');
@@ -328,6 +338,7 @@ function closeNamespace(members) {
     }
     for (const segment of targetSegments) {
       if (segment !== '..') {
+        validatePortableAsciiSegment(segment, 'symbolic-link target');
         validateWindowsSegment(
           segment,
           `symbolic-link target for ${member.rawName}`,
