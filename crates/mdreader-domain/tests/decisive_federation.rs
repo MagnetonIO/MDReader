@@ -832,7 +832,10 @@ fn the_scenarios_own_guards_are_not_vacuous() {
     )]);
     let root = outside.path();
     let fs = FilesystemSource::new(root);
-    let git = GitSource::open(root);
+    // A present directory is only a *potential* Git source now: probing it is
+    // deliberately deferred to the first bounded read. Use a genuinely absent
+    // root for this declaration-time `Unavailable` guard.
+    let git = GitSource::open(root.join("missing-git-root"));
     let front = FrontmatterSource::new(root);
     let sources: Vec<&dyn DataSource> = vec![&fs, &git, &front];
     let federation = Federation::new(sources.clone(), &prover()).expect("declares");
@@ -853,7 +856,7 @@ fn the_scenarios_own_guards_are_not_vacuous() {
                 ["git"]
             );
             assert!(
-                excluded[0].reason.contains("git work tree"),
+                excluded[0].reason.contains("not a directory"),
                 "the exclusion must carry the source's own reason: {}",
                 excluded[0].reason
             );
@@ -879,7 +882,7 @@ fn the_scenarios_own_guards_are_not_vacuous() {
     );
     match author.verdicts.get(1).map(|(_, verdict)| verdict) {
         Some(ProviderVerdict::NotAsked { reason }) => assert!(
-            reason.contains("git work tree"),
+            reason.contains("not a directory"),
             "the verdict must carry the executor's own reason: {reason}"
         ),
         other => panic!("git must be recorded as never asked, got {other:?}"),
