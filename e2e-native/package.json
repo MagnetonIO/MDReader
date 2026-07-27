@@ -10,7 +10,7 @@
     "appium:driver:android": "appium driver install uiautomator2",
     "build:e2e": "pnpm --filter '@mdreader/app...' run build && pnpm --filter @mdreader/app tauri build --bundles app --features e2e-build --config src-tauri/tauri.e2e.conf.json",
     "smoke:macos": "node --experimental-strip-types --no-warnings runners/macos.ts",
-    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts",
+    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts",
     "test:desktop": "wdio run ./config/wdio.desktop.conf.ts",
     "test:ios": "wdio run ./config/wdio.ios.conf.ts",
     "test:android": "wdio run ./config/wdio.android.conf.ts",
