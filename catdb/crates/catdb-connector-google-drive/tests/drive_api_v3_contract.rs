@@ -345,6 +345,7 @@ enum RefreshMode {
     Succeeds,
     Revoked,
     Transport,
+    RateLimited,
     Pending,
 }
 
@@ -399,6 +400,9 @@ impl DriveSecretResolver for RefreshingResolver {
             ),
             RefreshMode::Revoked => Err(DriveConnectorError::InvalidSecret),
             RefreshMode::Transport => Err(DriveConnectorError::Transport),
+            RefreshMode::RateLimited => Err(DriveConnectorError::RateLimited {
+                retry_after_ms: Some(17_000),
+            }),
             RefreshMode::Pending => std::future::pending().await,
         }
     }
@@ -600,6 +604,25 @@ async fn refresh_pipeline_preserves_authentication_transport_and_rate_limit_outc
             .await,
         Err(SourceError::RateLimited {
             retry_after_ms: Some(11_000),
+            ..
+        })
+    ));
+
+    let (refresh_rate_limited, _, _) = refreshable_source(
+        ScriptedTransport::new([response(401, br#"{"error":{"code":401}}"#)]),
+        RefreshingResolver::new(RefreshMode::RateLimited),
+    )
+    .await;
+    assert!(matches!(
+        refresh_rate_limited
+            .execute_page(
+                &plan(&refresh_rate_limited, &["id"]),
+                None,
+                &context(2, 2, 4_096),
+            )
+            .await,
+        Err(SourceError::RateLimited {
+            retry_after_ms: Some(17_000),
             ..
         })
     ));
@@ -1400,8 +1423,8 @@ async fn completed_rebuild_replaces_recursive_membership_after_drive_churn() {
             &["id".to_string()],
             &context(10, 10, 64 * 1024),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
     }
     source
         .start_change_tracking(&context(4, 4, 64 * 1024))

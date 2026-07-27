@@ -264,10 +264,10 @@ impl DriveSourceConfig {
                 field: "selections",
             });
         }
-        let mut unique = BTreeSet::new();
+        let mut unique_ids = BTreeSet::new();
         for selection in &self.selections {
             selection.validate()?;
-            if !unique.insert(selection.clone()) {
+            if !unique_ids.insert(selection.id()) {
                 return Err(DriveConnectorError::InvalidConfiguration {
                     field: "selections",
                 });
@@ -594,7 +594,8 @@ impl DriveOAuthPkce {
             .append_pair("state", &self.state)
             .append_pair("access_type", "offline")
             .append_pair("prompt", "consent")
-            .append_pair("trigger_onepick", "true");
+            .append_pair("trigger_onepick", "true")
+            .append_pair("allow_folder_selection", "true");
         Ok(url.into())
     }
 
@@ -940,15 +941,125 @@ struct QueryTraversal {
     traversal_id: Uuid,
     generation: u64,
     expires_at: Instant,
+    membership_epoch: u64,
+    membership: DriveMembership,
     selected_file_index: usize,
     selected_folder_index: usize,
     folders: VecDeque<FolderTraversal>,
     seen_ids: BTreeSet<String>,
 }
 
+#[derive(Clone)]
 struct DriveMembership {
     tracked_folders: BTreeSet<String>,
     resource_keys: BTreeMap<String, String>,
+    resource_key_header_bytes: usize,
+}
+
+struct DriveMembershipState {
+    current: DriveMembership,
+    next_rebuild_epoch: u64,
+    committed_rebuild_epoch: u64,
+}
+
+impl DriveMembership {
+    fn from_selections(selections: &[DriveSelection]) -> Result<Self, DriveConnectorError> {
+        let mut tracked_folders = BTreeSet::new();
+        let mut resource_keys = BTreeMap::new();
+        let mut resource_key_header_bytes = 0usize;
+        for selection in selections {
+            if matches!(selection, DriveSelection::Folder { .. }) {
+                tracked_folders.insert(selection.id().to_string());
+            }
+            if let Some(resource_key) = selection.resource_key() {
+                resource_key_header_bytes = resource_key_header_bytes
+                    .checked_add(selection.id().len() + 1 + resource_key.len() + 1)
+                    .ok_or(DriveConnectorError::InvalidConfiguration {
+                        field: "selections",
+                    })?;
+                resource_keys.insert(selection.id().to_string(), resource_key.to_string());
+            }
+        }
+        if resource_key_header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(DriveConnectorError::InvalidConfiguration {
+                field: "selections",
+            });
+        }
+        Ok(Self {
+            tracked_folders,
+            resource_keys,
+            resource_key_header_bytes,
+        })
+    }
+
+    fn record_provider_file(
+        &mut self,
+        file: &DriveFile,
+        track_folder: bool,
+        source_id: &SourceId,
+    ) -> Result<(), SourceError> {
+        let next_header_bytes = match (
+            self.resource_keys.get(&file.id),
+            file.resource_key.as_deref(),
+        ) {
+            (Some(existing), Some(observed)) if existing != observed => {
+                return Err(malformed_source(source_id, "resourceKey"));
+            }
+            (Some(_), _) | (None, None) => self.resource_key_header_bytes,
+            (None, Some(resource_key)) => self
+                .resource_key_header_bytes
+                .checked_add(file.id.len() + 1 + resource_key.len() + 1)
+                .ok_or(SourceError::ResourceLimit {
+                    source_id: source_id.clone(),
+                    resource: "Drive resource-key header",
+                })?,
+        };
+        if next_header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: source_id.clone(),
+                resource: "Drive resource-key header",
+            });
+        }
+        if track_folder {
+            self.tracked_folders.insert(file.id.clone());
+        }
+        if let Some(resource_key) = &file.resource_key {
+            self.resource_keys
+                .entry(file.id.clone())
+                .or_insert_with(|| resource_key.clone());
+        }
+        self.resource_key_header_bytes = next_header_bytes;
+        Ok(())
+    }
+
+    fn resource_key_headers(
+        &self,
+        source_id: &SourceId,
+    ) -> Result<BTreeMap<String, String>, SourceError> {
+        if self.resource_key_header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: source_id.clone(),
+                resource: "Drive resource-key header",
+            });
+        }
+        let value = self
+            .resource_keys
+            .iter()
+            .map(|(id, key)| format!("{id}/{key}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        if value.len() > MAX_RESOURCE_KEY_HEADER_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: source_id.clone(),
+                resource: "Drive resource-key header",
+            });
+        }
+        Ok(if value.is_empty() {
+            BTreeMap::new()
+        } else {
+            BTreeMap::from([("x-goog-drive-resource-keys".to_string(), value)])
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -988,7 +1099,8 @@ pub struct DriveSource {
     cursor_key: DriveCursorKey,
     transport: Arc<dyn DriveTransport>,
     traversals: Mutex<BTreeMap<Uuid, QueryTraversal>>,
-    membership: Mutex<DriveMembership>,
+    configured_membership: DriveMembership,
+    membership: Mutex<DriveMembershipState>,
 }
 
 impl fmt::Debug for DriveSource {
@@ -1063,16 +1175,7 @@ impl DriveSource {
             })?;
         let source_spec_digest = digest(&spec)?;
         let (grant, refresh_credential, cursor_key) = secrets.into_parts();
-        let mut tracked_folders = BTreeSet::new();
-        let mut resource_keys = BTreeMap::new();
-        for selection in &spec.config.selections {
-            if matches!(selection, DriveSelection::Folder { .. }) {
-                tracked_folders.insert(selection.id().to_string());
-            }
-            if let Some(resource_key) = selection.resource_key() {
-                resource_keys.insert(selection.id().to_string(), resource_key.to_string());
-            }
-        }
+        let configured_membership = DriveMembership::from_selections(&spec.config.selections)?;
         Ok(Self {
             spec,
             model,
@@ -1090,9 +1193,11 @@ impl DriveSource {
             cursor_key,
             transport,
             traversals: Mutex::new(BTreeMap::new()),
-            membership: Mutex::new(DriveMembership {
-                tracked_folders,
-                resource_keys,
+            configured_membership: configured_membership.clone(),
+            membership: Mutex::new(DriveMembershipState {
+                current: configured_membership,
+                next_rebuild_epoch: 0,
+                committed_rebuild_epoch: 0,
             }),
         })
     }
@@ -1241,6 +1346,24 @@ impl DriveSource {
     }
 
     fn request(&self, path: String) -> Result<DriveHttpRequest, SourceError> {
+        let headers = self.resource_key_headers()?;
+        self.request_with_headers(path, headers)
+    }
+
+    fn request_with_membership(
+        &self,
+        path: String,
+        membership: &DriveMembership,
+    ) -> Result<DriveHttpRequest, SourceError> {
+        let headers = membership.resource_key_headers(self.model.id())?;
+        self.request_with_headers(path, headers)
+    }
+
+    fn request_with_headers(
+        &self,
+        path: String,
+        headers: BTreeMap<String, String>,
+    ) -> Result<DriveHttpRequest, SourceError> {
         let access = self
             .credentials
             .access
@@ -1251,7 +1374,7 @@ impl DriveSource {
         Ok(DriveHttpRequest {
             method: DriveHttpMethod::Get,
             path,
-            headers: self.resource_key_headers()?,
+            headers,
             bearer_token: Arc::from(access.grant.token.as_str()),
             credential_generation: access.generation,
         })
@@ -1393,9 +1516,7 @@ impl DriveSource {
             ) => {
                 result
                     .map_err(|_| SourceError::DeadlineExceeded)?
-                    .map_err(|_| SourceError::Authentication {
-                        source_id: self.model.id().clone(),
-                    })?
+                    .map_err(|error| self.map_refresh_failure(error))?
             }
         };
         if refreshed.is_expired() {
@@ -1422,27 +1543,29 @@ impl DriveSource {
         Ok(())
     }
 
+    fn map_refresh_failure(&self, error: DriveConnectorError) -> SourceError {
+        match error {
+            DriveConnectorError::Transport => SourceError::Transport {
+                source_id: self.model.id().clone(),
+            },
+            DriveConnectorError::RateLimited { retry_after_ms } => SourceError::RateLimited {
+                source_id: self.model.id().clone(),
+                retry_after_ms,
+            },
+            DriveConnectorError::InvalidConfiguration { .. }
+            | DriveConnectorError::InvalidSecret
+            | DriveConnectorError::InvalidPkce
+            | DriveConnectorError::InvalidRevision => SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            },
+        }
+    }
+
     fn resource_key_headers(&self) -> Result<BTreeMap<String, String>, SourceError> {
         let membership = self.membership.lock().map_err(|_| SourceError::Transport {
             source_id: self.model.id().clone(),
         })?;
-        let value = membership
-            .resource_keys
-            .iter()
-            .map(|(id, key)| format!("{id}/{key}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        if value.len() > MAX_RESOURCE_KEY_HEADER_BYTES {
-            return Err(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "Drive resource-key header",
-            });
-        }
-        Ok(if value.is_empty() {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([("x-goog-drive-resource-keys".to_string(), value)])
-        })
+        membership.current.resource_key_headers(self.model.id())
     }
 
     fn map_http_failure(&self, response: &DriveHttpResponse) -> SourceError {
@@ -1565,13 +1688,13 @@ impl DriveSource {
         Ok(file
             .parents
             .iter()
-            .any(|parent| membership.tracked_folders.contains(parent)))
+            .any(|parent| membership.current.tracked_folders.contains(parent)))
     }
 
     fn is_tracked_folder_id(&self, file_id: &str) -> Result<bool, SourceError> {
         self.membership
             .lock()
-            .map(|membership| membership.tracked_folders.contains(file_id))
+            .map(|membership| membership.current.tracked_folders.contains(file_id))
             .map_err(|_| SourceError::Transport {
                 source_id: self.model.id().clone(),
             })
@@ -1691,10 +1814,26 @@ impl DriveSource {
                 resource: "active Drive traversals",
             });
         }
+        let membership_epoch = {
+            let mut membership = self.membership.lock().map_err(|_| SourceError::Transport {
+                source_id: self.model.id().clone(),
+            })?;
+            membership.next_rebuild_epoch =
+                membership
+                    .next_rebuild_epoch
+                    .checked_add(1)
+                    .ok_or(SourceError::ResourceLimit {
+                        source_id: self.model.id().clone(),
+                        resource: "Drive membership rebuild epoch",
+                    })?;
+            membership.next_rebuild_epoch
+        };
         Ok(QueryTraversal {
             traversal_id: Uuid::new_v4(),
             generation: 0,
             expires_at,
+            membership_epoch,
+            membership: self.configured_membership.clone(),
             selected_file_index: 0,
             selected_folder_index: 0,
             folders: VecDeque::new(),
@@ -1712,15 +1851,18 @@ impl DriveSource {
             source_id: self.model.id().clone(),
         })?;
         let traversal = traversals
-            .remove(&query_id)
+            .get(&query_id)
             .ok_or(SourceError::InvalidCursor)?;
         if traversal.traversal_id != traversal_id || traversal.generation != generation {
             return Err(SourceError::InvalidCursor);
         }
         if traversal.expires_at <= Instant::now() {
+            traversals.remove(&query_id);
             return Err(SourceError::DeadlineExceeded);
         }
-        Ok(traversal)
+        traversals
+            .remove(&query_id)
+            .ok_or(SourceError::InvalidCursor)
     }
 
     fn save_query_traversal(
@@ -1737,31 +1879,17 @@ impl DriveSource {
         Ok(())
     }
 
-    fn record_tracked_folder(&self, file: &DriveFile) -> Result<(), SourceError> {
+    fn commit_membership(
+        &self,
+        rebuild_epoch: u64,
+        rebuilt: DriveMembership,
+    ) -> Result<(), SourceError> {
         let mut membership = self.membership.lock().map_err(|_| SourceError::Transport {
             source_id: self.model.id().clone(),
         })?;
-        membership.tracked_folders.insert(file.id.clone());
-        if let Some(resource_key) = &file.resource_key {
-            membership
-                .resource_keys
-                .insert(file.id.clone(), resource_key.clone());
-        }
-        let header_bytes = membership
-            .resource_keys
-            .iter()
-            .try_fold(0usize, |total, (id, key)| {
-                total.checked_add(id.len() + 1 + key.len() + 1)
-            })
-            .ok_or(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "Drive resource-key header",
-            })?;
-        if header_bytes > MAX_RESOURCE_KEY_HEADER_BYTES {
-            return Err(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "Drive resource-key header",
-            });
+        if rebuild_epoch > membership.committed_rebuild_epoch {
+            membership.current = rebuilt;
+            membership.committed_rebuild_epoch = rebuild_epoch;
         }
         Ok(())
     }
@@ -1837,6 +1965,7 @@ impl DriveSource {
     async fn observe_file(
         &self,
         file: DriveFile,
+        membership: &DriveMembership,
         plan: &SourcePlan,
         context: &ReadContext,
         physical_bytes: &mut usize,
@@ -1856,7 +1985,11 @@ impl DriveSource {
         if needs_body {
             if let Some(path) = self.body_path(&file) {
                 let body = self
-                    .send(self.request(path)?, context, physical_bytes)
+                    .send(
+                        self.request_with_membership(path, membership)?,
+                        context,
+                        physical_bytes,
+                    )
                     .await?;
                 if body.status != 200 {
                     return Err(self.map_http_failure(&body));
@@ -1958,7 +2091,10 @@ impl DataSource for DriveSource {
             let expected_id = selected_file_ids[traversal.selected_file_index];
             let response = self
                 .send(
-                    self.request(self.metadata_path(expected_id))?,
+                    self.request_with_membership(
+                        self.metadata_path(expected_id),
+                        &traversal.membership,
+                    )?,
                     context,
                     &mut physical_bytes,
                 )
@@ -1978,15 +2114,25 @@ impl DataSource for DriveSource {
             }
             let file: DriveFile =
                 serde_json::from_slice(&response.body).map_err(|_| self.malformed("file"))?;
+            file.validate(self.model.id())?;
             if file.id != expected_id {
                 return Err(self.malformed("selected file identity"));
             }
             if file.mime_type == "application/vnd.google-apps.folder" {
                 return Err(self.malformed("selected file kind"));
             }
+            traversal
+                .membership
+                .record_provider_file(&file, false, self.model.id())?;
             traversal.seen_ids.insert(file.id.clone());
             if let Some(row) = self
-                .observe_file(file, plan, context, &mut physical_bytes)
+                .observe_file(
+                    file,
+                    &traversal.membership,
+                    plan,
+                    context,
+                    &mut physical_bytes,
+                )
                 .await?
             {
                 rows.push(row);
@@ -2000,6 +2146,47 @@ impl DataSource for DriveSource {
                 && traversal.selected_folder_index < selected_folder_ids.len()
             {
                 let root = selected_folder_ids[traversal.selected_folder_index];
+                let response = self
+                    .send(
+                        self.request_with_membership(
+                            self.metadata_path(root),
+                            &traversal.membership,
+                        )?,
+                        context,
+                        &mut physical_bytes,
+                    )
+                    .await?;
+                if response.status == 404 {
+                    return Err(SourceError::Read {
+                        source_id: self.model.id().clone(),
+                        path: "selected Drive folder".to_string(),
+                        detail:
+                            "provider returned 404; deletion and lost authorization are ambiguous"
+                                .to_string(),
+                    });
+                }
+                if response.status != 200 {
+                    return Err(self.map_http_failure(&response));
+                }
+                let folder: DriveFile = serde_json::from_slice(&response.body)
+                    .map_err(|_| self.malformed("selected folder"))?;
+                folder.validate(self.model.id())?;
+                if folder.id != root {
+                    return Err(self.malformed("selected folder identity"));
+                }
+                if folder.trashed {
+                    return Err(SourceError::Read {
+                        source_id: self.model.id().clone(),
+                        path: "selected Drive folder".to_string(),
+                        detail: "provider reports the selected folder is trashed".to_string(),
+                    });
+                }
+                if folder.mime_type != "application/vnd.google-apps.folder" {
+                    return Err(self.malformed("selected folder kind"));
+                }
+                traversal
+                    .membership
+                    .record_provider_file(&folder, true, self.model.id())?;
                 traversal.selected_folder_index += 1;
                 if traversal.seen_ids.insert(root.to_string()) {
                     traversal.folders.push_back(FolderTraversal {
@@ -2018,11 +2205,10 @@ impl DataSource for DriveSource {
             let remaining = page_size - scanned;
             let response = self
                 .send(
-                    self.request(self.list_path(
-                        &folder_id,
-                        provider_page_token.as_deref(),
-                        remaining,
-                    ))?,
+                    self.request_with_membership(
+                        self.list_path(&folder_id, provider_page_token.as_deref(), remaining),
+                        &traversal.membership,
+                    )?,
                     context,
                     &mut physical_bytes,
                 )
@@ -2056,6 +2242,10 @@ impl DataSource for DriveSource {
                 if !file.parents.iter().any(|parent| parent == &folder_id) {
                     return Err(self.malformed("parents"));
                 }
+                let is_folder = file.mime_type == "application/vnd.google-apps.folder";
+                traversal
+                    .membership
+                    .record_provider_file(&file, is_folder, self.model.id())?;
                 if !traversal.seen_ids.insert(file.id.clone()) {
                     continue;
                 }
@@ -2065,7 +2255,7 @@ impl DataSource for DriveSource {
                         resource: "Drive traversal items",
                     });
                 }
-                if file.mime_type == "application/vnd.google-apps.folder" {
+                if is_folder {
                     let depth = folder_depth
                         .checked_add(1)
                         .ok_or(SourceError::ResourceLimit {
@@ -2078,7 +2268,6 @@ impl DataSource for DriveSource {
                             resource: "Drive recursion depth",
                         });
                     }
-                    self.record_tracked_folder(&file)?;
                     traversal.folders.push_back(FolderTraversal {
                         id: file.id,
                         depth,
@@ -2093,7 +2282,13 @@ impl DataSource for DriveSource {
                     continue;
                 }
                 if let Some(row) = self
-                    .observe_file(file, plan, context, &mut physical_bytes)
+                    .observe_file(
+                        file,
+                        &traversal.membership,
+                        plan,
+                        context,
+                        &mut physical_bytes,
+                    )
                     .await?
                 {
                     rows.push(row);
@@ -2141,6 +2336,7 @@ impl DataSource for DriveSource {
             self.save_query_traversal(context.query_id(), traversal)?;
             Some(next)
         } else {
+            self.commit_membership(traversal.membership_epoch, traversal.membership)?;
             None
         };
         Ok(SourcePage {
@@ -2298,6 +2494,12 @@ pub enum DriveConnectorError {
     /// Production HTTPS transport could not be constructed.
     #[error("Google Drive transport construction failed")]
     Transport,
+    /// Runtime secret resolution or refresh was rate limited.
+    #[error("Google Drive runtime secret operation was rate limited")]
+    RateLimited {
+        /// Provider-requested wait, when available.
+        retry_after_ms: Option<u64>,
+    },
 }
 
 fn validate_drive_id(field: &'static str, id: &str) -> Result<(), DriveConnectorError> {
@@ -2610,5 +2812,49 @@ mod cursor_binding_tests {
             source.decode_change_cursor(&wrong_kind),
             Err(SourceError::InvalidCursor)
         );
+    }
+}
+
+#[cfg(test)]
+mod membership_transaction_tests {
+    use super::*;
+
+    #[test]
+    fn header_bound_failure_leaves_the_staged_membership_unchanged() {
+        let source_id = SourceId::new("drive-library");
+        let mut membership =
+            DriveMembership::from_selections(&[DriveSelection::folder("selected-folder")]).unwrap();
+        let mut observed_bound = false;
+        for index in 0..20 {
+            let before_folders = membership.tracked_folders.clone();
+            let before_keys = membership.resource_keys.clone();
+            let before_header_bytes = membership.resource_key_header_bytes;
+            let file = DriveFile {
+                id: format!("{}{:02}", "f".repeat(248), index),
+                name: format!("Folder {index}"),
+                mime_type: "application/vnd.google-apps.folder".to_string(),
+                modified_time: "2026-07-20T12:34:56Z".to_string(),
+                size: None,
+                md5_checksum: None,
+                resource_key: Some("k".repeat(500)),
+                parents: vec!["selected-folder".to_string()],
+                trashed: false,
+            };
+            match membership.record_provider_file(&file, true, &source_id) {
+                Ok(()) => {}
+                Err(SourceError::ResourceLimit {
+                    resource: "Drive resource-key header",
+                    ..
+                }) => {
+                    assert_eq!(membership.tracked_folders, before_folders);
+                    assert_eq!(membership.resource_keys, before_keys);
+                    assert_eq!(membership.resource_key_header_bytes, before_header_bytes);
+                    observed_bound = true;
+                    break;
+                }
+                Err(error) => panic!("unexpected membership failure: {error}"),
+            }
+        }
+        assert!(observed_bound);
     }
 }
