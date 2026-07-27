@@ -59,6 +59,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
 catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
+catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite" }
 # Schema introspection (the View As / Schema View surfaces) and the kernel
 # provenance the Semantic Inspector renders. Read-only: nothing here builds a
 # fact, it only describes ones the engine and the extractors produced.
@@ -77,6 +78,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
+catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite", features = ["test-migrations"] }
 # Index-version rows, so a test can manufacture the reported situation — a
 # workspace whose ACTIVE index was embedded by a different model — through the
 # storage lifecycle instead of a stand-in embedder.

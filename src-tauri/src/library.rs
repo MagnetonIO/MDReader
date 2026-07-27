@@ -984,30 +984,20 @@ fn recover_v2_engine_source_id_with_hooks(
         return Err(LibraryError::CorruptRegistry);
     }
     ensure_no_sqlite_recovery_sidecars(&db_path)?;
-    validate_v2_catdb_index(&connection)?;
-    let mut statement = connection
-        .prepare("SELECT source_id, root_path FROM sources ORDER BY source_id LIMIT 2")
+    let inspected = catdb_storage_sqlite::inspect_single_source_catalog_for_adoption(&connection)
         .map_err(|_| LibraryError::CorruptRegistry)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|_| LibraryError::CorruptRegistry)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    let [(stored_source_id, stored_root)] = rows.as_slice() else {
+    // Registry V2 was introduced against CatDB v7. Earlier schemas were never
+    // V2 producers; later supported schemas remain migration-owned and are
+    // accepted only after storage validates their exact contract.
+    const EARLIEST_V2_CATDB_SCHEMA_VERSION: i64 = 7;
+    if inspected.schema_version() < EARLIEST_V2_CATDB_SCHEMA_VERSION {
         return Err(LibraryError::CorruptRegistry);
-    };
+    }
     let expected_root = source_path.display().to_string();
-    if *stored_root != expected_root {
+    if inspected.root_path() != expected_root {
         return Err(LibraryError::CorruptRegistry);
     }
-    let source_id =
-        uuid::Uuid::parse_str(stored_source_id).map_err(|_| LibraryError::CorruptRegistry)?;
-    if source_id.is_nil() || source_id.to_string() != *stored_source_id {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    Ok(Some(source_id))
+    Ok(Some(inspected.source_id()))
 }
 
 fn ensure_no_sqlite_recovery_sidecars(db_path: &Path) -> Result<(), LibraryError> {
@@ -1086,83 +1076,6 @@ fn open_checked_v2_connection(
     _checked_file: &same_file::Handle,
 ) -> Result<(rusqlite::Connection, ()), LibraryError> {
     Err(LibraryError::CorruptRegistry)
-}
-
-fn validate_v2_catdb_index(connection: &rusqlite::Connection) -> Result<(), LibraryError> {
-    // Library registry V2 was introduced after CatDB SQLite schema v7 and was
-    // replaced by registry V3 without an intervening storage-schema release.
-    // Seven is therefore the complete producer set, not a "current version"
-    // alias that should drift when a later CatDB schema is added.
-    const CATDB_SCHEMA_VERSION: i64 = 7;
-    const REQUIRED_TABLES: &[&str] = &[
-        "schema_defs",
-        "mapping_defs",
-        "realizations",
-        "sources",
-        "index_versions",
-        "catalog_versions",
-        "jobs",
-        "documents",
-        "objects",
-        "morphisms",
-        "operation_log",
-        "sections",
-        "chunks",
-        "links",
-        "chunk_fts",
-        "operation_log_anchor",
-        "catalog_schema_contents",
-        "catalog_schema_versions",
-        "catalog_mapping_versions",
-        "catalog_source_versions",
-        "catalog_policy_versions",
-        "catalog_revisions",
-        "catalog_revision_schema_versions",
-        "catalog_revision_mapping_versions",
-        "catalog_revision_source_versions",
-        "catalog_revision_policy_versions",
-        "catalog_head",
-    ];
-
-    let version = connection
-        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    if version != CATDB_SCHEMA_VERSION {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    for table in REQUIRED_TABLES {
-        let present = connection
-            .query_row(
-                "SELECT EXISTS(
-                   SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
-                 )",
-                [table],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|_| LibraryError::CorruptRegistry)?;
-        if !present {
-            return Err(LibraryError::CorruptRegistry);
-        }
-    }
-    let quick_check = connection
-        .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    if quick_check != "ok" {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    let has_foreign_key_violation = connection
-        .query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM pragma_foreign_key_check LIMIT 1
-             )",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    if has_foreign_key_violation {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    Ok(())
 }
 
 fn managed_directory_present(path: &Path) -> Result<bool, LibraryError> {
@@ -1971,6 +1884,62 @@ mod tests {
         (sources[0].source_id, schema_version)
     }
 
+    fn create_genuine_v7_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
+        fs::create_dir_all(path.parent().expect("legacy index parent"))
+            .expect("create legacy workspace");
+        catdb_storage_sqlite::migrate_database_to_version_for_tests(path, 7)
+            .expect("migrate through genuine v7 DDL");
+        let source_id = uuid::Uuid::new_v4();
+        let connection = rusqlite::Connection::open(path).expect("open genuine v7 catalog");
+        let schema_version = connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .expect("read genuine v7 schema version");
+        assert_eq!(schema_version, 7);
+        connection
+            .execute(
+                "INSERT INTO sources(
+                   source_id, root_path, enabled, watch, include_globs,
+                   exclude_globs, max_file_size, respect_gitignore, embed_policy
+                 ) VALUES (?1, ?2, 1, 0, '[]', '[]', 1, 1, 'auto')",
+                (source_id.to_string(), root.path.display().to_string()),
+            )
+            .expect("insert genuine v7 source");
+        drop(connection);
+        assert_no_sqlite_sidecars(path);
+        source_id
+    }
+
+    fn mutate_catalog_without_leaving_sidecars(path: &Path, sql: &str) {
+        let connection = rusqlite::Connection::open(path).expect("open catalog for mutation");
+        connection
+            .execute_batch(sql)
+            .expect("apply controlled catalog mutation");
+        let _: (i64, i64, i64) = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("checkpoint controlled mutation");
+        let journal_mode = connection
+            .query_row("PRAGMA journal_mode=DELETE", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("leave controlled mutation in the main database");
+        assert_eq!(journal_mode, "delete");
+        drop(connection);
+        assert_no_sqlite_sidecars(path);
+    }
+
+    fn assert_no_sqlite_sidecars(path: &Path) {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = path.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            assert!(
+                !PathBuf::from(sidecar).exists(),
+                "fixture must not leave a {suffix} sidecar"
+            );
+        }
+    }
+
     #[test]
     fn version_two_recovers_an_authentic_v9_catalog_without_mutating_it() {
         let temp = tempdir().expect("tempdir");
@@ -1978,18 +1947,10 @@ mod tests {
         let root = bound_root(&mkdir(temp.path(), "notes"));
         fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
         let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-        let (source_id, schema_version) =
-            create_authentic_v2_index_with_schema(&old_db, &root);
+        let (source_id, schema_version) = create_authentic_v2_index_with_schema(&old_db, &root);
         assert_eq!(schema_version, 9, "fixture must traverse the real v9 DDL");
         let before = fs::read(&old_db).expect("read index before legacy inspection");
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let mut sidecar = old_db.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            assert!(
-                !PathBuf::from(sidecar).exists(),
-                "read-only fixture check must not leave a {suffix} sidecar"
-            );
-        }
+        assert_no_sqlite_sidecars(&old_db);
 
         let recovered = super::recover_v2_engine_source_id(&app_data, &v2_source(&root));
         let after = fs::read(&old_db).expect("read index after legacy inspection");
@@ -2003,6 +1964,25 @@ mod tests {
             Ok(Some(source_id)),
             "a complete current CatDB catalog remains a valid V2 recovery authority"
         );
+    }
+
+    #[test]
+    fn version_two_preserves_genuine_v7_catalog_compatibility_without_mutation() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
+        let source_id = create_genuine_v7_index(&old_db, &root);
+        let before = fs::read(&old_db).expect("read v7 index before legacy inspection");
+
+        let recovered = super::recover_v2_engine_source_id(&app_data, &v2_source(&root));
+        let after = fs::read(&old_db).expect("read v7 index after legacy inspection");
+
+        assert_eq!(
+            after, before,
+            "v7 compatibility inspection must never migrate or write the catalog"
+        );
+        assert_eq!(recovered, Ok(Some(source_id)));
     }
 
     fn v2_source(root: &SourceRoot) -> super::LibrarySourceV2 {
@@ -2651,6 +2631,42 @@ mod tests {
         drop(impostor);
 
         assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
+    }
+
+    #[test]
+    fn version_two_refuses_newer_and_partial_catalog_mutations_without_writing_them() {
+        for (label, mutation) in [
+            ("newer", "PRAGMA user_version = 10;"),
+            (
+                "partial",
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE links;",
+            ),
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let app_data = temp.path().join("app-data");
+            let registry_path = app_data.join("library.json");
+            let root = bound_root(&mkdir(temp.path(), "notes"));
+            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+            super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+            let registry_before = fs::read(&registry_path).expect("read V2 registry");
+            let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+            create_authentic_v2_index(&old_db, &root);
+            mutate_catalog_without_leaving_sidecars(&old_db, mutation);
+            let catalog_before = fs::read(&old_db).expect("read mutated catalog");
+
+            assert_v2_refusal_preserves_managed_state(
+                &registry_path,
+                &registry_before,
+                &old_db,
+                &new_db,
+            );
+            assert_eq!(
+                fs::read(&old_db).expect("read refused catalog"),
+                catalog_before,
+                "refusing the {label} catalog must not mutate it"
+            );
+        }
     }
 
     // APFS rejects arbitrary non-UTF-8 directory names at creation time, so
