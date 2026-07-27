@@ -24,6 +24,7 @@ const MAX_DEX_BYTES = 256 * 1024 * 1024;
 const MAX_TOTAL_DEX_BYTES = 512 * 1024 * 1024;
 const MAX_DEX_FILES = 64;
 const MAX_DEX_MAP_ITEMS = 256;
+const MAX_DEX_VARIABLE_SECTION_BYTES = 32 * 1024 * 1024;
 const DEX_MAP_TYPES = new Set([
   0x0000,
   0x0001,
@@ -60,6 +61,18 @@ const DEX_VARIABLE_ITEM_MINIMUM_BYTES = new Map([
   [0x2006, 16],
   [0xf000, 1],
 ]);
+const DEX_IMPLEMENTED_VARIABLE_TYPES = new Set([
+  0x1001,
+  0x1002,
+  0x1003,
+  0x2000,
+  0x2001,
+  0x2002,
+  0x2003,
+  0x2004,
+  0x2005,
+  0x2006,
+]);
 const MAX_EMBEDDED_BUILD_MANIFEST_BYTES = 16 * 1024;
 const MAX_OTHER_MEMBER_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_OTHER_BYTES = 256 * 1024 * 1024;
@@ -68,6 +81,8 @@ const ELF64_HEADER_BYTES = 64;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
 const MAX_ELF_PROGRAM_HEADERS = 128;
 const MAX_ELF_DYNAMIC_BYTES = 64 * 1024;
+const MAX_ELF_REFERENCE_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_ELF_REFERENCE_BYTES = 64 * 1024 * 1024;
 const MAX_ELF_PREFIX_BYTES =
   ELF64_HEADER_BYTES + ELF64_PROGRAM_HEADER_BYTES * MAX_ELF_PROGRAM_HEADERS;
 const ZIP_FLAG_ENCRYPTED = 0x0001;
@@ -743,8 +758,25 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
   ) {
     fail(`APK ZIP directory member ${descriptor.name} is not empty`);
   }
-  dex?.finish(memberBytes);
+  const dexLayout = dex?.finish(memberBytes);
+  if (dexLayout !== undefined) {
+    await validateDexVariableSections(
+      apkPath,
+      descriptor,
+      dexLayout,
+      memberBytes,
+    );
+  }
   const elfResult = elf?.finish(memberBytes);
+  if (elfResult !== undefined) {
+    await validateElfReferences(
+      apkPath,
+      descriptor,
+      elfResult,
+      memberBytes,
+      limits.maximumNative,
+    );
+  }
   return {
     bytes: chunks ? Buffer.concat(chunks, memberBytes) : null,
     embeddedManifest: elfResult?.embeddedManifest ?? null,
@@ -1158,6 +1190,7 @@ class DexStreamValidator {
       }
     }
     const orderedItems = [...items.entries()];
+    const variableSections = [];
     for (let index = 0; index < orderedItems.length; index += 1) {
       const [type, item] = orderedItems[index];
       const minimumItemBytes = DEX_VARIABLE_ITEM_MINIMUM_BYTES.get(type);
@@ -1174,8 +1207,570 @@ class DexStreamValidator {
           `APK member ${this.name} has a DEX variable section outside bounds`,
         );
       }
+      if (!DEX_IMPLEMENTED_VARIABLE_TYPES.has(type)) {
+        fail(
+          `APK member ${this.name} uses an unsupported DEX variable section`,
+        );
+      }
+      const alignment =
+        type === 0x1001 ||
+        type === 0x1002 ||
+        type === 0x1003 ||
+        type === 0x2001 ||
+        type === 0x2006
+          ? 4
+          : 1;
+      if (
+        item.offset % alignment !== 0 ||
+        availableBytes > MAX_DEX_VARIABLE_SECTION_BYTES
+      ) {
+        fail(
+          `APK member ${this.name} has a DEX variable section outside bounds`,
+        );
+      }
+      variableSections.push({
+        type,
+        size: item.size,
+        offset: item.offset,
+        end: nextOffset,
+        alignment,
+      });
+    }
+    return {
+      variableSections,
+      stringIds: this.header.readUInt32LE(56),
+      typeIds: this.header.readUInt32LE(64),
+      protoIds: this.header.readUInt32LE(72),
+      fieldIds: this.header.readUInt32LE(80),
+      methodIds: this.header.readUInt32LE(88),
+      classDefs: this.header.readUInt32LE(96),
+      methodHandles: items.get(0x0008)?.size ?? 0,
+    };
+  }
+}
+
+class DexCursor {
+  constructor(name, section, bytes, context) {
+    this.name = name;
+    this.section = section;
+    this.bytes = bytes;
+    this.context = context;
+    this.position = 0;
+  }
+
+  need(length, label) {
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      this.position + length > this.bytes.byteLength
+    ) {
+      fail(`APK member ${this.name} has a truncated DEX ${label}`);
     }
   }
+
+  align(alignment) {
+    while ((this.section.offset + this.position) % alignment !== 0) {
+      if (this.u8('alignment padding') !== 0) {
+        fail(`APK member ${this.name} has invalid DEX alignment padding`);
+      }
+    }
+  }
+
+  u8(label) {
+    this.need(1, label);
+    const value = this.bytes[this.position];
+    this.position += 1;
+    return value;
+  }
+
+  u16(label) {
+    this.need(2, label);
+    const value = this.bytes.readUInt16LE(this.position);
+    this.position += 2;
+    return value;
+  }
+
+  u32(label) {
+    this.need(4, label);
+    const value = this.bytes.readUInt32LE(this.position);
+    this.position += 4;
+    return value;
+  }
+
+  uleb(label) {
+    let value = 0;
+    for (let index = 0; index < 5; index += 1) {
+      const byte = this.u8(label);
+      value += (byte & 0x7f) * 2 ** (index * 7);
+      if ((byte & 0x80) === 0) {
+        if (!Number.isSafeInteger(value) || value > 0xffffffff) {
+          fail(`APK member ${this.name} has an invalid DEX ${label}`);
+        }
+        return value;
+      }
+    }
+    fail(`APK member ${this.name} has an invalid DEX ${label}`);
+  }
+
+  sleb(label) {
+    let value = 0;
+    let byte = 0;
+    let shift = 0;
+    for (let index = 0; index < 5; index += 1) {
+      byte = this.u8(label);
+      value += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) {
+        if ((byte & 0x40) !== 0) value -= 2 ** shift;
+        if (value < -0x80000000 || value > 0x7fffffff) {
+          fail(`APK member ${this.name} has an invalid DEX ${label}`);
+        }
+        return value;
+      }
+    }
+    fail(`APK member ${this.name} has an invalid DEX ${label}`);
+  }
+
+  index(index, limit, label) {
+    if (index < 0 || index >= limit) {
+      fail(`APK member ${this.name} has an invalid DEX ${label} index`);
+    }
+  }
+
+  reference(type, offset, label) {
+    if (offset !== 0) this.context.references.push({ type, offset, label });
+  }
+
+  trailingZeros() {
+    while (this.position < this.bytes.byteLength) {
+      if (this.u8('section padding') !== 0) {
+        fail(`APK member ${this.name} has trailing DEX section data`);
+      }
+    }
+  }
+}
+
+function parseDexStringData(cursor) {
+  const expectedUnits = cursor.uleb('string data length');
+  let units = 0;
+  while (units < expectedUnits) {
+    const first = cursor.u8('string data');
+    if (first === 0) {
+      fail(`APK member ${cursor.name} has an early DEX string data terminator`);
+    }
+    if (first <= 0x7f) {
+      units += 1;
+      continue;
+    }
+    if ((first & 0xe0) === 0xc0) {
+      const second = cursor.u8('string data');
+      if (
+        (second & 0xc0) !== 0x80 ||
+        (first === 0xc0 ? second !== 0x80 : first < 0xc2)
+      ) {
+        fail(`APK member ${cursor.name} has invalid DEX string data`);
+      }
+      units += 1;
+      continue;
+    }
+    if ((first & 0xf0) === 0xe0) {
+      const second = cursor.u8('string data');
+      const third = cursor.u8('string data');
+      if (
+        (second & 0xc0) !== 0x80 ||
+        (third & 0xc0) !== 0x80 ||
+        (first === 0xe0 && second < 0xa0)
+      ) {
+        fail(`APK member ${cursor.name} has invalid DEX string data`);
+      }
+      units += 1;
+      continue;
+    }
+    fail(`APK member ${cursor.name} has invalid DEX string data`);
+  }
+  if (cursor.u8('string data terminator') !== 0) {
+    fail(`APK member ${cursor.name} has invalid DEX string data terminator`);
+  }
+}
+
+function parseDexEncodedAnnotation(cursor, depth) {
+  if (depth > 64) fail(`APK member ${cursor.name} has nested DEX encoded values`);
+  cursor.index(
+    cursor.uleb('annotation type'),
+    cursor.context.typeIds,
+    'annotation type',
+  );
+  const size = cursor.uleb('annotation element count');
+  let previousName = -1;
+  for (let index = 0; index < size; index += 1) {
+    const name = cursor.uleb('annotation name');
+    cursor.index(name, cursor.context.stringIds, 'annotation name');
+    if (name <= previousName) {
+      fail(`APK member ${cursor.name} has unordered DEX annotation elements`);
+    }
+    previousName = name;
+    parseDexEncodedValue(cursor, depth + 1);
+  }
+}
+
+function parseDexEncodedArray(cursor, depth) {
+  if (depth > 64) fail(`APK member ${cursor.name} has nested DEX encoded values`);
+  const size = cursor.uleb('encoded array size');
+  for (let index = 0; index < size; index += 1) {
+    parseDexEncodedValue(cursor, depth + 1);
+  }
+}
+
+function parseDexEncodedValue(cursor, depth) {
+  const header = cursor.u8('encoded value');
+  const type = header & 0x1f;
+  const argument = header >>> 5;
+  const widths = new Map([
+    [0x00, 1],
+    [0x02, 2],
+    [0x03, 2],
+    [0x04, 4],
+    [0x06, 8],
+    [0x10, 4],
+    [0x11, 8],
+    [0x15, 4],
+    [0x16, 4],
+    [0x17, 4],
+    [0x18, 4],
+    [0x19, 4],
+    [0x1a, 4],
+    [0x1b, 4],
+  ]);
+  const maximumWidth = widths.get(type);
+  if (maximumWidth !== undefined) {
+    const width = argument + 1;
+    if (width > maximumWidth) {
+      fail(`APK member ${cursor.name} has an invalid DEX encoded value`);
+    }
+    cursor.need(width, 'encoded value');
+    let value = 0;
+    for (let index = 0; index < width; index += 1) {
+      value += cursor.u8('encoded value') * 2 ** (index * 8);
+    }
+    const limit =
+      type === 0x15
+        ? cursor.context.protoIds
+        : type === 0x16
+          ? cursor.context.methodHandles
+          : type === 0x17
+            ? cursor.context.stringIds
+            : type === 0x18
+              ? cursor.context.typeIds
+              : type === 0x19 || type === 0x1b
+                ? cursor.context.fieldIds
+                : type === 0x1a
+                  ? cursor.context.methodIds
+                  : null;
+    if (limit !== null) cursor.index(value, limit, 'encoded value');
+    return;
+  }
+  if (type === 0x1c && argument === 0) {
+    parseDexEncodedArray(cursor, depth);
+    return;
+  }
+  if (type === 0x1d && argument === 0) {
+    parseDexEncodedAnnotation(cursor, depth);
+    return;
+  }
+  if ((type === 0x1e && argument === 0) || (type === 0x1f && argument <= 1)) {
+    return;
+  }
+  fail(`APK member ${cursor.name} has an unsupported DEX encoded value`);
+}
+
+function parseDexVariableSection(name, section, bytes, context) {
+  const cursor = new DexCursor(name, section, bytes, context);
+  const starts = new Set();
+  const recordStart = () => {
+    cursor.align(section.alignment);
+    starts.add(section.offset + cursor.position);
+  };
+  for (let itemIndex = 0; itemIndex < section.size; itemIndex += 1) {
+    recordStart();
+    if (section.type === 0x1001) {
+      const count = cursor.u32('type list');
+      for (let index = 0; index < count; index += 1) {
+        cursor.index(cursor.u16('type list'), context.typeIds, 'type list');
+      }
+    } else if (section.type === 0x1002 || section.type === 0x1003) {
+      const count = cursor.u32('annotation set');
+      for (let index = 0; index < count; index += 1) {
+        cursor.reference(
+          section.type === 0x1002 ? 0x1003 : 0x2004,
+          cursor.u32('annotation offset'),
+          'annotation offset',
+        );
+      }
+    } else if (section.type === 0x2000) {
+      const staticFields = cursor.uleb('static field count');
+      const instanceFields = cursor.uleb('instance field count');
+      const directMethods = cursor.uleb('direct method count');
+      const virtualMethods = cursor.uleb('virtual method count');
+      for (const count of [staticFields, instanceFields]) {
+        let field = 0;
+        for (let index = 0; index < count; index += 1) {
+          const difference = cursor.uleb('field index difference');
+          if (index > 0 && difference === 0) {
+            fail(`APK member ${name} has duplicate DEX field data`);
+          }
+          field += difference;
+          cursor.index(field, context.fieldIds, 'field data');
+          cursor.uleb('field access flags');
+        }
+      }
+      for (const count of [directMethods, virtualMethods]) {
+        let method = 0;
+        for (let index = 0; index < count; index += 1) {
+          const difference = cursor.uleb('method index difference');
+          if (index > 0 && difference === 0) {
+            fail(`APK member ${name} has duplicate DEX method data`);
+          }
+          method += difference;
+          cursor.index(method, context.methodIds, 'method data');
+          cursor.uleb('method access flags');
+          cursor.reference(0x2001, cursor.uleb('code offset'), 'code offset');
+        }
+      }
+    } else if (section.type === 0x2001) {
+      cursor.u16('code registers');
+      cursor.u16('code inputs');
+      cursor.u16('code outputs');
+      const tries = cursor.u16('code tries');
+      cursor.reference(0x2003, cursor.u32('debug info offset'), 'debug info');
+      const instructions = cursor.u32('instruction count');
+      cursor.need(instructions * 2, 'instructions');
+      cursor.position += instructions * 2;
+      if (tries > 0 && instructions % 2 !== 0) {
+        if (cursor.u16('code padding') !== 0) {
+          fail(`APK member ${name} has invalid DEX code padding`);
+        }
+      }
+      const handlerOffsets = [];
+      for (let index = 0; index < tries; index += 1) {
+        const start = cursor.u32('try start');
+        const count = cursor.u16('try instruction count');
+        handlerOffsets.push(cursor.u16('try handler offset'));
+        if (start + count > instructions) {
+          fail(`APK member ${name} has a DEX try range outside code`);
+        }
+      }
+      if (tries > 0) {
+        const handlersStart = cursor.position;
+        const handlerCount = cursor.uleb('catch handler count');
+        const handlerStarts = new Set();
+        for (let index = 0; index < handlerCount; index += 1) {
+          handlerStarts.add(cursor.position - handlersStart);
+          const count = cursor.sleb('catch handler size');
+          for (let handler = 0; handler < Math.abs(count); handler += 1) {
+            cursor.index(
+              cursor.uleb('catch type'),
+              context.typeIds,
+              'catch type',
+            );
+            if (cursor.uleb('catch address') > instructions) {
+              fail(`APK member ${name} has a DEX catch outside code`);
+            }
+          }
+          if (count <= 0 && cursor.uleb('catch-all address') > instructions) {
+            fail(`APK member ${name} has a DEX catch outside code`);
+          }
+        }
+        if (handlerOffsets.some((offset) => !handlerStarts.has(offset))) {
+          fail(`APK member ${name} has an invalid DEX catch handler offset`);
+        }
+      }
+    } else if (section.type === 0x2002) {
+      parseDexStringData(cursor);
+    } else if (section.type === 0x2003) {
+      cursor.uleb('debug line start');
+      const parameters = cursor.uleb('debug parameter count');
+      for (let index = 0; index < parameters; index += 1) {
+        const parameter = cursor.uleb('debug parameter name') - 1;
+        if (parameter >= 0) {
+          cursor.index(parameter, context.stringIds, 'debug parameter');
+        }
+      }
+      let ended = false;
+      while (!ended) {
+        const opcode = cursor.u8('debug opcode');
+        if (opcode === 0) ended = true;
+        else if (opcode === 1) cursor.uleb('debug address');
+        else if (opcode === 2) cursor.sleb('debug line');
+        else if (opcode === 3 || opcode === 4) {
+          cursor.uleb('debug register');
+          for (let index = 0; index < (opcode === 4 ? 3 : 2); index += 1) {
+            const value = cursor.uleb('debug local index') - 1;
+            if (value >= 0) {
+              cursor.index(
+                value,
+                index === 1 ? context.typeIds : context.stringIds,
+                'debug local',
+              );
+            }
+          }
+        } else if (opcode === 5 || opcode === 6) cursor.uleb('debug register');
+        else if (opcode === 9) {
+          const file = cursor.uleb('debug source file') - 1;
+          if (file >= 0) cursor.index(file, context.stringIds, 'debug source');
+        }
+      }
+    } else if (section.type === 0x2004) {
+      if (cursor.u8('annotation visibility') > 2) {
+        fail(`APK member ${name} has invalid DEX annotation visibility`);
+      }
+      parseDexEncodedAnnotation(cursor, 0);
+    } else if (section.type === 0x2005) {
+      parseDexEncodedArray(cursor, 0);
+    } else if (section.type === 0x2006) {
+      cursor.reference(
+        0x1003,
+        cursor.u32('class annotations'),
+        'class annotations',
+      );
+      const fields = cursor.u32('annotated field count');
+      const methods = cursor.u32('annotated method count');
+      const parameters = cursor.u32('annotated parameter count');
+      for (const [count, limit, target, label] of [
+        [fields, context.fieldIds, 0x1003, 'annotated field'],
+        [methods, context.methodIds, 0x1003, 'annotated method'],
+        [parameters, context.methodIds, 0x1002, 'annotated parameter'],
+      ]) {
+        let previous = -1;
+        for (let index = 0; index < count; index += 1) {
+          const item = cursor.u32(label);
+          cursor.index(item, limit, label);
+          if (item <= previous) {
+            fail(`APK member ${name} has unordered DEX ${label} entries`);
+          }
+          previous = item;
+          cursor.reference(target, cursor.u32(`${label} annotations`), label);
+        }
+      }
+    }
+  }
+  cursor.trailingZeros();
+  return starts;
+}
+
+class DexVariableSectionsValidator {
+  constructor(name, layout) {
+    this.name = name;
+    this.layout = layout;
+    this.index = 0;
+    this.buffers = new Map();
+    this.starts = new Map();
+    this.context = { ...layout, references: [] };
+  }
+
+  push(chunk, chunkOffset) {
+    const chunkEnd = chunkOffset + chunk.byteLength;
+    while (
+      this.index < this.layout.variableSections.length &&
+      this.layout.variableSections[this.index].end <= chunkOffset
+    ) {
+      this.finishSection(this.layout.variableSections[this.index]);
+      this.index += 1;
+    }
+    let candidate = this.index;
+    while (candidate < this.layout.variableSections.length) {
+      const section = this.layout.variableSections[candidate];
+      if (section.offset >= chunkEnd) break;
+      const start = Math.max(section.offset, chunkOffset);
+      const end = Math.min(section.end, chunkEnd);
+      if (start < end) {
+        let buffer = this.buffers.get(section.type);
+        if (buffer === undefined) {
+          buffer = Buffer.alloc(section.end - section.offset);
+          this.buffers.set(section.type, buffer);
+        }
+        chunk.copy(
+          buffer,
+          start - section.offset,
+          start - chunkOffset,
+          end - chunkOffset,
+        );
+      }
+      if (chunkEnd >= section.end) {
+        this.finishSection(section);
+        this.index = candidate + 1;
+      }
+      candidate += 1;
+    }
+  }
+
+  finishSection(section) {
+    if (this.starts.has(section.type)) return;
+    const buffer = this.buffers.get(section.type);
+    if (buffer === undefined) {
+      fail(`APK member ${this.name} has a truncated DEX variable section`);
+    }
+    this.starts.set(
+      section.type,
+      parseDexVariableSection(this.name, section, buffer, this.context),
+    );
+    this.buffers.delete(section.type);
+  }
+
+  finish() {
+    for (const section of this.layout.variableSections) {
+      this.finishSection(section);
+    }
+    for (const reference of this.context.references) {
+      if (!this.starts.get(reference.type)?.has(reference.offset)) {
+        fail(`APK member ${this.name} has an invalid DEX ${reference.label}`);
+      }
+    }
+  }
+}
+
+async function validateDexVariableSections(
+  apkPath,
+  descriptor,
+  layout,
+  expectedStreamedBytes,
+) {
+  if (layout.variableSections.length === 0) return;
+  const validator = new DexVariableSectionsValidator(descriptor.name, layout);
+  let streamedBytes = 0;
+  let compressedBytesConsumed =
+    descriptor.method === 0 ? descriptor.compressedSize : null;
+  if (descriptor.compressedSize > 0) {
+    const source = createReadStream(apkPath, {
+      start: descriptor.dataOffset,
+      end: descriptor.dataOffset + descriptor.compressedSize - 1,
+    });
+    const inflater = descriptor.method === 8 ? createInflateRaw() : null;
+    const output = inflater === null ? source : source.pipe(inflater);
+    try {
+      for await (const chunk of output) {
+        validator.push(chunk, streamedBytes);
+        streamedBytes = checkedAdd(
+          streamedBytes,
+          chunk.byteLength,
+          `APK member ${descriptor.name} DEX structure stream exceeds bounds`,
+        );
+        if (streamedBytes > MAX_DEX_BYTES) {
+          fail(`APK member ${descriptor.name} DEX structure stream exceeds bounds`);
+        }
+      }
+      if (inflater !== null) compressedBytesConsumed = inflater.bytesWritten;
+    } finally {
+      output.destroy();
+      source.destroy();
+    }
+  }
+  if (
+    compressedBytesConsumed !== descriptor.compressedSize ||
+    streamedBytes !== expectedStreamedBytes
+  ) {
+    fail(`APK member ${descriptor.name} DEX structure stream is inconsistent`);
+  }
+  validator.finish();
 }
 
 function readElfU64(name, bytes, offset) {
@@ -1306,21 +1901,34 @@ function parseX86_64ElfLayout(name, prefix, streamedBytes = null) {
   ) {
     fail(`APK member ${name} has a PT_DYNAMIC segment outside PT_LOAD bounds`);
   }
-  const loadFileRanges = [];
-  for (const segment of [...loadSegments].sort(
+  const sortedLoads = [...loadSegments].sort(
     (left, right) => left.fileStart - right.fileStart,
-  )) {
-    if (segment.fileEnd <= segment.fileStart) continue;
-    const previous = loadFileRanges.at(-1);
-    if (previous !== undefined && segment.fileStart <= previous.end) {
-      previous.end = Math.max(previous.end, segment.fileEnd);
-    } else {
-      loadFileRanges.push({
-        start: segment.fileStart,
-        end: segment.fileEnd,
-      });
+  );
+  for (let leftIndex = 0; leftIndex < sortedLoads.length; leftIndex += 1) {
+    const left = sortedLoads[leftIndex];
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < sortedLoads.length;
+      rightIndex += 1
+    ) {
+      const right = sortedLoads[rightIndex];
+      const virtualOverlap =
+        Math.max(left.virtualStart, right.virtualStart) <
+        Math.min(left.virtualFileEnd, right.virtualFileEnd);
+      const fileOverlap =
+        Math.max(left.fileStart, right.fileStart) <
+        Math.min(left.fileEnd, right.fileEnd);
+      if (virtualOverlap || fileOverlap) {
+        fail(`APK member ${name} has an ambiguous overlapping PT_LOAD mapping`);
+      }
     }
   }
+  const loadFileRanges = sortedLoads
+    .filter((segment) => segment.fileEnd > segment.fileStart)
+    .map((segment) => ({
+      start: segment.fileStart,
+      end: segment.fileEnd,
+    }));
   if (loadFileRanges.length === 0) {
     fail(`APK member ${name} has no file-backed PT_LOAD program header`);
   }
@@ -1334,30 +1942,48 @@ function dynamicNumber(name, label, value) {
   return Number(value);
 }
 
-function validateLoadedReference(name, label, address, size, loadSegments) {
+function mapLoadedReference(name, label, address, size, loadSegments) {
   const end = checkedAdd(
     address,
     size,
     `APK member ${name} ${label} reference is outside file-backed PT_LOAD`,
   );
-  if (
-    !loadSegments.some(
-      (segment) =>
-        address >= segment.virtualStart &&
-        end <= segment.virtualFileEnd &&
-        (size > 0
-          ? address < segment.virtualFileEnd
-          : address <= segment.virtualFileEnd),
-    )
-  ) {
+  const matches = loadSegments.filter(
+    (segment) =>
+      address >= segment.virtualStart &&
+      end <= segment.virtualFileEnd &&
+      (size > 0
+        ? address < segment.virtualFileEnd
+        : address <= segment.virtualFileEnd),
+  );
+  if (matches.length === 0) {
     fail(
       `APK member ${name} ${label} reference is outside file-backed PT_LOAD`,
     );
   }
+  if (matches.length !== 1) {
+    fail(`APK member ${name} ${label} has an ambiguous PT_LOAD mapping`);
+  }
+  const segment = matches[0];
+  const fileStart = checkedAdd(
+    segment.fileStart,
+    address - segment.virtualStart,
+    `APK member ${name} ${label} has an invalid PT_LOAD mapping`,
+  );
+  const fileEnd = checkedAdd(
+    fileStart,
+    size,
+    `APK member ${name} ${label} has an invalid PT_LOAD mapping`,
+  );
+  if (fileEnd > segment.fileEnd) {
+    fail(`APK member ${name} ${label} has an invalid PT_LOAD mapping`);
+  }
+  return { label, fileStart, fileEnd, size };
 }
 
 function validateElfDynamicTable(name, bytes, loadSegments) {
   const entries = new Map();
+  const references = [];
   let terminated = false;
   for (let offset = 0; offset < bytes.byteLength; offset += 16) {
     const tagValue = bytes.readBigUInt64LE(offset);
@@ -1398,6 +2024,19 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
     const value = one(tag, label, required);
     return value === undefined ? null : dynamicNumber(name, label, value);
   };
+  const loaded = (label, address, size) => {
+    const reference = mapLoadedReference(
+      name,
+      label,
+      address,
+      size,
+      loadSegments,
+    );
+    if (size > MAX_ELF_REFERENCE_BYTES) {
+      fail(`APK member ${name} ${label} reference exceeds the safety bound`);
+    }
+    references.push(reference);
+  };
   const boundedPair = (addressTag, sizeTag, label, alignment = 1) => {
     const address = number(addressTag, label);
     const size = number(sizeTag, `${label} size`);
@@ -1408,7 +2047,7 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
     if (alignment > 1 && size % alignment !== 0) {
       fail(`APK member ${name} has an invalid ${label} size`);
     }
-    validateLoadedReference(name, label, address, size, loadSegments);
+    loaded(label, address, size);
   };
   const boundedTable = (
     addressTag,
@@ -1430,24 +2069,18 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
     if (entrySize !== expectedEntryBytes || size % entrySize !== 0) {
       fail(`APK member ${name} has an invalid ${label} entry size`);
     }
-    validateLoadedReference(name, label, address, size, loadSegments);
+    loaded(label, address, size);
   };
 
   const stringTable = number(5, 'DT_STRTAB', true);
   const stringBytes = number(10, 'DT_STRSZ', true);
-  validateLoadedReference(
-    name,
-    'DT_STRTAB',
-    stringTable,
-    stringBytes,
-    loadSegments,
-  );
+  loaded('DT_STRTAB', stringTable, stringBytes);
   const symbolTable = number(6, 'DT_SYMTAB', true);
   const symbolEntryBytes = number(11, 'DT_SYMENT', true);
   if (symbolEntryBytes !== 24) {
     fail(`APK member ${name} has an invalid DT_SYMENT`);
   }
-  validateLoadedReference(name, 'DT_SYMTAB', symbolTable, 24, loadSegments);
+  loaded('DT_SYMTAB', symbolTable, 24);
 
   for (const tag of [1, 14, 15, 29]) {
     for (const value of entries.get(tag) ?? []) {
@@ -1481,13 +2114,7 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
     if (entryBytes === 0 || jumpBytes % entryBytes !== 0) {
       fail(`APK member ${name} has an invalid DT_JMPREL entry size`);
     }
-    validateLoadedReference(
-      name,
-      'DT_JMPREL',
-      jumpAddress,
-      jumpBytes,
-      loadSegments,
-    );
+    loaded('DT_JMPREL', jumpAddress, jumpBytes);
   }
 
   for (const [tag, label, minimumBytes] of [
@@ -1498,13 +2125,7 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
   ]) {
     const address = number(tag, label);
     if (address !== null) {
-      validateLoadedReference(
-        name,
-        label,
-        address,
-        minimumBytes,
-        loadSegments,
-      );
+      loaded(label, address, minimumBytes);
     }
   }
   for (const [tag, label] of [
@@ -1513,7 +2134,7 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
   ]) {
     const address = number(tag, label);
     if (address !== null) {
-      validateLoadedReference(name, label, address, 1, loadSegments);
+      loaded(label, address, 1);
     }
   }
   for (const [addressTag, countTag, label, minimumBytes] of [
@@ -1526,15 +2147,28 @@ function validateElfDynamicTable(name, bytes, loadSegments) {
       fail(`APK member ${name} has an incomplete ${label} dynamic reference`);
     }
     if (address !== null && count !== null) {
-      validateLoadedReference(
-        name,
-        label,
-        address,
-        count * minimumBytes,
-        loadSegments,
-      );
+      loaded(label, address, count * minimumBytes);
     }
   }
+  let totalReferenceBytes = 0;
+  for (const reference of references) {
+    totalReferenceBytes = checkedAdd(
+      totalReferenceBytes,
+      reference.size,
+      `APK member ${name} ELF references exceed the aggregate safety bound`,
+    );
+  }
+  if (totalReferenceBytes > MAX_TOTAL_ELF_REFERENCE_BYTES) {
+    fail(`APK member ${name} ELF references exceed the aggregate safety bound`);
+  }
+  return {
+    references,
+    stringOffsets: [1, 14, 15, 29].flatMap((tag) =>
+      (entries.get(tag) ?? []).map((value) =>
+        dynamicNumber(name, 'dynamic string', value),
+      ),
+    ),
+  };
 }
 
 class ElfStreamValidator {
@@ -1643,7 +2277,7 @@ class ElfStreamValidator {
     if (this.dynamicCapturedBytes !== this.dynamicCapture.byteLength) {
       fail(`APK member ${this.name} has a truncated PT_DYNAMIC segment`);
     }
-    validateElfDynamicTable(
+    const dynamic = validateElfDynamicTable(
       this.name,
       this.dynamicCapture,
       layout.loadSegments,
@@ -1654,8 +2288,124 @@ class ElfStreamValidator {
     if (manifests.length > 1) {
       fail('artifact has an ambiguous embedded E2E build manifest');
     }
-    return { embeddedManifest: manifests[0] ?? null };
+    return {
+      embeddedManifest: manifests[0] ?? null,
+      references: dynamic.references,
+      stringOffsets: dynamic.stringOffsets,
+    };
   }
+}
+
+class ElfReferencesValidator {
+  constructor(name, plan) {
+    this.name = name;
+    this.plan = plan;
+    this.references = plan.references.map((reference) => ({
+      ...reference,
+      bytes: Buffer.alloc(reference.size),
+      captured: 0,
+    }));
+  }
+
+  push(chunk, chunkOffset) {
+    const chunkEnd = chunkOffset + chunk.byteLength;
+    for (const reference of this.references) {
+      const start = Math.max(reference.fileStart, chunkOffset);
+      const end = Math.min(reference.fileEnd, chunkEnd);
+      if (start < end) {
+        chunk.copy(
+          reference.bytes,
+          start - reference.fileStart,
+          start - chunkOffset,
+          end - chunkOffset,
+        );
+        reference.captured += end - start;
+      }
+    }
+  }
+
+  finish() {
+    if (
+      this.references.some(
+        (reference) => reference.captured !== reference.size,
+      )
+    ) {
+      fail(`APK member ${this.name} has a truncated ELF dynamic reference`);
+    }
+    const stringTable = this.references.find(
+      (reference) => reference.label === 'DT_STRTAB',
+    );
+    if (
+      stringTable === undefined ||
+      stringTable.bytes.byteLength === 0 ||
+      stringTable.bytes[0] !== 0 ||
+      stringTable.bytes.at(-1) !== 0
+    ) {
+      fail(`APK member ${this.name} has invalid DT_STRTAB referenced bytes`);
+    }
+    for (const offset of this.plan.stringOffsets) {
+      if (
+        offset >= stringTable.bytes.byteLength ||
+        stringTable.bytes.indexOf(0, offset) < 0
+      ) {
+        fail(`APK member ${this.name} has invalid DT_STRTAB referenced bytes`);
+      }
+    }
+    const symbolTable = this.references.find(
+      (reference) => reference.label === 'DT_SYMTAB',
+    );
+    if (
+      symbolTable === undefined ||
+      symbolTable.bytes.some((byte) => byte !== 0)
+    ) {
+      fail(`APK member ${this.name} has invalid DT_SYMTAB referenced bytes`);
+    }
+  }
+}
+
+async function validateElfReferences(
+  apkPath,
+  descriptor,
+  plan,
+  expectedStreamedBytes,
+  maximumBytes,
+) {
+  const validator = new ElfReferencesValidator(descriptor.name, plan);
+  let streamedBytes = 0;
+  let compressedBytesConsumed =
+    descriptor.method === 0 ? descriptor.compressedSize : null;
+  if (descriptor.compressedSize > 0) {
+    const source = createReadStream(apkPath, {
+      start: descriptor.dataOffset,
+      end: descriptor.dataOffset + descriptor.compressedSize - 1,
+    });
+    const inflater = descriptor.method === 8 ? createInflateRaw() : null;
+    const output = inflater === null ? source : source.pipe(inflater);
+    try {
+      for await (const chunk of output) {
+        validator.push(chunk, streamedBytes);
+        streamedBytes = checkedAdd(
+          streamedBytes,
+          chunk.byteLength,
+          `APK member ${descriptor.name} ELF reference stream exceeds bounds`,
+        );
+        if (streamedBytes > maximumBytes) {
+          fail(`APK member ${descriptor.name} ELF reference stream exceeds bounds`);
+        }
+      }
+      if (inflater !== null) compressedBytesConsumed = inflater.bytesWritten;
+    } finally {
+      output.destroy();
+      source.destroy();
+    }
+  }
+  if (
+    compressedBytesConsumed !== descriptor.compressedSize ||
+    streamedBytes !== expectedStreamedBytes
+  ) {
+    fail(`APK member ${descriptor.name} ELF reference stream is inconsistent`);
+  }
+  validator.finish();
 }
 
 export async function scanAndroidArchive(apk, limits) {

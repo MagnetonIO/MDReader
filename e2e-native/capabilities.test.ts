@@ -149,10 +149,11 @@ function elfLibrary(
   machine = 0x3e,
   validMagic = true,
   extraDynamicEntries: ReadonlyArray<readonly [number, bigint]> = [],
+  loadLayout: 'single' | 'split-marker' | 'ambiguous' = 'single',
 ): Buffer {
   const programHeaderOffset = 64;
   const programHeaderSize = 56;
-  const programHeaderCount = 2;
+  const programHeaderCount = loadLayout === 'single' ? 2 : 3;
   const dynamicOffset =
     programHeaderOffset + programHeaderSize * programHeaderCount;
   const stringTable = Buffer.from('\0libmdreader_app_lib.so\0', 'utf8');
@@ -164,6 +165,9 @@ function elfLibrary(
   const symbolTable = Buffer.alloc(24);
   const payloadOffset = symbolTableOffset + symbolTable.byteLength;
   const fileSize = payloadOffset + payload.byteLength;
+  const splitOffset = payloadOffset + Math.floor(payload.byteLength / 2);
+  const primaryLoadEnd =
+    loadLayout === 'split-marker' ? splitOffset : fileSize;
   const header = Buffer.alloc(fileSize);
   header.set(validMagic ? [0x7f, 0x45, 0x4c, 0x46] : [0, 0, 0, 0], 0);
   header[4] = 2;
@@ -182,8 +186,8 @@ function elfLibrary(
   header.writeBigUInt64LE(0n, programHeaderOffset + 8);
   header.writeBigUInt64LE(0n, programHeaderOffset + 16);
   header.writeBigUInt64LE(0n, programHeaderOffset + 24);
-  header.writeBigUInt64LE(BigInt(fileSize), programHeaderOffset + 32);
-  header.writeBigUInt64LE(BigInt(fileSize), programHeaderOffset + 40);
+  header.writeBigUInt64LE(BigInt(primaryLoadEnd), programHeaderOffset + 32);
+  header.writeBigUInt64LE(BigInt(primaryLoadEnd), programHeaderOffset + 40);
   header.writeBigUInt64LE(4_096n, programHeaderOffset + 48);
 
   const dynamicProgramHeader = programHeaderOffset + programHeaderSize;
@@ -195,6 +199,22 @@ function elfLibrary(
   header.writeBigUInt64LE(BigInt(dynamic.byteLength), dynamicProgramHeader + 32);
   header.writeBigUInt64LE(BigInt(dynamic.byteLength), dynamicProgramHeader + 40);
   header.writeBigUInt64LE(8n, dynamicProgramHeader + 48);
+
+  if (loadLayout !== 'single') {
+    const secondaryProgramHeader =
+      programHeaderOffset + programHeaderSize * 2;
+    const fileOffset = loadLayout === 'split-marker' ? splitOffset : 64;
+    const virtualAddress = loadLayout === 'split-marker' ? splitOffset : 0;
+    const fileBytes = fileSize - fileOffset;
+    header.writeUInt32LE(1, secondaryProgramHeader);
+    header.writeUInt32LE(4, secondaryProgramHeader + 4);
+    header.writeBigUInt64LE(BigInt(fileOffset), secondaryProgramHeader + 8);
+    header.writeBigUInt64LE(BigInt(virtualAddress), secondaryProgramHeader + 16);
+    header.writeBigUInt64LE(BigInt(virtualAddress), secondaryProgramHeader + 24);
+    header.writeBigUInt64LE(BigInt(fileBytes), secondaryProgramHeader + 32);
+    header.writeBigUInt64LE(BigInt(fileBytes), secondaryProgramHeader + 40);
+    header.writeBigUInt64LE(1n, secondaryProgramHeader + 48);
+  }
 
   const dynamicEntries: ReadonlyArray<readonly [number, bigint]> = [
     [5, BigInt(stringTableOffset)],
@@ -923,6 +943,50 @@ test('Android validation bounds variable-width DEX map sections', async () => {
   }
 });
 
+test('Android validation rejects an unterminated DEX string-data item', async () => {
+  const dex = dexFile();
+  dex[118] = 0x79;
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX string data.*terminator/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation fails closed on an unsupported DEX variable section', async () => {
+  const dex = dexFile();
+  dex.writeUInt16LE(0xf000, 148);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /unsupported DEX variable section/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation rejects a native library without ELF magic', async () => {
   const artifact = await fakeAndroidArtifact(
     Buffer.from(buildManifest()),
@@ -1058,6 +1122,29 @@ test('Android validation rejects DT_STRTAB outside a file-backed PT_LOAD', async
   }
 });
 
+test('Android validation verifies file-backed DT_STRTAB bytes', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeBigUInt64LE(0n, 176 + 8);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DT_STRTAB.*bytes/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation bounds a DT_RELA table inside file-backed PT_LOAD', async () => {
   const library = elfLibrary(
     Buffer.from(buildManifest()),
@@ -1089,6 +1176,34 @@ test('Android validation bounds a DT_RELA table inside file-backed PT_LOAD', asy
   }
 });
 
+test('Android validation rejects ambiguous virtual-to-file PT_LOAD mappings', async () => {
+  const library = elfLibrary(
+    Buffer.from(buildManifest()),
+    0x3e,
+    true,
+    [],
+    'ambiguous',
+  );
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ambiguous.*PT_LOAD mapping/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation ignores build markers outside file-backed PT_LOAD', async () => {
   const manifest = Buffer.from(buildManifest());
   const library = elfLibrary(manifest);
@@ -1110,6 +1225,34 @@ test('Android validation ignores build markers outside file-backed PT_LOAD', asy
     await assert.rejects(
       async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       /MDReader app library.*build manifest/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation requires the build marker inside one PT_LOAD segment', async () => {
+  const library = elfLibrary(
+    Buffer.from(buildManifest()),
+    0x3e,
+    true,
+    [],
+    'split-marker',
+  );
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /embedded E2E build manifest/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });
