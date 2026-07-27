@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tauri_plugin_dialog::DialogExt;
 
 use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, CloudSourceRecord};
@@ -1701,6 +1702,16 @@ pub(crate) async fn pick_and_add_library_source(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<PickedLibrarySource, LibraryError> {
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        // tauri-plugin-dialog deliberately has no mobile directory picker.
+        // Refuse instead of treating a file pick or display path as a durable
+        // directory grant.
+        let _ = (app, workspace, state);
+        return Err(LibraryError::NeedsNativeRepick);
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     let Some(selected) = app
         .dialog()
         .file()
@@ -1713,35 +1724,38 @@ pub(crate) async fn pick_and_add_library_source(
         });
     };
 
-    let _guard = lock_library(&state)?;
-    let (path, app_data) = registry_path(&app)?;
-    let active = active_root(&workspace);
-    LibraryStore::new(path).update(|registry| {
-        let canonical = fs::canonicalize(&selected).map_err(|_| LibraryError::InvalidRoot)?;
-        let picked_identity =
-            SourceRoot::capture(canonical).map_err(|_| LibraryError::InvalidRoot)?;
-        let (source_id, added) = match registry.add_root(&selected) {
-            Ok(source) => (source.id, true),
-            Err(LibraryError::DuplicateRoot) => {
-                let source_id = registry
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _guard = lock_library(&state)?;
+        let (path, app_data) = registry_path(&app)?;
+        let active = active_root(&workspace);
+        LibraryStore::new(path).update(|registry| {
+            let canonical = fs::canonicalize(&selected).map_err(|_| LibraryError::InvalidRoot)?;
+            let picked_identity =
+                SourceRoot::capture(canonical).map_err(|_| LibraryError::InvalidRoot)?;
+            let (source_id, added) = match registry.add_root(&selected) {
+                Ok(source) => (source.id, true),
+                Err(LibraryError::DuplicateRoot) => {
+                    let source_id = registry
+                        .sources
+                        .iter()
+                        .find(|source| source.identity.as_ref() == Some(&picked_identity.identity))
+                        .map(|source| source.id.clone())
+                        .ok_or(LibraryError::CorruptRegistry)?;
+                    (source_id, false)
+                }
+                Err(error) => return Err(error),
+            };
+            let snapshot = registry.snapshot(&app_data, active.as_ref())?;
+            Ok(PickedLibrarySource {
+                source: snapshot
                     .sources
-                    .iter()
-                    .find(|source| source.identity.as_ref() == Some(&picked_identity.identity))
-                    .map(|source| source.id.clone())
-                    .ok_or(LibraryError::CorruptRegistry)?;
-                (source_id, false)
-            }
-            Err(error) => return Err(error),
-        };
-        let snapshot = registry.snapshot(&app_data, active.as_ref())?;
-        Ok(PickedLibrarySource {
-            source: snapshot
-                .sources
-                .into_iter()
-                .find(|source| source.id == source_id),
-            added,
+                    .into_iter()
+                    .find(|source| source.id == source_id),
+                added,
+            })
         })
-    })
+    }
 }
 
 /// Reconcile a persisted session root against available membership. Returning
