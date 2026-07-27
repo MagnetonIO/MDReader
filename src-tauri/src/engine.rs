@@ -1598,7 +1598,7 @@ fn heading_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catdb_storage::DocumentRow;
+    use catdb_storage::{CatalogStorage, DocumentRow};
     use mdreader_ingest::registration;
     use std::fs;
     use tempfile::TempDir;
@@ -2441,5 +2441,119 @@ mod tests {
         })
         .unwrap();
         assert_eq!(stale.status, "unresolved");
+    }
+
+    #[test]
+    fn library_identity_preserves_catdb_source_document_and_provenance_across_rename() {
+        let temp = TempDir::new().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let original = temp.path().join("original");
+        fs::create_dir(&original).expect("create original library");
+        fs::write(
+            original.join("note.md"),
+            "# Stable note\n\nalpha provenance\n",
+        )
+        .expect("write document");
+
+        let mut registry = crate::library::LibraryRegistry::empty();
+        let admitted = registry.add_root(&original).expect("native admission");
+        let source_id = admitted.engine_source_id();
+        let first_root = registry
+            .activation_root(&admitted.id)
+            .expect("activate original");
+        let first_db_path = db_path_under(&app_data, &first_root);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (first_db, first_proposals) = open_engine(
+            &first_db_path,
+            Arc::new(HashEmbedder::new()),
+            first_root.clone(),
+            Some(source_id),
+        )
+        .expect("open original engine");
+        rt.block_on(first_db.import(&first_root.path, ImportOptions::default()))
+            .expect("import original");
+        let first_sources = rt
+            .block_on(first_db.store().list_sources())
+            .expect("list original sources");
+        let first_documents = first_db
+            .store()
+            .list_documents()
+            .expect("list original documents");
+        let first_hits = rt
+            .block_on(first_db.search(
+                "alpha",
+                catdb_engine::SearchOptions {
+                    explain: true,
+                    ..catdb_engine::SearchOptions::default()
+                },
+            ))
+            .expect("search original");
+        let first_provenance = first_hits[0]
+            .explain
+            .as_ref()
+            .expect("original explain")
+            .provenance
+            .clone();
+        drop(first_db);
+        drop(first_proposals);
+
+        let renamed = temp.path().join("renamed");
+        fs::rename(&original, &renamed).expect("rename retained object");
+        let repicked = registry
+            .add_root(&renamed)
+            .expect("native re-pick retained object");
+        assert_eq!(repicked.id, admitted.id);
+        assert_eq!(repicked.engine_source_id(), source_id);
+        let second_root = registry
+            .activation_root(&repicked.id)
+            .expect("activate renamed source");
+        let second_db_path = db_path_under(&app_data, &second_root);
+        assert_eq!(second_db_path, first_db_path);
+        let (second_db, _second_proposals) = open_engine(
+            &second_db_path,
+            Arc::new(HashEmbedder::new()),
+            second_root.clone(),
+            Some(source_id),
+        )
+        .expect("reopen renamed engine");
+        rt.block_on(second_db.import(&second_root.path, ImportOptions::default()))
+            .expect("import renamed");
+
+        let second_sources = rt
+            .block_on(second_db.store().list_sources())
+            .expect("list renamed sources");
+        let second_documents = second_db
+            .store()
+            .list_documents()
+            .expect("list renamed documents");
+        let second_hits = rt
+            .block_on(second_db.search(
+                "alpha",
+                catdb_engine::SearchOptions {
+                    explain: true,
+                    ..catdb_engine::SearchOptions::default()
+                },
+            ))
+            .expect("search renamed");
+        let second_provenance = second_hits[0]
+            .explain
+            .as_ref()
+            .expect("renamed explain")
+            .provenance
+            .clone();
+
+        assert_eq!(second_sources.len(), 1);
+        assert_eq!(second_sources[0].source_id, first_sources[0].source_id);
+        assert_eq!(second_sources[0].source_id, source_id);
+        assert_eq!(second_sources[0].root_path, second_root.path.display().to_string());
+        assert_eq!(second_documents.len(), 1);
+        assert_eq!(second_documents[0].id, first_documents[0].id);
+        assert_eq!(second_documents[0].source_id, Some(source_id));
+        assert_eq!(second_provenance.source_id, first_provenance.source_id);
+        assert_eq!(second_provenance.document_id, first_provenance.document_id);
+        assert_eq!(second_provenance.file_path, first_provenance.file_path);
     }
 }
