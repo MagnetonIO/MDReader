@@ -967,21 +967,15 @@ fn recover_v2_engine_source_id_with_hooks(
         return Err(LibraryError::CorruptRegistry);
     }
 
-    // Hold the exact checked file open across SQLite's path-based open, then
-    // compare it with the file still named by that path. `SQLITE_OPEN_NOFOLLOW`
-    // rejects a symlink substituted after `symlink_metadata`; the stable
-    // cross-platform handle identity rejects a regular-file substitution.
+    // Hold the exact checked file open while SQLite opens a platform-specific
+    // binding to it. A final name-to-handle comparison also rejects a
+    // one-directional replacement, while the bound connection prevents an ABA
+    // replacement from changing which database is read.
     let open_path = fs::canonicalize(&db_path).map_err(|_| LibraryError::CorruptRegistry)?;
     let checked_file =
         same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
     before_open(&db_path);
-    let connection = rusqlite::Connection::open_with_flags(
-        &open_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| LibraryError::CorruptRegistry)?;
+    let (connection, _connection_guard) = open_checked_v2_connection(&open_path, &checked_file)?;
     after_open(&db_path);
     let opened_file =
         same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
@@ -1012,6 +1006,71 @@ fn recover_v2_engine_source_id_with_hooks(
         return Err(LibraryError::CorruptRegistry);
     }
     Ok(Some(source_id))
+}
+
+#[cfg(unix)]
+fn open_checked_v2_connection(
+    _open_path: &Path,
+    checked_file: &same_file::Handle,
+) -> Result<(rusqlite::Connection, ()), LibraryError> {
+    use std::os::fd::AsRawFd;
+
+    // SQLite opens the descriptor link, so the connection is bound to the
+    // already-checked inode even if the original filename is replaced.
+    let descriptor_path = format!(
+        "file:/dev/fd/{}?mode=ro&immutable=1",
+        checked_file.as_raw_fd()
+    );
+    let connection = rusqlite::Connection::open_with_flags(
+        descriptor_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|_| LibraryError::CorruptRegistry)?;
+    Ok((connection, ()))
+}
+
+#[cfg(windows)]
+fn open_checked_v2_connection(
+    open_path: &Path,
+    checked_file: &same_file::Handle,
+) -> Result<(rusqlite::Connection, fs::File), LibraryError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // Excluding FILE_SHARE_DELETE keeps the name attached to this file from
+    // the identity comparison through SQLite's open. SQLite remains free to
+    // acquire its ordinary read/write sharing and locking handles.
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    let path_lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(open_path)
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    let locked_file = path_lock
+        .try_clone()
+        .and_then(same_file::Handle::from_file)
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    if *checked_file != locked_file {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        open_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|_| LibraryError::CorruptRegistry)?;
+    Ok((connection, path_lock))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_checked_v2_connection(
+    _open_path: &Path,
+    _checked_file: &same_file::Handle,
+) -> Result<(rusqlite::Connection, ()), LibraryError> {
+    Err(LibraryError::CorruptRegistry)
 }
 
 fn validate_v2_catdb_index(connection: &rusqlite::Connection) -> Result<(), LibraryError> {
@@ -2808,6 +2867,7 @@ mod tests {
         assert!(old_db.is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn version_two_recovery_reads_checked_file_across_regular_file_aba_swap() {
         let temp = tempdir().expect("tempdir");
