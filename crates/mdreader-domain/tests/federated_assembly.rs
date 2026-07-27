@@ -434,7 +434,9 @@ async fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() 
     )]);
     let root = tree.path();
     let fs = FilesystemSource::new(root);
-    let git = GitSource::open(root);
+    // Repository discovery is intentionally deferred for existing
+    // directories. A missing root is the declaration-time unavailable case.
+    let git = GitSource::open(root.join("missing-git-root"));
     let front = FrontmatterSource::new(root);
     assert!(matches!(
         git.capabilities().availability(),
@@ -448,7 +450,7 @@ async fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() 
         .map(|(id, _)| id.to_string())
         .collect();
     assert_eq!(unavailable, ["git"]);
-    assert!(federation.unavailable()[0].1.contains("git work tree"));
+    assert!(federation.unavailable()[0].1.contains("not a directory"));
 
     let context = federation_support::read_context();
     let documents = federation
@@ -462,7 +464,7 @@ async fn an_unavailable_source_is_never_asked_and_never_forged_into_an_answer() 
     match &author.verdicts[1].1 {
         ProviderVerdict::NotAsked { reason } => {
             assert!(
-                reason.contains("git work tree"),
+                reason.contains("not a directory"),
                 "the reason must be the source's own: {reason}"
             );
         }
