@@ -9,12 +9,16 @@ export type MobileSourceKind =
 export interface MobileSourcePolicy {
   kind: MobileSourceKind;
   label: string;
-  connection: 'available' | 'secure-vault-unavailable' | 'server-session';
+  connection: 'native-grant-unavailable' | 'secure-vault-unavailable' | 'server-session';
 }
 
 /** The complete, read-only mobile V1 source vocabulary. */
 export const MOBILE_SOURCE_ALLOWLIST: readonly MobileSourcePolicy[] = [
-  { kind: 'device-folder', label: 'Device folders', connection: 'available' },
+  {
+    kind: 'device-folder',
+    label: 'Device folders',
+    connection: 'native-grant-unavailable',
+  },
   {
     kind: 'google-drive',
     label: 'Google Drive',

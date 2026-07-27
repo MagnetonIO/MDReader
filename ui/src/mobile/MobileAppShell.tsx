@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { listWorkspaceFiles } from '../platform/fs';
-import {
-  pickAndAddLibrarySource,
-  watchLibrarySource,
-} from '../platform/settings';
 import { applyTheme, useSettingsStore } from '../stores/settings';
 import { useSourcesStore } from '../stores/sources';
 import { selectActiveTab, useTabsStore } from '../stores/tabs';
 import { MobileReader } from './MobileReader';
-import type { MobileSourceIdentity } from './offline-cache';
 import {
   MOBILE_SOURCE_ALLOWLIST,
   saveEnterpriseServerConfig,
@@ -42,7 +36,7 @@ function LibraryScreen({ onOpen }: { onOpen: (path: string, name: string) => voi
       {files.length === 0 ? (
         <div className="mobile-state">
           <h2>No documents available</h2>
-          <p>Add a device folder or connect an available source from Sources.</p>
+          <p>No source has loaded documents on this device.</p>
         </div>
       ) : (
         <ol className="mobile-document-list">
@@ -111,34 +105,11 @@ function SearchScreen({ onOpen }: { onOpen: (path: string, name: string) => void
   );
 }
 
-function SourcesScreen({
-  onSourceIdentity,
-}: {
-  onSourceIdentity: (identity: MobileSourceIdentity) => void;
-}) {
+function SourcesScreen() {
   const [message, setMessage] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState('');
   const [sessionReference, setSessionReference] = useState('');
-
-  const addDeviceFolder = async () => {
-    setMessage(null);
-    try {
-      const picked = await pickAndAddLibrarySource();
-      if (!picked.source) return;
-      const grant = await watchLibrarySource(picked.source.id);
-      const listing = await listWorkspaceFiles(grant.root);
-      const sources = useSourcesStore.getState();
-      sources.setRoot(grant.root);
-      sources.setFiles(listing.files);
-      sources.setFromIndex(listing.fromIndex);
-      sources.setWatcher('watching');
-      onSourceIdentity({ kind: 'device-folder', id: picked.source.id });
-      setMessage(`${picked.source.name} is available in Library.`);
-    } catch {
-      setMessage('The device folder could not be added.');
-    }
-  };
 
   return (
     <section className="mobile-screen" aria-label="Sources">
@@ -149,10 +120,10 @@ function SourcesScreen({
       <div className="mobile-source-list">
         <article className="mobile-source">
           <h2>Device folders</h2>
-          <p>Choose a folder the operating system makes available to MDReader.</p>
-          <button type="button" className="mobile-action mobile-touch" onClick={addDeviceFolder}>
-            Add folder
-          </button>
+          <p className="mobile-source__status">
+            Unavailable until a durable mobile folder grant is implemented
+          </p>
+          <p>MDReader will not accept an unscoped path or substitute a file selection.</p>
         </article>
         {MOBILE_SOURCE_ALLOWLIST.filter(
           (source) => source.connection === 'secure-vault-unavailable',
@@ -248,7 +219,6 @@ function SettingsScreen() {
 export function MobileAppShell({ platform }: MobileAppShellProps) {
   const [tab, setTab] = useState<MobileTab>('library');
   const [readerMode, setReaderMode] = useState<'reader' | 'inspector'>('reader');
-  const [sourceIdentity, setSourceIdentity] = useState<MobileSourceIdentity | null>(null);
   const [tablet] = useState(() => window.innerWidth >= 768);
   const theme = useSettingsStore((state) => state.theme);
   const activeTab = useTabsStore(selectActiveTab);
@@ -272,7 +242,7 @@ export function MobileAppShell({ platform }: MobileAppShellProps) {
     ) : tab === 'search' ? (
       <SearchScreen onOpen={openDocument} />
     ) : tab === 'sources' ? (
-      <SourcesScreen onSourceIdentity={setSourceIdentity} />
+      <SourcesScreen />
     ) : (
       <SettingsScreen />
     );
@@ -286,7 +256,6 @@ export function MobileAppShell({ platform }: MobileAppShellProps) {
             <MobileReader
               tab={activeTab}
               mode={readerMode}
-              sourceIdentity={sourceIdentity}
               onBack={closeReader}
               onModeChange={setReaderMode}
             />
