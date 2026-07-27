@@ -59,7 +59,7 @@ const CLOUD_READ_POLICY_VERSION: &str = "mdreader.cloud-read/v2";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_MAPPING_VERSION_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_6d_61_70_5f_01_00);
-const CLOUD_SOURCE_SCHEMA_VERSION_NAMESPACE: uuid::Uuid =
+const CLOUD_PHYSICAL_SCHEMA_VERSION_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_73_63_68_5f_01_00);
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_SOURCE_VERSION_NAMESPACE: uuid::Uuid =
@@ -635,10 +635,10 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     }
 
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-    fn active_record(
+    fn admitted_record(
         &self,
         provider: CloudProvider,
-    ) -> Result<CloudSourceRecord, CloudSourceError> {
+    ) -> Result<(CloudSourceRecord, SecretBundle), CloudSourceError> {
         self.registry.read_cloud(|sources| {
             let record = sources
                 .iter()
@@ -648,10 +648,11 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             if !record.enabled {
                 return Err(CloudSourceError::SourcePaused);
             }
-            if self.vault.get(&record.credential_reference)?.is_none() {
-                return Err(CloudSourceError::CredentialMissing);
-            }
-            Ok(record)
+            let credential = self
+                .vault
+                .get(&record.credential_reference)?
+                .ok_or(CloudSourceError::CredentialMissing)?;
+            Ok((record, credential))
         })
     }
 
@@ -1287,19 +1288,42 @@ struct CloudCredentialResolver {
     provider: CloudProvider,
     reference: String,
     vault: Arc<dyn CredentialVault>,
+    admitted: Option<Arc<Mutex<SecretBundle>>>,
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 impl CloudCredentialResolver {
+    #[cfg(test)]
     fn new(provider: CloudProvider, reference: String, vault: Arc<dyn CredentialVault>) -> Self {
         Self {
             provider,
             reference,
             vault,
+            admitted: None,
+        }
+    }
+
+    fn from_admitted(
+        provider: CloudProvider,
+        reference: String,
+        credential: SecretBundle,
+        vault: Arc<dyn CredentialVault>,
+    ) -> Self {
+        Self {
+            provider,
+            reference,
+            vault,
+            admitted: Some(Arc::new(Mutex::new(credential))),
         }
     }
 
     async fn load(&self) -> Result<SecretBundle, CloudSourceError> {
+        if let Some(admitted) = &self.admitted {
+            return admitted
+                .lock()
+                .map_err(|_| CloudSourceError::CredentialUnavailable)
+                .map(|credential| credential.clone());
+        }
         let vault = self.vault.clone();
         let reference = self.reference.clone();
         tauri::async_runtime::spawn_blocking(move || vault.get(&reference))
@@ -1311,9 +1335,16 @@ impl CloudCredentialResolver {
     async fn store(&self, secret: SecretBundle) -> Result<(), CloudSourceError> {
         let vault = self.vault.clone();
         let reference = self.reference.clone();
-        tauri::async_runtime::spawn_blocking(move || vault.set(&reference, &secret))
+        let stored = secret.clone();
+        tauri::async_runtime::spawn_blocking(move || vault.set(&reference, &stored))
             .await
-            .map_err(|_| CloudSourceError::CredentialUnavailable)?
+            .map_err(|_| CloudSourceError::CredentialUnavailable)??;
+        if let Some(admitted) = &self.admitted {
+            *admitted
+                .lock()
+                .map_err(|_| CloudSourceError::CredentialUnavailable)? = secret;
+        }
+        Ok(())
     }
 
     async fn refresh_bundle(
@@ -1513,6 +1544,46 @@ fn map_dropbox_credential_error(
     }
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct AdmittedCloudRead<V> {
+    record: CloudSourceRecord,
+    credential: SecretBundle,
+    read_authority: CloudReadAuthority,
+    vault: V,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn admit_cloud_read<V: CredentialVault>(
+    registry: LibraryStore,
+    vault: V,
+    provider: CloudProvider,
+) -> Result<AdmittedCloudRead<V>, CloudSourceError> {
+    let (record, credential) =
+        CloudAccountService::new(registry, &vault).admitted_record(provider)?;
+    let read_authority = CloudReadAuthority::from_record(&record)?;
+    Ok(AdmittedCloudRead {
+        record,
+        credential,
+        read_authority,
+        vault,
+    })
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+async fn admit_cloud_read_before_catalog<V, A, C, CFut>(
+    admission: A,
+    catalog: C,
+) -> Result<(AdmittedCloudRead<V>, CloudCatalogAuthority), CloudSourceError>
+where
+    A: std::future::Future<Output = Result<AdmittedCloudRead<V>, CloudSourceError>>,
+    C: FnOnce() -> CFut,
+    CFut: std::future::Future<Output = Result<CloudCatalogAuthority, CloudSourceError>>,
+{
+    let admitted = admission.await?;
+    let catalog = catalog().await?;
+    Ok((admitted, catalog))
+}
+
 async fn query_cloud_documents_inner(
     app: AppHandle,
     request_id: String,
@@ -1545,16 +1616,22 @@ async fn query_cloud_documents_inner(
                 }
                 operation = state.operations.lock() => operation,
             };
-            let catalog = ensure_cloud_catalog(&app, state).await?;
-            let (record, vault) = blocking_cloud_operation(app, move |registry, vault| {
-                let record = CloudAccountService::new(registry, &vault).active_record(provider)?;
-                Ok((record, vault))
-            })
-            .await?;
-            let read_authority = CloudReadAuthority::from_record(&record)?;
-            let resolver = Arc::new(CloudCredentialResolver::new(
+            let admission = blocking_cloud_operation(app.clone(), move |registry, vault| {
+                admit_cloud_read(registry, vault, provider)
+            });
+            let (admitted, catalog) =
+                admit_cloud_read_before_catalog(admission, || ensure_cloud_catalog(&app, state))
+                    .await?;
+            let AdmittedCloudRead {
+                record,
+                credential,
+                read_authority,
+                vault,
+            } = admitted;
+            let resolver = Arc::new(CloudCredentialResolver::from_admitted(
                 provider,
                 record.credential_reference.clone(),
+                credential,
                 Arc::new(vault),
             ));
 
@@ -2165,10 +2242,8 @@ pub(crate) fn open_cloud_catalog(
         serde_json::to_value(mdreader_domain::library::document_schema())
             .map_err(|_| CloudSourceError::QueryCatalogInvalid)?,
     );
-    let schema_version_id = uuid::Uuid::new_v5(
-        &CLOUD_SOURCE_SCHEMA_VERSION_NAMESPACE,
-        active_content.checksum.as_bytes(),
-    );
+    let schema_version_id =
+        catdb_engine::operational_schema_version_id(&mdreader_domain::library::document_schema());
     let active_version = SchemaVersion {
         schema_version_id,
         name: mdreader_domain::library::SCHEMA.to_string(),
@@ -2495,8 +2570,10 @@ fn resolve_cloud_execution_authority(
 
     let source_schema_spec =
         serde_json::to_value(source.schema()).map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
-    let (source_schema_version, source_schema_checksum) =
-        content_version(&CLOUD_SOURCE_SCHEMA_VERSION_NAMESPACE, &source_schema_spec);
+    let (source_schema_version, source_schema_checksum) = content_version(
+        &CLOUD_PHYSICAL_SCHEMA_VERSION_NAMESPACE,
+        &source_schema_spec,
+    );
     let source_spec = source.source_spec();
     let (source_version, source_checksum) =
         content_version(&CLOUD_SOURCE_VERSION_NAMESPACE, &source_spec);
@@ -3430,7 +3507,9 @@ impl CredentialVault for MemoryCredentialVault {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -3891,6 +3970,123 @@ mod tests {
             [7; 32],
         )
         .expect("valid test credentials")
+    }
+
+    fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn visit(base: &Path, current: &Path, snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            let mut entries = fs::read_dir(current)
+                .expect("read snapshot directory")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("snapshot entries");
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let path = entry.path();
+                let relative = path.strip_prefix(base).expect("relative snapshot path");
+                let file_type = entry.file_type().expect("snapshot file type");
+                if file_type.is_dir() {
+                    snapshot.insert(relative.to_path_buf(), None);
+                    visit(base, &path, snapshot);
+                } else {
+                    snapshot.insert(
+                        relative.to_path_buf(),
+                        Some(fs::read(&path).expect("snapshot file bytes")),
+                    );
+                }
+            }
+        }
+
+        let mut snapshot = BTreeMap::new();
+        visit(root, root, &mut snapshot);
+        snapshot
+    }
+
+    #[tokio::test]
+    async fn rejected_cloud_read_admission_has_no_catalog_or_cached_authority_effect() {
+        for case in ["invalid", "missing", "paused", "missing-credential"] {
+            let temp = tempdir().expect("temporary app data");
+            let app_data = temp.path().join("app-data");
+            fs::create_dir(&app_data).expect("app data");
+            let registry_path = app_data.join("library.json");
+            let vault = MemoryCredentialVault::default();
+            let service =
+                CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault);
+
+            let expected = match case {
+                "missing" => {
+                    crate::library::LibraryRegistry::empty()
+                        .save_to(&registry_path)
+                        .expect("empty Library registry");
+                    service.snapshot().expect("prime Library lock");
+                    CloudSourceError::SourceNotFound
+                }
+                "paused" => {
+                    service
+                        .install(CloudProvider::GoogleDrive, google_config(), credentials())
+                        .expect("install Drive");
+                    service
+                        .set_enabled(CloudProvider::GoogleDrive, false)
+                        .expect("pause Drive");
+                    CloudSourceError::SourcePaused
+                }
+                "missing-credential" => {
+                    service
+                        .install(CloudProvider::GoogleDrive, google_config(), credentials())
+                        .expect("install Drive");
+                    vault.clear();
+                    CloudSourceError::CredentialMissing
+                }
+                "invalid" => {
+                    service
+                        .install(CloudProvider::GoogleDrive, google_config(), credentials())
+                        .expect("install Drive");
+                    let mut stored: serde_json::Value = serde_json::from_slice(
+                        &fs::read(&registry_path).expect("read Library registry"),
+                    )
+                    .expect("parse Library registry");
+                    stored["sources"][0]["contract"]["mapping_version"] =
+                        serde_json::json!("unreviewed-mapping");
+                    fs::write(
+                        &registry_path,
+                        serde_json::to_vec_pretty(&stored).expect("encode invalid registry"),
+                    )
+                    .expect("persist invalid registry");
+                    CloudSourceError::CorruptRegistry
+                }
+                _ => unreachable!(),
+            };
+            drop(service);
+
+            let before = tree_snapshot(&app_data);
+            let state = CloudAccountsState::default();
+            let catalog_path = app_data.join("cloud-library.catdb");
+            let result = super::admit_cloud_read_before_catalog(
+                async {
+                    super::admit_cloud_read(
+                        LibraryStore::new(registry_path),
+                        vault,
+                        CloudProvider::GoogleDrive,
+                    )
+                },
+                || async {
+                    fs::create_dir_all(&app_data).map_err(|_| CloudSourceError::PersistFailed)?;
+                    let catalog =
+                        super::open_cloud_catalog(&catalog_path, uuid::Uuid::from_u128(0xc10d))?;
+                    *state.catalog.lock().await = Some(catalog.clone());
+                    Ok(catalog)
+                },
+            )
+            .await;
+
+            assert_eq!(result.map(|_| ()), Err(expected), "{case}");
+            assert!(
+                tree_snapshot(&app_data) == before,
+                "{case} must not change any app-data catalog entry or byte"
+            );
+            assert!(
+                state.catalog.lock().await.is_none(),
+                "{case} must not install cached catalog authority"
+            );
+        }
     }
 
     #[cfg(feature = "google-drive-connector")]

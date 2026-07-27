@@ -1843,21 +1843,6 @@ export function AppShell() {
                 source={cloudDocument.source}
                 row={cloudDocument.row}
                 evidence={cloudDocument.evidence}
-                entityQuery={async (provider, filters, fields, requestId, evidence) => {
-                  if (!settingsBackend.queryCloudEntity) {
-                    throw new Error('Shared cloud entity queries are unavailable.');
-                  }
-                  return settingsBackend.queryCloudEntity(
-                    provider,
-                    filters,
-                    fields,
-                    requestId,
-                    evidence,
-                  );
-                }}
-                cancel={async (requestId) =>
-                  settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false
-                }
               />
             ) : (
             <>

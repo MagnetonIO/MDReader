@@ -1986,9 +1986,7 @@ export type WikiResolution = {
 	candidates: WikiCandidate[],
 };
 
-export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "unobservable"; value: {
-	reason: string,
-} } | { state: "record_unseen" } | { state: "not_asked"; value: {
+export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "record_unseen" } | { state: "not_asked"; value: {
 	reason: string,
 } };
 

@@ -687,24 +687,37 @@ fn persisted_document_schema(
                 .to_string(),
         );
     }
-    Uuid::parse_str(&catalog.schema_version).map_err(|_| {
+    let catalog_schema_version = Uuid::parse_str(&catalog.schema_version).map_err(|_| {
         "the Library catalog selected an invalid Document schema version".to_string()
     })?;
+    if stored.schema_version_id != catalog_schema_version {
+        return Err(format!(
+            "the local engine and Library catalog do not select the same Document schema version \
+             UUID (local {}, Library {}); migrate the older catalog before source execution",
+            stored.schema_version_id, catalog_schema_version
+        ));
+    }
 
     let summary = crate::overlay::schema_summary_for(epoch, FEDERATED_SCHEMA)
         .ok_or_else(|| "the federated Document schema is not registered".to_string())?;
-    Ok(persisted_schema(summary, catalog, &persisted))
+    Ok(persisted_schema(
+        summary,
+        stored.schema_version_id,
+        content.checksum,
+        &persisted,
+    ))
 }
 
 fn persisted_schema(
     summary: SchemaSummary,
-    catalog: &CloudCatalogAuthority,
+    schema_version_id: Uuid,
+    schema_checksum: String,
     schema: &catdb_core::Schema,
 ) -> FederatedSchemaDto {
     FederatedSchemaDto {
         name: schema.name.to_string(),
-        version: catalog.schema_version.clone(),
-        checksum: catalog.schema_checksum.clone(),
+        version: schema_version_id.to_string(),
+        checksum: schema_checksum,
         entities: schema.entities.iter().map(ToString::to_string).collect(),
         arrow_count: schema.arrows.len() as u32,
         attribute_count: schema.attributes.len() as u32,
@@ -1082,13 +1095,53 @@ mod tests {
         let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
         let state = catalogued_state(&root);
         let catalog = super::test_catalog_authority().expect("persisted Library catalog");
-        let schema =
-            super::persisted_document_schema(&state.current().expect("workspace epoch"), &catalog)
-                .expect("canonical local Document schema");
+        let epoch = state.current().expect("workspace epoch");
+        let engine = epoch.db().expect("local CatDB");
+        let revision = engine
+            .catalog_revision()
+            .expect("local catalog")
+            .expect("local operational revision");
+        let local_version = revision
+            .schema_version_ids
+            .into_iter()
+            .map(|version_id| {
+                engine
+                    .catalog_schema_version(version_id)
+                    .expect("schema lookup")
+                    .expect("persisted schema")
+            })
+            .find(|version| version.name == mdreader_domain::federated::SCHEMA)
+            .expect("local Document schema");
+        let schema = super::persisted_document_schema(&epoch, &catalog)
+            .expect("canonical local Document schema");
 
+        assert_eq!(
+            local_version.schema_version_id.to_string(),
+            catalog.schema_version,
+            "the two persisted catalogs must select one real immutable UUID"
+        );
         assert_eq!(schema.version, catalog.schema_version);
+        assert_eq!(schema.version, local_version.schema_version_id.to_string());
         assert_eq!(schema.checksum, catalog.schema_checksum);
         uuid::Uuid::parse_str(&schema.version).expect("one immutable schema-version identity");
+    }
+
+    #[test]
+    fn a_mismatched_library_schema_uuid_is_refused_instead_of_relabeling_local_authority() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let mut catalog = super::test_catalog_authority().expect("persisted Library catalog");
+        catalog.schema_version = uuid::Uuid::new_v4().to_string();
+
+        let error =
+            super::persisted_document_schema(&state.current().expect("workspace epoch"), &catalog)
+                .expect_err("a foreign UUID cannot relabel the local persisted schema");
+
+        assert!(
+            error.contains("same Document schema version UUID"),
+            "the mismatch must fail explicitly: {error}"
+        );
     }
 
     #[tokio::test]
