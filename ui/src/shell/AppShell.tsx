@@ -149,6 +149,7 @@ export function AppShell() {
   // selection in the reading column. It STICKS — clicking Approve collapses the
   // selection, and the panel must not empty itself out from under the ruling.
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
+  const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -372,6 +373,7 @@ export function AppShell() {
       // folder best-effort so the shell still renders content.
       if (!isTauri()) {
         sources.setRoot(folder);
+        setSemanticWorkspaceGeneration(epoch);
         sources.setWatcher('idle');
         await listInto(folder, epoch);
         // A newer open superseded this one during listInto → report NOT-current so
@@ -437,6 +439,7 @@ export function AppShell() {
         // attributed to the previous source while the new listing is pending.
         activeSourceIdRef.current = sourceId ?? null;
         sources.setRoot(g);
+        setSemanticWorkspaceGeneration(epoch);
         sources.setWatcher('error');
         sources.setImport(null); // fresh workspace: no import belongs to it yet
         await listInto(g, epoch);
@@ -457,6 +460,7 @@ export function AppShell() {
       // can never inherit the previous source ID.
       activeSourceIdRef.current = sourceId ?? null;
       sources.setRoot(grant.root);
+      setSemanticWorkspaceGeneration(grant.generation);
       sources.setWatcher('watching');
       sources.setImport(null); // fresh workspace: no import belongs to it yet
       await listInto(grant.root, epoch);
@@ -1722,8 +1726,10 @@ export function AppShell() {
                 onSetReviewer={(name) => useSettingsStore.getState().setReviewer(name)}
                 onCite={onCite}
                 workspaceKey={root}
+                workspaceGeneration={semanticWorkspaceGeneration}
                 documentPath={activeTab.docRef.path}
                 queryDocument={semantics.queryFederatedDocument}
+                cancelDocument={semantics.cancelFederatedDocument}
               />
             ) : null}
             {activeTab ? (

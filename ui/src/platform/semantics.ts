@@ -25,6 +25,7 @@ import {
   type ExplainDto,
   type FactProvenanceDto,
   type FederatedDocumentResponse as FederatedDocumentResponseDto,
+  type FederatedSchemaDto,
   type InspectedFact as InspectedFactDto,
   type Projection as ProjectionDto,
   type SchemaDetail as SchemaDetailDto,
@@ -66,14 +67,14 @@ export interface FederatedProvider {
   source: string;
   attribute: string;
   verdict: string;
-  value: string | null;
+  value: unknown | null;
   reason: string | null;
   declaredFallback: string[];
 }
 
 export interface FederatedField {
   name: string;
-  value: string | null;
+  value: unknown | null;
   winner: string | null;
   providers: FederatedProvider[];
   explanation: string;
@@ -94,13 +95,19 @@ export interface FederatedSource {
 
 export interface FederatedDocument {
   queryId: string;
-  schema: SchemaSummary;
+  schema: PersistedSchemaSummary;
   completeness: string;
   document: {
     path: string;
     fields: FederatedField[];
   };
   sources: FederatedSource[];
+}
+
+/** The exact catalogued schema identity pinned by a federated response. */
+export interface PersistedSchemaSummary extends Omit<SchemaSummary, 'version' | 'checksum'> {
+  version: number;
+  checksum: string;
 }
 
 /** A fact's derivation record, field for field. */
@@ -516,7 +523,12 @@ export interface SemanticsAdapter {
   rejectFact(factId: string, reviewer: string): Promise<RejectionOutcome>;
   checkConstraints(): Promise<ConstraintReport>;
   explainQuery(query: string, limit?: number): Promise<ExplainedHit[]>;
-  queryFederatedDocument(path: string): Promise<FederatedDocument>;
+  queryFederatedDocument(
+    path: string,
+    invocation: string,
+    request: string,
+  ): Promise<FederatedDocument>;
+  cancelFederatedDocument(invocation: string, request: string): Promise<void>;
 }
 
 function unwrap<T>(result: { status: 'ok'; data: T } | { status: 'error'; error: string }): T {
@@ -527,7 +539,7 @@ function unwrap<T>(result: { status: 'ok'; data: T } | { status: 'error'; error:
 function normalizeFederatedDocument(dto: FederatedDocumentResponseDto): FederatedDocument {
   return {
     queryId: dto.query_id,
-    schema: normalizeSummary(dto.schema),
+    schema: normalizeFederatedSchema(dto.schema),
     completeness: dto.completeness,
     document: {
       path: dto.document.path,
@@ -558,6 +570,21 @@ function normalizeFederatedDocument(dto: FederatedDocumentResponseDto): Federate
       residual: source.residual,
       refusal: source.refusal,
     })),
+  };
+}
+
+function normalizeFederatedSchema(dto: FederatedSchemaDto): PersistedSchemaSummary {
+  return {
+    name: dto.name,
+    version: dto.version,
+    checksum: dto.checksum,
+    entities: dto.entities,
+    arrowCount: dto.arrow_count,
+    attributeCount: dto.attribute_count,
+    equationCount: dto.equation_count,
+    approvalRequired: dto.approval_required,
+    objectCount: dto.object_count,
+    proposalCount: dto.proposal_count,
   };
 }
 
@@ -595,8 +622,13 @@ export function makeSemanticsAdapter(): SemanticsAdapter {
     async explainQuery(query, limit = EXPLAIN_LIMIT) {
       return unwrap(await commands.explainQuery(query, limit)).map(normalizeExplainedHit);
     },
-    async queryFederatedDocument(path) {
-      return normalizeFederatedDocument(unwrap(await commands.queryFederatedDocument(path)));
+    async queryFederatedDocument(path, invocation, request) {
+      return normalizeFederatedDocument(
+        unwrap(await commands.queryFederatedDocument(path, invocation, request)),
+      );
+    },
+    async cancelFederatedDocument(invocation, request) {
+      unwrap(await commands.cancelFederatedDocument(invocation, request));
     },
   };
 }

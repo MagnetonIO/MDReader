@@ -61,10 +61,18 @@ export interface InspectorRailProps {
   onCite: (file: string, startLine: number, endLine: number) => void;
   /** The active workspace root; a change drops any in-flight read. */
   workspaceKey: string | null;
+  /** The backend epoch generation, including same-root reopens. */
+  workspaceGeneration?: number;
   /** Active Markdown document queried across filesystem, Git, and frontmatter. */
   documentPath?: string | null;
   /** Native federated query seam. Optional only for isolated legacy tests. */
-  queryDocument?: (path: string) => Promise<FederatedDocument>;
+  queryDocument?: (
+    path: string,
+    invocation: string,
+    request: string,
+  ) => Promise<FederatedDocument>;
+  /** Cancels superseded native federation work for this Inspector instance. */
+  cancelDocument?: (invocation: string, request: string) => Promise<void>;
 }
 
 type Status = 'idle' | 'loading' | 'ready' | 'error';
@@ -78,8 +86,10 @@ export function InspectorRail({
   onSetReviewer,
   onCite,
   workspaceKey,
+  workspaceGeneration = 0,
   documentPath = null,
   queryDocument,
+  cancelDocument,
 }: InspectorRailProps) {
   const [facts, setFacts] = useState<InspectedFact[]>([]);
   const [status, setStatus] = useState<Status>('idle');
@@ -185,12 +195,14 @@ export function InspectorRail({
       </div>
 
       <div className="lens-rail__body">
-        {documentPath && queryDocument ? (
+        {documentPath && queryDocument && cancelDocument ? (
           <>
             <DocumentInspector
               path={documentPath}
               query={queryDocument}
+              cancel={cancelDocument}
               workspaceKey={workspaceKey}
+              workspaceGeneration={workspaceGeneration}
             />
             <div className="inspector__section-break" />
           </>

@@ -384,7 +384,7 @@ function federatedDocument(path: string) {
       fields: [
         {
           name: 'title',
-          value: '"Reference"',
+          value: 'Reference',
           winner: 'frontmatter',
           explanation: '`title` answered by `frontmatter.title`',
           providers: [
@@ -392,7 +392,7 @@ function federatedDocument(path: string) {
               source: 'frontmatter',
               attribute: 'title',
               verdict: 'observed',
-              value: '"Reference"',
+              value: 'Reference',
               reason: null,
               declared_fallback: ['YAML `title:`', 'first H1'],
             },
@@ -400,7 +400,7 @@ function federatedDocument(path: string) {
         },
         {
           name: 'modifiedAt',
-          value: '1700000000000',
+          value: 1700000000000,
           winner: 'filesystem',
           explanation:
             '`modifiedAt` answered by `filesystem.modifiedAt`; `git.modifiedAt` also observed a value',
@@ -409,7 +409,7 @@ function federatedDocument(path: string) {
               source: 'filesystem',
               attribute: 'modifiedAt',
               verdict: 'observed',
-              value: '1700000000000',
+              value: 1700000000000,
               reason: null,
               declared_fallback: [],
             },
@@ -417,7 +417,7 @@ function federatedDocument(path: string) {
               source: 'git',
               attribute: 'modifiedAt',
               verdict: 'observed',
-              value: '1690000000000',
+              value: 1690000000000,
               reason: null,
               declared_fallback: [],
             },
@@ -428,7 +428,7 @@ function federatedDocument(path: string) {
     sources: ['filesystem', 'git', 'frontmatter'].map((source) => ({
       source,
       outcome: 'ran',
-      execution: source === 'git' ? 'materialized' : 'virtual',
+      execution: 'virtual',
       freshness: 'fresh',
       age_ms: 0,
       scanned: 1,
@@ -851,6 +851,8 @@ export function installTauriMocks(): void {
         return SCHEMAS;
       case 'query_federated_document':
         return federatedDocument((args as { path: string }).path);
+      case 'cancel_federated_document':
+        return null;
       case 'describe_schema':
         return SCHEMA_DETAILS[(args as { schema: string }).schema] ?? null;
       case 'project_corpus':

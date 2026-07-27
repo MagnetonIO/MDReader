@@ -56,6 +56,7 @@ function adapterWithListSchemas(
     queryFederatedDocument: async () => {
       throw new Error('queryFederatedDocument is outside this schema-listing test');
     },
+    cancelFederatedDocument: async () => {},
   };
 }
 

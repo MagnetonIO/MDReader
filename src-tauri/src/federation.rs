@@ -1,15 +1,19 @@
 //! Native product boundary for the federated `Document` concept.
 
+use std::collections::HashMap;
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use catdb_connectors::{
     CancellationToken, DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext,
-    SourceId,
 };
 use catdb_federation::{Completeness, ExecutionPolicy, Executor, Freshness, Outcome};
 use mdreader_domain::federated::{Federation, ProviderVerdict, SCHEMA as FEDERATED_SCHEMA};
 use serde::Serialize;
 use specta::Type;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 use crate::commands::{resolve_within, WorkspaceState};
@@ -18,7 +22,142 @@ use crate::overlay::SchemaSummary;
 const QUERY_DEADLINE: Duration = Duration::from_secs(30);
 const QUERY_WORK_BUDGET: usize = 250_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
+const RESPONSE_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const QUERY_PAGE_SIZE: usize = 1_000;
+const MAX_CONCURRENT_QUERIES: usize = 4;
+const MAX_INVOCATION_BYTES: usize = 128;
+
+#[derive(Debug, Clone)]
+struct ActiveQuery {
+    invocation: String,
+    serial: u64,
+    cancellation: CancellationToken,
+}
+
+impl ActiveQuery {
+    fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+}
+
+#[derive(Debug)]
+struct ActiveEntry {
+    serial: u64,
+    request: String,
+    cancellation: CancellationToken,
+}
+
+/// Process-wide lifecycle for Semantic Inspector federation work.
+///
+/// A stable UI invocation key has at most one registered query. Replacing it
+/// cancels the retired source jobs, while the semaphore bounds work across all
+/// inspector instances. The registry is itself bounded so callers cannot turn
+/// queued 30-second operations into unbounded retained state.
+#[derive(Debug)]
+pub(crate) struct FederationRuntime {
+    gate: Arc<Semaphore>,
+    active: Mutex<HashMap<String, ActiveEntry>>,
+    next_serial: AtomicU64,
+    max_active: usize,
+}
+
+impl Default for FederationRuntime {
+    fn default() -> Self {
+        Self::with_limit(MAX_CONCURRENT_QUERIES)
+    }
+}
+
+impl FederationRuntime {
+    fn with_limit(limit: usize) -> Self {
+        let limit = limit.max(1);
+        Self {
+            gate: Arc::new(Semaphore::new(limit)),
+            active: Mutex::new(HashMap::new()),
+            next_serial: AtomicU64::new(1),
+            max_active: limit.saturating_mul(8),
+        }
+    }
+
+    fn begin(&self, _workspace_generation: u64, invocation: &str, request: &str) -> ActiveQuery {
+        let serial = self.next_serial.fetch_add(1, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(previous) = active.remove(invocation) {
+            previous.cancellation.cancel();
+        } else if active.len() >= self.max_active {
+            for retired in active.drain().map(|(_, entry)| entry) {
+                retired.cancellation.cancel();
+            }
+        }
+        active.insert(
+            invocation.to_string(),
+            ActiveEntry {
+                serial,
+                request: request.to_string(),
+                cancellation: cancellation.clone(),
+            },
+        );
+        ActiveQuery {
+            invocation: invocation.to_string(),
+            serial,
+            cancellation,
+        }
+    }
+
+    async fn acquire(&self, query: &ActiveQuery) -> Result<OwnedSemaphorePermit, String> {
+        let permit = tokio::select! {
+            _ = query.cancellation.cancelled() => {
+                return Err("federated document query was cancelled".to_string());
+            }
+            permit = Arc::clone(&self.gate).acquire_owned() => {
+                permit.map_err(|_| "federated document query executor is unavailable".to_string())?
+            }
+        };
+        if query.cancellation.is_cancelled() {
+            return Err("federated document query was cancelled".to_string());
+        }
+        Ok(permit)
+    }
+
+    fn cancel(&self, invocation: &str, request: &str) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let removed = active
+            .get(invocation)
+            .is_some_and(|entry| entry.request == request)
+            .then(|| active.remove(invocation))
+            .flatten();
+        if let Some(active) = removed {
+            active.cancellation.cancel();
+        }
+    }
+
+    fn finish(&self, query: &ActiveQuery) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .get(&query.invocation)
+            .is_some_and(|entry| entry.serial == query.serial)
+        {
+            active.remove(&query.invocation);
+        }
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> usize {
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+}
 
 /// One provider considered for one field, in declared precedence order.
 #[derive(Debug, Clone, Serialize, Type)]
@@ -30,7 +169,8 @@ pub struct FederatedProviderDto {
     /// `observed`, `observed-nothing`, `did-not-see-document`, or `not-asked`.
     pub verdict: String,
     /// Observed JSON value, when present.
-    pub value: Option<String>,
+    #[specta(type = Option<specta_typescript::Unknown>)]
+    pub value: Option<serde_json::Value>,
     /// Why the provider was not asked, when applicable.
     pub reason: Option<String>,
     /// Adapter-internal fallback declaration.
@@ -43,7 +183,8 @@ pub struct FederatedFieldDto {
     /// Semantic field name.
     pub name: String,
     /// Selected JSON value, or `None` when every provider was absent.
-    pub value: Option<String>,
+    #[specta(type = Option<specta_typescript::Unknown>)]
+    pub value: Option<serde_json::Value>,
     /// Winning source, or `None` when the field is absent.
     pub winner: Option<String>,
     /// Every declared provider, including losers and absences.
@@ -86,13 +227,38 @@ pub struct FederatedSourceDto {
     pub refusal: Option<String>,
 }
 
+/// Catalog-persisted identity of the schema used for this response.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct FederatedSchemaDto {
+    /// Stable schema name.
+    pub name: String,
+    /// Persisted catalog version.
+    pub version: u32,
+    /// Persisted content checksum for that exact version.
+    pub checksum: String,
+    /// Entity names in the persisted schema.
+    pub entities: Vec<String>,
+    /// Arrow count.
+    pub arrow_count: u32,
+    /// Attribute count.
+    pub attribute_count: u32,
+    /// Equation count.
+    pub equation_count: u32,
+    /// Whether facts in the schema require approval.
+    pub approval_required: bool,
+    /// Objects currently committed to the graph.
+    pub object_count: u32,
+    /// Review proposals currently retained.
+    pub proposal_count: u32,
+}
+
 /// The shipping response shown by MDReader's Semantic Inspector.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct FederatedDocumentResponse {
     /// Stable identity of this execution.
     pub query_id: String,
     /// Persisted schema version/checksum when the engine has catalogued it.
-    pub schema: SchemaSummary,
+    pub schema: FederatedSchemaDto,
     /// `complete` or `partial`; derived from the source reports.
     pub completeness: String,
     /// The exact requested document.
@@ -102,15 +268,63 @@ pub struct FederatedDocumentResponse {
 }
 
 /// Query the active document through the three local physical sources.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn query_federated_document(
+pub async fn query_federated_document(
     path: String,
+    invocation: String,
+    request: String,
     state: tauri::State<'_, WorkspaceState>,
+    runtime: tauri::State<'_, FederationRuntime>,
 ) -> Result<FederatedDocumentResponse, String> {
-    tauri::async_runtime::block_on(query_federated_document_guarded(&state, &path, || {}))
+    validate_request_key("invocation", &invocation)?;
+    validate_request_key("request", &request)?;
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    let active = runtime.begin(epoch.generation, &invocation, &request);
+    let permit = runtime.acquire(&active).await;
+    let result = match permit {
+        Ok(_permit) => {
+            query_federated_document_for_epoch(
+                &state,
+                epoch,
+                &path,
+                active.cancellation().clone(),
+                || {},
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    runtime.finish(&active);
+    result
 }
 
+/// Cancel one Inspector invocation, including a query waiting for a permit.
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_federated_document(
+    invocation: String,
+    request: String,
+    runtime: tauri::State<'_, FederationRuntime>,
+) -> Result<(), String> {
+    validate_request_key("invocation", &invocation)?;
+    validate_request_key("request", &request)?;
+    runtime.cancel(&invocation, &request);
+    Ok(())
+}
+
+fn validate_request_key(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > MAX_INVOCATION_BYTES {
+        return Err(format!(
+            "federated document {label} must contain 1 to {MAX_INVOCATION_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 async fn query_federated_document_guarded(
     state: &WorkspaceState,
     path: &str,
@@ -119,6 +333,44 @@ async fn query_federated_document_guarded(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    query_federated_document_for_epoch(state, epoch, path, CancellationToken::new(), after_query)
+        .await
+}
+
+async fn query_federated_document_for_epoch(
+    state: &WorkspaceState,
+    epoch: Arc<crate::engine::Epoch>,
+    path: &str,
+    cancellation: CancellationToken,
+    after_query: impl FnOnce(),
+) -> Result<FederatedDocumentResponse, String> {
+    let worker_epoch = Arc::clone(&epoch);
+    let worker_path = path.to_string();
+    let response = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("could not start the federation worker runtime: {error}"))?;
+        runtime.block_on(query_federated_document_unpublished(
+            &worker_epoch,
+            &worker_path,
+            cancellation,
+        ))
+    })
+    .await
+    .map_err(|error| format!("federated document worker failed: {error}"))??;
+    after_query();
+    // EPOCH-GUARDED
+    epoch
+        .finish(state, response)
+        .map_err(|error| error.to_string())
+}
+
+async fn query_federated_document_unpublished(
+    epoch: &Arc<crate::engine::Epoch>,
+    path: &str,
+    cancellation: CancellationToken,
+) -> Result<FederatedDocumentResponse, String> {
     epoch.validate_root()?;
     let source_root = epoch.source_root();
     let exact = resolve_within(&source_root.path, std::path::Path::new(path))?;
@@ -157,13 +409,10 @@ async fn query_federated_document_guarded(
         QUERY_WORK_BUDGET,
         QUERY_BYTE_BUDGET,
         QUERY_PAGE_SIZE,
-        CancellationToken::new(),
+        cancellation,
     )
     .map_err(|error| error.to_string())?;
-    let executor = Executor::new(
-        ExecutionPolicy::default()
-            .materialize(SourceId::new(GitSource::ID), Duration::from_secs(300)),
-    );
+    let executor = Executor::new(ExecutionPolicy::default());
     let answer = executor
         .execute(&sources, &query, &context)
         .await
@@ -184,8 +433,10 @@ async fn query_federated_document_guarded(
         .iter()
         .map(source_dto)
         .collect::<Result<Vec<_>, _>>()?;
-    let schema = crate::overlay::schema_summary_for(&epoch, FEDERATED_SCHEMA)
-        .ok_or_else(|| "the federated Document schema is not registered".to_string())?;
+    let schema = persisted_schema(
+        crate::overlay::schema_summary_for(epoch, FEDERATED_SCHEMA)
+            .ok_or_else(|| "the federated Document schema is not registered".to_string())?,
+    )?;
     let response = FederatedDocumentResponse {
         query_id: context.query_id().to_string(),
         schema,
@@ -193,11 +444,8 @@ async fn query_federated_document_guarded(
         document: document_dto(&document),
         sources,
     };
-    after_query();
-    // EPOCH-GUARDED
-    epoch
-        .finish(state, response)
-        .map_err(|error| error.to_string())
+    enforce_response_budget(&response)?;
+    Ok(response)
 }
 
 fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDocumentDto {
@@ -210,7 +458,7 @@ fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDoc
                 .iter()
                 .map(|(provider, verdict)| {
                     let (value, reason) = match verdict {
-                        ProviderVerdict::Observed(value) => (Some(value.to_string()), None),
+                        ProviderVerdict::Observed(value) => (Some(value.clone()), None),
                         ProviderVerdict::NotAsked { reason } => (None, Some(reason.clone())),
                         ProviderVerdict::ObservedNothing | ProviderVerdict::DidNotSeeDocument => {
                             (None, None)
@@ -228,7 +476,7 @@ fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDoc
                 .collect();
             FederatedFieldDto {
                 name: field.field.to_string(),
-                value: field.value().map(ToString::to_string),
+                value: field.value().cloned(),
                 winner: field.source().map(ToString::to_string),
                 providers,
                 explanation: field.explain(),
@@ -238,6 +486,63 @@ fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDoc
     FederatedDocumentDto {
         path: document.path().to_string(),
         fields,
+    }
+}
+
+fn persisted_schema(summary: SchemaSummary) -> Result<FederatedSchemaDto, String> {
+    let version = summary.version.ok_or_else(|| {
+        "the federated Document schema has no persisted catalog version/checksum yet".to_string()
+    })?;
+    let checksum = summary
+        .checksum
+        .filter(|checksum| !checksum.is_empty())
+        .ok_or_else(|| {
+            "the federated Document schema has no persisted catalog version/checksum yet"
+                .to_string()
+        })?;
+    Ok(FederatedSchemaDto {
+        name: summary.name,
+        version,
+        checksum,
+        entities: summary.entities,
+        arrow_count: summary.arrow_count,
+        attribute_count: summary.attribute_count,
+        equation_count: summary.equation_count,
+        approval_required: summary.approval_required,
+        object_count: summary.object_count,
+        proposal_count: summary.proposal_count,
+    })
+}
+
+fn enforce_response_budget(response: &FederatedDocumentResponse) -> Result<(), String> {
+    let mut writer = BoundedWriter {
+        written: 0,
+        maximum: RESPONSE_BYTE_BUDGET,
+    };
+    serde_json::to_writer(&mut writer, response)
+        .map_err(|_| "federated document response byte budget exceeded".to_string())
+}
+
+struct BoundedWriter {
+    written: usize,
+    maximum: usize,
+}
+
+impl Write for BoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .written
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("response byte budget overflow"))?;
+        if next > self.maximum {
+            return Err(std::io::Error::other("response byte budget exceeded"));
+        }
+        self.written = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -402,7 +707,10 @@ mod tests {
             .find(|field| field.name == "title")
             .expect("title field");
         assert_eq!(title.winner.as_deref(), Some("frontmatter"));
-        assert_eq!(title.value.as_deref(), Some("\"Declared title\""));
+        assert_eq!(
+            title.value.as_ref(),
+            Some(&serde_json::json!("Declared title"))
+        );
         let modified = answer
             .document
             .fields
@@ -667,7 +975,8 @@ mod tests {
                 .expect("test URL"),
                 body: serde_json::json!({
                     "path": "/missing.md",
-                    "invocation": "wrapper-boundary-test"
+                    "invocation": "wrapper-boundary-test",
+                    "request": "request-1"
                 })
                 .into(),
                 headers: Default::default(),
@@ -684,10 +993,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_cancels_superseded_invocations_and_bounds_global_work() {
         let runtime = super::FederationRuntime::with_limit(1);
-        let first = runtime.begin(7, "inspector");
+        let first = runtime.begin(7, "inspector", "request-1");
         let first_permit = runtime.acquire(&first).await.expect("first permit");
 
-        let replacement = runtime.begin(8, "inspector");
+        let replacement = runtime.begin(8, "inspector", "request-2");
         assert!(
             first.cancellation().is_cancelled(),
             "a same-root generation change cancels backend work, not only UI publication"
@@ -698,7 +1007,13 @@ mod tests {
             "one invocation cannot accumulate retired 30-second jobs"
         );
 
-        let other = runtime.begin(8, "other-inspector");
+        runtime.cancel("inspector", "request-1");
+        assert!(
+            !replacement.cancellation().is_cancelled(),
+            "late cleanup from a retired request cannot cancel its replacement"
+        );
+
+        let other = runtime.begin(8, "other-inspector", "request-1");
         assert!(
             tokio::time::timeout(Duration::from_millis(20), runtime.acquire(&other))
                 .await

@@ -73,6 +73,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             search::related,
             search::explain_query,
             federation::query_federated_document,
+            federation::cancel_federated_document,
             overlay::list_schemas,
             overlay::project_corpus,
             overlay::describe_schema,
@@ -156,6 +157,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(WorkspaceState::default())
+        .manage(federation::FederationRuntime::default())
         .manage(WatcherState::default())
         .manage(LibraryState::default())
         .invoke_handler(builder.invoke_handler())
@@ -278,6 +280,7 @@ mod tests {
             ("engine.rs", include_str!("engine.rs")),
             ("library.rs", include_str!("library.rs")),
             ("search.rs", include_str!("search.rs")),
+            ("federation.rs", include_str!("federation.rs")),
             ("overlay.rs", include_str!("overlay.rs")),
             ("mapping.rs", include_str!("mapping.rs")),
             ("updater.rs", include_str!("updater.rs")),

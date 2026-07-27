@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   FederatedDocument,
@@ -11,7 +11,9 @@ type InspectorTab = 'result' | 'sources' | 'provenance' | 'schema';
 export interface DocumentInspectorProps {
   path: string;
   workspaceKey: string | null;
-  query: (path: string) => Promise<FederatedDocument>;
+  workspaceGeneration: number;
+  query: (path: string, invocation: string, request: string) => Promise<FederatedDocument>;
+  cancel: (invocation: string, request: string) => Promise<void>;
 }
 
 const TABS: Array<{ id: InspectorTab; label: string }> = [
@@ -21,15 +23,10 @@ const TABS: Array<{ id: InspectorTab; label: string }> = [
   { id: 'schema', label: 'Schema' },
 ];
 
-function valueText(value: string | null): string {
+function valueText(value: unknown | null): string {
   if (value === null) return 'Not provided';
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (typeof parsed === 'string') return parsed;
-    return JSON.stringify(parsed);
-  } catch {
-    return value;
-  }
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value) ?? String(value);
 }
 
 function providerLabel(provider: FederatedProvider): string {
@@ -44,19 +41,29 @@ function providerStanding(field: FederatedField, provider: FederatedProvider): s
   return 'not consulted';
 }
 
-export function DocumentInspector({ path, workspaceKey, query }: DocumentInspectorProps) {
+export function DocumentInspector({
+  path,
+  workspaceKey,
+  workspaceGeneration,
+  query,
+  cancel,
+}: DocumentInspectorProps) {
   const [tab, setTab] = useState<InspectorTab>('result');
   const [answer, setAnswer] = useState<FederatedDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const requestRef = useRef(0);
+  const tabsetId = useId();
+  const invocation = useRef(`document-inspector-${tabsetId}`).current;
+  const tabRefs = useRef(new Map<InspectorTab, HTMLButtonElement>());
 
   useEffect(() => {
     const request = (requestRef.current += 1);
+    const requestToken = String(request);
     setAnswer(null);
     setError(null);
     setLoading(true);
-    void query(path)
+    void query(path, invocation, requestToken)
       .then((value) => {
         if (requestRef.current !== request) return;
         setAnswer(value);
@@ -69,8 +76,22 @@ export function DocumentInspector({ path, workspaceKey, query }: DocumentInspect
       });
     return () => {
       requestRef.current += 1;
+      void cancel(invocation, requestToken);
     };
-  }, [path, query, workspaceKey]);
+  }, [cancel, invocation, path, query, workspaceGeneration, workspaceKey]);
+
+  const selectFromKeyboard = (current: InspectorTab, key: string) => {
+    const index = TABS.findIndex((item) => item.id === current);
+    let next = index;
+    if (key === 'ArrowRight') next = (index + 1) % TABS.length;
+    else if (key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length;
+    else if (key === 'Home') next = 0;
+    else if (key === 'End') next = TABS.length - 1;
+    else return;
+    const nextTab = TABS[next]!.id;
+    setTab(nextTab);
+    tabRefs.current.get(nextTab)?.focus();
+  };
 
   return (
     <section className="document-inspector" aria-label="Federated document">
@@ -90,9 +111,22 @@ export function DocumentInspector({ path, workspaceKey, query }: DocumentInspect
             key={item.id}
             type="button"
             role="tab"
+            id={`${tabsetId}-${item.id}-tab`}
+            aria-controls={`${tabsetId}-${item.id}-panel`}
             aria-selected={tab === item.id}
+            tabIndex={tab === item.id ? 0 : -1}
             className={`document-inspector__tab${tab === item.id ? ' is-active' : ''}`}
             onClick={() => setTab(item.id)}
+            onKeyDown={(event) => {
+              if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) {
+                event.preventDefault();
+                selectFromKeyboard(item.id, event.key);
+              }
+            }}
+            ref={(element) => {
+              if (element) tabRefs.current.set(item.id, element);
+              else tabRefs.current.delete(item.id);
+            }}
           >
             {item.label}
           </button>
@@ -101,14 +135,25 @@ export function DocumentInspector({ path, workspaceKey, query }: DocumentInspect
 
       {loading ? <p className="lens-rail__empty">Reading the document across sources…</p> : null}
       {error ? <p className="lens-rail__empty">Could not assemble this document — {error}</p> : null}
-      {answer && !loading ? (
-        <div role="tabpanel" className="document-inspector__panel">
-          {tab === 'result' ? <ResultTab answer={answer} /> : null}
-          {tab === 'sources' ? <SourcesTab answer={answer} /> : null}
-          {tab === 'provenance' ? <ProvenanceTab answer={answer} /> : null}
-          {tab === 'schema' ? <SchemaTab answer={answer} /> : null}
-        </div>
-      ) : null}
+      {answer && !loading
+        ? TABS.map((item) => (
+            <div
+              key={item.id}
+              role="tabpanel"
+              id={`${tabsetId}-${item.id}-panel`}
+              aria-labelledby={`${tabsetId}-${item.id}-tab`}
+              className="document-inspector__panel"
+              hidden={tab !== item.id}
+            >
+              {tab === item.id && item.id === 'result' ? <ResultTab answer={answer} /> : null}
+              {tab === item.id && item.id === 'sources' ? <SourcesTab answer={answer} /> : null}
+              {tab === item.id && item.id === 'provenance' ? (
+                <ProvenanceTab answer={answer} />
+              ) : null}
+              {tab === item.id && item.id === 'schema' ? <SchemaTab answer={answer} /> : null}
+            </div>
+          ))
+        : null}
     </section>
   );
 }
@@ -198,14 +243,11 @@ function ProvenanceTab({ answer }: { answer: FederatedDocument }) {
 }
 
 function SchemaTab({ answer }: { answer: FederatedDocument }) {
-  const version =
-    answer.schema.version === null
-      ? `${answer.schema.name} · not catalogued yet`
-      : `${answer.schema.name} · v${answer.schema.version}`;
+  const version = `${answer.schema.name} · v${answer.schema.version}`;
   return (
     <div className="document-schema">
       <h3>{version}</h3>
-      <p className="lens-mono">{answer.schema.checksum ?? 'No persisted checksum yet'}</p>
+      <p className="lens-mono">{answer.schema.checksum}</p>
       <p>
         This semantic view assembles one Document from filesystem, Git, and frontmatter evidence.
         Changing the semantic view changes the semantic interpretation, not the Markdown file or

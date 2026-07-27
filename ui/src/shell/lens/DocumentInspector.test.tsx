@@ -24,7 +24,7 @@ const answer: FederatedDocument = {
     fields: [
       {
         name: 'title',
-        value: '"A title"',
+        value: 'A title',
         winner: 'frontmatter',
         explanation: '`title` answered by `frontmatter.title`',
         providers: [
@@ -32,7 +32,7 @@ const answer: FederatedDocument = {
             source: 'frontmatter',
             attribute: 'title',
             verdict: 'observed',
-            value: '"A title"',
+            value: 'A title',
             reason: null,
             declaredFallback: ['YAML `title:`', 'first H1'],
           },
@@ -40,7 +40,7 @@ const answer: FederatedDocument = {
       },
       {
         name: 'modifiedAt',
-        value: '1720000000000',
+        value: 1720000000000,
         winner: 'filesystem',
         explanation:
           '`modifiedAt` answered by `filesystem.modifiedAt`; `git.modifiedAt` also observed a value',
@@ -49,7 +49,7 @@ const answer: FederatedDocument = {
             source: 'filesystem',
             attribute: 'modifiedAt',
             verdict: 'observed',
-            value: '1720000000000',
+            value: 1720000000000,
             reason: null,
             declaredFallback: [],
           },
@@ -57,7 +57,7 @@ const answer: FederatedDocument = {
             source: 'git',
             attribute: 'modifiedAt',
             verdict: 'observed',
-            value: '1710000000000',
+            value: 1710000000000,
             reason: null,
             declaredFallback: [],
           },
@@ -109,11 +109,23 @@ afterEach(cleanup);
 
 it('presents Result, Sources, Provenance, and Schema as one document answer', async () => {
   const query = vi.fn().mockResolvedValue(answer);
-  render(<DocumentInspector path="/library/notes/a.md" query={query} workspaceKey="/library" />);
+  render(
+    <DocumentInspector
+      path="/library/notes/a.md"
+      query={query}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/library"
+      workspaceGeneration={1}
+    />,
+  );
 
   expect(await screen.findByText('A title')).toBeTruthy();
   expect(screen.getByText('Complete')).toBeTruthy();
-  expect(query).toHaveBeenCalledWith('/library/notes/a.md');
+  expect(query).toHaveBeenCalledWith(
+    '/library/notes/a.md',
+    expect.stringContaining('document-inspector-'),
+    '1',
+  );
 
   fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
   expect(screen.getByText('filesystem')).toBeTruthy();
@@ -137,17 +149,31 @@ it('presents Result, Sources, Provenance, and Schema as one document answer', as
 
 it('drops a late answer after the active workspace changes', async () => {
   const pending: Array<(value: FederatedDocument) => void> = [];
-  const query = vi.fn(
+  const query = vi.fn<
+    (path: string, invocation: string, request: string) => Promise<FederatedDocument>
+  >(
     () =>
       new Promise<FederatedDocument>((done) => {
         pending.push(done);
       }),
   );
   const rendered = render(
-    <DocumentInspector path="/one/a.md" query={query} workspaceKey="/one" />,
+    <DocumentInspector
+      path="/one/a.md"
+      query={query}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/one"
+      workspaceGeneration={1}
+    />,
   );
   rendered.rerender(
-    <DocumentInspector path="/two/b.md" query={query} workspaceKey="/two" />,
+    <DocumentInspector
+      path="/two/b.md"
+      query={query}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/two"
+      workspaceGeneration={2}
+    />,
   );
 
   pending[0]!(answer);
@@ -156,7 +182,9 @@ it('drops a late answer after the active workspace changes', async () => {
 
 it('retires and cancels a request when the same root advances to a new generation', async () => {
   const pending: Array<(value: FederatedDocument) => void> = [];
-  const query = vi.fn(
+  const query = vi.fn<
+    (path: string, invocation: string, request: string) => Promise<FederatedDocument>
+  >(
     () =>
       new Promise<FederatedDocument>((done) => {
         pending.push(done);
@@ -189,6 +217,11 @@ it('retires and cancels a request when the same root advances to a new generatio
 
   await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(cancel).toHaveBeenCalled());
+  const firstInvocation = query.mock.calls[0]![1];
+  const firstRequest = query.mock.calls[0]![2];
+  const replacementRequest = query.mock.calls[1]![2];
+  expect(firstRequest).not.toBe(replacementRequest);
+  expect(cancel).toHaveBeenCalledWith(firstInvocation, firstRequest);
   pending[0]!(answer);
   await waitFor(() => expect(screen.queryByText('A title')).toBeNull());
 });
@@ -198,7 +231,9 @@ it('implements the tab and tabpanel relationships plus arrow-key navigation', as
     <DocumentInspector
       path="/library/notes/a.md"
       query={vi.fn().mockResolvedValue(answer)}
+      cancel={vi.fn(async () => {})}
       workspaceKey="/library"
+      workspaceGeneration={1}
     />,
   );
   await screen.findByText('A title');

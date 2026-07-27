@@ -25,7 +25,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
@@ -36,10 +36,9 @@ import {
   clearSeed,
   clearWorkspaceIndex,
   createE2EProfile,
-  fingerprintSourceTree,
   seedWorkspace,
+  withNativeRunArtifacts,
   type E2EProfile,
-  type SourceFingerprint,
 } from '../seed.ts';
 import { withOwnedProcesses } from '../lifecycle.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
@@ -121,15 +120,6 @@ function assertE2EBundle(app: string, profile: E2EProfile): void {
   }
 }
 
-function changedSourcePaths(
-  before: SourceFingerprint,
-  after: SourceFingerprint,
-): string[] {
-  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .sort()
-    .filter((path) => JSON.stringify(before[path]) !== JSON.stringify(after[path]));
-}
-
 async function appiumReachable(): Promise<boolean> {
   try {
     const res = await fetch(`${APPIUM_BASE}/status`, { signal: AbortSignal.timeout(2000) });
@@ -182,34 +172,35 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  mkdirSync(opts.artifacts, { recursive: true });
-  const sourceBefore = await fingerprintSourceTree(opts.corpus);
-  writeFileSync(
-    join(opts.artifacts, 'source-fingerprint-before.json'),
-    JSON.stringify(sourceBefore, null, 2),
-  );
+  const summary = await withNativeRunArtifacts(opts.artifacts, opts.corpus, async (artifacts) => {
+    console.log(`run:       ${artifacts}`);
 
-  // Register the bundle so the mac2 session can attach to it by bundle id.
-  quietExec('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', opts.app]);
+    // Register the bundle so the mac2 session can attach to it by bundle id.
+    quietExec(
+      '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister',
+      ['-f', opts.app],
+    );
 
-  // Fresh state: wipe the plugin-store + engine index, then re-seed the fixture
-  // workspace so the app re-grants + re-indexes from scratch on launch.
-  await clearSeed(opts.profile);
-  await clearWorkspaceIndex(opts.profile);
-  const seedPath = await seedWorkspace(opts.profile, opts.corpus);
-  console.log(`seeded:    ${seedPath}`);
+    // Fresh state: wipe the plugin-store + engine index, then re-seed the fixture
+    // workspace so the app re-grants + re-indexes from scratch on launch.
+    await clearSeed(opts.profile);
+    await clearWorkspaceIndex(opts.profile);
+    const seedPath = await seedWorkspace(opts.profile, opts.corpus);
+    console.log(`seeded:    ${seedPath}`);
 
-  // Seed the REVIEW state into the very workspace the app is about to open, so
-  // the semantic surfaces have an interpretation to show and a law to break.
-  // Fails the run outright if it cannot: a GUI pass over an empty graph would
-  // prove less than it claims.
-  try {
+    // Seed the REVIEW state into the very workspace the app is about to open, so
+    // the semantic surfaces have an interpretation to show and a law to break.
+    // Fails the run outright if it cannot: a GUI pass over an empty graph would
+    // prove less than it claims.
     const seeded = execFileSync(
       'cargo',
       [
-        'run', '--quiet',
-        '-p', 'mdreader-ingest',
-        '--example', 'seed_reviewed_workspace',
+        'run',
+        '--quiet',
+        '-p',
+        'mdreader-ingest',
+        '--example',
+        'seed_reviewed_workspace',
         '--no-default-features',
         '--',
         opts.corpus,
@@ -220,106 +211,94 @@ async function main(): Promise<number> {
       { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
     );
     for (const line of seeded.trimEnd().split('\n')) console.log(`review:    ${line}`);
-  } catch (err) {
-    console.error(`\nFAIL: could not seed the reviewed workspace: ${err instanceof Error ? err.message : String(err)}`);
-    return 1;
-  }
 
-  const axBin = buildSwiftHelper(opts.artifacts, 'axquery');
-  console.log(`axquery:   ${axBin}`);
-  // The chord-delivery fallback, used only when a shortcut demonstrably never
-  // reached the app because another application owns it system-wide. See
-  // `drivers/macos/keypost.swift` and `runner.ts`'s `openSurface`.
-  const keyBin = buildSwiftHelper(opts.artifacts, 'keypost');
-  console.log(`keypost:   ${keyBin}\n`);
+    const axBin = buildSwiftHelper(artifacts, 'axquery');
+    console.log(`axquery:   ${axBin}`);
+    // The chord-delivery fallback, used only when a shortcut demonstrably never
+    // reached the app because another application owns it system-wide. See
+    // `drivers/macos/keypost.swift` and `runner.ts`'s `openSurface`.
+    const keyBin = buildSwiftHelper(artifacts, 'keypost');
+    console.log(`keypost:   ${keyBin}\n`);
 
-  const appium = await ensureAppium();
+    const appium = await ensureAppium();
 
-  // Launch the real binary (offline instant index), then attach the session to it.
-  const child = spawn(opts.binary, [], {
-    env: { ...process.env, MDREADER_DEV_HASH_EMBED: '1' },
-    stdio: 'ignore',
-    detached: false,
-  });
-  if (child.pid === undefined) {
-    console.error('FAIL: could not spawn the app');
-    appium?.kill();
-    return 1;
-  }
-
-  // The exact process we spawned is the only process this runner may terminate.
-  const pid = child.pid;
-  let adapter: Mac2Adapter | undefined;
-  let browser: Awaited<ReturnType<typeof remote>> | undefined;
-  const result = await withOwnedProcesses(child, appium, opts.keep, async () => {
-    await sleep(500);
-    browser = await remote({
-      hostname: '127.0.0.1',
-      port: APPIUM_PORT,
-      path: '/',
-      logLevel: 'error',
-      // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
-      // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
-      // not seconds, and WebdriverIO's default session timeout aborts the POST
-      // while the build is still going — which surfaces as an opaque
-      // "operation was aborted due to timeout" and no run at all. Warm runs are
-      // still ~3s; this only has to be longer than a cold build.
-      connectionRetryTimeout: 600_000,
-      capabilities: {
-        platformName: 'mac',
-        'appium:automationName': 'mac2',
-        'appium:bundleId': opts.profile.identifier,
-        'appium:noReset': true,
-        // Same reasoning on the server side of the handshake.
-        'appium:newCommandTimeout': 600,
-        'appium:showServerLogs': true,
-      } as WebdriverIO.Capabilities,
+    // Launch the real binary (offline instant index), then attach the session to it.
+    const child = spawn(opts.binary, [], {
+      env: { ...process.env, MDREADER_DEV_HASH_EMBED: '1' },
+      stdio: 'ignore',
+      detached: false,
     });
+    if (child.pid === undefined) {
+      appium?.kill();
+      throw new Error('could not spawn the app');
+    }
 
-    adapter = new Mac2Adapter({
-      browser,
-      bundleId: opts.profile.identifier,
-      pid,
-      axBin,
-      keyBin,
-      artifacts: opts.artifacts,
-    });
-    return runFlow(adapter, consoleLog);
-  }, async () => {
-    if (adapter) await adapter.dispose();
-    else await browser?.deleteSession();
+    // The exact process we spawned is the only process this runner may terminate.
+    const pid = child.pid;
+    let adapter: Mac2Adapter | undefined;
+    let browser: Awaited<ReturnType<typeof remote>> | undefined;
+    const result = await withOwnedProcesses(
+      child,
+      appium,
+      opts.keep,
+      async () => {
+        await sleep(500);
+        browser = await remote({
+          hostname: '127.0.0.1',
+          port: APPIUM_PORT,
+          path: '/',
+          logLevel: 'error',
+          // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+          // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+          // not seconds, and WebdriverIO's default session timeout aborts the POST
+          // while the build is still going — which surfaces as an opaque
+          // "operation was aborted due to timeout" and no run at all. Warm runs are
+          // still ~3s; this only has to be longer than a cold build.
+          connectionRetryTimeout: 600_000,
+          capabilities: {
+            platformName: 'mac',
+            'appium:automationName': 'mac2',
+            'appium:bundleId': opts.profile.identifier,
+            'appium:noReset': true,
+            // Same reasoning on the server side of the handshake.
+            'appium:newCommandTimeout': 600,
+            'appium:showServerLogs': true,
+          } as WebdriverIO.Capabilities,
+        });
+
+        adapter = new Mac2Adapter({
+          browser,
+          bundleId: opts.profile.identifier,
+          pid,
+          axBin,
+          keyBin,
+          artifacts,
+        });
+        return runFlow(adapter, consoleLog);
+      },
+      async () => {
+        if (adapter) await adapter.dispose();
+        else await browser?.deleteSession();
+      },
+    );
+    return result;
   });
-
-  const sourceAfter = await fingerprintSourceTree(opts.corpus);
-  writeFileSync(
-    join(opts.artifacts, 'source-fingerprint-after.json'),
-    JSON.stringify(sourceAfter, null, 2),
-  );
-  const changedSources = changedSourcePaths(sourceBefore, sourceAfter);
-  const sourcesUnchanged = changedSources.length === 0;
-  const summary = {
-    ok: result.ok && sourcesUnchanged,
-    failedAt: sourcesUnchanged ? result.failedAt : 'source-integrity',
-    artifacts: opts.artifacts,
-    sourceIntegrity: { unchanged: sourcesUnchanged, changed: changedSources },
-    results: result.results,
-  };
-  writeFileSync(join(opts.artifacts, 'result.json'), JSON.stringify(summary, null, 2));
 
   console.log('───────────────────────────────────────────────────────────');
-  if (result.ok && sourcesUnchanged) {
+  if (summary.ok) {
     console.log(
       'RESULT: PASS — all flow steps green; source bytes, mtimes, and membership unchanged.',
     );
     return 0;
   }
-  if (!sourcesUnchanged) {
+  if (!summary.sourceIntegrity.unchanged) {
     console.log(
-      `RESULT: FAIL — source integrity changed: ${changedSources.join(', ') || '(unknown)'}.`,
+      `RESULT: FAIL — source integrity changed: ${summary.sourceIntegrity.changed.join(', ') || '(unknown)'}.`,
     );
     return 1;
   }
-  console.log(`RESULT: FAIL at step "${result.failedAt}".`);
+  if (summary.error) console.log(`RESULT: FAIL — ${summary.error}.`);
+  else console.log(`RESULT: FAIL at step "${summary.failedAt}".`);
   return 1;
 }
 

@@ -16,17 +16,27 @@
  * and writes the store's flat `{ "<key>": <value> }` shape. Node built-ins only.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 export { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 export interface SourceFingerprintEntry {
-  readonly kind: 'file' | 'symlink';
+  readonly kind: 'file' | 'symlink' | 'directory';
   readonly size: string;
   readonly sha256: string;
   readonly mtimeNs: string;
@@ -51,6 +61,17 @@ export async function fingerprintSourceTree(root: string): Promise<SourceFingerp
     for (const entry of entries) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
+        const children = await readdir(path);
+        if (children.length === 0) {
+          const key = `${relative(absoluteRoot, path).replaceAll('\\', '/')}/`;
+          fingerprint[key] = {
+            kind: 'directory',
+            size: '0',
+            sha256: createHash('sha256').update('').digest('hex'),
+            mtimeNs: '0',
+          };
+          continue;
+        }
         await visit(path);
         continue;
       }
@@ -82,6 +103,88 @@ export async function fingerprintSourceTree(root: string): Promise<SourceFingerp
 
   await visit(absoluteRoot);
   return fingerprint;
+}
+
+export interface NativeRunOutcome {
+  readonly ok: boolean;
+  readonly failedAt: string | null;
+  readonly results: readonly unknown[];
+}
+
+export interface NativeRunSummary extends NativeRunOutcome {
+  readonly artifacts: string;
+  readonly error?: string;
+  readonly sourceIntegrity: {
+    readonly unchanged: boolean;
+    readonly changed: readonly string[];
+  };
+}
+
+function changedSourcePaths(
+  before: SourceFingerprint,
+  after: SourceFingerprint,
+): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .sort()
+    .filter((path) => JSON.stringify(before[path]) !== JSON.stringify(after[path]));
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(value, null, 2), 'utf8');
+  await rename(temporary, path);
+}
+
+/**
+ * Run one native flow in a unique artifact directory and always finalize its
+ * source-integrity evidence. A setup/session/flow exception becomes a recorded
+ * failed result after the `after` snapshot is taken; it cannot leave a fresh
+ * `before` paired with stale fixed-path files from an earlier run.
+ */
+export async function withNativeRunArtifacts(
+  base: string,
+  source: string,
+  run: (artifacts: string) => Promise<NativeRunOutcome>,
+): Promise<NativeRunSummary> {
+  const artifacts = join(
+    resolve(base),
+    `run-${new Date().toISOString().replaceAll(':', '-')}-${process.pid}-${randomUUID()}`,
+  );
+  await mkdir(artifacts, { recursive: true });
+  const before = await fingerprintSourceTree(source);
+  await writeJsonAtomic(join(artifacts, 'source-fingerprint-before.json'), before);
+
+  let outcome: NativeRunOutcome = { ok: false, failedAt: 'harness-error', results: [] };
+  let runError: string | undefined;
+  try {
+    outcome = await run(artifacts);
+  } catch (cause) {
+    runError = cause instanceof Error ? cause.message : String(cause);
+  }
+
+  let after: SourceFingerprint = {};
+  let finalizationError: string | undefined;
+  try {
+    after = await fingerprintSourceTree(source);
+    await writeJsonAtomic(join(artifacts, 'source-fingerprint-after.json'), after);
+  } catch (cause) {
+    finalizationError = cause instanceof Error ? cause.message : String(cause);
+  }
+  const changed = changedSourcePaths(before, after);
+  const unchanged = finalizationError === undefined && changed.length === 0;
+  const error = [runError, finalizationError && `source finalization failed: ${finalizationError}`]
+    .filter((message): message is string => message !== undefined)
+    .join('; ');
+  const summary: NativeRunSummary = {
+    ok: outcome.ok && unchanged,
+    failedAt: unchanged ? outcome.failedAt : 'source-integrity',
+    artifacts,
+    sourceIntegrity: { unchanged, changed },
+    results: outcome.results,
+    ...(error.length === 0 ? {} : { error }),
+  };
+  await writeJsonAtomic(join(artifacts, 'result.json'), summary);
+  return summary;
 }
 
 /** The store key `persistence.ts` reads the session under (`store.get('session')`). */

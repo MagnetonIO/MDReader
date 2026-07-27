@@ -214,7 +214,9 @@ export const commands = {
 	 */
 	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
 	/**  Query the active document through the three local physical sources. */
-	queryFederatedDocument: (path: string) => typedError<FederatedDocumentResponse, string>(__TAURI_INVOKE("query_federated_document", { path })),
+	queryFederatedDocument: (path: string, invocation: string, request: string) => typedError<FederatedDocumentResponse, string>(__TAURI_INVOKE("query_federated_document", { path, invocation, request })),
+	/**  Cancel one Inspector invocation, including a query waiting for a permit. */
+	cancelFederatedDocument: (invocation: string, request: string) => typedError<null, string>(__TAURI_INVOKE("cancel_federated_document", { invocation, request })),
 	/**
 	 *  Every schema this workspace can be viewed through — persisted version and
 	 *  checksum included — with live counts of what the graph and the proposal
@@ -555,7 +557,7 @@ export type FederatedDocumentResponse = {
 	/**  Stable identity of this execution. */
 	query_id: string,
 	/**  Persisted schema version/checksum when the engine has catalogued it. */
-	schema: SchemaSummary,
+	schema: FederatedSchemaDto,
 	/**  `complete` or `partial`; derived from the source reports. */
 	completeness: string,
 	/**  The exact requested document. */
@@ -569,7 +571,7 @@ export type FederatedFieldDto = {
 	/**  Semantic field name. */
 	name: string,
 	/**  Selected JSON value, or `None` when every provider was absent. */
-	value: string | null,
+	value: unknown | null,
 	/**  Winning source, or `None` when the field is absent. */
 	winner: string | null,
 	/**  Every declared provider, including losers and absences. */
@@ -587,11 +589,35 @@ export type FederatedProviderDto = {
 	/**  `observed`, `observed-nothing`, `did-not-see-document`, or `not-asked`. */
 	verdict: string,
 	/**  Observed JSON value, when present. */
-	value: string | null,
+	value: unknown | null,
 	/**  Why the provider was not asked, when applicable. */
 	reason: string | null,
 	/**  Adapter-internal fallback declaration. */
 	declared_fallback: string[],
+};
+
+/**  Catalog-persisted identity of the schema used for this response. */
+export type FederatedSchemaDto = {
+	/**  Stable schema name. */
+	name: string,
+	/**  Persisted catalog version. */
+	version: number,
+	/**  Persisted content checksum for that exact version. */
+	checksum: string,
+	/**  Entity names in the persisted schema. */
+	entities: string[],
+	/**  Arrow count. */
+	arrow_count: number,
+	/**  Attribute count. */
+	attribute_count: number,
+	/**  Equation count. */
+	equation_count: number,
+	/**  Whether facts in the schema require approval. */
+	approval_required: boolean,
+	/**  Objects currently committed to the graph. */
+	object_count: number,
+	/**  Review proposals currently retained. */
+	proposal_count: number,
 };
 
 /**  What became of one physical source. */

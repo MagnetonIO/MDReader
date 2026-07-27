@@ -103,6 +103,7 @@ function adapterWith(overrides: Partial<SemanticsAdapter> = {}): SemanticsAdapte
     checkConstraints: vi.fn(),
     explainQuery: vi.fn(),
     queryFederatedDocument: vi.fn(),
+    cancelFederatedDocument: vi.fn(async () => {}),
     ...overrides,
   } as SemanticsAdapter;
 }

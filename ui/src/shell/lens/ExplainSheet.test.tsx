@@ -60,6 +60,7 @@ function adapterWith(hits: ExplainedHit[]): SemanticsAdapter {
     checkConstraints: vi.fn(),
     explainQuery: vi.fn(async () => hits),
     queryFederatedDocument: vi.fn(),
+    cancelFederatedDocument: vi.fn(async () => {}),
   } as SemanticsAdapter;
 }
 
