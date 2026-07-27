@@ -1,4 +1,25 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    if std::env::var_os("CARGO_FEATURE_E2E_BUILD").is_some() {
+        let base: serde_json::Value = serde_json::from_str(include_str!("tauri.conf.json"))
+            .expect("tauri.conf.json must contain valid JSON");
+        let overlay = std::env::var("TAURI_CONFIG").ok().map(|value| {
+            serde_json::from_str::<serde_json::Value>(&value)
+                .expect("TAURI_CONFIG must contain valid JSON")
+        });
+        let identifier = overlay
+            .as_ref()
+            .and_then(|value| value.get("identifier"))
+            .or_else(|| base.get("identifier"))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            identifier,
+            Some("dev.mdreader.app.e2e"),
+            "e2e-build requires Tauri bundle identity dev.mdreader.app.e2e"
+        );
+    }
+
     let unset_release_commit = "0000000000000000000000000000000000000000";
     let release_source_commit = std::env::var("MDREADER_RELEASE_SOURCE_COMMIT")
         .unwrap_or_else(|_| unset_release_commit.to_owned());

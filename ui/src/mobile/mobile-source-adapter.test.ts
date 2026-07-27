@@ -25,6 +25,9 @@ const IDS = {
   mapping: '00000000-0000-0000-0000-000000000008',
   policy: '00000000-0000-0000-0000-000000000009',
   query: '00000000-0000-0000-0000-000000000010',
+  source2: '00000000-0000-0000-0000-000000000011',
+  sourceVersion2: '00000000-0000-0000-0000-000000000012',
+  mapping2: '00000000-0000-0000-0000-000000000013',
 } as const;
 
 const session = {
@@ -133,7 +136,12 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
       label: 'Enterprise Document library',
       documents: [
         {
-          source: { kind: 'enterprise-catdb', id: IDS.source },
+          source: {
+            kind: 'enterprise-catdb',
+            id: IDS.deployment,
+            connectionId: config.connectionId,
+            deploymentId: IDS.deployment,
+          },
           sourceRoot: { id: IDS.workspace, version: IDS.catalog },
           document: { id: 'document-1', path: 'papers/architecture.md' },
           name: 'architecture.md',
@@ -283,13 +291,73 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
           select: ['path', 'title', 'size', 'body'],
           filters: [{ field: 'path', operator: 'eq', value: 'papers/architecture.md' }],
           order_by: [],
-          source_ids: [IDS.source],
           page_size: 2,
           limit: 2,
           require_complete: true,
         }),
       }),
     );
+  });
+
+  test('preserves logical document identity when path and body select different providers', async () => {
+    const listing = queryResponse({
+      path: 'papers/federated.md',
+      title: 'Federated',
+      size: 19,
+    });
+    const read = queryResponse({
+      path: 'papers/federated.md',
+      title: 'Federated',
+      size: 19,
+      body: '# Federated content',
+    });
+    read.pins.source_version_ids.push(IDS.sourceVersion2);
+    read.pins.mapping_version_ids.push(IDS.mapping2);
+    read.sources.push({
+      source_id: IDS.source2,
+      source_version_id: IDS.sourceVersion2,
+      scanned: 1,
+      returned: 1,
+      freshness_ms: 1,
+      outcome: 'ran',
+    });
+    read.rows[0]!.provenance.body = {
+      field: 'body',
+      selected: 0,
+      considered: [
+        {
+          source_version_id: IDS.sourceVersion2,
+          record_key: 'document-1',
+          mapping_version_id: IDS.mapping2,
+          observed_at_ms: 1_234,
+          state: {
+            state: 'observed_value',
+            value: '# Federated content',
+          },
+        },
+      ],
+    };
+    const fetcher = sequence(response(session), response(listing), response(read));
+    const adapter = createEnterpriseMobileSourceAdapter(config, fetcher);
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+    expect(listed.documents[0]!.source).toEqual({
+      kind: 'enterprise-catdb',
+      id: IDS.deployment,
+      connectionId: config.connectionId,
+      deploymentId: IDS.deployment,
+    });
+
+    await expect(adapter.readDocument(listed.documents[0]!)).resolves.toMatchObject({
+      content: '# Federated content',
+      provenance: {
+        pins: read.pins,
+        fields: read.rows[0]!.provenance,
+        sources: read.sources,
+      },
+    });
+    const readBody = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
+    expect(readBody).not.toHaveProperty('source_ids');
   });
 
   test('preserves a titleless Markdown document and an empty body as valid data', async () => {
@@ -324,36 +392,26 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
   });
 
-  test('a document answer under a different source identity fails closed', async () => {
-    const read = queryResponse(
-      {
-        path: 'papers/architecture.md',
-        title: 'Semantic architecture',
-        size: 128,
-        body: '# Wrong source',
-        modifiedAt: 1_234,
-      },
-      {
-        sources: [
-          {
-            source_id: IDS.deployment,
-            source_version_id: IDS.sourceVersion,
-            scanned: 1,
-            returned: 1,
-            freshness_ms: 1,
-            outcome: 'ran',
-          },
-        ],
-      },
-    );
-    const adapter = createEnterpriseMobileSourceAdapter(config, sequence(response(read)));
-    const document = {
-      source: { kind: 'enterprise-catdb', id: IDS.source },
-      sourceRoot: { id: IDS.workspace, version: IDS.catalog },
-      document: { id: 'document-1', path: 'papers/architecture.md' },
-      name: 'architecture.md',
+  test('a document under a different admitted CatDB service identity fails closed', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
       title: 'Semantic architecture',
       size: 128,
+    });
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+    const document = {
+      ...listed.documents[0]!,
+      source: {
+        kind: 'enterprise-catdb' as const,
+        id: IDS.source,
+        connectionId: 'different-connection',
+        deploymentId: IDS.source,
+      },
     } satisfies MobileLibraryDocument;
 
     await expect(adapter.readDocument(document)).rejects.toMatchObject({

@@ -13,6 +13,7 @@ import {
 } from './mobile-source-adapter';
 import {
   readOfflineDocument,
+  sameMobileDocumentIdentity,
   writeOfflineDocument,
   type MobileDocumentIdentity,
   type OfflineCacheRead,
@@ -31,20 +32,6 @@ function dirname(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '');
   const index = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
   return index >= 0 ? normalized.slice(0, index) : normalized;
-}
-
-function sameIdentity(
-  left: MobileDocumentIdentity,
-  right: MobileDocumentIdentity,
-): boolean {
-  return (
-    left.source.kind === right.source.kind &&
-    left.source.id === right.source.id &&
-    left.sourceRoot.id === right.sourceRoot.id &&
-    left.sourceRoot.version === right.sourceRoot.version &&
-    left.document.id === right.document.id &&
-    left.document.path === right.document.path
-  );
 }
 
 function observationStateLabel(state: { state: string; value?: unknown }): string {
@@ -103,7 +90,7 @@ export function MobileReader({
         }));
     void liveRead
       .then(async (payload) => {
-        if (!sameIdentity(sourceIdentity, payload)) {
+        if (!sameMobileDocumentIdentity(sourceIdentity, payload)) {
           throw new MobileSourceReadError(
             'identity-mismatch',
             'The mobile document identity changed during the read.',

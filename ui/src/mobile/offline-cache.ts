@@ -15,7 +15,15 @@ export type MobileSourceIdentity =
   | { kind: 'device-folder'; id: string }
   | { kind: 'google-drive'; id: string }
   | { kind: 'dropbox'; id: string }
-  | { kind: 'enterprise-catdb'; id: string };
+  | {
+      kind: 'enterprise-catdb';
+      /** Stable logical identity of the admitted CatDB deployment. */
+      id: string;
+      /** Native-managed connection whose authorization admitted the deployment. */
+      connectionId: string;
+      /** Deployment identity returned by the authenticated CatDB session. */
+      deploymentId: string;
+    };
 
 export interface MobileSourceRootIdentity {
   /** Stable identity of the admitted source root, independent of its display path. */
@@ -92,14 +100,23 @@ function storedBytes(entry: OfflineDocumentEntry): number {
 function validSource(value: unknown): value is MobileSourceIdentity {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.id !== 'string' ||
+    candidate.id.length === 0 ||
+    candidate.id.length > 512
+  ) {
+    return false;
+  }
+  if (candidate.kind === 'enterprise-catdb') {
+    return (
+      validIdentityPart(candidate.connectionId) &&
+      validIdentityPart(candidate.deploymentId)
+    );
+  }
   return (
-    (candidate.kind === 'device-folder' ||
-      candidate.kind === 'google-drive' ||
-      candidate.kind === 'dropbox' ||
-      candidate.kind === 'enterprise-catdb') &&
-    typeof candidate.id === 'string' &&
-    candidate.id.length > 0 &&
-    candidate.id.length <= 512
+    candidate.kind === 'device-folder' ||
+    candidate.kind === 'google-drive' ||
+    candidate.kind === 'dropbox'
   );
 }
 
@@ -123,7 +140,49 @@ function validNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
-function entryOf(value: unknown): OfflineDocumentEntry | null {
+async function sha256(content: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return `sha256:${Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')}`;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function selectedBodyMatches(
+  provenance: MobileDocumentProvenance,
+  documentId: string,
+  content: string,
+  observedAt: number,
+): boolean {
+  const body = record(provenance.fields.body);
+  const selected = body?.selected;
+  const considered = body?.considered;
+  if (
+    body?.field !== 'body' ||
+    typeof selected !== 'number' ||
+    !Number.isInteger(selected) ||
+    !Array.isArray(considered) ||
+    selected < 0 ||
+    selected >= considered.length
+  ) {
+    return false;
+  }
+  const observation = record(considered[selected]);
+  const state = record(observation?.state);
+  return (
+    observation?.record_key === documentId &&
+    observation.observed_at_ms === observedAt &&
+    state?.state === 'observed_value' &&
+    state.value === content
+  );
+}
+
+async function entryOf(value: unknown): Promise<OfflineDocumentEntry | null> {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
   if (
@@ -151,12 +210,20 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
   if (
     actualBytes !== candidate.bytes ||
     actualBytes > MAX_OFFLINE_DOCUMENT_BYTES ||
+    !/^sha256:[0-9a-f]{64}$/.test(candidate.revision) ||
+    candidate.revision !== (await sha256(candidate.content)) ||
     candidate.expiresAt < candidate.cachedAt ||
     provenanceBytes === null ||
     (candidate.provenance !== null && provenance === null) ||
     (source.kind === 'enterprise-catdb' &&
-      (provenance === null ||
-        !provenance.sources.some((provider) => provider.source_id === source.id)))
+      provenance === null) ||
+    (provenance !== null &&
+      !selectedBodyMatches(
+        provenance,
+        candidate.document.id,
+        candidate.content,
+        candidate.observedAt,
+      ))
   ) {
     return null;
   }
@@ -178,13 +245,13 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
   };
 }
 
-function envelopeOf(value: unknown): OfflineCacheEnvelope | null {
+async function envelopeOf(value: unknown): Promise<OfflineCacheEnvelope | null> {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
   if (candidate.version !== CACHE_VERSION || !Array.isArray(candidate.entries)) return null;
   const entries: OfflineDocumentEntry[] = [];
   for (const valueEntry of candidate.entries) {
-    const entry = entryOf(valueEntry);
+    const entry = await entryOf(valueEntry);
     if (!entry) return null;
     entries.push(entry);
   }
@@ -213,13 +280,25 @@ function withoutContent(entry: OfflineDocumentEntry): Omit<OfflineDocumentEntry,
   };
 }
 
-function sameDocumentIdentity(
+function sameSourceIdentity(
+  left: MobileSourceIdentity,
+  right: MobileSourceIdentity,
+): boolean {
+  if (left.kind !== right.kind || left.id !== right.id) return false;
+  if (left.kind !== 'enterprise-catdb') return true;
+  return (
+    right.kind === 'enterprise-catdb' &&
+    left.connectionId === right.connectionId &&
+    left.deploymentId === right.deploymentId
+  );
+}
+
+export function sameMobileDocumentIdentity(
   left: MobileDocumentIdentity,
   right: MobileDocumentIdentity,
 ): boolean {
   return (
-    left.source.kind === right.source.kind &&
-    left.source.id === right.source.id &&
+    sameSourceIdentity(left.source, right.source) &&
     left.sourceRoot.id === right.sourceRoot.id &&
     left.sourceRoot.version === right.sourceRoot.version &&
     left.document.id === right.document.id &&
@@ -235,9 +314,11 @@ export async function readOfflineDocument(
     const store = await cacheStore();
     const raw = await store.get(CACHE_KEY);
     if (raw === null || raw === undefined) return { status: 'miss' };
-    const envelope = envelopeOf(raw);
+    const envelope = await envelopeOf(raw);
     if (!envelope) return { status: 'corrupt' };
-    const matches = envelope.entries.filter((candidate) => sameDocumentIdentity(candidate, identity));
+    const matches = envelope.entries.filter((candidate) =>
+      sameMobileDocumentIdentity(candidate, identity),
+    );
     if (matches.length > 1) return { status: 'corrupt' };
     const entry = matches[0];
     if (!entry) return { status: 'miss' };
@@ -253,14 +334,14 @@ export async function readOfflineDocument(
 }
 
 async function writeOfflineDocumentTransaction(entry: OfflineDocumentEntry): Promise<boolean> {
-  const normalized = entryOf(entry);
-  if (!normalized) return false;
   try {
+    const normalized = await entryOf(entry);
+    if (!normalized) return false;
     const store = await cacheStore();
     const raw = await store.get(CACHE_KEY);
-    const current = envelopeOf(raw) ?? { version: CACHE_VERSION, entries: [] };
+    const current = (await envelopeOf(raw)) ?? { version: CACHE_VERSION, entries: [] };
     const replaced = current.entries.find((candidate) =>
-      sameDocumentIdentity(candidate, normalized),
+      sameMobileDocumentIdentity(candidate, normalized),
     );
     if (
       replaced &&
@@ -271,7 +352,7 @@ async function writeOfflineDocumentTransaction(entry: OfflineDocumentEntry): Pro
       return false;
     }
     const deduped = current.entries.filter(
-      (candidate) => !sameDocumentIdentity(candidate, normalized),
+      (candidate) => !sameMobileDocumentIdentity(candidate, normalized),
     );
     deduped.push(normalized);
     deduped.sort((left, right) => right.cachedAt - left.cachedAt);

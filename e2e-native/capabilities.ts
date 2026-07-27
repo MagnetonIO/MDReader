@@ -22,14 +22,12 @@
 import { execFileSync } from 'node:child_process';
 import {
   closeSync,
+  fstatSync,
   lstatSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   readSync,
-  rmSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +38,8 @@ const REPO_ROOT = resolve(HERE, '..', '..', '..');
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
 const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
 const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
+const MAX_ANDROID_CENTRAL_DIRECTORY_BYTES = 64 * 1024 * 1024;
+const APK_MANIFEST_SCANNER = join(HERE, 'apk-manifest-scanner.mjs');
 
 interface E2eBuildManifest {
   schema: 1;
@@ -97,37 +97,110 @@ export function validateEmbeddedBuildManifest(
   return manifest as E2eBuildManifest;
 }
 
+function readExactly(handle: number, bytes: Buffer, position: number): void {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(handle, bytes, offset, bytes.length - offset, position + offset);
+    if (count === 0) throw new Error('APK ZIP metadata is truncated');
+    offset += count;
+  }
+}
+
+function declaredZipMemberSize(apk: string, member: string): number {
+  const handle = openSync(apk, 'r');
+  try {
+    const size = fstatSync(handle).size;
+    const tailLength = Math.min(size, 65_557);
+    const tail = Buffer.alloc(tailLength);
+    readExactly(handle, tail, size - tailLength);
+    let eocd = -1;
+    for (let index = tail.length - 22; index >= 0; index -= 1) {
+      if (
+        tail.readUInt32LE(index) === 0x06054b50 &&
+        index + 22 + tail.readUInt16LE(index + 20) === tail.length
+      ) {
+        eocd = index;
+        break;
+      }
+    }
+    if (eocd < 0) throw new Error('APK ZIP central directory is missing');
+    const entries = tail.readUInt16LE(eocd + 10);
+    const centralSize = tail.readUInt32LE(eocd + 12);
+    const centralOffset = tail.readUInt32LE(eocd + 16);
+    if (
+      tail.readUInt16LE(eocd + 4) !== 0 ||
+      tail.readUInt16LE(eocd + 6) !== 0 ||
+      tail.readUInt16LE(eocd + 8) !== entries ||
+      entries === 0xffff ||
+      centralSize === 0xffffffff ||
+      centralOffset === 0xffffffff
+    ) {
+      throw new Error('ZIP64 APK metadata is unsupported');
+    }
+    if (
+      centralSize > MAX_ANDROID_CENTRAL_DIRECTORY_BYTES ||
+      centralOffset + centralSize !== size - tailLength + eocd
+    ) {
+      throw new Error('APK ZIP central directory exceeds the artifact safety bound');
+    }
+
+    const header = Buffer.alloc(46);
+    let offset = centralOffset;
+    let declared: number | undefined;
+    for (let index = 0; index < entries; index += 1) {
+      if (offset + header.length > centralOffset + centralSize) {
+        throw new Error('APK ZIP central directory is truncated');
+      }
+      readExactly(handle, header, offset);
+      if (header.readUInt32LE(0) !== 0x02014b50) {
+        throw new Error('APK ZIP central directory is invalid');
+      }
+      const uncompressedSize = header.readUInt32LE(24);
+      const nameLength = header.readUInt16LE(28);
+      const extraLength = header.readUInt16LE(30);
+      const commentLength = header.readUInt16LE(32);
+      const recordLength = header.length + nameLength + extraLength + commentLength;
+      if (offset + recordLength > centralOffset + centralSize || nameLength > 4096) {
+        throw new Error('APK ZIP central directory entry exceeds the artifact safety bound');
+      }
+      const nameBytes = Buffer.alloc(nameLength);
+      readExactly(handle, nameBytes, offset + header.length);
+      if (nameBytes.toString('utf8') === member) {
+        if (declared !== undefined) throw new Error(`APK contains duplicate native library ${member}`);
+        if (uncompressedSize === 0xffffffff) throw new Error('ZIP64 APK member is unsupported');
+        declared = uncompressedSize;
+      }
+      offset += recordLength;
+    }
+    if (declared === undefined) throw new Error(`APK native library is missing: ${member}`);
+    return declared;
+  } finally {
+    closeSync(handle);
+  }
+}
+
 function validateZipMemberBuildManifest(
   apk: string,
   member: string,
   expectedCommit: string,
+  maximumBytes: number,
 ): E2eBuildManifest | null {
-  const directory = mkdtempSync(join(tmpdir(), 'mdreader-apk-member-'));
-  const extracted = join(directory, 'native-library.so');
-  let output: number | undefined;
-  try {
-    output = openSync(extracted, 'wx', 0o600);
-    execFileSync('unzip', ['-p', apk, member], {
-      stdio: ['ignore', output, 'pipe'],
-    });
-    closeSync(output);
-    output = undefined;
-    const metadata = lstatSync(extracted);
-    if (
-      !metadata.isFile() ||
-      metadata.size === 0 ||
-      metadata.size > MAX_ANDROID_NATIVE_LIBRARY_BYTES
-    ) {
-      throw new Error('Android native library exceeds the artifact safety bound');
-    }
-    const library = readFileSync(extracted);
-    return library.includes(BUILD_MANIFEST_PREFIX)
-      ? validateEmbeddedBuildManifest(library, expectedCommit)
-      : null;
-  } finally {
-    if (output !== undefined) closeSync(output);
-    rmSync(directory, { recursive: true, force: true });
+  const declaredSize = declaredZipMemberSize(apk, member);
+  if (declaredSize > maximumBytes) {
+    throw new Error('Android declared native library exceeds the artifact safety bound');
   }
+  const manifestBytes = execFileSync(
+    process.execPath,
+    [APK_MANIFEST_SCANNER, apk, member, String(maximumBytes)],
+    {
+      encoding: null,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024,
+    },
+  );
+  return manifestBytes.length === 0
+    ? null
+    : validateEmbeddedBuildManifest(manifestBytes, expectedCommit);
 }
 
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
@@ -290,7 +363,11 @@ export function validateIosApp(
 export function validateAndroidApk(
   artifact: string | undefined,
   sourceCommit = expectedSourceCommit(),
+  maximumNativeLibraryBytes = MAX_ANDROID_NATIVE_LIBRARY_BYTES,
 ): string {
+  if (!Number.isSafeInteger(maximumNativeLibraryBytes) || maximumNativeLibraryBytes <= 0) {
+    throw new Error('Android native library safety bound must be a positive integer');
+  }
   const apk = requiredAbsoluteArtifact('MDREADER_ANDROID_APP', artifact);
   let metadata;
   try {
@@ -365,7 +442,12 @@ export function validateAndroidApk(
       .map((file) => file.replace(/^\//, ''))
       .filter((file) => /^lib\/x86_64\/[^/]+\.so$/.test(file));
     const manifests = nativeLibraries.flatMap((file) => {
-      const manifest = validateZipMemberBuildManifest(apk, file, sourceCommit);
+      const manifest = validateZipMemberBuildManifest(
+        apk,
+        file,
+        sourceCommit,
+        maximumNativeLibraryBytes,
+      );
       return manifest ? [manifest] : [];
     });
     if (manifests.length !== 1) {
