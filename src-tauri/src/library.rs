@@ -966,6 +966,7 @@ fn recover_v2_engine_source_id_with_hooks(
     if db_metadata.file_type().is_symlink() || !db_metadata.is_file() {
         return Err(LibraryError::CorruptRegistry);
     }
+    ensure_no_sqlite_recovery_sidecars(&db_path)?;
 
     // Hold the exact checked file open while SQLite opens a platform-specific
     // binding to it. A final name-to-handle comparison also rejects a
@@ -982,6 +983,7 @@ fn recover_v2_engine_source_id_with_hooks(
     if checked_file != opened_file {
         return Err(LibraryError::CorruptRegistry);
     }
+    ensure_no_sqlite_recovery_sidecars(&db_path)?;
     validate_v2_catdb_index(&connection)?;
     let mut statement = connection
         .prepare("SELECT source_id, root_path FROM sources ORDER BY source_id LIMIT 2")
@@ -1006,6 +1008,19 @@ fn recover_v2_engine_source_id_with_hooks(
         return Err(LibraryError::CorruptRegistry);
     }
     Ok(Some(source_id))
+}
+
+fn ensure_no_sqlite_recovery_sidecars(db_path: &Path) -> Result<(), LibraryError> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = db_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        match fs::symlink_metadata(PathBuf::from(sidecar)) {
+            Ok(_) => return Err(LibraryError::CorruptRegistry),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(LibraryError::CorruptRegistry),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
