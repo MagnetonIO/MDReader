@@ -10,8 +10,8 @@ use catdb_connector_dropbox::{
     DropboxEndpoint, DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse,
     DropboxKnownRevision, DropboxOAuthPkce, DropboxRefreshCredential, DropboxRuntimeSecrets,
     DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxSourceConfig,
-    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec,
-    DROPBOX_CONTENT_READ_SCOPE, DROPBOX_METADATA_READ_SCOPE,
+    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
+    DROPBOX_METADATA_READ_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -103,9 +103,7 @@ fn config() -> DropboxSourceConfig {
     .unwrap()
 }
 
-fn source(
-    transport: ScriptedTransport,
-) -> (DropboxSource, ScriptedTransport) {
+fn source(transport: ScriptedTransport) -> (DropboxSource, ScriptedTransport) {
     let source = DropboxSource::open_with_transport(
         PinnedDropboxSourceSpec::new(config(), "dropbox-schema-v1").unwrap(),
         DropboxRuntimeSecrets::new(
@@ -237,7 +235,11 @@ async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
     let transport = ScriptedTransport::new([
         response(
             200,
-            list_page(serde_json::json!([first_markdown, binary]), "cursor-1", true),
+            list_page(
+                serde_json::json!([first_markdown, binary]),
+                "cursor-1",
+                true,
+            ),
         ),
         response_with_headers(
             200,
@@ -297,8 +299,12 @@ async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
     assert_eq!(requests[2].path(), "/2/files/list_folder/continue");
     assert_eq!(requests[2].json_body()["cursor"], "cursor-1");
     assert_eq!(requests[3].endpoint(), DropboxEndpoint::Content);
-    assert!(requests.iter().all(|request| request.method() == DropboxHttpMethod::Post));
-    assert!(requests.iter().all(|request| !request.path().contains("upload")));
+    assert!(requests
+        .iter()
+        .all(|request| request.method() == DropboxHttpMethod::Post));
+    assert!(requests
+        .iter()
+        .all(|request| !request.path().contains("upload")));
 }
 
 #[tokio::test]
@@ -307,12 +313,7 @@ async fn download_result_must_match_the_requested_path_id_and_revision() {
         response(
             200,
             list_page(
-                serde_json::json!([file(
-                    "/knowledge/one.md",
-                    "one.md",
-                    "r1",
-                    "hash-1"
-                )]),
+                serde_json::json!([file("/knowledge/one.md", "one.md", "r1", "hash-1")]),
                 "cursor-1",
                 false,
             ),
@@ -338,23 +339,20 @@ async fn download_result_must_match_the_requested_path_id_and_revision() {
 
 #[tokio::test]
 async fn bound_query_cursor_rejects_replay_wrong_query_and_tampering_before_http() {
-    let transport = ScriptedTransport::new([response(
-        200,
-        list_page(
-            serde_json::json!([file(
-                "/knowledge/report.pdf",
-                "report.pdf",
-                "r2",
-                "hash-2"
-            )]),
-            "cursor-1",
-            true,
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            list_page(
+                serde_json::json!([file("/knowledge/report.pdf", "report.pdf", "r2", "hash-2")]),
+                "cursor-1",
+                true,
+            ),
         ),
-    )]);
+        response(200, list_page(serde_json::json!([]), "cursor-2", false)),
+    ]);
     let (source, transport) = source(transport);
     let query_id = uuid::Uuid::new_v4();
-    let first_context =
-        context_with_id(query_id, 1, 10, 4096, CancellationToken::new());
+    let first_context = context_with_id(query_id, 1, 10, 4096, CancellationToken::new());
     let source_plan = plan(&source, &["name"]);
     let first = source
         .execute_page(&source_plan, None, &first_context)
@@ -363,13 +361,7 @@ async fn bound_query_cursor_rejects_replay_wrong_query_and_tampering_before_http
     let cursor = first.next_cursor.expect("provider continuation");
     assert_eq!(transport.requests().len(), 1);
 
-    let wrong_query = context_with_id(
-        uuid::Uuid::new_v4(),
-        1,
-        10,
-        4096,
-        CancellationToken::new(),
-    );
+    let wrong_query = context_with_id(uuid::Uuid::new_v4(), 1, 10, 4096, CancellationToken::new());
     assert_eq!(
         source
             .execute_page(&source_plan, Some(&cursor), &wrong_query)
@@ -389,13 +381,19 @@ async fn bound_query_cursor_rejects_replay_wrong_query_and_tampering_before_http
     );
     assert_eq!(transport.requests().len(), 1);
 
+    source
+        .execute_page(&source_plan, Some(&cursor), &first_context)
+        .await
+        .expect("an authenticated continuation remains usable after invalid attempts");
+    assert_eq!(transport.requests().len(), 2);
+
     assert_eq!(
         source
             .execute_page(&source_plan, Some(&cursor), &first_context)
             .await,
         Err(SourceError::InvalidCursor)
     );
-    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.requests().len(), 2);
 }
 
 #[tokio::test]
@@ -479,9 +477,18 @@ async fn incremental_changes_distinguish_unchanged_upsert_delete_and_reset() {
         DropboxChangeOutcome::RebuildRequired
     );
     assert_eq!(transport.requests().len(), 3);
-    assert_eq!(transport.requests()[0].path(), "/2/files/list_folder/get_latest_cursor");
-    assert_eq!(transport.requests()[1].path(), "/2/files/list_folder/continue");
-    assert_eq!(transport.requests()[2].path(), "/2/files/list_folder/continue");
+    assert_eq!(
+        transport.requests()[0].path(),
+        "/2/files/list_folder/get_latest_cursor"
+    );
+    assert_eq!(
+        transport.requests()[1].path(),
+        "/2/files/list_folder/continue"
+    );
+    assert_eq!(
+        transport.requests()[2].path(),
+        "/2/files/list_folder/continue"
+    );
 }
 
 #[derive(Clone)]
@@ -589,11 +596,17 @@ async fn concurrent_401s_share_one_refresh_and_each_read_retries_once() {
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert_eq!(
-        requests.iter().filter(|request| request.credential_generation() == 0).count(),
+        requests
+            .iter()
+            .filter(|request| request.credential_generation() == 0)
+            .count(),
         2
     );
     assert_eq!(
-        requests.iter().filter(|request| request.credential_generation() == 1).count(),
+        requests
+            .iter()
+            .filter(|request| request.credential_generation() == 1)
+            .count(),
         2
     );
 }
@@ -653,7 +666,10 @@ fn source_spec_and_debug_are_secret_free_and_surface_is_read_only() {
     assert!(spec.contains("keychain/mdreader/dropbox"));
     assert!(!spec.contains("fixture-access-token"));
     assert!(!format!("{source:?}").contains("fixture-access-token"));
-    assert_eq!(source.availability_evidence(), DropboxAvailability::FixtureValidated);
+    assert_eq!(
+        source.availability_evidence(),
+        DropboxAvailability::FixtureValidated
+    );
 
     let source_text = include_str!("../src/lib.rs").to_ascii_lowercase();
     for forbidden in [
@@ -664,7 +680,10 @@ fn source_spec_and_debug_are_secret_free_and_surface_is_read_only() {
         "/2/sharing/",
         "arbitrary_rpc",
     ] {
-        assert!(!source_text.contains(forbidden), "mutation surface: {forbidden}");
+        assert!(
+            !source_text.contains(forbidden),
+            "mutation surface: {forbidden}"
+        );
     }
 }
 
