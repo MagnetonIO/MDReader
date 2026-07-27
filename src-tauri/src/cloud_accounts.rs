@@ -1844,6 +1844,7 @@ fn admit_library_query(
             .as_ref()
             .is_none_or(|requested| requested.contains(&source_id))
     };
+    let active_source_id = snapshot.active_source_id;
 
     let mut members = Vec::new();
     for local in snapshot
@@ -1852,6 +1853,8 @@ fn admit_library_query(
         .filter(|source| selected(source.engine_source_id()))
     {
         let membership_id = local.engine_source_id();
+        let registry_id = local.id.clone();
+        let active = active_source_id.as_deref() == Some(registry_id.as_str());
         let root = local
             .path()
             .map_err(crate::library::map_library_cloud_error)?;
@@ -1874,6 +1877,7 @@ fn admit_library_query(
             .collect::<Result<Vec<_>, CloudSourceError>>()?;
         members.push(crate::library_query::LibraryQueryMember {
             membership_id,
+            registry_id,
             name: root
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1881,6 +1885,7 @@ fn admit_library_query(
                 .to_string(),
             kind: crate::library_query::LibraryQueryMemberKind::LocalFolder,
             editable: true,
+            active,
             sources: physical,
         });
     }
@@ -1918,6 +1923,7 @@ async fn bind_library_cloud_source(
 
     let provider = record.provider;
     let membership_id = crate::library_query::membership_id(record.id());
+    let registry_id = record.id().to_string();
     let resolver = Arc::new(CloudCredentialResolver::from_admitted(
         provider,
         record.credential_reference.clone(),
@@ -1984,12 +1990,14 @@ async fn bind_library_cloud_source(
             .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
     Ok(crate::library_query::LibraryQueryMember {
         membership_id,
+        registry_id,
         name: record.label,
         kind: match provider {
             CloudProvider::GoogleDrive => crate::library_query::LibraryQueryMemberKind::GoogleDrive,
             CloudProvider::Dropbox => crate::library_query::LibraryQueryMemberKind::Dropbox,
         },
         editable: false,
+        active: false,
         sources: vec![crate::library_query::LibraryPhysicalSource::new(
             membership_id,
             source,

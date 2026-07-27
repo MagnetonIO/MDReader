@@ -425,6 +425,61 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       );
     }
 
+    case 'inspectLibraryDocument': {
+      const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
+      const readerRe = new RegExp(step.readerPattern);
+      let reader = '';
+      const opened = await waitUntil(async () => {
+        try {
+          await clickIn('library-sources__document', step.document);
+          reader = await scopedText('library-reader');
+          return readerRe.test(reader);
+        } catch {
+          return false;
+        }
+      }, 15_000);
+      if (!opened) {
+        throw new Error(
+          `the unified Library did not open ${JSON.stringify(step.document)} with ` +
+            `/${readerRe.source}/ (reader: ${JSON.stringify(reader.slice(0, 320))})`,
+        );
+      }
+
+      await clickIn('library-reader__inspect', 'Inspect');
+      const inspectorReady = await waitUntil(
+        async () => (await d.countClass('document-inspector')) === 1,
+        15_000,
+      );
+      if (!inspectorReady) {
+        throw new Error('the unified Library document did not open its Semantic Inspector');
+      }
+
+      await clickIn('document-inspector__tab', 'Provenance');
+      const provenanceRe = new RegExp(step.provenancePattern);
+      const provenance = await scopedText('document-inspector');
+      if (!provenanceRe.test(provenance)) {
+        throw new Error(
+          `the unified Library provenance did not report /${provenanceRe.source}/ ` +
+            `(inspector: ${JSON.stringify(provenance.replace(/\n/g, ' | ').slice(0, 320))})`,
+        );
+      }
+
+      await clickIn('document-inspector__tab', 'Schema');
+      const schemaRe = new RegExp(step.schemaPattern);
+      const schema = await scopedText('document-inspector');
+      if (!schemaRe.test(schema)) {
+        throw new Error(
+          `the unified Library schema did not report /${schemaRe.source}/ ` +
+            `(inspector: ${JSON.stringify(schema.replace(/\n/g, ' | ').slice(0, 320))})`,
+        );
+      }
+      return (
+        'one Library answer supplied the local reader, edit capability, provenance, ' +
+        'and pinned schema; the runner fingerprint verifies the source tree stayed unchanged'
+      );
+    }
+
     case 'constraintJump': {
       const scopedText = required(d, 'scopedText');
       const clickIn = required(d, 'clickIn');

@@ -4,7 +4,6 @@
 
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type {
-  CloudSourceDto,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
@@ -28,18 +27,13 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocRef) => void;
   isIgnored?: (path: string) => boolean;
-  cloudSources?: CloudSourceDto[];
   libraryEvidence?: LibraryEntityQueryResponse_Serialize | null;
-  cloudSearch?: string;
-  cloudLoading?: boolean;
-  cloudError?: string | null;
-  onCloudSearch?: (value: string) => void;
-  onOpenCloud?: (
-    source: CloudSourceDto,
-    member: LibrarySourceExecution,
-    row: EntityRow,
-  ) => void;
-  onRefreshCloud?: () => void;
+  librarySearch?: string;
+  libraryLoading?: boolean;
+  libraryError?: string | null;
+  onLibrarySearch?: (value: string) => void;
+  onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
+  onRefreshLibrary?: () => void;
 }
 
 function basename(path: string): string {
@@ -85,19 +79,15 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
-  cloudSources = [],
   libraryEvidence = null,
-  cloudSearch = '',
-  cloudLoading = false,
-  cloudError = null,
-  onCloudSearch,
-  onOpenCloud,
-  onRefreshCloud,
+  librarySearch = '',
+  libraryLoading = false,
+  libraryError = null,
+  onLibrarySearch,
+  onOpenLibrary,
+  onRefreshLibrary,
 }: SidebarProps) {
-  const connectedSources = cloudSources.filter(
-    (source) => source.connection !== 'disconnected',
-  );
-  const search = cloudSearch.trim().toLocaleLowerCase();
+  const search = librarySearch.trim().toLocaleLowerCase();
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -114,7 +104,7 @@ export function Sidebar({
         </button>
       </div>
 
-      {root && listingError ? (
+      {libraryEvidence ? null : root && listingError ? (
         <ListingErrorPanel failure={listingError} />
       ) : root && loading && files.length === 0 ? (
         // The listing has not answered YET. Saying "no markdown files" here is a
@@ -140,82 +130,73 @@ export function Sidebar({
         </div>
       )}
 
-      {connectedSources.length > 0 ? (
-        <nav className="cloud-library" aria-label="Connected Library sources">
-          <div className="cloud-library__heading">
-            <span>Connected</span>
-            {onRefreshCloud ? (
-              <button type="button" onClick={onRefreshCloud} disabled={cloudLoading}>
-                {cloudLoading ? 'Reading…' : 'Refresh'}
+      {libraryEvidence || libraryLoading || libraryError ? (
+        <nav className="library-sources" aria-label="Library sources">
+          <div className="library-sources__heading">
+            <span>Library</span>
+            {onRefreshLibrary ? (
+              <button type="button" onClick={onRefreshLibrary} disabled={libraryLoading}>
+                {libraryLoading ? 'Reading…' : 'Refresh'}
               </button>
             ) : null}
           </div>
-          {onCloudSearch ? (
+          {onLibrarySearch ? (
             <input
               type="search"
-              value={cloudSearch}
-              onChange={(event) => onCloudSearch(event.currentTarget.value)}
-              placeholder="Search connected documents"
-              aria-label="Search connected Library documents"
+              value={librarySearch}
+              onChange={(event) => onLibrarySearch(event.currentTarget.value)}
+              placeholder="Filter Library documents"
+              aria-label="Filter Library documents"
             />
           ) : null}
-          {cloudError ? <p className="cloud-library__error">{cloudError}</p> : null}
-          {connectedSources.map((source) => {
-            const memberKind =
-              source.provider === 'google-drive' ? 'google-drive' : 'dropbox';
-            const member = libraryEvidence?.memberships.find(
-              (candidate) => candidate.kind === memberKind,
-            );
+          {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
+          {libraryEvidence?.memberships.map((member) => {
             const rows =
-              (libraryEvidence && member
-                ? rowsForMember(libraryEvidence, member)
-                : []
-              ).filter((row) => {
+              rowsForMember(libraryEvidence, member).filter((row) => {
                 if (!search) return true;
                 const fields = row.fields;
                 const title = typeof fields.title === 'string' ? fields.title : row.record_key;
                 return title.toLocaleLowerCase().includes(search);
               });
             return (
-              <section className="cloud-library__source" key={source.id}>
+              <section className="library-sources__source" key={member.membership_id}>
                 <div>
-                  <strong>{source.label}</strong>
+                  <strong>{member.name}</strong>
                   <small>
-                    {source.enabled ? 'Read-through · not locally indexed' : 'Paused in Settings'}
+                    {member.editable
+                      ? member.active
+                        ? 'Local · editable'
+                        : 'Local · open to edit'
+                      : 'Read-only'}
                   </small>
                 </div>
-                {source.connection === 'reauthorize' ? (
-                  <p>Sign in again from Settings to read this source.</p>
-                ) : !source.enabled ? null : libraryEvidence && member ? (
-                  rows.length > 0 ? (
-                    <ul>
-                      {rows.map((row) => {
-                        const fields =
-                          row.fields;
-                        const title =
-                          typeof fields.title === 'string' ? fields.title : row.record_key;
-                        return (
-                          <li key={`${member.membership_id}:${row.record_key}`}>
-                            <button
-                              type="button"
-                              aria-label={`Open ${title} from ${source.label}`}
-                              onClick={() => onOpenCloud?.(source, member, row)}
-                            >
-                              {title}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <p>{search ? 'No connected documents match.' : 'No documents found.'}</p>
-                  )
+                {rows.length > 0 ? (
+                  <ul>
+                    {rows.map((row) => {
+                      const fields = row.fields;
+                      const title =
+                        typeof fields.title === 'string' ? fields.title : row.record_key;
+                      return (
+                        <li key={row.record_key}>
+                          <button
+                            type="button"
+                            className="library-sources__document"
+                            aria-label={`Open ${title} from ${member.name}`}
+                            onClick={() => onOpenLibrary?.(member, row)}
+                          >
+                            {title}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 ) : (
-                  <p>{cloudLoading ? 'Reading provider…' : 'Refresh to read this source.'}</p>
+                  <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
                 )}
               </section>
             );
           })}
+          {!libraryEvidence && libraryLoading ? <p>Reading Library…</p> : null}
         </nav>
       ) : null}
 

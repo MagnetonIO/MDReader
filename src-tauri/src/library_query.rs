@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use catdb_api_types::{EntityQueryRequest, EntityQueryResponse, SourceExecution};
-use catdb_connectors::{CancellationToken, DataSource, ReadContext};
+use catdb_connectors::{
+    CancellationToken, DataSource, ReadContext, SourceCursor, SourceError, SourceFreshness,
+    SourcePage, SourcePlan,
+};
 use catdb_core::Mapping;
 use catdb_federation::{
     CatalogResolveError, CatalogResolver, EntityQueryError, EntityQueryService, ResolvedCatalog,
@@ -20,6 +23,7 @@ use catdb_federation::{
 use catdb_policy::{
     Action, Effect, PolicyDocument, PolicyRule, Principal, ResourceScope, SubjectSelector,
 };
+use catdb_provenance::FieldProvenance;
 use catdb_storage::{
     catalog_content_checksum, CatalogRevision, Compatibility, MappingCapability, MappingVersion,
     PolicyVersion, SchemaContent, SchemaVersion, SourceVersion,
@@ -38,10 +42,75 @@ const QUERY_WORK_BUDGET: usize = 100_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const QUERY_PAGE_SIZE: usize = 256;
 const QUERY_CONCURRENCY: usize = 4;
+const SCOPED_KEY_PREFIX: &str = "library:";
 
 /// Stable query identity for one persisted Library membership record.
 pub(crate) fn membership_id(registry_id: &str) -> Uuid {
     Uuid::new_v5(&PHYSICAL_SOURCE_NAMESPACE, registry_id.as_bytes())
+}
+
+fn scope_record_key(membership_id: Uuid, physical_key: &str) -> String {
+    format!("{SCOPED_KEY_PREFIX}{membership_id}:{physical_key}")
+}
+
+fn split_scoped_record_key(value: &str) -> Option<(Uuid, &str)> {
+    let rest = value.strip_prefix(SCOPED_KEY_PREFIX)?;
+    let (membership, physical) = rest.split_once(':')?;
+    let membership = Uuid::parse_str(membership).ok()?;
+    (!physical.is_empty()).then_some((membership, physical))
+}
+
+struct MembershipScopedSource {
+    membership_id: Uuid,
+    source: Arc<dyn DataSource>,
+}
+
+#[async_trait]
+impl DataSource for MembershipScopedSource {
+    fn id(&self) -> &catdb_connectors::SourceId {
+        self.source.id()
+    }
+
+    fn schema(&self) -> &catdb_core::Schema {
+        self.source.schema()
+    }
+
+    fn capabilities(&self) -> &catdb_connectors::SourceCapabilities {
+        self.source.capabilities()
+    }
+
+    fn source_spec(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "mdreader-library-membership",
+            "membership_id": self.membership_id,
+            "source": self.source.source_spec(),
+        })
+    }
+
+    async fn freshness(&self, context: &ReadContext) -> Result<SourceFreshness, SourceError> {
+        self.source.freshness(context).await
+    }
+
+    fn compile(
+        &self,
+        query: &catdb_query::EntityQuery,
+        authorized_fields: &[String],
+    ) -> Result<SourcePlan, SourceError> {
+        self.source.compile(query, authorized_fields)
+    }
+
+    async fn execute_page(
+        &self,
+        plan: &SourcePlan,
+        cursor: Option<&SourceCursor>,
+        context: &ReadContext,
+    ) -> Result<SourcePage, SourceError> {
+        let mut page = self.source.execute_page(plan, cursor, context).await?;
+        for row in &mut page.rows {
+            row.key = scope_record_key(self.membership_id, &row.key);
+        }
+        Ok(page)
+    }
 }
 
 /// One registered Library membership and the physical sources it authorizes.
@@ -49,12 +118,16 @@ pub(crate) fn membership_id(registry_id: &str) -> Uuid {
 pub(crate) struct LibraryQueryMember {
     /// Stable identity presented in `EntityQueryRequest.source_ids`.
     pub membership_id: Uuid,
+    /// Opaque persisted registry identity used for explicit local activation.
+    pub registry_id: String,
     /// User-facing source label captured with membership.
     pub name: String,
     /// Source family, used only for presentation and open-original behavior.
     pub kind: LibraryQueryMemberKind,
     /// Whether records from this member can be edited by MDReader.
     pub editable: bool,
+    /// Whether this local membership owns the current editor grant.
+    pub active: bool,
     /// Physical connectors admitted by the same registry snapshot.
     pub sources: Vec<LibraryPhysicalSource>,
 }
@@ -86,7 +159,10 @@ impl LibraryPhysicalSource {
         identity.extend_from_slice(source.id().as_str().as_bytes());
         Self {
             source_id: Uuid::new_v5(&PHYSICAL_SOURCE_NAMESPACE, &identity),
-            source,
+            source: Arc::new(MembershipScopedSource {
+                membership_id,
+                source,
+            }),
             mapping,
         }
     }
@@ -96,10 +172,12 @@ impl LibraryPhysicalSource {
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct LibrarySourceExecution {
     pub membership_id: Uuid,
+    pub registry_id: String,
     pub name: String,
     pub kind: LibraryQueryMemberKind,
     pub source_ids: Vec<Uuid>,
     pub editable: bool,
+    pub active: bool,
 }
 
 /// One exact CatDB answer plus the membership boundary used to produce it.
@@ -272,11 +350,8 @@ fn build_runtime(
                 serde_json::to_value(physical.source.schema())
                     .map_err(|_| LibraryQueryError::InvalidCatalog)?,
             );
-            let source_schema_version_id = version_id(
-                "physical-schema",
-                physical.source_id,
-                &schema_content.checksum,
-            );
+            let source_schema_version_id =
+                version_id("physical-schema", Uuid::nil(), &schema_content.checksum);
             let source_schema_version = SchemaVersion {
                 schema_version_id: source_schema_version_id,
                 name: physical.source.schema().name.to_string(),
@@ -310,8 +385,13 @@ fn build_runtime(
                 .and_then(|()| source_version.verify())
                 .map_err(|_| LibraryQueryError::InvalidCatalog)?;
 
-            schema_contents.push(schema_content);
-            schema_versions.push(source_schema_version);
+            if !schema_versions
+                .iter()
+                .any(|version| version.schema_version_id == source_schema_version_id)
+            {
+                schema_contents.push(schema_content);
+                schema_versions.push(source_schema_version);
+            }
             mapping_versions.push(mapping_version);
             source_versions.push(source_version);
             bindings.push(SourceBinding {
@@ -325,10 +405,12 @@ fn build_runtime(
         }
         reports.push(LibrarySourceExecution {
             membership_id: member.membership_id,
+            registry_id: member.registry_id,
             name: member.name,
             kind: member.kind,
             source_ids: member_sources,
             editable: member.editable,
+            active: member.active,
         });
     }
 
@@ -417,6 +499,68 @@ fn build_runtime(
     })
 }
 
+fn restore_membership_provenance(
+    answer: &mut EntityQueryResponse,
+    memberships: &[LibrarySourceExecution],
+) -> Result<(), LibraryQueryError> {
+    let source_memberships = memberships
+        .iter()
+        .flat_map(|membership| {
+            membership
+                .source_ids
+                .iter()
+                .map(move |source_id| (*source_id, membership.membership_id))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let version_memberships = answer
+        .sources
+        .iter()
+        .map(|source| {
+            source_memberships
+                .get(&source.source_id)
+                .copied()
+                .map(|membership| (source.source_version_id, membership))
+                .ok_or(LibraryQueryError::InvalidResponse)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+    for row in &mut answer.rows {
+        let (row_membership, _) =
+            split_scoped_record_key(&row.record_key).ok_or(LibraryQueryError::InvalidResponse)?;
+        let original = std::mem::take(&mut row.provenance);
+        let mut restored = BTreeMap::new();
+        for (field, evidence) in original {
+            let selected = evidence.selected_index();
+            let mut selected_restored = None;
+            let mut considered = Vec::new();
+            for (index, observation) in evidence.considered().iter().enumerate() {
+                if version_memberships.get(&observation.source_version_id())
+                    != Some(&row_membership)
+                {
+                    continue;
+                }
+                let (observation_membership, physical_key) =
+                    split_scoped_record_key(observation.record_key())
+                        .ok_or(LibraryQueryError::InvalidResponse)?;
+                if observation_membership != row_membership {
+                    return Err(LibraryQueryError::InvalidResponse);
+                }
+                if selected == Some(index) {
+                    selected_restored = Some(considered.len());
+                }
+                considered.push(observation.clone().with_record_key(physical_key));
+            }
+            restored.insert(
+                field.clone(),
+                FieldProvenance::new(field, considered, selected_restored)
+                    .map_err(|_| LibraryQueryError::InvalidResponse)?,
+            );
+        }
+        row.provenance = restored;
+    }
+    Ok(())
+}
+
 /// Execute exactly one bounded query over one immutable Library snapshot.
 pub(crate) async fn execute_registered_library_query(
     mut request: EntityQueryRequest,
@@ -499,10 +643,11 @@ pub(crate) async fn execute_registered_library_query(
         LIBRARY_DEPLOYMENT_ID,
         [request.workspace_id],
     );
-    let answer = service
+    let mut answer = service
         .query(&principal, request, &context)
         .await
         .map_err(map_entity_query_error)?;
+    restore_membership_provenance(&mut answer, &runtime.memberships)?;
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
     Ok(LibraryEntityQueryResponse {
         answer,
@@ -667,6 +812,7 @@ mod tests {
             .collect();
         LibraryQueryMember {
             membership_id,
+            registry_id: membership_id.to_string(),
             name: root
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -674,6 +820,7 @@ mod tests {
                 .to_string(),
             kind: LibraryQueryMemberKind::LocalFolder,
             editable: true,
+            active: true,
             sources,
         }
     }
@@ -687,6 +834,7 @@ mod tests {
             .expect("cloud mapping");
         LibraryQueryMember {
             membership_id,
+            registry_id: membership_id.to_string(),
             name: match provider {
                 mdreader_domain::library::CloudDocumentSource::GoogleDrive => {
                     "Google Drive".to_string()
@@ -702,6 +850,7 @@ mod tests {
                 }
             },
             editable: false,
+            active: false,
             sources: vec![LibraryPhysicalSource::new(membership_id, source, mapping)],
         }
     }
@@ -779,17 +928,17 @@ mod tests {
             .answer
             .rows
             .iter()
-            .any(|row| row.record_key == "note.md"));
+            .any(|row| row.record_key == scope_record_key(local, "note.md")));
         assert!(answer
             .answer
             .rows
             .iter()
-            .any(|row| row.record_key == "drive-note"));
+            .any(|row| row.record_key == scope_record_key(drive, "drive-note")));
         assert!(answer
             .answer
             .rows
             .iter()
-            .any(|row| row.record_key == "/dropbox-note.md"));
+            .any(|row| row.record_key == scope_record_key(dropbox, "/dropbox-note.md")));
     }
 
     #[tokio::test]
@@ -827,5 +976,98 @@ mod tests {
         )
         .await;
         assert_eq!(result, Err(LibraryQueryError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn equal_relative_paths_in_different_memberships_remain_distinct_documents() {
+        let first_tree = tempfile::tempdir().expect("first tree");
+        let second_tree = tempfile::tempdir().expect("second tree");
+        std::fs::write(first_tree.path().join("note.md"), "# First membership\n")
+            .expect("first fixture");
+        std::fs::write(second_tree.path().join("note.md"), "# Second membership\n")
+            .expect("second fixture");
+        for tree in [&first_tree, &second_tree] {
+            let output = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(tree.path())
+                .output()
+                .expect("git");
+            assert!(output.status.success());
+        }
+
+        let workspace = Uuid::new_v4();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut query = request(workspace, vec![first, second]);
+        query.select = vec!["path".to_string(), "title".to_string(), "body".to_string()];
+        query.require_complete = Some(false);
+        let answer = execute_registered_library_query(
+            query,
+            vec![
+                local_member(first_tree.path(), first),
+                local_member(second_tree.path(), second),
+            ],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("two Library memberships");
+
+        assert_eq!(answer.answer.rows.len(), 2);
+        assert_ne!(
+            answer.answer.rows[0].record_key,
+            answer.answer.rows[1].record_key
+        );
+        let titles = answer
+            .answer
+            .rows
+            .iter()
+            .filter_map(|row| row.fields.get("title").and_then(serde_json::Value::as_str))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            titles,
+            BTreeSet::from(["First membership", "Second membership"])
+        );
+        for row in &answer.answer.rows {
+            for field in row.provenance.values() {
+                assert!(field
+                    .considered()
+                    .iter()
+                    .all(|observation| observation.record_key() == "note.md"));
+                assert_eq!(field.considered().len(), 3);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn provenance_names_the_physical_attribute_selected_by_the_mapping() {
+        let workspace = Uuid::new_v4();
+        let drive = Uuid::new_v4();
+        let mut query = request(workspace, vec![drive]);
+        query.select = vec!["path".to_string(), "title".to_string()];
+        let answer = execute_registered_library_query(
+            query,
+            vec![cloud_member(
+                drive,
+                Arc::new(CloudFixture::drive()),
+                mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+            )],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("Drive query");
+        let row = answer.answer.rows.first().expect("Drive row");
+
+        assert_eq!(
+            row.provenance["path"]
+                .selected()
+                .and_then(|observation| observation.physical_attribute()),
+            Some("id")
+        );
+        assert_eq!(
+            row.provenance["title"]
+                .selected()
+                .and_then(|observation| observation.physical_attribute()),
+            Some("name")
+        );
     }
 }

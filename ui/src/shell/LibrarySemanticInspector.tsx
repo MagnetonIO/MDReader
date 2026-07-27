@@ -1,10 +1,10 @@
 import { useId, useRef, useState } from 'react';
 
 import type {
-  EntityQueryResponse_Serialize,
   EntityRow,
   FieldObservation,
   FieldProvenance,
+  LibraryEntityQueryResponse_Serialize,
 } from '../bindings.js';
 
 type InspectorTab = 'result' | 'sources' | 'provenance' | 'schema';
@@ -16,8 +16,8 @@ const TABS: Array<{ id: InspectorTab; label: string }> = [
   { id: 'schema', label: 'Schema' },
 ];
 
-export interface CloudSemanticInspectorProps {
-  evidence: EntityQueryResponse_Serialize;
+export interface LibrarySemanticInspectorProps {
+  evidence: LibraryEntityQueryResponse_Serialize;
   row: EntityRow;
 }
 
@@ -47,14 +47,14 @@ function selectedObservation(field: FieldProvenance): FieldObservation | null {
   return field.considered[field.selected] ?? null;
 }
 
-export function CloudSemanticInspector({
+export function LibrarySemanticInspector({
   evidence,
   row,
-}: CloudSemanticInspectorProps) {
+}: LibrarySemanticInspectorProps) {
   const [tab, setTab] = useState<InspectorTab>('result');
   const tabsetId = useId();
   const tabRefs = useRef(new Map<InspectorTab, HTMLButtonElement>());
-  const complete = evidence.completeness.state === 'complete';
+  const complete = evidence.answer.completeness.state === 'complete';
 
   const selectFromKeyboard = (current: InspectorTab, key: string) => {
     const index = TABS.findIndex((item) => item.id === current);
@@ -123,7 +123,7 @@ export function CloudSemanticInspector({
             <SourcesTab evidence={evidence} />
           ) : null}
           {tab === item.id && item.id === 'provenance' ? (
-            <ProvenanceTab row={row} />
+            <ProvenanceTab evidence={evidence} row={row} />
           ) : null}
           {tab === item.id && item.id === 'schema' ? (
             <SchemaTab evidence={evidence} />
@@ -163,30 +163,52 @@ function ResultTab({ row }: { row: EntityRow }) {
   );
 }
 
-function SourcesTab({ evidence }: { evidence: EntityQueryResponse_Serialize }) {
+function SourcesTab({ evidence }: { evidence: LibraryEntityQueryResponse_Serialize }) {
   return (
     <ol className="document-sources">
-      {evidence.sources.map((source) => (
-        <li key={source.source_id}>
-          <div className="document-sources__head">
-            <strong>{source.source_id}</strong>
-            <span>{source.outcome}</span>
-          </div>
-          <p>
-            {source.freshness_ms === null
-              ? 'Freshness unavailable'
-              : `${source.freshness_ms} ms freshness`}
-          </p>
-          <p>
-            {source.scanned} scanned · {source.returned} returned
-          </p>
-        </li>
-      ))}
+      {evidence.answer.sources.map((source) => {
+        const member = evidence.memberships.find((candidate) =>
+          candidate.source_ids.includes(source.source_id),
+        );
+        return (
+          <li key={source.source_id}>
+            <div className="document-sources__head">
+              <strong>{member?.name ?? source.source_id}</strong>
+              <span>{source.outcome}</span>
+            </div>
+            <p className="lens-mono">{source.source_id}</p>
+            <p>
+              {source.freshness_ms === null
+                ? 'Freshness unavailable'
+                : `${source.freshness_ms} ms freshness`}
+            </p>
+            <p>
+              {source.scanned} scanned · {source.returned} returned
+            </p>
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
-function ProvenanceTab({ row }: { row: EntityRow }) {
+function ProvenanceTab({
+  evidence,
+  row,
+}: {
+  evidence: LibraryEntityQueryResponse_Serialize;
+  row: EntityRow;
+}) {
+  const memberName = (observation: FieldObservation): string | null => {
+    const sourceId = evidence.answer.sources.find(
+      (source) => source.source_version_id === observation.source_version_id,
+    )?.source_id;
+    if (!sourceId) return null;
+    return (
+      evidence.memberships.find((member) => member.source_ids.includes(sourceId))?.name ??
+      null
+    );
+  };
   return (
     <ol className="document-provenance">
       {Object.entries(row.provenance).map(([name, field]) => (
@@ -203,6 +225,7 @@ function ProvenanceTab({ row }: { row: EntityRow }) {
                 key={`${observation.source_version_id}:${observation.record_key}:${index}`}
               >
                 <span className="lens-mono">
+                  {memberName(observation) ? `${memberName(observation)} · ` : null}
                   {observation.physical_attribute
                     ? `${observation.source_version_id}.${observation.physical_attribute}`
                     : observation.source_version_id}
@@ -220,10 +243,10 @@ function ProvenanceTab({ row }: { row: EntityRow }) {
   );
 }
 
-function SchemaTab({ evidence }: { evidence: EntityQueryResponse_Serialize }) {
-  const pins = evidence.pins;
+function SchemaTab({ evidence }: { evidence: LibraryEntityQueryResponse_Serialize }) {
+  const pins = evidence.answer.pins;
   const versions = [
-    ['Query', evidence.query_id],
+    ['Query', evidence.answer.query_id],
     ['Catalog authority', pins.catalog_resolver_id],
     ['Catalog', pins.catalog_revision_id],
     ['Schema', pins.schema_version_id],

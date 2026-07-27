@@ -1207,10 +1207,12 @@ export type LibrarySourceDto = {
 /**  How a returned physical source relates to the user-selected Library member. */
 export type LibrarySourceExecution = {
 	membership_id: string,
+	registry_id: string,
 	name: string,
 	kind: LibraryQueryMemberKind,
 	source_ids: string[],
 	editable: boolean,
+	active: boolean,
 };
 
 /**

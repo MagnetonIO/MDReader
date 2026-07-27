@@ -4,18 +4,19 @@ import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
 
 import type {
-  CloudProvider,
-  CloudSourceDto,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
 } from '../bindings.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
-import { CloudSemanticInspector } from './CloudSemanticInspector.js';
+import { LibrarySemanticInspector } from './LibrarySemanticInspector.js';
+import { physicalRecordKey } from './library-documents.js';
 
-export interface CloudLibraryPaneProps {
-  source: CloudSourceDto;
+export interface LibraryDocumentPaneProps {
+  member: LibrarySourceExecution;
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
+  onEdit?: () => void;
 }
 
 function fieldsOf(row: EntityRow): Record<string, unknown> {
@@ -23,14 +24,17 @@ function fieldsOf(row: EntityRow): Record<string, unknown> {
   return row.fields as Record<string, unknown>;
 }
 
-function originalUrl(provider: CloudProvider, recordKey: string): string {
-  if (provider === 'google-drive') {
+function originalUrl(member: LibrarySourceExecution, recordKey: string): string | null {
+  if (member.kind === 'google-drive') {
     return `https://drive.google.com/open?id=${encodeURIComponent(recordKey)}`;
   }
-  return `https://www.dropbox.com/home${recordKey
-    .split('/')
-    .map((part) => encodeURIComponent(part))
-    .join('/')}`;
+  if (member.kind === 'dropbox') {
+    return `https://www.dropbox.com/home${recordKey
+      .split('/')
+      .map((part) => encodeURIComponent(part))
+      .join('/')}`;
+  }
+  return null;
 }
 
 function saveCopy(name: string, body: string): void {
@@ -43,11 +47,12 @@ function saveCopy(name: string, body: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function CloudLibraryPane({
-  source,
+export function LibraryDocumentPane({
+  member,
   row,
   evidence,
-}: CloudLibraryPaneProps) {
+  onEdit,
+}: LibraryDocumentPaneProps) {
   const values = fieldsOf(row);
   const title =
     typeof values.title === 'string' && values.title.length > 0
@@ -58,6 +63,8 @@ export function CloudLibraryPane({
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const platform = useMemo(() => createReaderPlatform(null), []);
+  const recordKey = physicalRecordKey(row);
+  const providerUrl = recordKey === null ? null : originalUrl(member, recordKey);
 
   useEffect(() => {
     let current = true;
@@ -78,26 +85,35 @@ export function CloudLibraryPane({
 
   return (
     <>
-      <div className="reader-region cloud-reader">
-        <div className="reader-toolbar cloud-reader__toolbar">
+      <div className="reader-region library-reader">
+        <div className="reader-toolbar library-reader__toolbar">
           <nav className="breadcrumb" aria-label="Document location">
-            <span className="breadcrumb__crumb">{source.label}</span>
+            <span className="breadcrumb__crumb">{member.name}</span>
             <span className="breadcrumb__sep">/</span>
             <span className="breadcrumb__leaf">{title}</span>
           </nav>
-          <span className="cloud-reader__state">Read-only</span>
+          {member.editable ? (
+            <button type="button" onClick={onEdit} disabled={!onEdit}>
+              Edit local file
+            </button>
+          ) : (
+            <span className="library-reader__state">Read-only</span>
+          )}
           {body !== null ? (
             <button
               type="button"
+              className="library-reader__inspect"
               aria-expanded={inspectorOpen}
               onClick={() => setInspectorOpen((open) => !open)}
             >
               {inspectorOpen ? 'Close Inspector' : 'Inspect'}
             </button>
           ) : null}
-          <a href={originalUrl(source.provider, row.record_key)} target="_blank" rel="noreferrer">
-            Open original
-          </a>
+          {providerUrl ? (
+            <a href={providerUrl} target="_blank" rel="noreferrer">
+              Open original
+            </a>
+          ) : null}
           <button
             type="button"
             disabled={body === null}
@@ -106,9 +122,11 @@ export function CloudLibraryPane({
             Download
           </button>
         </div>
-        <p className="cloud-reader__policy">
-          Read through from {source.label}; this document is not copied into the local index.
-        </p>
+        {!member.editable ? (
+          <p className="library-reader__policy">
+            Read from {member.name}. Changes remain in the source.
+          </p>
+        ) : null}
         <div className="reader-body">
           <div className="reader-host">
             {body === null ? (
@@ -128,9 +146,9 @@ export function CloudLibraryPane({
         </div>
       </div>
       {body !== null && inspectorOpen ? (
-        <aside className="cloud-reader__inspector" aria-label="Semantic Inspector">
-          <CloudSemanticInspector
-            evidence={evidence.answer}
+        <aside className="library-reader__inspector" aria-label="Semantic Inspector">
+          <LibrarySemanticInspector
+            evidence={evidence}
             row={row}
           />
         </aside>

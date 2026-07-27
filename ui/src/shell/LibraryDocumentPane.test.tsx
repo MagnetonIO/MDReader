@@ -1,19 +1,21 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import type {
-  CloudSourceDto,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
 } from '../bindings.js';
-import { CloudLibraryPane } from './CloudLibraryPane.js';
+import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 
-const source: CloudSourceDto = {
-  id: 'a'.repeat(64),
-  provider: 'google-drive',
-  label: 'Google Drive',
-  connection: 'connected',
-  enabled: true,
+const member: LibrarySourceExecution = {
+  membership_id: '00000000-0000-4000-8000-000000000010',
+  registry_id: 'google-drive',
+  name: 'Google Drive',
+  kind: 'google-drive',
+  source_ids: ['a'.repeat(64)],
+  editable: false,
+  active: false,
 };
 
 const SOURCE_VERSION = '00000000-0000-4000-8000-000000000007';
@@ -66,7 +68,7 @@ const response: LibraryEntityQueryResponse_Serialize = {
     rows: [row],
     sources: [
       {
-        source_id: source.id,
+        source_id: member.source_ids[0]!,
         source_version_id: SOURCE_VERSION,
         outcome: 'ran',
         freshness_ms: 0,
@@ -79,11 +81,7 @@ const response: LibraryEntityQueryResponse_Serialize = {
   },
   memberships: [
     {
-      membership_id: '00000000-0000-4000-8000-000000000010',
-      name: 'Google Drive',
-      kind: 'google-drive',
-      source_ids: [source.id],
-      editable: false,
+      ...member,
     },
   ],
 };
@@ -92,8 +90,8 @@ afterEach(cleanup);
 
 it('reads and inspects one hydrated provider response without a second query', async () => {
   render(
-    <CloudLibraryPane
-      source={source}
+    <LibraryDocumentPane
+      member={member}
       row={row}
       evidence={response}
     />,
@@ -102,7 +100,7 @@ it('reads and inspects one hydrated provider response without a second query', a
   expect(await screen.findByText('Cloud note')).toBeTruthy();
   expect(screen.getByText('Provider-owned body.')).toBeTruthy();
   expect(screen.getByText(/Read-only/)).toBeTruthy();
-  expect(screen.getByText(/not copied into the local index/i)).toBeTruthy();
+  expect(screen.getByText(/Changes remain in the source/i)).toBeTruthy();
   expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toContain(
     'drive-file-1',
   );
@@ -117,14 +115,26 @@ it('reads and inspects one hydrated provider response without a second query', a
   expect(inspector.getByText('Cloud note.md')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
-  expect(screen.getByText(source.id)).toBeTruthy();
+  expect(screen.getByText(member.source_ids[0]!)).toBeTruthy();
   expect(screen.getByText('0 ms freshness')).toBeTruthy();
   expect(screen.getByText('1 scanned · 1 returned')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Provenance' }));
-  expect(await screen.findByText(`${SOURCE_VERSION}.body`)).toBeTruthy();
-  expect(screen.getByText(`${SOURCE_VERSION}.name`)).toBeTruthy();
-  expect(screen.getByText(`${SOURCE_VERSION}.id`)).toBeTruthy();
+  expect(
+    await screen.findByText(
+      (_, element) => element?.textContent === `Google Drive · ${SOURCE_VERSION}.body`,
+    ),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(
+      (_, element) => element?.textContent === `Google Drive · ${SOURCE_VERSION}.name`,
+    ),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(
+      (_, element) => element?.textContent === `Google Drive · ${SOURCE_VERSION}.id`,
+    ),
+  ).toBeTruthy();
   expect(screen.queryByText(`${SOURCE_VERSION}.title`)).toBeNull();
   expect(
     screen.getAllByText(
@@ -141,6 +151,36 @@ it('reads and inspects one hydrated provider response without a second query', a
   expect(screen.getByText('00000000-0000-4000-8000-000000000008')).toBeTruthy();
   expect(screen.queryByText('Attributes')).toBeNull();
   expect(screen.queryByText(/read-only external source evidence/i)).toBeNull();
+});
+
+it('derives local edit capability from the selected Library membership', async () => {
+  const edit = vi.fn();
+  const localEvidence: LibraryEntityQueryResponse_Serialize = {
+    ...response,
+    memberships: [
+      {
+        ...response.memberships[0]!,
+        registry_id: 'local-source-id',
+        name: 'Local notes',
+        kind: 'local-folder',
+        editable: true,
+        active: true,
+      },
+    ],
+  };
+  render(
+    <LibraryDocumentPane
+      member={localEvidence.memberships[0]!}
+      row={row}
+      evidence={localEvidence}
+      onEdit={edit}
+    />,
+  );
+
+  expect(await screen.findByText('Provider-owned body.')).toBeTruthy();
+  expect(screen.queryByText(/Read-only/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit local file' }));
+  expect(edit).toHaveBeenCalledOnce();
 });
 
 it('renders backend-authored null, absence, unobservable reason, reports, and pins exactly', () => {
@@ -198,7 +238,7 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
       ...response.answer,
       sources: [
         {
-          source_id: source.id,
+          source_id: member.source_ids[0]!,
           source_version_id: SOURCE_VERSION,
           freshness_ms: 4_321,
           outcome: 'ran',
@@ -211,8 +251,8 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
   };
 
   render(
-    <CloudLibraryPane
-      source={source}
+    <LibraryDocumentPane
+      member={member}
       row={exactRow}
       evidence={exactResponse}
     />,
@@ -245,8 +285,8 @@ it('never mounts Semantic Inspector for a row that was not body-hydrated', () =>
     fields: { path: 'drive-file-1', title: 'Unavailable.md' },
   };
   render(
-    <CloudLibraryPane
-      source={source}
+    <LibraryDocumentPane
+      member={member}
       row={unhydrated}
       evidence={{ ...response, answer: { ...response.answer, rows: [unhydrated] } }}
     />,
@@ -261,10 +301,11 @@ it('never mounts Semantic Inspector for a row that was not body-hydrated', () =>
 it('preserves a valid 4 KiB Dropbox record key in the hydrated Inspector evidence', async () => {
   const recordKey = `/${'a'.repeat(4092)}.md`;
   expect(new TextEncoder().encode(recordKey)).toHaveLength(4_096);
-  const dropboxSource: CloudSourceDto = {
-    ...source,
-    provider: 'dropbox',
-    label: 'Dropbox',
+  const dropboxMember: LibrarySourceExecution = {
+    ...member,
+    registry_id: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
   };
   const answer: LibraryEntityQueryResponse_Serialize = {
     ...response,
@@ -296,8 +337,8 @@ it('preserves a valid 4 KiB Dropbox record key in the hydrated Inspector evidenc
     },
   };
   render(
-    <CloudLibraryPane
-      source={dropboxSource}
+    <LibraryDocumentPane
+      member={dropboxMember}
       row={answer.answer.rows[0]!}
       evidence={answer}
     />,

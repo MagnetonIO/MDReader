@@ -47,7 +47,6 @@ import {
   recordDiagnosticEventNonBlocking,
   settingsBackend,
   watchLibrarySource,
-  type CloudSourceDto,
   type LibrarySourceDto,
 } from '../platform/settings.js';
 import type {
@@ -68,7 +67,7 @@ import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
-import { CloudLibraryPane } from './CloudLibraryPane.js';
+import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
@@ -131,27 +130,25 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cloudDocument, setCloudDocument] = useState<{
-    source: CloudSourceDto;
+  const [libraryDocument, setLibraryDocument] = useState<{
     member: LibrarySourceExecution;
     row: EntityRow;
     evidence: LibraryEntityQueryResponse_Serialize;
   } | null>(null);
-  const [cloudSources, setCloudSources] = useState<CloudSourceDto[]>([]);
   const [libraryEvidence, setLibraryEvidence] =
     useState<LibraryEntityQueryResponse_Serialize | null>(null);
-  const [cloudSearch, setCloudSearch] = useState('');
-  const [cloudLoading, setCloudLoading] = useState(false);
-  const [cloudError, setCloudError] = useState<string | null>(null);
-  const cloudRefreshGeneration = useRef(0);
-  const cloudRefreshRequest = useRef<string | null>(null);
-  const clearCloudDocument = useCallback(() => {
-    setCloudDocument(null);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const libraryRefreshGeneration = useRef(0);
+  const libraryRefreshRequest = useRef<string | null>(null);
+  const clearLibraryDocument = useCallback(() => {
+    setLibraryDocument(null);
   }, []);
 
   useEffect(() => {
-    clearCloudDocument();
-  }, [activeTabId, clearCloudDocument]);
+    clearLibraryDocument();
+  }, [activeTabId, clearLibraryDocument]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -181,59 +178,54 @@ export function AppShell() {
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
-  const refreshCloudLibrary = useCallback(async () => {
-    if (
-      !settingsBackend.prepareCloudCatalog ||
-      !settingsBackend.listCloudSources ||
-      !settingsBackend.queryLibraryDocuments
-    ) {
+  const refreshLibrary = useCallback(async () => {
+    if (!settingsBackend.prepareCloudCatalog || !settingsBackend.queryLibraryDocuments) {
       return;
     }
-    const generation = cloudRefreshGeneration.current + 1;
-    cloudRefreshGeneration.current = generation;
-    if (settingsBackend.cancelCloudDocumentQuery && cloudRefreshRequest.current) {
-      await settingsBackend.cancelCloudDocumentQuery(cloudRefreshRequest.current);
+    const generation = libraryRefreshGeneration.current + 1;
+    libraryRefreshGeneration.current = generation;
+    if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
+      await settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
     }
-    setCloudLoading(true);
-    setCloudError(null);
+    setLibraryLoading(true);
+    setLibraryError(null);
     try {
       const requestId = `library:${globalThis.crypto.randomUUID()}`;
-      cloudRefreshRequest.current = requestId;
-      const { sources, evidence: answer } = await hydrateLibrary(
+      libraryRefreshRequest.current = requestId;
+      const { evidence: answer } = await hydrateLibrary(
         settingsBackend,
         requestId,
       );
-      if (cloudRefreshGeneration.current !== generation) return;
-      setCloudSources(sources);
+      if (libraryRefreshGeneration.current !== generation) return;
       setLibraryEvidence(answer);
       if (answer.answer.completeness.state === 'partial') {
-        setCloudError('Some Library sources could not answer this query.');
+        setLibraryError('Some Library sources could not answer this query.');
       }
     } catch {
-      if (cloudRefreshGeneration.current === generation) {
-        setCloudError('Connected sources could not be read.');
+      if (libraryRefreshGeneration.current === generation) {
+        setLibraryError('Library sources could not be read.');
       }
     } finally {
-      if (cloudRefreshGeneration.current === generation) {
-        cloudRefreshRequest.current = null;
-        setCloudLoading(false);
+      if (libraryRefreshGeneration.current === generation) {
+        libraryRefreshRequest.current = null;
+        setLibraryLoading(false);
       }
     }
   }, []);
 
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
-    void refreshCloudLibrary();
+    void refreshLibrary();
     return () => {
-      cloudRefreshGeneration.current += 1;
+      libraryRefreshGeneration.current += 1;
       if (settingsBackend.cancelCloudDocumentQuery) {
-        if (cloudRefreshRequest.current) {
-          void settingsBackend.cancelCloudDocumentQuery(cloudRefreshRequest.current);
+        if (libraryRefreshRequest.current) {
+          void settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
         }
       }
-      cloudRefreshRequest.current = null;
+      libraryRefreshRequest.current = null;
     };
-  }, [hydrated, refreshCloudLibrary]);
+  }, [hydrated, refreshLibrary]);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -671,11 +663,11 @@ export function AppShell() {
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
-    clearCloudDocument();
+    clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, [clearCloudDocument]);
+  }, [clearLibraryDocument]);
 
   const openFile = useCallback(
     (file: WorkspaceFile) => {
@@ -685,22 +677,55 @@ export function AppShell() {
     [openRef],
   );
 
+  const editLibraryDocument = useCallback(
+    async (member: LibrarySourceExecution, row: EntityRow): Promise<void> => {
+      if (!member.editable) return;
+      const path = typeof row.fields.path === 'string' ? row.fields.path : null;
+      if (!path) {
+        toast('This Library result has no editable local path');
+        return;
+      }
+      let snapshot;
+      try {
+        snapshot = await settingsBackend.listSources();
+      } catch {
+        toast('Could not resolve this Library source');
+        return;
+      }
+      const source = snapshot.sources.find((candidate) => candidate.id === member.registry_id);
+      if (!source) {
+        toast('This Library source is no longer registered');
+        return;
+      }
+      if (useSourcesStore.getState().root !== source.path) {
+        const switched = await switchWorkspace(source.path, source.id);
+        if (!switched) return;
+      }
+      const title =
+        typeof row.fields.title === 'string' && row.fields.title.length > 0
+          ? row.fields.title
+          : path.split(/[\\/]+/).pop() ?? path;
+      openRef({ path, name: title });
+    },
+    [openRef, switchWorkspace],
+  );
+
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
   const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
-    if (!opts.background) clearCloudDocument();
+    if (!opts.background) clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: file.path, name: file.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, [clearCloudDocument]);
+  }, [clearLibraryDocument]);
 
   // The palette's search-hit open: land at the hit's provenance line and mark the
   // chunk that matched. Enter focuses the tab and schedules the jump (consumed
   // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
   // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
-    if (!opts.background) clearCloudDocument();
+    if (!opts.background) clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
@@ -716,10 +741,10 @@ export function AppShell() {
         nonce: (jumpSeq.current += 1),
       });
     }
-  }, [clearCloudDocument]);
+  }, [clearLibraryDocument]);
 
   const onNavigate = useCallback((ref: DocRef) => {
-    clearCloudDocument();
+    clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
@@ -728,7 +753,7 @@ export function AppShell() {
       useTabsStore.getState().navigateInTab(active, ref);
     }
     useSourcesStore.getState().addRecent(ref, root);
-  }, [clearCloudDocument]);
+  }, [clearLibraryDocument]);
 
   const onPersistScroll = useCallback((scroll: ScrollPos) => {
     const active = useTabsStore.getState().activeTabId;
@@ -775,14 +800,14 @@ export function AppShell() {
   // range or reports that it could not, and never approximates.
   const jumpToSpan = useCallback(
     (absPath: string, name: string, startLine: number, endLine: number) => {
-      clearCloudDocument();
+      clearLibraryDocument();
       const workspaceRoot = useSourcesStore.getState().root;
       const ref = { path: absPath, name };
       useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
       useSourcesStore.getState().addRecent(ref, workspaceRoot);
       setJump({ path: absPath, startLine, endLine, nonce: (jumpSeq.current += 1) });
     },
-    [clearCloudDocument],
+    [clearLibraryDocument],
   );
 
   // Resolve a repo-relative file (how the engine cites provenance) to a path the
@@ -988,21 +1013,21 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
-    clearCloudDocument();
+    clearLibraryDocument();
     useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
-  }, [clearCloudDocument]);
+  }, [clearLibraryDocument]);
 
   // Request a tab close: a tab with ANY unsaved document prompts the guard first;
   // a clean one closes immediately. Every close path (⌘W, the tab's ×, middle
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
-      clearCloudDocument();
+      clearLibraryDocument();
       if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
-    [clearCloudDocument, closeTabAndBuffer],
+    [clearLibraryDocument, closeTabAndBuffer],
   );
 
   // Save every dirty document of a tab (Save on the tab-close guard).
@@ -1765,37 +1790,45 @@ export function AppShell() {
           onOpenFile={openFile}
           onOpenRecent={openRef}
           isIgnored={isIgnored}
-          cloudSources={cloudSources}
           libraryEvidence={libraryEvidence}
-          cloudSearch={cloudSearch}
-          cloudLoading={cloudLoading}
-          cloudError={cloudError}
-          onCloudSearch={setCloudSearch}
-          onOpenCloud={(source, member, row) => {
-            setCloudError(null);
+          librarySearch={librarySearch}
+          libraryLoading={libraryLoading}
+          libraryError={libraryError}
+          onLibrarySearch={setLibrarySearch}
+          onOpenLibrary={(member, row) => {
+            setLibraryError(null);
             if (libraryEvidence) {
-              setCloudDocument({ source, member, row, evidence: libraryEvidence });
+              setLibraryDocument({ member, row, evidence: libraryEvidence });
             }
           }}
-          onRefreshCloud={() => void refreshCloudLibrary()}
+          onRefreshLibrary={() => void refreshLibrary()}
         />
 
         <main className="shell__main">
           <TabStrip
-            onLocalIntent={clearCloudDocument}
+            onLocalIntent={clearLibraryDocument}
             onRequestClose={requestCloseTab}
           />
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
-            }${cloudDocument ? ' shell__reader-row--cloud-open' : ''
+            }${libraryDocument ? ' shell__reader-row--library-open' : ''
             }`}
           >
-            {cloudDocument ? (
-              <CloudLibraryPane
-                source={cloudDocument.source}
-                row={cloudDocument.row}
-                evidence={cloudDocument.evidence}
+            {libraryDocument ? (
+              <LibraryDocumentPane
+                member={libraryDocument.member}
+                row={libraryDocument.row}
+                evidence={libraryDocument.evidence}
+                onEdit={
+                  libraryDocument.member.editable
+                    ? () =>
+                        void editLibraryDocument(
+                          libraryDocument.member,
+                          libraryDocument.row,
+                        )
+                    : undefined
+                }
               />
             ) : (
             <>
@@ -1899,7 +1932,7 @@ export function AppShell() {
           onSourceIntent={beginSourceIntent}
           onClose={() => {
             setSettingsOpen(false);
-            void refreshCloudLibrary();
+            void refreshLibrary();
           }}
         />
       ) : null}

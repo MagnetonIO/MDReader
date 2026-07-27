@@ -1,5 +1,4 @@
 import type {
-  CloudSourceDto,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
@@ -20,7 +19,6 @@ export const LIBRARY_DOCUMENT_FIELDS = [
 ] as const;
 
 export interface HydratedLibrary {
-  sources: CloudSourceDto[];
   evidence: LibraryEntityQueryResponse_Serialize;
 }
 
@@ -32,26 +30,21 @@ export interface HydratedLibrary {
 export async function hydrateLibrary(
   backend: Pick<
     SettingsBackend,
-    'prepareCloudCatalog' | 'listCloudSources' | 'queryLibraryDocuments'
+    'prepareCloudCatalog' | 'queryLibraryDocuments'
   >,
   requestId: string,
 ): Promise<HydratedLibrary> {
-  if (
-    !backend.prepareCloudCatalog ||
-    !backend.listCloudSources ||
-    !backend.queryLibraryDocuments
-  ) {
+  if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
     throw new Error('Library queries are unavailable.');
   }
   const catalog = await backend.prepareCloudCatalog();
-  const snapshot = await backend.listCloudSources();
   const evidence = await backend.queryLibraryDocuments(
     catalog.workspace_id,
     [],
     [...LIBRARY_DOCUMENT_FIELDS],
     requestId,
   );
-  return { sources: snapshot.sources, evidence };
+  return { evidence };
 }
 
 export interface HydratedLibrarySelection {
@@ -64,6 +57,13 @@ function selectedSourceVersion(row: EntityRow): string | null {
   const path = row.provenance.path;
   if (!path || path.selected === null) return null;
   return path.considered[path.selected]?.source_version_id ?? null;
+}
+
+/** The provider-owned key selected for the semantic path identity. */
+export function physicalRecordKey(row: EntityRow): string | null {
+  const path = row.provenance.path;
+  if (!path || path.selected === null) return null;
+  return path.considered[path.selected]?.record_key ?? null;
 }
 
 /** Resolve a row to the membership that supplied its semantic path identity. */

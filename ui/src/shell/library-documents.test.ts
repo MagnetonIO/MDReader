@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
-  CloudSourceDto,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
@@ -9,6 +8,7 @@ import type {
 import {
   hydrateLibrary,
   memberForRow,
+  physicalRecordKey,
   rowsForMember,
 } from './library-documents.js';
 
@@ -53,10 +53,12 @@ const row: EntityRow = {
 
 const member: LibrarySourceExecution = {
   membership_id: MEMBERSHIP_ID,
+  registry_id: 'google-drive',
   name: 'Google Drive',
   kind: 'google-drive',
   source_ids: [PHYSICAL_SOURCE_ID],
   editable: false,
+  active: false,
 };
 
 const evidence: LibraryEntityQueryResponse_Serialize = {
@@ -88,14 +90,6 @@ const evidence: LibraryEntityQueryResponse_Serialize = {
   memberships: [member],
 };
 
-const cloudSource: CloudSourceDto = {
-  id: 'a'.repeat(64),
-  provider: 'google-drive',
-  label: 'Google Drive',
-  connection: 'connected',
-  enabled: true,
-};
-
 describe('one hydrated Library answer', () => {
   it('uses one entity-query IPC and never issues provider-specific reads', async () => {
     const queryLibraryDocuments = vi.fn(async () => evidence);
@@ -105,15 +99,11 @@ describe('one hydrated Library answer', () => {
         catalog_revision_id: '00000000-0000-4000-8000-000000000021',
         schema_version_id: '00000000-0000-4000-8000-000000000022',
       })),
-      listCloudSources: vi.fn(async () => ({
-        version: 1,
-        sources: [cloudSource],
-      })),
       queryLibraryDocuments,
     };
     const result = await hydrateLibrary(backend, 'request-1');
 
-    expect(result).toEqual({ sources: [cloudSource], evidence });
+    expect(result).toEqual({ evidence });
     expect(queryLibraryDocuments).toHaveBeenCalledOnce();
     expect(queryLibraryDocuments).toHaveBeenCalledWith(
       '00000000-0000-4000-8000-000000000020',
@@ -137,6 +127,7 @@ describe('one hydrated Library answer', () => {
   it('derives membership from selected provenance and keeps remote rows read-only', () => {
     expect(memberForRow(evidence, row)).toEqual(member);
     expect(rowsForMember(evidence, member)).toEqual([row]);
+    expect(physicalRecordKey(row)).toBe('drive-file');
     expect(member.editable).toBe(false);
   });
 });
