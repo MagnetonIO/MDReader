@@ -742,8 +742,8 @@ impl LibraryRegistry {
             .map(|source| {
                 let id = new_source_id();
                 id_map.insert(source.id.clone(), id.clone());
-                let engine_source_id =
-                    recover_v2_engine_source_id(app_data, source)?.unwrap_or_else(uuid::Uuid::new_v4);
+                let engine_source_id = recover_v2_engine_source_id(app_data, source)?
+                    .unwrap_or_else(uuid::Uuid::new_v4);
                 if engine_source_id.is_nil() || !engine_source_ids.insert(engine_source_id) {
                     return Err(LibraryError::CorruptRegistry);
                 }
@@ -966,12 +966,26 @@ fn recover_v2_engine_source_id_with_hook(
         return Err(LibraryError::CorruptRegistry);
     }
 
+    // Hold the exact checked file open across SQLite's path-based open, then
+    // compare it with the file still named by that path. `SQLITE_OPEN_NOFOLLOW`
+    // rejects a symlink substituted after `symlink_metadata`; the stable
+    // cross-platform handle identity rejects a regular-file substitution.
+    let open_path = fs::canonicalize(&db_path).map_err(|_| LibraryError::CorruptRegistry)?;
+    let checked_file =
+        same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
     before_open(&db_path);
     let connection = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        &open_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|_| LibraryError::CorruptRegistry)?;
+    let opened_file =
+        same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
+    if checked_file != opened_file {
+        return Err(LibraryError::CorruptRegistry);
+    }
     validate_v2_catdb_index(&connection)?;
     let mut statement = connection
         .prepare("SELECT source_id, root_path FROM sources ORDER BY source_id LIMIT 2")
@@ -999,6 +1013,10 @@ fn recover_v2_engine_source_id_with_hook(
 }
 
 fn validate_v2_catdb_index(connection: &rusqlite::Connection) -> Result<(), LibraryError> {
+    // Library registry V2 was introduced after CatDB SQLite schema v7 and was
+    // replaced by registry V3 without an intervening storage-schema release.
+    // Seven is therefore the complete producer set, not a "current version"
+    // alias that should drift when a later CatDB schema is added.
     const CATDB_SCHEMA_VERSION: i64 = 7;
     const REQUIRED_TABLES: &[&str] = &[
         "schema_defs",
@@ -1056,14 +1074,16 @@ fn validate_v2_catdb_index(connection: &rusqlite::Connection) -> Result<(), Libr
     if quick_check != "ok" {
         return Err(LibraryError::CorruptRegistry);
     }
-    let mut foreign_key_check = connection
-        .prepare("PRAGMA foreign_key_check")
+    let has_foreign_key_violation = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM pragma_foreign_key_check LIMIT 1
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
         .map_err(|_| LibraryError::CorruptRegistry)?;
-    if foreign_key_check
-        .query([])
-        .and_then(|mut rows| rows.next().map(|row| row.is_some()))
-        .map_err(|_| LibraryError::CorruptRegistry)?
-    {
+    if has_foreign_key_violation {
         return Err(LibraryError::CorruptRegistry);
     }
     Ok(())
@@ -1884,8 +1904,7 @@ mod tests {
     ) {
         assert!(matches!(
             LibraryRegistry::load_from(registry_path),
-            Err(LibraryError::CorruptRegistry { .. })
-                | Err(LibraryError::CleanupFailed { .. })
+            Err(LibraryError::CorruptRegistry { .. }) | Err(LibraryError::CleanupFailed { .. })
         ));
         assert_eq!(
             fs::read(registry_path).expect("read unchanged V2 registry"),
@@ -2416,9 +2435,7 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime")
-            .block_on(
-                legacy_engine.import(&admitted.path, catdb_engine::ImportOptions::default()),
-            )
+            .block_on(legacy_engine.import(&admitted.path, catdb_engine::ImportOptions::default()))
             .expect("import authentic old managed index");
         let legacy_sources = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2436,10 +2453,7 @@ mod tests {
         let opaque_id = migrated.sources()[0].id.clone();
         assert_ne!(opaque_id, path_id);
         assert_eq!(migrated.restore_source_id(), Some(opaque_id.as_str()));
-        assert_eq!(
-            migrated.sources()[0].engine_source_id(),
-            legacy_source_id
-        );
+        assert_eq!(migrated.sources()[0].engine_source_id(), legacy_source_id);
         let new_db = mdreader_ingest::workspace_index_path_for_stable_identity(
             &app_data,
             &admitted.identity,
@@ -2489,8 +2503,7 @@ mod tests {
         super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
         let before = fs::read(&registry_path).expect("read V2 registry");
         let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-        fs::create_dir_all(old_db.parent().expect("old workspace"))
-            .expect("create old workspace");
+        fs::create_dir_all(old_db.parent().expect("old workspace")).expect("create old workspace");
         let impostor = rusqlite::Connection::open(&old_db).expect("open SQLite impostor");
         impostor
             .execute_batch(
@@ -2533,9 +2546,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
         let registry_path = app_data.join("library.json");
-        let root_path = temp
-            .path()
-            .join(OsString::from_vec(b"notes-\xff".to_vec()));
+        let root_path = temp.path().join(OsString::from_vec(b"notes-\xff".to_vec()));
         fs::create_dir(&root_path).expect("create non-UTF-8 root");
         fs::write(root_path.join("note.md"), b"# alpha\n").expect("write Markdown");
         let root = bound_root(&root_path);
@@ -2596,7 +2607,10 @@ mod tests {
             LibraryRegistry::load_from(&registry_path),
             Err(LibraryError::CleanupFailed { .. })
         ));
-        assert_eq!(fs::read(&registry_path).expect("unchanged registry"), before);
+        assert_eq!(
+            fs::read(&registry_path).expect("unchanged registry"),
+            before
+        );
         assert!(old_db.is_file());
         assert!(new_db.is_file());
     }
@@ -2624,18 +2638,19 @@ mod tests {
                 fs::create_dir(&old_db).expect("substitute directory DB");
             }
 
-            assert_v2_refusal_preserves_managed_state(
-                &registry_path,
-                &before,
-                &old_db,
-                &new_db,
-            );
+            assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
         }
     }
 
     #[test]
     fn version_two_refuses_malformed_or_ambiguous_source_rows_and_path_mismatch() {
-        for kind in ["malformed-db", "zero", "multiple", "non-uuid", "path-mismatch"] {
+        for kind in [
+            "malformed-db",
+            "zero",
+            "multiple",
+            "non-uuid",
+            "path-mismatch",
+        ] {
             let temp = tempdir().expect("tempdir");
             let app_data = temp.path().join("app-data");
             let registry_path = app_data.join("library.json");
@@ -2685,12 +2700,7 @@ mod tests {
                 }
             }
 
-            assert_v2_refusal_preserves_managed_state(
-                &registry_path,
-                &before,
-                &old_db,
-                &new_db,
-            );
+            assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
         }
     }
 
@@ -2706,10 +2716,9 @@ mod tests {
             .add_root(&mkdir(temp.path(), "two"))
             .expect("add second source");
         registry.save_to(&registry_path).expect("save valid V3");
-        let valid: serde_json::Value = serde_json::from_slice(
-            &fs::read(&registry_path).expect("read valid V3 registry"),
-        )
-        .expect("parse valid V3 registry");
+        let valid: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read valid V3 registry"))
+                .expect("parse valid V3 registry");
 
         let mut duplicate = valid.clone();
         let sources = duplicate["sources"].as_array_mut().expect("source array");
@@ -2751,14 +2760,15 @@ mod tests {
         let (old_db, new_db) = v2_managed_paths(&app_data, &root);
         create_authentic_v2_index(&old_db, &root);
 
-        let result = LibraryRegistry::migrate_v2_with_persist(
-            &registry_path,
-            &before,
-            |_, _| Err(LibraryError::PersistFailed),
-        );
+        let result = LibraryRegistry::migrate_v2_with_persist(&registry_path, &before, |_, _| {
+            Err(LibraryError::PersistFailed)
+        });
 
         assert!(matches!(result, Err(LibraryError::PersistFailed)));
-        assert_eq!(fs::read(&registry_path).expect("unchanged registry"), before);
+        assert_eq!(
+            fs::read(&registry_path).expect("unchanged registry"),
+            before
+        );
         assert!(old_db.is_file(), "managed move was rolled back");
         assert!(!new_db.exists(), "failed publish leaves no V3 managed path");
     }
@@ -2777,14 +2787,10 @@ mod tests {
         let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
         let original_parked = old_db.with_file_name("checked-original.db");
         let source = v2_source(&root);
-        let recovered = super::recover_v2_engine_source_id_with_hook(
-            &app_data,
-            &source,
-            |_| {
-                fs::rename(&old_db, &original_parked).expect("park checked file");
-                fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
-            },
-        );
+        let recovered = super::recover_v2_engine_source_id_with_hook(&app_data, &source, |_| {
+            fs::rename(&old_db, &original_parked).expect("park checked file");
+            fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
+        });
 
         assert_eq!(
             recovered,

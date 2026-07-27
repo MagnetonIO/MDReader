@@ -2677,10 +2677,9 @@ mod tests {
             migrated_epoch.source_id(),
         )
         .expect("reopen migrated index through the V3 epoch");
-        rt.block_on(migrated_db.import(
-            &migrated_epoch.source_root().path,
-            ImportOptions::default(),
-        ))
+        rt.block_on(
+            migrated_db.import(&migrated_epoch.source_root().path, ImportOptions::default()),
+        )
         .expect("import through migrated V3 epoch");
         let migrated_sources = rt
             .block_on(migrated_db.store().list_sources())
@@ -2713,13 +2712,8 @@ mod tests {
             renamed_epoch.source_id(),
         )
         .expect("reopen renamed V3 index");
-        rt.block_on(
-            renamed_db.import(
-                &renamed_epoch.source_root().path,
-                ImportOptions::default(),
-            ),
-        )
-        .expect("import renamed V3 source");
+        rt.block_on(renamed_db.import(&renamed_epoch.source_root().path, ImportOptions::default()))
+            .expect("import renamed V3 source");
         let renamed_sources = rt
             .block_on(renamed_db.store().list_sources())
             .expect("list renamed sources");
@@ -2751,17 +2745,11 @@ mod tests {
             renamed_documents[0].source_id,
             original_documents[0].source_id
         );
-        assert_eq!(
-            renamed_provenance.source_id,
-            original_provenance.source_id
-        );
+        assert_eq!(renamed_provenance.source_id, original_provenance.source_id);
         assert_eq!(
             renamed_provenance.document_id,
             original_provenance.document_id
         );
-        assert_eq!(
-            renamed_provenance.file_path,
-            original_provenance.file_path
-        );
+        assert_eq!(renamed_provenance.file_path, original_provenance.file_path);
     }
 }

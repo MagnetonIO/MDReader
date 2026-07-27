@@ -46,6 +46,7 @@ tempfile = "3"
 # the on-disk hash under the lock, right before the swap.
 fs2 = "0.4"
 walkdir = "2.5.0"
+same-file = "1.0.6"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # The embedded CatDB engine and the MDReader domain registration compose the
 # real index the shell drives. `catdb-embed` is pulled WITH `local-embed` on so
