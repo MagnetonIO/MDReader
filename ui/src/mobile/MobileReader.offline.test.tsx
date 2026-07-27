@@ -73,7 +73,7 @@ describe('mobile offline document fallback', () => {
       />,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Cached note' })).toBeTruthy();
+    expect(await screen.findByText('Cached note', { selector: 'h1' })).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('Offline copy');
     expect(screen.getByRole('status').textContent).toContain('library-source-7');
     expect(screen.getByRole('status').textContent).toContain('blake3:abc123');

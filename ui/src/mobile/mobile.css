@@ -224,6 +224,15 @@
   background: var(--mobile-surface);
 }
 
+.mobile-offline-notice {
+  padding: 0.65rem 0.85rem;
+  color: var(--mobile-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: var(--mobile-accent-soft);
+  border-bottom: 1px solid var(--mobile-border);
+}
+
 .mobile-reader__bar {
   display: grid;
   grid-template-columns: minmax(44px, auto) minmax(0, 1fr) minmax(44px, auto);

@@ -8,10 +8,17 @@ import { createReaderPlatform } from '../platform/reader-platform';
 import { makeSemanticsAdapter } from '../platform/semantics';
 import type { TabState } from '../stores/types';
 import { DocumentInspector } from '../shell/lens/DocumentInspector';
+import {
+  readOfflineDocument,
+  writeOfflineDocument,
+  type MobileSourceIdentity,
+  type OfflineCacheRead,
+} from './offline-cache';
 
 export interface MobileReaderProps {
   tab: TabState;
   mode: 'reader' | 'inspector';
+  sourceIdentity?: MobileSourceIdentity | null;
   onBack: () => void;
   onModeChange: (mode: 'reader' | 'inspector') => void;
 }
@@ -23,9 +30,16 @@ function dirname(path: string): string {
 }
 
 /** A read-only mobile document surface. It never imports or mounts the editor. */
-export function MobileReader({ tab, mode, onBack, onModeChange }: MobileReaderProps) {
+export function MobileReader({
+  tab,
+  mode,
+  sourceIdentity = null,
+  onBack,
+  onModeChange,
+}: MobileReaderProps) {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState<OfflineCacheRead | null>(null);
   const semantics = useMemo(makeSemanticsAdapter, []);
   const readerPlatform = useMemo(
     () => createReaderPlatform(dirname(tab.docRef.path)),
@@ -36,18 +50,56 @@ export function MobileReader({ tab, mode, onBack, onModeChange }: MobileReaderPr
     let current = true;
     setDoc(null);
     setError(null);
+    setOffline(null);
     void readDoc(tab.docRef.path)
-      .then((payload) => parseMarkdownAuto(payload.content))
+      .then(async (payload) => {
+        const parsed = await parseMarkdownAuto(payload.content);
+        if (sourceIdentity && tab.originRoot) {
+          const cachedAt = Date.now();
+          void writeOfflineDocument({
+            source: sourceIdentity,
+            sourceRoot: tab.originRoot,
+            documentPath: tab.docRef.path,
+            revision: payload.hash,
+            observedAt: payload.mtime,
+            cachedAt,
+            freshUntil: cachedAt + 5 * 60_000,
+            expiresAt: cachedAt + 7 * 24 * 60 * 60_000,
+            content: payload.content,
+            bytes: new TextEncoder().encode(payload.content).byteLength,
+          });
+        }
+        return parsed;
+      })
       .then((parsed) => {
         if (current) setDoc(parsed);
       })
-      .catch((cause: unknown) => {
-        if (current) setError(cause instanceof Error ? cause.message : String(cause));
+      .catch(async () => {
+        const cached = await readOfflineDocument(tab.originRoot, tab.docRef.path);
+        if (!current) return;
+        setOffline(cached);
+        if (cached.status === 'hit') {
+          try {
+            setDoc(await parseMarkdownAuto(cached.entry.content));
+          } catch {
+            setOffline({ status: 'corrupt' });
+          }
+        } else {
+          setError(
+            cached.status === 'expired'
+              ? 'Offline copy expired'
+              : cached.status === 'corrupt'
+                ? 'Offline copy is corrupt'
+                : cached.status === 'unavailable'
+                  ? 'Offline cache unavailable'
+                  : 'No offline copy',
+          );
+        }
       });
     return () => {
       current = false;
     };
-  }, [tab.docRef.path]);
+  }, [sourceIdentity, tab.docRef.path, tab.originRoot]);
 
   return (
     <main className="mobile-reader" aria-label={mode === 'reader' ? 'Reader' : 'Semantic Inspector'}>
@@ -76,15 +128,27 @@ export function MobileReader({ tab, mode, onBack, onModeChange }: MobileReaderPr
         </div>
       ) : error ? (
         <div className="mobile-state" role="status">
-          <h2>Document unavailable</h2>
-          <p>{error}</p>
+          <h2>{error}</h2>
+          {offline?.status === 'expired' ? (
+            <p>
+              Source {offline.entry.source.id} · revision {offline.entry.revision}
+            </p>
+          ) : null}
         </div>
       ) : doc ? (
-        <div className="mobile-reader__document">
-          <PlatformProvider platform={readerPlatform}>
-            <MarkdownReader doc={doc} />
-          </PlatformProvider>
-        </div>
+        <>
+          {offline?.status === 'hit' ? (
+            <aside className="mobile-offline-notice" role="status">
+              Offline copy · {offline.freshness} · source {offline.entry.source.id} · revision{' '}
+              {offline.entry.revision}. This is one cached document, not a complete library.
+            </aside>
+          ) : null}
+          <div className="mobile-reader__document">
+            <PlatformProvider platform={readerPlatform}>
+              <MarkdownReader doc={doc} />
+            </PlatformProvider>
+          </div>
+        </>
       ) : (
         <div className="mobile-state" role="status">
           Loading document…
