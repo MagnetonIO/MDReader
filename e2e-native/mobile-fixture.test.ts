@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import {
+  MOBILE_FIXTURE_IDS,
+  MOBILE_FIXTURE_SESSION,
+  startMobileFixtureServer,
+} from './mobile-fixture.ts';
+
+test('the isolated fixture serves the real session/entity-query contract and forces offline', async () => {
+  const fixture = await startMobileFixtureServer(0);
+  try {
+    const refused = await fetch(`${fixture.origin}/v1/session`);
+    assert.equal(refused.status, 403);
+
+    const headers = {
+      'X-MDReader-Session-Reference': MOBILE_FIXTURE_SESSION,
+      'content-type': 'application/json',
+    };
+    const session = await fetch(`${fixture.origin}/v1/session`, { headers });
+    assert.equal(session.status, 200);
+    assert.deepEqual(await session.json(), {
+      deployment_id: MOBILE_FIXTURE_IDS.deployment,
+      principal_kind: 'oidc',
+      scopes: ['query'],
+      workspace_ids: [MOBILE_FIXTURE_IDS.workspace],
+    });
+
+    const listing = await fetch(`${fixture.origin}/v1/entity/query`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        workspace_id: MOBILE_FIXTURE_IDS.workspace,
+        entity: 'document.Document',
+        select: ['path', 'title', 'size'],
+      }),
+    });
+    assert.equal(listing.status, 200);
+    const listBody = (await listing.json()) as {
+      pins: { catalog_revision_id: string };
+      rows: Array<{ record_key: string; fields: { title: string } }>;
+      sources: Array<{ source_id: string }>;
+    };
+    assert.equal(listBody.pins.catalog_revision_id, MOBILE_FIXTURE_IDS.catalog);
+    assert.equal(listBody.sources[0]?.source_id, MOBILE_FIXTURE_IDS.source);
+    assert.equal(listBody.rows.length, 1);
+    assert.equal(listBody.rows[0]?.record_key, 'mobile-e2e-document');
+    assert.equal(listBody.rows[0]?.fields.title, 'Mobile evidence handbook');
+
+    const readQuery = {
+      workspace_id: MOBILE_FIXTURE_IDS.workspace,
+      entity: 'document.Document',
+      select: ['path', 'title', 'size', 'body'],
+    };
+    const online = await fetch(`${fixture.origin}/v1/entity/query`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(readQuery),
+    });
+    assert.equal(online.status, 200);
+    assert.match(await online.text(), /Mobile evidence handbook/);
+
+    const offline = await fetch(`${fixture.origin}/v1/entity/query`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(readQuery),
+    });
+    assert.equal(offline.status, 503);
+  } finally {
+    await fixture.close();
+  }
+});

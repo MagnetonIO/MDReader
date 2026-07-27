@@ -1,13 +1,18 @@
 /**
- * Native mobile smoke over an Appium-provided WEBVIEW context.
+ * Native mobile product flow over an Appium-provided WEBVIEW context.
  *
- * This deliberately checks the mobile composition instead of replaying the
- * desktop document flow: mobile currently has no durable folder grant or
- * secure cloud sign-in, so manufacturing seeded documents would turn a
- * scaffold into false native product evidence.
+ * The source is a loopback-only server fixture under the isolated `.e2e`
+ * application identity. It exercises the shipping authenticated adapter and
+ * offline cache; it is test evidence, never a production-provider claim.
  */
 
-import { $, browser, expect } from '@wdio/globals';
+import { $, $$, browser, expect } from '@wdio/globals';
+
+import {
+  MOBILE_FIXTURE_IDS,
+  MOBILE_FIXTURE_ORIGIN,
+  MOBILE_FIXTURE_SESSION,
+} from '../mobile-fixture.ts';
 
 /** Switch the Appium session into the app's WEBVIEW context (the HTML UI). */
 async function switchToWebview(b: WebdriverIO.Browser): Promise<void> {
@@ -28,10 +33,10 @@ async function switchToWebview(b: WebdriverIO.Browser): Promise<void> {
   }
 }
 
-describe('MDReader native mobile shell', () => {
+describe('MDReader native mobile product flow', () => {
   before(async () => switchToWebview(browser));
 
-  it('mounts the four mobile tabs without desktop chrome', async () => {
+  it('smoke: mounts the four mobile tabs without desktop chrome', async () => {
     const navigation = await $('nav[aria-label="Primary"]');
     await expect(navigation).toHaveText('LibrarySearchSourcesSettings');
     await expect(await $('button=Source')).not.toExist();
@@ -39,7 +44,7 @@ describe('MDReader native mobile shell', () => {
     await expect(await $('button*=Check for updates')).not.toExist();
   });
 
-  it('shows only truthful mobile source boundaries', async () => {
+  it('admits the isolated Enterprise fixture while keeping other source boundaries truthful', async () => {
     await (await $('button=Sources')).click();
     await expect(await $('h1=Sources')).toExist();
     await expect(await $('h2=Device folders')).toExist();
@@ -51,9 +56,46 @@ describe('MDReader native mobile shell', () => {
     await expect(await $('h2=Dropbox')).toExist();
     await expect(await $('h2=Enterprise CatDB server')).toExist();
     await expect(await $('input[type="password"]')).not.toExist();
+    await (await $('input[type="url"]')).setValue(MOBILE_FIXTURE_ORIGIN);
+    const textInputs = await $$('input:not([type]), input[type="text"]');
+    await textInputs[0]!.setValue(MOBILE_FIXTURE_SESSION);
+    await (await $('button=Use server')).click();
+    await expect(await $('p*=Connected to Enterprise Document library')).toExist();
+    await (await $('button=Library')).click();
+    await expect(await $('button=mobile-e2e.md')).toExist();
+  });
+
+  it('searches the admitted title, reads it, and inspects versioned provenance', async () => {
+    await (await $('button=Search')).click();
+    await (await $('input[type="search"]')).setValue('Mobile evidence handbook');
+    await (await $('button=mobile-e2e.md')).click();
+    await expect(await $('h1=Mobile evidence handbook')).toExist();
+    await expect(await $('main[aria-label="Reader"]')).toExist();
+    await (await $('button=Evidence')).click();
+    await expect(await $('main[aria-label="Semantic Inspector"]')).toExist();
+    for (const value of [
+      MOBILE_FIXTURE_IDS.source,
+      MOBILE_FIXTURE_IDS.catalog,
+      MOBILE_FIXTURE_IDS.schema,
+      MOBILE_FIXTURE_IDS.mapping,
+      MOBILE_FIXTURE_IDS.policy,
+    ]) {
+      await expect(await $(`dd=${value}`)).toExist();
+    }
+    await expect(await $('dd*=sha256:')).toExist();
+  });
+
+  it('uses the identity-authorized offline copy when the fixture read becomes unavailable', async () => {
+    await (await $('button=Back')).click();
+    await (await $('button=mobile-e2e.md')).click();
+    await expect(await $('h1=Mobile evidence handbook')).toExist();
+    await expect(await $('aside*=Offline copy')).toExist();
+    await expect(await $(`aside*=${MOBILE_FIXTURE_IDS.source}`)).toExist();
+    await expect(await $('aside*=sha256:')).toExist();
   });
 
   it('preserves System, Light, and Dark theme controls', async () => {
+    await (await $('button=Back')).click();
     await (await $('button=Settings')).click();
     for (const theme of ['System', 'Light', 'Dark']) {
       await expect(await $(`span=${theme}`)).toExist();
