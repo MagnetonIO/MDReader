@@ -166,7 +166,7 @@ pub(crate) enum CloudSourceError {
     OauthTimeout,
     OauthTransport,
     OauthRateLimited {
-        retry_after_ms: Option<u64>,
+        retry_after_ms: Option<u32>,
     },
     ProviderRejected,
     #[allow(dead_code)]
@@ -377,6 +377,16 @@ pub(crate) struct CloudSourceRecord {
     enabled: bool,
     credential_reference: String,
     config: CloudSourceConfig,
+}
+
+impl CloudSourceRecord {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn provider(&self) -> CloudProvider {
+        self.provider
+    }
 }
 
 pub(crate) fn validate_cloud_source_records(
@@ -1135,7 +1145,9 @@ fn map_drive_credential_error(
             catdb_connector_google_drive::DriveConnectorError::Transport
         }
         CloudSourceError::OauthRateLimited { retry_after_ms } => {
-            catdb_connector_google_drive::DriveConnectorError::RateLimited { retry_after_ms }
+            catdb_connector_google_drive::DriveConnectorError::RateLimited {
+                retry_after_ms: retry_after_ms.map(u64::from),
+            }
         }
         _ => catdb_connector_google_drive::DriveConnectorError::InvalidSecret,
     }
@@ -1150,7 +1162,9 @@ fn map_dropbox_credential_error(
             catdb_connector_dropbox::DropboxConnectorError::Transport
         }
         CloudSourceError::OauthRateLimited { retry_after_ms } => {
-            catdb_connector_dropbox::DropboxConnectorError::RateLimited { retry_after_ms }
+            catdb_connector_dropbox::DropboxConnectorError::RateLimited {
+                retry_after_ms: retry_after_ms.map(u64::from),
+            }
         }
         _ => catdb_connector_dropbox::DropboxConnectorError::InvalidSecret,
     }
@@ -1810,14 +1824,15 @@ fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bo
     }
 }
 
-fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    headers
+fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u32> {
+    let milliseconds = headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
         .ok()?
         .parse::<u64>()
         .ok()?
-        .checked_mul(1_000)
+        .checked_mul(1_000)?;
+    u32::try_from(milliseconds).ok()
 }
 
 async fn bounded_provider_response(
@@ -2323,7 +2338,70 @@ mod tests {
 
         let restored = LibraryRegistry::load_from(&registry_path).expect("unified registry");
         assert_eq!(restored.sources().len(), 1);
-        assert_eq!(restored.cloud_sources.len(), 1);
+        assert_eq!(restored.cloud_source_count(), 1);
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &fs::read(&registry_path).expect("read unified Library registry"),
+        )
+        .expect("parse unified Library registry");
+        assert!(
+            persisted.get("cloud_sources").is_none(),
+            "local and cloud membership must not be persisted in parallel lists"
+        );
+        let sources = persisted["sources"].as_array().expect("source array");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0]["kind"], "local-folder");
+        assert_eq!(sources[1]["kind"], "google-drive");
+    }
+
+    #[test]
+    fn version_four_parallel_membership_migrates_once_to_first_class_sources() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("notes");
+        fs::create_dir(&local_root).expect("local source");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&local_root).expect("admit local source");
+        registry
+            .save_to(&registry_path)
+            .expect("persist local source");
+        let vault = MemoryCredentialVault::default();
+        let service = CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault);
+        service
+            .install(CloudProvider::GoogleDrive, google_config(), credentials())
+            .expect("connect Drive");
+
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read V5 registry"))
+                .expect("parse V5 registry");
+        let mut entries = legacy["sources"]
+            .as_array_mut()
+            .expect("source array")
+            .drain(..)
+            .collect::<Vec<_>>();
+        let mut local = entries.remove(0);
+        local.as_object_mut().expect("local source").remove("kind");
+        let mut drive = entries.remove(0);
+        drive.as_object_mut().expect("Drive source").remove("kind");
+        legacy["version"] = serde_json::json!(4);
+        legacy["sources"] = serde_json::json!([local]);
+        legacy["cloud_sources"] = serde_json::json!([drive]);
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&legacy).expect("encode V4 registry"),
+        )
+        .expect("write V4 registry");
+
+        let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate V4");
+        assert_eq!(migrated.sources().len(), 1);
+        assert_eq!(migrated.cloud_source_count(), 1);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
+                .expect("parse migrated registry");
+        assert_eq!(persisted["version"], serde_json::json!(5));
+        assert!(persisted.get("cloud_sources").is_none());
+        assert_eq!(persisted["sources"][0]["kind"], "local-folder");
+        assert_eq!(persisted["sources"][1]["kind"], "google-drive");
     }
 
     #[test]
@@ -2490,12 +2568,13 @@ mod tests {
         let registry: serde_json::Value =
             serde_json::from_str(&persisted).expect("unified Library registry");
         assert_eq!(
-            registry["cloud_sources"]
+            registry["sources"]
                 .as_array()
-                .expect("cloud membership")
+                .expect("Library membership")
                 .len(),
             1
         );
+        assert_eq!(registry["sources"][0]["kind"], "google-drive");
         assert!(
             !temp.path().join("cloud-sources.json").exists(),
             "cloud membership must not create a parallel source registry"

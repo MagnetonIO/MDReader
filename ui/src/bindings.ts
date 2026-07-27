@@ -424,7 +424,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
 
 export type CloudSourcesSnapshot = {
 	version: number,
