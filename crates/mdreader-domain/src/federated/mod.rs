@@ -746,6 +746,38 @@ impl std::fmt::Debug for Federation<'_> {
     }
 }
 
+#[cfg(test)]
+mod product_scope_tests {
+    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+    use catdb_validation::EggProver;
+
+    use super::Federation;
+
+    #[test]
+    fn exact_product_path_is_typed_without_round_tripping_through_query_text() {
+        let root = tempfile::tempdir().expect("temporary source root");
+        std::fs::write(root.path().join("a file.md"), "# A file\n").expect("write markdown");
+        let filesystem = FilesystemSource::new(root.path());
+        let git = GitSource::open(root.path());
+        let frontmatter = FrontmatterSource::new(root.path());
+        let sources: Vec<&dyn DataSource> = vec![&filesystem, &git, &frontmatter];
+        let federation =
+            Federation::new(sources, &EggProver::default()).expect("valid federation");
+
+        let query = federation
+            .scope_exact_path("a file.md")
+            .expect("spaces are data, not query syntax");
+
+        assert_eq!(query.filters.len(), 1);
+        assert_eq!(query.filters[0].attr, "path");
+        assert_eq!(query.filters[0].op, catdb_query::AttrOp::Eq);
+        assert_eq!(
+            query.filters[0].value,
+            catdb_query::AttrValue::Text("a file.md".to_string())
+        );
+    }
+}
+
 /// One source's rows for one scope, keyed by the natural key.
 struct Reading<'a> {
     binding: &'a Binding<'a>,

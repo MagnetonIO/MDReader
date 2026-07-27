@@ -240,6 +240,15 @@ mod tests {
         assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
     }
 
+    #[test]
+    fn federated_document_query_is_a_registered_specta_command() {
+        let registry = include_str!("lib.rs");
+        assert!(
+            registry.contains("federation::query_federated_document,"),
+            "the P8 federation must cross the real Tauri/Specta command boundary"
+        );
+    }
+
     /// THE first-paint guarantee, enforced by construction.
     ///
     /// Tauri dispatches a command that is neither `async fn` nor marked
