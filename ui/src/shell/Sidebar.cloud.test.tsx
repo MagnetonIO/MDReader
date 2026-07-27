@@ -34,9 +34,10 @@ it('navigates connected read-through sources from the primary Library rail', () 
     },
     completeness: 'complete',
     sources: [
-      {
-        source_id: source.id,
-        outcome: {
+    {
+      source_id: source.id,
+      freshness_ms: 0,
+      outcome: {
           kind: 'ran',
           mode: 'virtual',
           scanned: 1,

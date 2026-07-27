@@ -57,6 +57,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::connect_cloud_source,
             cloud_accounts::set_cloud_source_enabled,
             cloud_accounts::disconnect_cloud_source,
+            cloud_accounts::prepare_cloud_catalog,
+            cloud_accounts::entity_query,
             cloud_accounts::query_cloud_documents,
             cloud_accounts::cancel_cloud_document_query,
             library::list_library_sources,
@@ -283,6 +285,10 @@ mod tests {
                 "\"disconnect_cloud_source\"",
             ),
             (
+                "cloud_accounts::prepare_cloud_catalog,",
+                "\"prepare_cloud_catalog\"",
+            ),
+            (
                 "cloud_accounts::query_cloud_documents,",
                 "\"query_cloud_documents\"",
             ),
@@ -294,6 +300,22 @@ mod tests {
             assert!(registry.contains(rust_command), "missing {rust_command}");
             assert!(bindings.contains(invoke_name), "missing {invoke_name}");
         }
+    }
+
+    #[test]
+    fn shared_entity_query_is_registered_and_generated_for_the_renderer() {
+        let registry = include_str!("lib.rs");
+        let bindings = include_str!("../../ui/src/bindings.ts");
+        assert!(
+            registry.contains("cloud_accounts::entity_query,"),
+            "cloud P8 must cross the shared entity-query command boundary"
+        );
+        assert!(
+            bindings.contains("\"entity_query\""),
+            "the shared entity-query command must be generated for the renderer"
+        );
+        assert!(bindings.contains("EntityQueryRequest"));
+        assert!(bindings.contains("EntityQueryResponse"));
     }
 
     /// THE first-paint guarantee, enforced by construction.

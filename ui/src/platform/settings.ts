@@ -12,6 +12,7 @@ import {
   type CloudDocumentQueryResponse,
   type CloudFilterInput,
   type CloudProvider,
+  type CloudCatalogReady,
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
@@ -20,6 +21,8 @@ import {
   type DiagnosticExport,
   type DiagnosticInfo,
   type DiagnosticLevel,
+  type EntityQueryResponse,
+  type EntityQueryRequest_Deserialize,
   type LibraryError,
   type LibrarySnapshot,
   type LibrarySourceDto,
@@ -88,6 +91,7 @@ export interface SettingsBackend {
    * cloud-account surface instead of displaying controls that cannot work.
    */
   listCloudSources?: () => Promise<CloudSourcesView>;
+  prepareCloudCatalog?: () => Promise<CloudCatalogReady>;
   connectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
   setCloudSourceEnabled?: (
     provider: CloudProvider,
@@ -100,6 +104,12 @@ export interface SettingsBackend {
     fields: string[],
     requestId: string,
   ) => Promise<CloudDocumentQueryResponse>;
+  queryCloudEntity?: (
+    provider: CloudProvider,
+    filters: CloudFilterInput[],
+    fields: string[],
+    requestId: string,
+  ) => Promise<EntityQueryResponse>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
 }
 
@@ -189,6 +199,12 @@ export async function listCloudSources(): Promise<CloudSourcesSnapshot> {
   return result.data;
 }
 
+export async function prepareCloudCatalog(): Promise<CloudCatalogReady> {
+  const result = await commands.prepareCloudCatalog();
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
 export async function connectCloudSource(
   provider: CloudProvider,
 ): Promise<CloudSourcesSnapshot> {
@@ -225,6 +241,37 @@ export async function queryCloudDocuments(
   return result.data;
 }
 
+export async function queryCloudEntity(
+  provider: CloudProvider,
+  filters: CloudFilterInput[],
+  fields: string[],
+  requestId: string,
+): Promise<EntityQueryResponse> {
+  const catalog = await prepareCloudCatalog();
+  const request: EntityQueryRequest_Deserialize = {
+    workspace_id: catalog.workspace_id,
+    catalog_revision_id: catalog.catalog_revision_id,
+    schema_version_id: catalog.schema_version_id,
+    entity: 'library.Document',
+    select: fields,
+    filters: filters.map((filter) => ({
+      field: filter.field,
+      operator: filter.operator,
+      value: filter.value,
+    })),
+    order_by: [],
+    source_ids: null,
+    max_staleness_ms: null,
+    require_complete: true,
+    page_size: 1_000,
+    limit: 1_000,
+    cursor: null,
+  };
+  const result = await commands.entityQuery(requestId, provider, request);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
 export async function cancelCloudDocumentQuery(requestId: string): Promise<boolean> {
   const result = await commands.cancelCloudDocumentQuery(requestId);
   if (result.status === 'error') return cloudFailure(result.error);
@@ -244,10 +291,12 @@ export const settingsBackend: SettingsBackend = {
   exportDiagnostics,
   clearDiagnostics,
   listCloudSources,
+  prepareCloudCatalog,
   connectCloudSource,
   setCloudSourceEnabled,
   disconnectCloudSource,
   queryCloudDocuments,
+  queryCloudEntity,
   cancelCloudDocumentQuery,
 };
 

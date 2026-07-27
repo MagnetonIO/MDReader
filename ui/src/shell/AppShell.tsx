@@ -170,7 +170,13 @@ export function AppShell() {
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
   const refreshCloudLibrary = useCallback(async () => {
-    if (!settingsBackend.listCloudSources || !settingsBackend.queryCloudDocuments) return;
+    if (
+      !settingsBackend.prepareCloudCatalog ||
+      !settingsBackend.listCloudSources ||
+      !settingsBackend.queryCloudDocuments
+    ) {
+      return;
+    }
     const generation = cloudRefreshGeneration.current + 1;
     cloudRefreshGeneration.current = generation;
     if (settingsBackend.cancelCloudDocumentQuery) {
@@ -183,6 +189,8 @@ export function AppShell() {
     setCloudLoading(true);
     setCloudError(null);
     try {
+      await settingsBackend.prepareCloudCatalog();
+      if (cloudRefreshGeneration.current !== generation) return;
       const snapshot = await settingsBackend.listCloudSources();
       if (cloudRefreshGeneration.current !== generation) return;
       setCloudSources(snapshot.sources);
@@ -237,7 +245,7 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!hydrated || !isTauri()) return;
     void refreshCloudLibrary();
     return () => {
       cloudRefreshGeneration.current += 1;
@@ -248,7 +256,7 @@ export function AppShell() {
       }
       cloudRefreshRequests.current = [];
     };
-  }, [refreshCloudLibrary]);
+  }, [hydrated, refreshCloudLibrary]);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -1807,6 +1815,12 @@ export function AppShell() {
                     throw new Error('Cloud document queries are unavailable.');
                   }
                   return settingsBackend.queryCloudDocuments(provider, filters, fields, requestId);
+                }}
+                entityQuery={async (provider, filters, fields, requestId) => {
+                  if (!settingsBackend.queryCloudEntity) {
+                    throw new Error('Shared cloud entity queries are unavailable.');
+                  }
+                  return settingsBackend.queryCloudEntity(provider, filters, fields, requestId);
                 }}
                 cancel={async (requestId) =>
                   settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false

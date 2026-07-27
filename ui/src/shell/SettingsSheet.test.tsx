@@ -98,6 +98,7 @@ function cloudResponse(
     sources: [
       {
         source_id: 'b'.repeat(64),
+        freshness_ms: 0,
         outcome: {
           kind: 'ran',
           mode: 'virtual',
@@ -132,6 +133,7 @@ function cloudResponse(
               source_id: 'b'.repeat(64),
               record_key: recordKey,
               mapping_version: 'mdreader.Document.cloud-mapping/v1',
+              physical_attribute: field,
               observation: 'observed' as const,
               observed_at_ms: 1_800_000_000_000,
             },

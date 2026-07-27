@@ -9,6 +9,8 @@ import type {
   CloudFilterInput,
   CloudProvider,
   CloudSourceDto,
+  EntityQueryResponse,
+  EntityRow,
 } from '../bindings.js';
 import type { FederatedDocument } from '../platform/semantics.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
@@ -35,6 +37,12 @@ export interface CloudLibraryPaneProps {
     fields: string[],
     requestId: string,
   ) => Promise<CloudDocumentQueryResponse>;
+  entityQuery: (
+    provider: CloudProvider,
+    filters: CloudFilterInput[],
+    fields: string[],
+    requestId: string,
+  ) => Promise<EntityQueryResponse>;
   cancel: (requestId: string) => Promise<boolean>;
 }
 
@@ -64,47 +72,65 @@ function saveCopy(name: string, body: string): void {
 }
 
 function normalizeCloudDocument(
-  response: CloudDocumentQueryResponse,
-  row: CloudDocumentRow,
+  response: EntityQueryResponse,
+  row: EntityRow,
+  source: CloudSourceDto,
+  cloudEvidence: CloudDocumentQueryResponse,
 ): FederatedDocument {
-  const values = fieldsOf(row);
+  if (
+    response.pins.catalog_revision_id !== cloudEvidence.version_pins.catalog_version ||
+    response.pins.schema_version_id !== cloudEvidence.version_pins.schema_version ||
+    response.pins.mapping_version_ids[0] !== cloudEvidence.version_pins.mapping_version ||
+    response.pins.source_version_ids[0] !== cloudEvidence.version_pins.source_version ||
+    response.pins.policy_version_ids[0] !== cloudEvidence.version_pins.policy_version
+  ) {
+    throw new Error('Cloud document evidence changed between the body and semantic reads.');
+  }
+  const values = row.fields;
   const report = response.sources[0];
-  const sourceOutcome = report?.outcome;
-  const fields = row.provenance.map((field) => {
+  const physicalReport = cloudEvidence.sources[0];
+  const fields = Object.values(row.provenance).map((field) => {
     const value = values[field.field] ?? null;
-    const providers = field.providers.map((provider) => ({
-      source: provider.source_id,
-      attribute: field.field,
-      verdict: provider.observation,
-      value: provider.observation === 'observed' ? value : null,
+    const providers = field.considered.map((provider) => ({
+      source: source.id,
+      attribute: provider.physical_attribute ?? 'physical attribute unavailable',
+      verdict:
+        provider.state.state === 'observed_value' ||
+        provider.state.state === 'observed_null'
+          ? 'observed'
+          : 'observed-nothing',
+      value:
+        provider.state.state === 'observed_value'
+          ? provider.state.value
+          : null,
       reason: [
-        `Provider ${provider.provider}`,
+        `Provider ${source.provider}`,
         `record ${provider.record_key}`,
-        `mapping ${provider.mapping_version}`,
+        `mapping ${provider.mapping_version_id}`,
         provider.observed_at_ms === null
           ? 'observed time unavailable'
           : `observed at ${new Date(provider.observed_at_ms).toISOString()}`,
       ].join(' · '),
       declaredFallback: [] as string[],
     }));
-    const winner = field.providers.find((provider) => provider.observation === 'observed');
+    const winner = field.selected === null ? null : field.considered[field.selected] ?? null;
     return {
       name: field.field,
       value,
-      winner: winner?.source_id ?? null,
+      winner: winner ? source.id : null,
       providers,
       explanation: winner
-        ? `\`${field.field}\` answered by \`${winner.source_id}.${field.field}\``
+        ? `\`${field.field}\` answered by \`${source.id}.${winner.physical_attribute ?? 'physical attribute unavailable'}\``
         : `No provider observed \`${field.field}\``,
     };
   });
   return {
     queryId: response.query_id,
-    completeness: response.completeness,
+    completeness: response.completeness.state,
     schema: {
       name: 'library',
-      version: response.version_pins.schema_version,
-      checksum: response.version_pins.schema_checksum,
+      version: response.pins.schema_version_id,
+      checksum: cloudEvidence.version_pins.schema_checksum,
       entities: ['Document'],
       arrowCount: 0,
       attributeCount: DOCUMENT_FIELDS.length,
@@ -120,18 +146,21 @@ function normalizeCloudDocument(
           : row.record_key,
       fields,
     },
-    sources: report && sourceOutcome
+    sources: report
       ? [
           {
-            source: report.source_id,
-            outcome: sourceOutcome.kind,
-            execution: sourceOutcome.mode,
-            freshness: 'live',
-            ageMs: null,
-            scanned: sourceOutcome.scanned,
-            returned: sourceOutcome.returned,
-            pushed: sourceOutcome.pushed,
-            residual: sourceOutcome.residual,
+            source: source.id,
+            outcome: report.outcome,
+            execution:
+              physicalReport?.outcome.kind === 'ran' ? physicalReport.outcome.mode : null,
+            freshness: report.freshness_ms === null ? null : 'live',
+            ageMs: report.freshness_ms,
+            scanned: report.scanned as number,
+            returned: report.returned as number,
+            pushed:
+              physicalReport?.outcome.kind === 'ran' ? physicalReport.outcome.pushed : [],
+            residual:
+              physicalReport?.outcome.kind === 'ran' ? physicalReport.outcome.residual : [],
             refusal: null,
           },
         ]
@@ -143,13 +172,18 @@ export function CloudLibraryPane({
   source,
   row,
   query,
+  entityQuery,
   cancel,
 }: CloudLibraryPaneProps) {
   const queryRef = useRef(query);
   queryRef.current = query;
+  const entityQueryRef = useRef(entityQuery);
+  entityQueryRef.current = entityQuery;
   const cancelRef = useRef(cancel);
   cancelRef.current = cancel;
   const [resolvedRow, setResolvedRow] = useState<CloudDocumentRow | null>(null);
+  const [resolvedEvidence, setResolvedEvidence] =
+    useState<CloudDocumentQueryResponse | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const values = fieldsOf(resolvedRow ?? row);
   const title =
@@ -164,9 +198,9 @@ export function CloudLibraryPane({
   useEffect(() => {
     let retired = false;
     const bodyRequestId =
-      `cloud-reader:${source.provider}:${source.id}:${row.record_key}:` +
-      globalThis.crypto.randomUUID();
+      `cloud-reader:${source.provider}:` + globalThis.crypto.randomUUID();
     setResolvedRow(null);
+    setResolvedEvidence(null);
     setReadError(null);
     void queryRef
       .current(
@@ -185,6 +219,7 @@ export function CloudLibraryPane({
           throw new Error('The provider did not return the selected document body.');
         }
         setResolvedRow(selected);
+        setResolvedEvidence(answer);
       })
       .catch((cause: unknown) => {
         if (retired) return;
@@ -219,20 +254,18 @@ export function CloudLibraryPane({
   );
   const queryInspector = useCallback(
     async (_path: string, invocation: string, request: string) => {
-      const answer = await queryRef.current(
+      const answer = await entityQueryRef.current(
         source.provider,
         [{ field: 'path', operator: 'eq', value: row.record_key }],
         DOCUMENT_FIELDS,
         requestId(invocation, request),
       );
-      const selected = answer.rows.find(
-        (candidate) =>
-          candidate.source_id === source.id && candidate.record_key === row.record_key,
-      );
+      const selected = answer.rows.find((candidate) => candidate.record_key === row.record_key);
       if (!selected) throw new Error('The provider did not return the selected document.');
-      return normalizeCloudDocument(answer, selected);
+      if (!resolvedEvidence) throw new Error('Cloud query evidence is not ready.');
+      return normalizeCloudDocument(answer, selected, source, resolvedEvidence);
     },
-    [requestId, row.record_key, source.id, source.provider],
+    [requestId, resolvedEvidence, row.record_key, source],
   );
   const cancelInspector = useCallback(
     async (invocation: string, request: string) => {
