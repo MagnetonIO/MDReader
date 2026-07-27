@@ -3107,12 +3107,11 @@ mod tests {
     fn library_transport_never_serializes_free_form_native_or_secret_context() {
         let sentinel =
             "/Users/private-user/secret.md token=blue-lantern postgres://name:pass@host/db $1";
-        let error = LibraryError::CorruptRegistry {
-            message: sentinel.to_string(),
-        };
-        let availability = super::LibraryAvailability::Unreadable {
-            reason: sentinel.to_string(),
-        };
+        let error = LibraryRegistry::empty()
+            .activation_root(sentinel)
+            .expect_err("renderer-supplied source id is not a member");
+        let availability: super::LibraryAvailability =
+            classify_probe_error(io::Error::new(io::ErrorKind::PermissionDenied, sentinel)).into();
 
         for rendered in [
             format!("{error:?}"),
