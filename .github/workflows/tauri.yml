@@ -330,10 +330,6 @@ jobs:
         working-directory: apps/mdreader/e2e-native
         run: npm install
 
-      - name: Install Appium xcuitest driver
-        working-directory: apps/mdreader/e2e-native
-        run: npx appium driver install xcuitest
-
       - name: Typecheck the GUI harness
         working-directory: apps/mdreader/e2e-native
         run: pnpm run typecheck
@@ -416,10 +412,6 @@ jobs:
       - name: Install e2e-native toolchain
         working-directory: apps/mdreader/e2e-native
         run: npm install
-
-      - name: Install Appium uiautomator2 driver
-        working-directory: apps/mdreader/e2e-native
-        run: npx appium driver install uiautomator2
 
       - name: Typecheck the GUI harness
         working-directory: apps/mdreader/e2e-native

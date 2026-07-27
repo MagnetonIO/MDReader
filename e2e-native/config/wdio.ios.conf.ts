@@ -31,8 +31,8 @@ export const config: WebdriverIO.Config = {
   framework: 'mocha',
   reporters: ['spec'],
   mochaOpts: { ui: 'bdd', timeout: 240_000 },
-  // Spawn a local Appium server for the session. The xcuitest driver must be
-  // installed: `appium driver install xcuitest`.
+  // Spawn a local Appium server. The pinned xcuitest driver is installed with
+  // this package's ordinary dependencies.
   services: [['appium', { args: { address: '127.0.0.1', port: 4723 }, command: 'appium' }]],
   port: 4723,
   path: '/',

@@ -6,8 +6,6 @@
   "description": "Milestone PT — the UNIFIED Appium + WebdriverIO GUI functional-test harness for MDReader across desktop (macOS/Windows/Linux) and mobile (iOS/Android). One runner + shared behavioural spec (flows.ts) + per-driver adapters. Deliberately OUTSIDE the pnpm workspace: its Appium/WebdriverIO toolchain installs on demand (locally + in CI) and never bloats the root lockfile. The macOS leg (appium-mac2-driver) additionally shells out to a compiled Swift AX helper to read WKWebView's accessibility tree, which no WebDriver surface exposes.",
   "scripts": {
     "appium:driver:macos": "appium driver install mac2",
-    "appium:driver:ios": "appium driver install xcuitest",
-    "appium:driver:android": "appium driver install uiautomator2",
     "build:e2e": "pnpm --filter '@mdreader/app...' run build && pnpm --filter @mdreader/app tauri build --bundles app --features e2e-build --config src-tauri/tauri.e2e.conf.json",
     "smoke:macos": "node --experimental-strip-types --no-warnings runners/macos.ts",
     "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts",
@@ -25,6 +23,8 @@
     "@wdio/mocha-framework": "^9.20.0",
     "@wdio/spec-reporter": "^9.20.0",
     "appium": "^3.5.0",
+    "appium-uiautomator2-driver": "8.1.2",
+    "appium-xcuitest-driver": "12.1.0",
     "expect-webdriverio": "^5.0.0",
     "tsx": "^4.19.2",
     "typescript": "~5.6.3",

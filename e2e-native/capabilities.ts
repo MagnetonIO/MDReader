@@ -181,6 +181,8 @@ export function iosCapabilitiesFor(
     'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
     'appium:includeSafariInWebviews': false,
+    'appium:wdaLaunchTimeout': 180_000,
+    'appium:wdaConnectionTimeout': 180_000,
   } as WebdriverIO.Capabilities;
 }
 
