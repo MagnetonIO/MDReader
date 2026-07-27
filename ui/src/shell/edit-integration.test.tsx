@@ -483,6 +483,17 @@ describe('library source identity follows the committed backend epoch', () => {
       { sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' },
     ]);
     expect(h.readCalls).not.toContain('notes/local.md');
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Source view' }).getAttribute('aria-pressed'),
+      ).toBe('true'),
+    );
+    expect(screen.getByTestId('source-pane').textContent).toContain('# Local note');
+    const activeTabId = useTabsStore.getState().activeTabId;
+    expect(activeTabId).not.toBeNull();
+    expect(
+      useEditorStore.getState().entry(activeTabId!, '/ws-b/notes/local.md')?.mode,
+    ).toBe('source');
   });
 
   it('attributes a new watcher failure to the new source while its listing is still pending', async () => {

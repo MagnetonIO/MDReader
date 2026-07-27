@@ -709,6 +709,9 @@ impl LibraryRegistry {
         relative_path: &Path,
         active_root: Option<&SourceRoot>,
     ) -> Result<PathBuf, LibraryError> {
+        if relative_path.is_absolute() {
+            return Err(LibraryError::InvalidDocumentPath);
+        }
         let source_root = self.activation_root(source_id)?;
         if active_root != Some(&source_root) {
             return Err(LibraryError::GrantMismatch);
@@ -2686,7 +2689,7 @@ mod tests {
                 Path::new("nested/document.md"),
                 Some(&active),
             ),
-            Ok(expected)
+            Ok(expected.clone())
         );
         assert_eq!(
             registry.resolve_document_edit_path(
@@ -2694,6 +2697,10 @@ mod tests {
                 Path::new("../outside.md"),
                 Some(&active),
             ),
+            Err(LibraryError::InvalidDocumentPath)
+        );
+        assert_eq!(
+            registry.resolve_document_edit_path(&source.id, &expected, Some(&active)),
             Err(LibraryError::InvalidDocumentPath)
         );
     }

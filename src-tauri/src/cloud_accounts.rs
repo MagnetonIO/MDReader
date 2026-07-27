@@ -4031,6 +4031,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
+        time::{Duration, Instant},
     };
 
     use catdb_connectors::{
@@ -4044,7 +4045,8 @@ mod tests {
         CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectionState,
         CloudCredentialResolver, CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider,
         CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
-        CredentialVault, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
+        OAuthAttempt, SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -5353,6 +5355,111 @@ mod tests {
         assert!(sources
             .iter()
             .all(|source| source.outcome == catdb_api_types::SourceOutcome::RuntimeRefused));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn identity_bound_git_never_observes_an_overlapping_a_b_a_replacement() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fn commit(root: &Path, filename: &str, author: &str) {
+            fs::create_dir(root).expect("repository directory");
+            fs::write(root.join(filename), format!("# {author}\n")).expect("tracked document");
+            for args in [
+                vec!["init", "-q"],
+                vec!["add", "--all"],
+                vec![
+                    "-c",
+                    &format!("user.name={author}"),
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-q",
+                    "-m",
+                    author,
+                ],
+            ] {
+                let output = std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .output()
+                    .expect("git fixture command");
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        let temp = tempdir().expect("temporary directory");
+        let root = temp.path().join("notes");
+        let replacement = temp.path().join("replacement");
+        let retired = temp.path().join("retired");
+        commit(&root, "original.md", "Original Author");
+        commit(&replacement, "replacement.md", "Replacement Author");
+        let bound_root = mdreader_ingest::SourceRoot::capture(
+            fs::canonicalize(&root).expect("canonical original root"),
+        )
+        .expect("bind original root");
+
+        let shim = temp.path().join("git-overlap");
+        fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nset -eu\nmv '{}' '{}'\nmv '{}' '{}'\nset +e\ngit \"$@\"\nstatus=$?\nset -e\nmv '{}' '{}'\nmv '{}' '{}'\nexit \"$status\"\n",
+                root.display(),
+                retired.display(),
+                replacement.display(),
+                root.display(),
+                root.display(),
+                replacement.display(),
+                retired.display(),
+                root.display(),
+            ),
+        )
+        .expect("git overlap shim");
+        let mut permissions = fs::metadata(&shim).expect("shim metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&shim, permissions).expect("executable shim");
+
+        let source: Arc<dyn DataSource> = Arc::new(IdentityBoundLocalSource {
+            root: bound_root,
+            source: Arc::new(catdb_connectors::GitSource::open_with_git_binary(
+                &root, &shim,
+            )),
+        });
+        let query = catdb_query::EntityQuery {
+            target: catdb_query::EntityTarget::Entity("doc.Document".to_string()),
+            filters: Vec::new(),
+        };
+        let plan = source
+            .compile(&query, &["path".to_string()])
+            .expect("compile tracked paths");
+        let context = ReadContext::new(
+            uuid::Uuid::new_v4(),
+            Instant::now() + Duration::from_secs(5),
+            100,
+            1024 * 1024,
+            100,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .expect("bounded read context");
+        let page = source
+            .execute_page(&plan, None, &context)
+            .await
+            .expect("identity-bound read");
+        let keys = page
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, ["original.md"]);
+        assert!(root.join("original.md").is_file());
+        assert!(replacement.join("replacement.md").is_file());
     }
 
     #[test]

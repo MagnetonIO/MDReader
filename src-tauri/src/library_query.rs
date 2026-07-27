@@ -43,6 +43,7 @@ const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const QUERY_PAGE_SIZE: usize = 256;
 const QUERY_CONCURRENCY: usize = 4;
 const SCOPED_KEY_PREFIX: &str = "library:";
+const LIBRARY_IDENTITY_FIELD: &str = "path";
 
 /// Stable query identity for one persisted Library membership record.
 pub(crate) fn membership_id(registry_id: &str) -> Uuid {
@@ -592,6 +593,13 @@ pub(crate) async fn execute_registered_library_query(
     {
         return Err(LibraryQueryError::InvalidRequest);
     }
+    let identity_was_selected = request
+        .select
+        .iter()
+        .any(|field| field == LIBRARY_IDENTITY_FIELD);
+    if !identity_was_selected {
+        request.select.push(LIBRARY_IDENTITY_FIELD.to_string());
+    }
     let runtime = build_runtime(request.workspace_id, members)?;
     let by_membership = runtime
         .memberships
@@ -663,6 +671,12 @@ pub(crate) async fn execute_registered_library_query(
         .await
         .map_err(map_entity_query_error)?;
     restore_membership_provenance(&mut answer, &runtime.memberships)?;
+    if !identity_was_selected {
+        for row in &mut answer.rows {
+            row.fields.remove(LIBRARY_IDENTITY_FIELD);
+            row.provenance.remove(LIBRARY_IDENTITY_FIELD);
+        }
+    }
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
     Ok(LibraryEntityQueryResponse {
         answer,
@@ -1020,6 +1034,52 @@ mod tests {
                 .values()
                 .all(|field| field.considered().len() == expected_providers));
         }
+    }
+
+    #[tokio::test]
+    async fn body_only_projection_keeps_every_selected_local_provider_in_evidence() {
+        let tree = tempfile::tempdir().expect("temp tree");
+        std::fs::write(tree.path().join("note.md"), "# Local body\n").expect("fixture");
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tree.path())
+            .output()
+            .expect("git");
+        assert!(output.status.success());
+
+        let workspace = Uuid::new_v4();
+        let local = Uuid::new_v4();
+        let mut query = request(workspace, vec![local]);
+        query.select = vec!["body".to_string()];
+        let answer = execute_registered_library_query(
+            query,
+            vec![local_member(tree.path(), local)],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("body-only Library query");
+
+        assert_eq!(answer.answer.completeness, Completeness::Complete);
+        assert_eq!(answer.answer.sources.len(), 3);
+        assert!(answer
+            .answer
+            .sources
+            .iter()
+            .all(|source| source.outcome == catdb_api_types::SourceOutcome::Ran));
+        let row = answer.answer.rows.first().expect("local row");
+        assert_eq!(row.fields.len(), 1);
+        assert_eq!(row.fields["body"], serde_json::json!("# Local body\n"));
+        assert_eq!(row.provenance["body"].considered().len(), 3);
+        assert_eq!(
+            row.provenance["body"]
+                .considered()
+                .iter()
+                .filter(|observation| {
+                    observation.state().kind() == catdb_provenance::ObservationKind::NotAsked
+                })
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]

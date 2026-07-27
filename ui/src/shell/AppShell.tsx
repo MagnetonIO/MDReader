@@ -677,6 +677,37 @@ export function AppShell() {
     [openRef],
   );
 
+  // Switch the active tab's view mode for its CURRENT document. Entering
+  // source/split for the first time seeds the editor buffer from a fresh disk read
+  // (content + hash) so the save guard is anchored to exactly what was on disk
+  // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
+  // keeps its own entry untouched.
+  const setEditorMode = useCallback(async (mode: EditorMode) => {
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab) return;
+    const tabId = tab.id;
+    const docPath = tab.docRef.path;
+    const editor = useEditorStore.getState();
+    if (mode === 'read') {
+      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
+      return;
+    }
+    if (editor.entry(tabId, docPath)) {
+      editor.setMode(tabId, docPath, mode);
+      return;
+    }
+    try {
+      const doc = await readDoc(docPath);
+      // The active tab may have changed (or navigated) during the read — seed only
+      // if it still stands on the same document.
+      const landed = selectActiveTab(useTabsStore.getState());
+      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
+      useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
+    } catch (cause) {
+      toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }, []);
+
   const editLibraryDocument = useCallback(
     async (member: LibrarySourceExecution, row: EntityRow): Promise<void> => {
       if (!member.editable) return;
@@ -717,8 +748,9 @@ export function AppShell() {
           ? row.fields.title
           : path.split(/[\\/]+/).pop() ?? path;
       openRef({ path: documentPath, name: title });
+      await setEditorMode('source');
     },
-    [openRef, switchWorkspace],
+    [openRef, setEditorMode, switchWorkspace],
   );
 
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
@@ -915,37 +947,6 @@ export function AppShell() {
   }, []);
 
   // --- light editing (source/split, hash-guarded save, conflicts) --------
-  // Switch the active tab's view mode for its CURRENT document. Entering
-  // source/split for the first time seeds the editor buffer from a fresh disk read
-  // (content + hash) so the save guard is anchored to exactly what was on disk
-  // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
-  // keeps its own entry untouched.
-  const setEditorMode = useCallback(async (mode: EditorMode) => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab) return;
-    const tabId = tab.id;
-    const docPath = tab.docRef.path;
-    const editor = useEditorStore.getState();
-    if (mode === 'read') {
-      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
-      return;
-    }
-    if (editor.entry(tabId, docPath)) {
-      editor.setMode(tabId, docPath, mode);
-      return;
-    }
-    try {
-      const doc = await readDoc(docPath);
-      // The active tab may have changed (or navigated) during the read — seed only
-      // if it still stands on the same document.
-      const landed = selectActiveTab(useTabsStore.getState());
-      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
-      useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
-    } catch (cause) {
-      toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
-    }
-  }, []);
-
   // Cmd+E: toggle read ↔ source for the active tab's current doc.
   const toggleSourceMode = useCallback(() => {
     const tab = selectActiveTab(useTabsStore.getState());
