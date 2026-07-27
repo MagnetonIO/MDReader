@@ -2906,6 +2906,28 @@ mod tests {
     }
 
     #[test]
+    fn version_two_recovery_refuses_sqlite_recovery_sidecars() {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let temp = tempdir().expect("tempdir");
+            let app_data = temp.path().join("app-data");
+            let root = bound_root(&mkdir(temp.path(), "notes"));
+            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+            let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
+            let source_id = create_authentic_v2_index(&old_db, &root);
+            let mut sidecar = old_db.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            fs::write(PathBuf::from(sidecar), b"unresolved SQLite state")
+                .expect("write recovery sidecar");
+
+            assert_eq!(
+                super::recover_v2_engine_source_id(&app_data, &v2_source(&root)),
+                Err(LibraryError::CorruptRegistry),
+                "recovery must not adopt {source_id} while {suffix} state is unresolved"
+            );
+        }
+    }
+
+    #[test]
     fn version_two_migration_without_identity_fails_closed_and_preserves_bytes() {
         let temp = tempdir().expect("tempdir");
         let registry_path = temp.path().join("app-data/library.json");
