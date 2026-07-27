@@ -197,9 +197,7 @@ fn pkce_uses_s256_state_and_the_exact_selected_file_scope_without_a_client_secre
         .unwrap();
     assert!(authorization.contains("code_challenge_method=S256"));
     assert!(authorization.contains("state=state-123"));
-    assert!(authorization.contains(
-        "scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file"
-    ));
+    assert!(authorization.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file"));
     assert!(!authorization.contains("client_secret"));
     assert_eq!(config().oauth_scope(), GOOGLE_DRIVE_FILE_SCOPE);
     assert_eq!(
@@ -301,16 +299,15 @@ async fn rejected_remote_page_token_is_invalid_cursor_not_transport_or_empty() {
     let (source, _) = source(
         ScriptedTransport::new([
             response(200, first),
-            response(400, br#"{"error":{"code":400,"message":"Invalid page token."}}"#),
+            response(
+                400,
+                br#"{"error":{"code":400,"message":"Invalid page token."}}"#,
+            ),
         ]),
         config(),
     );
     let page = source
-        .execute_page(
-            &plan(&source, &["id"]),
-            None,
-            &context(1, 4, 64 * 1024),
-        )
+        .execute_page(&plan(&source, &["id"]), None, &context(1, 4, 64 * 1024))
         .await
         .unwrap();
     assert!(matches!(
@@ -346,11 +343,11 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
         false,
     );
     let transport = ScriptedTransport::new([response(200, body)]);
-    let (source, _) = source(transport, config());
+    let (first_source, _) = source(transport, config());
     let query_id = uuid::Uuid::new_v4();
-    let page = source
+    let page = first_source
         .execute_page(
-            &plan(&source, &["id"]),
+            &plan(&first_source, &["id"]),
             None,
             &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
         )
@@ -359,10 +356,7 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
     let cursor = page.next_cursor.unwrap();
 
     let same_source = source(
-        ScriptedTransport::new([response(
-            200,
-            listing(serde_json::json!([]), None, false),
-        )]),
+        ScriptedTransport::new([response(200, listing(serde_json::json!([]), None, false))]),
         config(),
     )
     .0;
@@ -473,8 +467,7 @@ async fn body_projection_exports_google_docs_downloads_text_and_leaves_binaries_
     assert!(page.rows[2].value.get("body").is_none());
     let requests = transport.requests();
     assert!(requests.iter().any(|request| {
-        request.path()
-            == "/drive/v3/files/gdoc/export?mimeType=text%2Fplain&supportsAllDrives=true"
+        request.path() == "/drive/v3/files/gdoc/export?mimeType=text%2Fplain&supportsAllDrives=true"
     }));
     assert!(requests.iter().any(|request| {
         request.path() == "/drive/v3/files/markdown?alt=media&supportsAllDrives=true"
@@ -505,11 +498,7 @@ async fn projected_body_cannot_cross_the_context_byte_bound() {
     );
     assert_eq!(
         source
-            .execute_page(
-                &plan(&source, &["id", "body"]),
-                None,
-                &context(2, 2, 300),
-            )
+            .execute_page(&plan(&source, &["id", "body"]), None, &context(2, 2, 300),)
             .await,
         Err(SourceError::ByteBudgetExceeded)
     );
@@ -523,11 +512,7 @@ async fn revoked_credentials_rate_limits_and_cancellation_remain_distinct() {
     );
     assert!(matches!(
         unauthorized
-            .execute_page(
-                &plan(&unauthorized, &["id"]),
-                None,
-                &context(2, 2, 1024),
-            )
+            .execute_page(&plan(&unauthorized, &["id"]), None, &context(2, 2, 1024),)
             .await,
         Err(SourceError::Authentication { .. })
     ));
@@ -542,11 +527,7 @@ async fn revoked_credentials_rate_limits_and_cancellation_remain_distinct() {
     );
     assert!(matches!(
         rate_limited
-            .execute_page(
-                &plan(&rate_limited, &["id"]),
-                None,
-                &context(2, 2, 1024),
-            )
+            .execute_page(&plan(&rate_limited, &["id"]), None, &context(2, 2, 1024),)
             .await,
         Err(SourceError::RateLimited {
             retry_after_ms: Some(7_000),
@@ -573,18 +554,11 @@ async fn revoked_credentials_rate_limits_and_cancellation_remain_distinct() {
 #[tokio::test]
 async fn shared_drive_listing_declares_all_required_drive_flags() {
     let (source, transport) = source(
-        ScriptedTransport::new([response(
-            200,
-            listing(serde_json::json!([]), None, false),
-        )]),
+        ScriptedTransport::new([response(200, listing(serde_json::json!([]), None, false))]),
         shared_drive_config(),
     );
     source
-        .execute_page(
-            &plan(&source, &["id"]),
-            None,
-            &context(2, 2, 1024),
-        )
+        .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 1024))
         .await
         .unwrap();
     let path = transport.requests()[0].path().to_string();
