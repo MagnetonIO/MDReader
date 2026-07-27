@@ -1592,6 +1592,9 @@ jobs:
               if (metadata.isDirectory()) {
                 walk(path);
               } else if (metadata.isFile()) {
+                if (metadata.nlink !== 1) {
+                  throw new Error(`credentialed output contains a hard-linked file ${relativePath}`);
+                }
                 const body = readFileSync(path);
                 files.push({
                   path: relativePath,
@@ -1639,8 +1642,16 @@ jobs:
           rmSync(archiveRoot, { recursive: true, force: true });
           mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
           const archivePath = join(archiveRoot, 'credentialed-output.tar');
-          execFileSync('tar', ['-cf', archivePath, '-C', output, '.'], {
+          execFileSync('tar', [
+            '--format=ustar',
+            '-cf',
+            archivePath,
+            '-C',
+            output,
+            'credentialed-output.json', 'release-config.json', 'bundle',
+          ], {
             stdio: 'pipe',
+            env: { ...process.env, COPYFILE_DISABLE: '1' },
           });
           writeFileSync(
             process.env.GITHUB_OUTPUT,

@@ -902,9 +902,21 @@ function validateBundle(
       'credentialed-output.json',
       'credentialed output contains unsupported entry',
       'credentialed-output.tar',
+      '--format=ustar',
+      "'credentialed-output.json', 'release-config.json', 'bundle'",
+      "COPYFILE_DISABLE: '1'",
       'archive_sha256=',
     ],
-    'credentialed output is not completely inventoried',
+    'credentialed output is not completely inventoried into a closed POSIX ustar namespace',
+  );
+  requireRun(
+    steps,
+    'seal-credentialed-output',
+    [
+      'metadata.nlink !== 1',
+      'credentialed output contains a hard-linked file',
+    ],
+    'hard-linked credentialed output can be sealed',
   );
 }
 
