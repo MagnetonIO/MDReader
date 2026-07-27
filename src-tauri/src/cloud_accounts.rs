@@ -58,8 +58,6 @@ const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_DOCUMENT_SCHEMA_VERSION: &str = "mdreader.Document/v1";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const GOOGLE_REDIRECT_URI: &str = "http://127.0.0.1:53681/oauth/google-drive";
-const DROPBOX_REDIRECT_URI: &str = "http://127.0.0.1:53682/oauth/dropbox";
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropboxapi.com/oauth2/token";
 const GOOGLE_DRIVE_FILES_ENDPOINT: &str = "https://www.googleapis.com/drive/v3/files/";
@@ -700,6 +698,10 @@ impl OAuthAttempt {
             #[cfg(feature = "dropbox-connector")]
             OAuthPkce::Dropbox(pkce) => Ok(pkce.verifier()),
         }
+    }
+
+    fn redirect_uri(&self) -> &str {
+        &self.redirect_uri
     }
 
     pub(crate) fn verify_callback(
@@ -1466,12 +1468,9 @@ pub(crate) async fn connect_cloud_source(
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     let _operation = state.0.lock().await;
     let client_id = oauth_client_id(provider)?;
-    let redirect_uri = oauth_redirect_uri(provider);
-    let listener = TcpListener::bind(oauth_callback_address(provider))
-        .await
-        .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?;
+    let (listener, redirect_uri) = bind_oauth_callback_listener(provider).await?;
     let (verifier, oauth_state) = new_pkce_material();
-    let attempt = OAuthAttempt::new(provider, verifier, oauth_state, redirect_uri)?;
+    let attempt = OAuthAttempt::new(provider, verifier, oauth_state, redirect_uri.clone())?;
     let authorization_url = attempt.authorization_url(client_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         tauri_plugin_opener::open_url(authorization_url, None::<&str>)
@@ -1480,7 +1479,7 @@ pub(crate) async fn connect_cloud_source(
     .await
     .map_err(|_| CloudSourceError::OauthTransport)??;
 
-    let callback = receive_oauth_callback(listener, redirect_uri).await?;
+    let callback = receive_oauth_callback(listener, &redirect_uri).await?;
     let authorization = attempt.verify_callback(&callback)?;
     let token = exchange_authorization_code(provider, client_id, &attempt, &authorization).await?;
     let config = cloud_source_config(provider, &token, &authorization).await?;
@@ -1508,13 +1507,6 @@ fn oauth_client_id(provider: CloudProvider) -> Result<&'static str, CloudSourceE
     Ok(client_id)
 }
 
-fn oauth_redirect_uri(provider: CloudProvider) -> &'static str {
-    match provider {
-        CloudProvider::GoogleDrive => GOOGLE_REDIRECT_URI,
-        CloudProvider::Dropbox => DROPBOX_REDIRECT_URI,
-    }
-}
-
 fn expires_at_unix_seconds(expires_in_seconds: u64) -> Result<u64, CloudSourceError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1524,11 +1516,21 @@ fn expires_at_unix_seconds(expires_in_seconds: u64) -> Result<u64, CloudSourceEr
         .ok_or(CloudSourceError::InvalidConfiguration)
 }
 
-fn oauth_callback_address(provider: CloudProvider) -> (&'static str, u16) {
-    match provider {
-        CloudProvider::GoogleDrive => ("127.0.0.1", 53_681),
-        CloudProvider::Dropbox => ("127.0.0.1", 53_682),
-    }
+async fn bind_oauth_callback_listener(
+    provider: CloudProvider,
+) -> Result<(TcpListener, String), CloudSourceError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?
+        .port();
+    let path = match provider {
+        CloudProvider::GoogleDrive => "/oauth/google-drive",
+        CloudProvider::Dropbox => "/oauth/dropbox",
+    };
+    Ok((listener, format!("http://127.0.0.1:{port}{path}")))
 }
 
 fn new_pkce_material() -> (String, String) {
@@ -1673,7 +1675,7 @@ async fn exchange_authorization_code(
         ("code", authorization.code()),
         ("code_verifier", attempt.verifier()?),
         ("grant_type", "authorization_code"),
-        ("redirect_uri", oauth_redirect_uri(provider)),
+        ("redirect_uri", attempt.redirect_uri()),
     ];
     let response = client
         .post(endpoint)
@@ -2046,9 +2048,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        execute_cloud_query, CloudAccountService, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudProvider, CloudSourceConfig, CloudSourceError,
-        CredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        bind_oauth_callback_listener, execute_cloud_query, CloudAccountService,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse, CloudProvider,
+        CloudSourceConfig, CloudSourceError, CredentialVault, MemoryCredentialVault, OAuthAttempt,
+        SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -2393,6 +2396,41 @@ mod tests {
                 Err(CloudSourceError::OauthInvalidCallback)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_uses_the_port_reserved_for_this_attempt() {
+        let (first_listener, first_redirect) =
+            bind_oauth_callback_listener(CloudProvider::GoogleDrive)
+                .await
+                .expect("first callback listener");
+        let (second_listener, second_redirect) =
+            bind_oauth_callback_listener(CloudProvider::GoogleDrive)
+                .await
+                .expect("second callback listener");
+
+        let first_port = first_listener
+            .local_addr()
+            .expect("first listener address")
+            .port();
+        let second_port = second_listener
+            .local_addr()
+            .expect("second listener address")
+            .port();
+        assert_ne!(first_port, 0);
+        assert_ne!(second_port, 0);
+        assert_ne!(
+            first_port, second_port,
+            "concurrent OAuth attempts must not contend for one fixed port"
+        );
+        assert_eq!(
+            first_redirect,
+            format!("http://127.0.0.1:{first_port}/oauth/google-drive")
+        );
+        assert_eq!(
+            second_redirect,
+            format!("http://127.0.0.1:{second_port}/oauth/google-drive")
+        );
     }
 
     #[test]
