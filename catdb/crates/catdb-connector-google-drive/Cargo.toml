@@ -12,6 +12,7 @@ blake3 = "1"
 catdb-connectors = { path = "../catdb-connectors" }
 catdb-core = { path = "../catdb-core" }
 catdb-query = { path = "../catdb-query" }
+futures-util = "0.3"
 hmac = "0.12"
 httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = [

@@ -10,6 +10,7 @@ publish = false
 [features]
 direct-updater = ["dep:tauri-plugin-updater"]
 e2e-build = []
+google-drive-connector = ["dep:catdb-connector-google-drive"]
 
 [lib]
 # The `_lib` suffix keeps the library name distinct from the binary so the two
@@ -60,6 +61,7 @@ catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
 catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
 catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite" }
+catdb-connector-google-drive = { path = "../../../catdb/crates/catdb-connector-google-drive", optional = true }
 # Schema introspection (the View As / Schema View surfaces) and the kernel
 # provenance the Semantic Inspector renders. Read-only: nothing here builds a
 # fact, it only describes ones the engine and the extractors produced.
