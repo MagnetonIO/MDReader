@@ -1941,6 +1941,10 @@ mod tests {
     }
 
     fn create_authentic_v2_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
+        create_authentic_v2_index_with_schema(path, root).0
+    }
+
+    fn create_authentic_v2_index_with_schema(path: &Path, root: &SourceRoot) -> (uuid::Uuid, i64) {
         let engine = catdb_engine::EmbeddedCatDb::open(
             catdb_engine::EngineConfig::new(
                 path,
@@ -1960,7 +1964,45 @@ mod tests {
             .block_on(engine.store().list_sources())
             .expect("list authentic V2 source");
         assert_eq!(sources.len(), 1);
-        sources[0].source_id
+        let schema_version = engine
+            .store()
+            .schema_version()
+            .expect("read authentic schema version");
+        (sources[0].source_id, schema_version)
+    }
+
+    #[test]
+    fn version_two_recovers_an_authentic_v9_catalog_without_mutating_it() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
+        let (source_id, schema_version) =
+            create_authentic_v2_index_with_schema(&old_db, &root);
+        assert_eq!(schema_version, 9, "fixture must traverse the real v9 DDL");
+        let before = fs::read(&old_db).expect("read index before legacy inspection");
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = old_db.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            assert!(
+                !PathBuf::from(sidecar).exists(),
+                "read-only fixture check must not leave a {suffix} sidecar"
+            );
+        }
+
+        let recovered = super::recover_v2_engine_source_id(&app_data, &v2_source(&root));
+        let after = fs::read(&old_db).expect("read index after legacy inspection");
+
+        assert_eq!(
+            after, before,
+            "legacy inspection must never migrate or otherwise write the catalog"
+        );
+        assert_eq!(
+            recovered,
+            Ok(Some(source_id)),
+            "a complete current CatDB catalog remains a valid V2 recovery authority"
+        );
     }
 
     fn v2_source(root: &SourceRoot) -> super::LibrarySourceV2 {
