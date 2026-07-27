@@ -1,13 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { applyTheme, useSettingsStore } from '../stores/settings';
-import { useSourcesStore } from '../stores/sources';
-import { selectActiveTab, useTabsStore } from '../stores/tabs';
+import type { SettingsSnapshot } from '../stores/settings';
+import type { TabState } from '../stores/types';
+import { loadPersisted, saveSettings } from '../shell/persistence';
 import { MobileReader } from './MobileReader';
 import {
+  createEnterpriseMobileSourceAdapter,
+  type EnterpriseMobileSourceAdapter,
+  type MobileLibraryDocument,
+  type MobileLibraryResult,
+} from './mobile-source-adapter';
+import {
   MOBILE_SOURCE_ALLOWLIST,
+  loadEnterpriseServerConfig,
   saveEnterpriseServerConfig,
   validateEnterpriseServerConfig,
+  type EnterpriseServerConfig,
 } from './source-policy';
 import './mobile.css';
 
@@ -24,31 +33,88 @@ const NAVIGATION: ReadonlyArray<{ id: MobileTab; label: string }> = [
   { id: 'settings', label: 'Settings' },
 ];
 
-function LibraryScreen({ onOpen }: { onOpen: (path: string, name: string) => void }) {
-  const files = useSourcesStore((state) => state.files);
-  const root = useSourcesStore((state) => state.root);
+type MobileSourceState =
+  | { status: 'loading' }
+  | { status: 'not-configured' }
+  | MobileLibraryResult;
+
+function useMediaQuery(query: string, fallback: boolean): boolean {
+  const [matched, setMatched] = useState(() =>
+    typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : fallback,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(query);
+    const update = (event: MediaQueryListEvent) => setMatched(event.matches);
+    setMatched(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+  return matched;
+}
+
+function currentSettings(): SettingsSnapshot {
+  const settings = useSettingsStore.getState();
+  return {
+    theme: settings.theme,
+    readingFont: settings.readingFont,
+    textScaleIndex: settings.textScaleIndex,
+    sidebarCollapsed: settings.sidebarCollapsed,
+    outlineVisible: settings.outlineVisible,
+    relatedRailOpen: settings.relatedRailOpen,
+    inspectorOpen: settings.inspectorOpen,
+    lensSchema: settings.lensSchema,
+    reviewer: settings.reviewer,
+  };
+}
+
+function sourceStatus(state: MobileSourceState): string {
+  if (state.status === 'loading') return 'Loading the admitted Enterprise library…';
+  if (state.status === 'not-configured') return 'No mobile source is configured.';
+  if (state.status === 'ready') {
+    return `Connected to ${state.label} · ${state.documents.length} document${state.documents.length === 1 ? '' : 's'}`;
+  }
+  return state.message;
+}
+
+function LibraryScreen({
+  state,
+  onOpen,
+}: {
+  state: MobileSourceState;
+  onOpen: (document: MobileLibraryDocument) => void;
+}) {
+  const files = state.status === 'ready' ? state.documents : [];
   return (
     <section className="mobile-screen" aria-label="Library">
       <div className="mobile-screen__head">
         <span className="mobile-eyebrow">Library</span>
-        <h1>{root ? root.split(/[\\/]/).filter(Boolean).at(-1) : 'Your documents'}</h1>
+        <h1>{state.status === 'ready' ? state.label : 'Your documents'}</h1>
       </div>
-      {files.length === 0 ? (
+      {state.status !== 'ready' ? (
+        <div className="mobile-state" role="status">
+          <h2>Library unavailable</h2>
+          <p>{sourceStatus(state)}</p>
+        </div>
+      ) : files.length === 0 ? (
         <div className="mobile-state">
           <h2>No documents available</h2>
-          <p>No source has loaded documents on this device.</p>
+          <p>The admitted source contains no available documents.</p>
         </div>
       ) : (
         <ol className="mobile-document-list">
           {files.map((file) => (
-            <li key={file.path}>
+            <li key={`${file.source.id}:${file.sourceRoot.version}:${file.document.id}`}>
               <button
                 type="button"
                 className="mobile-document"
                 aria-label={file.name}
-                onClick={() => onOpen(file.path, file.name)}
+                onClick={() => onOpen(file)}
               >
-                <span>{file.name}</span>
+                <span>
+                  <strong>{file.title}</strong>
+                  <small>{file.name}</small>
+                </span>
                 <small>{Math.max(1, Math.ceil(file.size / 1024))} KiB</small>
               </button>
             </li>
@@ -59,14 +125,25 @@ function LibraryScreen({ onOpen }: { onOpen: (path: string, name: string) => voi
   );
 }
 
-function SearchScreen({ onOpen }: { onOpen: (path: string, name: string) => void }) {
-  const files = useSourcesStore((state) => state.files);
+function SearchScreen({
+  documents,
+  onOpen,
+}: {
+  documents: MobileLibraryDocument[];
+  onOpen: (document: MobileLibraryDocument) => void;
+}) {
   const [query, setQuery] = useState('');
   const results = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return [];
-    return files.filter((file) => file.name.toLocaleLowerCase().includes(needle)).slice(0, 50);
-  }, [files, query]);
+    return documents
+      .filter(
+        (file) =>
+          file.name.toLocaleLowerCase().includes(needle) ||
+          file.title.toLocaleLowerCase().includes(needle),
+      )
+      .slice(0, 50);
+  }, [documents, query]);
 
   return (
     <section className="mobile-screen" aria-label="Search">
@@ -88,14 +165,15 @@ function SearchScreen({ onOpen }: { onOpen: (path: string, name: string) => void
       ) : (
         <ol className="mobile-document-list">
           {results.map((file) => (
-            <li key={file.path}>
+            <li key={`${file.source.id}:${file.sourceRoot.version}:${file.document.id}`}>
               <button
                 type="button"
                 className="mobile-document"
                 aria-label={file.name}
-                onClick={() => onOpen(file.path, file.name)}
+                onClick={() => onOpen(file)}
               >
-                {file.name}
+                <span>{file.title}</span>
+                <small>{file.name}</small>
               </button>
             </li>
           ))}
@@ -105,11 +183,27 @@ function SearchScreen({ onOpen }: { onOpen: (path: string, name: string) => void
   );
 }
 
-function SourcesScreen() {
+function SourcesScreen({
+  savedConfig,
+  sourceState,
+  onConnect,
+}: {
+  savedConfig: EnterpriseServerConfig | null;
+  sourceState: MobileSourceState;
+  onConnect: (config: EnterpriseServerConfig) => Promise<MobileLibraryResult>;
+}) {
   const [message, setMessage] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [serverUrl, setServerUrl] = useState('');
-  const [sessionReference, setSessionReference] = useState('');
+  const [serverUrl, setServerUrl] = useState(savedConfig?.serverUrl ?? '');
+  const [sessionReference, setSessionReference] = useState(
+    savedConfig?.sessionReference ?? '',
+  );
+
+  useEffect(() => {
+    if (!savedConfig) return;
+    setServerUrl(savedConfig.serverUrl);
+    setSessionReference(savedConfig.sessionReference);
+  }, [savedConfig]);
 
   return (
     <section className="mobile-screen" aria-label="Sources">
@@ -139,6 +233,9 @@ function SourcesScreen() {
         <article className="mobile-source">
           <h2>Enterprise CatDB server</h2>
           <p>Connect to an authenticated CatDB service. Warehouse credentials stay on the server.</p>
+          <p className="mobile-source__status" role="status">
+            {sourceStatus(sourceState)}
+          </p>
           <label className="mobile-field">
             <span>Server URL</span>
             <input
@@ -169,8 +266,13 @@ function SourcesScreen() {
               }
               setServerError(null);
               void saveEnterpriseServerConfig(result.config)
-                .then(() =>
-                  setMessage('Server boundary saved. Authentication remains server-managed.'),
+                .then(() => onConnect(result.config))
+                .then((connection) =>
+                  setMessage(
+                    connection.status === 'ready'
+                      ? 'Server boundary saved and connected.'
+                      : `Server boundary saved. ${sourceStatus(connection)}`,
+                  ),
                 )
                 .catch(() => setServerError('The server boundary could not be saved on this device.'));
             }}
@@ -219,43 +321,140 @@ function SettingsScreen() {
 export function MobileAppShell({ platform }: MobileAppShellProps) {
   const [tab, setTab] = useState<MobileTab>('library');
   const [readerMode, setReaderMode] = useState<'reader' | 'inspector'>('reader');
-  const [tablet] = useState(() => window.innerWidth >= 768);
+  const [hydrated, setHydrated] = useState(false);
+  const [sourceState, setSourceState] = useState<MobileSourceState>({ status: 'loading' });
+  const [savedConfig, setSavedConfig] = useState<EnterpriseServerConfig | null>(null);
+  const [adapter, setAdapter] = useState<EnterpriseMobileSourceAdapter | null>(null);
+  const [activeDocument, setActiveDocument] = useState<MobileLibraryDocument | null>(null);
+  const sourceEpoch = useRef(0);
+  const tablet = useMediaQuery('(min-width: 768px)', window.innerWidth >= 768);
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)', false);
   const theme = useSettingsStore((state) => state.theme);
-  const activeTab = useTabsStore(selectActiveTab);
-  const root = useSourcesStore((state) => state.root);
 
   useEffect(() => applyTheme(theme), [theme]);
 
-  const openDocument = (path: string, name: string) => {
-    useTabsStore.getState().openTab({ path, name }, { originRoot: root });
+  const connect = useCallback(async (config: EnterpriseServerConfig) => {
+    const epoch = ++sourceEpoch.current;
+    const nextAdapter = createEnterpriseMobileSourceAdapter(config);
+    setSavedConfig(config);
+    setSourceState({ status: 'loading' });
+    const result = await nextAdapter.listDocuments();
+    if (sourceEpoch.current !== epoch) return result;
+    setAdapter(result.status === 'ready' ? nextAdapter : null);
+    setActiveDocument(null);
+    setSourceState(result);
+    return result;
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    void Promise.all([loadPersisted(), loadEnterpriseServerConfig()]).then(
+      async ([persisted, config]) => {
+        if (!current) return;
+        if (Object.keys(persisted.settings).length > 0) {
+          useSettingsStore.getState().hydrate(persisted.settings);
+        }
+        setHydrated(true);
+        if (config) await connect(config);
+        else if (current) setSourceState({ status: 'not-configured' });
+      },
+    );
+    return () => {
+      current = false;
+      sourceEpoch.current += 1;
+    };
+  }, [connect]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const handle = window.setTimeout(() => void saveSettings(currentSettings()), 100);
+    return () => window.clearTimeout(handle);
+  }, [hydrated, theme]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const flush = () => void saveSettings(currentSettings());
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('beforeunload', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('beforeunload', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [hydrated]);
+
+  const documents = sourceState.status === 'ready' ? sourceState.documents : [];
+  const openDocument = (document: MobileLibraryDocument) => {
+    setActiveDocument(document);
     setReaderMode('reader');
   };
   const closeReader = () => {
-    if (activeTab) useTabsStore.getState().closeTab(activeTab.id);
+    setActiveDocument(null);
     setReaderMode('reader');
   };
+  const activeTab = useMemo<TabState | null>(
+    () =>
+      activeDocument
+        ? {
+            id: `mobile:${activeDocument.source.kind}:${activeDocument.source.id}:${activeDocument.document.id}`,
+            docRef: {
+              path: activeDocument.document.path,
+              name: activeDocument.name,
+            },
+            scroll: { block: 0, offset: 0 },
+            history: [
+              {
+                path: activeDocument.document.path,
+                name: activeDocument.name,
+              },
+            ],
+            historyIndex: 0,
+            pinned: false,
+            originRoot: activeDocument.sourceRoot.id,
+          }
+        : null,
+    [activeDocument],
+  );
+  const readActiveDocument = useCallback(() => {
+    if (!adapter || !activeDocument) {
+      return Promise.reject(new Error('No admitted mobile document is active.'));
+    }
+    return adapter.readDocument(activeDocument);
+  }, [activeDocument, adapter]);
 
-  const library = <LibraryScreen onOpen={openDocument} />;
+  const library = <LibraryScreen state={sourceState} onOpen={openDocument} />;
   const content =
     tab === 'library' ? (
       library
     ) : tab === 'search' ? (
-      <SearchScreen onOpen={openDocument} />
+      <SearchScreen documents={documents} onOpen={openDocument} />
     ) : tab === 'sources' ? (
-      <SourcesScreen />
+      <SourcesScreen
+        savedConfig={savedConfig}
+        sourceState={sourceState}
+        onConnect={connect}
+      />
     ) : (
       <SettingsScreen />
     );
 
   return (
-    <div className={`mobile-shell mobile-shell--${platform}`} data-mobile-platform={platform}>
+    <div
+      className={`mobile-shell mobile-shell--${platform}`}
+      data-mobile-platform={platform}
+      data-system-theme={theme === 'system' ? (systemDark ? 'dark' : 'light') : undefined}
+    >
       <div className={`mobile-shell__content${tablet ? ' mobile-shell__content--tablet' : ''}`}>
-        {activeTab ? (
+        {activeTab && activeDocument ? (
           <>
             {tablet ? <div className="mobile-shell__library-pane">{library}</div> : null}
             <MobileReader
               tab={activeTab}
               mode={readerMode}
+              sourceIdentity={activeDocument}
+              loadDocument={readActiveDocument}
               onBack={closeReader}
               onModeChange={setReaderMode}
             />

@@ -1,7 +1,7 @@
 import { load } from '@tauri-apps/plugin-store';
 
 const CACHE_KEY = 'mobile-offline-documents';
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 export const MAX_OFFLINE_DOCUMENTS = 64;
 export const MAX_OFFLINE_DOCUMENT_BYTES = 2 * 1024 * 1024;
 export const MAX_OFFLINE_CACHE_BYTES = 8 * 1024 * 1024;
@@ -12,10 +12,28 @@ export type MobileSourceIdentity =
   | { kind: 'dropbox'; id: string }
   | { kind: 'enterprise-catdb'; id: string };
 
-export interface OfflineDocumentEntry {
+export interface MobileSourceRootIdentity {
+  /** Stable identity of the admitted source root, independent of its display path. */
+  id: string;
+  /** Admission/version token. A revoke and re-grant must produce a new value. */
+  version: string;
+}
+
+export interface MobileDocumentReference {
+  /** Stable source-owned document identity. */
+  id: string;
+  /** Display/navigation path; never sufficient authority by itself. */
+  path: string;
+}
+
+/** Complete authority required to address one mobile document or offline copy. */
+export interface MobileDocumentIdentity {
   source: MobileSourceIdentity;
-  sourceRoot: string;
-  documentPath: string;
+  sourceRoot: MobileSourceRootIdentity;
+  document: MobileDocumentReference;
+}
+
+export interface OfflineDocumentEntry extends MobileDocumentIdentity {
   revision: string;
   observedAt: number;
   cachedAt: number;
@@ -42,6 +60,7 @@ export type OfflineCacheRead =
   | { status: 'unavailable' };
 
 let storePromise: ReturnType<typeof load> | undefined;
+let writerTail: Promise<void> = Promise.resolve();
 
 function cacheStore() {
   return (storePromise ??= load('mobile-offline-documents.json', { autoSave: false }));
@@ -65,6 +84,22 @@ function validSource(value: unknown): value is MobileSourceIdentity {
   );
 }
 
+function validIdentityPart(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 1_024;
+}
+
+function validSourceRoot(value: unknown): value is MobileSourceRootIdentity {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return validIdentityPart(candidate.id) && validIdentityPart(candidate.version);
+}
+
+function validDocument(value: unknown): value is MobileDocumentReference {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return validIdentityPart(candidate.id) && validIdentityPart(candidate.path);
+}
+
 function validNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
@@ -74,10 +109,8 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
   const candidate = value as Record<string, unknown>;
   if (
     !validSource(candidate.source) ||
-    typeof candidate.sourceRoot !== 'string' ||
-    candidate.sourceRoot.length === 0 ||
-    typeof candidate.documentPath !== 'string' ||
-    candidate.documentPath.length === 0 ||
+    !validSourceRoot(candidate.sourceRoot) ||
+    !validDocument(candidate.document) ||
     typeof candidate.revision !== 'string' ||
     candidate.revision.length === 0 ||
     !validNumber(candidate.observedAt) ||
@@ -102,7 +135,7 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
   return {
     source: candidate.source,
     sourceRoot: candidate.sourceRoot,
-    documentPath: candidate.documentPath,
+    document: candidate.document,
     revision: candidate.revision,
     observedAt: candidate.observedAt,
     cachedAt: candidate.cachedAt,
@@ -136,7 +169,7 @@ function withoutContent(entry: OfflineDocumentEntry): Omit<OfflineDocumentEntry,
   return {
     source: entry.source,
     sourceRoot: entry.sourceRoot,
-    documentPath: entry.documentPath,
+    document: entry.document,
     revision: entry.revision,
     observedAt: entry.observedAt,
     cachedAt: entry.cachedAt,
@@ -146,22 +179,31 @@ function withoutContent(entry: OfflineDocumentEntry): Omit<OfflineDocumentEntry,
   };
 }
 
+function sameDocumentIdentity(
+  left: MobileDocumentIdentity,
+  right: MobileDocumentIdentity,
+): boolean {
+  return (
+    left.source.kind === right.source.kind &&
+    left.source.id === right.source.id &&
+    left.sourceRoot.id === right.sourceRoot.id &&
+    left.sourceRoot.version === right.sourceRoot.version &&
+    left.document.id === right.document.id &&
+    left.document.path === right.document.path
+  );
+}
+
 export async function readOfflineDocument(
-  sourceRoot: string | null,
-  documentPath: string,
+  identity: MobileDocumentIdentity,
   now = Date.now(),
 ): Promise<OfflineCacheRead> {
-  if (!sourceRoot) return { status: 'miss' };
   try {
     const store = await cacheStore();
     const raw = await store.get(CACHE_KEY);
     if (raw === null || raw === undefined) return { status: 'miss' };
     const envelope = envelopeOf(raw);
     if (!envelope) return { status: 'corrupt' };
-    const matches = envelope.entries.filter(
-      (candidate) =>
-        candidate.sourceRoot === sourceRoot && candidate.documentPath === documentPath,
-    );
+    const matches = envelope.entries.filter((candidate) => sameDocumentIdentity(candidate, identity));
     if (matches.length > 1) return { status: 'corrupt' };
     const entry = matches[0];
     if (!entry) return { status: 'miss' };
@@ -176,17 +218,15 @@ export async function readOfflineDocument(
   }
 }
 
-export async function writeOfflineDocument(entry: OfflineDocumentEntry): Promise<boolean> {
+async function writeOfflineDocumentTransaction(entry: OfflineDocumentEntry): Promise<boolean> {
   const normalized = entryOf(entry);
   if (!normalized) return false;
   try {
     const store = await cacheStore();
     const raw = await store.get(CACHE_KEY);
     const current = envelopeOf(raw) ?? { version: CACHE_VERSION, entries: [] };
-    const replaced = current.entries.find(
-      (candidate) =>
-        candidate.source.id === normalized.source.id &&
-        candidate.documentPath === normalized.documentPath,
+    const replaced = current.entries.find((candidate) =>
+      sameDocumentIdentity(candidate, normalized),
     );
     if (
       replaced &&
@@ -197,11 +237,7 @@ export async function writeOfflineDocument(entry: OfflineDocumentEntry): Promise
       return false;
     }
     const deduped = current.entries.filter(
-      (candidate) =>
-        !(
-          candidate.source.id === normalized.source.id &&
-          candidate.documentPath === normalized.documentPath
-        ),
+      (candidate) => !sameDocumentIdentity(candidate, normalized),
     );
     deduped.push(normalized);
     deduped.sort((left, right) => right.cachedAt - left.cachedAt);
@@ -219,4 +255,21 @@ export async function writeOfflineDocument(entry: OfflineDocumentEntry): Promise
   } catch {
     return false;
   }
+}
+
+/**
+ * Persist one cache entry through a module-wide transaction queue. Mobile V1
+ * owns one webview, so every writer in that process shares this queue and the
+ * complete get/compare/set/save sequence is serialized.
+ */
+export function writeOfflineDocument(entry: OfflineDocumentEntry): Promise<boolean> {
+  const result = writerTail.then(
+    () => writeOfflineDocumentTransaction(entry),
+    () => writeOfflineDocumentTransaction(entry),
+  );
+  writerTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }

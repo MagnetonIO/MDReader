@@ -34,7 +34,15 @@ export default defineConfig({
   // `worker` condition is react-dom, and only on its `./server`/`./static`
   // subpaths (unused by the client) where `worker` maps to the same file as
   // `browser`.
-  resolve: { conditions: workerBundleResolveConditions(defaultClientConditions) },
+  resolve: {
+    alias: {
+      '@catdb/client': new URL(
+        '../../../catdb/sdk/typescript/src/index.ts',
+        import.meta.url,
+      ).pathname,
+    },
+    conditions: workerBundleResolveConditions(defaultClientConditions),
+  },
   server: {
     host: mobileDevHost || false,
     port: 1420,

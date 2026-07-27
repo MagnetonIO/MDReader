@@ -1,24 +1,28 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
 
 import { readDoc } from '../platform/fs';
 import { createReaderPlatform } from '../platform/reader-platform';
-import { makeSemanticsAdapter } from '../platform/semantics';
 import type { TabState } from '../stores/types';
-import { DocumentInspector } from '../shell/lens/DocumentInspector';
+import {
+  MobileSourceReadError,
+  type MobileDocumentPayload,
+  type MobileDocumentProvenance,
+} from './mobile-source-adapter';
 import {
   readOfflineDocument,
   writeOfflineDocument,
-  type MobileSourceIdentity,
+  type MobileDocumentIdentity,
   type OfflineCacheRead,
 } from './offline-cache';
 
 export interface MobileReaderProps {
   tab: TabState;
   mode: 'reader' | 'inspector';
-  sourceIdentity?: MobileSourceIdentity | null;
+  sourceIdentity: MobileDocumentIdentity;
+  loadDocument?: () => Promise<MobileDocumentPayload>;
   onBack: () => void;
   onModeChange: (mode: 'reader' | 'inspector') => void;
 }
@@ -29,77 +33,144 @@ function dirname(path: string): string {
   return index >= 0 ? normalized.slice(0, index) : normalized;
 }
 
+function sameIdentity(
+  left: MobileDocumentIdentity,
+  right: MobileDocumentIdentity,
+): boolean {
+  return (
+    left.source.kind === right.source.kind &&
+    left.source.id === right.source.id &&
+    left.sourceRoot.id === right.sourceRoot.id &&
+    left.sourceRoot.version === right.sourceRoot.version &&
+    left.document.id === right.document.id &&
+    left.document.path === right.document.path
+  );
+}
+
 /** A read-only mobile document surface. It never imports or mounts the editor. */
 export function MobileReader({
   tab,
   mode,
-  sourceIdentity = null,
+  sourceIdentity,
+  loadDocument,
   onBack,
   onModeChange,
 }: MobileReaderProps) {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ kind: string; message: string } | null>(null);
   const [offline, setOffline] = useState<OfflineCacheRead | null>(null);
-  const semantics = useMemo(makeSemanticsAdapter, []);
+  const [evidence, setEvidence] = useState<{
+    revision: string;
+    observedAt: number;
+    provenance: MobileDocumentProvenance | null;
+  } | null>(null);
+  const requestEpoch = useRef(0);
   const readerPlatform = useMemo(
     () => createReaderPlatform(dirname(tab.docRef.path)),
     [tab.docRef.path],
   );
 
   useEffect(() => {
-    let current = true;
+    const epoch = ++requestEpoch.current;
+    const current = () => requestEpoch.current === epoch;
     setDoc(null);
     setError(null);
     setOffline(null);
-    void readDoc(tab.docRef.path)
+    setEvidence(null);
+    const liveRead = loadDocument
+      ? loadDocument()
+      : readDoc(tab.docRef.path).then((payload) => ({
+          ...sourceIdentity,
+          content: payload.content,
+          revision: payload.hash,
+          observedAt: payload.mtime,
+          provenance: null,
+        }));
+    void liveRead
       .then(async (payload) => {
+        if (!sameIdentity(sourceIdentity, payload)) {
+          throw new MobileSourceReadError(
+            'identity-mismatch',
+            'The mobile document identity changed during the read.',
+          );
+        }
         const parsed = await parseMarkdownAuto(payload.content);
-        if (sourceIdentity && tab.originRoot) {
-          const cachedAt = Date.now();
-          void writeOfflineDocument({
-            source: sourceIdentity,
-            sourceRoot: tab.originRoot,
-            documentPath: tab.docRef.path,
-            revision: payload.hash,
-            observedAt: payload.mtime,
-            cachedAt,
-            freshUntil: cachedAt + 5 * 60_000,
-            expiresAt: cachedAt + 7 * 24 * 60 * 60_000,
-            content: payload.content,
-            bytes: new TextEncoder().encode(payload.content).byteLength,
+        if (!current()) return null;
+        const cachedAt = Date.now();
+        await writeOfflineDocument({
+          ...sourceIdentity,
+          revision: payload.revision,
+          observedAt: payload.observedAt,
+          cachedAt,
+          freshUntil: cachedAt + 5 * 60_000,
+          expiresAt: cachedAt + 7 * 24 * 60 * 60_000,
+          content: payload.content,
+          bytes: new TextEncoder().encode(payload.content).byteLength,
+        });
+        if (!current()) return null;
+        return { parsed, payload };
+      })
+      .then((result) => {
+        if (current() && result) {
+          setDoc(result.parsed);
+          setEvidence({
+            revision: result.payload.revision,
+            observedAt: result.payload.observedAt,
+            provenance: result.payload.provenance,
           });
         }
-        return parsed;
       })
-      .then((parsed) => {
-        if (current) setDoc(parsed);
-      })
-      .catch(async () => {
-        const cached = await readOfflineDocument(tab.originRoot, tab.docRef.path);
-        if (!current) return;
+      .catch(async (cause: unknown) => {
+        const cached = await readOfflineDocument(sourceIdentity);
+        if (!current()) return;
         setOffline(cached);
         if (cached.status === 'hit') {
           try {
-            setDoc(await parseMarkdownAuto(cached.entry.content));
+            const parsed = await parseMarkdownAuto(cached.entry.content);
+            if (current()) {
+              setDoc(parsed);
+              setEvidence({
+                revision: cached.entry.revision,
+                observedAt: cached.entry.observedAt,
+                provenance: null,
+              });
+            }
           } catch {
-            setOffline({ status: 'corrupt' });
+            if (current()) {
+              setOffline({ status: 'corrupt' });
+              setError({ kind: 'offline-corrupt', message: 'Offline copy is corrupt' });
+            }
           }
         } else {
-          setError(
+          const message =
             cached.status === 'expired'
               ? 'Offline copy expired'
               : cached.status === 'corrupt'
                 ? 'Offline copy is corrupt'
                 : cached.status === 'unavailable'
                   ? 'Offline cache unavailable'
-                  : 'No offline copy',
-          );
+                  : 'No offline copy';
+          const sourceMessage =
+            cause instanceof Error && cause.name === 'MobileSourceReadError'
+              ? `${cause.message} `
+              : '';
+          setError({ kind: `offline-${cached.status}`, message: `${sourceMessage}${message}` });
         }
       });
     return () => {
-      current = false;
+      if (requestEpoch.current === epoch) requestEpoch.current += 1;
     };
-  }, [sourceIdentity, tab.docRef.path, tab.originRoot]);
+  }, [
+    sourceIdentity.document.id,
+    sourceIdentity.document.path,
+    sourceIdentity.source.id,
+    sourceIdentity.source.kind,
+    sourceIdentity.sourceRoot.id,
+    sourceIdentity.sourceRoot.version,
+    loadDocument,
+    tab.docRef.path,
+    tab.originRoot,
+  ]);
 
   return (
     <main className="mobile-reader" aria-label={mode === 'reader' ? 'Reader' : 'Semantic Inspector'}>
@@ -118,17 +189,71 @@ export function MobileReader({
       </header>
       {mode === 'inspector' ? (
         <div className="mobile-reader__inspector">
-          <DocumentInspector
-            path={tab.docRef.path}
-            workspaceKey={tab.originRoot}
-            workspaceGeneration={0}
-            query={semantics.queryFederatedDocument}
-            cancel={semantics.cancelFederatedDocument}
-          />
+          <h2>Semantic evidence</h2>
+          {error ? (
+            <p role="status">{error.message}</p>
+          ) : evidence ? (
+            <dl className="mobile-evidence">
+              <div>
+                <dt>Source</dt>
+                <dd>{sourceIdentity.source.id}</dd>
+              </div>
+              <div>
+                <dt>Source root</dt>
+                <dd>{sourceIdentity.sourceRoot.id}</dd>
+              </div>
+              <div>
+                <dt>Root version</dt>
+                <dd>{sourceIdentity.sourceRoot.version}</dd>
+              </div>
+              <div>
+                <dt>Document</dt>
+                <dd>{sourceIdentity.document.id}</dd>
+              </div>
+              <div>
+                <dt>Revision</dt>
+                <dd>{evidence.revision}</dd>
+              </div>
+              {evidence.provenance ? (
+                <>
+                  <div>
+                    <dt>Schema version</dt>
+                    <dd>{evidence.provenance.schemaVersion}</dd>
+                  </div>
+                  <div>
+                    <dt>Mapping version</dt>
+                    <dd>{evidence.provenance.mappingVersion}</dd>
+                  </div>
+                  <div>
+                    <dt>Policy version</dt>
+                    <dd>{evidence.provenance.policyVersion}</dd>
+                  </div>
+                  <div>
+                    <dt>Source record</dt>
+                    <dd>{evidence.provenance.sourceRecord}</dd>
+                  </div>
+                  <div>
+                    <dt>Considered providers</dt>
+                    <dd>{evidence.provenance.consideredProviders.join(', ')}</dd>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <dt>Availability</dt>
+                  <dd>
+                    Detailed semantic provenance is unavailable; the admitted source and
+                    revision remain visible.
+                  </dd>
+                </div>
+              )}
+            </dl>
+          ) : (
+            <p role="status">Loading semantic evidence…</p>
+          )}
         </div>
       ) : error ? (
         <div className="mobile-state" role="status">
-          <h2>{error}</h2>
+          <h2>{error.message}</h2>
           {offline?.status === 'expired' ? (
             <p>
               Source {offline.entry.source.id} · revision {offline.entry.revision}
