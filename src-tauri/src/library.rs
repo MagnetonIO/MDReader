@@ -285,6 +285,7 @@ pub(crate) struct LibrarySource {
     path: NativePath,
     #[serde(deserialize_with = "deserialize_identity_binding")]
     identity: Option<SourceRootIdentity>,
+    engine_source_id: uuid::Uuid,
 }
 
 fn deserialize_identity_binding<'de, D>(
@@ -297,12 +298,10 @@ where
 }
 
 impl LibrarySource {
-    /// Stable CatDB source identity derived from this opaque Library
-    /// membership, never from its current filesystem address.
+    /// Stable CatDB source identity owned and persisted by this Library
+    /// membership, never derived from its current filesystem address.
     pub(crate) fn engine_source_id(&self) -> uuid::Uuid {
-        const LIBRARY_SOURCE_NAMESPACE: uuid::Uuid =
-            uuid::Uuid::from_u128(0x8fbd_af35_46d0_5d78_a3c1_f46a_3f87_27b2);
-        uuid::Uuid::new_v5(&LIBRARY_SOURCE_NAMESPACE, self.id.as_bytes())
+        self.engine_source_id
     }
 
     pub(crate) fn path(&self) -> Result<PathBuf, LibraryError> {
@@ -348,7 +347,16 @@ struct LibrarySourceV1 {
 struct StoredLibraryV2 {
     version: u32,
     active_source_id: Option<String>,
-    sources: Vec<LibrarySource>,
+    sources: Vec<LibrarySourceV2>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LibrarySourceV2 {
+    id: String,
+    path: NativePath,
+    #[serde(deserialize_with = "deserialize_identity_binding")]
+    identity: Option<SourceRootIdentity>,
 }
 
 #[cfg(test)]
@@ -361,7 +369,7 @@ pub(crate) fn write_v2_registry_for_test(
     let stored = StoredLibraryV2 {
         version: 2,
         active_source_id: Some(source_id.clone()),
-        sources: vec![LibrarySource {
+        sources: vec![LibrarySourceV2 {
             id: source_id,
             path: native,
             identity: Some(root.identity.clone()),
@@ -445,6 +453,7 @@ impl LibraryRegistry {
             id: source_id,
             path: native,
             identity: Some(admitted.identity),
+            engine_source_id: new_engine_source_id(&self.sources),
         };
         self.sources.push(source.clone());
         Ok(source)
@@ -716,20 +725,28 @@ impl LibraryRegistry {
             return Err(LibraryError::CorruptRegistry);
         }
 
+        let app_data = path.parent().ok_or(LibraryError::PersistFailed)?;
         let mut id_map = HashMap::with_capacity(stored.sources.len());
+        let mut engine_source_ids = HashSet::with_capacity(stored.sources.len());
         let sources = stored
             .sources
             .iter()
             .map(|source| {
                 let id = new_source_id();
                 id_map.insert(source.id.clone(), id.clone());
-                LibrarySource {
+                let engine_source_id =
+                    recover_v2_engine_source_id(app_data, source)?.unwrap_or_else(uuid::Uuid::new_v4);
+                if engine_source_id.is_nil() || !engine_source_ids.insert(engine_source_id) {
+                    return Err(LibraryError::CorruptRegistry);
+                }
+                Ok(LibrarySource {
                     id,
                     path: source.path.clone(),
                     identity: source.identity.clone(),
-                }
+                    engine_source_id,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, LibraryError>>()?;
         let migrated = Self {
             active_source_id: stored
                 .active_source_id
@@ -740,7 +757,6 @@ impl LibraryRegistry {
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
 
-        let app_data = path.parent().ok_or(LibraryError::PersistFailed)?;
         let moves = migrate_v2_managed_workspaces(app_data, &stored.sources)?;
         if let Err(error) = migrated.save_to(path) {
             if rollback_managed_moves(&moves).is_err() {
@@ -785,6 +801,7 @@ impl LibraryRegistry {
             return Err(LibraryError::CorruptRegistry);
         }
         let mut ids = HashSet::new();
+        let mut engine_source_ids = HashSet::new();
         for (index, source) in sources.iter().enumerate() {
             let path = source.path.restore()?;
             let valid_id = source.id.len() == 64
@@ -800,6 +817,8 @@ impl LibraryRegistry {
             if !path.is_absolute()
                 || !valid_id
                 || !ids.insert(source.id.as_str())
+                || source.engine_source_id.is_nil()
+                || !engine_source_ids.insert(source.engine_source_id)
                 || sources[..index]
                     .iter()
                     .any(|prior| prior.identity.as_ref() == Some(identity))
@@ -869,6 +888,108 @@ impl LibraryRegistry {
             .persist(path)
             .map(|_| ())
             .map_err(|_| LibraryError::PersistFailed)
+    }
+}
+
+fn new_engine_source_id(sources: &[LibrarySource]) -> uuid::Uuid {
+    loop {
+        let candidate = uuid::Uuid::new_v4();
+        if sources
+            .iter()
+            .all(|source| source.engine_source_id != candidate)
+        {
+            return candidate;
+        }
+    }
+}
+
+fn recover_v2_engine_source_id(
+    app_data: &Path,
+    source: &LibrarySourceV2,
+) -> Result<Option<uuid::Uuid>, LibraryError> {
+    let identity = source
+        .identity
+        .as_ref()
+        .ok_or(LibraryError::CorruptRegistry)?;
+    let source_path = source.path.restore()?;
+    let old_workspace = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+        app_data,
+        &source_path,
+        identity,
+    )
+    .parent()
+    .ok_or(LibraryError::PersistFailed)?
+    .to_path_buf();
+    let new_workspace =
+        mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::PersistFailed)?
+            .to_path_buf();
+
+    let old_present = managed_directory_present(&old_workspace)?;
+    let new_present = managed_directory_present(&new_workspace)?;
+    let workspace = match (old_present, new_present) {
+        (true, false) => old_workspace,
+        (false, true) => new_workspace,
+        (false, false) => return Ok(None),
+        (true, true) => {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })
+        }
+    };
+    let db_path = workspace.join("catdb.db");
+    let db_metadata = match fs::symlink_metadata(&db_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(LibraryError::CorruptRegistry),
+    };
+    if db_metadata.file_type().is_symlink() || !db_metadata.is_file() {
+        return Err(LibraryError::CorruptRegistry);
+    }
+
+    let connection = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| LibraryError::CorruptRegistry)?;
+    let mut statement = connection
+        .prepare("SELECT source_id, root_path FROM sources ORDER BY source_id LIMIT 2")
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| LibraryError::CorruptRegistry)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    let [(stored_source_id, stored_root)] = rows.as_slice() else {
+        return Err(LibraryError::CorruptRegistry);
+    };
+    let expected_root = source_path.to_str().ok_or(LibraryError::CorruptRegistry)?;
+    if stored_root != expected_root {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    let source_id =
+        uuid::Uuid::parse_str(stored_source_id).map_err(|_| LibraryError::CorruptRegistry)?;
+    if source_id.is_nil() || source_id.to_string() != *stored_source_id {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    Ok(Some(source_id))
+}
+
+fn managed_directory_present(path: &Path) -> Result<bool, LibraryError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })
+        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(LibraryError::CleanupFailed {
+            reason: LibraryCleanupReason::ManagedStateUnavailable,
+        }),
     }
 }
 
@@ -951,7 +1072,7 @@ fn quarantine_v1_workspaces(
 
 fn migrate_v2_managed_workspaces(
     app_data: &Path,
-    sources: &[LibrarySource],
+    sources: &[LibrarySourceV2],
 ) -> Result<Vec<(PathBuf, PathBuf)>, LibraryError> {
     let mut moves = Vec::new();
     for source in sources {
@@ -1557,6 +1678,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use catdb_storage::CatalogStorage;
     use tempfile::tempdir;
 
     use super::{
@@ -2126,9 +2248,31 @@ mod tests {
             &admitted.path,
             &admitted.identity,
         );
-        fs::create_dir_all(old_db.parent().expect("old managed workspace"))
-            .expect("create old managed workspace");
-        fs::write(&old_db, b"index").expect("write old index");
+        let legacy_engine = catdb_engine::EmbeddedCatDb::open(
+            catdb_engine::EngineConfig::new(
+                &old_db,
+                std::sync::Arc::new(catdb_embed::HashEmbedder::new()),
+            )
+            .with_domain(mdreader_ingest::registration()),
+        )
+        .expect("open authentic old managed index");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(
+                legacy_engine.import(&admitted.path, catdb_engine::ImportOptions::default()),
+            )
+            .expect("import authentic old managed index");
+        let legacy_sources = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("source runtime")
+            .block_on(legacy_engine.store().list_sources())
+            .expect("list authentic old sources");
+        assert_eq!(legacy_sources.len(), 1);
+        let legacy_source_id = legacy_sources[0].source_id;
+        drop(legacy_engine);
         fs::write(old_db.with_file_name("proposals.db"), b"proposals")
             .expect("write old proposals");
 
@@ -2136,12 +2280,16 @@ mod tests {
         let opaque_id = migrated.sources()[0].id.clone();
         assert_ne!(opaque_id, path_id);
         assert_eq!(migrated.restore_source_id(), Some(opaque_id.as_str()));
+        assert_eq!(
+            migrated.sources()[0].engine_source_id(),
+            legacy_source_id
+        );
         let new_db = mdreader_ingest::workspace_index_path_for_stable_identity(
             &app_data,
             &admitted.identity,
         );
         assert!(!old_db.exists());
-        assert_eq!(fs::read(&new_db).expect("migrated index"), b"index");
+        assert!(new_db.is_file());
         assert_eq!(
             fs::read(new_db.with_file_name("proposals.db")).expect("migrated proposals"),
             b"proposals"
