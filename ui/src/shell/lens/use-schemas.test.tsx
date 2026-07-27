@@ -53,6 +53,9 @@ function adapterWithListSchemas(
     explainQuery: async () => {
       throw new Error('explainQuery is outside this schema-listing test');
     },
+    queryFederatedDocument: async () => {
+      throw new Error('queryFederatedDocument is outside this schema-listing test');
+    },
   };
 }
 

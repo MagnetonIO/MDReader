@@ -380,6 +380,226 @@
   font-family: var(--font-mono);
 }
 
+.document-inspector {
+  display: grid;
+  gap: 12px;
+}
+
+.document-inspector__intro,
+.document-sources__head,
+.document-provenance__field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.document-inspector__eyebrow {
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.document-inspector__completeness {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
+
+.document-inspector__completeness--complete {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+}
+
+.document-inspector__tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border);
+}
+
+.document-inspector__tabs button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 7px 2px 8px;
+}
+
+.document-inspector__tabs button:hover,
+.document-inspector__tabs button:focus-visible {
+  color: var(--text-1);
+}
+
+.document-inspector__tabs button.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text-1);
+}
+
+.document-inspector__panel {
+  min-width: 0;
+}
+
+.document-inspector__path {
+  color: var(--text-3);
+  font-size: 10px;
+  margin: 0 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-result,
+.document-schema dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.document-result > div,
+.document-schema dl > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1.5fr);
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.document-result dt,
+.document-schema dt {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.document-result dd,
+.document-schema dd {
+  color: var(--text-1);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.document-result dd span,
+.document-result dd small {
+  display: block;
+}
+
+.document-result dd small {
+  color: var(--text-3);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.document-result .is-absent {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.document-sources,
+.document-provenance,
+.document-provenance ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.document-sources {
+  display: grid;
+  gap: 8px;
+}
+
+.document-sources > li,
+.document-provenance > li {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 10px;
+}
+
+.document-sources__head strong,
+.document-provenance__field strong {
+  color: var(--text-1);
+  font-size: 12px;
+}
+
+.document-sources__head span {
+  color: var(--text-3);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.document-sources p,
+.document-provenance > li > p,
+.document-schema p {
+  color: var(--text-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+  margin: 5px 0 0;
+}
+
+.document-provenance {
+  display: grid;
+  gap: 8px;
+}
+
+.document-provenance__field > span {
+  color: var(--text-2);
+  font-size: 11px;
+  max-width: 60%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.document-provenance ol {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.document-provenance ol li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+}
+
+.document-provenance ol small {
+  color: var(--text-3);
+  font-size: 9.5px;
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.provider-standing {
+  color: var(--text-3);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.provider-standing--observed {
+  color: var(--accent);
+}
+
+.document-schema h3 {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.inspector__section-break {
+  border-top: 1px solid var(--border);
+  margin: 6px 0 14px;
+}
+
 .claim__cite {
   margin-top: var(--space-2);
   font-size: 0.72rem;

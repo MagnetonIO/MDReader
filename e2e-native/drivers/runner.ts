@@ -305,11 +305,11 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       await d.focus();
       // FAIL CLOSED on the sheet itself: if it never opened, say that, rather
       // than let a later "no band" failure blame the wrong thing.
-      const opened = await openSurface(d, 'Mod+Shift+V', 'lens-sheet', 'the View As sheet');
+      const opened = await openSurface(d, 'Mod+Shift+V', 'lens-sheet', 'the Semantic view sheet');
       const sheet = await scopedText('lens-sheet');
       if (!sheet.includes(step.schema)) {
         throw new Error(
-          `the View As sheet does not list "${step.schema}" — it cannot be adopted. ` +
+          `the Semantic view sheet does not list "${step.schema}" — it cannot be adopted. ` +
             `Sheet text: ${JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240))}`,
         );
       }
@@ -383,6 +383,46 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
       return `passage inspected — ${claims} claim(s), /${step.claimPattern}/ cited to /${step.citationPattern}/${opened}`;
+    }
+
+    case 'inspectFederation': {
+      const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
+      await d.focus();
+      let opened = '';
+      if ((await d.countClass('lens-rail')) === 0) {
+        opened = await openSurface(d, 'Mod+Shift+I', 'lens-rail', 'the Semantic Inspector');
+      }
+
+      const readTab = async (label: string, pattern: string): Promise<string> => {
+        if (label !== 'Result') await clickIn('document-inspector__tab', label);
+        const expected = new RegExp(pattern);
+        let text = '';
+        const ok = await waitUntil(async () => {
+          if ((await d.countClass('document-inspector')) === 0) return false;
+          text = await scopedText('document-inspector');
+          return expected.test(text);
+        }, 15_000);
+        if (!ok) {
+          throw new Error(
+            `the federated Document ${label} tab did not report /${expected.source}/ ` +
+              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 320))})`,
+          );
+        }
+        return text;
+      };
+
+      await readTab('Result', step.resultPattern);
+      await readTab(
+        'Sources',
+        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
+      );
+      await readTab('Provenance', step.provenancePattern);
+      await readTab('Schema', step.schemaPattern);
+      return (
+        'one native query reported a complete Document, all three source executions, ' +
+        `the selected and losing providers, and its schema version${opened}`
+      );
     }
 
     case 'constraintJump': {

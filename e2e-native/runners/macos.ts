@@ -31,7 +31,16 @@ import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
 import { E2E_PROCESS_NAME, E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
-import { appConfigDir, clearSeed, clearWorkspaceIndex, createE2EProfile, seedWorkspace, type E2EProfile } from '../seed.ts';
+import {
+  appConfigDir,
+  clearSeed,
+  clearWorkspaceIndex,
+  createE2EProfile,
+  fingerprintSourceTree,
+  seedWorkspace,
+  type E2EProfile,
+  type SourceFingerprint,
+} from '../seed.ts';
 import { withOwnedProcesses } from '../lifecycle.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
@@ -112,6 +121,15 @@ function assertE2EBundle(app: string, profile: E2EProfile): void {
   }
 }
 
+function changedSourcePaths(
+  before: SourceFingerprint,
+  after: SourceFingerprint,
+): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .sort()
+    .filter((path) => JSON.stringify(before[path]) !== JSON.stringify(after[path]));
+}
+
 async function appiumReachable(): Promise<boolean> {
   try {
     const res = await fetch(`${APPIUM_BASE}/status`, { signal: AbortSignal.timeout(2000) });
@@ -165,6 +183,11 @@ async function main(): Promise<number> {
   }
 
   mkdirSync(opts.artifacts, { recursive: true });
+  const sourceBefore = await fingerprintSourceTree(opts.corpus);
+  writeFileSync(
+    join(opts.artifacts, 'source-fingerprint-before.json'),
+    JSON.stringify(sourceBefore, null, 2),
+  );
 
   // Register the bundle so the mac2 session can attach to it by bundle id.
   quietExec('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', opts.app]);
@@ -267,13 +290,34 @@ async function main(): Promise<number> {
     else await browser?.deleteSession();
   });
 
-  const summary = { ok: result.ok, failedAt: result.failedAt, artifacts: opts.artifacts, results: result.results };
+  const sourceAfter = await fingerprintSourceTree(opts.corpus);
+  writeFileSync(
+    join(opts.artifacts, 'source-fingerprint-after.json'),
+    JSON.stringify(sourceAfter, null, 2),
+  );
+  const changedSources = changedSourcePaths(sourceBefore, sourceAfter);
+  const sourcesUnchanged = changedSources.length === 0;
+  const summary = {
+    ok: result.ok && sourcesUnchanged,
+    failedAt: sourcesUnchanged ? result.failedAt : 'source-integrity',
+    artifacts: opts.artifacts,
+    sourceIntegrity: { unchanged: sourcesUnchanged, changed: changedSources },
+    results: result.results,
+  };
   writeFileSync(join(opts.artifacts, 'result.json'), JSON.stringify(summary, null, 2));
 
   console.log('───────────────────────────────────────────────────────────');
-  if (result.ok) {
-    console.log('RESULT: PASS — all flow steps green (drag + red-X close asserted via mac2).');
+  if (result.ok && sourcesUnchanged) {
+    console.log(
+      'RESULT: PASS — all flow steps green; source bytes, mtimes, and membership unchanged.',
+    );
     return 0;
+  }
+  if (!sourcesUnchanged) {
+    console.log(
+      `RESULT: FAIL — source integrity changed: ${changedSources.join(', ') || '(unknown)'}.`,
+    );
+    return 1;
   }
   console.log(`RESULT: FAIL at step "${result.failedAt}".`);
   return 1;

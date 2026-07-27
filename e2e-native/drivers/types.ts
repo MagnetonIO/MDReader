@@ -84,7 +84,7 @@ export interface PlatformDriver {
    *  WebDriver DOM legs assert the DOM directly and need no pixel corroboration. */
   readonly frameOracle: boolean;
   /** Can this driver drive AND rigorously assert the P7 semantic surfaces
-   *  (View As, Semantic Inspector, Constraint Explorer, Query Explanation)?
+   *  (Semantic view, Semantic Inspector, Constraint Explorer, Query Explanation)?
    *  They need two primitives beyond the class counts the base contract has:
    *  clicking a specific in-webview control located by what it SAYS
    *  ({@link clickIn}) and reading the text under one class

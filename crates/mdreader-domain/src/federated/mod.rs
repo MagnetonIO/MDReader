@@ -63,7 +63,10 @@ use catdb_core::{
     ObjectId, PathProver, Schema, ValidMapping,
 };
 use catdb_federation::{Federated, Outcome};
-use catdb_query::{parse_query, validate_entity, EntityQuery, EntityTarget, EntityVocabulary};
+use catdb_query::{
+    parse_query, validate_entity, validate_entity_request, AttrOp, EntityFilterInput, EntityQuery,
+    EntityTarget, EntityVocabulary,
+};
 use uuid::Uuid;
 
 /// Why a federated `Document` could not be declared or assembled.
@@ -465,6 +468,34 @@ impl<'a> Federation<'a> {
         Ok(query)
     }
 
+    /// Validate one exact workspace-relative document path without encoding it
+    /// into the human query language.
+    ///
+    /// The native application already holds the path as data. Re-rendering it
+    /// as `path:...` would make spaces, quotes, `*`, and `?` syntax again and
+    /// could silently widen an exact document query into a glob. The
+    /// programmatic filter input keeps the value exact while still deriving
+    /// its type and origin from the federated vocabulary.
+    pub fn scope_exact_path(&self, path: &str) -> Result<EntityQuery, FederationError> {
+        let entity = self
+            .source_vocabulary
+            .entities
+            .first()
+            .map(|entity| format!("{}.{}", self.source_vocabulary.name, entity))
+            .unwrap_or_default();
+        let vocabulary = EntityVocabulary::derive(std::slice::from_ref(&self.source_vocabulary));
+        validate_entity_request(
+            EntityTarget::parse(&entity),
+            &[EntityFilterInput {
+                field: mapping::KEY.to_string(),
+                op: AttrOp::Eq,
+                value: path.to_string(),
+            }],
+            &vocabulary,
+        )
+        .map_err(Into::into)
+    }
+
     /// Read every available source over `scope` and assemble the documents,
     /// in path order.
     ///
@@ -746,38 +777,6 @@ impl std::fmt::Debug for Federation<'_> {
     }
 }
 
-#[cfg(test)]
-mod product_scope_tests {
-    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
-    use catdb_validation::EggProver;
-
-    use super::Federation;
-
-    #[test]
-    fn exact_product_path_is_typed_without_round_tripping_through_query_text() {
-        let root = tempfile::tempdir().expect("temporary source root");
-        std::fs::write(root.path().join("a file.md"), "# A file\n").expect("write markdown");
-        let filesystem = FilesystemSource::new(root.path());
-        let git = GitSource::open(root.path());
-        let frontmatter = FrontmatterSource::new(root.path());
-        let sources: Vec<&dyn DataSource> = vec![&filesystem, &git, &frontmatter];
-        let federation =
-            Federation::new(sources, &EggProver::default()).expect("valid federation");
-
-        let query = federation
-            .scope_exact_path("a file.md")
-            .expect("spaces are data, not query syntax");
-
-        assert_eq!(query.filters.len(), 1);
-        assert_eq!(query.filters[0].attr, "path");
-        assert_eq!(query.filters[0].op, catdb_query::AttrOp::Eq);
-        assert_eq!(
-            query.filters[0].value,
-            catdb_query::AttrValue::Text("a file.md".to_string())
-        );
-    }
-}
-
 /// One source's rows for one scope, keyed by the natural key.
 struct Reading<'a> {
     binding: &'a Binding<'a>,
@@ -825,4 +824,35 @@ impl Reading<'_> {
 /// a human can be asked to rule on twice.
 fn object_id(name: &str) -> ObjectId {
     ObjectId::from_uuid(Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()))
+}
+
+#[cfg(test)]
+mod product_scope_tests {
+    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+    use catdb_validation::EggProver;
+
+    use super::Federation;
+
+    #[test]
+    fn exact_product_path_is_typed_without_round_tripping_through_query_text() {
+        let root = tempfile::tempdir().expect("temporary source root");
+        std::fs::write(root.path().join("a file.md"), "# A file\n").expect("write markdown");
+        let filesystem = FilesystemSource::new(root.path());
+        let git = GitSource::open(root.path());
+        let frontmatter = FrontmatterSource::new(root.path());
+        let sources: Vec<&dyn DataSource> = vec![&filesystem, &git, &frontmatter];
+        let federation = Federation::new(sources, &EggProver::default()).expect("valid federation");
+
+        let query = federation
+            .scope_exact_path("a file.md")
+            .expect("spaces are data, not query syntax");
+
+        assert_eq!(query.filters.len(), 1);
+        assert_eq!(query.filters[0].attr, "path");
+        assert_eq!(query.filters[0].op, catdb_query::AttrOp::Eq);
+        assert_eq!(
+            query.filters[0].value,
+            catdb_query::AttrValue::Text("a file.md".to_string())
+        );
+    }
 }

@@ -662,7 +662,7 @@ export function AppShell() {
 
   // --- semantic surfaces: transport, selection, click-to-source ---------
   const semantics = useMemo(makeSemanticsAdapter, []);
-  // The registered schemas drive the toolbar's View As control and the lens
+  // The registered schemas drive the toolbar's Semantic view control and the lens
   // band. Only read inside a Tauri shell — there is no engine on the website.
   const { schemas, reload: reloadSchemas } = useSchemas(
     semantics,
@@ -708,7 +708,7 @@ export function AppShell() {
     [jumpToSpan],
   );
 
-  // The Inspector's and the View As sheet's citation jump. Both hand over the
+  // The Inspector's and the Semantic view sheet's citation jump. Both hand over the
   // claim's recorded first AND last line; neither is narrowed here.
   const onCite = useCallback(
     (file: string, startLine: number, endLine: number) => openCitation(file, startLine, endLine),
@@ -1051,7 +1051,7 @@ export function AppShell() {
       {
         id: 'view-as',
         keys: 'Mod+Shift+V',
-        description: 'View as…',
+        description: 'Semantic view…',
         group: 'Semantics',
         run: () => setLensSheetOpen((open) => !open),
       },
@@ -1722,6 +1722,8 @@ export function AppShell() {
                 onSetReviewer={(name) => useSettingsStore.getState().setReviewer(name)}
                 onCite={onCite}
                 workspaceKey={root}
+                documentPath={activeTab.docRef.path}
+                queryDocument={semantics.queryFederatedDocument}
               />
             ) : null}
             {activeTab ? (

@@ -72,6 +72,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             search::search,
             search::related,
             search::explain_query,
+            federation::query_federated_document,
             overlay::list_schemas,
             overlay::project_corpus,
             overlay::describe_schema,

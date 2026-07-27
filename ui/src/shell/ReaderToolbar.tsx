@@ -20,8 +20,8 @@ export interface ReaderToolbarProps {
   /** Whether a document is open (the toggles are inert otherwise). */
   canEdit: boolean;
   /**
-   * Open the View As sheet. Omitted when no schema is registered for this
-   * workspace — there is nothing to view the corpus as, so no control appears.
+   * Open the Semantic view sheet. Omitted when no schema is registered for
+   * this workspace — there is no alternate interpretation to select.
    */
   onViewAs?: () => void;
   /** The schema in force, or `null` for the plain reading. */
@@ -70,9 +70,10 @@ export function ReaderToolbar({
           type="button"
           className={`icon-btn${lensSchema ? ' icon-btn--active' : ''}`}
           onClick={onViewAs}
-          title="View the corpus as a registered schema (⌘⇧V)"
+          title="Choose CatDB's semantic interpretation (⌘⇧V)"
+          aria-label="Semantic view"
         >
-          {lensSchema ? `As ${lensSchema}` : 'View as'}
+          {lensSchema ? `Semantic: ${lensSchema}` : 'Semantic view'}
         </button>
       ) : null}
 

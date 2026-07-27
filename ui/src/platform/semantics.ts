@@ -24,6 +24,7 @@ import {
   type ConstraintReport as ConstraintReportDto,
   type ExplainDto,
   type FactProvenanceDto,
+  type FederatedDocumentResponse as FederatedDocumentResponseDto,
   type InspectedFact as InspectedFactDto,
   type Projection as ProjectionDto,
   type SchemaDetail as SchemaDetailDto,
@@ -38,7 +39,7 @@ import {
 // domain shapes
 // --------------------------------------------------------------------------
 
-/** One registered schema, as the View As picker lists it. */
+/** One registered schema, as the Semantic view picker lists it. */
 export interface SchemaSummary {
   name: string;
   /**
@@ -59,6 +60,47 @@ export interface SchemaSummary {
   objectCount: number;
   /** Claims the proposal store holds, in any review state. */
   proposalCount: number;
+}
+
+export interface FederatedProvider {
+  source: string;
+  attribute: string;
+  verdict: string;
+  value: string | null;
+  reason: string | null;
+  declaredFallback: string[];
+}
+
+export interface FederatedField {
+  name: string;
+  value: string | null;
+  winner: string | null;
+  providers: FederatedProvider[];
+  explanation: string;
+}
+
+export interface FederatedSource {
+  source: string;
+  outcome: string;
+  execution: string | null;
+  freshness: string | null;
+  ageMs: number | null;
+  scanned: number;
+  returned: number;
+  pushed: string[];
+  residual: string[];
+  refusal: string | null;
+}
+
+export interface FederatedDocument {
+  queryId: string;
+  schema: SchemaSummary;
+  completeness: string;
+  document: {
+    path: string;
+    fields: FederatedField[];
+  };
+  sources: FederatedSource[];
 }
 
 /** A fact's derivation record, field for field. */
@@ -474,11 +516,49 @@ export interface SemanticsAdapter {
   rejectFact(factId: string, reviewer: string): Promise<RejectionOutcome>;
   checkConstraints(): Promise<ConstraintReport>;
   explainQuery(query: string, limit?: number): Promise<ExplainedHit[]>;
+  queryFederatedDocument(path: string): Promise<FederatedDocument>;
 }
 
 function unwrap<T>(result: { status: 'ok'; data: T } | { status: 'error'; error: string }): T {
   if (result.status === 'error') throw new Error(result.error);
   return result.data;
+}
+
+function normalizeFederatedDocument(dto: FederatedDocumentResponseDto): FederatedDocument {
+  return {
+    queryId: dto.query_id,
+    schema: normalizeSummary(dto.schema),
+    completeness: dto.completeness,
+    document: {
+      path: dto.document.path,
+      fields: dto.document.fields.map((field) => ({
+        name: field.name,
+        value: field.value,
+        winner: field.winner,
+        explanation: field.explanation,
+        providers: field.providers.map((provider) => ({
+          source: provider.source,
+          attribute: provider.attribute,
+          verdict: provider.verdict,
+          value: provider.value,
+          reason: provider.reason,
+          declaredFallback: provider.declared_fallback,
+        })),
+      })),
+    },
+    sources: dto.sources.map((source) => ({
+      source: source.source,
+      outcome: source.outcome,
+      execution: source.execution,
+      freshness: source.freshness,
+      ageMs: source.age_ms,
+      scanned: source.scanned,
+      returned: source.returned,
+      pushed: source.pushed,
+      residual: source.residual,
+      refusal: source.refusal,
+    })),
+  };
 }
 
 /** The real transport, backed by the generated Tauri command surface. */
@@ -514,6 +594,9 @@ export function makeSemanticsAdapter(): SemanticsAdapter {
     },
     async explainQuery(query, limit = EXPLAIN_LIMIT) {
       return unwrap(await commands.explainQuery(query, limit)).map(normalizeExplainedHit);
+    },
+    async queryFederatedDocument(path) {
+      return normalizeFederatedDocument(unwrap(await commands.queryFederatedDocument(path)));
     },
   };
 }

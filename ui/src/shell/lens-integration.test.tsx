@@ -145,7 +145,7 @@ vi.mock('./ReaderPane.js', () => ({
     <div className="reader-region">
       {onViewAs ? (
         <button type="button" onClick={onViewAs}>
-          {lensSchema ? `As ${lensSchema}` : 'View as'}
+          {lensSchema ? `Semantic: ${lensSchema}` : 'Semantic view'}
         </button>
       ) : null}
       {lensBand}
@@ -315,7 +315,7 @@ describe('Constraint Explorer: click-to-source', () => {
   });
 });
 
-describe('View As', () => {
+describe('Semantic view', () => {
   it('opens on ⌘⇧V, adopts a lens, and shows the band over the untouched prose', async () => {
     await openWorkspace();
     act(() => modKeyDown('V', { shiftKey: true }));
@@ -352,11 +352,11 @@ describe('View As', () => {
     await waitFor(() => expect(screen.queryByLabelText('Active lens')).toBeNull());
   });
 
-  it('offers no View As control at all when no schema is registered', async () => {
+  it('offers no Semantic view control at all when no schema is registered', async () => {
     h.listSchemas.mockImplementation(async () => []);
     await openWorkspace();
     await act(async () => {});
-    expect(screen.queryByRole('button', { name: 'View as' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Semantic view' })).toBeNull();
   });
 });
 

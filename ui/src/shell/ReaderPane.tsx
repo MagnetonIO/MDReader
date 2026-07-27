@@ -95,9 +95,9 @@ export interface ReaderPaneProps {
    * prose beneath it makes the point. `null` for the plain reading.
    */
   lensBand?: ReactNode;
-  /** Open the View As sheet (omitted when no schema is registered). */
+  /** Open the Semantic view sheet (omitted when no schema is registered). */
   onViewAs?: () => void;
-  /** The schema in force, for the toolbar's View As control. */
+  /** The schema in force, for the toolbar's Semantic view control. */
   lensSchema?: string | null;
 }
 

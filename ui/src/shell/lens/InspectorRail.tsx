@@ -24,7 +24,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { InspectedFact, SemanticsAdapter, SpanSelection } from '../../platform/semantics.js';
+import type {
+  FederatedDocument,
+  InspectedFact,
+  SemanticsAdapter,
+  SpanSelection,
+} from '../../platform/semantics.js';
 import {
   STATE_LABEL,
   citeProvenance,
@@ -37,6 +42,7 @@ import {
   reReviewPrompt,
   shortHash,
 } from './lens-format.js';
+import { DocumentInspector } from './DocumentInspector.js';
 
 export interface InspectorRailProps {
   /** The semantic transport. */
@@ -55,6 +61,10 @@ export interface InspectorRailProps {
   onCite: (file: string, startLine: number, endLine: number) => void;
   /** The active workspace root; a change drops any in-flight read. */
   workspaceKey: string | null;
+  /** Active Markdown document queried across filesystem, Git, and frontmatter. */
+  documentPath?: string | null;
+  /** Native federated query seam. Optional only for isolated legacy tests. */
+  queryDocument?: (path: string) => Promise<FederatedDocument>;
 }
 
 type Status = 'idle' | 'loading' | 'ready' | 'error';
@@ -68,6 +78,8 @@ export function InspectorRail({
   onSetReviewer,
   onCite,
   workspaceKey,
+  documentPath = null,
+  queryDocument,
 }: InspectorRailProps) {
   const [facts, setFacts] = useState<InspectedFact[]>([]);
   const [status, setStatus] = useState<Status>('idle');
@@ -173,6 +185,16 @@ export function InspectorRail({
       </div>
 
       <div className="lens-rail__body">
+        {documentPath && queryDocument ? (
+          <>
+            <DocumentInspector
+              path={documentPath}
+              query={queryDocument}
+              workspaceKey={workspaceKey}
+            />
+            <div className="inspector__section-break" />
+          </>
+        ) : null}
         <p className="inspector__scope">
           {selection ? (
             <>

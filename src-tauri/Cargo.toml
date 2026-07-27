@@ -66,7 +66,10 @@ catdb-connector-google-drive = { path = "../../../catdb/crates/catdb-connector-g
 # provenance the Semantic Inspector renders. Read-only: nothing here builds a
 # fact, it only describes ones the engine and the extractors produced.
 catdb-core = { path = "../../../catdb/crates/catdb-core" }
+catdb-connectors = { path = "../../../catdb/crates/catdb-connectors" }
+catdb-federation = { path = "../../../catdb/crates/catdb-federation" }
 catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
+catdb-validation = { path = "../../../catdb/crates/catdb-validation" }
 mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }

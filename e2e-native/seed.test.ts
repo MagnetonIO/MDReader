@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { clearSeed, clearWorkspaceIndex, createE2EProfile, E2E_BUNDLE_IDENTIFIER, type E2EProfile } from './seed.ts';
+import { FLOW, SEMANTIC_KINDS } from './flows.ts';
+import {
+  clearSeed,
+  clearWorkspaceIndex,
+  createE2EProfile,
+  E2E_BUNDLE_IDENTIFIER,
+  fingerprintSourceTree,
+  type E2EProfile,
+} from './seed.ts';
 
 async function temporaryE2EConfig(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'mdreader-e2e-'));
@@ -113,4 +121,27 @@ test('validated test-owned E2E state clears only its persisted state', async () 
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
+});
+
+test('the shared native flow makes the P8 federated Document surface load-bearing', () => {
+  const step = FLOW.find((candidate) => candidate.id === 'federated-document');
+  assert.equal(step?.kind, 'inspectFederation');
+  assert.equal(SEMANTIC_KINDS.includes('inspectFederation'), true);
+});
+
+test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {
+  const root = await temporaryE2EConfig();
+  const document = join(root, 'note.md');
+  await writeFile(document, '# unchanged bytes');
+  const before = await fingerprintSourceTree(root);
+
+  await utimes(document, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+  const touched = await fingerprintSourceTree(root);
+  assert.notDeepEqual(touched, before);
+  assert.equal(touched['note.md']?.sha256, before['note.md']?.sha256);
+
+  await writeFile(join(root, 'added.md'), '# added');
+  const added = await fingerprintSourceTree(root);
+  assert.deepEqual(Object.keys(added), ['added.md', 'note.md']);
+  await rm(root, { recursive: true, force: true });
 });

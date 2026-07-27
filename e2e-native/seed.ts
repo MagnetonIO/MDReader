@@ -16,13 +16,73 @@
  * and writes the store's flat `{ "<key>": <value> }` shape. Node built-ins only.
  */
 
+import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { lstat, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises';
 
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 export { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
+
+export interface SourceFingerprintEntry {
+  readonly kind: 'file' | 'symlink';
+  readonly size: string;
+  readonly sha256: string;
+  readonly mtimeNs: string;
+}
+
+export type SourceFingerprint = Record<string, SourceFingerprintEntry>;
+
+/**
+ * Fingerprint every source-tree file by membership, bytes, length, and mtime.
+ *
+ * The native P8 leg takes one snapshot before launch and one after shutdown.
+ * A byte-identical rewrite is therefore still visible through `mtimeNs`, while
+ * a rename/add/delete changes the record's sorted key set.
+ */
+export async function fingerprintSourceTree(root: string): Promise<SourceFingerprint> {
+  const absoluteRoot = resolve(root);
+  const fingerprint: SourceFingerprint = {};
+
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
+      const metadata = await lstat(path, { bigint: true });
+      const key = relative(absoluteRoot, path).replaceAll('\\', '/');
+      if (entry.isFile()) {
+        const bytes = await readFile(path);
+        fingerprint[key] = {
+          kind: 'file',
+          size: metadata.size.toString(),
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          mtimeNs: metadata.mtimeNs.toString(),
+        };
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        const target = await readlink(path);
+        fingerprint[key] = {
+          kind: 'symlink',
+          size: metadata.size.toString(),
+          sha256: createHash('sha256').update(target).digest('hex'),
+          mtimeNs: metadata.mtimeNs.toString(),
+        };
+        continue;
+      }
+      throw new Error(`cannot fingerprint unsupported source entry: ${path}`);
+    }
+  };
+
+  await visit(absoluteRoot);
+  return fingerprint;
+}
 
 /** The store key `persistence.ts` reads the session under (`store.get('session')`). */
 const SESSION_KEY = 'session';
@@ -37,7 +97,7 @@ const SESSION_VERSION = 1;
  * `settings.json` belongs on this list as much as `session.json` does, and
  * leaving it off cost a lane a day: it carries `lensSchema`, so a workspace
  * left with an interpretation in force hands the NEXT run an app that is
- * already reading through that lens. The View As step then has nothing to
+ * already reading through that lens. The Semantic view step then has nothing to
  * adopt — the sheet opens on "Reading as this" — and the run fails claiming the
  * lens never took effect, which is the opposite of what happened. It also
  * carries `inspectorOpen` and `reviewer`, which the Inspector step toggles and

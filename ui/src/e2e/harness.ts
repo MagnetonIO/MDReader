@@ -357,6 +357,89 @@ const SCHEMAS = [
   },
 ];
 
+/**
+ * Browser-only fixture for the P8 product surface. It mirrors the generated
+ * Tauri DTO exactly; the native leg is the proof that these values are produced
+ * by the filesystem, Git, and frontmatter adapters rather than this fixture.
+ */
+function federatedDocument(path: string) {
+  const relative = path.replace(/^\/mock\/ws\/?/, '');
+  return {
+    query_id: '00000000-0000-4000-8000-000000000008',
+    schema: {
+      name: 'document',
+      version: 2,
+      checksum: 'blake3:federated-document-fixture',
+      entities: ['Document'],
+      arrow_count: 0,
+      attribute_count: 6,
+      equation_count: 0,
+      approval_required: false,
+      object_count: 0,
+      proposal_count: 0,
+    },
+    completeness: 'complete',
+    document: {
+      path: relative,
+      fields: [
+        {
+          name: 'title',
+          value: '"Reference"',
+          winner: 'frontmatter',
+          explanation: '`title` answered by `frontmatter.title`',
+          providers: [
+            {
+              source: 'frontmatter',
+              attribute: 'title',
+              verdict: 'observed',
+              value: '"Reference"',
+              reason: null,
+              declared_fallback: ['YAML `title:`', 'first H1'],
+            },
+          ],
+        },
+        {
+          name: 'modifiedAt',
+          value: '1700000000000',
+          winner: 'filesystem',
+          explanation:
+            '`modifiedAt` answered by `filesystem.modifiedAt`; `git.modifiedAt` also observed a value',
+          providers: [
+            {
+              source: 'filesystem',
+              attribute: 'modifiedAt',
+              verdict: 'observed',
+              value: '1700000000000',
+              reason: null,
+              declared_fallback: [],
+            },
+            {
+              source: 'git',
+              attribute: 'modifiedAt',
+              verdict: 'observed',
+              value: '1690000000000',
+              reason: null,
+              declared_fallback: [],
+            },
+          ],
+        },
+      ],
+    },
+    sources: ['filesystem', 'git', 'frontmatter'].map((source) => ({
+      source,
+      outcome: 'ran',
+      execution: source === 'git' ? 'materialized' : 'virtual',
+      freshness: 'fresh',
+      age_ms: 0,
+      scanned: 1,
+      returned: 1,
+      pushed: ['path'],
+      residual: [],
+      refusal: null,
+    })),
+  };
+}
+
 const SCHEMA_DETAILS: Record<string, unknown> = {
   decision_overlay: {
     name: 'decision_overlay',
@@ -766,6 +849,8 @@ export function installTauriMocks(): void {
       // --- the semantic surface (P7) -------------------------------------
       case 'list_schemas':
         return SCHEMAS;
+      case 'query_federated_document':
+        return federatedDocument((args as { path: string }).path);
       case 'describe_schema':
         return SCHEMA_DETAILS[(args as { schema: string }).schema] ?? null;
       case 'project_corpus':

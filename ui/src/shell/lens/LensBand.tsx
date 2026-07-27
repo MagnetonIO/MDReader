@@ -18,7 +18,7 @@ import { UNVERSIONED_REASON, checksumLabel, plural, versionLabel } from './lens-
 export interface LensBandProps {
   /** The schema in force. */
   schema: SchemaSummary;
-  /** Open the View As sheet on this schema. */
+  /** Open the Semantic view sheet on this schema. */
   onOpen: () => void;
   /** Return to the plain reading. */
   onClear: () => void;

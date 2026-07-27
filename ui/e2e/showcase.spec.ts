@@ -149,10 +149,10 @@ async function computedDisplay(page: Page, selector: string): Promise<string | n
   }, selector);
 }
 
-/** Adopt `schema` as the reading lens through the View As sheet, then close it. */
+/** Adopt `schema` as the reading lens through the Semantic view sheet, then close it. */
 async function readAs(page: Page, schema: string): Promise<void> {
   await chord(page, 'Shift+V');
-  const sheet = page.getByRole('dialog', { name: 'View as' });
+  const sheet = page.getByRole('dialog', { name: 'Semantic view' });
   await expect(sheet).toBeVisible();
   await expect(sheet.locator('.lens-choice')).not.toHaveCount(0);
   await sheet.getByRole('button', { name: new RegExp(schema) }).click();
@@ -166,10 +166,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// 1. View As — the band, and what a lens actually changes
+// 1. Semantic view — the band, and what a lens actually changes
 // ---------------------------------------------------------------------------
 
-test('View As: the band sits in the reading column, and switching the lens changes what is listed', async ({
+test('Semantic view: the band sits in the reading column, and switching the lens changes what is listed', async ({
   page,
 }) => {
   await openWorkspace(page, 'index.md');
@@ -185,7 +185,7 @@ test('View As: the band sits in the reading column, and switching the lens chang
   await expect(page.locator('.lens-band')).toHaveCount(0);
 
   await chord(page, 'Shift+V');
-  const sheet = page.getByRole('dialog', { name: 'View as' });
+  const sheet = page.getByRole('dialog', { name: 'Semantic view' });
   await expect(sheet).toBeVisible();
 
   // Non-emptiness first: there are schemas to choose between at all.
@@ -360,7 +360,44 @@ test('Inspector: a stale rejection offers re-review with BOTH digests', async ({
 });
 
 // ---------------------------------------------------------------------------
-// 3. Reviewer identity — inert means nothing crossed the boundary
+// 3. Federated Document — one answer, all of its evidence
+// ---------------------------------------------------------------------------
+
+test('Federated Document: result, sources, provenance, and schema stay connected', async ({
+  page,
+}) => {
+  await openWorkspace(page, 'reference.md');
+  await clearSentCommands(page);
+  await chord(page, 'Shift+I');
+
+  const inspector = page.getByRole('region', { name: 'Federated document' });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByText('Complete')).toBeVisible();
+  await expect(inspector.getByText('Reference', { exact: true })).toBeVisible();
+  await expect(inspector.getByText('from frontmatter')).toBeVisible();
+
+  await inspector.getByRole('tab', { name: 'Sources' }).click();
+  await expect(inspector.locator('.document-sources > li')).toHaveCount(3);
+  await expect(inspector.getByText('filesystem')).toBeVisible();
+  await expect(inspector.getByText('git')).toBeVisible();
+  await expect(inspector.getByText('frontmatter')).toBeVisible();
+
+  await inspector.getByRole('tab', { name: 'Provenance' }).click();
+  await expect(inspector.getByText('filesystem.modifiedAt', { exact: true })).toBeVisible();
+  await expect(inspector.getByText('git.modifiedAt', { exact: true })).toBeVisible();
+  await expect(inspector.getByText('selected', { exact: true })).toHaveCount(2);
+  await expect(inspector.getByText('also observed', { exact: true })).toBeVisible();
+
+  await inspector.getByRole('tab', { name: 'Schema' }).click();
+  await expect(inspector.getByText('document · v2')).toBeVisible();
+  await expect(inspector.getByText(/not the Markdown file or its format/i)).toBeVisible();
+
+  const sent = await sentCommands(page);
+  expect(sent.filter((command) => command === 'query_federated_document').length).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------------------
+// 4. Reviewer identity — inert means nothing crossed the boundary
 // ---------------------------------------------------------------------------
 
 test('Reviewer identity: Approve is genuinely inert until a real name is set', async ({ page }) => {
@@ -417,7 +454,7 @@ test('Reviewer identity: Approve is genuinely inert until a real name is set', a
 });
 
 // ---------------------------------------------------------------------------
-// 4. Constraint Explorer click-to-source — the load-bearing one
+// 5. Constraint Explorer click-to-source — the load-bearing one
 // ---------------------------------------------------------------------------
 
 /**
@@ -529,7 +566,7 @@ test('Constraint Explorer: a SAME-DOCUMENT jump marks the whole cited range too'
 });
 
 // ---------------------------------------------------------------------------
-// 5. Query Explanation — an absent contribution is not a zero one
+// 6. Query Explanation — an absent contribution is not a zero one
 // ---------------------------------------------------------------------------
 
 test('Query Explanation: a boost that never fired reads "did not fire", not 0', async ({ page }) => {

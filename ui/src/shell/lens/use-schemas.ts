@@ -1,6 +1,6 @@
 /**
  * The registered-schema list, shared by the chrome that has to know what the
- * corpus can be read as: the reader toolbar's View As control and the lens band.
+ * corpus can be interpreted through: the toolbar's Semantic view control and the lens band.
  *
  * Guarded like every other engine read in the shell — a workspace change
  * re-reads, and a superseded read is discarded rather than allowed to describe

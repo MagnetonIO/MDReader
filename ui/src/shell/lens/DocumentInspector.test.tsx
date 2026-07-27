@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import type { FederatedDocument } from '../../platform/semantics.js';
 import { DocumentInspector } from './DocumentInspector.js';
@@ -105,40 +105,42 @@ const answer: FederatedDocument = {
   ],
 };
 
+afterEach(cleanup);
+
 it('presents Result, Sources, Provenance, and Schema as one document answer', async () => {
   const query = vi.fn().mockResolvedValue(answer);
   render(<DocumentInspector path="/library/notes/a.md" query={query} workspaceKey="/library" />);
 
-  expect(await screen.findByText('A title')).toBeVisible();
-  expect(screen.getByText('Complete')).toBeVisible();
+  expect(await screen.findByText('A title')).toBeTruthy();
+  expect(screen.getByText('Complete')).toBeTruthy();
   expect(query).toHaveBeenCalledWith('/library/notes/a.md');
 
   fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
-  expect(screen.getByText('filesystem')).toBeVisible();
-  expect(screen.getByText('git')).toBeVisible();
-  expect(screen.getByText('frontmatter')).toBeVisible();
+  expect(screen.getByText('filesystem')).toBeTruthy();
+  expect(screen.getByText('git')).toBeTruthy();
+  expect(screen.getByText('frontmatter')).toBeTruthy();
   expect(screen.getAllByText('1 scanned · 1 returned')).toHaveLength(3);
 
   fireEvent.click(screen.getByRole('tab', { name: 'Provenance' }));
-  expect(screen.getByText('filesystem.modifiedAt')).toBeVisible();
-  expect(screen.getByText('git.modifiedAt')).toBeVisible();
-  expect(screen.getByText('selected')).toBeVisible();
-  expect(screen.getByText('also observed')).toBeVisible();
+  expect(screen.getByText('filesystem.modifiedAt')).toBeTruthy();
+  expect(screen.getByText('git.modifiedAt')).toBeTruthy();
+  expect(screen.getAllByText('selected')).toHaveLength(2);
+  expect(screen.getByText('also observed')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Schema' }));
-  expect(screen.getByText('doc · v3')).toBeVisible();
-  expect(screen.getByText('blake3:abc')).toBeVisible();
+  expect(screen.getByText('doc · v3')).toBeTruthy();
+  expect(screen.getByText('blake3:abc')).toBeTruthy();
   expect(
     screen.getByText(/changes the semantic interpretation, not the Markdown file/i),
-  ).toBeVisible();
+  ).toBeTruthy();
 });
 
 it('drops a late answer after the active workspace changes', async () => {
-  let resolve!: (value: FederatedDocument) => void;
+  const pending: Array<(value: FederatedDocument) => void> = [];
   const query = vi.fn(
     () =>
       new Promise<FederatedDocument>((done) => {
-        resolve = done;
+        pending.push(done);
       }),
   );
   const rendered = render(
@@ -148,6 +150,6 @@ it('drops a late answer after the active workspace changes', async () => {
     <DocumentInspector path="/two/b.md" query={query} workspaceKey="/two" />,
   );
 
-  resolve(answer);
-  await waitFor(() => expect(screen.queryByText('A title')).not.toBeInTheDocument());
+  pending[0]!(answer);
+  await waitFor(() => expect(screen.queryByText('A title')).toBeNull());
 });

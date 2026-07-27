@@ -121,16 +121,16 @@ export const SELECTORS = {
     name: 'Active lens',
     description: 'the active-lens band',
   },
-  /** The View As sheet. NOTE: the lens sheets set `role=dialog` + `aria-label`
+  /** The Semantic view sheet. NOTE: the lens sheets set `role=dialog` + `aria-label`
    *  but NOT `aria-modal`, so {@link paletteDialog} deliberately does not match
    *  them. */
   lensSheet: {
-    css: '[role="dialog"][aria-label="View as"]',
+    css: '[role="dialog"][aria-label="Semantic view"]',
     role: 'dialog',
-    name: 'View as',
-    description: 'the View As sheet',
+    name: 'Semantic view',
+    description: 'the Semantic view sheet',
   },
-  /** One schema row inside the View As sheet. */
+  /** One schema row inside the Semantic view sheet. */
   lensChoice: {
     css: '.lens-choice',
     role: 'button',
@@ -204,7 +204,7 @@ export type Chord =
   | 'Mod+K'
   | 'Enter'
   | 'Escape'
-  /** View as… — opens the lens sheet. */
+  /** Semantic view… — opens the lens sheet. */
   | 'Mod+Shift+V'
   /** Toggle the semantic inspector rail. */
   | 'Mod+Shift+I'
@@ -283,7 +283,7 @@ export type Step =
       readonly provenancePattern: string;
     }
   | {
-      /** **P7 W5.** Switch the interpretation through the real *View As* sheet
+      /** **P7 W5.** Switch the interpretation through the real *Semantic view* sheet
        *  and assert the switch took effect where the user sees it: the lens
        *  band naming {@link schema} and reporting how many objects that
        *  interpretation holds. Asserting the sheet listed the schema would only
@@ -317,6 +317,23 @@ export type Step =
       readonly claimPattern: string;
       /** Regex source for the claim's citation back to the source. */
       readonly citationPattern: string;
+    }
+  | {
+      /** **P8.** Query the active Markdown document through the shipping
+       * Tauri command, then inspect the one answer as result, source execution,
+       * field provenance, and persisted semantic schema. */
+      readonly kind: 'inspectFederation';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      /** Regex source matched against the Result tab. */
+      readonly resultPattern: string;
+      /** Regex source proving all physical source reports are present. */
+      readonly sourcesPattern: string;
+      /** Regex source proving the winner and an observed loser stay visible. */
+      readonly provenancePattern: string;
+      /** Regex source proving the schema identity/version is rendered. */
+      readonly schemaPattern: string;
     }
   | {
       /** **P7 W5.** Open the Constraint Explorer, click a violation's
@@ -503,7 +520,7 @@ export const FLOW: readonly Step[] = [
   {
     kind: 'viewAs',
     id: 'view-as',
-    title: 'View As switches the interpretation — the lens band says so',
+    title: 'Semantic view switches the interpretation — the lens band says so',
     channel: 'dom',
     schema: 'architecture_overlay',
     // 12 committed objects for this corpus; the count is read live, so the
@@ -513,6 +530,20 @@ export const FLOW: readonly Step[] = [
     // nodes back on separate lines. Either way a zero interpretation still
     // cannot satisfy it.
     bandPattern: 'architecture_overlay[\\s\\S]*[1-9]\\d*\\s+in the graph',
+  },
+  {
+    kind: 'inspectFederation',
+    id: 'federated-document',
+    title: 'The active Document is assembled across filesystem, Git, and frontmatter',
+    channel: 'dom',
+    resultPattern:
+      'Federated document[\\s\\S]*Complete[\\s\\S]*title[\\s\\S]*broken-app[\\s\\S]*from frontmatter',
+    sourcesPattern:
+      'filesystem[\\s\\S]*ran[\\s\\S]*git[\\s\\S]*ran[\\s\\S]*frontmatter[\\s\\S]*ran',
+    provenancePattern:
+      'modifiedAt[\\s\\S]*filesystem\\.modifiedAt[\\s\\S]*selected[\\s\\S]*git\\.modifiedAt[\\s\\S]*also observed',
+    schemaPattern:
+      'document[\\s\\S]*(v\\d+|not catalogued yet)[\\s\\S]*semantic interpretation[\\s\\S]*not the Markdown file',
   },
   {
     kind: 'inspectPassage',
@@ -584,6 +615,7 @@ export const FLOW: readonly Step[] = [
  *  silent skip. */
 export const SEMANTIC_KINDS: readonly Step['kind'][] = [
   'viewAs',
+  'inspectFederation',
   'inspectPassage',
   'constraintJump',
   'queryExplanation',

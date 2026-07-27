@@ -58,6 +58,7 @@ function adapterWith(report: ConstraintReport): SemanticsAdapter {
     rejectFact: vi.fn(),
     checkConstraints: vi.fn(async () => report),
     explainQuery: vi.fn(),
+    queryFederatedDocument: vi.fn(),
   } as SemanticsAdapter;
 }
 

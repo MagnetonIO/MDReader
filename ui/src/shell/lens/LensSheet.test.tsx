@@ -1,5 +1,5 @@
 /**
- * View As and Schema View.
+ * Semantic view and Schema View.
  *
  * The assertions worth making here are the ones about what the panel says when
  * the engine has *not* told it something: an unbuilt index leaves a schema
@@ -102,6 +102,7 @@ function adapterWith(overrides: Partial<SemanticsAdapter> = {}): SemanticsAdapte
     rejectFact: vi.fn(),
     checkConstraints: vi.fn(),
     explainQuery: vi.fn(),
+    queryFederatedDocument: vi.fn(),
     ...overrides,
   } as SemanticsAdapter;
 }
@@ -123,6 +124,13 @@ function renderSheet(
 }
 
 describe('the thesis, stated', () => {
+  test('names this a semantic interpretation, not another reader layout', async () => {
+    renderSheet(adapterWith());
+    expect(await screen.findByRole('dialog', { name: 'Semantic view' })).toBeTruthy();
+    expect(screen.getByText(/changes CatDB's interpretation/i)).toBeTruthy();
+    expect(screen.getByText(/does not change the Markdown file or its format/i)).toBeTruthy();
+  });
+
   test('says the corpus is reinterpreted and the files are not touched', async () => {
     renderSheet(adapterWith());
     expect(await screen.findByText(/files on disk are never touched/i)).toBeTruthy();

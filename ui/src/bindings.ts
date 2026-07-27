@@ -213,6 +213,8 @@ export const commands = {
 	 *  lexical-only breakdown as the explanation.
 	 */
 	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
+	/**  Query the active document through the three local physical sources. */
+	queryFederatedDocument: (path: string) => typedError<FederatedDocumentResponse, string>(__TAURI_INVOKE("query_federated_document", { path })),
 	/**
 	 *  Every schema this workspace can be viewed through — persisted version and
 	 *  checksum included — with live counts of what the graph and the proposal
@@ -538,6 +540,82 @@ export type FactProvenanceDto = {
 	confidence: number | null,
 	/**  The reviewer stamped at approval time; `None` until a human accepts it. */
 	approved_by: string | null,
+};
+
+/**  The one assembled semantic `Document`. */
+export type FederatedDocumentDto = {
+	/**  Workspace-relative natural key. */
+	path: string,
+	/**  All six schema fields in stable name order. */
+	fields: FederatedFieldDto[],
+};
+
+/**  The shipping response shown by MDReader's Semantic Inspector. */
+export type FederatedDocumentResponse = {
+	/**  Stable identity of this execution. */
+	query_id: string,
+	/**  Persisted schema version/checksum when the engine has catalogued it. */
+	schema: SchemaSummary,
+	/**  `complete` or `partial`; derived from the source reports. */
+	completeness: string,
+	/**  The exact requested document. */
+	document: FederatedDocumentDto,
+	/**  One report for filesystem, Git, and frontmatter, in execution order. */
+	sources: FederatedSourceDto[],
+};
+
+/**  One semantic field and its complete source attribution. */
+export type FederatedFieldDto = {
+	/**  Semantic field name. */
+	name: string,
+	/**  Selected JSON value, or `None` when every provider was absent. */
+	value: string | null,
+	/**  Winning source, or `None` when the field is absent. */
+	winner: string | null,
+	/**  Every declared provider, including losers and absences. */
+	providers: FederatedProviderDto[],
+	/**  Human-readable explanation derived from the same attribution record. */
+	explanation: string,
+};
+
+/**  One provider considered for one field, in declared precedence order. */
+export type FederatedProviderDto = {
+	/**  Physical source name. */
+	source: string,
+	/**  Attribute name as the source declares it. */
+	attribute: string,
+	/**  `observed`, `observed-nothing`, `did-not-see-document`, or `not-asked`. */
+	verdict: string,
+	/**  Observed JSON value, when present. */
+	value: string | null,
+	/**  Why the provider was not asked, when applicable. */
+	reason: string | null,
+	/**  Adapter-internal fallback declaration. */
+	declared_fallback: string[],
+};
+
+/**  What became of one physical source. */
+export type FederatedSourceDto = {
+	/**  Stable connector name. */
+	source: string,
+	/**  `ran` or `refused`. */
+	outcome: string,
+	/**  `virtual` or `materialized` when the source ran. */
+	execution: string | null,
+	/**  `fresh`, `cached`, or `None` when refused. */
+	freshness: string | null,
+	/**  Cached-answer age; zero for a fresh read. */
+	age_ms: number | null,
+	/**  Physical candidates examined. */
+	scanned: number,
+	/**  Rows surviving residual filtering. */
+	returned: number,
+	/**  Filters executed by the source. */
+	pushed: string[],
+	/**  Filters executed by CatDB after the source answered. */
+	residual: string[],
+	/**  Typed refusal rendered for the user when the source did not run. */
+	refusal: string | null,
 };
 
 /**  Where one old field goes. */
@@ -1165,7 +1243,7 @@ export type SchemaEquationDto = {
 	rhs: string[],
 };
 
-/**  One registered schema, as the **View As** picker lists it. */
+/**  One registered schema, as the **Semantic view** picker lists it. */
 export type SchemaSummary = {
 	/**  Schema name (e.g. `decision_overlay`). */
 	name: string,

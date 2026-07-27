@@ -3,7 +3,7 @@
 //!
 //! | Surface | Commands |
 //! |---|---|
-//! | **View As** | [`list_schemas`], [`project_corpus`] |
+//! | **Semantic view** | [`list_schemas`], [`project_corpus`] |
 //! | **Semantic Inspector** | [`inspect_span`], [`approve_fact`], [`reject_fact`] |
 //! | **Schema View** | [`describe_schema`] |
 //! | **Constraint Explorer** | [`check_constraints`] |
@@ -60,7 +60,7 @@ use crate::engine::Epoch;
 // Wire DTOs
 // --------------------------------------------------------------------------
 
-/// One registered schema, as the **View As** picker lists it.
+/// One registered schema, as the **Semantic view** picker lists it.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct SchemaSummary {
     /// Schema name (e.g. `decision_overlay`).
@@ -560,6 +560,15 @@ fn schema_summary(
     }
 }
 
+pub(crate) fn schema_summary_for(epoch: &Arc<Epoch>, schema_name: &str) -> Option<SchemaSummary> {
+    let db = epoch.db();
+    let store = epoch.proposals();
+    known_schemas(db.as_deref())
+        .iter()
+        .find(|known| known.schema.name.as_str() == schema_name)
+        .map(|known| schema_summary(known, db.as_deref(), store.as_deref()))
+}
+
 fn schema_detail(known: &KnownSchema) -> SchemaDetail {
     let schema = &known.schema;
     let approval_required = known.approval_required;
@@ -625,7 +634,7 @@ fn schema_detail(known: &KnownSchema) -> SchemaDetail {
 }
 
 // --------------------------------------------------------------------------
-// View As
+// Semantic view
 // --------------------------------------------------------------------------
 
 /// Every schema this workspace can be viewed through — persisted version and
@@ -1198,7 +1207,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // View As
+    // Semantic view
     // ----------------------------------------------------------------------
 
     #[test]

@@ -1,5 +1,5 @@
 /**
- * **View As** and **Schema View**, together — because they are one object seen
+ * **Semantic view** and **Schema View**, together — because they are one object seen
  * two ways: a schema's *shape* (its entities, arrows and laws) and its
  * *contents* (the corpus projected through it).
  *
@@ -98,14 +98,14 @@ export function LensSheet({ adapter, activeSchema, onChoose, onCite, onClose }: 
       <div
         className="lens-sheet"
         role="dialog"
-        aria-label="View as"
+        aria-label="Semantic view"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="lens-sheet__head">
-          <h2 className="lens-sheet__title">View as</h2>
+          <h2 className="lens-sheet__title">Semantic view</h2>
           <p className="lens-sheet__lede">
-            One corpus, several typed readings. A lens changes how the notes are interpreted — the
-            files on disk are never touched.
+            Choose how CatDB interprets this library. This changes CatDB&apos;s interpretation; it
+            does not change the Markdown file or its format. The files on disk are never touched.
           </p>
         </header>
 
