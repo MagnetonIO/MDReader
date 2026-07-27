@@ -9,6 +9,12 @@ import { applyTheme, useSettingsStore } from '../stores/settings';
 import { useSourcesStore } from '../stores/sources';
 import { selectActiveTab, useTabsStore } from '../stores/tabs';
 import { MobileReader } from './MobileReader';
+import type { MobileSourceIdentity } from './offline-cache';
+import {
+  MOBILE_SOURCE_ALLOWLIST,
+  saveEnterpriseServerConfig,
+  validateEnterpriseServerConfig,
+} from './source-policy';
 import './mobile.css';
 
 type MobileTab = 'library' | 'search' | 'sources' | 'settings';
@@ -105,8 +111,13 @@ function SearchScreen({ onOpen }: { onOpen: (path: string, name: string) => void
   );
 }
 
-function SourcesScreen() {
+function SourcesScreen({
+  onSourceIdentity,
+}: {
+  onSourceIdentity: (identity: MobileSourceIdentity) => void;
+}) {
   const [message, setMessage] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [serverUrl, setServerUrl] = useState('');
   const [sessionReference, setSessionReference] = useState('');
 
@@ -122,6 +133,7 @@ function SourcesScreen() {
       sources.setFiles(listing.files);
       sources.setFromIndex(listing.fromIndex);
       sources.setWatcher('watching');
+      onSourceIdentity({ kind: 'device-folder', id: picked.source.id });
       setMessage(`${picked.source.name} is available in Library.`);
     } catch {
       setMessage('The device folder could not be added.');
@@ -142,9 +154,11 @@ function SourcesScreen() {
             Add folder
           </button>
         </article>
-        {['Google Drive', 'Dropbox'].map((provider) => (
-          <article className="mobile-source" key={provider}>
-            <h2>{provider}</h2>
+        {MOBILE_SOURCE_ALLOWLIST.filter(
+          (source) => source.connection === 'secure-vault-unavailable',
+        ).map((source) => (
+          <article className="mobile-source" key={source.kind}>
+            <h2>{source.label}</h2>
             <p className="mobile-source__status">
               Unavailable on mobile until secure sign-in is supported
             </p>
@@ -173,6 +187,26 @@ function SourcesScreen() {
               autoComplete="off"
             />
           </label>
+          <button
+            type="button"
+            className="mobile-action mobile-touch"
+            onClick={() => {
+              const result = validateEnterpriseServerConfig(serverUrl, sessionReference);
+              if (result.status === 'error') {
+                setServerError(result.message);
+                return;
+              }
+              setServerError(null);
+              void saveEnterpriseServerConfig(result.config)
+                .then(() =>
+                  setMessage('Server boundary saved. Authentication remains server-managed.'),
+                )
+                .catch(() => setServerError('The server boundary could not be saved on this device.'));
+            }}
+          >
+            Use server
+          </button>
+          {serverError ? <p role="alert">{serverError}</p> : null}
         </article>
       </div>
       {message ? <p role="status">{message}</p> : null}
@@ -214,6 +248,7 @@ function SettingsScreen() {
 export function MobileAppShell({ platform }: MobileAppShellProps) {
   const [tab, setTab] = useState<MobileTab>('library');
   const [readerMode, setReaderMode] = useState<'reader' | 'inspector'>('reader');
+  const [sourceIdentity, setSourceIdentity] = useState<MobileSourceIdentity | null>(null);
   const [tablet] = useState(() => window.innerWidth >= 768);
   const theme = useSettingsStore((state) => state.theme);
   const activeTab = useTabsStore(selectActiveTab);
@@ -237,7 +272,7 @@ export function MobileAppShell({ platform }: MobileAppShellProps) {
     ) : tab === 'search' ? (
       <SearchScreen onOpen={openDocument} />
     ) : tab === 'sources' ? (
-      <SourcesScreen />
+      <SourcesScreen onSourceIdentity={setSourceIdentity} />
     ) : (
       <SettingsScreen />
     );
@@ -251,6 +286,7 @@ export function MobileAppShell({ platform }: MobileAppShellProps) {
             <MobileReader
               tab={activeTab}
               mode={readerMode}
+              sourceIdentity={sourceIdentity}
               onBack={closeReader}
               onModeChange={setReaderMode}
             />
