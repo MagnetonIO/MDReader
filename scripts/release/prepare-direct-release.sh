@@ -5,6 +5,8 @@ TARGET="${1:?target is required}"
 _BUNDLES="${2:?bundles are required}"
 CONFIG="${3:?release config is required}"
 
+node scripts/release/public-oauth-config.mjs assert-hashes
+
 pnpm --filter '@mdreader/app...' run build
 
 # Compile the shipping binary before private updater, Apple, or Windows

@@ -3777,11 +3777,11 @@ async fn receive_oauth_callback(
             return Err(CloudSourceError::OauthInvalidCallback);
         }
         request.extend_from_slice(&buffer[..read]);
-        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
-        }
         if request.len() > MAX_CALLBACK_BYTES {
             return Err(CloudSourceError::OauthInvalidCallback);
+        }
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
         }
     }
     let request =
@@ -4267,18 +4267,22 @@ mod tests {
         SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
     };
     use tempfile::tempdir;
-    use tokio::net::TcpListener;
+    use tokio::{
+        io::AsyncWriteExt as _,
+        net::{TcpListener, TcpStream},
+    };
     use url::Url;
 
     use super::{
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
         bind_oauth_callback_listener, dropbox_redirect_configuration, execute_cloud_query,
-        oauth_callback_configuration, refresh_token_form, CloudAccountService,
+        oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
+        CloudAccountService,
         CloudAccountsState, CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
         CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
         CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
         IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
-        SecretBundle,
+        SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -6090,6 +6094,35 @@ mod tests {
             .expect("exact Dropbox callback listener");
         assert_eq!(listener.local_addr().expect("bound address"), occupied);
         assert_eq!(bound_redirect, redirect_uri);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_rejects_a_terminated_request_over_16_kib() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("callback listener");
+        let address = listener.local_addr().expect("callback address");
+        let redirect_uri = format!("http://{address}/oauth/google-drive");
+        let receiver = receive_oauth_callback(listener, &redirect_uri);
+        let sender = async move {
+            let mut stream = TcpStream::connect(address)
+                .await
+                .expect("connect to callback listener");
+            let mut request = format!(
+                "GET /oauth/google-drive?code=provider-code&state=expected-state HTTP/1.1\r\nX-Padding: {}",
+                "a".repeat(MAX_CALLBACK_BYTES)
+            )
+            .into_bytes();
+            request.extend_from_slice(b"\r\n\r\n");
+            assert!(request.len() > MAX_CALLBACK_BYTES);
+            stream
+                .write_all(&request)
+                .await
+                .expect("send oversized callback");
+        };
+
+        let (result, ()) = tokio::join!(receiver, sender);
+        assert_eq!(result, Err(CloudSourceError::OauthInvalidCallback));
     }
 
     #[test]

@@ -16,6 +16,22 @@ const WINDOWS_NSIS_HOOK_SHA256 =
   'd47e8e70f688281a29eb8d23b18e245b59fec995ff3f196307e3fa5b17b475a3';
 const SAFE_PACKAGE_EXTRACTOR_SHA256 =
   'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8';
+const PUBLIC_OAUTH_VARIABLES = {
+  MDREADER_GOOGLE_DRIVE_CLIENT_ID:
+    '${{ vars.MDREADER_GOOGLE_DRIVE_CLIENT_ID }}',
+  MDREADER_DROPBOX_CLIENT_ID:
+    '${{ vars.MDREADER_DROPBOX_CLIENT_ID }}',
+  MDREADER_DROPBOX_REDIRECT_URI:
+    '${{ vars.MDREADER_DROPBOX_REDIRECT_URI }}',
+};
+const PUBLIC_OAUTH_HASHES = {
+  EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256:
+    '${{ needs.prepare.outputs.google_drive_client_id_sha256 }}',
+  EXPECTED_DROPBOX_CLIENT_ID_SHA256:
+    '${{ needs.prepare.outputs.dropbox_client_id_sha256 }}',
+  EXPECTED_DROPBOX_REDIRECT_URI_SHA256:
+    '${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}',
+};
 
 const STEP_IDS: Record<string, string[]> = {
   prepare: [
@@ -689,6 +705,12 @@ function validatePrepare(
       '${{ steps.seal-release-support.outputs.support_sha256 }}',
     updater_public_key_sha256:
       '${{ steps.seal-release-support.outputs.updater_public_key_sha256 }}',
+    google_drive_client_id_sha256:
+      '${{ steps.seal-release-support.outputs.google_drive_client_id_sha256 }}',
+    dropbox_client_id_sha256:
+      '${{ steps.seal-release-support.outputs.dropbox_client_id_sha256 }}',
+    dropbox_redirect_uri_sha256:
+      '${{ steps.seal-release-support.outputs.dropbox_redirect_uri_sha256 }}',
   }, 'prepare outputs are not bound to the reviewed authorizers');
   const sourceAuthorization = requireRun(
     steps,
@@ -726,8 +748,9 @@ function validatePrepare(
       'reviewed release support is not approved by the workflow',
       'updater_public_key_sha256',
       'sourceCommit: process.env.GITHUB_SHA',
+      'public-oauth-config.mjs emit-github-output',
     ],
-    'reviewed support and updater identity are not sealed before package code',
+    'reviewed support, updater identity, and public OAuth inputs are not sealed before package code',
   );
   const supportEnv = mapping(
     steps.get('seal-release-support')!.env,
@@ -748,6 +771,13 @@ function validatePrepare(
     SAFE_PACKAGE_EXTRACTOR_SHA256,
     'safe package extractor is not bound to workflow-approved bytes',
   );
+  for (const [name, value] of Object.entries(PUBLIC_OAUTH_VARIABLES)) {
+    same(
+      supportEnv[name],
+      value,
+      `prepare does not seal public OAuth variable ${name}`,
+    );
+  }
   requireRun(
     steps,
     'authorize-publisher-bundle',
@@ -775,23 +805,54 @@ function validateUnsigned(
   );
   requireRun(
     steps,
-    'verify-unsigned-build',
+    'attest-unsigned-build',
     [
-      'EXPECTED_BUILD_ATTESTATION_SHA256',
-      'EXPECTED_RELEASE_PLATFORM',
-      'releaseConfigSha256',
-      'config.bundle?.windows !== undefined',
-      'config.bundle?.macOS !== undefined',
+      'public-oauth-config.mjs assert-hashes',
+      'schemaVersion: 3',
+      'googleDriveClientIdSha256',
+      'dropboxClientIdSha256',
+      'dropboxRedirectUriSha256',
     ],
-    'unsigned build attestation is incomplete',
+    'public OAuth inputs are not part of the immutable compile attestation',
   );
   same(
     steps.get('prepare-direct-release')!.env,
     {
+      ...PUBLIC_OAUTH_VARIABLES,
+      ...PUBLIC_OAUTH_HASHES,
       MDREADER_RELEASE_SOURCE_COMMIT:
         '${{ needs.prepare.outputs.source_commit }}',
     },
-    'shipping executable is not compiled with the exact reviewed source commit',
+    'shipping Tauri build does not receive the exact source and public OAuth inputs',
+  );
+  for (const id of ['attest-unsigned-build', 'verify-unsigned-build']) {
+    const environment = mapping(steps.get(id)!.env, `${id}.env`);
+    for (const [name, value] of Object.entries({
+      ...PUBLIC_OAUTH_VARIABLES,
+      ...PUBLIC_OAUTH_HASHES,
+    })) {
+      same(
+        environment[name],
+        value,
+        `${id} does not bind public OAuth input ${name}`,
+      );
+    }
+  }
+  requireRun(
+    steps,
+    'verify-unsigned-build',
+    [
+      'public-oauth-config.mjs assert-hashes',
+      'EXPECTED_BUILD_ATTESTATION_SHA256',
+      'EXPECTED_RELEASE_PLATFORM',
+      'releaseConfigSha256',
+      'googleDriveClientIdSha256',
+      'dropboxClientIdSha256',
+      'dropboxRedirectUriSha256',
+      'config.bundle?.windows !== undefined',
+      'config.bundle?.macOS !== undefined',
+    ],
+    'unsigned build attestation is incomplete',
   );
   requireRun(
     steps,
@@ -800,9 +861,31 @@ function validateUnsigned(
       'const sources = [',
       "'32x32.png'",
       'process.env.RELEASE_BINARY',
+      'googleDriveClientIdSha256',
+      'dropboxClientIdSha256',
+      'dropboxRedirectUriSha256',
       'handoff_sha256=',
     ],
-    'unsigned binary and resource handoff is not closed and hash-addressed',
+    'unsigned binary, resources, and public OAuth identities are not closed and hash-addressed',
+  );
+  const handoffEnvironment = mapping(
+    steps.get('seal-unsigned-handoff')!.env,
+    'seal-unsigned-handoff.env',
+  );
+  same(
+    handoffEnvironment.GOOGLE_DRIVE_CLIENT_ID_SHA256,
+    PUBLIC_OAUTH_HASHES.EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256,
+    'unsigned handoff does not bind the Google Drive public client identifier',
+  );
+  same(
+    handoffEnvironment.DROPBOX_CLIENT_ID_SHA256,
+    PUBLIC_OAUTH_HASHES.EXPECTED_DROPBOX_CLIENT_ID_SHA256,
+    'unsigned handoff does not bind the Dropbox public client identifier',
+  );
+  same(
+    handoffEnvironment.DROPBOX_REDIRECT_URI_SHA256,
+    PUBLIC_OAUTH_HASHES.EXPECTED_DROPBOX_REDIRECT_URI_SHA256,
+    'unsigned handoff does not bind the Dropbox public redirect URI',
   );
 }
 
@@ -912,6 +995,9 @@ function validateBundle(
       'approved Windows ${label} SHA-256 does not match',
       'EXPECTED_RUNTIME_MANIFEST_SHA256',
       'unexpected handoff path',
+      'handoff.googleDriveClientIdSha256',
+      'handoff.dropboxClientIdSha256',
+      'handoff.dropboxRedirectUriSha256',
       'Node runtime inventory mismatch',
       'MDREADER_RELEASE_IDENTITY_V1',
       'productName=MDReader',
@@ -948,6 +1034,13 @@ function validateBundle(
     SAFE_PACKAGE_EXTRACTOR_SHA256,
     'credential boundary does not require the workflow-approved package extractor',
   );
+  for (const [name, value] of Object.entries(PUBLIC_OAUTH_HASHES)) {
+    same(
+      boundaryEnv[name],
+      value,
+      `credential boundary does not retain public OAuth hash ${name}`,
+    );
+  }
   if (
     boundary.includes('github.workspace') ||
     boundary.includes('GITHUB_WORKSPACE')
