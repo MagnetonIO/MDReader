@@ -55,6 +55,17 @@ describe('public demo Worker route set', () => {
       ),
       'utf8',
     );
+    const cliManifest = await readFile(
+      new URL('../../../catdb/crates/catdb-cli/Cargo.toml', import.meta.url),
+      'utf8',
+    );
+    const ingestManifest = await readFile(
+      new URL(
+        '../../mdreader/crates/mdreader-ingest/Cargo.toml',
+        import.meta.url,
+      ),
+      'utf8',
+    );
     expect(dockerfile).toMatch(
       /^FROM rust:1\.94\.0-bookworm@sha256:[0-9a-f]{64} AS builder$/m,
     );
@@ -63,6 +74,26 @@ describe('public demo Worker route set', () => {
     );
     expect(dockerfile).toContain('cargo fetch --locked');
     expect(dockerfile).toContain('cargo build --locked --offline');
+    expect(dockerfile).toContain('--no-default-features');
+    expect(cliManifest).toContain(
+      'external-connectors = [\n    "dep:catdb-connector-dropbox"',
+    );
+    for (const connector of [
+      'dropbox',
+      'duckdb',
+      'google-drive',
+      'postgres',
+      'snowflake',
+    ]) {
+      expect(cliManifest).toMatch(
+        new RegExp(
+          `catdb-connector-${connector} = \\{[^\\n]+optional = true`,
+        ),
+      );
+    }
+    expect(ingestManifest).toContain(
+      'external-connectors = ["catdb-cli/external-connectors"]',
+    );
     expect(dockerfile).toContain('/image/metadata/workspace.sha256');
     expect(dockerfile).toContain('find /image -type f -exec chmod 0444');
     expect(dockerfile).toContain('USER 10001:10001');

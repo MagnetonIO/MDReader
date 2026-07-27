@@ -25,8 +25,9 @@ path = "src/bin/catdb-demo-server.rs"
 # Passthrough to catdb-cli (and transitively catdb-embed): compiles the
 # fastembed/ORT provider. Default-on so the shipped `catdb` binary embeds
 # locally; `--no-default-features` builds stay genuinely ORT-free.
-default = ["local-embed"]
+default = ["local-embed", "external-connectors"]
 local-embed = ["catdb-cli/local-embed"]
+external-connectors = ["catdb-cli/external-connectors"]
 # Integration latch: Task 13B deliberately leaves this unavailable until the
 # reviewed Task 3 catalog-revision authority is merged and can verify the
 # deployment pin against the opened workspace.
