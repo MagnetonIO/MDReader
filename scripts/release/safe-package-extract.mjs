@@ -28,9 +28,10 @@ import {
 import { TextDecoder } from 'node:util';
 
 const TAR_BLOCK_BYTES = 512;
-const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_ENTRIES = 4096;
-const MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_EXTRACTED_BYTES = 256 * 1024 * 1024;
+const TOOL_TIMEOUT_MS = 120_000;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const WINDOWS_RESERVED =
   /^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])(?:\.|$)/i;
@@ -49,7 +50,6 @@ function checkedArchive(path) {
   ) {
     fail(`archive is not a regular file within the ${MAX_ARCHIVE_BYTES}-byte limit`);
   }
-  return readFileSync(path);
 }
 
 function decode(bytes, label) {
@@ -312,7 +312,7 @@ function parseTar(input) {
       ...canonical,
       kind: type === '5' ? 'directory' : 'file',
       mode,
-      body: type === '5' ? Buffer.alloc(0) : Buffer.from(body),
+      body: type === '5' ? Buffer.alloc(0) : body,
     });
     checkedCount(entries, totalBytes);
     pax = null;
@@ -397,7 +397,7 @@ function parseCpio(archive) {
       ...canonical,
       kind: fileType === 0o040000 ? 'directory' : 'file',
       mode: mode & 0o777,
-      body: fileType === 0o040000 ? Buffer.alloc(0) : Buffer.from(body),
+      body: fileType === 0o040000 ? Buffer.alloc(0) : body,
     });
     totalBytes += fileType === 0o100000 ? size : 0;
     checkedCount(entries, totalBytes);
@@ -412,7 +412,12 @@ function sevenZipRecords(archivePath) {
   const output = execFileSync(
     '7z',
     ['l', '-slt', '-ba', '--', archivePath],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: TOOL_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    },
   );
   const records = [];
   let record = {};
@@ -433,8 +438,9 @@ function sevenZipRecords(archivePath) {
   let totalBytes = 0;
   for (const record of records) {
     if (
-      record['Symbolic Link'] !== undefined ||
-      record['Hard Link'] !== undefined
+      (record['Symbolic Link'] ?? '') !== '' ||
+      (record['Hard Link'] ?? '') !== '' ||
+      /^[Ll]/.test(String(record.Attributes ?? '').trim())
     ) {
       fail('7z archive contains a link member');
     }
@@ -458,7 +464,6 @@ function sevenZipRecords(archivePath) {
       kind: directory ? 'directory' : 'file',
       mode: directory ? 0o755 : 0o644,
       size,
-      archivePath: record.Path,
     });
     totalBytes += directory ? 0 : size;
     checkedCount(entries, totalBytes);
@@ -555,43 +560,95 @@ function scanRoot(rootInput) {
     }
   };
   walk(root);
+  return { entries, bytes };
+}
+
+function extractSevenZip(archivePath, outputRoot) {
+  const entries = sevenZipRecords(archivePath);
+  if (existsSync(outputRoot)) {
+    fail(`output root already exists: ${outputRoot}`);
+  }
+  const parent = dirname(outputRoot);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const staging = mkdtempSync(join(parent, `.${basename(outputRoot)}.extracting-`));
+  chmodSync(staging, 0o700);
+  try {
+    execFileSync(
+      '7z',
+      ['x', '-y', `-o${staging}`, '--', archivePath],
+      {
+        cwd: staging,
+        stdio: ['ignore', 'ignore', 'pipe'],
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: TOOL_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
+    );
+    scanRoot(staging);
+    const expectedFiles = entries
+      .filter((entry) => entry.kind === 'file')
+      .sort((left, right) => left.path.localeCompare(right.path));
+    const actualFiles = [];
+    const collect = (directory) => {
+      for (const name of readdirSync(directory).sort()) {
+        const path = join(directory, name);
+        const metadata = lstatSync(path);
+        if (metadata.isDirectory()) collect(path);
+        else if (metadata.isFile()) {
+          actualFiles.push({
+            path: relative(staging, path).split(sep).join('/'),
+            size: metadata.size,
+          });
+        }
+      }
+    };
+    collect(staging);
+    actualFiles.sort((left, right) => left.path.localeCompare(right.path));
+    if (
+      actualFiles.length !== expectedFiles.length ||
+      expectedFiles.some(
+        (entry, index) =>
+          actualFiles[index]?.path !== entry.path ||
+          actualFiles[index]?.size !== entry.size,
+      )
+    ) {
+      fail('7z materialized inventory differs from its validated listing');
+    }
+    renameSync(staging, outputRoot);
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function extract(mode, archivePath, outputRoot) {
-  const archive = checkedArchive(archivePath);
+  checkedArchive(archivePath);
   if (mode === 'tar') {
+    const archive = readFileSync(archivePath);
     const entries = parseTar(archive);
     materialize(entries, outputRoot, (entry) => entry.body);
   } else if (mode === 'deb') {
     const tarBody = execFileSync('dpkg-deb', ['--fsys-tarfile', archivePath], {
-      maxBuffer: MAX_ARCHIVE_BYTES,
+      maxBuffer: MAX_EXTRACTED_BYTES,
+      timeout: TOOL_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     });
     const entries = parseTar(tarBody);
     materialize(entries, outputRoot, (entry) => entry.body);
   } else if (mode === 'rpm') {
     const cpio = execFileSync('rpm2cpio', [archivePath], {
-      maxBuffer: MAX_ARCHIVE_BYTES,
+      maxBuffer: MAX_EXTRACTED_BYTES,
+      timeout: TOOL_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     });
     const entries = parseCpio(cpio);
     materialize(entries, outputRoot, (entry) => entry.body);
   } else if (mode === 'cpio') {
+    const archive = readFileSync(archivePath);
     const entries = parseCpio(archive);
     materialize(entries, outputRoot, (entry) => entry.body);
   } else if (mode === '7z') {
-    const entries = sevenZipRecords(archivePath);
-    materialize(entries, outputRoot, (entry) => {
-      const body = execFileSync(
-        '7z',
-        ['x', '-so', '--', archivePath, entry.archivePath],
-        {
-          maxBuffer: Math.min(MAX_EXTRACTED_BYTES, entry.size + 1024),
-        },
-      );
-      if (body.byteLength !== entry.size) {
-        fail(`7z member ${entry.path} changed size while reading`);
-      }
-      return body;
-    });
+    extractSevenZip(archivePath, outputRoot);
   } else {
     fail(`unsupported extraction mode ${mode}`);
   }

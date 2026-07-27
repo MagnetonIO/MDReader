@@ -30,6 +30,17 @@ export interface PackageBinary {
   binary: Uint8Array;
   artifact: Uint8Array;
   signatureAuthenticated: boolean;
+  signatureIdentity: string | null;
+  entrypoint: PackageEntrypoint;
+}
+
+export interface PackageEntrypoint {
+  contract:
+    | 'macos-bundle-executable'
+    | 'windows-nsis-install-target'
+    | 'linux-apprun-target'
+    | 'linux-package-install-target';
+  path: string;
 }
 
 export interface PackageBinaryEvidence {
@@ -42,6 +53,7 @@ export interface PackageBinaryEvidence {
   reviewedPayloadSha256: string;
   product: 'MDReader';
   identifier: 'dev.mdreader.app';
+  publisherIdentity: string | null;
   packageKinds: string[];
   packages: Array<{
     kind: string;
@@ -49,6 +61,9 @@ export interface PackageBinaryEvidence {
     binarySha256: string;
     payloadSha256: string;
     transformation: 'exact' | 'authenticode' | 'code-signature';
+    publisherIdentity: string | null;
+    entrypointContract: PackageEntrypoint['contract'];
+    entrypointPath: string;
     format: 'ELF' | 'PE' | 'Mach-O';
     architectures: Array<'arm64' | 'x86_64'>;
   }>;
@@ -59,6 +74,7 @@ export interface PackageBinarySetExpectation
   unsignedHandoffSha256: string;
   reviewedBinarySha256: string;
   reviewedBinary: Uint8Array;
+  expectedPublisherIdentity: string | null;
 }
 
 export interface FinalPackageArtifact {
@@ -199,11 +215,26 @@ function architecture(cpuType: number): 'arm64' | 'x86_64' | null {
   return null;
 }
 
+function expectedMachSubtype(cpuType: number): number {
+  if (cpuType === CPU_ARM64) return 0;
+  if (cpuType === CPU_X86_64) return 3;
+  throw new Error('universal Mach-O has an unsupported CPU type');
+}
+
+function alignMachOffset(offset: number, exponent: number): number {
+  if (!Number.isInteger(exponent) || exponent < 0 || exponent > 30) {
+    throw new Error('universal Mach-O slice alignment is invalid');
+  }
+  const alignment = 2 ** exponent;
+  return Math.ceil(offset / alignment) * alignment;
+}
+
 function inspectMachSlice(
   body: Buffer,
   offset: number,
   size: number,
   expectedCpu: number,
+  expectedSubtype: number,
   sourceCommit: string,
 ): void {
   if (
@@ -212,6 +243,7 @@ function inspectMachSlice(
     offset > body.byteLength - size ||
     body.readUInt32LE(offset) !== 0xfeedfacf ||
     body.readUInt32LE(offset + 4) !== expectedCpu ||
+    body.readUInt32LE(offset + 8) !== expectedSubtype ||
     body.readUInt32LE(offset + 12) !== 2
   ) {
     throw new Error('universal Mach-O contains an invalid executable slice');
@@ -241,24 +273,33 @@ function inspectMachO(
   }
   const architectures = new Set<'arm64' | 'x86_64'>();
   const ranges: Array<{ offset: number; end: number }> = [];
+  let precedingEnd = 8 + count * 20;
   for (let index = 0; index < count; index += 1) {
     const entry = 8 + index * 20;
     const cpuType = body.readUInt32BE(entry);
     const parsed = architecture(cpuType);
+    const cpuSubtype = body.readUInt32BE(entry + 4);
     const offset = body.readUInt32BE(entry + 8);
     const size = body.readUInt32BE(entry + 12);
+    const alignment = body.readUInt32BE(entry + 16);
+    const expectedOffset = alignMachOffset(precedingEnd, alignment);
     if (
       parsed === null ||
       architectures.has(parsed) ||
-      offset < 8 + count * 20 ||
+      cpuSubtype !== expectedMachSubtype(cpuType) ||
+      offset !== expectedOffset ||
       size < 40 ||
-      offset > body.byteLength - size
+      offset > body.byteLength - size ||
+      !body.subarray(precedingEnd, offset).every((byte) => byte === 0)
     ) {
-      throw new Error('universal Mach-O has an unsupported or duplicate slice');
+      throw new Error(
+        'universal Mach-O has an unsupported, misaligned, or duplicate slice',
+      );
     }
-    inspectMachSlice(body, offset, size, cpuType, sourceCommit);
+    inspectMachSlice(body, offset, size, cpuType, cpuSubtype, sourceCommit);
     architectures.add(parsed);
     ranges.push({ offset, end: offset + size });
+    precedingEnd = offset + size;
   }
   ranges.sort((left, right) => left.offset - right.offset);
   if (
@@ -384,7 +425,7 @@ function machSlicePayload(
   body: Buffer,
   sliceOffset: number,
   sliceBytes: number,
-): { sha256: string; hasCodeSignature: boolean } {
+): { sha256: string; hasCodeSignature: boolean; payloadBytes: number } {
   const commandCount = body.readUInt32LE(sliceOffset + 16);
   const commandBytes = body.readUInt32LE(sliceOffset + 20);
   let commandOffset = sliceOffset + 32;
@@ -459,7 +500,11 @@ function machSlicePayload(
       normalized.fill(0, command + 48, command + 56);
     }
   }
-  return { sha256: sha256(normalized), hasCodeSignature };
+  return {
+    sha256: sha256(normalized),
+    hasCodeSignature,
+    payloadBytes: normalized.byteLength,
+  };
 }
 
 function machPayload(body: Buffer): {
@@ -469,19 +514,26 @@ function machPayload(body: Buffer): {
   const count = body.readUInt32BE(4);
   const slices: Array<{
     architecture: 'arm64' | 'x86_64';
+    cpuSubtype: number;
+    alignment: number;
     sha256: string;
     hasCodeSignature: boolean;
+    payloadBytes: number;
     end: number;
   }> = [];
   for (let index = 0; index < count; index += 1) {
     const entry = 8 + index * 20;
     const parsed = architecture(body.readUInt32BE(entry));
     if (parsed === null) throw new Error('Mach-O payload architecture is invalid');
+    const cpuSubtype = body.readUInt32BE(entry + 4);
     const offset = body.readUInt32BE(entry + 8);
     const size = body.readUInt32BE(entry + 12);
+    const alignment = body.readUInt32BE(entry + 16);
     const payload = machSlicePayload(body, offset, size);
     slices.push({
       architecture: parsed,
+      cpuSubtype,
+      alignment,
       ...payload,
       end: offset + size,
     });
@@ -490,12 +542,13 @@ function machPayload(body: Buffer): {
   if (finalEnd !== body.byteLength) {
     throw new Error('universal Mach-O contains unreviewed trailing bytes');
   }
-  slices.sort((left, right) =>
-    left.architecture.localeCompare(right.architecture),
-  );
   return {
     sha256: hashParts(
-      slices.flatMap((slice) => [slice.architecture, '\0', slice.sha256, '\0']),
+      slices.flatMap((slice, index) => [
+        `slice=${index}\0architecture=${slice.architecture}\0subtype=${slice.cpuSubtype}\0alignment=${slice.alignment}\0payloadBytes=${slice.payloadBytes}\0`,
+        slice.sha256,
+        '\0',
+      ]),
     ),
     hasCodeSignature: slices.every((slice) => slice.hasCodeSignature),
   };
@@ -529,6 +582,34 @@ const PACKAGE_KINDS: Record<ReleasePlatform, string[]> = {
   linux: ['appimage', 'deb', 'rpm', 'updater'],
 };
 
+function expectedEntrypoint(
+  platform: ReleasePlatform,
+  kind: string,
+): PackageEntrypoint {
+  if (platform === 'macos') {
+    return {
+      contract: 'macos-bundle-executable',
+      path: 'MDReader.app/Contents/MacOS/mdreader-app',
+    };
+  }
+  if (platform === 'windows') {
+    return {
+      contract: 'windows-nsis-install-target',
+      path: 'mdreader-app.exe',
+    };
+  }
+  if (kind === 'appimage' || kind === 'updater') {
+    return {
+      contract: 'linux-apprun-target',
+      path: 'usr/bin/mdreader-app',
+    };
+  }
+  return {
+    contract: 'linux-package-install-target',
+    path: 'usr/bin/mdreader-app',
+  };
+}
+
 export function verifyPackageBinarySet(
   platform: ReleasePlatform,
   packages: PackageBinary[],
@@ -549,6 +630,15 @@ export function verifyPackageBinarySet(
     throw new Error('reviewed handoff executable digest does not match its exact bytes');
   }
   const reviewedPayload = payloadIdentity(platform, expected.reviewedBinary);
+  if (
+    (platform === 'macos' &&
+      !/^[A-Z0-9]{10}$/.test(expected.expectedPublisherIdentity ?? '')) ||
+    (platform === 'windows' &&
+      !/^[0-9A-F]{40}$/.test(expected.expectedPublisherIdentity ?? '')) ||
+    (platform === 'linux' && expected.expectedPublisherIdentity !== null)
+  ) {
+    throw new Error(`${platform} expected publisher identity is invalid`);
+  }
   const wanted = PACKAGE_KINDS[platform];
   const actual = packages.map((entry) => entry.kind);
   if (
@@ -561,8 +651,24 @@ export function verifyPackageBinarySet(
   }
   const inspected = packages.map((entry) => {
     try {
+      const entrypoint = expectedEntrypoint(platform, entry.kind);
+      if (
+        entry.entrypoint?.contract !== entrypoint.contract ||
+        entry.entrypoint.path !== entrypoint.path
+      ) {
+        throw new Error(
+          `package entrypoint is not bound by ${entrypoint.contract} to ${entrypoint.path}`,
+        );
+      }
       if (platform !== 'linux' && entry.signatureAuthenticated !== true) {
         throw new Error('platform signature was not independently authenticated');
+      }
+      if (entry.signatureIdentity !== expected.expectedPublisherIdentity) {
+        throw new Error(
+          `${platform} package publisher identity does not match the independently reviewed ${
+            platform === 'macos' ? 'team identifier' : 'certificate thumbprint'
+          }`,
+        );
       }
       const inspection = inspectReviewedBinary(entry.binary, {
         platform,
@@ -594,6 +700,9 @@ export function verifyPackageBinarySet(
         artifactSha256: sha256(entry.artifact),
         payloadSha256: payload.sha256,
         transformation,
+        publisherIdentity: entry.signatureIdentity,
+        entrypointContract: entrypoint.contract,
+        entrypointPath: entrypoint.path,
       };
     } catch (error) {
       throw new Error(
@@ -613,6 +722,7 @@ export function verifyPackageBinarySet(
     reviewedPayloadSha256: reviewedPayload.sha256,
     product: EXPECTED_PRODUCT,
     identifier: EXPECTED_IDENTIFIER,
+    publisherIdentity: expected.expectedPublisherIdentity,
     packageKinds: actual,
     packages: inspected.map((entry) => ({
       kind: entry.kind,
@@ -620,6 +730,9 @@ export function verifyPackageBinarySet(
       binarySha256: entry.sha256,
       payloadSha256: entry.payloadSha256,
       transformation: entry.transformation,
+      publisherIdentity: entry.publisherIdentity,
+      entrypointContract: entry.entrypointContract,
+      entrypointPath: entry.entrypointPath,
       format: entry.format,
       architectures: entry.architectures,
     })),
@@ -629,7 +742,9 @@ export function verifyPackageBinarySet(
 export function verifyFinalPackageEvidence(
   evidence: PackageBinaryEvidence,
   artifacts: FinalPackageArtifact[],
-  expected: PackageBinarySetExpectation & { platform: ReleasePlatform },
+  expected: Omit<PackageBinarySetExpectation, 'expectedPublisherIdentity'> & {
+    platform: ReleasePlatform;
+  },
 ): void {
   const wanted = PACKAGE_KINDS[expected.platform];
   const actualKinds = artifacts.map((entry) => entry.kind);
@@ -658,6 +773,11 @@ export function verifyFinalPackageEvidence(
     evidence.target !== expected.target ||
     evidence.product !== EXPECTED_PRODUCT ||
     evidence.identifier !== EXPECTED_IDENTIFIER ||
+    (expected.platform === 'macos' &&
+      !/^[A-Z0-9]{10}$/.test(evidence.publisherIdentity ?? '')) ||
+    (expected.platform === 'windows' &&
+      !/^[0-9A-F]{40}$/.test(evidence.publisherIdentity ?? '')) ||
+    (expected.platform === 'linux' && evidence.publisherIdentity !== null) ||
     evidence.reviewedBinarySha256 !== expected.reviewedBinarySha256 ||
     evidence.reviewedBinarySha256 !== reviewed.sha256 ||
     evidence.reviewedPayloadSha256 !== reviewedPayload.sha256 ||
@@ -682,6 +802,11 @@ export function verifyFinalPackageEvidence(
     if (
       !SHA256.test(recorded.binarySha256) ||
       recorded.payloadSha256 !== reviewedPayload.sha256 ||
+      recorded.entrypointContract !==
+        expectedEntrypoint(expected.platform, kind).contract ||
+      recorded.entrypointPath !==
+        expectedEntrypoint(expected.platform, kind).path ||
+      recorded.publisherIdentity !== evidence.publisherIdentity ||
       !['exact', 'authenticode', 'code-signature'].includes(
         recorded.transformation,
       )

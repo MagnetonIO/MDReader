@@ -11,6 +11,7 @@ import {
   resolve,
   sep,
 } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   verifyPackageBinarySet,
@@ -52,28 +53,125 @@ async function files(root: string, directory = root): Promise<string[]> {
   return result;
 }
 
-async function reviewedBinary(
+export async function resolveReviewedPackageBinary(
   root: string,
   platform: ReleasePlatform,
-): Promise<{ body: Uint8Array; path: string }> {
-  const expectedName = platform === 'windows' ? 'mdreader-app.exe' : 'mdreader-app';
-  const matches = (await files(root)).filter(
-    (path) => basename(path) === expectedName,
-  );
-  if (matches.length !== 1) {
+  kind: string,
+): Promise<{
+  body: Uint8Array;
+  path: string;
+  entrypoint: PackageBinary['entrypoint'];
+}> {
+  const inventory = await files(root);
+  if (platform === 'macos') {
+    const app = join(root, 'MDReader.app');
+    const binaryPath = join(app, 'Contents', 'MacOS', 'mdreader-app');
+    const plist = join(app, 'Contents', 'Info.plist');
+    const matches = inventory.filter(
+      (path) => basename(path) === 'mdreader-app',
+    );
+    if (matches.length !== 1 || matches[0] !== binaryPath) {
+      throw new Error(
+        'package does not bind its sole reviewed executable to MDReader.app/Contents/MacOS/mdreader-app',
+      );
+    }
+    const plistValue = (key: string) =>
+      execFileSync(
+        'plutil',
+        ['-extract', key, 'raw', '-o', '-', '--', plist],
+        { encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024 },
+      ).trim();
+    if (
+      plistValue('CFBundleIdentifier') !== 'dev.mdreader.app' ||
+      plistValue('CFBundleExecutable') !== 'mdreader-app'
+    ) {
+      throw new Error('macOS bundle metadata does not name the reviewed MDReader entrypoint');
+    }
+    return {
+      body: await readFile(binaryPath),
+      path: binaryPath,
+      entrypoint: {
+        contract: 'macos-bundle-executable',
+        path: 'MDReader.app/Contents/MacOS/mdreader-app',
+      },
+    };
+  }
+  if (platform === 'windows') {
+    const expectedName = 'mdreader-app.exe';
+    const matches = inventory.filter((path) => basename(path) === expectedName);
+    const allowed = new Set([
+      join(root, expectedName),
+      join(root, 'app-64bit', expectedName),
+      join(root, '$PLUGINSDIR', 'app-64bit', expectedName),
+    ]);
+    if (matches.length !== 1 || !allowed.has(matches[0]!)) {
+      throw new Error(
+        `package contains ${matches.length} reviewed executables but does not bind one exact NSIS install payload to ${expectedName}`,
+      );
+    }
+    return {
+      body: await readFile(matches[0]!),
+      path: matches[0]!,
+      entrypoint: {
+        contract: 'windows-nsis-install-target',
+        path: expectedName,
+      },
+    };
+  }
+  const binaryPath = join(root, 'usr', 'bin', 'mdreader-app');
+  const matches = inventory.filter((path) => basename(path) === 'mdreader-app');
+  if (matches.length !== 1 || matches[0] !== binaryPath) {
     throw new Error(
-      `package extraction ${root} contains ${matches.length} ${expectedName} executables; expected exactly one`,
+      'package does not bind its sole reviewed executable to usr/bin/mdreader-app',
     );
   }
-  const body = await readFile(matches[0]!);
-  return { body, path: matches[0]! };
+  if (kind === 'appimage' || kind === 'updater') {
+    const appRun = join(root, 'AppRun');
+    const desktop = inventory.filter((path) => path.endsWith('.desktop'));
+    const appRunMetadata = await lstat(appRun);
+    if (!appRunMetadata.isFile() || (appRunMetadata.mode & 0o111) === 0) {
+      throw new Error('AppImage AppRun is not a regular executable launcher');
+    }
+    if (desktop.length !== 1) {
+      throw new Error('AppImage must carry one desktop entry bound to AppRun');
+    }
+    const desktopBody = await readFile(desktop[0]!, 'utf8');
+    const desktopCommand = /^Exec=([^\r\n]+)$/m
+      .exec(desktopBody)?.[1]
+      ?.trim()
+      .split(/\s+/, 1)[0]
+      ?.replace(/^"(.*)"$/, '$1');
+    if (
+      desktopCommand !== 'mdreader-app' &&
+      desktopCommand !== 'usr/bin/mdreader-app' &&
+      desktopCommand !== '/usr/bin/mdreader-app'
+    ) {
+      throw new Error('AppImage desktop entry does not dispatch to usr/bin/mdreader-app');
+    }
+    return {
+      body: await readFile(binaryPath),
+      path: binaryPath,
+      entrypoint: {
+        contract: 'linux-apprun-target',
+        path: 'usr/bin/mdreader-app',
+      },
+    };
+  }
+  return {
+    body: await readFile(binaryPath),
+    path: binaryPath,
+    entrypoint: {
+      contract: 'linux-package-install-target',
+      path: 'usr/bin/mdreader-app',
+    },
+  };
 }
 
 function authenticatePlatformSignature(
   platform: ReleasePlatform,
   path: string,
-): boolean {
-  if (platform === 'linux') return true;
+): { authenticated: boolean; identity: string | null } {
+  if (platform === 'linux') return { authenticated: true, identity: null };
   if (platform === 'macos') {
     let appPath = dirname(path);
     while (!basename(appPath).endsWith('.app')) {
@@ -110,20 +208,27 @@ function authenticatePlatformSignature(
       ['--assess', '--type', 'execute', '--verbose=2', appPath],
       { stdio: 'pipe' },
     );
-    return true;
+    const team = /^TeamIdentifier=([A-Z0-9]{10})$/m.exec(details)?.[1];
+    if (!team) {
+      throw new Error('final package macOS signature has no exact TeamIdentifier');
+    }
+    return { authenticated: true, identity: team };
   }
-  execFileSync(
+  const thumbprint = execFileSync(
     'pwsh',
     [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      "& { param([string]$BinaryPath) $signature = Get-AuthenticodeSignature -LiteralPath $BinaryPath; if ($signature.Status -ne 'Valid') { throw \"invalid final package Authenticode status: $($signature.Status)\" } }",
+      "& { param([string]$BinaryPath) $signature = Get-AuthenticodeSignature -LiteralPath $BinaryPath; if ($signature.Status -ne 'Valid') { throw \"invalid final package Authenticode status: $($signature.Status)\" }; if ($null -eq $signature.SignerCertificate) { throw 'final package has no Authenticode signer certificate' }; $signature.SignerCertificate.Thumbprint.ToUpperInvariant() }",
       path,
     ],
-    { stdio: 'pipe' },
-  );
-  return true;
+    { encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 },
+  ).trim();
+  if (!/^[0-9A-F]{40}$/.test(thumbprint)) {
+    throw new Error('final package Authenticode signer thumbprint is invalid');
+  }
+  return { authenticated: true, identity: thumbprint };
 }
 
 function keyedArgs(args: string[], optionName: string): Map<string, string> {
@@ -188,6 +293,10 @@ async function main(): Promise<void> {
   }
   const reviewedBinaryBytes = await readFile(reviewedBinaryPath);
   const output = resolve(option(args, '--output'));
+  const expectedPublisherIdentity =
+    platform === 'linux'
+      ? null
+      : option(args, '--expected-publisher-identity').toUpperCase();
   const packageRoots = keyedArgs(args, '--package');
   const artifactPaths = keyedArgs(args, '--artifact');
   if (
@@ -198,15 +307,15 @@ async function main(): Promise<void> {
   }
   const packages: PackageBinary[] = [];
   for (const [kind, root] of packageRoots) {
-    const binary = await reviewedBinary(root, platform);
+    const binary = await resolveReviewedPackageBinary(root, platform, kind);
+    const signature = authenticatePlatformSignature(platform, binary.path);
     packages.push({
       kind,
       binary: binary.body,
       artifact: await readFile(artifactPaths.get(kind)!),
-      signatureAuthenticated: authenticatePlatformSignature(
-        platform,
-        binary.path,
-      ),
+      signatureAuthenticated: signature.authenticated,
+      signatureIdentity: signature.identity,
+      entrypoint: binary.entrypoint,
     });
   }
   const evidence = verifyPackageBinarySet(platform, packages, {
@@ -215,6 +324,7 @@ async function main(): Promise<void> {
     unsignedHandoffSha256,
     reviewedBinarySha256,
     reviewedBinary: reviewedBinaryBytes,
+    expectedPublisherIdentity,
   });
   await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,
@@ -224,11 +334,16 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(
-    `final package binary verification refused: ${
-      error instanceof Error ? error.message : String(error)
-    }\n`,
-  );
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  main().catch((error: unknown) => {
+    process.stderr.write(
+      `final package binary verification refused: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`,
+    );
+    process.exitCode = 1;
+  });
+}

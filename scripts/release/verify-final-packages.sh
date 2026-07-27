@@ -55,6 +55,22 @@ verify_extractions() {
     --credentialed-manifest "$CREDENTIALED_MANIFEST"
     --output "$EVIDENCE_PATH"
   )
+  if [[ "$PLATFORM" == 'macos' ]]; then
+    [[ "${EXPECTED_APPLE_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] || {
+      echo "reviewed Apple team identifier is missing or invalid" >&2
+      exit 1
+    }
+    args+=(--expected-publisher-identity "$EXPECTED_APPLE_TEAM_ID")
+  elif [[ "$PLATFORM" == 'windows' ]]; then
+    [[ "${EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT:-}" =~ ^[0-9A-F]{40}$ ]] || {
+      echo "reviewed Windows certificate thumbprint is missing or invalid" >&2
+      exit 1
+    }
+    args+=(
+      --expected-publisher-identity
+      "$EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT"
+    )
+  fi
   local package
   for package in "$@"; do
     args+=(--package "$package")
@@ -121,6 +137,18 @@ elif [[ "$PLATFORM" == 'linux' ]]; then
   DEB="$(snapshot_file "$DEB_SOURCE" 'release.deb')"
   RPM="$(snapshot_file "$RPM_SOURCE" 'release.rpm')"
   UPDATER="$(snapshot_file "$UPDATER_SOURCE" 'updater.AppImage.tar.gz')"
+  DEB_PACKAGE="$(timeout --signal=KILL 15s dpkg-deb --field "$DEB" Package)"
+  DEB_ARCH="$(timeout --signal=KILL 15s dpkg-deb --field "$DEB" Architecture)"
+  RPM_PACKAGE="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{NAME}' "$RPM")"
+  RPM_ARCH="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{ARCH}' "$RPM")"
+  [[ "$DEB_PACKAGE" == 'mdreader' && "$DEB_ARCH" == 'amd64' ]] || {
+    echo "DEB metadata does not identify the reviewed mdreader/amd64 install target" >&2
+    exit 1
+  }
+  [[ "$RPM_PACKAGE" == 'mdreader' && "$RPM_ARCH" == 'x86_64' ]] || {
+    echo "RPM metadata does not identify the reviewed mdreader/x86_64 install target" >&2
+    exit 1
+  }
   mkdir -p \
     "$EXTRACT_ROOT/appimage" \
     "$EXTRACT_ROOT/deb" \

@@ -83,7 +83,7 @@ jobs:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
           EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
-          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8'
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -523,7 +523,7 @@ jobs:
           SUPPORT_DOWNLOAD_ROOT: ${{ runner.temp }}/mdreader-support-download
           EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
           EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
-          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8'
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -737,7 +737,7 @@ jobs:
           EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
           EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
-          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8'
           EXPECTED_RUNTIME_MANIFEST_SHA256: ${{ steps.establish-tauri-runtime.outputs.runtime_manifest_sha256 }}
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
@@ -1254,7 +1254,12 @@ jobs:
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
         run: |
+          [[ "$EXPECTED_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || {
+            echo "reviewed Apple team identifier is missing or invalid" >&2
+            exit 1
+          }
           for name in \
             TAURI_SIGNING_PRIVATE_KEY \
             TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
@@ -1269,6 +1274,10 @@ jobs:
               exit 1
             }
           done
+          [[ "$APPLE_TEAM_ID" == "$EXPECTED_APPLE_TEAM_ID" ]] || {
+            echo "Apple credential team does not match the reviewed publisher identity" >&2
+            exit 1
+          }
       - name: Require Windows release credentials with shell builtins
         id: require-release-secrets-windows
         if: matrix.platform == 'windows'
@@ -1310,6 +1319,7 @@ jobs:
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
+          EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $flags = [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
@@ -1320,7 +1330,14 @@ jobs:
           )
           try {
             if (-not $certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
-            "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+            $thumbprint = $certificate.Thumbprint.ToUpperInvariant()
+            if ($env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT -notmatch '^[0-9A-F]{40}$') {
+              throw "reviewed Windows certificate thumbprint is missing or invalid"
+            }
+            if ($certificate.Thumbprint.ToUpperInvariant() -ne $env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT) {
+              throw "Windows credential does not match the reviewed publisher identity"
+            }
+            "thumbprint=$thumbprint" >> $env:GITHUB_OUTPUT
           } finally {
             $certificate.Dispose()
           }
@@ -2004,13 +2021,18 @@ jobs:
         id: windows-verify-signature
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "$env:RUNNER_TEMP/mdreader-credentialed-output/bundle"
+        env:
+          EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "$env:RUNNER_TEMP/mdreader-credentialed-output/bundle" -ExpectedThumbprint "$env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT"
       - name: Verify Linux package matrix
         id: linux-verify-packages
         if: matrix.platform == 'linux'
         run: scripts/release/verify-linux-packages.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
       - name: Verify every final package contains the reviewed MDReader executable
         id: verify-final-package-binaries
+        env:
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+          EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: scripts/release/verify-final-packages.sh "${{ matrix.platform }}" "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "$RUNNER_TEMP/mdreader-final-package-binaries.json"
       - name: Install pinned Syft SBOM scanner
         id: install-syft

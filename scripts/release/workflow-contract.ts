@@ -15,7 +15,7 @@ const WINDOWS_SIGNER_SHA256 =
 const WINDOWS_NSIS_HOOK_SHA256 =
   '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64';
 const SAFE_PACKAGE_EXTRACTOR_SHA256 =
-  'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7';
+  'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8';
 
 const STEP_IDS: Record<string, string[]> = {
   prepare: [
@@ -357,6 +357,7 @@ const BUNDLE_SECRET_ENVS: Record<string, Mapping> = {
     APPLE_ID: '${{ secrets.MDREADER_APPLE_ID }}',
     APPLE_PASSWORD: '${{ secrets.MDREADER_APPLE_PASSWORD }}',
     APPLE_TEAM_ID: '${{ secrets.MDREADER_APPLE_TEAM_ID }}',
+    EXPECTED_APPLE_TEAM_ID: '${{ vars.MDREADER_APPLE_TEAM_ID }}',
   },
   'require-release-secrets-windows': {
     TAURI_SIGNING_PRIVATE_KEY:
@@ -377,6 +378,8 @@ const BUNDLE_SECRET_ENVS: Record<string, Mapping> = {
     WINDOWS_CERTIFICATE: '${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}',
     WINDOWS_CERTIFICATE_PASSWORD:
       '${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}',
+    EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT:
+      '${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}',
   },
   'generate-bundle-config-macos': {
     APPLE_SIGNING_IDENTITY:
@@ -825,6 +828,26 @@ function validateBundle(
       throw new Error(`${id} accesses a secret outside its reviewed environment`);
     }
   }
+  requireRun(
+    steps,
+    'require-release-secrets-macos',
+    [
+      'EXPECTED_APPLE_TEAM_ID',
+      'APPLE_TEAM_ID" == "$EXPECTED_APPLE_TEAM_ID',
+      'reviewed publisher identity',
+    ],
+    'macOS credential is not pinned to the independently reviewed team identifier',
+  );
+  requireRun(
+    steps,
+    'inspect-windows-cert',
+    [
+      'EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT',
+      '$certificate.Thumbprint.ToUpperInvariant() -ne $env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT',
+      'reviewed publisher identity',
+    ],
+    'Windows credential is not pinned to the independently reviewed certificate thumbprint',
+  );
   if (
     entries.some(
       (step) =>
@@ -1029,6 +1052,15 @@ function validateVerify(
     ],
     'credentialed output is not verified before platform acceptance',
   );
+  same(
+    steps.get('verify-final-package-binaries')!.env,
+    {
+      EXPECTED_APPLE_TEAM_ID: '${{ vars.MDREADER_APPLE_TEAM_ID }}',
+      EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT:
+        '${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}',
+    },
+    'final package verification lacks independently reviewed publisher identities',
+  );
   requireRun(
     steps,
     'macos-verify-signature',
@@ -1044,8 +1076,21 @@ function validateVerify(
   requireRun(
     steps,
     'windows-verify-signature',
-    ['verify-windows-signature.ps1', 'mdreader-credentialed-output/bundle'],
+    [
+      'verify-windows-signature.ps1',
+      'mdreader-credentialed-output/bundle',
+      'ExpectedThumbprint',
+      'EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT',
+    ],
     'Windows signing verification is incomplete',
+  );
+  same(
+    steps.get('windows-verify-signature')!.env,
+    {
+      EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT:
+        '${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}',
+    },
+    'NSIS installer verification lacks the independently reviewed signer identity',
   );
   requireRun(
     steps,
