@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { ReleasePlatform } from '../../apps/web/lib/release-manifest';
 
 const SOURCE_COMMIT = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const IDENTITY_PREFIX = Buffer.from('MDREADER_RELEASE_IDENTITY_V1\0', 'utf8');
 const EXPECTED_PRODUCT = 'MDReader';
 const EXPECTED_IDENTIFIER = 'dev.mdreader.app';
@@ -27,26 +28,52 @@ export interface ReviewedBinaryInspection {
 export interface PackageBinary {
   kind: string;
   binary: Uint8Array;
+  artifact: Uint8Array;
+  signatureAuthenticated: boolean;
 }
 
 export interface PackageBinaryEvidence {
-  schemaVersion: 1;
+  schemaVersion: 2;
   platform: ReleasePlatform;
   target: string;
   sourceCommit: string;
+  unsignedHandoffSha256: string;
+  reviewedBinarySha256: string;
+  reviewedPayloadSha256: string;
   product: 'MDReader';
   identifier: 'dev.mdreader.app';
   packageKinds: string[];
   packages: Array<{
     kind: string;
+    artifactSha256: string;
     binarySha256: string;
+    payloadSha256: string;
+    transformation: 'exact' | 'authenticode' | 'code-signature';
     format: 'ELF' | 'PE' | 'Mach-O';
     architectures: Array<'arm64' | 'x86_64'>;
   }>;
 }
 
+export interface PackageBinarySetExpectation
+  extends Omit<ReviewedBinaryExpectation, 'platform'> {
+  unsignedHandoffSha256: string;
+  reviewedBinarySha256: string;
+  reviewedBinary: Uint8Array;
+}
+
+export interface FinalPackageArtifact {
+  kind: string;
+  artifact: Uint8Array;
+}
+
 function sha256(body: Uint8Array): string {
   return createHash('sha256').update(body).digest('hex');
+}
+
+function hashParts(parts: Array<Uint8Array | string>): string {
+  const hash = createHash('sha256');
+  for (const part of parts) hash.update(part);
+  return hash.digest('hex');
 }
 
 function expectedIdentity(sourceCommit: string): Buffer {
@@ -287,6 +314,215 @@ export function inspectReviewedBinary(
   };
 }
 
+function pePayload(body: Buffer): {
+  sha256: string;
+  hasAuthenticode: boolean;
+} {
+  const header = body.readUInt32LE(0x3c);
+  const coff = header + 4;
+  const optional = coff + 20;
+  const optionalBytes = body.readUInt16LE(coff + 16);
+  const securityDirectory = optional + 112 + 4 * 8;
+  if (optionalBytes < 152 || securityDirectory + 8 > optional + optionalBytes) {
+    throw new Error('Windows PE has no complete Authenticode directory');
+  }
+  const certificateOffset = body.readUInt32LE(securityDirectory);
+  const certificateBytes = body.readUInt32LE(securityDirectory + 4);
+  if ((certificateOffset === 0) !== (certificateBytes === 0)) {
+    throw new Error('Windows Authenticode directory is incomplete');
+  }
+  let payloadEnd = body.byteLength;
+  let hasAuthenticode = false;
+  if (certificateOffset !== 0) {
+    if (
+      certificateOffset % 8 !== 0 ||
+      certificateBytes < 8 ||
+      certificateOffset > body.byteLength - certificateBytes ||
+      certificateOffset + certificateBytes !== body.byteLength
+    ) {
+      throw new Error('Windows Authenticode certificate table is not an exact trailing table');
+    }
+    let offset = certificateOffset;
+    const end = certificateOffset + certificateBytes;
+    while (offset < end) {
+      if (offset > end - 8) {
+        throw new Error('Windows Authenticode certificate table is truncated');
+      }
+      const length = body.readUInt32LE(offset);
+      if (
+        length < 8 ||
+        offset > end - length ||
+        body.readUInt16LE(offset + 4) !== 0x0200 ||
+        body.readUInt16LE(offset + 6) !== 0x0002
+      ) {
+        throw new Error('Windows Authenticode certificate entry is invalid');
+      }
+      const next = Math.ceil((offset + length) / 8) * 8;
+      if (
+        next > end ||
+        !body.subarray(offset + length, next).every((byte) => byte === 0)
+      ) {
+        throw new Error('Windows Authenticode certificate padding is invalid');
+      }
+      offset = next;
+    }
+    if (offset !== end) {
+      throw new Error('Windows Authenticode certificate table is not closed');
+    }
+    payloadEnd = certificateOffset;
+    hasAuthenticode = true;
+  }
+  const normalizedLength = Math.ceil(payloadEnd / 8) * 8;
+  const normalized = Buffer.alloc(normalizedLength);
+  body.copy(normalized, 0, 0, payloadEnd);
+  normalized.fill(0, optional + 64, optional + 68);
+  normalized.fill(0, securityDirectory, securityDirectory + 8);
+  return { sha256: sha256(normalized), hasAuthenticode };
+}
+
+function machSlicePayload(
+  body: Buffer,
+  sliceOffset: number,
+  sliceBytes: number,
+): { sha256: string; hasCodeSignature: boolean } {
+  const commandCount = body.readUInt32LE(sliceOffset + 16);
+  const commandBytes = body.readUInt32LE(sliceOffset + 20);
+  let commandOffset = sliceOffset + 32;
+  const commandEnd = commandOffset + commandBytes;
+  if (
+    commandCount < 1 ||
+    commandEnd > sliceOffset + sliceBytes
+  ) {
+    throw new Error('Mach-O payload has a malformed load-command table');
+  }
+  let signature:
+    | { commandOffset: number; dataOffset: number; dataBytes: number }
+    | undefined;
+  const linkeditCommands: number[] = [];
+  for (let index = 0; index < commandCount; index += 1) {
+    if (commandOffset > commandEnd - 8) {
+      throw new Error('Mach-O payload has a truncated load command');
+    }
+    const command = body.readUInt32LE(commandOffset);
+    const size = body.readUInt32LE(commandOffset + 4);
+    if (size < 8 || commandOffset > commandEnd - size) {
+      throw new Error('Mach-O payload has an invalid load command');
+    }
+    if (command === 0x1d) {
+      if (size < 16 || signature !== undefined) {
+        throw new Error('Mach-O payload has an invalid code-signature command');
+      }
+      signature = {
+        commandOffset,
+        dataOffset: body.readUInt32LE(commandOffset + 8),
+        dataBytes: body.readUInt32LE(commandOffset + 12),
+      };
+    } else if (
+      command === 0x19 &&
+      size >= 72 &&
+      body
+        .subarray(commandOffset + 8, commandOffset + 24)
+        .subarray(0, 10)
+        .equals(Buffer.from('__LINKEDIT'))
+    ) {
+      linkeditCommands.push(commandOffset);
+    }
+    commandOffset += size;
+  }
+  if (commandOffset !== commandEnd) {
+    throw new Error('Mach-O load-command count does not close its table');
+  }
+  let payloadEnd = sliceBytes;
+  let hasCodeSignature = false;
+  if (signature !== undefined) {
+    if (
+      signature.dataBytes < 12 ||
+      signature.dataOffset < commandEnd - sliceOffset ||
+      signature.dataOffset > sliceBytes - signature.dataBytes ||
+      signature.dataOffset + signature.dataBytes !== sliceBytes ||
+      body.readUInt32BE(sliceOffset + signature.dataOffset) !== 0xfade0cc0
+    ) {
+      throw new Error('Mach-O code-signature blob is not an exact trailing superblob');
+    }
+    payloadEnd = signature.dataOffset;
+    hasCodeSignature = true;
+  }
+  const normalized = Buffer.from(
+    body.subarray(sliceOffset, sliceOffset + payloadEnd),
+  );
+  if (signature !== undefined) {
+    const relativeCommand = signature.commandOffset - sliceOffset;
+    normalized.fill(0, relativeCommand + 8, relativeCommand + 16);
+    for (const absoluteCommand of linkeditCommands) {
+      const command = absoluteCommand - sliceOffset;
+      normalized.fill(0, command + 32, command + 40);
+      normalized.fill(0, command + 48, command + 56);
+    }
+  }
+  return { sha256: sha256(normalized), hasCodeSignature };
+}
+
+function machPayload(body: Buffer): {
+  sha256: string;
+  hasCodeSignature: boolean;
+} {
+  const count = body.readUInt32BE(4);
+  const slices: Array<{
+    architecture: 'arm64' | 'x86_64';
+    sha256: string;
+    hasCodeSignature: boolean;
+    end: number;
+  }> = [];
+  for (let index = 0; index < count; index += 1) {
+    const entry = 8 + index * 20;
+    const parsed = architecture(body.readUInt32BE(entry));
+    if (parsed === null) throw new Error('Mach-O payload architecture is invalid');
+    const offset = body.readUInt32BE(entry + 8);
+    const size = body.readUInt32BE(entry + 12);
+    const payload = machSlicePayload(body, offset, size);
+    slices.push({
+      architecture: parsed,
+      ...payload,
+      end: offset + size,
+    });
+  }
+  const finalEnd = Math.max(...slices.map((slice) => slice.end));
+  if (finalEnd !== body.byteLength) {
+    throw new Error('universal Mach-O contains unreviewed trailing bytes');
+  }
+  slices.sort((left, right) =>
+    left.architecture.localeCompare(right.architecture),
+  );
+  return {
+    sha256: hashParts(
+      slices.flatMap((slice) => [slice.architecture, '\0', slice.sha256, '\0']),
+    ),
+    hasCodeSignature: slices.every((slice) => slice.hasCodeSignature),
+  };
+}
+
+function payloadIdentity(
+  platform: ReleasePlatform,
+  body: Uint8Array,
+): { sha256: string; authenticatedTransformation: boolean } {
+  const bytes = Buffer.from(body);
+  if (platform === 'windows') {
+    const payload = pePayload(bytes);
+    return {
+      sha256: payload.sha256,
+      authenticatedTransformation: payload.hasAuthenticode,
+    };
+  }
+  if (platform === 'macos') {
+    const payload = machPayload(bytes);
+    return {
+      sha256: payload.sha256,
+      authenticatedTransformation: payload.hasCodeSignature,
+    };
+  }
+  return { sha256: sha256(bytes), authenticatedTransformation: false };
+}
+
 const PACKAGE_KINDS: Record<ReleasePlatform, string[]> = {
   macos: ['dmg', 'updater'],
   windows: ['nsis', 'updater'],
@@ -296,8 +532,23 @@ const PACKAGE_KINDS: Record<ReleasePlatform, string[]> = {
 export function verifyPackageBinarySet(
   platform: ReleasePlatform,
   packages: PackageBinary[],
-  expected: Omit<ReviewedBinaryExpectation, 'platform'>,
+  expected: PackageBinarySetExpectation,
 ): PackageBinaryEvidence {
+  if (!SHA256.test(expected.unsignedHandoffSha256)) {
+    throw new Error('unsigned handoff digest must be an exact SHA-256');
+  }
+  const reviewed = inspectReviewedBinary(expected.reviewedBinary, {
+    platform,
+    target: expected.target,
+    sourceCommit: expected.sourceCommit,
+  });
+  if (
+    !SHA256.test(expected.reviewedBinarySha256) ||
+    reviewed.sha256 !== expected.reviewedBinarySha256
+  ) {
+    throw new Error('reviewed handoff executable digest does not match its exact bytes');
+  }
+  const reviewedPayload = payloadIdentity(platform, expected.reviewedBinary);
   const wanted = PACKAGE_KINDS[platform];
   const actual = packages.map((entry) => entry.kind);
   if (
@@ -310,9 +561,39 @@ export function verifyPackageBinarySet(
   }
   const inspected = packages.map((entry) => {
     try {
+      if (platform !== 'linux' && entry.signatureAuthenticated !== true) {
+        throw new Error('platform signature was not independently authenticated');
+      }
+      const inspection = inspectReviewedBinary(entry.binary, {
+        platform,
+        ...expected,
+      });
+      const binarySha256 = sha256(entry.binary);
+      const payload = payloadIdentity(platform, entry.binary);
+      const exact = binarySha256 === reviewed.sha256;
+      if (
+        (!exact &&
+          (platform === 'linux' ||
+            !payload.authenticatedTransformation ||
+            payload.sha256 !== reviewedPayload.sha256)) ||
+        (exact && platform === 'linux' && payload.sha256 !== reviewedPayload.sha256)
+      ) {
+        throw new Error(
+          'executable is neither the exact reviewed handoff nor an authenticated signature-preserving payload equivalent',
+        );
+      }
+      const transformation: PackageBinaryEvidence['packages'][number]['transformation'] =
+        exact
+          ? 'exact'
+          : platform === 'windows'
+            ? 'authenticode'
+            : 'code-signature';
       return {
         kind: entry.kind,
-        ...inspectReviewedBinary(entry.binary, { platform, ...expected }),
+        ...inspection,
+        artifactSha256: sha256(entry.artifact),
+        payloadSha256: payload.sha256,
+        transformation,
       };
     } catch (error) {
       throw new Error(
@@ -323,18 +604,122 @@ export function verifyPackageBinarySet(
     }
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     platform,
     target: expected.target,
     sourceCommit: expected.sourceCommit,
+    unsignedHandoffSha256: expected.unsignedHandoffSha256,
+    reviewedBinarySha256: reviewed.sha256,
+    reviewedPayloadSha256: reviewedPayload.sha256,
     product: EXPECTED_PRODUCT,
     identifier: EXPECTED_IDENTIFIER,
     packageKinds: actual,
     packages: inspected.map((entry) => ({
       kind: entry.kind,
+      artifactSha256: entry.artifactSha256,
       binarySha256: entry.sha256,
+      payloadSha256: entry.payloadSha256,
+      transformation: entry.transformation,
       format: entry.format,
       architectures: entry.architectures,
     })),
   };
+}
+
+export function verifyFinalPackageEvidence(
+  evidence: PackageBinaryEvidence,
+  artifacts: FinalPackageArtifact[],
+  expected: PackageBinarySetExpectation & { platform: ReleasePlatform },
+): void {
+  const wanted = PACKAGE_KINDS[expected.platform];
+  const actualKinds = artifacts.map((entry) => entry.kind);
+  if (
+    actualKinds.length !== wanted.length ||
+    actualKinds.some((kind, index) => kind !== wanted[index])
+  ) {
+    throw new Error(
+      `${expected.platform} staged package set is not the exact final package matrix`,
+    );
+  }
+  const reviewed = inspectReviewedBinary(expected.reviewedBinary, expected);
+  const reviewedPayload = payloadIdentity(
+    expected.platform,
+    expected.reviewedBinary,
+  );
+  if (evidence.sourceCommit !== expected.sourceCommit) {
+    throw new Error('final package evidence has the wrong source commit');
+  }
+  if (evidence.unsignedHandoffSha256 !== expected.unsignedHandoffSha256) {
+    throw new Error('final package evidence has the wrong unsigned handoff digest');
+  }
+  if (
+    evidence.schemaVersion !== 2 ||
+    evidence.platform !== expected.platform ||
+    evidence.target !== expected.target ||
+    evidence.product !== EXPECTED_PRODUCT ||
+    evidence.identifier !== EXPECTED_IDENTIFIER ||
+    evidence.reviewedBinarySha256 !== expected.reviewedBinarySha256 ||
+    evidence.reviewedBinarySha256 !== reviewed.sha256 ||
+    evidence.reviewedPayloadSha256 !== reviewedPayload.sha256 ||
+    JSON.stringify(evidence.packageKinds) !== JSON.stringify(wanted) ||
+    !Array.isArray(evidence.packages) ||
+    evidence.packages.length !== wanted.length
+  ) {
+    throw new Error('final package evidence does not match the reviewed handoff identity');
+  }
+  for (let index = 0; index < wanted.length; index += 1) {
+    const kind = wanted[index]!;
+    const recorded = evidence.packages[index]!;
+    const artifact = artifacts[index]!;
+    if (
+      recorded.kind !== kind ||
+      artifact.kind !== kind ||
+      !SHA256.test(recorded.artifactSha256) ||
+      recorded.artifactSha256 !== sha256(artifact.artifact)
+    ) {
+      throw new Error(`${kind} package substitution detected before staging`);
+    }
+    if (
+      !SHA256.test(recorded.binarySha256) ||
+      recorded.payloadSha256 !== reviewedPayload.sha256 ||
+      !['exact', 'authenticode', 'code-signature'].includes(
+        recorded.transformation,
+      )
+    ) {
+      throw new Error(`${kind} final package payload evidence is invalid`);
+    }
+    const expectedFormat =
+      expected.platform === 'linux'
+        ? 'ELF'
+        : expected.platform === 'windows'
+          ? 'PE'
+          : 'Mach-O';
+    const expectedArchitectures =
+      expected.platform === 'macos'
+        ? ['arm64', 'x86_64']
+        : ['x86_64'];
+    const allowedTransformations =
+      expected.platform === 'linux'
+        ? ['exact']
+        : expected.platform === 'windows'
+          ? ['exact', 'authenticode']
+          : ['exact', 'code-signature'];
+    if (
+      recorded.format !== expectedFormat ||
+      JSON.stringify(recorded.architectures) !==
+        JSON.stringify(expectedArchitectures) ||
+      !allowedTransformations.includes(recorded.transformation) ||
+      (recorded.transformation === 'exact') !==
+        (recorded.binarySha256 === reviewed.sha256)
+    ) {
+      throw new Error(`${kind} signature-preserving transformation evidence is invalid`);
+    }
+    if (
+      expected.platform === 'linux' &&
+      (recorded.transformation !== 'exact' ||
+        recorded.binarySha256 !== reviewed.sha256)
+    ) {
+      throw new Error(`${kind} does not contain the exact reviewed Linux executable`);
+    }
+  }
 }

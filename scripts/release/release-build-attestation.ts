@@ -18,6 +18,7 @@ import {
 } from 'node:path';
 
 import { updaterPublicKeyFingerprint } from './release-config';
+import { inspectReviewedBinary } from './binary-identity';
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER =
@@ -63,6 +64,9 @@ interface CredentialedOutputEntry {
 export interface VerifiedCredentialedOutput {
   releaseConfigSha256: string;
   updaterPublicKeySha256: string;
+  unsignedHandoffSha256: string;
+  reviewedBinaryPath: string;
+  reviewedBinarySha256: string;
 }
 
 function sha256(body: Uint8Array): string {
@@ -411,6 +415,9 @@ export async function verifyCredentialedOutput(
     platform?: unknown;
     target?: unknown;
     bundles?: unknown;
+    unsignedHandoffSha256?: unknown;
+    reviewedBinaryPath?: unknown;
+    reviewedBinarySha256?: unknown;
     updaterPublicKeySha256?: unknown;
     releaseConfigSha256?: unknown;
     files?: unknown;
@@ -432,7 +439,7 @@ export async function verifyCredentialedOutput(
       expected.bundles === 'appimage,deb,rpm');
   if (
     !exactTuple ||
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     manifest.version !== expected.version ||
     manifest.sourceCommit !== expected.sourceCommit ||
     manifest.platform !== expected.platform ||
@@ -444,6 +451,11 @@ export async function verifyCredentialedOutput(
     );
   }
   if (
+    typeof manifest.unsignedHandoffSha256 !== 'string' ||
+    !SHA256.test(manifest.unsignedHandoffSha256) ||
+    typeof manifest.reviewedBinaryPath !== 'string' ||
+    typeof manifest.reviewedBinarySha256 !== 'string' ||
+    !SHA256.test(manifest.reviewedBinarySha256) ||
     typeof manifest.updaterPublicKeySha256 !== 'string' ||
     !SHA256.test(manifest.updaterPublicKeySha256) ||
     typeof manifest.releaseConfigSha256 !== 'string' ||
@@ -454,21 +466,32 @@ export async function verifyCredentialedOutput(
     throw new Error('credentialed output manifest has an invalid closed inventory');
   }
   const declared = manifest.files as CredentialedOutputEntry[];
+  const reviewedBinaryName =
+    expected.platform === 'windows' ? 'mdreader-app.exe' : 'mdreader-app';
+  const reviewedBinaryPath = `reviewed-binary/${reviewedBinaryName}`;
   if (
     declared.length === 0 ||
     declared.some(
       (entry) =>
         entry.path !== 'release-config.json' &&
+        !entry.path.startsWith('reviewed-binary/') &&
         !entry.path.startsWith('bundle/'),
     ) ||
+    manifest.reviewedBinaryPath !== reviewedBinaryPath ||
     declared.filter((entry) => entry.path === 'release-config.json').length !==
       1 ||
+    declared.filter((entry) => entry.path === reviewedBinaryPath).length !== 1 ||
+    declared.some(
+      (entry) =>
+        entry.path.startsWith('reviewed-binary/') &&
+        entry.path !== reviewedBinaryPath,
+    ) ||
     !declared.some(
       (entry) => entry.kind === 'file' && entry.path.startsWith('bundle/'),
     )
   ) {
     throw new Error(
-      'credentialed output manifest escapes the closed config and bundle handoff',
+      'credentialed output manifest escapes the closed config, reviewed binary, and bundle handoff',
     );
   }
   const actual = await credentialedOutputInventory(outputRoot);
@@ -478,6 +501,26 @@ export async function verifyCredentialedOutput(
     );
   }
   const configPath = join(outputRoot, 'release-config.json');
+  const reviewedBinaryBody = await readFile(
+    join(outputRoot, ...reviewedBinaryPath.split('/')),
+  );
+  const reviewedEntry = declared.find(
+    (entry) => entry.path === reviewedBinaryPath,
+  )!;
+  if (
+    manifest.reviewedBinarySha256 !== sha256(reviewedBinaryBody) ||
+    reviewedEntry.kind !== 'file' ||
+    reviewedEntry.sha256 !== manifest.reviewedBinarySha256
+  ) {
+    throw new Error(
+      'credentialed output reviewed executable does not match its unsigned handoff digest',
+    );
+  }
+  inspectReviewedBinary(reviewedBinaryBody, {
+    platform: expected.platform,
+    target: expected.target,
+    sourceCommit: expected.sourceCommit,
+  });
   const configBody = await readFile(configPath);
   const parsed = releaseConfigKey(JSON.parse(configBody.toString('utf8')), {
     target: expected.target,
@@ -496,7 +539,13 @@ export async function verifyCredentialedOutput(
       'credentialed output config or updater identity does not match the sealed inventory',
     );
   }
-  return { releaseConfigSha256, updaterPublicKeySha256 };
+  return {
+    releaseConfigSha256,
+    updaterPublicKeySha256,
+    unsignedHandoffSha256: manifest.unsignedHandoffSha256,
+    reviewedBinaryPath,
+    reviewedBinarySha256: manifest.reviewedBinarySha256,
+  };
 }
 
 export async function sealReleaseBundle(

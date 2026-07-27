@@ -9,6 +9,7 @@ TARGET="${5:?target is required}"
 BUNDLES="${6:?bundles are required}"
 RELEASE_CONFIG="${7:?release config is required}"
 CREDENTIALED_OUTPUT_MANIFEST="${8:?credentialed output manifest is required}"
+PACKAGE_IDENTITY_EVIDENCE="${9:?final package identity evidence is required}"
 CREDENTIALED_OUTPUT_ROOT="$(dirname "$CREDENTIALED_OUTPUT_MANIFEST")"
 
 pnpm exec tsx scripts/release/release-cli.ts stage \
@@ -21,5 +22,6 @@ pnpm exec tsx scripts/release/release-cli.ts stage \
   --release-config "$RELEASE_CONFIG" \
   --credentialed-output-root "$CREDENTIALED_OUTPUT_ROOT" \
   --credentialed-output-manifest "$CREDENTIALED_OUTPUT_MANIFEST" \
+  --package-identity-evidence "$PACKAGE_IDENTITY_EVIDENCE" \
   --build-target "$TARGET" \
   --build-bundles "$BUNDLES"

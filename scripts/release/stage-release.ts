@@ -21,6 +21,10 @@ import {
   verifyReleaseBuildAttestation,
   verifyReleaseBundleSeal,
 } from './release-build-attestation';
+import {
+  verifyFinalPackageEvidence,
+  type PackageBinaryEvidence,
+} from './binary-identity';
 
 const execFileAsync = promisify(execFile);
 const PINNED_SYFT_CREATOR = 'Tool: syft-1.29.0';
@@ -37,6 +41,7 @@ export interface StagePlatformInput {
   bundleSealPath?: string;
   credentialedOutputRoot?: string;
   credentialedOutputManifestPath?: string;
+  packageIdentityEvidencePath?: string;
   buildTarget: string;
   buildBundles: string;
   generateSbom?: (artifactPath: string) => Promise<string>;
@@ -293,6 +298,14 @@ export async function stagePlatformArtifacts(
         input.buildAttestationPath!,
         expectedBuild,
       );
+  if (
+    usesCredentialedOutput !==
+    (input.packageIdentityEvidencePath !== undefined)
+  ) {
+    throw new Error(
+      'credentialed staging requires final package identity evidence',
+    );
+  }
   if (usesLegacyAttestation) {
     await verifyReleaseBundleSeal(
       input.bundleRoot,
@@ -303,13 +316,7 @@ export async function stagePlatformArtifacts(
     );
   }
   const files = await walk(input.bundleRoot);
-  await requireEmptyStageRoot(input.outputRoot);
-  const destination = join(input.outputRoot, 'releases', `v${input.version}`);
-  await mkdir(destination, { recursive: true });
-  const { architecture, minimumOs } = platformDetails(input.platform);
-  const artifacts: ReleaseManifestArtifact[] = [];
-
-  for (const spec of SPECS[input.platform]) {
+  const selected = SPECS[input.platform].map((spec) => {
     const matches = files.filter(
       (path) => !path.endsWith('.sig') && spec.matches(path),
     );
@@ -318,10 +325,68 @@ export async function stagePlatformArtifacts(
         `expected exactly one ${spec.label}, found ${matches.length}`,
       );
     }
-    const source = matches[0]!;
+    return { spec, source: matches[0]! };
+  });
+  const credentialedArtifactBodies = new Map<
+    ReleaseArtifactKind,
+    Buffer
+  >();
+  if (usesCredentialedOutput) {
+    if (!('reviewedBinaryPath' in build)) {
+      throw new Error('credentialed output identity was not verified');
+    }
+    let evidence: PackageBinaryEvidence;
+    try {
+      evidence = JSON.parse(
+        await readFile(input.packageIdentityEvidencePath!, 'utf8'),
+      ) as PackageBinaryEvidence;
+    } catch {
+      throw new Error('final package identity evidence is not valid JSON');
+    }
+    const reviewedBinary = await readFile(
+      join(
+        input.credentialedOutputRoot!,
+        ...build.reviewedBinaryPath.split('/'),
+      ),
+    );
+    const evidenceArtifacts = await Promise.all(
+      selected.map(async ({ spec, source }) => {
+        const artifact = await readFile(source);
+        credentialedArtifactBodies.set(spec.kind, artifact);
+        return { kind: spec.kind, artifact };
+      }),
+    );
+    verifyFinalPackageEvidence(
+      evidence,
+      evidenceArtifacts,
+      {
+        platform: input.platform,
+        target: input.buildTarget,
+        sourceCommit: input.sourceCommit,
+        unsignedHandoffSha256: build.unsignedHandoffSha256,
+        reviewedBinarySha256: build.reviewedBinarySha256,
+        reviewedBinary,
+      },
+    );
+  }
+  await requireEmptyStageRoot(input.outputRoot);
+  const destination = join(input.outputRoot, 'releases', `v${input.version}`);
+  await mkdir(destination, { recursive: true });
+  const { architecture, minimumOs } = platformDetails(input.platform);
+  const artifacts: ReleaseManifestArtifact[] = [];
+
+  for (const { spec, source } of selected) {
     const filename = spec.filename(input.version);
     const target = join(destination, filename);
-    await copyFile(source, target);
+    if (usesCredentialedOutput) {
+      const authenticatedBody = credentialedArtifactBodies.get(spec.kind);
+      if (authenticatedBody === undefined) {
+        throw new Error(`authenticated ${spec.kind} package bytes are missing`);
+      }
+      await writeFile(target, authenticatedBody, { flag: 'wx' });
+    } else {
+      await copyFile(source, target);
+    }
     const body = await readFile(target);
     const checksum = sha256(body);
     const sbom = await createSpdx(target, filename, checksum, input);

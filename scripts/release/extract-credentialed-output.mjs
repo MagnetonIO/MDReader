@@ -22,6 +22,8 @@ import { pathToFileURL } from 'node:url';
 const BLOCK_BYTES = 512;
 const ZERO_BLOCKS_BYTES = BLOCK_BYTES * 2;
 const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 4096;
+const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const WINDOWS_RESERVED_NAMES =
   /^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/i;
@@ -156,7 +158,9 @@ function canonicalArchivePath(rawName, kind) {
   if (
     path !== 'credentialed-output.json' &&
     path !== 'release-config.json' &&
+    path !== 'reviewed-binary' &&
     path !== 'bundle' &&
+    !path.startsWith('reviewed-binary/') &&
     !path.startsWith('bundle/')
   ) {
     fail(`contains a member outside the closed output namespace: ${rawName}`);
@@ -175,6 +179,7 @@ function parseArchive(archive) {
   const members = [];
   let offset = 0;
   let foundEnd = false;
+  let extractedBytes = 0;
   while (offset + BLOCK_BYTES <= archive.byteLength) {
     const header = archive.subarray(offset, offset + BLOCK_BYTES);
     if (header.every((byte) => byte === 0)) {
@@ -237,6 +242,16 @@ function parseArchive(archive) {
       linkname,
       rawName,
     });
+    extractedBytes += kind === 'file' ? size : 0;
+    if (members.length > MAX_ARCHIVE_ENTRIES) {
+      fail(`exceeds the reviewed ${MAX_ARCHIVE_ENTRIES}-entry limit`);
+    }
+    if (
+      !Number.isSafeInteger(extractedBytes) ||
+      extractedBytes > MAX_EXTRACTED_BYTES
+    ) {
+      fail(`exceeds the reviewed ${MAX_EXTRACTED_BYTES}-byte extraction limit`);
+    }
     offset = nextOffset;
   }
   if (!foundEnd) fail('has no terminating zero blocks');
@@ -297,6 +312,7 @@ function closeNamespace(members) {
   for (const required of [
     'credentialed-output.json',
     'release-config.json',
+    'reviewed-binary',
     'bundle',
   ]) {
     if (!knownPaths.has(required)) {
@@ -313,6 +329,9 @@ function closeNamespace(members) {
   }
   if (byPath.get('bundle')?.kind !== 'directory') {
     fail('does not contain bundle as a directory');
+  }
+  if (byPath.get('reviewed-binary')?.kind !== 'directory') {
+    fail('does not contain reviewed-binary as a directory');
   }
 
   const symlinkTargets = new Map();

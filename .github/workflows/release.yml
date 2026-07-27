@@ -42,6 +42,11 @@ jobs:
       support_sha256: ${{ steps.seal-release-support.outputs.support_sha256 }}
       updater_public_key_sha256: ${{ steps.seal-release-support.outputs.updater_public_key_sha256 }}
     steps:
+      - name: Install Node 24 LTS
+        id: setup-node-prepare
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
       - name: Checkout the exact release source and main history
         id: checkout-release-source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -78,6 +83,7 @@ jobs:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
           EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -114,6 +120,10 @@ jobs:
             [
               'scripts/release/windows-minimum.nsh',
               process.env.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
+            ],
+            [
+              'scripts/release/safe-package-extract.mjs',
+              process.env.EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256,
             ],
           ]) {
             const metadata = lstatSync(source);
@@ -154,12 +164,6 @@ jobs:
           path: ${{ runner.temp }}/mdreader-release-support
           if-no-files-found: error
           retention-days: 1
-      - name: Install Node 24 LTS
-        id: setup-node-prepare
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24.18.0'
-          cache: pnpm
       - name: Enable pinned package manager
         id: enable-corepack-prepare
         run: corepack enable
@@ -219,17 +223,16 @@ jobs:
             binary: mdreader-app
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout the exact release source
-        id: checkout-build-source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
       - name: Install Node 24 LTS
         id: setup-node-build
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24.18.0'
-          cache: pnpm
+      - name: Checkout the exact release source
+        id: checkout-build-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Enable pinned package manager
         id: enable-corepack-build
         run: corepack enable
@@ -514,6 +517,58 @@ jobs:
         with:
           name: mdreader-release-support-${{ needs.prepare.outputs.support_sha256 }}
           path: ${{ runner.temp }}/mdreader-support-download/mdreader-release-support-${{ needs.prepare.outputs.support_sha256 }}
+      - name: Authenticate the fail-closed package extractor before use
+        id: verify-release-extractor
+        env:
+          SUPPORT_DOWNLOAD_ROOT: ${{ runner.temp }}/mdreader-support-download
+          EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
+          EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { lstatSync, readFileSync, writeFileSync } = require('node:fs');
+          const { join } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const supportSha = process.env.EXPECTED_SUPPORT_SHA256;
+          const root = join(
+            process.env.SUPPORT_DOWNLOAD_ROOT,
+            `mdreader-release-support-${supportSha}`,
+          );
+          const manifestBytes = readFileSync(join(root, 'support.json'));
+          const manifest = JSON.parse(manifestBytes.toString('utf8'));
+          const extractorPath = join(
+            root,
+            'payload',
+            'safe-package-extract.mjs',
+          );
+          const metadata = lstatSync(extractorPath);
+          const extractorBytes = readFileSync(extractorPath);
+          const declared = manifest.files?.filter(
+            (entry) => entry.path === 'safe-package-extract.mjs',
+          );
+          if (
+            hash(manifestBytes) !== supportSha ||
+            manifest.sourceCommit !== process.env.EXPECTED_SOURCE_COMMIT ||
+            !metadata.isFile() ||
+            metadata.isSymbolicLink() ||
+            !Array.isArray(declared) ||
+            declared.length !== 1 ||
+            declared[0].bytes !== extractorBytes.byteLength ||
+            declared[0].sha256 !== hash(extractorBytes) ||
+            hash(extractorBytes) !==
+              process.env.EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256
+          ) {
+            throw new Error(
+              'fail-closed package extractor does not match the independently sealed reviewed bytes',
+            );
+          }
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `extractor_path=${extractorPath}\n`,
+            { flag: 'a' },
+          );
+          NODE
       - name: Establish isolated SRI-pinned Tauri CLI and native runtime
         id: establish-tauri-runtime
         run: |
@@ -554,9 +609,10 @@ jobs:
           NODE
           CLI_TARBALL="$(node -e 'const { readFileSync } = require("node:fs"); process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$PACKAGE_ROOT/cli/pack.json")"
           NATIVE_TARBALL="$(node -e 'const { readFileSync } = require("node:fs"); process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$PACKAGE_ROOT/native/pack.json")"
-          mkdir -p "$PACKAGE_ROOT/cli-extract" "$PACKAGE_ROOT/native-extract"
-          tar -xzf "$PACKAGE_ROOT/cli/$CLI_TARBALL" -C "$PACKAGE_ROOT/cli-extract"
-          tar -xzf "$PACKAGE_ROOT/native/$NATIVE_TARBALL" -C "$PACKAGE_ROOT/native-extract"
+          node "$SAFE_PACKAGE_EXTRACTOR" \
+            tar "$PACKAGE_ROOT/cli/$CLI_TARBALL" "$PACKAGE_ROOT/cli-extract"
+          node "$SAFE_PACKAGE_EXTRACTOR" \
+            tar "$PACKAGE_ROOT/native/$NATIVE_TARBALL" "$PACKAGE_ROOT/native-extract"
           mv "$PACKAGE_ROOT/cli-extract/package" "$RUNTIME_ROOT/node_modules/@tauri-apps/cli"
           NATIVE_DIRECTORY="${TAURI_NATIVE_PACKAGE#@tauri-apps/}"
           mv "$PACKAGE_ROOT/native-extract/package" "$RUNTIME_ROOT/node_modules/@tauri-apps/$NATIVE_DIRECTORY"
@@ -653,6 +709,7 @@ jobs:
           TAURI_NATIVE_PACKAGE: ${{ matrix.native_package }}
           TAURI_NATIVE_INTEGRITY: ${{ matrix.native_integrity }}
           RELEASE_PLATFORM: ${{ matrix.platform }}
+          SAFE_PACKAGE_EXTRACTOR: ${{ steps.verify-release-extractor.outputs.extractor_path }}
       - name: Verify Windows Administrator authority before resolving its PFX
         id: windows-admin-preflight
         if: matrix.platform == 'windows'
@@ -680,6 +737,7 @@ jobs:
           EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
           EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
+          EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7'
           EXPECTED_RUNTIME_MANIFEST_SHA256: ${{ steps.establish-tauri-runtime.outputs.runtime_manifest_sha256 }}
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
@@ -994,6 +1052,7 @@ jobs:
             !Array.isArray(support.files) ||
             JSON.stringify(support.files.map((entry) => entry.path).sort()) !==
               JSON.stringify([
+                'safe-package-extract.mjs',
                 'sign-windows-from-store.ps1',
                 'windows-minimum.nsh',
               ])
@@ -1016,6 +1075,11 @@ jobs:
               'windows-minimum.nsh',
               required('EXPECTED_WINDOWS_NSIS_HOOK_SHA256'),
               'NSIS hook',
+            ],
+            [
+              'safe-package-extract.mjs',
+              required('EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256'),
+              'package extractor',
             ],
           ]) {
             if (
@@ -1169,6 +1233,9 @@ jobs:
               `node_path=${nodePath}`,
               `tauri_entrypoint=${cliPath}`,
               `bundle_workspace=${workspace}`,
+              `unsigned_handoff_root=${unsignedRoot}`,
+              `unsigned_handoff_sha256=${hash(handoffBytes)}`,
+              `reviewed_binary_sha256=${hash(executable)}`,
               `windows_signer_path=${join(supportDestination, 'sign-windows-from-store.ps1')}`,
               `windows_hook_path=${join(supportDestination, 'windows-minimum.nsh')}`,
             ].join('\n') + '\n',
@@ -1699,6 +1766,9 @@ jobs:
         id: seal-credentialed-output
         env:
           BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
+          UNSIGNED_HANDOFF_ROOT: ${{ steps.verify-credential-boundaries.outputs.unsigned_handoff_root }}
+          EXPECTED_UNSIGNED_HANDOFF_SHA256: ${{ steps.verify-credential-boundaries.outputs.unsigned_handoff_sha256 }}
+          EXPECTED_REVIEWED_BINARY_SHA256: ${{ steps.verify-credential-boundaries.outputs.reviewed_binary_sha256 }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
           RELEASE_PLATFORM: ${{ matrix.platform }}
@@ -1711,6 +1781,7 @@ jobs:
           const { createHash } = require('node:crypto');
           const { execFileSync } = require('node:child_process');
           const {
+            copyFileSync,
             cpSync,
             lstatSync,
             mkdirSync,
@@ -1719,8 +1790,46 @@ jobs:
             rmSync,
             writeFileSync,
           } = require('node:fs');
-          const { join, relative, sep } = require('node:path');
+          const { basename, join, relative, sep } = require('node:path');
           const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`credentialed output sealing is missing ${name}`);
+            return value;
+          };
+          const handoffRoot = required('UNSIGNED_HANDOFF_ROOT');
+          const handoffPath = join(handoffRoot, 'handoff.json');
+          const handoffBytes = readFileSync(handoffPath);
+          const handoff = JSON.parse(handoffBytes.toString('utf8'));
+          const binaryName =
+            process.env.RELEASE_PLATFORM === 'windows'
+              ? 'mdreader-app.exe'
+              : 'mdreader-app';
+          const handoffBinaryPath =
+            `target/${process.env.RELEASE_TARGET}/release/${binaryName}`;
+          const handoffBinary = join(
+            handoffRoot,
+            'payload',
+            ...handoffBinaryPath.split('/'),
+          );
+          const reviewedBinaryBytes = readFileSync(handoffBinary);
+          const handoffEntry = handoff.files?.filter(
+            (entry) => entry.path === handoffBinaryPath,
+          );
+          if (
+            hash(handoffBytes) !== required('EXPECTED_UNSIGNED_HANDOFF_SHA256') ||
+            handoff.sourceCommit !== process.env.SOURCE_COMMIT ||
+            handoff.platform !== process.env.RELEASE_PLATFORM ||
+            handoff.target !== process.env.RELEASE_TARGET ||
+            !Array.isArray(handoffEntry) ||
+            handoffEntry.length !== 1 ||
+            handoffEntry[0].sha256 !== hash(reviewedBinaryBytes) ||
+            hash(reviewedBinaryBytes) !== required('EXPECTED_REVIEWED_BINARY_SHA256')
+          ) {
+            throw new Error(
+              'credentialed packaging no longer matches the reviewed unsigned handoff executable digest and source identity',
+            );
+          }
           const sourceBundle = join(
             process.env.BUNDLE_WORKSPACE,
             'target',
@@ -1738,6 +1847,15 @@ jobs:
           cpSync(
             join(process.env.RUNNER_TEMP, 'mdreader-release-config.json'),
             join(output, 'release-config.json'),
+          );
+          const reviewedBinaryRelativePath = `reviewed-binary/${basename(handoffBinary)}`;
+          mkdirSync(join(output, 'reviewed-binary'), {
+            recursive: true,
+            mode: 0o700,
+          });
+          copyFileSync(
+            handoffBinary,
+            join(output, ...reviewedBinaryRelativePath.split('/')),
           );
           const files = [];
           const walk = (directory) => {
@@ -1779,12 +1897,15 @@ jobs:
             throw new Error('credentialed bundle output is empty');
           }
           const encoded = `${JSON.stringify({
-            schemaVersion: 1,
+            schemaVersion: 2,
             version: process.env.RELEASE_VERSION,
             sourceCommit: process.env.SOURCE_COMMIT,
             platform: process.env.RELEASE_PLATFORM,
             target: process.env.RELEASE_TARGET,
             bundles: process.env.RELEASE_BUNDLES,
+            unsignedHandoffSha256: process.env.EXPECTED_UNSIGNED_HANDOFF_SHA256,
+            reviewedBinaryPath: reviewedBinaryRelativePath,
+            reviewedBinarySha256: process.env.EXPECTED_REVIEWED_BINARY_SHA256,
             updaterPublicKeySha256: process.env.UPDATER_PUBLIC_KEY_SHA256,
             releaseConfigSha256: process.env.RELEASE_CONFIG_SHA256,
             files,
@@ -1805,7 +1926,7 @@ jobs:
             archivePath,
             '-C',
             output,
-            'credentialed-output.json', 'release-config.json', 'bundle',
+            'credentialed-output.json', 'release-config.json', 'reviewed-binary', 'bundle',
           ], {
             stdio: 'pipe',
             env: { ...process.env, COPYFILE_DISABLE: '1' },
@@ -1845,17 +1966,16 @@ jobs:
             bundles: appimage,deb,rpm
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout the exact release verification source
-        id: checkout-verify-source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
       - name: Install Node 24 LTS
         id: setup-node-verify
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24.18.0'
-          cache: pnpm
+      - name: Checkout the exact release verification source
+        id: checkout-verify-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Enable pinned package manager
         id: enable-corepack-verify
         run: corepack enable
@@ -1902,7 +2022,7 @@ jobs:
         env:
           SYFT_BIN: ${{ steps.install-syft.outputs.cmd }}
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
-        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-credentialed-output/release-config.json" "$RUNNER_TEMP/mdreader-credentialed-output/credentialed-output.json"
+        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-credentialed-output/release-config.json" "$RUNNER_TEMP/mdreader-credentialed-output/credentialed-output.json" "$RUNNER_TEMP/mdreader-final-package-binaries.json"
       - name: Inspect artifact-specific SPDX 2.3 SBOMs
         id: generate-sbom
         run: scripts/release/inspect-sboms.sh target/release-stage
@@ -1924,17 +2044,16 @@ jobs:
     outputs:
       publish_plan_sha256: ${{ steps.seal-publication.outputs.publish_plan_sha256 }}
     steps:
-      - name: Checkout the exact release source
-        id: checkout-aggregate-source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
       - name: Install Node 24 LTS
         id: setup-node-aggregate
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24.18.0'
-          cache: pnpm
+      - name: Checkout the exact release source
+        id: checkout-aggregate-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Enable pinned package manager
         id: enable-corepack-aggregate
         run: corepack enable

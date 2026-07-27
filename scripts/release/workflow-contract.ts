@@ -14,14 +14,16 @@ const WINDOWS_SIGNER_SHA256 =
   'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30';
 const WINDOWS_NSIS_HOOK_SHA256 =
   '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64';
+const SAFE_PACKAGE_EXTRACTOR_SHA256 =
+  'f2101a5097b36da8c596c1e42112bd2548041019582ea8c328d75dcdfa77afa7';
 
 const STEP_IDS: Record<string, string[]> = {
   prepare: [
+    'setup-node-prepare',
     'checkout-release-source',
     'authorize-release-source',
     'seal-release-support',
     'upload-release-support',
-    'setup-node-prepare',
     'enable-corepack-prepare',
     'install-dependencies-prepare',
     'authorize-publisher-bundle',
@@ -29,8 +31,8 @@ const STEP_IDS: Record<string, string[]> = {
     'validate-workflow-contract',
   ],
   'build-unsigned': [
-    'checkout-build-source',
     'setup-node-build',
+    'checkout-build-source',
     'enable-corepack-build',
     'install-linux-compilation',
     'install-dependencies-build',
@@ -46,6 +48,7 @@ const STEP_IDS: Record<string, string[]> = {
     'setup-node-bundle',
     'download-unsigned-handoff',
     'download-release-support',
+    'verify-release-extractor',
     'establish-tauri-runtime',
     'windows-admin-preflight',
     'verify-credential-boundaries',
@@ -68,8 +71,8 @@ const STEP_IDS: Record<string, string[]> = {
     'upload-credentialed-output',
   ],
   verify: [
-    'checkout-verify-source',
     'setup-node-verify',
+    'checkout-verify-source',
     'enable-corepack-verify',
     'install-dependencies-verify',
     'download-credentialed-output',
@@ -86,8 +89,8 @@ const STEP_IDS: Record<string, string[]> = {
     'upload-staged-release',
   ],
   aggregate: [
-    'checkout-aggregate-source',
     'setup-node-aggregate',
+    'checkout-aggregate-source',
     'enable-corepack-aggregate',
     'install-dependencies-aggregate',
     'download-staged-release-macos',
@@ -158,7 +161,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'prepare/setup-node-prepare': {
     uses: SETUP_NODE,
-    with: { 'node-version': '24.18.0', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0' },
   },
   'build-unsigned/checkout-build-source': {
     uses: CHECKOUT,
@@ -166,7 +169,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'build-unsigned/setup-node-build': {
     uses: SETUP_NODE,
-    with: { 'node-version': '24.18.0', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0' },
   },
   'build-unsigned/upload-unsigned-handoff': {
     uses: UPLOAD,
@@ -211,7 +214,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'verify/setup-node-verify': {
     uses: SETUP_NODE,
-    with: { 'node-version': '24.18.0', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0' },
   },
   'verify/download-credentialed-output': {
     uses: DOWNLOAD,
@@ -240,7 +243,7 @@ const ACTIONS: Record<string, { uses: string; with: Mapping }> = {
   },
   'aggregate/setup-node-aggregate': {
     uses: SETUP_NODE,
-    with: { 'node-version': '24.18.0', cache: 'pnpm' },
+    with: { 'node-version': '24.18.0' },
   },
   ...Object.fromEntries(
     ['macos', 'windows', 'linux'].map((platform) => [
@@ -496,6 +499,43 @@ function stepMap(job: Mapping, jobName: string): Map<string, Mapping> {
   return new Map(entries.map((step) => [String(step.id), step]));
 }
 
+function validateNodeBootstrap(jobs: Mapping): void {
+  for (const [jobName, setupId] of Object.entries({
+    prepare: 'setup-node-prepare',
+    'build-unsigned': 'setup-node-build',
+    'bundle-sign': 'setup-node-bundle',
+    verify: 'setup-node-verify',
+    aggregate: 'setup-node-aggregate',
+    publish: 'setup-node-publish',
+  })) {
+    const job = mapping(jobs[jobName], `jobs.${jobName}`);
+    const entries = list(job.steps, `jobs.${jobName}.steps`).map((entry) =>
+      mapping(entry, `jobs.${jobName}.steps[]`),
+    );
+    const setups = entries.filter(
+      (entry) =>
+        typeof entry.uses === 'string' &&
+        entry.uses.startsWith('actions/setup-node@'),
+    );
+    const first = entries[0];
+    if (
+      setups.length !== 1 ||
+      JSON.stringify(Object.keys(first ?? {})) !==
+        JSON.stringify(['name', 'id', 'uses', 'with']) ||
+      first?.name !== 'Install Node 24 LTS' ||
+      first?.id !== setupId ||
+      first.uses !== SETUP_NODE ||
+      first.run !== undefined ||
+      JSON.stringify(canonical(first.with)) !==
+        JSON.stringify(canonical({ 'node-version': '24.18.0' }))
+    ) {
+      throw new Error(
+        `${jobName} must establish exact Node 24.18.0 before every other release step`,
+      );
+    }
+  }
+}
+
 function requireRun(
   steps: Map<string, Mapping>,
   id: string,
@@ -676,8 +716,10 @@ function validatePrepare(
     [
       'sign-windows-from-store.ps1',
       'windows-minimum.nsh',
+      'safe-package-extract.mjs',
       'EXPECTED_WINDOWS_SIGNER_SHA256',
       'EXPECTED_WINDOWS_NSIS_HOOK_SHA256',
+      'EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256',
       'reviewed release support is not approved by the workflow',
       'updater_public_key_sha256',
       'sourceCommit: process.env.GITHUB_SHA',
@@ -697,6 +739,11 @@ function validatePrepare(
     supportEnv.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
     WINDOWS_NSIS_HOOK_SHA256,
     'Windows NSIS hook is not bound to workflow-approved bytes',
+  );
+  same(
+    supportEnv.EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256,
+    SAFE_PACKAGE_EXTRACTOR_SHA256,
+    'safe package extractor is not bound to workflow-approved bytes',
   );
   requireRun(
     steps,
@@ -806,6 +853,17 @@ function validateBundle(
   }
   requireRun(
     steps,
+    'verify-release-extractor',
+    [
+      'safe-package-extract.mjs',
+      'EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256',
+      'fail-closed package extractor does not match',
+      'extractor_path=',
+    ],
+    'package extractor is not independently authenticated before use',
+  );
+  requireRun(
+    steps,
     'establish-tauri-runtime',
     [
       'npm pack --ignore-scripts --json',
@@ -815,6 +873,9 @@ function validateBundle(
       'Node runtime is not an exact regular executable',
       'sha256: hash(nodeBody)',
       'runtime_manifest_sha256=',
+      'SAFE_PACKAGE_EXTRACTOR',
+      'tar "$PACKAGE_ROOT/cli/$CLI_TARBALL"',
+      'tar "$PACKAGE_ROOT/native/$NATIVE_TARBALL"',
     ],
     'isolated Tauri and Node runtime is not fully inventoried before credentials',
   );
@@ -840,6 +901,8 @@ function validateBundle(
       "join(tauriRoot, 'tauri.conf.json')",
       'tauri_entrypoint=',
       'bundle_workspace=',
+      'unsigned_handoff_sha256=',
+      'reviewed_binary_sha256=',
     ],
     'credential boundary does not verify the closed handoff, runtime, and minimal scaffold',
   );
@@ -856,6 +919,11 @@ function validateBundle(
     boundaryEnv.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
     WINDOWS_NSIS_HOOK_SHA256,
     'credential boundary does not require the workflow-approved Windows NSIS hook',
+  );
+  same(
+    boundaryEnv.EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256,
+    SAFE_PACKAGE_EXTRACTOR_SHA256,
+    'credential boundary does not require the workflow-approved package extractor',
   );
   if (
     boundary.includes('github.workspace') ||
@@ -922,9 +990,13 @@ function validateBundle(
       'credentialed output contains unsupported entry',
       'credentialed-output.tar',
       '--format=ustar',
-      "'credentialed-output.json', 'release-config.json', 'bundle'",
+      "'credentialed-output.json', 'release-config.json', 'reviewed-binary', 'bundle'",
       "COPYFILE_DISABLE: '1'",
       'archive_sha256=',
+      'EXPECTED_UNSIGNED_HANDOFF_SHA256',
+      'EXPECTED_REVIEWED_BINARY_SHA256',
+      'reviewedBinarySha256',
+      'reviewedBinaryPath',
     ],
     'credentialed output is not completely inventoried into a closed POSIX ustar namespace',
   );
@@ -1000,6 +1072,7 @@ function validateVerify(
       'stage-platform.sh',
       'credentialed-output/release-config.json',
       'credentialed-output/credentialed-output.json',
+      'mdreader-final-package-binaries.json',
     ],
     'staging is not bound to the verified credentialed output and checksum metadata',
   );
@@ -1075,6 +1148,7 @@ export function validateReleaseWorkflow(workflowValue: unknown): void {
   same(workflow.defaults, { run: { shell: 'bash' } }, 'release workflow default shell is not exact');
   const jobs = mapping(workflow.jobs, 'jobs');
   validateJobMetadata(jobs);
+  validateNodeBootstrap(jobs);
   validateMatrices(jobs);
   const allSteps = new Map<string, Map<string, Mapping>>();
   for (const [name] of Object.entries(STEP_IDS)) {

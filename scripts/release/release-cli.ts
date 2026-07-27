@@ -98,6 +98,11 @@ async function stage(args: string[]): Promise<void> {
   );
   const buildAttestation = option(args, '--build-attestation', false);
   const bundleSeal = option(args, '--bundle-seal', false);
+  const packageIdentityEvidence = option(
+    args,
+    '--package-identity-evidence',
+    false,
+  );
   const fragment = await stagePlatformArtifacts({
     platform: platform as 'macos' | 'windows' | 'linux',
     version,
@@ -112,6 +117,9 @@ async function stage(args: string[]): Promise<void> {
           credentialedOutputManifestPath: resolve(
             credentialedOutputManifest,
           ),
+          packageIdentityEvidencePath: packageIdentityEvidence
+            ? resolve(packageIdentityEvidence)
+            : undefined,
         }
       : {}),
     ...(buildAttestation && bundleSeal

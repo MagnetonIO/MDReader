@@ -6,9 +6,11 @@ BUNDLE_ROOT="${2:?bundle root is required}"
 SOURCE_COMMIT="${3:?source commit is required}"
 TARGET="${4:?target is required}"
 EVIDENCE_PATH="${5:?evidence output is required}"
+CREDENTIALED_MANIFEST="$(dirname "$BUNDLE_ROOT")/credentialed-output.json"
 TRUSTED_RUNNER_TEMP="${RUNNER_TEMP:?runner temp is required}"
 EXTRACT_ROOT="$(mktemp -d "$TRUSTED_RUNNER_TEMP/mdreader-final-packages.XXXXXX")"
 MOUNT_POINT=''
+mkdir -p "$EXTRACT_ROOT/package-snapshots"
 
 cleanup() {
   if [[ -n "$MOUNT_POINT" ]]; then
@@ -33,23 +35,41 @@ exact_file() {
   printf '%s\n' "$REPLY"
 }
 
+snapshot_file() {
+  local source="${1:?source package is required}"
+  local name="${2:?snapshot name is required}"
+  local snapshot="$EXTRACT_ROOT/package-snapshots/$name"
+  cp -p -- "$source" "$snapshot"
+  if ! cmp -s -- "$source" "$snapshot"; then
+    echo "final package changed while its immutable verification snapshot was created" >&2
+    exit 1
+  fi
+  printf '%s\n' "$snapshot"
+}
+
 verify_extractions() {
   local args=(
     --platform "$PLATFORM"
     --target "$TARGET"
     --source-commit "$SOURCE_COMMIT"
+    --credentialed-manifest "$CREDENTIALED_MANIFEST"
     --output "$EVIDENCE_PATH"
   )
   local package
   for package in "$@"; do
     args+=(--package "$package")
   done
+  for package in "${ARTIFACT_ARGS[@]}"; do
+    args+=(--artifact "$package")
+  done
   pnpm exec tsx scripts/release/verify-package-binaries.ts "${args[@]}"
 }
 
 if [[ "$PLATFORM" == 'macos' ]]; then
-  DMG="$(exact_file 'macOS DMG' '*.dmg')"
-  UPDATER="$(exact_file 'macOS updater' '*.app.tar.gz')"
+  DMG_SOURCE="$(exact_file 'macOS DMG' '*.dmg')"
+  UPDATER_SOURCE="$(exact_file 'macOS updater' '*.app.tar.gz')"
+  DMG="$(snapshot_file "$DMG_SOURCE" 'release.dmg')"
+  UPDATER="$(snapshot_file "$UPDATER_SOURCE" 'updater.app.tar.gz')"
   MOUNT_POINT="$EXTRACT_ROOT/dmg"
   mkdir -p "$MOUNT_POINT" "$EXTRACT_ROOT/updater"
   hdiutil attach \
@@ -57,19 +77,26 @@ if [[ "$PLATFORM" == 'macos' ]]; then
     -readonly \
     -mountpoint "$MOUNT_POINT" \
     "$DMG" >/dev/null
-  tar -xzf "$UPDATER" -C "$EXTRACT_ROOT/updater"
+  node scripts/release/safe-package-extract.mjs scan "$MOUNT_POINT"
+  node scripts/release/safe-package-extract.mjs \
+    tar "$UPDATER" "$EXTRACT_ROOT/updater"
+  ARTIFACT_ARGS=("dmg=$DMG" "updater=$UPDATER")
   verify_extractions \
     "dmg=$MOUNT_POINT" \
     "updater=$EXTRACT_ROOT/updater"
 elif [[ "$PLATFORM" == 'windows' ]]; then
-  INSTALLER="$(exact_file 'Windows NSIS installer' '*setup.exe')"
-  UPDATER="$(exact_file 'Windows updater' '*.nsis.zip')"
+  INSTALLER_SOURCE="$(exact_file 'Windows NSIS installer' '*setup.exe')"
+  UPDATER_SOURCE="$(exact_file 'Windows updater' '*.nsis.zip')"
+  INSTALLER="$(snapshot_file "$INSTALLER_SOURCE" 'installer.exe')"
+  UPDATER="$(snapshot_file "$UPDATER_SOURCE" 'updater.nsis.zip')"
   mkdir -p \
     "$EXTRACT_ROOT/nsis" \
     "$EXTRACT_ROOT/updater-archive" \
     "$EXTRACT_ROOT/updater"
-  7z x -y "-o$EXTRACT_ROOT/nsis" "$INSTALLER" >/dev/null
-  7z x -y "-o$EXTRACT_ROOT/updater-archive" "$UPDATER" >/dev/null
+  node scripts/release/safe-package-extract.mjs \
+    7z "$INSTALLER" "$EXTRACT_ROOT/nsis"
+  node scripts/release/safe-package-extract.mjs \
+    7z "$UPDATER" "$EXTRACT_ROOT/updater-archive"
   NESTED_LIST="$EXTRACT_ROOT/nested-installers.txt"
   find "$EXTRACT_ROOT/updater-archive" -type f -iname '*setup.exe' -print \
     > "$NESTED_LIST"
@@ -79,28 +106,35 @@ elif [[ "$PLATFORM" == 'windows' ]]; then
     exit 1
   fi
   IFS= read -r NESTED_INSTALLER < "$NESTED_LIST"
-  7z x -y "-o$EXTRACT_ROOT/updater" "$NESTED_INSTALLER" >/dev/null
+  node scripts/release/safe-package-extract.mjs \
+    7z "$NESTED_INSTALLER" "$EXTRACT_ROOT/updater"
+  ARTIFACT_ARGS=("nsis=$INSTALLER" "updater=$UPDATER")
   verify_extractions \
     "nsis=$EXTRACT_ROOT/nsis" \
     "updater=$EXTRACT_ROOT/updater"
 elif [[ "$PLATFORM" == 'linux' ]]; then
-  APPIMAGE="$(exact_file 'Linux AppImage' '*.AppImage')"
-  DEB="$(exact_file 'Linux DEB' '*.deb')"
-  RPM="$(exact_file 'Linux RPM' '*.rpm')"
-  UPDATER="$(exact_file 'Linux updater' '*.AppImage.tar.gz')"
+  APPIMAGE_SOURCE="$(exact_file 'Linux AppImage' '*.AppImage')"
+  DEB_SOURCE="$(exact_file 'Linux DEB' '*.deb')"
+  RPM_SOURCE="$(exact_file 'Linux RPM' '*.rpm')"
+  UPDATER_SOURCE="$(exact_file 'Linux updater' '*.AppImage.tar.gz')"
+  APPIMAGE="$(snapshot_file "$APPIMAGE_SOURCE" 'release.AppImage')"
+  DEB="$(snapshot_file "$DEB_SOURCE" 'release.deb')"
+  RPM="$(snapshot_file "$RPM_SOURCE" 'release.rpm')"
+  UPDATER="$(snapshot_file "$UPDATER_SOURCE" 'updater.AppImage.tar.gz')"
   mkdir -p \
     "$EXTRACT_ROOT/appimage" \
     "$EXTRACT_ROOT/deb" \
     "$EXTRACT_ROOT/rpm" \
     "$EXTRACT_ROOT/updater-archive" \
     "$EXTRACT_ROOT/updater"
-  7z x -y "-o$EXTRACT_ROOT/appimage" "$APPIMAGE" >/dev/null
-  dpkg-deb -x "$DEB" "$EXTRACT_ROOT/deb"
-  (
-    cd "$EXTRACT_ROOT/rpm"
-    rpm2cpio "$RPM" | cpio -idm --quiet
-  )
-  tar -xzf "$UPDATER" -C "$EXTRACT_ROOT/updater-archive"
+  node scripts/release/safe-package-extract.mjs \
+    7z "$APPIMAGE" "$EXTRACT_ROOT/appimage"
+  node scripts/release/safe-package-extract.mjs \
+    deb "$DEB" "$EXTRACT_ROOT/deb"
+  node scripts/release/safe-package-extract.mjs \
+    rpm "$RPM" "$EXTRACT_ROOT/rpm"
+  node scripts/release/safe-package-extract.mjs \
+    tar "$UPDATER" "$EXTRACT_ROOT/updater-archive"
   UPDATER_LIST="$EXTRACT_ROOT/updater-appimages.txt"
   find "$EXTRACT_ROOT/updater-archive" -type f -name '*.AppImage' -print \
     > "$UPDATER_LIST"
@@ -110,7 +144,14 @@ elif [[ "$PLATFORM" == 'linux' ]]; then
     exit 1
   fi
   IFS= read -r UPDATER_APPIMAGE < "$UPDATER_LIST"
-  7z x -y "-o$EXTRACT_ROOT/updater" "$UPDATER_APPIMAGE" >/dev/null
+  node scripts/release/safe-package-extract.mjs \
+    7z "$UPDATER_APPIMAGE" "$EXTRACT_ROOT/updater"
+  ARTIFACT_ARGS=(
+    "appimage=$APPIMAGE"
+    "deb=$DEB"
+    "rpm=$RPM"
+    "updater=$UPDATER"
+  )
   verify_extractions \
     "appimage=$EXTRACT_ROOT/appimage" \
     "deb=$EXTRACT_ROOT/deb" \
