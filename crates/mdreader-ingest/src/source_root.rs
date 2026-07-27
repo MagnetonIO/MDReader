@@ -187,6 +187,154 @@ impl SourceRoot {
             })
     }
 
+    /// Open an existing source-relative regular file, returning `None` only
+    /// when its name is absent. Symlinks, reparse points, directories, and
+    /// replacement of the retained root are typed refusals.
+    pub fn open_optional_file_relative(
+        &self,
+        relative: &Path,
+    ) -> Result<Option<fs::File>, SourceRootError> {
+        validate_relative(relative, false)?;
+        self.verify()?;
+        let path = self.path.join(relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(SourceRootError::CannotInspect {
+                    path,
+                    reason: error.to_string(),
+                })
+            }
+        };
+        #[cfg(unix)]
+        if metadata.file_type().is_symlink() {
+            return Err(SourceRootError::SymlinkOrReparse { path });
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if is_windows_reparse_point(metadata.file_attributes()) {
+                return Err(SourceRootError::SymlinkOrReparse { path });
+            }
+        }
+        if !metadata.is_file() {
+            return Err(SourceRootError::CannotInspect {
+                path,
+                reason: "not a regular file".to_string(),
+            });
+        }
+        let file = self.open_file_relative(relative)?;
+        self.verify()?;
+        Ok(Some(file))
+    }
+
+    /// Read metadata from an existing source-relative regular file without
+    /// following a symlink or Windows reparse point.
+    pub fn metadata_optional_relative(
+        &self,
+        relative: &Path,
+    ) -> Result<Option<fs::Metadata>, SourceRootError> {
+        self.open_optional_file_relative(relative)?
+            .map(|file| {
+                file.metadata()
+                    .map_err(|error| SourceRootError::CannotInspect {
+                        path: self.path.join(relative),
+                        reason: error.to_string(),
+                    })
+            })
+            .transpose()
+    }
+
+    /// Open or create a source-relative regular file for append without
+    /// following a symlink or Windows reparse point.
+    pub fn open_append_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
+        validate_relative(relative, false)?;
+        self.verify()?;
+
+        #[cfg(unix)]
+        let file = {
+            use rustix::fs::{openat, Mode, OFlags};
+
+            let (parent, name) = open_unix_parent(self, relative)?;
+            let fd = openat(
+                &parent,
+                &name,
+                OFlags::WRONLY
+                    | OFlags::APPEND
+                    | OFlags::CREATE
+                    | OFlags::CLOEXEC
+                    | OFlags::NOFOLLOW,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|error| SourceRootError::CannotInspect {
+                path: self.path.join(relative),
+                reason: error.to_string(),
+            })?;
+            fs::File::from(fd)
+        };
+
+        #[cfg(windows)]
+        let file = {
+            use windows_sys::Wdk::Storage::FileSystem::{
+                FILE_NON_DIRECTORY_FILE, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
+                FILE_SYNCHRONOUS_IO_NONALERT,
+            };
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+            };
+
+            let (parent, name) = open_windows_parent(self, relative)?;
+            open_windows_child(
+                self,
+                &parent,
+                &name,
+                FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN_IF,
+                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                relative,
+            )?
+        };
+
+        #[cfg(not(any(unix, windows)))]
+        let file = {
+            let path = self.path.join(relative);
+            let metadata = fs::symlink_metadata(&path).ok();
+            if metadata
+                .as_ref()
+                .is_some_and(|metadata| !metadata.is_file())
+            {
+                return Err(SourceRootError::CannotInspect {
+                    path,
+                    reason: "not a regular file".to_string(),
+                });
+            }
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| SourceRootError::CannotInspect {
+                    path,
+                    reason: error.to_string(),
+                })?
+        };
+
+        let metadata = file
+            .metadata()
+            .map_err(|error| SourceRootError::CannotInspect {
+                path: self.path.join(relative),
+                reason: error.to_string(),
+            })?;
+        if !metadata.is_file() {
+            return Err(SourceRootError::CannotInspect {
+                path: self.path.join(relative),
+                reason: "not a regular file".to_string(),
+            });
+        }
+        self.verify()?;
+        Ok(file)
+    }
+
     /// Create a new source-relative regular file without following symlinks.
     pub fn create_new_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
         validate_relative(relative, false)?;

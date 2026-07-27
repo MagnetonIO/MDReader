@@ -29,6 +29,7 @@ export interface SettingsSheetProps {
   watcher: WatcherStatus;
   importState: ImportState | null;
   onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
+  onSourceIntent?: () => void;
   onClose: () => void;
 }
 
@@ -112,6 +113,7 @@ export function SettingsSheet({
   watcher,
   importState,
   onActivateSource,
+  onSourceIntent = () => {},
   onClose,
 }: SettingsSheetProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -183,25 +185,28 @@ export function SettingsSheet({
   }, []);
 
   const activate = useCallback(
-    (source: LibrarySourceDto) => {
+    (source: LibrarySourceDto, intentAlreadyStarted = false) => {
+      if (!intentAlreadyStarted) onSourceIntent();
       onClose();
       void onActivateSource(source);
     },
-    [onActivateSource, onClose],
+    [onActivateSource, onClose, onSourceIntent],
   );
 
   const addSource = useCallback(() => {
+    onSourceIntent();
     void run('add', () => backend.pickAndAddSource(), (picked) => {
       if (!picked.source) return;
-      activate(picked.source);
+      activate(picked.source, true);
     });
-  }, [activate, backend, run]);
+  }, [activate, backend, onSourceIntent, run]);
 
   const forget = useCallback(
     (source: LibrarySourceDto) => {
+      onSourceIntent();
       void run(`forget:${source.id}`, () => backend.forgetSource(source.id), setLibrary);
     },
-    [backend, run],
+    [backend, onSourceIntent, run],
   );
 
   const setLevel = useCallback(

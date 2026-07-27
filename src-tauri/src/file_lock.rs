@@ -27,6 +27,11 @@ impl AdvisoryFileLock {
         fs2::FileExt::lock_exclusive(&file)?;
         Ok(Self(file))
     }
+
+    pub(crate) fn acquire_file(file: File) -> io::Result<Self> {
+        fs2::FileExt::lock_exclusive(&file)?;
+        Ok(Self(file))
+    }
 }
 
 impl Drop for AdvisoryFileLock {

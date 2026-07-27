@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::file_lock::AdvisoryFileLock;
+use mdreader_ingest::SourceRoot;
 
 const DIAGNOSTIC_SETTINGS_VERSION: u32 = 1;
 pub(crate) const MAX_LOG_BYTES: usize = 256 * 1_024;
@@ -270,66 +271,95 @@ impl DiagnosticLog {
         &self.directory
     }
 
-    fn settings_path(&self) -> PathBuf {
-        self.directory.join("settings.json")
-    }
-
-    fn lock_path(&self) -> PathBuf {
-        self.directory.join("diagnostics.lock")
-    }
-
     fn acquire_transaction(
         &self,
         transaction: DiagnosticTransaction,
-    ) -> Result<(std::sync::MutexGuard<'_, ()>, AdvisoryFileLock), DiagnosticError> {
+    ) -> Result<(std::sync::MutexGuard<'_, ()>, AdvisoryFileLock, SourceRoot), DiagnosticError>
+    {
         let guard = self
             .lock
             .lock()
             .map_err(|_| transaction.error("diagnostic log lock is poisoned".to_string()))?;
-        let lease = AdvisoryFileLock::acquire(&self.lock_path()).map_err(|error| {
+        fs::create_dir_all(&self.directory).map_err(|error| {
+            transaction.error(format!("cannot create diagnostic directory: {error}"))
+        })?;
+        let authority = SourceRoot::capture(self.directory.clone()).map_err(|error| {
+            transaction.error(format!("cannot open diagnostic directory: {error}"))
+        })?;
+        let lock_file = authority
+            .open_lock_relative(Path::new("diagnostics.lock"))
+            .map_err(|error| {
+                transaction.error(format!("cannot open diagnostic transaction lock: {error}"))
+            })?;
+        let lease = AdvisoryFileLock::acquire_file(lock_file).map_err(|error| {
             transaction.error(format!(
                 "cannot acquire diagnostic transaction lock: {error}"
             ))
         })?;
-        Ok((guard, lease))
+        authority
+            .verify()
+            .map_err(|error| transaction.error(format!("diagnostic directory changed: {error}")))?;
+        Ok((guard, lease, authority))
     }
 
-    fn log_path(&self, slot: usize) -> PathBuf {
+    fn log_relative(&self, slot: usize) -> PathBuf {
         if slot == 0 {
-            self.directory.join("mdreader.log")
+            PathBuf::from("mdreader.log")
         } else {
-            self.directory.join(format!("mdreader.log.{slot}"))
+            PathBuf::from(format!("mdreader.log.{slot}"))
         }
     }
 
     #[cfg(test)]
+    fn log_path(&self, slot: usize) -> PathBuf {
+        self.directory.join(self.log_relative(slot))
+    }
+
+    #[cfg(test)]
     pub(crate) fn log_files(&self) -> Result<Vec<PathBuf>, DiagnosticError> {
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
-        Ok((0..self.retention)
-            .rev()
-            .map(|slot| self.log_path(slot))
-            .filter(|path| path.is_file())
-            .collect())
+        let (_guard, _lease, authority) = self.acquire_transaction(DiagnosticTransaction::Write)?;
+        let mut files = Vec::new();
+        for slot in (0..self.retention).rev() {
+            if authority
+                .metadata_optional_relative(&self.log_relative(slot))
+                .map_err(|error| DiagnosticError::WriteFailed {
+                    message: format!("cannot inspect diagnostic log: {error}"),
+                })?
+                .is_some()
+            {
+                files.push(self.log_path(slot));
+            }
+        }
+        Ok(files)
     }
 
     pub(crate) fn level(&self) -> Result<DiagnosticLevel, DiagnosticError> {
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
-        self.level_unlocked()
+        let (_guard, _lease, authority) = self.acquire_transaction(DiagnosticTransaction::Write)?;
+        self.level_unlocked(&authority)
     }
 
-    fn level_unlocked(&self) -> Result<DiagnosticLevel, DiagnosticError> {
-        let path = self.settings_path();
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(DiagnosticLevel::Standard)
-            }
-            Err(error) => {
-                return Err(DiagnosticError::CorruptSettings {
-                    message: format!("cannot read diagnostic settings: {error}"),
-                })
-            }
+    fn level_unlocked(&self, authority: &SourceRoot) -> Result<DiagnosticLevel, DiagnosticError> {
+        const MAX_SETTINGS_BYTES: u64 = 64 * 1_024;
+        let Some(mut file) = authority
+            .open_optional_file_relative(Path::new("settings.json"))
+            .map_err(|error| DiagnosticError::CorruptSettings {
+                message: format!("cannot open diagnostic settings: {error}"),
+            })?
+        else {
+            return Ok(DiagnosticLevel::Standard);
         };
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take(MAX_SETTINGS_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| DiagnosticError::CorruptSettings {
+                message: format!("cannot read diagnostic settings: {error}"),
+            })?;
+        if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+            return Err(DiagnosticError::CorruptSettings {
+                message: "diagnostic settings exceed the local size bound".to_string(),
+            });
+        }
         let stored: StoredDiagnosticSettings =
             serde_json::from_slice(&bytes).map_err(|error| DiagnosticError::CorruptSettings {
                 message: format!("cannot parse diagnostic settings: {error}"),
@@ -346,10 +376,7 @@ impl DiagnosticLog {
     }
 
     pub(crate) fn set_level(&self, level: DiagnosticLevel) -> Result<(), DiagnosticError> {
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
-        fs::create_dir_all(&self.directory).map_err(|error| DiagnosticError::WriteFailed {
-            message: format!("cannot create diagnostic directory: {error}"),
-        })?;
+        let (_guard, _lease, authority) = self.acquire_transaction(DiagnosticTransaction::Write)?;
         let body = serde_json::to_vec_pretty(&StoredDiagnosticSettings {
             version: DIAGNOSTIC_SETTINGS_VERSION,
             level,
@@ -357,20 +384,22 @@ impl DiagnosticLog {
         .map_err(|error| DiagnosticError::WriteFailed {
             message: format!("cannot encode diagnostic settings: {error}"),
         })?;
-        atomic_write(&self.settings_path(), &body).map_err(|error| DiagnosticError::WriteFailed {
-            message: format!("cannot persist diagnostic settings: {error}"),
+        atomic_write_relative(&authority, Path::new("settings.json"), &body).map_err(|error| {
+            DiagnosticError::WriteFailed {
+                message: format!("cannot persist diagnostic settings: {error}"),
+            }
         })
     }
 
     pub(crate) fn append(&self, event: DiagnosticEvent) -> Result<(), DiagnosticError> {
         event.validate()?;
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
-        if !self.level_unlocked()?.permits(event.required_level()) {
+        let (_guard, _lease, authority) = self.acquire_transaction(DiagnosticTransaction::Write)?;
+        if !self
+            .level_unlocked(&authority)?
+            .permits(event.required_level())
+        {
             return Ok(());
         }
-        fs::create_dir_all(&self.directory).map_err(|error| DiagnosticError::WriteFailed {
-            message: format!("cannot create diagnostic directory: {error}"),
-        })?;
         let record = DiagnosticRecord {
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -394,73 +423,95 @@ impl DiagnosticLog {
             });
         }
 
-        let active = self.log_path(0);
-        let current_bytes = fs::metadata(&active).map_or(0, |meta| meta.len() as usize);
-        if current_bytes.saturating_add(line.len()) > self.max_log_bytes {
-            self.rotate()?;
-        }
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(active)
+        let active = self.log_relative(0);
+        let current_bytes = authority
+            .metadata_optional_relative(&active)
             .map_err(|error| DiagnosticError::WriteFailed {
+                message: format!("cannot inspect diagnostic log: {error}"),
+            })?
+            .map_or(0, |metadata| metadata.len() as usize);
+        if current_bytes.saturating_add(line.len()) > self.max_log_bytes {
+            self.rotate(&authority)?;
+        }
+        let mut file = authority.open_append_relative(&active).map_err(|error| {
+            DiagnosticError::WriteFailed {
                 message: format!("cannot open diagnostic log: {error}"),
-            })?;
+            }
+        })?;
         file.write_all(line.as_bytes())
             .and_then(|()| file.flush())
             .map_err(|error| DiagnosticError::WriteFailed {
                 message: format!("cannot append diagnostic log: {error}"),
+            })?;
+        authority
+            .verify()
+            .map_err(|error| DiagnosticError::WriteFailed {
+                message: format!("diagnostic directory changed after append: {error}"),
             })
     }
 
-    fn rotate(&self) -> Result<(), DiagnosticError> {
-        let oldest = self.log_path(self.retention - 1);
-        if oldest.exists() {
-            fs::remove_file(&oldest).map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("cannot retire oldest diagnostic log: {error}"),
+    fn rotate(&self, authority: &SourceRoot) -> Result<(), DiagnosticError> {
+        let mut present = Vec::with_capacity(self.retention);
+        for slot in 0..self.retention {
+            present.push(
+                authority
+                    .metadata_optional_relative(&self.log_relative(slot))
+                    .map_err(|error| DiagnosticError::WriteFailed {
+                        message: format!("cannot inspect diagnostic log during rotation: {error}"),
+                    })?,
+            );
+        }
+
+        let oldest = self.log_relative(self.retention - 1);
+        if present[self.retention - 1].is_some() {
+            authority.remove_file_relative(&oldest).map_err(|error| {
+                DiagnosticError::WriteFailed {
+                    message: format!("cannot retire oldest diagnostic log: {error}"),
+                }
             })?;
         }
         for slot in (1..self.retention).rev() {
-            let previous = self.log_path(slot - 1);
-            let metadata = match fs::metadata(&previous) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(DiagnosticError::WriteFailed {
-                        message: format!("cannot inspect diagnostic log during rotation: {error}"),
-                    })
-                }
+            let previous = self.log_relative(slot - 1);
+            let Some(metadata) = present[slot - 1].as_ref() else {
+                continue;
             };
             if metadata.len() > self.max_log_bytes as u64 {
-                fs::remove_file(previous).map_err(|error| DiagnosticError::WriteFailed {
-                    message: format!("cannot discard oversized diagnostic log: {error}"),
-                })?;
-            } else {
-                fs::rename(previous, self.log_path(slot)).map_err(|error| {
+                authority.remove_file_relative(&previous).map_err(|error| {
                     DiagnosticError::WriteFailed {
-                        message: format!("cannot rotate diagnostic log: {error}"),
+                        message: format!("cannot discard oversized diagnostic log: {error}"),
                     }
                 })?;
+            } else {
+                authority
+                    .rename_relative(&previous, &self.log_relative(slot))
+                    .map_err(|error| DiagnosticError::WriteFailed {
+                        message: format!("cannot rotate diagnostic log: {error}"),
+                    })?;
             }
         }
-        Ok(())
+        authority
+            .verify()
+            .map_err(|error| DiagnosticError::WriteFailed {
+                message: format!("diagnostic directory changed during rotation: {error}"),
+            })
     }
 
     pub(crate) fn export_to(&self, destination: &Path) -> Result<(), DiagnosticError> {
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Export)?;
+        let (_guard, _lease, authority) =
+            self.acquire_transaction(DiagnosticTransaction::Export)?;
         let mut bundle =
             b"MDReader local diagnostics bundle v1\nNo document or query contents are collected.\n\n"
                 .to_vec();
         for slot in (0..self.retention).rev() {
-            let path = self.log_path(slot);
-            let mut file = match fs::File::open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(DiagnosticError::ExportFailed {
-                        message: format!("cannot read diagnostic log for export: {error}"),
-                    })
-                }
+            let relative = self.log_relative(slot);
+            let Some(mut file) =
+                authority
+                    .open_optional_file_relative(&relative)
+                    .map_err(|error| DiagnosticError::ExportFailed {
+                        message: format!("cannot open diagnostic log for export: {error}"),
+                    })?
+            else {
+                continue;
             };
             let remaining = self.max_export_bytes.saturating_sub(bundle.len());
             if remaining == 0 {
@@ -482,29 +533,48 @@ impl DiagnosticLog {
                     .unwrap_or_default(),
             );
         }
+        authority
+            .verify()
+            .map_err(|error| DiagnosticError::ExportFailed {
+                message: format!("diagnostic directory changed during export: {error}"),
+            })?;
         atomic_write(destination, &bundle).map_err(|error| DiagnosticError::ExportFailed {
             message: format!("cannot write diagnostic export: {error}"),
         })
     }
 
-    pub(crate) fn clear(&self, confirmed: bool) -> Result<(), DiagnosticError> {
+    pub(crate) fn clear(&self, confirmed: bool) -> Result<DiagnosticLevel, DiagnosticError> {
         if !confirmed {
             return Err(DiagnosticError::ConfirmationRequired);
         }
-        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Clear)?;
+        let (_guard, _lease, authority) = self.acquire_transaction(DiagnosticTransaction::Clear)?;
+        let level = self.level_unlocked(&authority)?;
+        let mut present = Vec::with_capacity(self.retention);
         for slot in 0..self.retention {
-            let path = self.log_path(slot);
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(DiagnosticError::ClearFailed {
-                        message: format!("cannot clear {}: {error}", path.display()),
-                    })
-                }
+            present.push(
+                authority
+                    .metadata_optional_relative(&self.log_relative(slot))
+                    .map_err(|error| DiagnosticError::ClearFailed {
+                        message: format!("cannot inspect diagnostic log before clear: {error}"),
+                    })?
+                    .is_some(),
+            );
+        }
+        for (slot, exists) in present.into_iter().enumerate() {
+            if exists {
+                authority
+                    .remove_file_relative(&self.log_relative(slot))
+                    .map_err(|error| DiagnosticError::ClearFailed {
+                        message: format!("cannot clear diagnostic log: {error}"),
+                    })?;
             }
         }
-        Ok(())
+        authority
+            .verify()
+            .map_err(|error| DiagnosticError::ClearFailed {
+                message: format!("diagnostic directory changed during clear: {error}"),
+            })?;
+        Ok(level)
     }
 }
 
@@ -526,13 +596,17 @@ fn lock_diagnostics(
 }
 
 fn diagnostic_info(log: &DiagnosticLog) -> Result<DiagnosticInfo, DiagnosticError> {
-    Ok(DiagnosticInfo {
-        level: log.level()?,
+    Ok(diagnostic_info_with_level(log, log.level()?))
+}
+
+fn diagnostic_info_with_level(log: &DiagnosticLog, level: DiagnosticLevel) -> DiagnosticInfo {
+    DiagnosticInfo {
+        level,
         directory: log.directory().to_string_lossy().into_owned(),
         max_file_bytes: MAX_LOG_BYTES as u32,
         retained_files: LOG_RETENTION as u32,
         max_export_bytes: MAX_EXPORT_BYTES as u32,
-    })
+    }
 }
 
 /// Return the exact local log location and documented bounds.
@@ -639,10 +713,40 @@ pub(crate) fn clear_diagnostics(
     confirmed: bool,
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<DiagnosticInfo, DiagnosticError> {
+    if !confirmed {
+        return Err(DiagnosticError::ConfirmationRequired);
+    }
     let _guard = lock_diagnostics(&state)?;
     let log = DiagnosticLog::new(diagnostics_directory(&app)?);
-    log.clear(confirmed)?;
-    diagnostic_info(&log)
+    let level = log.clear(confirmed)?;
+    Ok(diagnostic_info_with_level(&log, level))
+}
+
+fn atomic_write_relative(authority: &SourceRoot, path: &Path, body: &[u8]) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| "diagnostic settings path has no file name".to_string())?;
+    let temporary = PathBuf::from(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut file = authority
+            .create_new_relative(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(body)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        authority
+            .rename_relative(&temporary, path)
+            .map_err(|error| error.to_string())?;
+        authority.verify().map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = authority.remove_file_relative(&temporary);
+    }
+    result
 }
 
 fn atomic_write(path: &Path, body: &[u8]) -> io::Result<()> {
@@ -837,7 +941,10 @@ mod tests {
             DiagnosticError::ConfirmationRequired
         );
         assert!(temp.path().join("mdreader.log").exists());
-        log.clear(true).expect("confirmed clear");
+        assert_eq!(
+            log.clear(true).expect("confirmed clear"),
+            DiagnosticLevel::Standard
+        );
         assert!(!temp.path().join("mdreader.log").exists());
         assert!(temp.path().join("keep.txt").exists());
 
@@ -899,7 +1006,7 @@ mod tests {
         });
         let for_clear = directory.clone();
         assert_sidecar_blocks(&directory, move || {
-            DiagnosticLog::new(for_clear).clear(true)
+            DiagnosticLog::new(for_clear).clear(true).map(|_| ())
         });
 
         let first = Arc::new(DiagnosticLog::with_limits(&directory, 512, 3, 1_024));
@@ -950,5 +1057,149 @@ mod tests {
             Err(DiagnosticError::WriteFailed { .. })
         ));
         assert!(!temp.path().join("mdreader.log").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn substituted_named_logs_are_refused_without_following_or_removing_the_link() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create logs");
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, b"outside stays").expect("write outside marker");
+        let active = logs.join("mdreader.log");
+        symlink(&outside, &active).expect("substitute active log");
+        let log = DiagnosticLog::with_limits(&logs, 256, 3, 1_024);
+
+        assert!(matches!(
+            log.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(active
+            .symlink_metadata()
+            .expect("link remains")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(&outside).expect("read outside after append"),
+            b"outside stays"
+        );
+
+        let export = temp.path().join("bundle.txt");
+        assert!(matches!(
+            log.export_to(&export),
+            Err(DiagnosticError::ExportFailed { .. })
+        ));
+        assert!(!export.exists(), "a refused export publishes no bundle");
+        assert_eq!(
+            fs::read(&outside).expect("read outside after export"),
+            b"outside stays"
+        );
+
+        assert!(matches!(
+            log.clear(true),
+            Err(DiagnosticError::ClearFailed { .. })
+        ));
+        assert!(active
+            .symlink_metadata()
+            .expect("link remains")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(&outside).expect("read outside after clear"),
+            b"outside stays"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotation_refuses_a_substituted_retained_slot_before_mutating_any_log() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let logs = temp.path().join("logs");
+        fs::create_dir(&logs).expect("create logs");
+        let active = logs.join("mdreader.log");
+        fs::write(&active, vec![b'a'; 250]).expect("write nearly-full active log");
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, b"outside stays").expect("write outside marker");
+        let retained = logs.join("mdreader.log.1");
+        symlink(&outside, &retained).expect("substitute retained log");
+        let before = fs::read(&active).expect("read active before rotation");
+        let log = DiagnosticLog::with_limits(&logs, 256, 3, 1_024);
+
+        assert!(matches!(
+            log.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert_eq!(fs::read(&active).expect("active remains"), before);
+        assert!(retained
+            .symlink_metadata()
+            .expect("retained link remains")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(&outside).expect("outside remains"),
+            b"outside stays"
+        );
+    }
+
+    #[test]
+    fn corrupt_settings_reject_clear_before_any_log_bytes_change() {
+        let temp = tempdir().expect("tempdir");
+        let log = DiagnosticLog::new(temp.path());
+        let active = temp.path().join("mdreader.log");
+        let retained = temp.path().join("mdreader.log.1");
+        fs::write(&active, b"active bytes").expect("write active");
+        fs::write(&retained, b"retained bytes").expect("write retained");
+        fs::write(temp.path().join("settings.json"), b"{not-json").expect("write corrupt settings");
+
+        assert!(matches!(
+            log.clear(true),
+            Err(DiagnosticError::CorruptSettings { .. })
+        ));
+        assert_eq!(fs::read(active).expect("active remains"), b"active bytes");
+        assert_eq!(
+            fs::read(retained).expect("retained remains"),
+            b"retained bytes"
+        );
+    }
+
+    #[test]
+    fn successful_clear_returns_the_validated_level_without_post_clear_io() {
+        let temp = tempdir().expect("tempdir");
+        let log = DiagnosticLog::new(temp.path());
+        log.set_level(DiagnosticLevel::Verbose)
+            .expect("persist verbose");
+        log.append(DiagnosticEvent::ApplicationStarted)
+            .expect("append active log");
+
+        let level = log.clear(true).expect("clear succeeds");
+
+        assert_eq!(level, DiagnosticLevel::Verbose);
+        assert!(!temp.path().join("mdreader.log").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_substituted_diagnostics_directory_is_not_treated_as_local_authority() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).expect("create outside directory");
+        let logs = temp.path().join("logs");
+        symlink(&outside, &logs).expect("substitute diagnostics directory");
+
+        assert!(matches!(
+            DiagnosticLog::new(&logs).append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(
+            !outside.join("mdreader.log").exists(),
+            "a substituted directory receives no diagnostic bytes"
+        );
     }
 }

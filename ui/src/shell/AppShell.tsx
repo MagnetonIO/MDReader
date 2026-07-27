@@ -158,14 +158,22 @@ export function AppShell() {
   // can reach the latest flusher without a declaration-order dependency.
   const flushSessionRef = useRef<() => void>(() => {});
   // Late-bound so `proceedAfterGuard` (declared before `commitSwitch`) can reach it.
-  const commitSwitchRef = useRef<(folder: string, sourceId?: string) => Promise<boolean>>(() =>
-    Promise.resolve(false),
-  );
+  const commitSwitchRef = useRef<
+    (folder: string, sourceId?: string, expectedSourceIntent?: number) => Promise<boolean>
+  >(() => Promise.resolve(false));
   // Native watch/grant commands commit the backend epoch before their IPC
   // promise resolves. Serialize the complete frontend transaction so a newer
   // request cannot supersede an already-committed response and then fail while
   // leaving the UI on a different root from the backend.
   const switchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Every user operation that can activate, add, or forget a library source
+  // advances this generation synchronously, before its first await. Startup
+  // captures the earlier generation before loading persistence and may publish
+  // only while it is still current.
+  const sourceIntentRef = useRef(0);
+  const beginSourceIntent = useCallback(() => {
+    sourceIntentRef.current += 1;
+  }, []);
   // Latched once the window is committing to close, so the force-close runs at
   // most once. We force-close with destroy(), which tears the window down WITHOUT
   // re-firing onCloseRequested — but the flag stays as a cheap guard against a
@@ -466,8 +474,18 @@ export function AppShell() {
   // tab tears it down, so this must run only after any unsaved edits have been
   // resolved — the guard in `switchWorkspace` guarantees that.
   const commitSwitch = useCallback(
-    (folder: string, sourceId?: string): Promise<boolean> => {
+    (
+      folder: string,
+      sourceId?: string,
+      expectedSourceIntent?: number,
+    ): Promise<boolean> => {
       const run = async (): Promise<boolean> => {
+        if (
+          expectedSourceIntent !== undefined &&
+          sourceIntentRef.current !== expectedSourceIntent
+        ) {
+          return false;
+        }
         const sources = useSourcesStore.getState();
         // `performSwitch` owns the two guarantees (same-root supersede; per-origin
         // retirement against the post-commit root) — see switch-workspace.ts.
@@ -529,6 +547,7 @@ export function AppShell() {
   // (or a same-root supersede) switches immediately.
   const switchWorkspace = useCallback(
     (folder: string, sourceId?: string): Promise<boolean> => {
+      beginSourceIntent();
       const currentRoot = useSourcesStore.getState().root;
       const isRealSwitch = currentRoot !== null && currentRoot !== folder;
       if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
@@ -537,10 +556,11 @@ export function AppShell() {
       }
       return commitSwitch(folder, sourceId);
     },
-    [commitSwitch],
+    [beginSourceIntent, commitSwitch],
   );
 
   const onPickFolder = useCallback(async () => {
+    beginSourceIntent();
     let picked: { source: LibrarySourceDto | null };
     try {
       picked = await pickAndAddLibrarySource();
@@ -550,7 +570,7 @@ export function AppShell() {
     }
     if (!picked.source) return;
     await switchWorkspace(picked.source.path, picked.source.id);
-  }, [switchWorkspace]);
+  }, [beginSourceIntent, switchWorkspace]);
 
   // Re-run the import for the current workspace. When the failure was the model
   // (the `model-unavailable` phase), this genuinely re-attempts the LOAD: the
@@ -1244,10 +1264,26 @@ export function AppShell() {
   // --- startup: restore session + settings ------------------------------
   useEffect(() => {
     let active = true;
+    const startupIntent = sourceIntentRef.current;
+    const startupIsCurrent = () =>
+      active && sourceIntentRef.current === startupIntent;
     void (async () => {
-      const { session, settings } = await loadPersisted();
-      if (!active) return;
+      let persisted: Awaited<ReturnType<typeof loadPersisted>>;
+      try {
+        persisted = await loadPersisted();
+      } catch {
+        if (startupIsCurrent()) {
+          toast('The saved session could not be read; startup restore was skipped');
+        }
+        if (active) setHydrated(true);
+        return;
+      }
+      const { session, settings } = persisted;
       if (Object.keys(settings).length > 0) useSettingsStore.getState().hydrate(settings);
+      if (!startupIsCurrent()) {
+        if (active) setHydrated(true);
+        return;
+      }
       if (session) {
         useTabsStore.getState().hydrate(session.tabs, session.activeTabId);
         // A serialized path is history, not a filesystem grant. Keep its Recent
@@ -1257,14 +1293,16 @@ export function AppShell() {
         if (session.root && isTauri()) {
           try {
             const member = await reconcileLibraryRestore(session.root);
-            if (active && member) {
+            if (startupIsCurrent() && member) {
               // The registry returns its current canonical path. Route that member
               // through the SAME watch/epoch transaction as an interactive switch,
               // then mark it active only after the grant commits.
-              await commitSwitch(member.path, member.id);
+              await commitSwitchRef.current(member.path, member.id, startupIntent);
             }
           } catch {
-            if (active) toast('The saved library could not be reconciled; no folder was opened');
+            if (startupIsCurrent()) {
+              toast('The saved library could not be reconciled; no folder was opened');
+            }
           }
         }
       }
@@ -1274,7 +1312,7 @@ export function AppShell() {
     return () => {
       active = false;
     };
-  }, [commitSwitch]);
+  }, []);
 
   // --- theme application ------------------------------------------------
   useEffect(() => {
@@ -1732,6 +1770,7 @@ export function AppShell() {
           watcher={watcher}
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
+          onSourceIntent={beginSourceIntent}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}

@@ -125,6 +125,40 @@ describe('Settings sheet', () => {
     expect(activate).toHaveBeenCalledWith(SOURCE);
   });
 
+  it('advances source intent synchronously before forgetting can await the backend', async () => {
+    let release!: (snapshot: LibrarySnapshot) => void;
+    const pending = new Promise<LibrarySnapshot>((resolve) => {
+      release = resolve;
+    });
+    const forgetSource = vi.fn(() => pending);
+    const api = backend({ forgetSource });
+    const onSourceIntent = vi.fn();
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onSourceIntent={onSourceIntent}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('Research notes');
+    fireEvent.click(screen.getByRole('button', { name: 'Forget Research notes' }));
+
+    expect(onSourceIntent).toHaveBeenCalledOnce();
+    expect(forgetSource).toHaveBeenCalledWith(SOURCE.id);
+    expect(onSourceIntent.mock.invocationCallOrder[0]).toBeLessThan(
+      forgetSource.mock.invocationCallOrder[0]!,
+    );
+
+    await act(async () => {
+      release({ version: 1, sources: [] });
+      await pending;
+    });
+  });
+
   it('keeps unavailable membership visible and protects the active source from forgetting', async () => {
     const active: LibrarySourceDto = {
       ...SOURCE,

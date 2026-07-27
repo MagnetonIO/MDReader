@@ -940,6 +940,62 @@ impl LibraryStore {
         registry.save_to(&self.registry_path)?;
         Ok(result)
     }
+
+    fn reconcile_restore_or_migrate(
+        &self,
+        requested_root: Option<&Path>,
+        app_data: &Path,
+    ) -> Result<Option<LibrarySourceDto>, LibraryError> {
+        let _lease = self.acquire()?;
+        let registry_exists = match fs::symlink_metadata(&self.registry_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(LibraryError::CorruptRegistry {
+                    message: "library registry is not a regular file".to_string(),
+                })
+            }
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(LibraryError::CorruptRegistry {
+                    message: format!("cannot inspect library registry: {error}"),
+                })
+            }
+        };
+
+        if registry_exists {
+            let registry = LibraryRegistry::load_from(&self.registry_path)?;
+            let source_id = registry.reconcile_restore(requested_root)?;
+            return source_id
+                .map(|source_id| {
+                    registry
+                        .snapshot(app_data, None)?
+                        .sources
+                        .into_iter()
+                        .find(|source| source.id == source_id)
+                        .ok_or_else(|| LibraryError::CorruptRegistry {
+                            message: "restored library source is not a member".to_string(),
+                        })
+                })
+                .transpose();
+        }
+
+        let Some(requested_root) = requested_root else {
+            return Ok(None);
+        };
+        let mut registry = LibraryRegistry::empty();
+        let source = match registry.add_root(requested_root) {
+            Ok(source) => source,
+            Err(LibraryError::InvalidRoot { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        registry.activation_root(&source.id)?;
+        registry.save_to(&self.registry_path)?;
+        Ok(registry
+            .snapshot(app_data, None)?
+            .sources
+            .into_iter()
+            .find(|candidate| candidate.id == source.id))
+    }
 }
 
 fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
@@ -1031,17 +1087,8 @@ pub(crate) fn reconcile_library_restore(
 ) -> Result<Option<LibrarySourceDto>, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    LibraryStore::new(path).read(|registry| {
-        let source_id = registry.reconcile_restore(session_root.as_deref().map(Path::new))?;
-        let Some(source_id) = source_id else {
-            return Ok(None);
-        };
-        Ok(registry
-            .snapshot(&app_data, None)?
-            .sources
-            .into_iter()
-            .find(|source| source.id == source_id))
-    })
+    LibraryStore::new(path)
+        .reconcile_restore_or_migrate(session_root.as_deref().map(Path::new), &app_data)
 }
 
 /// Arm and commit a persisted member by source ID. The registry supplies the
@@ -1724,5 +1771,103 @@ mod tests {
             LibraryStore::new(registry_path).read(|_| Ok(())),
             Err(LibraryError::PersistFailed { .. })
         ));
+    }
+
+    #[test]
+    fn absent_registry_migrates_one_available_legacy_session_root_once() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "legacy-notes");
+        let canonical = fs::canonicalize(&root).expect("canonical legacy root");
+        let store = LibraryStore::new(registry_path.clone());
+
+        let first = store
+            .reconcile_restore_or_migrate(Some(&canonical), &app_data)
+            .expect("available legacy root migrates")
+            .expect("migration returns the admitted member");
+        assert_eq!(first.path, canonical.to_string_lossy());
+        assert!(registry_path.is_file(), "migration is persisted atomically");
+
+        let first_bytes = fs::read(&registry_path).expect("read first registry");
+        let second = store
+            .reconcile_restore_or_migrate(Some(&canonical), &app_data)
+            .expect("second startup reconciles")
+            .expect("the same member restores");
+        assert_eq!(second.id, first.id, "filesystem identity is stable");
+        assert_eq!(
+            fs::read(&registry_path).expect("read second registry"),
+            first_bytes,
+            "restart is idempotent"
+        );
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("load migrated registry")
+                .sources()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn existing_registry_has_precedence_over_a_legacy_session_string() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let admitted = mkdir(temp.path(), "admitted");
+        let outsider = mkdir(temp.path(), "legacy-outsider");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&admitted).expect("add admitted source");
+        registry.save_to(&registry_path).expect("persist registry");
+        let before = fs::read(&registry_path).expect("read registry before restore");
+
+        let restored = LibraryStore::new(registry_path.clone())
+            .reconcile_restore_or_migrate(Some(&outsider), &app_data)
+            .expect("outsider is a clean refusal");
+
+        assert!(restored.is_none());
+        assert_eq!(
+            fs::read(&registry_path).expect("read registry after refusal"),
+            before,
+            "an existing registry is never overwritten from a session string"
+        );
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("load unchanged registry")
+                .sources()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn unavailable_or_corrupt_legacy_restore_fails_without_publishing_membership() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let missing = temp.path().join("missing");
+        let store = LibraryStore::new(registry_path.clone());
+
+        assert!(store
+            .reconcile_restore_or_migrate(Some(&missing), &app_data)
+            .expect("missing legacy root is a typed clean refusal")
+            .is_none());
+        assert!(
+            !registry_path.exists(),
+            "a refused migration does not consume or fabricate registry state"
+        );
+
+        fs::create_dir_all(&app_data).expect("create app data");
+        fs::write(&registry_path, b"{corrupt").expect("write corrupt registry");
+        let available = mkdir(temp.path(), "available");
+        assert!(matches!(
+            store.reconcile_restore_or_migrate(Some(&available), &app_data),
+            Err(LibraryError::CorruptRegistry { .. })
+        ));
+        assert_eq!(
+            fs::read(&registry_path).expect("corrupt bytes remain"),
+            b"{corrupt",
+            "corruption is never replaced by a session-derived registry"
+        );
     }
 }
