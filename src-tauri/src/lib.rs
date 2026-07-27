@@ -18,7 +18,7 @@ use tauri_specta::{collect_commands, collect_events, Builder};
 /// TypeScript bindings destination, relative to this crate's manifest dir
 /// (`apps/mdreader/src-tauri`). `cargo test` and `tauri dev` both run with that
 /// as the working directory, so this resolves to `apps/mdreader/ui/src`.
-#[cfg(test)]
+#[cfg(any(debug_assertions, test))]
 const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 
 /// Menu id for the remapped "Close Window" item (macOS). See [`build_app_menu`].
