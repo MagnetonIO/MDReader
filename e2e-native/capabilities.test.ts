@@ -116,32 +116,54 @@ function sealDex(dex: Buffer): Buffer {
 }
 
 function dexFile(version = '035'): Buffer {
-  const dex = Buffer.alloc(140);
+  const dex = Buffer.alloc(172);
   dex.write(`dex\n${version}\0`, 0, 'ascii');
   dex.writeUInt32LE(dex.byteLength, 32);
   dex.writeUInt32LE(112, 36);
   dex.writeUInt32LE(0x12345678, 40);
-  dex.writeUInt32LE(112, 52);
-  dex.writeUInt32LE(28, 104);
-  dex.writeUInt32LE(112, 108);
-  dex.writeUInt32LE(2, 112);
-  dex.writeUInt16LE(0x0000, 116);
-  dex.writeUInt32LE(1, 120);
-  dex.writeUInt32LE(0, 124);
-  dex.writeUInt16LE(0x1000, 128);
-  dex.writeUInt32LE(1, 132);
-  dex.writeUInt32LE(112, 136);
+  dex.writeUInt32LE(120, 52);
+  dex.writeUInt32LE(1, 56);
+  dex.writeUInt32LE(112, 60);
+  dex.writeUInt32LE(56, 104);
+  dex.writeUInt32LE(116, 108);
+  dex.writeUInt32LE(116, 112);
+  dex.set([1, 0x78, 0], 116);
+  dex.writeUInt32LE(4, 120);
+  dex.writeUInt16LE(0x0000, 124);
+  dex.writeUInt32LE(1, 128);
+  dex.writeUInt32LE(0, 132);
+  dex.writeUInt16LE(0x0001, 136);
+  dex.writeUInt32LE(1, 140);
+  dex.writeUInt32LE(112, 144);
+  dex.writeUInt16LE(0x2002, 148);
+  dex.writeUInt32LE(1, 152);
+  dex.writeUInt32LE(116, 156);
+  dex.writeUInt16LE(0x1000, 160);
+  dex.writeUInt32LE(1, 164);
+  dex.writeUInt32LE(120, 168);
   return sealDex(dex);
 }
 
-function elfLibrary(payload: Buffer, machine = 0x3e, validMagic = true): Buffer {
+function elfLibrary(
+  payload: Buffer,
+  machine = 0x3e,
+  validMagic = true,
+  extraDynamicEntries: ReadonlyArray<readonly [number, bigint]> = [],
+): Buffer {
   const programHeaderOffset = 64;
   const programHeaderSize = 56;
   const programHeaderCount = 2;
   const dynamicOffset =
     programHeaderOffset + programHeaderSize * programHeaderCount;
-  const dynamic = Buffer.alloc(16);
-  const fileSize = dynamicOffset + dynamic.byteLength + payload.byteLength;
+  const stringTable = Buffer.from('\0libmdreader_app_lib.so\0', 'utf8');
+  const dynamicEntryCount = 6 + extraDynamicEntries.length;
+  const dynamic = Buffer.alloc(dynamicEntryCount * 16);
+  const stringTableOffset = dynamicOffset + dynamic.byteLength;
+  const symbolTableOffset =
+    (stringTableOffset + stringTable.byteLength + 7) & ~7;
+  const symbolTable = Buffer.alloc(24);
+  const payloadOffset = symbolTableOffset + symbolTable.byteLength;
+  const fileSize = payloadOffset + payload.byteLength;
   const header = Buffer.alloc(fileSize);
   header.set(validMagic ? [0x7f, 0x45, 0x4c, 0x46] : [0, 0, 0, 0], 0);
   header[4] = 2;
@@ -156,7 +178,7 @@ function elfLibrary(payload: Buffer, machine = 0x3e, validMagic = true): Buffer 
   header.writeUInt16LE(programHeaderCount, 56);
 
   header.writeUInt32LE(1, programHeaderOffset);
-  header.writeUInt32LE(4, programHeaderOffset + 4);
+  header.writeUInt32LE(5, programHeaderOffset + 4);
   header.writeBigUInt64LE(0n, programHeaderOffset + 8);
   header.writeBigUInt64LE(0n, programHeaderOffset + 16);
   header.writeBigUInt64LE(0n, programHeaderOffset + 24);
@@ -174,8 +196,23 @@ function elfLibrary(payload: Buffer, machine = 0x3e, validMagic = true): Buffer 
   header.writeBigUInt64LE(BigInt(dynamic.byteLength), dynamicProgramHeader + 40);
   header.writeBigUInt64LE(8n, dynamicProgramHeader + 48);
 
+  const dynamicEntries: ReadonlyArray<readonly [number, bigint]> = [
+    [5, BigInt(stringTableOffset)],
+    [10, BigInt(stringTable.byteLength)],
+    [6, BigInt(symbolTableOffset)],
+    [11, 24n],
+    [14, 1n],
+    ...extraDynamicEntries,
+    [0, 0n],
+  ];
+  for (const [index, [tag, value]] of dynamicEntries.entries()) {
+    dynamic.writeBigUInt64LE(BigInt(tag), index * 16);
+    dynamic.writeBigUInt64LE(value, index * 16 + 8);
+  }
   dynamic.copy(header, dynamicOffset);
-  payload.copy(header, dynamicOffset + dynamic.byteLength);
+  stringTable.copy(header, stringTableOffset);
+  symbolTable.copy(header, symbolTableOffset);
+  payload.copy(header, payloadOffset);
   return header;
 }
 
@@ -523,6 +560,68 @@ async function renameZipMember(
   await writeFile(apk, bytes);
 }
 
+async function appendDeflateTail(
+  apk: string,
+  member: string,
+  tail: Buffer,
+): Promise<void> {
+  const bytes = await readFile(apk);
+  const records = zipRecords(bytes);
+  const record = records.find((candidate) => candidate.name === member);
+  if (!record) throw new Error(`missing ZIP member ${member}`);
+  if (
+    bytes.readUInt16LE(record.centralOffset + 10) !== 8 ||
+    bytes.readUInt16LE(record.localOffset + 8) !== 8
+  ) {
+    throw new Error(`test ZIP member ${member} must use deflate`);
+  }
+  const compressedSize = bytes.readUInt32LE(record.centralOffset + 20);
+  const localNameLength = bytes.readUInt16LE(record.localOffset + 26);
+  const localExtraLength = bytes.readUInt16LE(record.localOffset + 28);
+  const dataOffset =
+    record.localOffset + 30 + localNameLength + localExtraLength;
+  const dataEnd = dataOffset + compressedSize;
+  const output = Buffer.concat([
+    bytes.subarray(0, dataEnd),
+    tail,
+    bytes.subarray(dataEnd),
+  ]);
+  const shifted = (offset: number): number =>
+    offset >= dataEnd ? offset + tail.byteLength : offset;
+  for (const candidate of records) {
+    const centralOffset = shifted(candidate.centralOffset);
+    if (candidate.localOffset >= dataEnd) {
+      output.writeUInt32LE(
+        candidate.localOffset + tail.byteLength,
+        centralOffset + 42,
+      );
+    }
+  }
+  const targetCentralOffset = shifted(record.centralOffset);
+  const extendedCompressedSize = compressedSize + tail.byteLength;
+  output.writeUInt32LE(extendedCompressedSize, targetCentralOffset + 20);
+  const flags = output.readUInt16LE(record.localOffset + 6);
+  if ((flags & 0x0008) === 0) {
+    output.writeUInt32LE(extendedCompressedSize, record.localOffset + 18);
+  } else {
+    const descriptorOffset = dataEnd + tail.byteLength;
+    const hasSignature = output.readUInt32LE(descriptorOffset) === 0x08074b50;
+    output.writeUInt32LE(
+      extendedCompressedSize,
+      descriptorOffset + (hasSignature ? 8 : 4),
+    );
+  }
+  const originalEocd = bytes.lastIndexOf(
+    Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+  );
+  if (originalEocd < 0) throw new Error('test APK has no EOCD');
+  output.writeUInt32LE(
+    bytes.readUInt32LE(originalEocd + 16) + tail.byteLength,
+    originalEocd + tail.byteLength + 16,
+  );
+  await writeFile(apk, output);
+}
+
 function plist(bundleIdentifier: string, executable: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
@@ -802,6 +901,28 @@ test('Android validation rejects a DEX fixed-width section outside the file', as
   }
 });
 
+test('Android validation bounds variable-width DEX map sections', async () => {
+  const dex = dexFile();
+  dex.writeUInt32LE(0xffffffff, 152);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX variable section.*bound/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation rejects a native library without ELF magic', async () => {
   const artifact = await fakeAndroidArtifact(
     Buffer.from(buildManifest()),
@@ -908,6 +1029,87 @@ test('Android validation rejects an ELF program segment outside the library', as
     await assert.rejects(
       async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       /ELF program header.*bounds/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects DT_STRTAB outside a file-backed PT_LOAD', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeBigUInt64LE(BigInt(library.byteLength + 4_096), 176 + 8);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DT_STRTAB.*PT_LOAD/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation bounds a DT_RELA table inside file-backed PT_LOAD', async () => {
+  const library = elfLibrary(
+    Buffer.from(buildManifest()),
+    0x3e,
+    true,
+    [
+      [7, 65_536n],
+      [8, 24n],
+      [9, 24n],
+    ],
+  );
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DT_RELA.*PT_LOAD/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation ignores build markers outside file-backed PT_LOAD', async () => {
+  const manifest = Buffer.from(buildManifest());
+  const library = elfLibrary(manifest);
+  const markerOffset = library.indexOf(manifest);
+  assert.notEqual(markerOffset, -1);
+  library.writeBigUInt64LE(BigInt(markerOffset), 64 + 32);
+  library.writeBigUInt64LE(BigInt(markerOffset), 64 + 40);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /MDReader app library.*build manifest/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });
@@ -1050,6 +1252,24 @@ test('Android validation rejects an unsupported method on an unselected ZIP memb
     await assert.rejects(
       async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       /unsupported compression method/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects trailing bytes after a deflate stream', async () => {
+  const member = 'assets/deflated.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.alloc(32 * 1024, 0x61)]],
+  );
+  try {
+    await appendDeflateTail(artifact.apk, member, Buffer.from('trailing'));
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /deflate stream.*consume.*compressed bytes/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });

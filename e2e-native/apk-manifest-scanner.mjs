@@ -47,6 +47,19 @@ const DEX_MAP_TYPES = new Set([
   0x2006,
   0xf000,
 ]);
+const DEX_VARIABLE_ITEM_MINIMUM_BYTES = new Map([
+  [0x1001, 4],
+  [0x1002, 4],
+  [0x1003, 4],
+  [0x2000, 4],
+  [0x2001, 16],
+  [0x2002, 2],
+  [0x2003, 3],
+  [0x2004, 3],
+  [0x2005, 1],
+  [0x2006, 16],
+  [0xf000, 1],
+]);
 const MAX_EMBEDDED_BUILD_MANIFEST_BYTES = 16 * 1024;
 const MAX_OTHER_MEMBER_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_OTHER_BYTES = 256 * 1024 * 1024;
@@ -54,6 +67,7 @@ const MAX_COMPRESSION_OVERHEAD_BYTES = 64 * 1024;
 const ELF64_HEADER_BYTES = 64;
 const ELF64_PROGRAM_HEADER_BYTES = 56;
 const MAX_ELF_PROGRAM_HEADERS = 128;
+const MAX_ELF_DYNAMIC_BYTES = 64 * 1024;
 const MAX_ELF_PREFIX_BYTES =
   ELF64_HEADER_BYTES + ELF64_PROGRAM_HEADER_BYTES * MAX_ELF_PROGRAM_HEADERS;
 const ZIP_FLAG_ENCRYPTED = 0x0001;
@@ -624,10 +638,10 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
   let memberBytes = 0;
   let crc = 0xffffffff;
   const chunks = kind === 'manifest' ? [] : null;
-  const embedded = kind === 'native' ? new EmbeddedBuildManifestScanner() : null;
   const dex = kind === 'dex' ? new DexStreamValidator(descriptor.name) : null;
-  let prefix = Buffer.alloc(0);
-  const prefixLimit = kind === 'native' ? MAX_ELF_PREFIX_BYTES : 0;
+  const elf = kind === 'native' ? new ElfStreamValidator(descriptor.name) : null;
+  let compressedBytesConsumed =
+    descriptor.method === 0 ? descriptor.compressedSize : null;
 
   const consume = (chunk) => {
     const streamLabel =
@@ -694,17 +708,8 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
     }
     crc = updateCrc32(crc, chunk);
     if (chunks) chunks.push(Buffer.from(chunk));
-    if (prefix.byteLength < prefixLimit) {
-      prefix = Buffer.concat([
-        prefix,
-        chunk.subarray(
-          0,
-          Math.min(chunk.byteLength, prefixLimit - prefix.byteLength),
-        ),
-      ]);
-    }
-    embedded?.push(chunk);
     dex?.push(chunk);
+    elf?.push(chunk);
   };
 
   if (descriptor.compressedSize > 0) {
@@ -712,13 +717,20 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
       start: descriptor.dataOffset,
       end: descriptor.dataOffset + descriptor.compressedSize - 1,
     });
-    const output = descriptor.method === 8 ? source.pipe(createInflateRaw()) : source;
+    const inflater = descriptor.method === 8 ? createInflateRaw() : null;
+    const output = inflater === null ? source : source.pipe(inflater);
     try {
       for await (const chunk of output) consume(chunk);
+      if (inflater !== null) compressedBytesConsumed = inflater.bytesWritten;
     } finally {
       output.destroy();
       source.destroy();
     }
+  }
+  if (compressedBytesConsumed !== descriptor.compressedSize) {
+    fail(
+      `APK member ${descriptor.name} deflate stream did not consume exactly its declared compressed bytes`,
+    );
   }
   if (((crc ^ 0xffffffff) >>> 0) !== descriptor.crc32) {
     fail(`APK member ${descriptor.name} checksum is invalid`);
@@ -732,10 +744,10 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
     fail(`APK ZIP directory member ${descriptor.name} is not empty`);
   }
   dex?.finish(memberBytes);
+  const elfResult = elf?.finish(memberBytes);
   return {
     bytes: chunks ? Buffer.concat(chunks, memberBytes) : null,
-    embeddedManifest: embedded?.finish() ?? null,
-    prefix,
+    embeddedManifest: elfResult?.embeddedManifest ?? null,
     sizeMatches: memberBytes === descriptor.uncompressedSize,
     streamedBytes: memberBytes,
   };
@@ -1145,6 +1157,24 @@ class DexStreamValidator {
         fail(`APK member ${this.name} has an invalid DEX identifier section`);
       }
     }
+    const orderedItems = [...items.entries()];
+    for (let index = 0; index < orderedItems.length; index += 1) {
+      const [type, item] = orderedItems[index];
+      const minimumItemBytes = DEX_VARIABLE_ITEM_MINIMUM_BYTES.get(type);
+      if (minimumItemBytes === undefined) continue;
+      const nextOffset =
+        orderedItems[index + 1]?.[1].offset ?? streamedBytes;
+      const availableBytes = nextOffset - item.offset;
+      const minimumBytes = item.size * minimumItemBytes;
+      if (
+        !Number.isSafeInteger(minimumBytes) ||
+        minimumBytes > availableBytes
+      ) {
+        fail(
+          `APK member ${this.name} has a DEX variable section outside bounds`,
+        );
+      }
+    }
   }
 }
 
@@ -1156,7 +1186,7 @@ function readElfU64(name, bytes, offset) {
   return Number(value);
 }
 
-function validateX86_64Elf(name, prefix, streamedBytes) {
+function parseX86_64ElfLayout(name, prefix, streamedBytes = null) {
   if (
     prefix.byteLength < 64 ||
     !prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
@@ -1182,18 +1212,19 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
   const programEntrySize = prefix.readUInt16LE(54);
   const programCount = prefix.readUInt16LE(56);
   const programBytes = programEntrySize * programCount;
+  const programEnd = checkedAdd(
+    programOffset,
+    programBytes,
+    `APK member ${name} has an ELF program header outside bounds`,
+  );
   if (
     programOffset !== ELF64_HEADER_BYTES ||
     programEntrySize !== ELF64_PROGRAM_HEADER_BYTES ||
     programCount === 0 ||
     programCount > MAX_ELF_PROGRAM_HEADERS ||
     !Number.isSafeInteger(programBytes) ||
-    checkedAdd(
-      programOffset,
-      programBytes,
-      `APK member ${name} has an ELF program header outside bounds`,
-    ) > streamedBytes ||
-    prefix.byteLength < programOffset + programBytes
+    (streamedBytes !== null && programEnd > streamedBytes) ||
+    prefix.byteLength < programEnd
   ) {
     fail(`APK member ${name} has an invalid ELF program header table`);
   }
@@ -1202,7 +1233,8 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
   const sectionCount = prefix.readUInt16LE(60);
   if (
     (sectionCount === 0) !== (sectionOffset === 0) ||
-    (sectionCount > 0 &&
+    (streamedBytes !== null &&
+      sectionCount > 0 &&
       (sectionEntrySize < 64 ||
         checkedAdd(
           sectionOffset,
@@ -1217,6 +1249,7 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
   for (let index = 0; index < programCount; index += 1) {
     const offset = programOffset + index * programEntrySize;
     const type = prefix.readUInt32LE(offset);
+    const flags = prefix.readUInt32LE(offset + 4);
     const fileOffset = readElfU64(name, prefix, offset + 8);
     const virtualAddress = readElfU64(name, prefix, offset + 16);
     const fileSize = readElfU64(name, prefix, offset + 32);
@@ -1227,8 +1260,13 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
       fileSize,
       `APK member ${name} has an ELF program header outside bounds`,
     );
+    const virtualFileEnd = checkedAdd(
+      virtualAddress,
+      fileSize,
+      `APK member ${name} has an ELF program header outside bounds`,
+    );
     if (
-      fileEnd > streamedBytes ||
+      (streamedBytes !== null && fileEnd > streamedBytes) ||
       memorySize < fileSize ||
       (alignment > 1 &&
         (!Number.isInteger(Math.log2(alignment)) ||
@@ -1236,8 +1274,15 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
     ) {
       fail(`APK member ${name} has an ELF program header outside bounds`);
     }
-    if (type === 1) loadSegments.push({ start: fileOffset, end: fileEnd });
-    if (type === 2) dynamicSegments.push({ start: fileOffset, end: fileEnd });
+    const segment = {
+      fileStart: fileOffset,
+      fileEnd,
+      virtualStart: virtualAddress,
+      virtualFileEnd,
+      flags,
+    };
+    if (type === 1) loadSegments.push(segment);
+    if (type === 2) dynamicSegments.push(segment);
   }
   if (loadSegments.length === 0) {
     fail(`APK member ${name} has no PT_LOAD program header`);
@@ -1246,14 +1291,370 @@ function validateX86_64Elf(name, prefix, streamedBytes) {
     fail(`APK member ${name} must have exactly one PT_DYNAMIC program header`);
   }
   const dynamic = dynamicSegments[0];
+  const dynamicBytes = dynamic.fileEnd - dynamic.fileStart;
   if (
-    dynamic.end <= dynamic.start ||
-    (dynamic.end - dynamic.start) % 16 !== 0 ||
+    dynamicBytes <= 0 ||
+    dynamicBytes > MAX_ELF_DYNAMIC_BYTES ||
+    dynamicBytes % 16 !== 0 ||
     !loadSegments.some(
-      (load) => load.start <= dynamic.start && load.end >= dynamic.end,
+      (load) =>
+        load.fileStart <= dynamic.fileStart &&
+        load.fileEnd >= dynamic.fileEnd &&
+        load.virtualStart <= dynamic.virtualStart &&
+        load.virtualFileEnd >= dynamic.virtualFileEnd,
     )
   ) {
     fail(`APK member ${name} has a PT_DYNAMIC segment outside PT_LOAD bounds`);
+  }
+  const loadFileRanges = [];
+  for (const segment of [...loadSegments].sort(
+    (left, right) => left.fileStart - right.fileStart,
+  )) {
+    if (segment.fileEnd <= segment.fileStart) continue;
+    const previous = loadFileRanges.at(-1);
+    if (previous !== undefined && segment.fileStart <= previous.end) {
+      previous.end = Math.max(previous.end, segment.fileEnd);
+    } else {
+      loadFileRanges.push({
+        start: segment.fileStart,
+        end: segment.fileEnd,
+      });
+    }
+  }
+  if (loadFileRanges.length === 0) {
+    fail(`APK member ${name} has no file-backed PT_LOAD program header`);
+  }
+  return { dynamic, loadSegments, loadFileRanges };
+}
+
+function dynamicNumber(name, label, value) {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    fail(`APK member ${name} ${label} reference is outside file-backed PT_LOAD`);
+  }
+  return Number(value);
+}
+
+function validateLoadedReference(name, label, address, size, loadSegments) {
+  const end = checkedAdd(
+    address,
+    size,
+    `APK member ${name} ${label} reference is outside file-backed PT_LOAD`,
+  );
+  if (
+    !loadSegments.some(
+      (segment) =>
+        address >= segment.virtualStart &&
+        end <= segment.virtualFileEnd &&
+        (size > 0
+          ? address < segment.virtualFileEnd
+          : address <= segment.virtualFileEnd),
+    )
+  ) {
+    fail(
+      `APK member ${name} ${label} reference is outside file-backed PT_LOAD`,
+    );
+  }
+}
+
+function validateElfDynamicTable(name, bytes, loadSegments) {
+  const entries = new Map();
+  let terminated = false;
+  for (let offset = 0; offset < bytes.byteLength; offset += 16) {
+    const tagValue = bytes.readBigUInt64LE(offset);
+    const value = bytes.readBigUInt64LE(offset + 8);
+    if (tagValue === 0n) {
+      terminated = true;
+      for (let padding = offset; padding < bytes.byteLength; padding += 16) {
+        if (
+          bytes.readBigUInt64LE(padding) !== 0n ||
+          bytes.readBigUInt64LE(padding + 8) !== 0n
+        ) {
+          fail(`APK member ${name} has data after DT_NULL`);
+        }
+      }
+      break;
+    }
+    if (tagValue > BigInt(Number.MAX_SAFE_INTEGER)) {
+      fail(`APK member ${name} has an unsupported ELF dynamic tag`);
+    }
+    const tag = Number(tagValue);
+    const values = entries.get(tag) ?? [];
+    values.push(value);
+    entries.set(tag, values);
+  }
+  if (!terminated) fail(`APK member ${name} has no DT_NULL terminator`);
+
+  const one = (tag, label, required = false) => {
+    const values = entries.get(tag) ?? [];
+    if (values.length > 1) {
+      fail(`APK member ${name} has duplicate ${label} entries`);
+    }
+    if (required && values.length !== 1) {
+      fail(`APK member ${name} is missing ${label}`);
+    }
+    return values[0];
+  };
+  const number = (tag, label, required = false) => {
+    const value = one(tag, label, required);
+    return value === undefined ? null : dynamicNumber(name, label, value);
+  };
+  const boundedPair = (addressTag, sizeTag, label, alignment = 1) => {
+    const address = number(addressTag, label);
+    const size = number(sizeTag, `${label} size`);
+    if ((address === null) !== (size === null)) {
+      fail(`APK member ${name} has an incomplete ${label} dynamic reference`);
+    }
+    if (address === null || size === null) return;
+    if (alignment > 1 && size % alignment !== 0) {
+      fail(`APK member ${name} has an invalid ${label} size`);
+    }
+    validateLoadedReference(name, label, address, size, loadSegments);
+  };
+  const boundedTable = (
+    addressTag,
+    sizeTag,
+    entryTag,
+    label,
+    expectedEntryBytes,
+  ) => {
+    const address = number(addressTag, label);
+    const size = number(sizeTag, `${label} size`);
+    const entrySize = number(entryTag, `${label} entry size`);
+    if (
+      [address, size, entrySize].some((value) => value === null) &&
+      [address, size, entrySize].some((value) => value !== null)
+    ) {
+      fail(`APK member ${name} has an incomplete ${label} dynamic reference`);
+    }
+    if (address === null || size === null || entrySize === null) return;
+    if (entrySize !== expectedEntryBytes || size % entrySize !== 0) {
+      fail(`APK member ${name} has an invalid ${label} entry size`);
+    }
+    validateLoadedReference(name, label, address, size, loadSegments);
+  };
+
+  const stringTable = number(5, 'DT_STRTAB', true);
+  const stringBytes = number(10, 'DT_STRSZ', true);
+  validateLoadedReference(
+    name,
+    'DT_STRTAB',
+    stringTable,
+    stringBytes,
+    loadSegments,
+  );
+  const symbolTable = number(6, 'DT_SYMTAB', true);
+  const symbolEntryBytes = number(11, 'DT_SYMENT', true);
+  if (symbolEntryBytes !== 24) {
+    fail(`APK member ${name} has an invalid DT_SYMENT`);
+  }
+  validateLoadedReference(name, 'DT_SYMTAB', symbolTable, 24, loadSegments);
+
+  for (const tag of [1, 14, 15, 29]) {
+    for (const value of entries.get(tag) ?? []) {
+      const offset = dynamicNumber(name, 'dynamic string', value);
+      if (offset >= stringBytes) {
+        fail(`APK member ${name} has a dynamic string outside DT_STRTAB`);
+      }
+    }
+  }
+
+  boundedTable(7, 8, 9, 'DT_RELA', 24);
+  boundedTable(17, 18, 19, 'DT_REL', 16);
+  boundedTable(36, 35, 37, 'DT_RELR', 8);
+  boundedPair(25, 27, 'DT_INIT_ARRAY', 8);
+  boundedPair(26, 28, 'DT_FINI_ARRAY', 8);
+  boundedPair(32, 33, 'DT_PREINIT_ARRAY', 8);
+  boundedPair(0x6000000f, 0x60000010, 'DT_ANDROID_REL');
+  boundedPair(0x60000011, 0x60000012, 'DT_ANDROID_RELA');
+
+  const jumpAddress = number(23, 'DT_JMPREL');
+  const jumpBytes = number(2, 'DT_PLTRELSZ');
+  const jumpKind = number(20, 'DT_PLTREL');
+  if (
+    [jumpAddress, jumpBytes, jumpKind].some((value) => value === null) &&
+    [jumpAddress, jumpBytes, jumpKind].some((value) => value !== null)
+  ) {
+    fail(`APK member ${name} has an incomplete DT_JMPREL dynamic reference`);
+  }
+  if (jumpAddress !== null && jumpBytes !== null && jumpKind !== null) {
+    const entryBytes = jumpKind === 7 ? 24 : jumpKind === 17 ? 16 : 0;
+    if (entryBytes === 0 || jumpBytes % entryBytes !== 0) {
+      fail(`APK member ${name} has an invalid DT_JMPREL entry size`);
+    }
+    validateLoadedReference(
+      name,
+      'DT_JMPREL',
+      jumpAddress,
+      jumpBytes,
+      loadSegments,
+    );
+  }
+
+  for (const [tag, label, minimumBytes] of [
+    [3, 'DT_PLTGOT', 8],
+    [4, 'DT_HASH', 8],
+    [0x6ffffef5, 'DT_GNU_HASH', 16],
+    [0x6ffffff0, 'DT_VERSYM', 2],
+  ]) {
+    const address = number(tag, label);
+    if (address !== null) {
+      validateLoadedReference(
+        name,
+        label,
+        address,
+        minimumBytes,
+        loadSegments,
+      );
+    }
+  }
+  for (const [tag, label] of [
+    [12, 'DT_INIT'],
+    [13, 'DT_FINI'],
+  ]) {
+    const address = number(tag, label);
+    if (address !== null) {
+      validateLoadedReference(name, label, address, 1, loadSegments);
+    }
+  }
+  for (const [addressTag, countTag, label, minimumBytes] of [
+    [0x6ffffffc, 0x6ffffffd, 'DT_VERDEF', 20],
+    [0x6ffffffe, 0x6fffffff, 'DT_VERNEED', 16],
+  ]) {
+    const address = number(addressTag, label);
+    const count = number(countTag, `${label} count`);
+    if ((address === null) !== (count === null)) {
+      fail(`APK member ${name} has an incomplete ${label} dynamic reference`);
+    }
+    if (address !== null && count !== null) {
+      validateLoadedReference(
+        name,
+        label,
+        address,
+        count * minimumBytes,
+        loadSegments,
+      );
+    }
+  }
+}
+
+class ElfStreamValidator {
+  constructor(name) {
+    this.name = name;
+    this.offset = 0;
+    this.prefix = Buffer.alloc(0);
+    this.layout = null;
+    this.dynamicCapture = null;
+    this.dynamicCapturedBytes = 0;
+    this.loadScanners = [];
+    this.fedThrough = 0;
+  }
+
+  push(chunk) {
+    const chunkOffset = this.offset;
+    this.offset = checkedAdd(
+      this.offset,
+      chunk.byteLength,
+      `APK member ${this.name} ELF stream exceeds the artifact safety bound`,
+    );
+    if (this.prefix.byteLength < MAX_ELF_PREFIX_BYTES) {
+      this.prefix = Buffer.concat([
+        this.prefix,
+        chunk.subarray(
+          0,
+          Math.min(
+            chunk.byteLength,
+            MAX_ELF_PREFIX_BYTES - this.prefix.byteLength,
+          ),
+        ),
+      ]);
+    }
+    const wasReady = this.layout !== null;
+    if (!wasReady) this.tryInitialize();
+    if (this.layout === null) return;
+    if (!wasReady) {
+      this.feed(this.prefix, 0);
+      this.fedThrough = this.prefix.byteLength;
+    }
+    if (this.offset > this.fedThrough) {
+      const start = Math.max(0, this.fedThrough - chunkOffset);
+      this.feed(chunk.subarray(start), chunkOffset + start);
+      this.fedThrough = this.offset;
+    }
+  }
+
+  tryInitialize() {
+    if (this.prefix.byteLength < ELF64_HEADER_BYTES) return;
+    const programOffset = readElfU64(this.name, this.prefix, 32);
+    const programEntrySize = this.prefix.readUInt16LE(54);
+    const programCount = this.prefix.readUInt16LE(56);
+    const requiredBytes =
+      programOffset + programEntrySize * programCount;
+    if (!Number.isSafeInteger(requiredBytes)) {
+      fail(`APK member ${this.name} has an invalid ELF program header table`);
+    }
+    if (this.prefix.byteLength < requiredBytes) return;
+    this.layout = parseX86_64ElfLayout(this.name, this.prefix);
+    const dynamicBytes =
+      this.layout.dynamic.fileEnd - this.layout.dynamic.fileStart;
+    this.dynamicCapture = Buffer.alloc(dynamicBytes);
+    this.loadScanners = this.layout.loadFileRanges.map((range) => ({
+      ...range,
+      scanner: new EmbeddedBuildManifestScanner(),
+    }));
+  }
+
+  feed(chunk, chunkOffset) {
+    const dynamic = this.layout.dynamic;
+    const dynamicStart = Math.max(dynamic.fileStart, chunkOffset);
+    const dynamicEnd = Math.min(
+      dynamic.fileEnd,
+      chunkOffset + chunk.byteLength,
+    );
+    if (dynamicStart < dynamicEnd) {
+      chunk.copy(
+        this.dynamicCapture,
+        dynamicStart - dynamic.fileStart,
+        dynamicStart - chunkOffset,
+        dynamicEnd - chunkOffset,
+      );
+      this.dynamicCapturedBytes += dynamicEnd - dynamicStart;
+    }
+    for (const load of this.loadScanners) {
+      const start = Math.max(load.start, chunkOffset);
+      const end = Math.min(load.end, chunkOffset + chunk.byteLength);
+      if (start < end) {
+        load.scanner.push(
+          chunk.subarray(start - chunkOffset, end - chunkOffset),
+        );
+      }
+    }
+  }
+
+  finish(streamedBytes) {
+    if (this.layout === null) this.tryInitialize();
+    if (this.layout === null) {
+      fail(`APK member ${this.name} has an invalid ELF program header table`);
+    }
+    const layout = parseX86_64ElfLayout(
+      this.name,
+      this.prefix,
+      streamedBytes,
+    );
+    if (this.dynamicCapturedBytes !== this.dynamicCapture.byteLength) {
+      fail(`APK member ${this.name} has a truncated PT_DYNAMIC segment`);
+    }
+    validateElfDynamicTable(
+      this.name,
+      this.dynamicCapture,
+      layout.loadSegments,
+    );
+    const manifests = this.loadScanners
+      .map((load) => load.scanner.finish())
+      .filter((manifest) => manifest !== null);
+    if (manifests.length > 1) {
+      fail('artifact has an ambiguous embedded E2E build manifest');
+    }
+    return { embeddedManifest: manifests[0] ?? null };
   }
 }
 
@@ -1325,11 +1726,6 @@ export async function scanAndroidArchive(apk, limits) {
         'native',
         totals,
         limits,
-      );
-      validateX86_64Elf(
-        descriptor.name,
-        scanned.prefix,
-        scanned.streamedBytes,
       );
       nativeLibraries.push({
         name: descriptor.name,
