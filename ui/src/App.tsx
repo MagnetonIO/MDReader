@@ -1,6 +1,19 @@
-import { AppShell } from './shell/AppShell';
+import { platform } from '@tauri-apps/plugin-os';
 
-/** The MDReader desktop app is the shell — tabs, tree, and the real reader. */
+import { MobileAppShell } from './mobile/MobileAppShell';
+import { AppShell } from './shell/AppShell';
+import { isTauri } from './shell/persistence';
+
+/**
+ * Select the shipping composition from Tauri's compile-time platform value.
+ *
+ * Browser previews and unit tests without a Tauri runtime retain the desktop
+ * shell. A mobile build never mounts that shell, even briefly.
+ */
 export default function App() {
+  const runtime = isTauri() ? platform() : 'macos';
+  if (runtime === 'ios' || runtime === 'android') {
+    return <MobileAppShell platform={runtime} />;
+  }
   return <AppShell />;
 }

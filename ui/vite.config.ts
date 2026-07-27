@@ -2,6 +2,8 @@ import react from '@vitejs/plugin-react';
 import { defaultClientConditions, defineConfig } from 'vite';
 import { workerBundleResolveConditions } from '@mdreader/markdown/worker-conditions';
 
+const mobileDevHost = process.env.TAURI_DEV_HOST;
+
 // https://vite.dev/config/
 // Tauri drives this dev server: it expects a fixed port and relies on Vite not
 // clearing the screen so Rust build errors stay visible. Mobile host/HMR wiring
@@ -9,6 +11,7 @@ import { workerBundleResolveConditions } from '@mdreader/markdown/worker-conditi
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  envPrefix: ['VITE_', 'TAURI_ENV_*'],
   // The markdown parse worker (`@mdreader/markdown/worker`) bundles the unified
   // pipeline, whose transitive deps ship `browser` export variants that touch
   // `document` at module load (decode-named-character-reference,
@@ -33,8 +36,16 @@ export default defineConfig({
   // `browser`.
   resolve: { conditions: workerBundleResolveConditions(defaultClientConditions) },
   server: {
+    host: mobileDevHost || false,
     port: 1420,
     strictPort: true,
+    hmr: mobileDevHost
+      ? {
+          protocol: 'ws',
+          host: mobileDevHost,
+          port: 1421,
+        }
+      : undefined,
     // DEV ONLY, and e2e only: the same-origin seam the REAL-ENGINE Playwright
     // mode reaches a live `catdb-server` through (`src/e2e/real-engine.ts`).
     //
