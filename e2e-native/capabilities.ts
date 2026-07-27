@@ -23,10 +23,13 @@ import { execFileSync } from 'node:child_process';
 import {
   closeSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readSync,
+  rmSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,6 +39,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
 const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
+const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
 
 interface E2eBuildManifest {
   schema: 1;
@@ -91,6 +95,39 @@ export function validateEmbeddedBuildManifest(
     );
   }
   return manifest as E2eBuildManifest;
+}
+
+function validateZipMemberBuildManifest(
+  apk: string,
+  member: string,
+  expectedCommit: string,
+): E2eBuildManifest | null {
+  const directory = mkdtempSync(join(tmpdir(), 'mdreader-apk-member-'));
+  const extracted = join(directory, 'native-library.so');
+  let output: number | undefined;
+  try {
+    output = openSync(extracted, 'wx', 0o600);
+    execFileSync('unzip', ['-p', apk, member], {
+      stdio: ['ignore', output, 'pipe'],
+    });
+    closeSync(output);
+    output = undefined;
+    const metadata = lstatSync(extracted);
+    if (
+      !metadata.isFile() ||
+      metadata.size === 0 ||
+      metadata.size > MAX_ANDROID_NATIVE_LIBRARY_BYTES
+    ) {
+      throw new Error('Android native library exceeds the artifact safety bound');
+    }
+    const library = readFileSync(extracted);
+    return library.includes(BUILD_MANIFEST_PREFIX)
+      ? validateEmbeddedBuildManifest(library, expectedCommit)
+      : null;
+  } finally {
+    if (output !== undefined) closeSync(output);
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
@@ -328,16 +365,12 @@ export function validateAndroidApk(
       .map((file) => file.replace(/^\//, ''))
       .filter((file) => /^lib\/x86_64\/[^/]+\.so$/.test(file));
     const manifests = nativeLibraries.flatMap((file) => {
-      const library = execFileSync('unzip', ['-p', apk, file], {
-        encoding: null,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return library.includes(BUILD_MANIFEST_PREFIX) ? [library] : [];
+      const manifest = validateZipMemberBuildManifest(apk, file, sourceCommit);
+      return manifest ? [manifest] : [];
     });
     if (manifests.length !== 1) {
       throw new Error(`expected one native library with an E2E build manifest; found ${manifests.length}`);
     }
-    validateEmbeddedBuildManifest(manifests[0]!, sourceCommit);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`MDREADER_ANDROID_APP has an invalid manifest or x86_64 APK: ${detail}`);
