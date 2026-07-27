@@ -2586,4 +2586,182 @@ mod tests {
         assert_eq!(second_provenance.document_id, first_provenance.document_id);
         assert_eq!(second_provenance.file_path, first_provenance.file_path);
     }
+
+    #[test]
+    fn v2_library_migration_recovers_catdb_identity_before_reopen_and_rename() {
+        let temp = TempDir::new().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let original = temp.path().join("v2-original");
+        fs::create_dir(&original).expect("create V2 library");
+        fs::write(
+            original.join("note.md"),
+            "# Migrated note\n\nalpha migration provenance\n",
+        )
+        .expect("write document");
+        let original_root =
+            SourceRoot::capture(fs::canonicalize(&original).expect("canonical V2 root"))
+                .expect("capture V2 root");
+        let legacy_db_path = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+            &app_data,
+            &original_root.path,
+            &original_root.identity,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (legacy_db, legacy_proposals) = open_engine(
+            &legacy_db_path,
+            Arc::new(HashEmbedder::new()),
+            original_root.clone(),
+            None,
+        )
+        .expect("open authentic V2 engine without a configured source id");
+        rt.block_on(legacy_db.import(&original_root.path, ImportOptions::default()))
+            .expect("import authentic V2 Markdown");
+        let original_sources = rt
+            .block_on(legacy_db.store().list_sources())
+            .expect("list V2 sources");
+        let original_documents = legacy_db
+            .store()
+            .list_documents()
+            .expect("list V2 documents");
+        let original_hits = rt
+            .block_on(legacy_db.search(
+                "alpha",
+                catdb_engine::SearchOptions {
+                    explain: true,
+                    ..catdb_engine::SearchOptions::default()
+                },
+            ))
+            .expect("search V2 index");
+        let original_provenance = original_hits[0]
+            .explain
+            .as_ref()
+            .expect("V2 explain")
+            .provenance
+            .clone();
+        assert_eq!(original_sources.len(), 1);
+        assert_eq!(original_documents.len(), 1);
+        let original_source_id = original_sources[0].source_id;
+        drop(legacy_db);
+        drop(legacy_proposals);
+
+        crate::library::write_v2_registry_for_test(&registry_path, &original_root)
+            .expect("write authentic V2 registry");
+        let mut migrated =
+            crate::library::LibraryRegistry::load_from(&registry_path).expect("migrate V2 to V3");
+        assert_eq!(migrated.sources().len(), 1);
+        let migrated_source = migrated.sources()[0].clone();
+        let migrated_root = migrated
+            .activation_root(&migrated_source.id)
+            .expect("activate migrated source");
+        let migrated_db_path = db_path_under(&app_data, &migrated_root);
+        assert_eq!(
+            migrated_source.engine_source_id(),
+            original_source_id,
+            "V3 must persist the CatDB UUID recovered from the managed V2 index"
+        );
+        let workspace = WorkspaceState::default();
+        let migrated_epoch = workspace
+            .switch_bound_with_source(
+                migrated_root.clone(),
+                Some(migrated_source.engine_source_id()),
+            )
+            .expect("publish migrated Library epoch");
+        let (migrated_db, migrated_proposals) = open_engine(
+            &migrated_db_path,
+            Arc::new(HashEmbedder::new()),
+            migrated_epoch.source_root(),
+            migrated_epoch.source_id(),
+        )
+        .expect("reopen migrated index through the V3 epoch");
+        rt.block_on(migrated_db.import(
+            &migrated_epoch.source_root().path,
+            ImportOptions::default(),
+        ))
+        .expect("import through migrated V3 epoch");
+        let migrated_sources = rt
+            .block_on(migrated_db.store().list_sources())
+            .expect("list migrated sources");
+        assert_eq!(migrated_sources.len(), 1);
+        assert_eq!(migrated_sources[0].source_id, original_source_id);
+        drop(migrated_db);
+        drop(migrated_proposals);
+
+        let renamed = temp.path().join("v3-renamed");
+        fs::rename(&original, &renamed).expect("rename retained filesystem object");
+        let repicked = migrated
+            .add_root(&renamed)
+            .expect("native re-pick updates only the source address");
+        migrated
+            .save_to(&registry_path)
+            .expect("persist renamed V3 membership");
+        assert_eq!(repicked.id, migrated_source.id);
+        assert_eq!(repicked.engine_source_id(), original_source_id);
+        let renamed_root = migrated
+            .activation_root(&repicked.id)
+            .expect("activate renamed source");
+        let renamed_epoch = workspace
+            .switch_bound_with_source(renamed_root, Some(repicked.engine_source_id()))
+            .expect("publish renamed Library epoch");
+        let (renamed_db, _renamed_proposals) = open_engine(
+            &migrated_db_path,
+            Arc::new(HashEmbedder::new()),
+            renamed_epoch.source_root(),
+            renamed_epoch.source_id(),
+        )
+        .expect("reopen renamed V3 index");
+        rt.block_on(
+            renamed_db.import(
+                &renamed_epoch.source_root().path,
+                ImportOptions::default(),
+            ),
+        )
+        .expect("import renamed V3 source");
+        let renamed_sources = rt
+            .block_on(renamed_db.store().list_sources())
+            .expect("list renamed sources");
+        let renamed_documents = renamed_db
+            .store()
+            .list_documents()
+            .expect("list renamed documents");
+        let renamed_hits = rt
+            .block_on(renamed_db.search(
+                "alpha",
+                catdb_engine::SearchOptions {
+                    explain: true,
+                    ..catdb_engine::SearchOptions::default()
+                },
+            ))
+            .expect("search renamed index");
+        let renamed_provenance = renamed_hits[0]
+            .explain
+            .as_ref()
+            .expect("renamed explain")
+            .provenance
+            .clone();
+
+        assert_eq!(renamed_sources.len(), 1);
+        assert_eq!(renamed_sources[0].source_id, original_source_id);
+        assert_eq!(renamed_documents.len(), 1);
+        assert_eq!(renamed_documents[0].id, original_documents[0].id);
+        assert_eq!(
+            renamed_documents[0].source_id,
+            original_documents[0].source_id
+        );
+        assert_eq!(
+            renamed_provenance.source_id,
+            original_provenance.source_id
+        );
+        assert_eq!(
+            renamed_provenance.document_id,
+            original_provenance.document_id
+        );
+        assert_eq!(
+            renamed_provenance.file_path,
+            original_provenance.file_path
+        );
+    }
 }

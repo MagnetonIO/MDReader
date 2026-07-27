@@ -351,6 +351,28 @@ struct StoredLibraryV2 {
     sources: Vec<LibrarySource>,
 }
 
+#[cfg(test)]
+pub(crate) fn write_v2_registry_for_test(
+    path: &Path,
+    root: &SourceRoot,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let native = NativePath::capture(&root.path);
+    let source_id = native.source_id();
+    let stored = StoredLibraryV2 {
+        version: 2,
+        active_source_id: Some(source_id.clone()),
+        sources: vec![LibrarySource {
+            id: source_id,
+            path: native,
+            identity: Some(root.identity.clone()),
+        }],
+    };
+    let parent = path.parent().ok_or("registry has no parent")?;
+    fs::create_dir_all(parent)?;
+    fs::write(path, serde_json::to_vec_pretty(&stored)?)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct PendingCleanup {
