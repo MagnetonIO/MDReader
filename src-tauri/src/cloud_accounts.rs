@@ -1065,7 +1065,6 @@ struct CloudQueryHandle {
     cancellation: catdb_connectors::CancellationToken,
 }
 
-#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Debug, Clone, Copy)]
 struct RequestedCatalogPins {
     workspace_id: uuid::Uuid,
