@@ -53,7 +53,7 @@ const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_DOCUMENT_SCHEMA_VERSION: &str = "mdreader.Document/v1";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v1";
+pub(crate) const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v1";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_READ_POLICY_VERSION: &str = "mdreader.read-only/v1";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -495,6 +495,8 @@ pub(crate) struct CloudSourceRecord {
     enabled: bool,
     credential_reference: String,
     config: CloudSourceConfig,
+    #[serde(default)]
+    contract: Option<crate::library::LibrarySourceContract>,
 }
 
 impl CloudSourceRecord {
@@ -504,6 +506,12 @@ impl CloudSourceRecord {
 
     pub(crate) fn provider(&self) -> CloudProvider {
         self.provider
+    }
+
+    pub(crate) fn ensure_contract(&mut self) {
+        if self.contract.is_none() {
+            self.contract = Some(crate::library::LibrarySourceContract::cloud(self.provider));
+        }
     }
 }
 
@@ -530,6 +538,10 @@ pub(crate) fn validate_cloud_source_records(
             || source.label != source.provider.label()
             || source.config.provider() != source.provider
             || source.config.validate().is_err()
+            || source.contract.as_ref()
+                != Some(&crate::library::LibrarySourceContract::cloud(
+                    source.provider,
+                ))
             || !ids.insert(source.id.as_str())
             || !providers.insert(source.provider)
             || !references.insert(source.credential_reference.as_str())
@@ -644,6 +656,7 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
                 enabled: true,
                 credential_reference,
                 config,
+                contract: Some(crate::library::LibrarySourceContract::cloud(provider)),
             };
             if let Some(index) = existing_index {
                 sources[index] = record;
@@ -2783,6 +2796,16 @@ mod tests {
         assert_eq!(sources.len(), 2);
         assert_eq!(sources[0]["kind"], "local-folder");
         assert_eq!(sources[1]["kind"], "google-drive");
+        assert_eq!(
+            sources[0]["contract"]["connector_version"],
+            "local-folder/v1"
+        );
+        assert_eq!(
+            sources[1]["contract"]["mapping_version"],
+            "mdreader.Document.cloud-mapping/v1"
+        );
+        assert_eq!(sources[1]["contract"]["index_policy"], "read-through");
+        assert_eq!(sources[1]["contract"]["capabilities"]["write"], false);
     }
 
     #[test]
@@ -2811,9 +2834,17 @@ mod tests {
             .drain(..)
             .collect::<Vec<_>>();
         let mut local = entries.remove(0);
-        local.as_object_mut().expect("local source").remove("kind");
+        {
+            let local_record = local.as_object_mut().expect("local source");
+            local_record.remove("kind");
+            local_record.remove("contract");
+        }
         let mut drive = entries.remove(0);
-        drive.as_object_mut().expect("Drive source").remove("kind");
+        {
+            let drive_record = drive.as_object_mut().expect("Drive source");
+            drive_record.remove("kind");
+            drive_record.remove("contract");
+        }
         legacy["version"] = serde_json::json!(4);
         legacy["sources"] = serde_json::json!([local]);
         legacy["cloud_sources"] = serde_json::json!([drive]);

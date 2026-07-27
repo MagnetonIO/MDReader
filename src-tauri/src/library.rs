@@ -279,6 +279,71 @@ fn new_source_id() -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LibraryIndexPolicy {
+    Managed,
+    ReadThrough,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LibrarySourceCapabilities {
+    read: bool,
+    write: bool,
+    search: bool,
+    watch: bool,
+    open_original: bool,
+    download: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LibrarySourceContract {
+    connector_version: String,
+    capabilities: LibrarySourceCapabilities,
+    mapping_version: String,
+    index_policy: LibraryIndexPolicy,
+}
+
+impl LibrarySourceContract {
+    fn local_folder() -> Self {
+        Self {
+            connector_version: "local-folder/v1".to_string(),
+            capabilities: LibrarySourceCapabilities {
+                read: true,
+                write: true,
+                search: true,
+                watch: true,
+                open_original: true,
+                download: false,
+            },
+            mapping_version: "mdreader.Document.local-folder/v1".to_string(),
+            index_policy: LibraryIndexPolicy::Managed,
+        }
+    }
+
+    pub(crate) fn cloud(provider: crate::cloud_accounts::CloudProvider) -> Self {
+        let connector_version = match provider {
+            crate::cloud_accounts::CloudProvider::GoogleDrive => "google-drive/v1",
+            crate::cloud_accounts::CloudProvider::Dropbox => "dropbox/v1",
+        };
+        Self {
+            connector_version: connector_version.to_string(),
+            capabilities: LibrarySourceCapabilities {
+                read: true,
+                write: false,
+                search: true,
+                watch: false,
+                open_original: true,
+                download: true,
+            },
+            mapping_version: crate::cloud_accounts::CLOUD_DOCUMENT_MAPPING_VERSION.to_string(),
+            index_policy: LibraryIndexPolicy::ReadThrough,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LocalFolderSource {
@@ -287,6 +352,16 @@ pub(crate) struct LocalFolderSource {
     #[serde(deserialize_with = "deserialize_identity_binding")]
     identity: Option<SourceRootIdentity>,
     engine_source_id: uuid::Uuid,
+    #[serde(default)]
+    contract: Option<LibrarySourceContract>,
+}
+
+impl LocalFolderSource {
+    fn ensure_contract(&mut self) {
+        if self.contract.is_none() {
+            self.contract = Some(LibrarySourceContract::local_folder());
+        }
+    }
 }
 
 fn deserialize_identity_binding<'de, D>(
@@ -541,6 +616,7 @@ impl LibraryRegistry {
             engine_source_id: new_engine_source_id(
                 &self.local_sources().cloned().collect::<Vec<_>>(),
             ),
+            contract: Some(LibrarySourceContract::local_folder()),
         };
         self.sources
             .push(LibrarySource::LocalFolder(source.clone()));
@@ -848,6 +924,7 @@ impl LibraryRegistry {
                     path: source.path.clone(),
                     identity: source.identity.clone(),
                     engine_source_id,
+                    contract: Some(LibrarySourceContract::local_folder()),
                 }))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
@@ -874,8 +951,11 @@ impl LibraryRegistry {
     }
 
     fn migrate_v3(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibraryV3 =
+        let mut stored: StoredLibraryV3 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        for source in &mut stored.sources {
+            source.ensure_contract();
+        }
         Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         Self::validate_pending_local_cleanup(&stored.cleanup_pending, &stored.sources)?;
         let migrated = Self {
@@ -892,8 +972,14 @@ impl LibraryRegistry {
     }
 
     fn migrate_v4(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibraryV4 =
+        let mut stored: StoredLibraryV4 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        for source in &mut stored.sources {
+            source.ensure_contract();
+        }
+        for source in &mut stored.cloud_sources {
+            source.ensure_contract();
+        }
         Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         validate_cloud_source_records(&stored.cloud_sources)
             .map_err(|_| LibraryError::CorruptRegistry)?;
@@ -967,6 +1053,7 @@ impl LibraryRegistry {
                 || !valid_id
                 || !ids.insert(source.id.as_str())
                 || source.engine_source_id.is_nil()
+                || source.contract.as_ref() != Some(&LibrarySourceContract::local_folder())
                 || !engine_source_ids.insert(source.engine_source_id)
                 || sources[..index]
                     .iter()
@@ -3159,10 +3246,9 @@ mod tests {
             serde_json::from_slice(&fs::read(&registry_path).expect("read registry"))
                 .expect("parse registry");
         legacy["version"] = serde_json::json!(3);
-        legacy["sources"][0]
-            .as_object_mut()
-            .expect("local source")
-            .remove("kind");
+        let local = legacy["sources"][0].as_object_mut().expect("local source");
+        local.remove("kind");
+        local.remove("contract");
         legacy
             .as_object_mut()
             .expect("registry object")
