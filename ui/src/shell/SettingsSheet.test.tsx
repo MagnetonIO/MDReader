@@ -76,6 +76,17 @@ function cloudResponse(
   name = 'Research note.md',
   recordKey = 'provider-record-1',
 ): CloudDocumentQueryResponse {
+  const values: Record<string, unknown> = {
+    path: recordKey,
+    title: name,
+    modifiedAt: 1_800_000_000_000,
+    size: 2048,
+    ...(fields.includes('body')
+      ? {
+          body: `# ${name}\n\nConnected source content.`,
+        }
+      : {}),
+  };
   return {
     query_id: `query-${recordKey}`,
     provider,
@@ -115,19 +126,10 @@ function cloudResponse(
       {
         source_id: 'b'.repeat(64),
         record_key: recordKey,
-        fields: {
-          path: recordKey,
-          title: name,
-          modifiedAt: 1_800_000_000_000,
-          size: 2048,
-          ...(fields.includes('body')
-            ? {
-                body: `# ${name}\n\nConnected source content.`,
-              }
-            : {}),
-        },
+        fields: values,
         provenance: fields.map((field) => ({
           field,
+          selected: 0,
           providers: [
             {
               provider,
@@ -135,7 +137,10 @@ function cloudResponse(
               record_key: recordKey,
               mapping_version: 'mdreader.Document.cloud-mapping/v1',
               physical_attribute: field,
-              observation: 'observed' as const,
+              observation: {
+                kind: 'observed-value' as const,
+                value: values[field],
+              },
               observed_at_ms: 1_800_000_000_000,
             },
           ],

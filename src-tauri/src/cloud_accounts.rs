@@ -88,6 +88,14 @@ pub(crate) enum CloudProvider {
 }
 
 impl CloudProvider {
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn id(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "google-drive",
+            Self::Dropbox => "dropbox",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::GoogleDrive => "Google Drive",
@@ -159,15 +167,23 @@ pub(crate) struct CloudDocumentRow {
     pub provenance: Vec<CloudFieldProvenance>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Serialize, Type, PartialEq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum CloudObservation {
-    Observed,
-    ObservedNothing,
-    Unobservable,
+    ObservedValue {
+        #[specta(type = specta_typescript::Unknown)]
+        value: serde_json::Value,
+    },
+    ObservedNull,
+    ObservedNothing {
+        reason: String,
+    },
+    Unobservable {
+        reason: String,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq)]
 pub(crate) struct CloudConsideredProvider {
     pub provider: CloudProvider,
     pub source_id: String,
@@ -180,9 +196,11 @@ pub(crate) struct CloudConsideredProvider {
     pub observed_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Type, PartialEq)]
 pub(crate) struct CloudFieldProvenance {
     pub field: String,
+    #[specta(type = Option<f64>)]
+    pub selected: Option<u32>,
     pub providers: Vec<CloudConsideredProvider>,
 }
 
@@ -1553,6 +1571,14 @@ struct AdmittedCloudRead<V> {
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct AdmittedCloudQuery {
+    record: CloudSourceRecord,
+    read_authority: CloudReadAuthority,
+    catalog: CloudCatalogAuthority,
+    resolver: Arc<CloudCredentialResolver>,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn admit_cloud_read<V: CredentialVault>(
     registry: LibraryStore,
     vault: V,
@@ -1570,18 +1596,36 @@ fn admit_cloud_read<V: CredentialVault>(
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-async fn admit_cloud_read_before_catalog<V, A, C, CFut>(
+async fn open_admitted_cloud_query<V, A, C, CFut>(
+    provider: CloudProvider,
     admission: A,
     catalog: C,
-) -> Result<(AdmittedCloudRead<V>, CloudCatalogAuthority), CloudSourceError>
+) -> Result<AdmittedCloudQuery, CloudSourceError>
 where
+    V: CredentialVault + 'static,
     A: std::future::Future<Output = Result<AdmittedCloudRead<V>, CloudSourceError>>,
     C: FnOnce() -> CFut,
     CFut: std::future::Future<Output = Result<CloudCatalogAuthority, CloudSourceError>>,
 {
-    let admitted = admission.await?;
+    let AdmittedCloudRead {
+        record,
+        credential,
+        read_authority,
+        vault,
+    } = admission.await?;
     let catalog = catalog().await?;
-    Ok((admitted, catalog))
+    let resolver = Arc::new(CloudCredentialResolver::from_admitted(
+        provider,
+        record.credential_reference.clone(),
+        credential,
+        Arc::new(vault),
+    ));
+    Ok(AdmittedCloudQuery {
+        record,
+        read_authority,
+        catalog,
+        resolver,
+    })
 }
 
 async fn query_cloud_documents_inner(
@@ -1619,21 +1663,15 @@ async fn query_cloud_documents_inner(
             let admission = blocking_cloud_operation(app.clone(), move |registry, vault| {
                 admit_cloud_read(registry, vault, provider)
             });
-            let (admitted, catalog) =
-                admit_cloud_read_before_catalog(admission, || ensure_cloud_catalog(&app, state))
-                    .await?;
-            let AdmittedCloudRead {
+            let AdmittedCloudQuery {
                 record,
-                credential,
                 read_authority,
-                vault,
-            } = admitted;
-            let resolver = Arc::new(CloudCredentialResolver::from_admitted(
-                provider,
-                record.credential_reference.clone(),
-                credential,
-                Arc::new(vault),
-            ));
+                catalog,
+                resolver,
+            } = open_admitted_cloud_query(provider, admission, || {
+                ensure_cloud_catalog(&app, state)
+            })
+            .await?;
 
             let response = match record.config {
                 #[cfg(feature = "google-drive-connector")]
@@ -1790,7 +1828,7 @@ fn shared_entity_response(
         Completeness, EntityQueryResponse, EntityRow, PinnedVersions, SourceExecution,
         SourceOutcome,
     };
-    use catdb_provenance::{FieldObservation, FieldProvenance, ObservationKind};
+    use catdb_provenance::{FieldObservation, FieldProvenance};
 
     let source_report = response
         .sources
@@ -1817,11 +1855,14 @@ fn shared_entity_response(
                         .providers
                         .into_iter()
                         .map(|provider| match provider.observation {
-                            CloudObservation::Observed => {
-                                let value = fields
+                            CloudObservation::ObservedValue { value } => {
+                                if fields
                                     .get(&field.field)
-                                    .cloned()
-                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                    .filter(|selected| **selected == value)
+                                    .is_none()
+                                {
+                                    return Err(CloudSourceError::QueryInvalidResponse);
+                                }
                                 let physical_attribute = provider
                                     .physical_attribute
                                     .ok_or(CloudSourceError::QueryInvalidResponse)?;
@@ -1837,7 +1878,27 @@ fn shared_entity_response(
                                 )
                                 .with_physical_attribute(physical_attribute))
                             }
-                            CloudObservation::ObservedNothing => {
+                            CloudObservation::ObservedNull => {
+                                if !matches!(fields.get(&field.field), Some(value) if value.is_null())
+                                {
+                                    return Err(CloudSourceError::QueryInvalidResponse);
+                                }
+                                let physical_attribute = provider
+                                    .physical_attribute
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                let observed_at_ms = provider
+                                    .observed_at_ms
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                Ok(FieldObservation::observed(
+                                    source_version_id,
+                                    provider.record_key,
+                                    mapping_version_id,
+                                    observed_at_ms,
+                                    serde_json::Value::Null,
+                                )
+                                .with_physical_attribute(physical_attribute))
+                            }
+                            CloudObservation::ObservedNothing { .. } => {
                                 let physical_attribute = provider
                                     .physical_attribute
                                     .ok_or(CloudSourceError::QueryInvalidResponse)?;
@@ -1852,20 +1913,21 @@ fn shared_entity_response(
                                 )
                                 .with_physical_attribute(physical_attribute))
                             }
-                            CloudObservation::Unobservable => Ok(FieldObservation::not_asked(
-                                source_version_id,
-                                provider.record_key,
-                                mapping_version_id,
-                                "the provider mapping does not expose this Document field",
-                            )),
+                            CloudObservation::Unobservable { reason } => {
+                                Ok(FieldObservation::not_asked(
+                                    source_version_id,
+                                    provider.record_key,
+                                    mapping_version_id,
+                                    reason,
+                                ))
+                            }
                         })
                         .collect::<Result<Vec<_>, CloudSourceError>>()?;
-                    let selected = considered.iter().position(|observation| {
-                        matches!(
-                            observation.state().kind(),
-                            ObservationKind::ObservedValue | ObservationKind::ObservedNull
-                        )
-                    });
+                    let selected = field
+                        .selected
+                        .map(usize::try_from)
+                        .transpose()
+                        .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
                     let evidence = FieldProvenance::new(field.field.clone(), considered, selected)
                         .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
                     Ok((field.field, evidence))
@@ -2814,24 +2876,51 @@ async fn execute_cloud_query(
                     if let Some(value) = observed.as_ref() {
                         document_fields.insert(field.clone(), value.clone());
                     }
+                    let (observation, selected, observed_at_ms) =
+                        match (physical_attribute.as_deref(), observed.as_ref()) {
+                            (Some(_), Some(value)) if value.is_null() => (
+                                CloudObservation::ObservedNull,
+                                Some(0),
+                                Some(freshness.observed_at_ms),
+                            ),
+                            (Some(_), Some(value)) => (
+                                CloudObservation::ObservedValue {
+                                    value: value.clone(),
+                                },
+                                Some(0),
+                                Some(freshness.observed_at_ms),
+                            ),
+                            (Some(attribute), None) => (
+                                CloudObservation::ObservedNothing {
+                                    reason: format!(
+                                    "source record did not contain mapped attribute `{attribute}`"
+                                ),
+                                },
+                                None,
+                                Some(freshness.observed_at_ms),
+                            ),
+                            (None, _) => (
+                                CloudObservation::Unobservable {
+                                    reason: format!(
+                                    "pinned mapping does not expose `Document.{field}` for `{}`",
+                                    provider.id()
+                                ),
+                                },
+                                None,
+                                None,
+                            ),
+                        };
                     Ok(CloudFieldProvenance {
                         field: field.clone(),
+                        selected,
                         providers: vec![CloudConsideredProvider {
                             provider,
                             source_id: row_source.clone(),
                             record_key: row.key.clone(),
                             mapping_version: authority.pins.mapping_version.clone(),
                             physical_attribute,
-                            observation: match (
-                                provider_field(&authority.mapping, field),
-                                observed.is_some(),
-                            ) {
-                                (Some(_), true) => CloudObservation::Observed,
-                                (Some(_), false) => CloudObservation::ObservedNothing,
-                                (None, _) => CloudObservation::Unobservable,
-                            },
-                            observed_at_ms: provider_field(&authority.mapping, field)
-                                .map(|_| freshness.observed_at_ms),
+                            observation,
+                            observed_at_ms,
                         }],
                     })
                 })
@@ -4059,7 +4148,8 @@ mod tests {
             let before = tree_snapshot(&app_data);
             let state = CloudAccountsState::default();
             let catalog_path = app_data.join("cloud-library.catdb");
-            let result = super::admit_cloud_read_before_catalog(
+            let result = super::open_admitted_cloud_query(
+                CloudProvider::GoogleDrive,
                 async {
                     super::admit_cloud_read(
                         LibraryStore::new(registry_path),
@@ -4087,6 +4177,84 @@ mod tests {
                 "{case} must not install cached catalog authority"
             );
         }
+    }
+
+    #[test]
+    fn production_cloud_query_uses_the_admitted_context_boundary() {
+        let source = include_str!("cloud_accounts.rs");
+        let entry = source
+            .split_once("async fn query_cloud_documents_inner(")
+            .expect("production cloud query entry")
+            .1
+            .split_once("#[tauri::command(async)]")
+            .expect("query command boundary")
+            .0;
+
+        assert_eq!(
+            entry.matches("open_admitted_cloud_query(").count(),
+            1,
+            "the production entry must acquire catalog and resolver authority through one boundary"
+        );
+        assert_eq!(
+            entry.matches("ensure_cloud_catalog(").count(),
+            1,
+            "the catalog opener must only be supplied to the admitted boundary"
+        );
+        assert!(
+            !entry.contains("CloudCredentialResolver::from_admitted"),
+            "credential snapshot construction belongs to the admitted boundary, not a bypass in the command"
+        );
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    #[tokio::test]
+    async fn admitted_credential_is_a_stable_snapshot_until_explicit_store() {
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let reference = "keyring://admitted-drive";
+        let admitted = credentials();
+        vault
+            .set(reference, &admitted)
+            .expect("seed admitted credential");
+        let resolver = CloudCredentialResolver::from_admitted(
+            CloudProvider::GoogleDrive,
+            reference.to_string(),
+            admitted,
+            vault.clone(),
+        );
+
+        let replacement = SecretBundle::new(
+            "replacement-access-token",
+            "replacement-refresh-token",
+            4_100_000_000,
+            [8; 32],
+        )
+        .expect("replacement credential");
+        vault
+            .set(reference, &replacement)
+            .expect("mutate backing vault");
+        let loaded_after_mutation = resolver.load().await.expect("admitted snapshot");
+        assert_eq!(loaded_after_mutation.access_token, "access-token-value");
+        assert_eq!(loaded_after_mutation.refresh_token, "refresh-token-value");
+
+        vault.clear();
+        let loaded_after_removal = resolver.load().await.expect("admitted snapshot");
+        assert_eq!(loaded_after_removal.access_token, "access-token-value");
+        assert_eq!(loaded_after_removal.refresh_token, "refresh-token-value");
+
+        resolver
+            .store(replacement)
+            .await
+            .expect("explicit refresh persistence");
+        let loaded_after_store = resolver.load().await.expect("updated snapshot");
+        assert_eq!(loaded_after_store.access_token, "replacement-access-token");
+        assert_eq!(
+            vault
+                .get(reference)
+                .expect("vault read")
+                .expect("stored refresh")
+                .access_token,
+            "replacement-access-token"
+        );
     }
 
     #[cfg(feature = "google-drive-connector")]
@@ -4342,7 +4510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unmapped_unobservable_and_observed_null_are_distinct_provenance_states() {
+    async fn cloud_wire_preserves_null_missing_and_unobservable_without_relabelling() {
         let mut source = FakeCloudSource::one_row();
         source.result = Ok((
             1,
@@ -4356,7 +4524,6 @@ mod tests {
                     "name": null,
                     "modifiedAt": 1,
                     "size": 1,
-                    "rev": "1",
                     "contentHash": "abc",
                     "body": "# Null title",
                 }),
@@ -4368,25 +4535,59 @@ mod tests {
             &source,
             &authority,
             Vec::new(),
-            vec!["title".to_string(), "mediaType".to_string()],
+            vec![
+                "title".to_string(),
+                "revision".to_string(),
+                "author".to_string(),
+            ],
             catdb_connectors::CancellationToken::new(),
         )
         .await
         .expect("unmapped fields remain queryable as absence evidence");
-        let shared = super::shared_entity_response(cloud).expect("shared entity response");
-        let title = &shared.rows[0].provenance["title"].considered()[0];
-        let media_type = &shared.rows[0].provenance["mediaType"].considered()[0];
+        let wire = serde_json::to_value(cloud).expect("serialize exact cloud evidence");
+        let provenance = wire["rows"][0]["provenance"]
+            .as_array()
+            .expect("field provenance");
 
+        assert_eq!(provenance[0]["field"], "title");
+        assert_eq!(provenance[0]["selected"], 0);
         assert_eq!(
-            title.state().kind(),
-            catdb_provenance::ObservationKind::ObservedNull
+            provenance[0]["providers"][0]["observation"],
+            serde_json::json!({ "kind": "observed-null" })
+        );
+        assert_eq!(wire["rows"][0]["fields"]["title"], serde_json::Value::Null);
+
+        assert_eq!(provenance[1]["field"], "revision");
+        assert_eq!(provenance[1]["selected"], serde_json::Value::Null);
+        assert_eq!(
+            provenance[1]["providers"][0]["observation"],
+            serde_json::json!({
+                "kind": "observed-nothing",
+                "reason": "source record did not contain mapped attribute `rev`",
+            })
+        );
+        assert!(
+            wire["rows"][0]["fields"].get("revision").is_none(),
+            "missing must remain absent rather than becoming JSON null"
+        );
+
+        assert_eq!(provenance[2]["field"], "author");
+        assert_eq!(provenance[2]["selected"], serde_json::Value::Null);
+        assert_eq!(
+            provenance[2]["providers"][0]["observation"],
+            serde_json::json!({
+                "kind": "unobservable",
+                "reason": "pinned mapping does not expose `Document.author` for `dropbox`",
+            })
         );
         assert_eq!(
-            media_type.state().kind(),
-            catdb_provenance::ObservationKind::NotAsked
+            provenance[2]["providers"][0]["physical_attribute"],
+            serde_json::Value::Null
         );
-        assert_eq!(media_type.physical_attribute(), None);
-        assert_eq!(media_type.observed_at_ms(), None);
+        assert_eq!(
+            provenance[2]["providers"][0]["observed_at_ms"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]

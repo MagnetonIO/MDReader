@@ -440,6 +440,7 @@ export type CloudExecutionMode = "virtual";
 
 export type CloudFieldProvenance = {
 	field: string,
+	selected: number | null,
 	providers: CloudConsideredProvider[],
 };
 
@@ -451,7 +452,7 @@ export type CloudFilterInput = {
 
 export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
 
-export type CloudObservation = "observed" | "observed-nothing" | "unobservable";
+export type CloudObservation = { kind: "observed-value"; value: unknown } | { kind: "observed-null" } | { kind: "observed-nothing"; reason: string } | { kind: "unobservable"; reason: string };
 
 export type CloudProvider = "google-drive" | "dropbox";
 

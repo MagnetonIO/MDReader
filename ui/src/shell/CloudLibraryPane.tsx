@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
@@ -9,10 +9,8 @@ import type {
   CloudProvider,
   CloudSourceDto,
 } from '../bindings.js';
-import type { FederatedDocument } from '../platform/semantics.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
-import { DocumentInspector } from './lens/DocumentInspector.js';
-import { CLOUD_DOCUMENT_FIELDS } from './cloud-selection.js';
+import { CloudSemanticInspector } from './CloudSemanticInspector.js';
 
 export interface CloudLibraryPaneProps {
   source: CloudSourceDto;
@@ -45,81 +43,6 @@ function saveCopy(name: string, body: string): void {
   URL.revokeObjectURL(url);
 }
 
-function normalizeCloudDocument(
-  evidence: CloudDocumentQueryResponse,
-  row: CloudDocumentRow,
-): FederatedDocument {
-  const values = fieldsOf(row);
-  const fields = row.provenance.map((field) => {
-    const value = values[field.field] ?? null;
-    const providers = field.providers.map((provider) => ({
-      source: provider.source_id,
-      attribute: provider.physical_attribute ?? 'physical attribute unavailable',
-      verdict:
-        provider.observation === 'observed'
-          ? 'observed'
-          : provider.observation === 'observed-nothing'
-            ? 'observed-nothing'
-            : 'not-asked',
-      value: provider.observation === 'observed' ? value : null,
-      reason: [
-        `Provider ${provider.provider}`,
-        `record ${provider.record_key}`,
-        `mapping ${provider.mapping_version}`,
-        provider.observed_at_ms === null
-          ? 'observed time unavailable'
-          : `observed at ${new Date(provider.observed_at_ms).toISOString()}`,
-      ].join(' · '),
-      declaredFallback: [] as string[],
-    }));
-    const winner = field.providers.find((provider) => provider.observation === 'observed') ?? null;
-    return {
-      name: field.field,
-      value,
-      winner: winner?.source_id ?? null,
-      providers,
-      explanation: winner
-        ? `\`${field.field}\` answered by \`${winner.source_id}.${winner.physical_attribute ?? 'physical attribute unavailable'}\``
-        : `No provider observed \`${field.field}\``,
-    };
-  });
-  return {
-    queryId: evidence.query_id,
-    completeness: evidence.completeness,
-    schema: {
-      name: 'document',
-      version: evidence.version_pins.schema_version,
-      checksum: evidence.version_pins.schema_checksum,
-      entities: ['Document'],
-      arrowCount: 0,
-      attributeCount: CLOUD_DOCUMENT_FIELDS.length,
-      equationCount: 0,
-      approvalRequired: false,
-      objectCount: evidence.rows.length,
-      proposalCount: 0,
-    },
-    document: {
-      path:
-        typeof values.path === 'string' && values.path.length > 0
-          ? values.path
-          : row.record_key,
-      fields,
-    },
-    sources: evidence.sources.map((report) => ({
-      source: report.source_id,
-      outcome: report.outcome.kind,
-      execution: report.outcome.mode,
-      freshness: report.freshness_ms === null ? null : 'live',
-      ageMs: report.freshness_ms,
-      scanned: report.outcome.scanned,
-      returned: report.outcome.returned,
-      pushed: report.outcome.pushed,
-      residual: report.outcome.residual,
-      refusal: null,
-    })),
-  };
-}
-
 export function CloudLibraryPane({
   source,
   row,
@@ -148,13 +71,6 @@ export function CloudLibraryPane({
       current = false;
     };
   }, [body]);
-
-  const inspectorEvidence = useMemo(
-    () => normalizeCloudDocument(evidence, row),
-    [evidence, row],
-  );
-  const queryInspector = useCallback(async () => inspectorEvidence, [inspectorEvidence]);
-  const cancelInspector = useCallback(async () => {}, []);
 
   return (
     <>
@@ -200,13 +116,7 @@ export function CloudLibraryPane({
       </div>
       {body !== null ? (
         <aside className="cloud-reader__inspector" aria-label="Cloud Semantic Inspector">
-          <DocumentInspector
-            path={row.record_key}
-            workspaceKey={source.id}
-            workspaceGeneration={0}
-            query={queryInspector}
-            cancel={cancelInspector}
-          />
+          <CloudSemanticInspector evidence={evidence} row={row} />
         </aside>
       ) : null}
     </>
