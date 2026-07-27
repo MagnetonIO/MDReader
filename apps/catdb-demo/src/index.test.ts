@@ -66,6 +66,10 @@ describe('public demo Worker route set', () => {
       ),
       'utf8',
     );
+    const jsWorkflow = await readFile(
+      new URL('../../../.github/workflows/js.yml', import.meta.url),
+      'utf8',
+    );
     expect(dockerfile).toMatch(
       /^FROM rust:1\.94\.0-bookworm@sha256:[0-9a-f]{64} AS builder$/m,
     );
@@ -93,6 +97,9 @@ describe('public demo Worker route set', () => {
     }
     expect(ingestManifest).toContain(
       'external-connectors = ["catdb-cli/external-connectors"]',
+    );
+    expect(jsWorkflow).toContain(
+      'pnpm --filter @catdb/demo-runtime cf:dry-run',
     );
     expect(dockerfile).toContain('/image/metadata/workspace.sha256');
     expect(dockerfile).toContain('find /image -type f -exec chmod 0444');
