@@ -8,6 +8,7 @@ import { setTestPlatform } from './test/tauri-os';
 const persistence = vi.hoisted(() => ({
   stores: new Map<string, Map<string, unknown>>(),
 }));
+let nativeEnterpriseConfigured = false;
 
 vi.mock('@tauri-apps/plugin-store', () => ({
   load: async (name: string) => ({
@@ -27,7 +28,33 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 function installTauriRuntime(): void {
   Object.defineProperty(window, '__TAURI_INTERNALS__', {
     configurable: true,
-    value: { invoke: vi.fn(() => new Promise(() => undefined)) },
+    value: {
+      invoke: vi.fn(
+        async (
+          command: string,
+          args?: { operation?: string; bodyJson?: string | null },
+        ) => {
+          if (command === 'mobile_enterprise_request') {
+            const path =
+              args?.operation === 'session' ? '/v1/session' : '/v1/entity/query';
+            const response = await fetch(`https://catdb.example.com${path}`, {
+              method: args?.operation === 'session' ? 'GET' : 'POST',
+              body: args?.bodyJson ?? undefined,
+            });
+            return { status: response.status, body_json: await response.text() };
+          }
+          if (command === 'mobile_enterprise_connection') {
+            return nativeEnterpriseConfigured
+              ? {
+                  connection_id: 'managed-connection-42',
+                  label: 'Enterprise test connection',
+                }
+              : null;
+          }
+          return new Promise(() => undefined);
+        },
+      ),
+    },
   });
 }
 
@@ -109,18 +136,7 @@ function settingsStore(): Map<string, unknown> {
 }
 
 function installEnterpriseLibrary(): void {
-  persistence.stores.set(
-    'mobile-sources.json',
-    new Map([
-      [
-        'enterprise-server',
-        {
-          serverUrl: 'https://catdb.example.com',
-          sessionReference: 'managed-session-42',
-        },
-      ],
-    ]),
-  );
+  nativeEnterpriseConfigured = true;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -200,6 +216,7 @@ function installEnterpriseLibrary(): void {
 beforeEach(() => {
   installTauriRuntime();
   persistence.stores.clear();
+  nativeEnterpriseConfigured = false;
   mediaListeners.clear();
   viewportWidth = 390;
   systemDark = false;
@@ -252,25 +269,12 @@ describe('compile-time mobile composition', () => {
       screen.getByText('Unavailable until a durable mobile folder grant is implemented'),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Add folder' })).toBeNull();
-    expect(screen.getByLabelText('Server URL')).toBeTruthy();
-    expect(screen.getByLabelText('Session reference')).toBeTruthy();
-  });
-
-  test('Enterprise setup rejects embedded credentials and insecure remote origins', () => {
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
-
-    const url = screen.getByLabelText('Server URL');
-    const session = screen.getByLabelText('Session reference');
-    fireEvent.change(session, { target: { value: 'managed-session-42' } });
-
-    fireEvent.change(url, { target: { value: 'https://admin:secret@catdb.example.com' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Use server' }));
-    expect(screen.getByRole('alert').textContent).toMatch(/must not include credentials/i);
-
-    fireEvent.change(url, { target: { value: 'http://catdb.example.com' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Use server' }));
-    expect(screen.getByRole('alert').textContent).toMatch(/https/i);
+    expect(
+      screen.getByText('Unavailable until native secure bearer enrollment is implemented.'),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText('Native connection')).toBeNull();
+    expect(screen.queryByLabelText('Server URL')).toBeNull();
+    expect(screen.queryByLabelText('Session reference')).toBeNull();
   });
 
   test('hydrates and persists System, Light, and Dark choices across mobile relaunch', async () => {
@@ -338,7 +342,7 @@ describe('compile-time mobile composition', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Evidence' }));
     expect(screen.getByRole('main', { name: 'Semantic Inspector' })).toBeTruthy();
-    expect(screen.getAllByText('enterprise-source-1')).toHaveLength(2);
+    expect(screen.getByText('enterprise-source-1')).toBeTruthy();
     expect(screen.getByText('schema-9')).toBeTruthy();
     expect(screen.getByText('mapping-4')).toBeTruthy();
     expect(screen.getByText('policy-2')).toBeTruthy();

@@ -1,49 +1,46 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-const persisted = vi.hoisted(() => ({
-  value: null as unknown,
+const native = vi.hoisted(() => ({
+  result: { status: 'ok', data: null } as unknown,
 }));
 
-vi.mock('@tauri-apps/plugin-store', () => ({
-  load: async () => ({
-    get: async () => persisted.value,
-    set: async (_key: string, value: unknown) => {
-      persisted.value = value;
-    },
-    save: async () => undefined,
-  }),
+vi.mock('../bindings', () => ({
+  commands: {
+    mobileEnterpriseConnection: async () => native.result,
+  },
 }));
 
-import {
-  loadEnterpriseServerConfig,
-  saveEnterpriseServerConfig,
-} from './source-policy';
+import { loadEnterpriseServerConfig } from './source-policy';
 
 afterEach(() => {
-  persisted.value = null;
+  native.result = { status: 'ok', data: null };
 });
 
-describe('mobile Enterprise configuration persistence', () => {
-  test('loads only a validated non-secret server boundary', async () => {
-    persisted.value = {
-      serverUrl: 'https://catdb.example.com',
-      sessionReference: 'managed-session-42',
+describe('mobile Enterprise native configuration', () => {
+  test('loads only a validated non-secret connection selected by native state', async () => {
+    native.result = {
+      status: 'ok',
+      data: {
+        connection_id: 'managed-connection-42',
+        label: 'Enterprise',
+      },
     };
-    await expect(loadEnterpriseServerConfig()).resolves.toEqual(persisted.value);
+    await expect(loadEnterpriseServerConfig()).resolves.toEqual({
+      connectionId: 'managed-connection-42',
+    });
 
-    persisted.value = {
-      serverUrl: 'https://admin:secret@catdb.example.com',
-      sessionReference: 'managed-session-42',
+    native.result = {
+      status: 'ok',
+      data: {
+        connection_id: 'bad\nconnection',
+        label: 'Enterprise',
+      },
     };
     await expect(loadEnterpriseServerConfig()).resolves.toBeNull();
   });
 
-  test('a saved configuration is consumable on the next launch', async () => {
-    const config = {
-      serverUrl: 'https://catdb.example.com',
-      sessionReference: 'managed-session-42',
-    };
-    await saveEnterpriseServerConfig(config);
-    await expect(loadEnterpriseServerConfig()).resolves.toEqual(config);
+  test('native unavailability and refusal remain unconfigured', async () => {
+    native.result = { status: 'error', error: { kind: 'credential-unavailable' } };
+    await expect(loadEnterpriseServerConfig()).resolves.toBeNull();
   });
 });

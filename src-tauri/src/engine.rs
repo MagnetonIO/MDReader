@@ -97,7 +97,9 @@ use specta::Type;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-use catdb_embed::{EmbedError, EmbedResult, Embedder, FastembedEmbedder, HashEmbedder, ModelInfo};
+#[cfg(not(mobile))]
+use catdb_embed::FastembedEmbedder;
+use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
 use mdreader_ingest::{
@@ -255,6 +257,15 @@ fn model_info_for(hash_embed: bool) -> ModelInfo {
     if hash_embed {
         return HashEmbedder::new().info();
     }
+    #[cfg(mobile)]
+    {
+        ModelInfo {
+            name: "mdreader-mobile-local-embedding-unavailable".to_string(),
+            dim: 384,
+            max_tokens: 512,
+        }
+    }
+    #[cfg(not(mobile))]
     ModelInfo {
         name: FastembedEmbedder::MODEL_NAME.to_string(),
         dim: FastembedEmbedder::DIM,
@@ -830,10 +841,20 @@ async fn build_embedder() -> Result<Arc<dyn Embedder>, String> {
     if dev_hash_embed() {
         return Ok(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>);
     }
-    let embedder = FastembedEmbedder::load(None)
-        .await
-        .map_err(|err| format!("load embedding model: {err}"))?;
-    Ok(Arc::new(embedder) as Arc<dyn Embedder>)
+    #[cfg(mobile)]
+    {
+        Err(
+            "local semantic embedding is unavailable on mobile; no fallback model was selected"
+                .to_string(),
+        )
+    }
+    #[cfg(not(mobile))]
+    {
+        let embedder = FastembedEmbedder::load(None)
+            .await
+            .map_err(|err| format!("load embedding model: {err}"))?;
+        Ok(Arc::new(embedder) as Arc<dyn Embedder>)
+    }
 }
 
 /// Open (creating if needed) the engine at `db_path` and the overlay proposal

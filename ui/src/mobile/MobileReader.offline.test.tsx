@@ -54,7 +54,7 @@ const identity: MobileDocumentIdentity = {
 function cachedEntry(overrides: Record<string, unknown> = {}) {
   const now = Date.now();
   return {
-    version: 2,
+    version: 3,
     entries: [
       {
         source: { kind: 'device-folder', id: 'library-source-7' },
@@ -66,6 +66,7 @@ function cachedEntry(overrides: Record<string, unknown> = {}) {
         expiresAt: now + 60_000,
         content: '# Cached note\n\nRead while disconnected.',
         bytes: 39,
+        provenance: null,
         ...overrides,
       },
     ],
@@ -131,7 +132,7 @@ describe('mobile offline document fallback', () => {
     );
     corrupt.unmount();
 
-    fixtures.cache = { version: 2, entries: [] };
+    fixtures.cache = { version: 3, entries: [] };
     render(
       <MobileReader
         tab={tab}
@@ -164,7 +165,7 @@ describe('mobile offline document fallback', () => {
   });
 
   test('rejects a live payload whose authority differs from the requested document', async () => {
-    fixtures.cache = { version: 2, entries: [] };
+    fixtures.cache = { version: 3, entries: [] };
     const loadDocument = vi.fn(async () => ({
       ...identity,
       source: { kind: 'device-folder' as const, id: 'replacement-source' },
@@ -205,7 +206,7 @@ describe('mobile offline document fallback', () => {
 
     const now = Date.now();
     fixtures.cache = {
-      version: 2,
+      version: 3,
       entries: [
         cachedEntry().entries[0],
         {

@@ -11,8 +11,7 @@ import {
 } from './mobile-source-adapter';
 
 const config = {
-  serverUrl: 'https://catdb.example.com',
-  sessionReference: 'managed-session-42',
+  connectionId: 'managed-connection-42',
 };
 
 const IDS = {
@@ -41,7 +40,10 @@ function observation(value: unknown, observedAt = 1_234) {
     record_key: 'document-1',
     mapping_version_id: IDS.mapping,
     observed_at_ms: observedAt,
-    state: { state: 'observed_value' as const, value },
+    state:
+      value === null
+        ? ({ state: 'observed_null' as const })
+        : ({ state: 'observed_value' as const, value }),
   };
 }
 
@@ -143,19 +145,16 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
 
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
-      'https://catdb.example.com/v1/session',
-      expect.objectContaining({
-        method: 'GET',
-        credentials: 'include',
-        headers: expect.any(Headers),
-      }),
+      'http://mdreader-native.invalid/v1/session',
+      expect.objectContaining({ method: 'GET' }),
     );
     const firstHeaders = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
-    expect(firstHeaders.get('x-mdreader-session-reference')).toBe('managed-session-42');
+    expect(firstHeaders.has('authorization')).toBe(false);
+    expect(firstHeaders.has('x-mdreader-session-reference')).toBe(false);
 
     expect(fetcher).toHaveBeenNthCalledWith(
       2,
-      'https://catdb.example.com/v1/entity/query',
+      'http://mdreader-native.invalid/v1/entity/query',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
@@ -267,16 +266,14 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
         content: '# Semantic architecture',
         observedAt: 1_234,
         provenance: {
-          schemaVersion: IDS.schema,
-          mappingVersion: IDS.mapping,
-          policyVersion: IDS.policy,
-          sourceRecord: 'document-1',
-          consideredProviders: [IDS.source],
+          pins: read.pins,
+          fields: read.rows[0]!.provenance,
+          sources: read.sources,
         },
       }),
     );
     expect(fetcher).toHaveBeenLastCalledWith(
-      'https://catdb.example.com/v1/entity/query',
+      'http://mdreader-native.invalid/v1/entity/query',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
@@ -293,6 +290,38 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
         }),
       }),
     );
+  });
+
+  test('preserves a titleless Markdown document and an empty body as valid data', async () => {
+    const listing = queryResponse({
+      path: 'papers/untitled.md',
+      title: null,
+      size: 0,
+    });
+    const read = queryResponse({
+      path: 'papers/untitled.md',
+      title: null,
+      size: 0,
+      body: '',
+    });
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing), response(read)),
+    );
+
+    const listed = await adapter.listDocuments();
+    expect(listed).toMatchObject({
+      status: 'ready',
+      documents: [{ name: 'untitled.md', title: null, size: 0 }],
+    });
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+    await expect(adapter.readDocument(listed.documents[0]!)).resolves.toMatchObject({
+      content: '',
+      provenance: {
+        pins: read.pins,
+        fields: read.rows[0]!.provenance,
+      },
+    });
   });
 
   test('a document answer under a different source identity fails closed', async () => {

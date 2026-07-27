@@ -14,8 +14,6 @@ import {
 import {
   MOBILE_SOURCE_ALLOWLIST,
   loadEnterpriseServerConfig,
-  saveEnterpriseServerConfig,
-  validateEnterpriseServerConfig,
   type EnterpriseServerConfig,
 } from './source-policy';
 import './mobile.css';
@@ -112,7 +110,7 @@ function LibraryScreen({
                 onClick={() => onOpen(file)}
               >
                 <span>
-                  <strong>{file.title}</strong>
+                  <strong>{file.title ?? file.name}</strong>
                   <small>{file.name}</small>
                 </span>
                 <small>{Math.max(1, Math.ceil(file.size / 1024))} KiB</small>
@@ -140,7 +138,7 @@ function SearchScreen({
       .filter(
         (file) =>
           file.name.toLocaleLowerCase().includes(needle) ||
-          file.title.toLocaleLowerCase().includes(needle),
+          (file.title?.toLocaleLowerCase().includes(needle) ?? false),
       )
       .slice(0, 50);
   }, [documents, query]);
@@ -172,7 +170,7 @@ function SearchScreen({
                 aria-label={file.name}
                 onClick={() => onOpen(file)}
               >
-                <span>{file.title}</span>
+                <span>{file.title ?? file.name}</span>
                 <small>{file.name}</small>
               </button>
             </li>
@@ -186,25 +184,10 @@ function SearchScreen({
 function SourcesScreen({
   savedConfig,
   sourceState,
-  onConnect,
 }: {
   savedConfig: EnterpriseServerConfig | null;
   sourceState: MobileSourceState;
-  onConnect: (config: EnterpriseServerConfig) => Promise<MobileLibraryResult>;
 }) {
-  const [message, setMessage] = useState<string | null>(null);
-  const [serverError, setServerError] = useState<string | null>(null);
-  const [serverUrl, setServerUrl] = useState(savedConfig?.serverUrl ?? '');
-  const [sessionReference, setSessionReference] = useState(
-    savedConfig?.sessionReference ?? '',
-  );
-
-  useEffect(() => {
-    if (!savedConfig) return;
-    setServerUrl(savedConfig.serverUrl);
-    setSessionReference(savedConfig.sessionReference);
-  }, [savedConfig]);
-
   return (
     <section className="mobile-screen" aria-label="Sources">
       <div className="mobile-screen__head">
@@ -232,57 +215,20 @@ function SourcesScreen({
         ))}
         <article className="mobile-source">
           <h2>Enterprise CatDB server</h2>
-          <p>Connect to an authenticated CatDB service. Warehouse credentials stay on the server.</p>
+          <p>
+            Use a connection admitted by native secure state. Server and warehouse
+            credentials never enter the webview.
+          </p>
           <p className="mobile-source__status" role="status">
             {sourceStatus(sourceState)}
           </p>
-          <label className="mobile-field">
-            <span>Server URL</span>
-            <input
-              type="url"
-              value={serverUrl}
-              onChange={(event) => setServerUrl(event.currentTarget.value)}
-              inputMode="url"
-              autoCapitalize="none"
-            />
-          </label>
-          <label className="mobile-field">
-            <span>Session reference</span>
-            <input
-              value={sessionReference}
-              onChange={(event) => setSessionReference(event.currentTarget.value)}
-              autoCapitalize="none"
-              autoComplete="off"
-            />
-          </label>
-          <button
-            type="button"
-            className="mobile-action mobile-touch"
-            onClick={() => {
-              const result = validateEnterpriseServerConfig(serverUrl, sessionReference);
-              if (result.status === 'error') {
-                setServerError(result.message);
-                return;
-              }
-              setServerError(null);
-              void saveEnterpriseServerConfig(result.config)
-                .then(() => onConnect(result.config))
-                .then((connection) =>
-                  setMessage(
-                    connection.status === 'ready'
-                      ? 'Server boundary saved and connected.'
-                      : `Server boundary saved. ${sourceStatus(connection)}`,
-                  ),
-                )
-                .catch(() => setServerError('The server boundary could not be saved on this device.'));
-            }}
-          >
-            Use server
-          </button>
-          {serverError ? <p role="alert">{serverError}</p> : null}
+          <p>
+            {savedConfig
+              ? `Native connection ${savedConfig.connectionId}`
+              : 'Unavailable until native secure bearer enrollment is implemented.'}
+          </p>
         </article>
       </div>
-      {message ? <p role="status">{message}</p> : null}
     </section>
   );
 }
@@ -434,7 +380,6 @@ export function MobileAppShell({ platform }: MobileAppShellProps) {
       <SourcesScreen
         savedConfig={savedConfig}
         sourceState={sourceState}
-        onConnect={connect}
       />
     ) : (
       <SettingsScreen />

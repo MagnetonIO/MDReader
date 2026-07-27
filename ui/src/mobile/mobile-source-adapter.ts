@@ -8,8 +8,13 @@ import {
   type SessionResponse,
 } from '@catdb/client';
 
+import { commands, type MobileEnterpriseError } from '../bindings';
 import type { EnterpriseServerConfig } from './source-policy';
 import type { MobileDocumentIdentity } from './offline-cache';
+import {
+  mobileProvenanceOf,
+  type MobileDocumentProvenance,
+} from './mobile-provenance';
 
 const DOCUMENT_ENTITY = 'document.Document';
 const LIST_FIELDS = ['path', 'title', 'size'] as const;
@@ -17,11 +22,10 @@ const READ_FIELDS = [...LIST_FIELDS, 'body'] as const;
 const MAX_LIBRARY_DOCUMENTS = 1_000;
 const MAX_RESPONSE_BYTES = 3 * 1024 * 1024;
 const MAX_TEXT_FIELD = 4_096;
-const REQUEST_DEADLINE_MS = 15_000;
 
 export interface MobileLibraryDocument extends MobileDocumentIdentity {
   name: string;
-  title: string;
+  title: string | null;
   size: number;
 }
 
@@ -31,13 +35,7 @@ export type MobileLibraryResult =
   | { status: 'unavailable'; message: string }
   | { status: 'invalid-response'; message: string };
 
-export interface MobileDocumentProvenance {
-  schemaVersion: string;
-  mappingVersion: string;
-  policyVersion: string;
-  sourceRecord: string;
-  consideredProviders: string[];
-}
+export type { MobileDocumentProvenance } from './mobile-provenance';
 
 export interface MobileDocumentPayload extends MobileDocumentIdentity {
   content: string;
@@ -65,6 +63,7 @@ export interface EnterpriseMobileSourceAdapter {
 }
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+const NATIVE_TRANSPORT_ORIGIN = 'http://mdreader-native.invalid';
 
 class ResponseBoundError extends Error {
   constructor() {
@@ -131,27 +130,42 @@ async function boundedResponse(response: Response): Promise<Response> {
   });
 }
 
-function authenticatedFetch(config: EnterpriseServerConfig, fetcher: Fetcher): FetchLike {
+function boundedFetch(fetcher: Fetcher): FetchLike {
   return async (input, init) => {
-    const controller = new AbortController();
-    const upstreamSignal = init?.signal;
-    const abort = () => controller.abort(upstreamSignal?.reason);
-    upstreamSignal?.addEventListener('abort', abort, { once: true });
-    const timer = window.setTimeout(() => controller.abort(), REQUEST_DEADLINE_MS);
-    const headers = new Headers(init?.headers);
-    headers.set('X-MDReader-Session-Reference', config.sessionReference);
-    try {
-      const response = await fetcher(input, {
-        ...init,
-        credentials: 'include',
-        headers,
-        signal: controller.signal,
-      });
-      return await boundedResponse(response);
-    } finally {
-      window.clearTimeout(timer);
-      upstreamSignal?.removeEventListener('abort', abort);
-    }
+    return boundedResponse(await fetcher(input, init));
+  };
+}
+
+class NativeEnterpriseError extends Error {
+  constructor(readonly detail: MobileEnterpriseError) {
+    super(detail.kind);
+    this.name = 'NativeEnterpriseError';
+  }
+}
+
+function nativeFetch(config: EnterpriseServerConfig): FetchLike {
+  return async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.toString());
+    const method = init?.method ?? 'GET';
+    const operation =
+      url.pathname === '/v1/session' && method === 'GET'
+        ? 'session'
+        : url.pathname === '/v1/entity/query' && method === 'POST'
+          ? 'entity-query'
+          : null;
+    if (!operation) throw new NativeEnterpriseError({ kind: 'invalid-request' });
+    const bodyJson =
+      operation === 'entity-query' && typeof init?.body === 'string' ? init.body : null;
+    const result = await commands.mobileEnterpriseRequest(
+      config.connectionId,
+      operation,
+      bodyJson,
+    );
+    if (result.status === 'error') throw new NativeEnterpriseError(result.error);
+    return new Response(result.data.body_json, {
+      status: result.data.status,
+      headers: { 'content-type': 'application/json' },
+    });
   };
 }
 
@@ -274,14 +288,14 @@ function documentOf(
   const recordKey = text(rowRecord?.record_key, 1_024);
   if (!fields || !provenance || !recordKey) return null;
   const path = text(fields.path);
-  const title = text(fields.title, 1_024);
+  const title = fields.title === null ? null : text(fields.title, 1_024);
   const size = nonNegativeNumber(fields.size);
   const pathObservation = selectedObservation(row, 'path');
   const titleObservation = selectedObservation(row, 'title');
   const sizeObservation = selectedObservation(row, 'size');
   if (
     !path ||
-    !title ||
+    (fields.title !== null && !title) ||
     size === null ||
     !pathObservation ||
     !titleObservation ||
@@ -360,6 +374,12 @@ function libraryFailure(cause: unknown): MobileLibraryResult {
       message: 'The Enterprise server response exceeded the mobile safety bound.',
     };
   }
+  if (cause instanceof NativeEnterpriseError && cause.detail.kind === 'response-too-large') {
+    return {
+      status: 'invalid-response',
+      message: 'The Enterprise server response exceeded the mobile safety bound.',
+    };
+  }
   return { status: 'unavailable', message: 'The Enterprise server is unavailable.' };
 }
 
@@ -395,11 +415,11 @@ async function sha256(content: string): Promise<string> {
  */
 export function createEnterpriseMobileSourceAdapter(
   config: EnterpriseServerConfig,
-  fetcher: Fetcher = fetch.bind(globalThis),
+  fetcher?: Fetcher,
 ): EnterpriseMobileSourceAdapter {
   const client = createCatdbClient({
-    baseUrl: config.serverUrl,
-    fetch: authenticatedFetch(config, fetcher),
+    baseUrl: NATIVE_TRANSPORT_ORIGIN,
+    fetch: fetcher ? boundedFetch(fetcher) : nativeFetch(config),
   });
   let workspaceId: string | null = null;
 
@@ -482,11 +502,14 @@ export function createEnterpriseMobileSourceAdapter(
         }
         const row = response.rows[0]!;
         const actual = documentOf(response, document.sourceRoot.id, row);
-        const body = text(row.fields.body, 2 * 1024 * 1024);
+        const body =
+          typeof row.fields.body === 'string' && row.fields.body.length <= 2 * 1024 * 1024
+            ? row.fields.body
+            : null;
         const bodyObservation = selectedObservation(row, 'body');
         if (
           !actual ||
-          !body ||
+          body === null ||
           !bodyObservation ||
           bodyObservation.observedAt === null ||
           !response.pins.source_version_ids.includes(bodyObservation.sourceVersionId) ||
@@ -513,17 +536,15 @@ export function createEnterpriseMobileSourceAdapter(
             'The Enterprise document provider changed during the read.',
           );
         }
-        const consideredProviders = [
-          ...new Set(
-            response.sources
-              .map((source) => text(source.source_id, 1_024))
-              .filter((source): source is string => source !== null),
-          ),
-        ];
-        if (
-          consideredProviders.length !== response.sources.length ||
-          response.pins.policy_version_ids.length === 0
-        ) {
+        const provenance = mobileProvenanceOf(
+          {
+            pins: response.pins,
+            fields: row.provenance,
+            sources: response.sources,
+          },
+          row.record_key,
+        );
+        if (!provenance || response.pins.policy_version_ids.length === 0) {
           throw new MobileSourceReadError(
             'invalid-response',
             'The Enterprise server returned incomplete provenance.',
@@ -534,13 +555,7 @@ export function createEnterpriseMobileSourceAdapter(
           content: body,
           revision: await sha256(body),
           observedAt: bodyObservation.observedAt,
-          provenance: {
-            schemaVersion: response.pins.schema_version_id,
-            mappingVersion: bodyObservation.mappingVersionId,
-            policyVersion: response.pins.policy_version_ids.join(', '),
-            sourceRecord: bodyObservation.recordKey,
-            consideredProviders,
-          },
+          provenance,
         };
       } catch (cause) {
         throw readFailure(cause);

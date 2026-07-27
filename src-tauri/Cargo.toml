@@ -64,7 +64,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # stays default-features off to keep its `catdb` bin's ORT *binary* out of the
 # app build; we consume only its `registration()` and `scan_root` (public API).
 catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
-catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
+catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false }
 catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
 catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite" }
 catdb-connector-google-drive = { path = "../../../catdb/crates/catdb-connector-google-drive", optional = true }
@@ -91,12 +91,15 @@ tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
+catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
+catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["sync-secret-service"] }
+catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

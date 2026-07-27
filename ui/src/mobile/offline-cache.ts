@@ -1,10 +1,15 @@
 import { load } from '@tauri-apps/plugin-store';
+import {
+  mobileProvenanceOf,
+  type MobileDocumentProvenance,
+} from './mobile-provenance';
 
 const CACHE_KEY = 'mobile-offline-documents';
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 export const MAX_OFFLINE_DOCUMENTS = 64;
 export const MAX_OFFLINE_DOCUMENT_BYTES = 2 * 1024 * 1024;
 export const MAX_OFFLINE_CACHE_BYTES = 8 * 1024 * 1024;
+const MAX_OFFLINE_PROVENANCE_BYTES = 3 * 1024 * 1024;
 
 export type MobileSourceIdentity =
   | { kind: 'device-folder'; id: string }
@@ -41,6 +46,7 @@ export interface OfflineDocumentEntry extends MobileDocumentIdentity {
   expiresAt: number;
   content: string;
   bytes: number;
+  provenance: MobileDocumentProvenance | null;
 }
 
 interface OfflineCacheEnvelope {
@@ -68,6 +74,19 @@ function cacheStore() {
 
 function bytesOf(content: string): number {
   return new TextEncoder().encode(content).byteLength;
+}
+
+function provenanceBytesOf(provenance: MobileDocumentProvenance | null): number | null {
+  try {
+    const bytes = bytesOf(JSON.stringify(provenance));
+    return bytes <= MAX_OFFLINE_PROVENANCE_BYTES ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedBytes(entry: OfflineDocumentEntry): number {
+  return entry.bytes + (provenanceBytesOf(entry.provenance) ?? MAX_OFFLINE_CACHE_BYTES + 1);
 }
 
 function validSource(value: unknown): value is MobileSourceIdentity {
@@ -117,15 +136,27 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
     !validNumber(candidate.cachedAt) ||
     !validNumber(candidate.expiresAt) ||
     typeof candidate.content !== 'string' ||
-    !validNumber(candidate.bytes)
+    !validNumber(candidate.bytes) ||
+    !Object.hasOwn(candidate, 'provenance')
   ) {
     return null;
   }
   const actualBytes = bytesOf(candidate.content);
+  const source = candidate.source as MobileSourceIdentity;
+  const provenance =
+    candidate.provenance === null
+      ? null
+      : mobileProvenanceOf(candidate.provenance, candidate.document.id);
+  const provenanceBytes = provenanceBytesOf(provenance);
   if (
     actualBytes !== candidate.bytes ||
     actualBytes > MAX_OFFLINE_DOCUMENT_BYTES ||
-    candidate.expiresAt < candidate.cachedAt
+    candidate.expiresAt < candidate.cachedAt ||
+    provenanceBytes === null ||
+    (candidate.provenance !== null && provenance === null) ||
+    (source.kind === 'enterprise-catdb' &&
+      (provenance === null ||
+        !provenance.sources.some((provider) => provider.source_id === source.id)))
   ) {
     return null;
   }
@@ -133,7 +164,7 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
     ? Math.min(candidate.freshUntil, candidate.expiresAt)
     : candidate.cachedAt;
   return {
-    source: candidate.source,
+    source,
     sourceRoot: candidate.sourceRoot,
     document: candidate.document,
     revision: candidate.revision,
@@ -143,6 +174,7 @@ function entryOf(value: unknown): OfflineDocumentEntry | null {
     expiresAt: candidate.expiresAt,
     content: candidate.content,
     bytes: actualBytes,
+    provenance,
   };
 }
 
@@ -158,7 +190,8 @@ function envelopeOf(value: unknown): OfflineCacheEnvelope | null {
   }
   if (
     entries.length > MAX_OFFLINE_DOCUMENTS ||
-    entries.reduce((total, entry) => total + entry.bytes, 0) > MAX_OFFLINE_CACHE_BYTES
+    entries.reduce((total, entry) => total + storedBytes(entry), 0) >
+      MAX_OFFLINE_CACHE_BYTES
   ) {
     return null;
   }
@@ -176,6 +209,7 @@ function withoutContent(entry: OfflineDocumentEntry): Omit<OfflineDocumentEntry,
     freshUntil: entry.freshUntil,
     expiresAt: entry.expiresAt,
     bytes: entry.bytes,
+    provenance: entry.provenance,
   };
 }
 
@@ -245,9 +279,10 @@ async function writeOfflineDocumentTransaction(entry: OfflineDocumentEntry): Pro
     let totalBytes = 0;
     for (const candidate of deduped) {
       if (bounded.length >= MAX_OFFLINE_DOCUMENTS) break;
-      if (totalBytes + candidate.bytes > MAX_OFFLINE_CACHE_BYTES) continue;
+      const candidateBytes = storedBytes(candidate);
+      if (totalBytes + candidateBytes > MAX_OFFLINE_CACHE_BYTES) continue;
       bounded.push(candidate);
-      totalBytes += candidate.bytes;
+      totalBytes += candidateBytes;
     }
     await store.set(CACHE_KEY, { version: CACHE_VERSION, entries: bounded });
     await store.save();

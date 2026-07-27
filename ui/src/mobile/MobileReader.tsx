@@ -47,6 +47,21 @@ function sameIdentity(
   );
 }
 
+function observationStateLabel(state: { state: string; value?: unknown }): string {
+  if (state.state === 'observed_value') return 'observed value';
+  if (state.state === 'observed_null') return 'observed null';
+  if (state.state === 'field_unseen') return 'field unseen';
+  if (state.state === 'record_unseen') return 'record unseen';
+  if (state.state === 'not_asked') {
+    const value =
+      typeof state.value === 'object' && state.value !== null
+        ? (state.value as Record<string, unknown>)
+        : null;
+    return `not asked${typeof value?.reason === 'string' ? `: ${value.reason}` : ''}`;
+  }
+  return 'unknown';
+}
+
 /** A read-only mobile document surface. It never imports or mounts the editor. */
 export function MobileReader({
   tab,
@@ -106,6 +121,7 @@ export function MobileReader({
           expiresAt: cachedAt + 7 * 24 * 60 * 60_000,
           content: payload.content,
           bytes: new TextEncoder().encode(payload.content).byteLength,
+          provenance: payload.provenance,
         });
         if (!current()) return null;
         return { parsed, payload };
@@ -132,7 +148,7 @@ export function MobileReader({
               setEvidence({
                 revision: cached.entry.revision,
                 observedAt: cached.entry.observedAt,
-                provenance: null,
+                provenance: cached.entry.provenance,
               });
             }
           } catch {
@@ -217,25 +233,58 @@ export function MobileReader({
               {evidence.provenance ? (
                 <>
                   <div>
+                    <dt>Catalog resolver</dt>
+                    <dd>{evidence.provenance.pins.catalog_resolver_id}</dd>
+                  </div>
+                  <div>
                     <dt>Schema version</dt>
-                    <dd>{evidence.provenance.schemaVersion}</dd>
+                    <dd>{evidence.provenance.pins.schema_version_id}</dd>
                   </div>
                   <div>
-                    <dt>Mapping version</dt>
-                    <dd>{evidence.provenance.mappingVersion}</dd>
+                    <dt>Physical schema versions</dt>
+                    <dd>
+                      {evidence.provenance.pins.physical_schema_version_ids.join(', ') ||
+                        'None'}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Policy version</dt>
-                    <dd>{evidence.provenance.policyVersion}</dd>
+                    <dt>Mapping versions</dt>
+                    <dd>{evidence.provenance.pins.mapping_version_ids.join(', ')}</dd>
                   </div>
                   <div>
-                    <dt>Source record</dt>
-                    <dd>{evidence.provenance.sourceRecord}</dd>
+                    <dt>Policy versions</dt>
+                    <dd>{evidence.provenance.pins.policy_version_ids.join(', ')}</dd>
                   </div>
                   <div>
                     <dt>Considered providers</dt>
-                    <dd>{evidence.provenance.consideredProviders.join(', ')}</dd>
+                    <dd>
+                      {evidence.provenance.sources
+                        .map(
+                          (source) =>
+                            `${source.source_id} (${source.source_version_id}; ${source.outcome})`,
+                        )
+                        .join(', ')}
+                    </dd>
                   </div>
+                  {Object.entries(evidence.provenance.fields).map(
+                    ([field, fieldProvenance]) => (
+                      <div key={field}>
+                        <dt>Field {field}</dt>
+                        <dd>
+                          {fieldProvenance.considered.map((observation, index) => (
+                            <span key={`${observation.source_version_id}:${index}`}>
+                              {index === fieldProvenance.selected ? 'Selected' : 'Considered'} ·{' '}
+                              {observation.source_version_id} · {observation.record_key} ·{' '}
+                              {observation.mapping_version_id} ·{' '}
+                              {observation.observed_at_ms ?? 'no observation time'} ·{' '}
+                              {observationStateLabel(observation.state)}
+                              {index + 1 < fieldProvenance.considered.length ? '; ' : ''}
+                            </span>
+                          ))}
+                        </dd>
+                      </div>
+                    ),
+                  )}
                 </>
               ) : (
                 <div>

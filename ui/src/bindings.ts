@@ -44,6 +44,11 @@ export const commands = {
 	setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("set_cloud_source_enabled", { provider, enabled })),
 	disconnectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("disconnect_cloud_source", { provider })),
 	queryCloudDocuments: (provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { provider, filters, fields })),
+	mobileEnterpriseConnection: () => typedError<{
+	connection_id: string,
+	label: string,
+} | null, MobileEnterpriseError>(__TAURI_INVOKE("mobile_enterprise_connection")),
+	mobileEnterpriseRequest: (connectionId: string, operation: MobileEnterpriseOperation, bodyJson: string | null) => typedError<MobileEnterpriseResponse, MobileEnterpriseError>(__TAURI_INVOKE("mobile_enterprise_request", { connectionId, operation, bodyJson })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -424,7 +429,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
 
 export type CloudSourcesSnapshot = {
 	version: number,
@@ -1059,6 +1064,20 @@ export type MigrationPlanDto = {
 	sigma: SigmaOutcomeDto,
 	/**  Everything the plan is NOT claiming. Render these verbatim. */
 	notes: string[],
+};
+
+export type MobileEnterpriseConnection = {
+	connection_id: string,
+	label: string,
+};
+
+export type MobileEnterpriseError = { kind: "not-configured" } | { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" };
+
+export type MobileEnterpriseOperation = "session" | "entity-query";
+
+export type MobileEnterpriseResponse = {
+	status: number,
+	body_json: string,
 };
 
 export type PickedLibrarySource = {

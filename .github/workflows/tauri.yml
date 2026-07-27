@@ -312,7 +312,8 @@ jobs:
           node --experimental-strip-types --no-warnings \
             "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native/validate-artifact.ts" \
             ios \
-            "$app"
+            "$app" \
+            "$GITHUB_SHA"
           printf 'MDREADER_IOS_APP=%s\n' "$app" >> "$GITHUB_ENV"
 
       - name: Select an available iPhone Simulator
@@ -420,12 +421,21 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build MDReader Android debug APK
+      - name: Prepare isolated Android E2E project
+        shell: bash
         run: |
           test -f apps/mdreader/src-tauri/gen/android/gradlew || {
-            echo "the committed Tauri Android project is missing" >&2
+            echo "the committed production Tauri Android project is missing" >&2
             exit 1
           }
+          production_project="$RUNNER_TEMP/mdreader-android-production-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mv apps/mdreader/src-tauri/gen/android "$production_project"
+          pnpm --filter @mdreader/app tauri android init \
+            --config src-tauri/tauri.e2e.conf.json \
+            --ci
+
+      - name: Build MDReader Android debug APK
+        run: |
           pnpm --filter @mdreader/app tauri android build \
             --debug \
             --target x86_64 \
@@ -447,7 +457,8 @@ jobs:
           node --experimental-strip-types --no-warnings \
             apps/mdreader/e2e-native/validate-artifact.ts \
             android \
-            "$apk"
+            "$apk" \
+            "$GITHUB_SHA"
           printf 'MDREADER_ANDROID_APP=%s\n' "$apk" >> "$GITHUB_ENV"
 
       - name: Install e2e-native toolchain

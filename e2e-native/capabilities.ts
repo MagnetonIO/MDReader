@@ -34,6 +34,64 @@ import { E2E_BUNDLE_IDENTIFIER, E2E_PROCESS_NAME, FLOW_CONFIG } from './flows.ts
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
+const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
+const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
+
+interface E2eBuildManifest {
+  schema: 1;
+  source_commit: string;
+  bundle_identifier: string;
+  profile: 'e2e-build';
+}
+
+function expectedSourceCommit(): string {
+  const configured = process.env.MDREADER_SOURCE_COMMIT;
+  const commit =
+    configured ??
+    execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    }).trim();
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error('expected source commit must be a 40-character lowercase Git commit');
+  }
+  return commit;
+}
+
+export function validateEmbeddedBuildManifest(
+  bytes: Buffer,
+  expectedCommit: string,
+): E2eBuildManifest {
+  if (!/^[0-9a-f]{40}$/.test(expectedCommit)) {
+    throw new Error('expected source commit must be a 40-character lowercase Git commit');
+  }
+  const start = bytes.indexOf(BUILD_MANIFEST_PREFIX);
+  if (start < 0) throw new Error('artifact has no embedded E2E build manifest');
+  const jsonStart = start + BUILD_MANIFEST_PREFIX.length;
+  const end = bytes.indexOf(BUILD_MANIFEST_SUFFIX, jsonStart);
+  if (end < 0 || bytes.indexOf(BUILD_MANIFEST_PREFIX, jsonStart) >= 0) {
+    throw new Error('artifact has an ambiguous embedded E2E build manifest');
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(bytes.subarray(jsonStart, end).toString('utf8'));
+  } catch {
+    throw new Error('artifact has an invalid embedded E2E build manifest');
+  }
+  if (
+    typeof manifest !== 'object' ||
+    manifest === null ||
+    (manifest as Record<string, unknown>).schema !== 1 ||
+    (manifest as Record<string, unknown>).bundle_identifier !== E2E_BUNDLE_IDENTIFIER ||
+    (manifest as Record<string, unknown>).profile !== 'e2e-build' ||
+    (manifest as Record<string, unknown>).source_commit !== expectedCommit
+  ) {
+    throw new Error(
+      `artifact build manifest does not match source commit ${expectedCommit}`,
+    );
+  }
+  return manifest as E2eBuildManifest;
+}
 
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
  *  what tauri-driver launches. */
@@ -117,7 +175,10 @@ function plistValue(path: string, key: string): string {
 }
 
 /** Validate the exact unsigned arm64 iOS Simulator bundle used by Appium. */
-export function validateIosApp(artifact: string | undefined): string {
+export function validateIosApp(
+  artifact: string | undefined,
+  sourceCommit = expectedSourceCommit(),
+): string {
   const app = requiredAbsoluteArtifact('MDREADER_IOS_APP', artifact);
   let appMetadata;
   try {
@@ -180,6 +241,7 @@ export function validateIosApp(artifact: string | undefined): string {
     if (!/platform\s+IOSSIMULATOR\b/.test(build)) {
       throw new Error('Mach-O does not target the iOS Simulator platform');
     }
+    validateEmbeddedBuildManifest(readFileSync(executable), sourceCommit);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`MDREADER_IOS_APP executable is not a valid arm64 Simulator Mach-O: ${detail}`);
@@ -188,7 +250,10 @@ export function validateIosApp(artifact: string | undefined): string {
 }
 
 /** Validate the exact x86_64 Android package used by the emulator Appium leg. */
-export function validateAndroidApk(artifact: string | undefined): string {
+export function validateAndroidApk(
+  artifact: string | undefined,
+  sourceCommit = expectedSourceCommit(),
+): string {
   const apk = requiredAbsoluteArtifact('MDREADER_ANDROID_APP', artifact);
   let metadata;
   try {
@@ -258,6 +323,21 @@ export function validateAndroidApk(artifact: string | undefined): string {
     if (!/(^|\n)\/?lib\/x86_64\/[^/\n]+\.so(\n|$)/.test(files)) {
       throw new Error('x86_64 emulator native library is missing');
     }
+    const nativeLibraries = files
+      .split(/\r?\n/)
+      .map((file) => file.replace(/^\//, ''))
+      .filter((file) => /^lib\/x86_64\/[^/]+\.so$/.test(file));
+    const manifests = nativeLibraries.flatMap((file) => {
+      const library = execFileSync('unzip', ['-p', apk, file], {
+        encoding: null,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return library.includes(BUILD_MANIFEST_PREFIX) ? [library] : [];
+    });
+    if (manifests.length !== 1) {
+      throw new Error(`expected one native library with an E2E build manifest; found ${manifests.length}`);
+    }
+    validateEmbeddedBuildManifest(manifests[0]!, sourceCommit);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`MDREADER_ANDROID_APP has an invalid manifest or x86_64 APK: ${detail}`);
@@ -268,6 +348,7 @@ export function validateAndroidApk(artifact: string | undefined): string {
 /** iOS — appium-xcuitest-driver against a validated unsigned Simulator build. */
 export function iosCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_IOS_APP,
+  sourceCommit = expectedSourceCommit(),
 ): WebdriverIO.Capabilities {
   const platformVersion = process.env.MDREADER_IOS_VERSION;
   return {
@@ -275,7 +356,7 @@ export function iosCapabilitiesFor(
     'appium:automationName': 'XCUITest',
     'appium:deviceName': process.env.MDREADER_IOS_DEVICE ?? 'iPhone 17',
     ...(platformVersion ? { 'appium:platformVersion': platformVersion } : {}),
-    'appium:app': validateIosApp(artifact),
+    'appium:app': validateIosApp(artifact, sourceCommit),
     'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
     'appium:includeSafariInWebviews': false,
@@ -287,12 +368,13 @@ export function iosCapabilitiesFor(
 /** Android — appium-uiautomator2-driver against a validated debug APK. */
 export function androidCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_ANDROID_APP,
+  sourceCommit = expectedSourceCommit(),
 ): WebdriverIO.Capabilities {
   return {
     platformName: 'Android',
     'appium:automationName': 'UiAutomator2',
     'appium:deviceName': process.env.MDREADER_ANDROID_DEVICE ?? 'emulator-5554',
-    'appium:app': validateAndroidApk(artifact),
+    'appium:app': validateAndroidApk(artifact, sourceCommit),
     'appium:appPackage': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
     'appium:ensureWebviewsHavePages': true,
