@@ -5,15 +5,15 @@
  * WEBVIEW context (see `specs/mobile.e2e.ts`). The Appium server is spawned by
  * `@wdio/appium-service` so this is one self-contained `wdio run`.
  *
- * BLOCKED on P6: there is no iOS app build yet. Point `MDREADER_IOS_APP` at the
- * built simulator `.app` (or `MDREADER_IOS_BUNDLE_ID` at an installed build) once
- * the P6 mobile shell lands and this leg runs unchanged. CI-wired (see tauri.yml).
+ * `MDREADER_IOS_APP` must point to a built simulator `.app`; capability
+ * construction rejects missing, malformed, production-identity, or empty
+ * bundles before Appium starts.
  */
 
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { iosCapabilities } from '../capabilities.ts';
+import { iosCapabilitiesFor } from '../capabilities.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = resolve(HERE, '..');
@@ -22,7 +22,7 @@ export const config: WebdriverIO.Config = {
   runner: 'local',
   specs: [join(E2E_ROOT, 'specs', 'mobile.e2e.ts')],
   maxInstances: 1,
-  capabilities: [iosCapabilities],
+  capabilities: [iosCapabilitiesFor()],
   logLevel: 'info',
   bail: 0,
   waitforTimeout: 15_000,
