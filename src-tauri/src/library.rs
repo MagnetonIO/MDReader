@@ -301,7 +301,7 @@ impl LibrarySource {
     /// membership, never from its current filesystem address.
     pub(crate) fn engine_source_id(&self) -> uuid::Uuid {
         const LIBRARY_SOURCE_NAMESPACE: uuid::Uuid =
-            uuid::Uuid::from_u128(0x8fbd_af35_46d0_5d78_a3c1_f46a3f8727b2);
+            uuid::Uuid::from_u128(0x8fbd_af35_46d0_5d78_a3c1_f46a_3f87_27b2);
         uuid::Uuid::new_v5(&LIBRARY_SOURCE_NAMESPACE, self.id.as_bytes())
     }
 
