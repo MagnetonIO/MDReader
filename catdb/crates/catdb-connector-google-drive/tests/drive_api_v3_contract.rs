@@ -20,6 +20,7 @@ use catdb_query::{EntityQuery, EntityTarget};
 #[derive(Clone)]
 struct ScriptedTransport {
     state: Arc<Mutex<ScriptState>>,
+    auto_selected_folder_metadata: bool,
 }
 
 struct ScriptState {
@@ -39,6 +40,17 @@ impl ScriptedTransport {
                 steps: steps.into_iter().collect(),
                 requests: Vec::new(),
             })),
+            auto_selected_folder_metadata: true,
+        }
+    }
+
+    fn without_selected_folder_metadata(steps: impl IntoIterator<Item = ScriptStep>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ScriptState {
+                steps: steps.into_iter().collect(),
+                requests: Vec::new(),
+            })),
+            auto_selected_folder_metadata: false,
         }
     }
 
@@ -53,16 +65,43 @@ impl DriveTransport for ScriptedTransport {
         &self,
         request: DriveHttpRequest,
     ) -> Result<DriveHttpResponse, DriveTransportError> {
+        let supplies_selected_folder_metadata =
+            self.auto_selected_folder_metadata && is_selected_folder_metadata_request(&request);
         let step = {
             let mut state = self.state.lock().unwrap();
             state.requests.push(request);
-            state.steps.pop_front().expect("fixture script exhausted")
+            if supplies_selected_folder_metadata {
+                None
+            } else {
+                Some(state.steps.pop_front().expect("fixture script exhausted"))
+            }
+        };
+        let Some(step) = step else {
+            return DriveHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                serde_json::to_vec(&serde_json::json!({
+                    "id":"selected-folder",
+                    "name":"Selected",
+                    "mimeType":"application/vnd.google-apps.folder",
+                    "modifiedTime":"2026-07-20T12:34:55Z",
+                    "parents":[],
+                    "trashed":false
+                }))
+                .unwrap(),
+            );
         };
         match step {
             ScriptStep::Response(response) => Ok(response),
             ScriptStep::Pending => std::future::pending().await,
         }
     }
+}
+
+fn is_selected_folder_metadata_request(request: &DriveHttpRequest) -> bool {
+    request
+        .path()
+        .starts_with("/drive/v3/files/selected-folder?fields=")
 }
 
 #[derive(Clone)]
@@ -91,6 +130,7 @@ impl DriveTransport for ConcurrentUnauthorizedTransport {
         request: DriveHttpRequest,
     ) -> Result<DriveHttpResponse, DriveTransportError> {
         let generation = request.credential_generation();
+        let selected_folder_metadata = is_selected_folder_metadata_request(&request);
         self.requests.lock().unwrap().push(request);
         if generation == 0 {
             self.barrier.wait().await;
@@ -98,6 +138,21 @@ impl DriveTransport for ConcurrentUnauthorizedTransport {
                 401,
                 BTreeMap::new(),
                 br#"{"error":{"code":401}}"#.to_vec(),
+            );
+        }
+        if selected_folder_metadata {
+            return DriveHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                serde_json::to_vec(&serde_json::json!({
+                    "id":"selected-folder",
+                    "name":"Selected",
+                    "mimeType":"application/vnd.google-apps.folder",
+                    "modifiedTime":"2026-07-20T12:34:55Z",
+                    "parents":[],
+                    "trashed":false
+                }))
+                .unwrap(),
             );
         }
         DriveHttpResponse::new(
@@ -268,6 +323,7 @@ fn picker_pkce_requests_one_file_consent_and_the_exact_scope_without_a_client_se
     assert!(authorization.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file"));
     assert!(authorization.contains("prompt=consent"));
     assert!(authorization.contains("trigger_onepick=true"));
+    assert!(authorization.contains("allow_folder_selection=true"));
     assert!(!authorization.contains("client_secret"));
     assert_eq!(config().oauth_scope(), GOOGLE_DRIVE_FILE_SCOPE);
     assert_eq!(
@@ -288,6 +344,7 @@ struct RefreshingResolver {
 enum RefreshMode {
     Succeeds,
     Revoked,
+    Transport,
     Pending,
 }
 
@@ -341,6 +398,7 @@ impl DriveSecretResolver for RefreshingResolver {
                 Some(SystemTime::now() + Duration::from_secs(3_600)),
             ),
             RefreshMode::Revoked => Err(DriveConnectorError::InvalidSecret),
+            RefreshMode::Transport => Err(DriveConnectorError::Transport),
             RefreshMode::Pending => std::future::pending().await,
         }
     }
@@ -373,7 +431,7 @@ async fn concurrent_expired_access_uses_one_bounded_refresh_exchange() {
             .iter()
             .map(DriveHttpRequest::credential_generation)
             .collect::<Vec<_>>(),
-        vec![1, 1]
+        vec![1, 1, 1, 1]
     );
 }
 
@@ -414,7 +472,7 @@ async fn concurrent_unauthorized_responses_share_one_forced_refresh() {
             .iter()
             .filter(|request| request.credential_generation() == 1)
             .count(),
-        2
+        4
     );
 }
 
@@ -451,10 +509,16 @@ async fn one_unauthorized_response_refreshes_once_and_the_same_source_serves_lat
 
     assert_eq!(resolver.resolve_count.load(Ordering::SeqCst), 1);
     assert_eq!(resolver.refresh_count.load(Ordering::SeqCst), 1);
-    assert_eq!(transport.requests().len(), 3);
-    assert_eq!(transport.requests()[0].credential_generation(), 0);
-    assert_eq!(transport.requests()[1].credential_generation(), 1);
-    assert_eq!(transport.requests()[2].credential_generation(), 1);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| !is_selected_folder_metadata_request(request))
+            .map(DriveHttpRequest::credential_generation)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 1]
+    );
 }
 
 #[tokio::test]
@@ -496,6 +560,51 @@ async fn revoked_refresh_credential_and_cancelled_refresh_remain_typed() {
     assert_eq!(pending_resolver.refresh_count.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn refresh_pipeline_preserves_authentication_transport_and_rate_limit_outcomes() {
+    let (authentication, _, _) = refreshable_source(
+        ScriptedTransport::new([response(401, br#"{"error":{"code":401}}"#)]),
+        RefreshingResolver::new(RefreshMode::Revoked),
+    )
+    .await;
+    assert!(matches!(
+        authentication
+            .execute_page(&plan(&authentication, &["id"]), None, &context(2, 2, 4_096),)
+            .await,
+        Err(SourceError::Authentication { .. })
+    ));
+
+    let (transport, _, _) = refreshable_source(
+        ScriptedTransport::new([response(401, br#"{"error":{"code":401}}"#)]),
+        RefreshingResolver::new(RefreshMode::Transport),
+    )
+    .await;
+    assert!(matches!(
+        transport
+            .execute_page(&plan(&transport, &["id"]), None, &context(2, 2, 4_096))
+            .await,
+        Err(SourceError::Transport { .. })
+    ));
+
+    let (rate_limited, _, _) = refreshable_source(
+        ScriptedTransport::new([
+            response(401, br#"{"error":{"code":401}}"#),
+            response_with_headers(429, [("retry-after", "11")], br#"{"error":{"code":429}}"#),
+        ]),
+        RefreshingResolver::new(RefreshMode::Succeeds),
+    )
+    .await;
+    assert!(matches!(
+        rate_limited
+            .execute_page(&plan(&rate_limited, &["id"]), None, &context(2, 2, 4_096),)
+            .await,
+        Err(SourceError::RateLimited {
+            retry_after_ms: Some(11_000),
+            ..
+        })
+    ));
+}
+
 #[test]
 fn source_specs_and_debug_output_never_contain_runtime_credentials() {
     let transport = ScriptedTransport::new([]);
@@ -522,6 +631,33 @@ fn resource_keys_accept_bounded_header_safe_values_without_guessing_provider_gra
     assert!(DriveSelection::file_with_resource_key("selected-file", "rk,bad").is_err());
     assert!(DriveSelection::file_with_resource_key("selected-file", "rk/bad").is_err());
     assert!(DriveSelection::file_with_resource_key("selected-file", "rk\nbad").is_err());
+}
+
+#[test]
+fn configured_selections_are_unique_by_drive_id_and_conflicting_keys_fail_closed() {
+    let secret = DriveSecretReference::new("keychain/mdreader/drive").unwrap();
+    assert!(DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![
+            DriveSelection::file("same-id"),
+            DriveSelection::folder("same-id"),
+        ],
+        secret.clone(),
+    )
+    .is_err());
+    assert!(DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![
+            DriveSelection::file_with_resource_key("same-id", "key-one").unwrap(),
+            DriveSelection::file_with_resource_key("same-id", "key-two").unwrap(),
+        ],
+        secret,
+    )
+    .is_err());
 }
 
 #[tokio::test]
@@ -562,8 +698,8 @@ async fn read_follows_every_page_and_preserves_examined_zero_as_success() {
         serde_json::json!({"id":"a","name":"a.md"})
     );
     let requests = transport.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].path().contains("pageToken=page-token-2"));
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].path().contains("pageToken=page-token-2"));
     assert!(requests
         .iter()
         .all(|request| request.method() == DriveHttpMethod::Get));
@@ -667,6 +803,180 @@ async fn selected_file_ids_use_files_get_instead_of_an_unsupported_list_query_te
 }
 
 #[tokio::test]
+async fn selected_folder_is_validated_with_files_get_before_list_traversal() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-folder",
+        "name":"Selected",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, metadata),
+            response(200, listing(serde_json::json!([]), None, false)),
+        ]),
+        config(),
+    );
+
+    let page = source
+        .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 4_096))
+        .await
+        .unwrap();
+
+    assert_eq!(page.scanned, 0);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(is_selected_folder_metadata_request(&requests[0]));
+    assert!(requests[1]
+        .path()
+        .contains("%27selected-folder%27+in+parents"));
+}
+
+#[tokio::test]
+async fn deleted_or_trashed_selected_folder_is_a_read_failure_not_empty_success() {
+    let (deleted, deleted_transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([response(
+            404,
+            br#"{"error":{"code":404}}"#,
+        )]),
+        config(),
+    );
+    assert!(matches!(
+        deleted
+            .execute_page(&plan(&deleted, &["id"]), None, &context(2, 2, 4_096))
+            .await,
+        Err(SourceError::Read { path, .. }) if path == "selected Drive folder"
+    ));
+    assert!(is_selected_folder_metadata_request(
+        &deleted_transport.requests()[0]
+    ));
+
+    let trashed_metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-folder",
+        "name":"Selected",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":true
+    }))
+    .unwrap();
+    let (trashed, _) = source(
+        ScriptedTransport::without_selected_folder_metadata([response(200, trashed_metadata)]),
+        config(),
+    );
+    assert!(matches!(
+        trashed
+            .execute_page(&plan(&trashed, &["id"]), None, &context(2, 2, 4_096))
+            .await,
+        Err(SourceError::Read { path, .. }) if path == "selected Drive folder"
+    ));
+}
+
+#[tokio::test]
+async fn non_folder_selection_cannot_be_traversed_as_a_folder() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-folder",
+        "name":"not-a-folder.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([response(200, metadata)]),
+        config(),
+    );
+
+    assert!(matches!(
+        source
+            .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 4_096))
+            .await,
+        Err(SourceError::Malformed { attr, .. }) if attr == "selected folder kind"
+    ));
+    assert!(is_selected_folder_metadata_request(
+        &transport.requests()[0]
+    ));
+}
+
+#[tokio::test]
+async fn selected_folder_get_preserves_auth_rate_and_transport_failures() {
+    let cases = [
+        (
+            response(403, br#"{"error":{"code":403}}"#),
+            "authentication",
+        ),
+        (
+            response_with_headers(429, [("retry-after", "13")], br#"{"error":{"code":429}}"#),
+            "rate",
+        ),
+        (response(500, br#"{"error":{"code":500}}"#), "transport"),
+    ];
+    for (step, expected) in cases {
+        let (source, transport) = source(
+            ScriptedTransport::without_selected_folder_metadata([step]),
+            config(),
+        );
+        let result = source
+            .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 4_096))
+            .await;
+        match expected {
+            "authentication" => {
+                assert!(matches!(result, Err(SourceError::Authentication { .. })))
+            }
+            "rate" => assert!(matches!(
+                result,
+                Err(SourceError::RateLimited {
+                    retry_after_ms: Some(13_000),
+                    ..
+                })
+            )),
+            "transport" => assert!(matches!(result, Err(SourceError::Transport { .. }))),
+            _ => unreachable!(),
+        }
+        assert!(is_selected_folder_metadata_request(
+            &transport.requests()[0]
+        ));
+    }
+}
+
+#[tokio::test]
+async fn selected_folder_metadata_with_a_conflicting_resource_key_fails_closed() {
+    let keyed_config = DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![DriveSelection::folder_with_resource_key("selected-folder", "picker-key").unwrap()],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap();
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-folder",
+        "name":"Selected",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "resourceKey":"different-key",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, _) = source(
+        ScriptedTransport::without_selected_folder_metadata([response(200, metadata)]),
+        keyed_config,
+    );
+
+    assert!(matches!(
+        source
+            .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 4_096))
+            .await,
+        Err(SourceError::Malformed { attr, .. }) if attr == "resourceKey"
+    ));
+}
+
+#[tokio::test]
 async fn selected_folders_are_walked_recursively_and_membership_is_rechecked() {
     let root = listing(
         serde_json::json!([
@@ -726,10 +1036,10 @@ async fn selected_folders_are_walked_recursively_and_membership_is_rechecked() {
         vec!["root-note", "nested-note"]
     );
     let requests = transport.requests();
-    assert!(requests[0]
+    assert!(requests[1]
         .path()
         .contains("%27selected-folder%27+in+parents"));
-    assert!(requests[1]
+    assert!(requests[2]
         .path()
         .contains("%27nested-folder%27+in+parents"));
 
@@ -784,7 +1094,7 @@ async fn recursive_walk_deduplicates_cycles_and_refuses_excessive_depth() {
     .unwrap();
     assert_eq!(answer.scanned, 1);
     assert!(answer.rows.is_empty());
-    assert_eq!(cyclic_transport.requests().len(), 1);
+    assert_eq!(cyclic_transport.requests().len(), 2);
 
     let mut steps = Vec::new();
     for depth in 0..=32 {
@@ -986,11 +1296,166 @@ async fn picker_resource_keys_follow_selected_and_discovered_link_shared_items()
         Some("selected-folder/root-key")
     );
     let nested_requests = nested_transport.requests();
-    let nested_header = nested_requests[1]
+    let nested_header = nested_requests[2]
         .header("x-goog-drive-resource-keys")
         .unwrap();
     assert!(nested_header.contains("selected-folder/root-key"));
     assert!(nested_header.contains("nested-folder/nested-key"));
+}
+
+#[tokio::test]
+async fn discovered_file_resource_key_is_forwarded_before_body_read_and_then_persisted() {
+    let root = listing(
+        serde_json::json!([{
+            "id":"linked-note",
+            "name":"linked.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:56Z",
+            "resourceKey":"linked-key",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        None,
+        false,
+    );
+    let (source, transport) = source(
+        ScriptedTransport::new([
+            response(200, root),
+            response(200, b"# Linked".to_vec()),
+            response(200, br#"{"startPageToken":"changes-100"}"#),
+        ]),
+        config(),
+    );
+
+    let page = source
+        .execute_page(
+            &plan(&source, &["id", "body"]),
+            None,
+            &context(4, 4, 64 * 1024),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.rows[0].value["body"], "# Linked");
+    source
+        .start_change_tracking(&context(4, 4, 64 * 1024))
+        .await
+        .unwrap();
+
+    let requests = transport.requests();
+    let body_request = requests
+        .iter()
+        .find(|request| request.path().contains("linked-note?alt=media"))
+        .unwrap();
+    assert_eq!(
+        body_request.header("x-goog-drive-resource-keys"),
+        Some("linked-note/linked-key")
+    );
+    let change_request = requests
+        .iter()
+        .find(|request| request.path().contains("changes/startPageToken"))
+        .unwrap();
+    assert_eq!(
+        change_request.header("x-goog-drive-resource-keys"),
+        Some("linked-note/linked-key")
+    );
+}
+
+#[tokio::test]
+async fn completed_rebuild_replaces_recursive_membership_after_drive_churn() {
+    let first_root = listing(
+        serde_json::json!([{
+            "id":"moved-folder",
+            "name":"Moved",
+            "mimeType":"application/vnd.google-apps.folder",
+            "modifiedTime":"2026-07-20T12:34:56Z",
+            "resourceKey":"moved-folder-key",
+            "parents":["selected-folder"],
+            "trashed":false
+        }, {
+            "id":"moved-file",
+            "name":"moved.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:57Z",
+            "resourceKey":"moved-file-key",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        None,
+        false,
+    );
+    let (source, transport) = source(
+        ScriptedTransport::new([
+            response(200, first_root),
+            response(200, listing(serde_json::json!([]), None, false)),
+            response(200, listing(serde_json::json!([]), None, false)),
+            response(200, br#"{"startPageToken":"changes-100"}"#),
+        ]),
+        config(),
+    );
+
+    for _ in 0..2 {
+        source
+            .execute_page(&plan(&source, &["id"]), None, &context(10, 10, 64 * 1024))
+            .await
+            .unwrap();
+    }
+    source
+        .start_change_tracking(&context(4, 4, 64 * 1024))
+        .await
+        .unwrap();
+
+    let requests = transport.requests();
+    let change_request = requests
+        .iter()
+        .find(|request| request.path().contains("changes/startPageToken"))
+        .unwrap();
+    assert!(change_request
+        .header("x-goog-drive-resource-keys")
+        .is_none());
+}
+
+#[tokio::test]
+async fn failed_header_bound_does_not_partially_publish_tracked_membership() {
+    let files = (0..12)
+        .map(|index| {
+            serde_json::json!({
+                "id":format!("{}{:02}", "f".repeat(248), index),
+                "name":format!("Folder {index}"),
+                "mimeType":"application/vnd.google-apps.folder",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "resourceKey":"k".repeat(500),
+                "parents":["selected-folder"],
+                "trashed":false
+            })
+        })
+        .collect::<Vec<_>>();
+    let (source, transport) = source(
+        ScriptedTransport::new([
+            response(200, listing(files.into(), None, false)),
+            response(200, br#"{"startPageToken":"changes-100"}"#),
+        ]),
+        config(),
+    );
+
+    assert!(matches!(
+        source
+            .execute_page(&plan(&source, &["id"]), None, &context(20, 20, 64 * 1024))
+            .await,
+        Err(SourceError::ResourceLimit { resource, .. })
+            if resource == "Drive resource-key header"
+    ));
+    source
+        .start_change_tracking(&context(2, 2, 64 * 1024))
+        .await
+        .unwrap();
+    let requests = transport.requests();
+    let change_request = requests
+        .iter()
+        .find(|request| request.path().contains("changes/startPageToken"))
+        .unwrap();
+    assert!(change_request
+        .header("x-goog-drive-resource-keys")
+        .is_none());
 }
 
 #[tokio::test]
@@ -1041,8 +1506,8 @@ async fn provider_empty_pages_with_continuations_are_followed_inside_one_bounded
     assert_eq!(page.scanned, 1);
     assert_eq!(page.rows[0].key, "later");
     assert!(page.next_cursor.is_none());
-    assert_eq!(transport.requests().len(), 2);
-    assert!(transport.requests()[1]
+    assert_eq!(transport.requests().len(), 3);
+    assert!(transport.requests()[2]
         .path()
         .contains("pageToken=sparse-next"));
 }
@@ -1057,7 +1522,7 @@ async fn malformed_provider_page_tokens_never_cross_into_a_followup_request() {
             .await,
         Err(SourceError::InvalidCursor)
     );
-    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.requests().len(), 2);
 }
 
 #[tokio::test]
@@ -1202,6 +1667,82 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
             .await,
         Err(SourceError::InvalidCursor)
     );
+}
+
+#[tokio::test]
+async fn stale_cursor_replay_cannot_consume_the_live_continuation() {
+    let first = listing(
+        serde_json::json!([{
+            "id":"first",
+            "name":"first.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:56Z",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        Some("page-two"),
+        false,
+    );
+    let second = listing(
+        serde_json::json!([{
+            "id":"second",
+            "name":"second.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:57Z",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        Some("page-three"),
+        false,
+    );
+    let (source, _) = source(
+        ScriptedTransport::new([
+            response(200, first),
+            response(200, second),
+            response(200, listing(serde_json::json!([]), None, false)),
+        ]),
+        config(),
+    );
+    let query_id = uuid::Uuid::new_v4();
+    let first_page = source
+        .execute_page(
+            &plan(&source, &["id"]),
+            None,
+            &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+    let first_cursor = first_page.next_cursor.unwrap();
+    let second_page = source
+        .execute_page(
+            &plan(&source, &["id"]),
+            Some(&first_cursor),
+            &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+    let live_cursor = second_page.next_cursor.unwrap();
+
+    assert_eq!(
+        source
+            .execute_page(
+                &plan(&source, &["id"]),
+                Some(&first_cursor),
+                &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
+            )
+            .await,
+        Err(SourceError::InvalidCursor)
+    );
+    let final_page = source
+        .execute_page(
+            &plan(&source, &["id"]),
+            Some(&live_cursor),
+            &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(final_page.scanned, 0);
+    assert!(final_page.next_cursor.is_none());
 }
 
 #[tokio::test]
@@ -1354,7 +1895,7 @@ async fn shared_drive_listing_declares_all_required_drive_flags() {
         .execute_page(&plan(&source, &["id"]), None, &context(2, 2, 1024))
         .await
         .unwrap();
-    let path = transport.requests()[0].path().to_string();
+    let path = transport.requests()[1].path().to_string();
     assert!(path.contains("corpora=drive"));
     assert!(path.contains("driveId=shared-drive-7"));
     assert!(path.contains("includeItemsFromAllDrives=true"));
