@@ -158,10 +158,12 @@ export async function readOfflineDocument(
     if (raw === null || raw === undefined) return { status: 'miss' };
     const envelope = envelopeOf(raw);
     if (!envelope) return { status: 'corrupt' };
-    const entry = envelope.entries.find(
+    const matches = envelope.entries.filter(
       (candidate) =>
         candidate.sourceRoot === sourceRoot && candidate.documentPath === documentPath,
     );
+    if (matches.length > 1) return { status: 'corrupt' };
+    const entry = matches[0];
     if (!entry) return { status: 'miss' };
     if (now > entry.expiresAt) return { status: 'expired', entry: withoutContent(entry) };
     return {
@@ -181,6 +183,19 @@ export async function writeOfflineDocument(entry: OfflineDocumentEntry): Promise
     const store = await cacheStore();
     const raw = await store.get(CACHE_KEY);
     const current = envelopeOf(raw) ?? { version: CACHE_VERSION, entries: [] };
+    const replaced = current.entries.find(
+      (candidate) =>
+        candidate.source.id === normalized.source.id &&
+        candidate.documentPath === normalized.documentPath,
+    );
+    if (
+      replaced &&
+      (replaced.observedAt > normalized.observedAt ||
+        (replaced.observedAt === normalized.observedAt &&
+          replaced.cachedAt >= normalized.cachedAt))
+    ) {
+      return false;
+    }
     const deduped = current.entries.filter(
       (candidate) =>
         !(
