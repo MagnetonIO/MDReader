@@ -83,11 +83,14 @@ export const commands = {
 	 */
 	markLibrarySourceActive: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("mark_library_source_active", { sourceId })),
 	/**
-	 *  Forget membership only. The active epoch is protected, and this command
-	 *  never addresses either the user's source directory or the per-root index.
+	 *  Forget one inactive membership and exactly its private CatDB-managed state.
+	 *  The user's source directory is never addressed by cleanup.
 	 */
 	forgetLibrarySource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("forget_library_source", { sourceId })),
-	/**  Return the exact local log location and documented bounds. */
+	/**
+	 *  Return the local diagnostic policy and bounds without exposing filesystem
+	 *  authority.
+	 */
 	diagnosticsInfo: () => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("diagnostics_info")),
 	/**  Persist the local verbosity level; no telemetry or upload side effect exists. */
 	setDiagnosticsLevel: (level: DiagnosticLevel) => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("set_diagnostics_level", { level })),
@@ -430,7 +433,7 @@ export type ConstraintReport = {
 	violations: ViolationDto[],
 };
 
-export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; message: string } | { kind: "invalid-event"; message: string } | { kind: "write-failed"; message: string } | { kind: "export-failed"; message: string } | { kind: "clear-failed"; message: string } | { kind: "reveal-failed"; message: string };
+export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 
 export type DiagnosticErrorCode = "invalid-source" | "source-missing" | "source-unreadable" | "watcher-unavailable" | "index-unavailable" | "persistence-unavailable";
 
@@ -438,19 +441,19 @@ export type DiagnosticEvent = { kind: "application-started" } | { kind: "workspa
 
 export type DiagnosticExport = {
 	status: DiagnosticExportStatus,
-	path: string | null,
 	bytes_written: number,
 };
 
 export type DiagnosticExportStatus = "cancelled" | "exported";
 
+export type DiagnosticFailureReason = "authority-unavailable" | "authority-changed" | "lock-unavailable" | "settings-unavailable" | "settings-invalid" | "event-invalid" | "storage-unavailable" | "destination-unavailable";
+
 export type DiagnosticIndexPhase = "loading" | "importing" | "reembedding" | "done" | "model-unavailable" | "error";
 
 export type DiagnosticInfo = {
 	level: DiagnosticLevel,
-	directory: string,
 	max_file_bytes: number,
-	retained_files: number,
+	max_retained_files: number,
 	max_export_bytes: number,
 };
 
@@ -707,13 +710,18 @@ export type InspectedFact = {
 
 export type LibraryAvailability = { kind: "available" } | { kind: "missing"; reason: string } | { kind: "unreadable"; reason: string } | { kind: "not-directory"; reason: string };
 
-export type LibraryError = { kind: "invalid-root"; message: string } | { kind: "duplicate-root"; source_id: string } | { kind: "source-not-found"; source_id: string } | { kind: "source-unavailable"; source_id: string; reason: string } | { kind: "active-source"; source_id: string } | { kind: "grant-mismatch"; source_id: string } | { kind: "open-failed"; source_id: string; message: string } | { kind: "corrupt-registry"; message: string } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed"; message: string };
+export type LibraryCleanupReason = "managed-state-unavailable" | "rollback-failed";
 
-export type LibraryIndexState = "present" | "not-created";
+export type LibraryCleanupStatus = { kind: "complete" } | { kind: "pending"; source_count: number };
+
+export type LibraryError = { kind: "invalid-root"; message: string } | { kind: "duplicate-root"; source_id: string } | { kind: "source-not-found"; source_id: string } | { kind: "source-unavailable"; source_id: string; reason: string } | { kind: "active-source"; source_id: string } | { kind: "grant-mismatch"; source_id: string } | { kind: "open-failed"; source_id: string; message: string } | { kind: "corrupt-registry"; message: string } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed"; message: string } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+
+export type LibraryIndexState = "present" | "not-created" | "unknown";
 
 export type LibrarySnapshot = {
 	version: number,
 	sources: LibrarySourceDto[],
+	cleanup: LibraryCleanupStatus,
 };
 
 export type LibrarySourceDto = {

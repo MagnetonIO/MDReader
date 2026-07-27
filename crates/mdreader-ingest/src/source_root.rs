@@ -52,8 +52,7 @@ impl std::fmt::Debug for SourceRoot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SourceRoot")
-            .field("path", &self.path)
-            .field("identity", &self.identity)
+            .field("authority", &"<redacted>")
             .finish_non_exhaustive()
     }
 }
@@ -673,7 +672,6 @@ impl SourceRoot {
 }
 
 /// A typed refusal to treat a path as the previously admitted source root.
-#[derive(Debug)]
 pub enum SourceRootError {
     /// The path or its metadata could not be opened.
     CannotInspect {
@@ -726,62 +724,78 @@ pub enum SourceRootError {
     UnsupportedPlatform,
 }
 
+/// A bounded, path-free reason code for a source-root refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRootErrorCode {
+    /// The root or one of its entries could not be inspected.
+    CannotInspect,
+    /// The operating system refused access.
+    PermissionDenied,
+    /// The retained address no longer names a directory.
+    NotDirectory,
+    /// A symlink or reparse point was encountered.
+    SymlinkOrReparse,
+    /// Stable filesystem identity was unavailable.
+    IdentityUnavailable,
+    /// The address names a different filesystem object.
+    IdentityChanged,
+    /// Identity changed during validation.
+    ChangedDuringValidation,
+    /// A relative operation received an invalid path.
+    InvalidRelative,
+    /// Stable identity is unsupported on this platform.
+    #[cfg(not(any(unix, windows)))]
+    UnsupportedPlatform,
+}
+
+impl SourceRootErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CannotInspect => "cannot-inspect",
+            Self::PermissionDenied => "permission-denied",
+            Self::NotDirectory => "not-directory",
+            Self::SymlinkOrReparse => "symlink-or-reparse",
+            Self::IdentityUnavailable => "identity-unavailable",
+            Self::IdentityChanged => "identity-changed",
+            Self::ChangedDuringValidation => "changed-during-validation",
+            Self::InvalidRelative => "invalid-relative",
+            #[cfg(not(any(unix, windows)))]
+            Self::UnsupportedPlatform => "unsupported-platform",
+        }
+    }
+}
+
+impl SourceRootError {
+    /// Return the bounded reason code without exposing native paths or
+    /// operating-system context.
+    pub fn code(&self) -> SourceRootErrorCode {
+        match self {
+            Self::CannotInspect { .. } => SourceRootErrorCode::CannotInspect,
+            Self::PermissionDenied { .. } => SourceRootErrorCode::PermissionDenied,
+            Self::NotDirectory { .. } => SourceRootErrorCode::NotDirectory,
+            Self::SymlinkOrReparse { .. } => SourceRootErrorCode::SymlinkOrReparse,
+            Self::IdentityUnavailable { .. } => SourceRootErrorCode::IdentityUnavailable,
+            Self::IdentityChanged { .. } => SourceRootErrorCode::IdentityChanged,
+            Self::ChangedDuringValidation { .. } => SourceRootErrorCode::ChangedDuringValidation,
+            Self::InvalidRelative { .. } => SourceRootErrorCode::InvalidRelative,
+            #[cfg(not(any(unix, windows)))]
+            Self::UnsupportedPlatform => SourceRootErrorCode::UnsupportedPlatform,
+        }
+    }
+}
+
+impl std::fmt::Debug for SourceRootError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceRootError")
+            .field("code", &self.code().as_str())
+            .finish()
+    }
+}
+
 impl std::fmt::Display for SourceRootError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CannotInspect { path, reason } => {
-                write!(
-                    formatter,
-                    "cannot inspect source root {}: {reason}",
-                    path.display()
-                )
-            }
-            Self::PermissionDenied { path, reason } => {
-                write!(
-                    formatter,
-                    "cannot inspect source root {}: {reason}",
-                    path.display()
-                )
-            }
-            Self::NotDirectory { path } => {
-                write!(
-                    formatter,
-                    "source root is not a directory: {}",
-                    path.display()
-                )
-            }
-            Self::SymlinkOrReparse { path } => write!(
-                formatter,
-                "source root identity changed: {} is a symlink or reparse point",
-                path.display()
-            ),
-            Self::IdentityUnavailable { path, reason } => write!(
-                formatter,
-                "source root identity is unavailable for {}: {reason}",
-                path.display()
-            ),
-            Self::IdentityChanged { path } => write!(
-                formatter,
-                "source root identity changed since it was admitted: {}",
-                path.display()
-            ),
-            Self::ChangedDuringValidation { path } => write!(
-                formatter,
-                "source root changed while its identity was being validated: {}",
-                path.display()
-            ),
-            Self::InvalidRelative { path } => {
-                write!(
-                    formatter,
-                    "source-relative path is invalid: {}",
-                    path.display()
-                )
-            }
-            #[cfg(not(any(unix, windows)))]
-            Self::UnsupportedPlatform => {
-                formatter.write_str("stable source root identity is unsupported on this platform")
-            }
-        }
+        formatter.write_str(self.code().as_str())
     }
 }
 
@@ -817,15 +831,29 @@ impl SourceRootIdentity {
 
 /// Return the private per-source index path below `base`.
 ///
-/// Both native path units and stable object identity participate in the key, so
-/// a replacement directory at the same canonical path cannot inherit an older
-/// source object's index.
+/// Stable object identity determines the key, so a replacement directory at
+/// the same canonical path cannot inherit an older source object's index and a
+/// rename does not orphan the existing index.
 pub fn workspace_index_path(base: &Path, root: &SourceRoot) -> PathBuf {
-    workspace_index_path_for_identity(base, &root.path, &root.identity)
+    workspace_index_path_for_stable_identity(base, &root.identity)
 }
 
-/// Return the private per-source index path for persisted path/identity data.
-pub fn workspace_index_path_for_identity(
+/// Return the private per-source index path for a persisted stable identity.
+pub fn workspace_index_path_for_stable_identity(
+    base: &Path,
+    identity: &SourceRootIdentity,
+) -> PathBuf {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"mdreader-source-root-v3\0");
+    hash_source_identity(&mut hasher, identity);
+    let hash = hasher.finalize().to_hex().to_string();
+    base.join("workspaces").join(hash).join("catdb.db")
+}
+
+/// Return the historical V2 per-source index path whose key combined native
+/// path units with stable object identity. This is migration-only: new managed
+/// state must use [`workspace_index_path_for_stable_identity`].
+pub fn legacy_workspace_index_path_for_path_identity(
     base: &Path,
     path: &Path,
     identity: &SourceRootIdentity,
@@ -851,6 +879,12 @@ pub fn workspace_index_path_for_identity(
         hasher.update(b"platform-path\0");
         hasher.update(path.to_string_lossy().as_bytes());
     }
+    hash_source_identity(&mut hasher, identity);
+    let hash = hasher.finalize().to_hex().to_string();
+    base.join("workspaces").join(hash).join("catdb.db")
+}
+
+fn hash_source_identity(hasher: &mut blake3::Hasher, identity: &SourceRootIdentity) {
     match identity {
         SourceRootIdentity::Unix { device, inode } => {
             hasher.update(b"unix-identity\0");
@@ -866,8 +900,6 @@ pub fn workspace_index_path_for_identity(
             hasher.update(file_id);
         }
     }
-    let hash = hasher.finalize().to_hex().to_string();
-    base.join("workspaces").join(hash).join("catdb.db")
 }
 
 fn capture_authority(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRootError> {
@@ -1718,15 +1750,58 @@ mod tests {
 
         let base = Path::new("C:\\app-data");
         assert_ne!(
-            super::workspace_index_path_for_identity(base, Path::new("C:\\notes"), &expected),
-            super::workspace_index_path_for_identity(base, Path::new("C:\\notes"), &other_volume),
+            super::workspace_index_path_for_stable_identity(base, &expected),
+            super::workspace_index_path_for_stable_identity(base, &other_volume),
             "the index key includes all 64 volume-serial bits"
         );
         assert_ne!(
-            super::workspace_index_path_for_identity(base, Path::new("C:\\notes"), &expected),
-            super::workspace_index_path_for_identity(base, Path::new("C:\\notes"), &other_file),
+            super::workspace_index_path_for_stable_identity(base, &expected),
+            super::workspace_index_path_for_stable_identity(base, &other_file),
             "the index key includes all 128 file-ID bits"
         );
+    }
+
+    #[test]
+    fn managed_index_address_follows_stable_object_identity_across_rename() {
+        let base = Path::new("/app-data");
+        let directory = tempdir().expect("tempdir");
+        let before = SourceRoot::capture(directory.path().to_path_buf()).expect("capture root");
+        let mut after = before.clone();
+        after.path = directory.path().join("renamed-address");
+
+        assert_eq!(
+            super::workspace_index_path(base, &before),
+            super::workspace_index_path(base, &after),
+            "renaming one retained filesystem object must not fabricate a new managed index"
+        );
+    }
+
+    #[test]
+    fn generic_debug_and_error_surfaces_never_expose_native_authority_or_secret_context() {
+        let temp = tempdir().expect("tempdir");
+        let sentinel = temp.path().join("private-token-document-body");
+        fs::create_dir(&sentinel).expect("create sentinel source");
+        let root =
+            SourceRoot::capture(fs::canonicalize(&sentinel).expect("canonical sentinel source"))
+                .expect("capture source");
+        let root_debug = format!("{root:?}");
+        assert!(!root_debug.contains("private-token-document-body"));
+        assert!(!root_debug.contains(&temp.path().to_string_lossy().into_owned()));
+
+        let error = SourceRootError::CannotInspect {
+            path: sentinel,
+            reason:
+                "postgres://user:password@host/db bearer-token bound-value secret document text"
+                    .to_string(),
+        };
+        for surface in [format!("{error:?}"), error.to_string()] {
+            assert!(!surface.contains("private-token-document-body"));
+            assert!(!surface.contains("postgres://"));
+            assert!(!surface.contains("bearer-token"));
+            assert!(!surface.contains("bound-value"));
+            assert!(!surface.contains("secret document text"));
+            assert!(surface.contains("cannot-inspect"));
+        }
     }
 
     #[test]

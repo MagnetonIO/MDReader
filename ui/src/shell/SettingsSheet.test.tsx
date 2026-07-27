@@ -8,7 +8,7 @@ import type {
   LibrarySourceDto,
   PickedLibrarySource,
 } from '../bindings';
-import type { SettingsBackend } from '../platform/settings.js';
+import { SettingsCommandError, type SettingsBackend } from '../platform/settings.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { SettingsSheet } from './SettingsSheet.js';
 
@@ -23,12 +23,15 @@ const SOURCE: LibrarySourceDto = {
   restore_candidate: false,
 };
 
-const SNAPSHOT: LibrarySnapshot = { version: 1, sources: [SOURCE] };
+const SNAPSHOT: LibrarySnapshot = {
+  version: 3,
+  sources: [SOURCE],
+  cleanup: { kind: 'complete' },
+};
 const DIAGNOSTICS: DiagnosticInfo = {
   level: 'standard',
-  directory: '/Users/alex/Library/Logs/MDReader',
   max_file_bytes: 256 * 1024,
-  retained_files: 3,
+  max_retained_files: 3,
   max_export_bytes: 512 * 1024,
 };
 
@@ -40,7 +43,11 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
     ),
     reconcileRestore: vi.fn(async () => null),
     markActive: vi.fn(async () => SNAPSHOT),
-    forgetSource: vi.fn(async () => ({ version: 1, sources: [] })),
+    forgetSource: vi.fn(async () => ({
+      version: 3,
+      sources: [],
+      cleanup: { kind: 'complete' as const },
+    })),
     diagnosticsInfo: vi.fn(async () => DIAGNOSTICS),
     setDiagnosticLevel: vi.fn(async (level: DiagnosticLevel) => ({
       ...DIAGNOSTICS,
@@ -50,7 +57,6 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
     revealDiagnostics: vi.fn(async () => {}),
     exportDiagnostics: vi.fn(async () => ({
       status: 'exported' as const,
-      path: '/tmp/mdreader-diagnostics.txt',
       bytes_written: 128,
     })),
     clearDiagnostics: vi.fn(async () => DIAGNOSTICS),
@@ -154,7 +160,7 @@ describe('Settings sheet', () => {
     );
 
     await act(async () => {
-      release({ version: 1, sources: [] });
+      release({ version: 3, sources: [], cleanup: { kind: 'complete' } });
       await pending;
     });
   });
@@ -174,7 +180,11 @@ describe('Settings sheet', () => {
       index_state: 'not-created',
     };
     const api = backend({
-      listSources: vi.fn(async () => ({ version: 1, sources: [active, missing] })),
+      listSources: vi.fn(async () => ({
+        version: 3,
+        sources: [active, missing],
+        cleanup: { kind: 'complete' as const },
+      })),
     });
     render(
       <SettingsSheet
@@ -225,6 +235,87 @@ describe('Settings sheet', () => {
       fireEvent.click(clearNow);
     });
     expect(api.clearDiagnostics).toHaveBeenCalledWith(true);
+  });
+
+  it('reports retention as a maximum without exposing a native diagnostics path', async () => {
+    render(
+      <SettingsSheet
+        backend={backend()}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(/up to 3 files/i);
+    expect(screen.queryByText('/Users/alex/Library/Logs/MDReader')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Reveal' })).toBeTruthy();
+  });
+
+  it('uses local copy instead of echoing a path-bearing backend failure', async () => {
+    const sentinel = '/Users/alex/private/token-document-dsn-bound-value';
+    const api = backend({
+      forgetSource: vi.fn(async () => {
+        throw new SettingsCommandError('library', {
+          kind: 'open-failed',
+          source_id: SOURCE.id,
+          message: sentinel,
+        });
+      }),
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('Research notes');
+    fireEvent.click(screen.getByRole('button', { name: 'Forget Research notes' }));
+    await screen.findByText('MDReader could not open that source.');
+    expect(document.body.textContent).not.toContain(sentinel);
+  });
+
+  it('keeps a failed managed-state deletion visible as pending local cleanup', async () => {
+    const api = backend({
+      listSources: vi.fn(async () => ({
+        version: 3,
+        sources: [],
+        cleanup: { kind: 'pending' as const, source_count: 2 },
+      })),
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(/finishing local cleanup for 2 sources/i);
+  });
+
+  it.each([0, 1, 3])('renders an exact retention maximum of %i without fabricating a live count', async (maximum) => {
+    const api = backend({
+      diagnosticsInfo: vi.fn(async () => ({ ...DIAGNOSTICS, max_retained_files: maximum })),
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(new RegExp(`up to ${maximum} ${maximum === 1 ? 'file' : 'files'}`, 'i'));
   });
 
   it('traps keyboard focus, closes on Escape, and restores the invoking focus', async () => {

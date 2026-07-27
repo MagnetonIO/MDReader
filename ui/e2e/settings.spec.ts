@@ -19,7 +19,9 @@ test('Settings is a focused, local-only sheet with responsive desktop and narrow
   await expect(sheet.getByText('Local Markdown folders', { exact: true })).toBeVisible();
   await expect(sheet.getByText('Active', { exact: true })).toBeVisible();
   await expect(sheet.getByText('Index on disk', { exact: true })).toBeVisible();
-  await expect(sheet.getByText(/256 KiB per file · 3 files · 512 KiB export/)).toBeVisible();
+  await expect(
+    sheet.getByText(/256 KiB per file · up to 3 files · 512 KiB export/),
+  ).toBeVisible();
   await expect(sheet.getByText(/Google Drive|Dropbox|Notion|connector/i)).toHaveCount(0);
 
   await sheet.getByRole('button', { name: 'Dark' }).click();

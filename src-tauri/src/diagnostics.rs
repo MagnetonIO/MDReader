@@ -147,7 +147,7 @@ impl DiagnosticEvent {
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
         }) {
             return Err(DiagnosticError::InvalidEvent {
-                message: "diagnostic source identity must be a lowercase BLAKE3 digest".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
         Ok(())
@@ -158,12 +158,25 @@ impl DiagnosticEvent {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum DiagnosticError {
     ConfirmationRequired,
-    CorruptSettings { message: String },
-    InvalidEvent { message: String },
-    WriteFailed { message: String },
-    ExportFailed { message: String },
-    ClearFailed { message: String },
-    RevealFailed { message: String },
+    CorruptSettings { reason: DiagnosticFailureReason },
+    InvalidEvent { reason: DiagnosticFailureReason },
+    WriteFailed { reason: DiagnosticFailureReason },
+    ExportFailed { reason: DiagnosticFailureReason },
+    ClearFailed { reason: DiagnosticFailureReason },
+    RevealFailed { reason: DiagnosticFailureReason },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum DiagnosticFailureReason {
+    AuthorityUnavailable,
+    AuthorityChanged,
+    LockUnavailable,
+    SettingsUnavailable,
+    SettingsInvalid,
+    EventInvalid,
+    StorageUnavailable,
+    DestinationUnavailable,
 }
 
 impl std::fmt::Display for DiagnosticError {
@@ -172,17 +185,32 @@ impl std::fmt::Display for DiagnosticError {
             Self::ConfirmationRequired => {
                 formatter.write_str("clearing diagnostics requires explicit confirmation")
             }
-            Self::CorruptSettings { message }
-            | Self::InvalidEvent { message }
-            | Self::WriteFailed { message }
-            | Self::ExportFailed { message }
-            | Self::ClearFailed { message }
-            | Self::RevealFailed { message } => formatter.write_str(message),
+            Self::CorruptSettings { reason }
+            | Self::InvalidEvent { reason }
+            | Self::WriteFailed { reason }
+            | Self::ExportFailed { reason }
+            | Self::ClearFailed { reason }
+            | Self::RevealFailed { reason } => formatter.write_str(reason.as_str()),
         }
     }
 }
 
 impl std::error::Error for DiagnosticError {}
+
+impl DiagnosticFailureReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthorityUnavailable => "authority-unavailable",
+            Self::AuthorityChanged => "authority-changed",
+            Self::LockUnavailable => "lock-unavailable",
+            Self::SettingsUnavailable => "settings-unavailable",
+            Self::SettingsInvalid => "settings-invalid",
+            Self::EventInvalid => "event-invalid",
+            Self::StorageUnavailable => "storage-unavailable",
+            Self::DestinationUnavailable => "destination-unavailable",
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,22 +228,22 @@ impl DiagnosticRecord {
     fn validate(&self) -> Result<(), DiagnosticError> {
         if self.schema != DIAGNOSTIC_RECORD_SCHEMA {
             return Err(DiagnosticError::InvalidEvent {
-                message: "unsupported diagnostic record schema".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
         if self.schema_version != DIAGNOSTIC_RECORD_VERSION {
             return Err(DiagnosticError::InvalidEvent {
-                message: "unsupported diagnostic record version".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
         if self.app != "MDReader" || self.app_version != env!("CARGO_PKG_VERSION") {
             return Err(DiagnosticError::InvalidEvent {
-                message: "diagnostic record application identity does not match".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
         if self.platform != std::env::consts::OS {
             return Err(DiagnosticError::InvalidEvent {
-                message: "diagnostic record platform does not match".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
         self.event.validate()
@@ -285,9 +313,8 @@ struct StoredDiagnosticSettings {
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct DiagnosticInfo {
     pub level: DiagnosticLevel,
-    pub directory: String,
     pub max_file_bytes: u32,
-    pub retained_files: u32,
+    pub max_retained_files: u32,
     pub max_export_bytes: u32,
 }
 
@@ -301,7 +328,6 @@ pub(crate) enum DiagnosticExportStatus {
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct DiagnosticExport {
     pub status: DiagnosticExportStatus,
-    pub path: Option<String>,
     pub bytes_written: u32,
 }
 
@@ -348,21 +374,32 @@ impl DiagnosticsState {
         let reveal_result = reveal(self.log.directory());
         authority
             .verify()
-            .map_err(|error| DiagnosticError::RevealFailed {
-                message: format!("diagnostic directory changed during reveal: {error}"),
+            .map_err(|_| DiagnosticError::RevealFailed {
+                reason: DiagnosticFailureReason::AuthorityChanged,
             })?;
         reveal_result
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct DiagnosticLog {
     directory: PathBuf,
-    authority: Result<SourceRoot, String>,
+    authority: Result<SourceRoot, DiagnosticFailureReason>,
     max_log_bytes: usize,
     retention: usize,
     max_export_bytes: usize,
     lock: Mutex<()>,
+}
+
+impl std::fmt::Debug for DiagnosticLog {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DiagnosticLog")
+            .field("authority", &"<redacted>")
+            .field("max_log_bytes", &self.max_log_bytes)
+            .field("retention", &self.retention)
+            .field("max_export_bytes", &self.max_export_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -374,12 +411,12 @@ enum DiagnosticTransaction {
 }
 
 impl DiagnosticTransaction {
-    fn error(self, message: String) -> DiagnosticError {
+    fn error(self, reason: DiagnosticFailureReason) -> DiagnosticError {
         match self {
-            Self::Write => DiagnosticError::WriteFailed { message },
-            Self::Export => DiagnosticError::ExportFailed { message },
-            Self::Clear => DiagnosticError::ClearFailed { message },
-            Self::Reveal => DiagnosticError::RevealFailed { message },
+            Self::Write => DiagnosticError::WriteFailed { reason },
+            Self::Export => DiagnosticError::ExportFailed { reason },
+            Self::Clear => DiagnosticError::ClearFailed { reason },
+            Self::Reveal => DiagnosticError::RevealFailed { reason },
         }
     }
 }
@@ -419,26 +456,22 @@ impl DiagnosticLog {
         let guard = self
             .lock
             .lock()
-            .map_err(|_| transaction.error("diagnostic log lock is poisoned".to_string()))?;
+            .map_err(|_| transaction.error(DiagnosticFailureReason::LockUnavailable))?;
         let authority = self.authority.as_ref().map_err(|error| {
-            transaction.error(format!("cannot open diagnostic directory: {error}"))
+            let _ = error;
+            transaction.error(DiagnosticFailureReason::AuthorityUnavailable)
         })?;
         authority
             .verify()
-            .map_err(|error| transaction.error(format!("diagnostic directory changed: {error}")))?;
+            .map_err(|_| transaction.error(DiagnosticFailureReason::AuthorityChanged))?;
         let lock_file = authority
             .open_lock_relative(Path::new("diagnostics.lock"))
-            .map_err(|error| {
-                transaction.error(format!("cannot open diagnostic transaction lock: {error}"))
-            })?;
-        let lease = AdvisoryFileLock::acquire_file(lock_file).map_err(|error| {
-            transaction.error(format!(
-                "cannot acquire diagnostic transaction lock: {error}"
-            ))
-        })?;
+            .map_err(|_| transaction.error(DiagnosticFailureReason::LockUnavailable))?;
+        let lease = AdvisoryFileLock::acquire_file(lock_file)
+            .map_err(|_| transaction.error(DiagnosticFailureReason::LockUnavailable))?;
         authority
             .verify()
-            .map_err(|error| transaction.error(format!("diagnostic directory changed: {error}")))?;
+            .map_err(|_| transaction.error(DiagnosticFailureReason::AuthorityChanged))?;
         Ok((guard, lease, authority.clone()))
     }
 
@@ -462,8 +495,8 @@ impl DiagnosticLog {
         for slot in (0..self.retention).rev() {
             if authority
                 .metadata_optional_relative(&self.log_relative(slot))
-                .map_err(|error| DiagnosticError::WriteFailed {
-                    message: format!("cannot inspect diagnostic log: {error}"),
+                .map_err(|_| DiagnosticError::WriteFailed {
+                    reason: DiagnosticFailureReason::StorageUnavailable,
                 })?
                 .is_some()
             {
@@ -482,8 +515,8 @@ impl DiagnosticLog {
         const MAX_SETTINGS_BYTES: u64 = 64 * 1_024;
         let Some(mut file) = authority
             .open_optional_file_relative(Path::new("settings.json"))
-            .map_err(|error| DiagnosticError::CorruptSettings {
-                message: format!("cannot open diagnostic settings: {error}"),
+            .map_err(|_| DiagnosticError::CorruptSettings {
+                reason: DiagnosticFailureReason::SettingsUnavailable,
             })?
         else {
             return Ok(DiagnosticLevel::Standard);
@@ -492,24 +525,21 @@ impl DiagnosticLog {
         Read::by_ref(&mut file)
             .take(MAX_SETTINGS_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| DiagnosticError::CorruptSettings {
-                message: format!("cannot read diagnostic settings: {error}"),
+            .map_err(|_| DiagnosticError::CorruptSettings {
+                reason: DiagnosticFailureReason::SettingsUnavailable,
             })?;
         if bytes.len() as u64 > MAX_SETTINGS_BYTES {
             return Err(DiagnosticError::CorruptSettings {
-                message: "diagnostic settings exceed the local size bound".to_string(),
+                reason: DiagnosticFailureReason::SettingsInvalid,
             });
         }
         let stored: StoredDiagnosticSettings =
-            serde_json::from_slice(&bytes).map_err(|error| DiagnosticError::CorruptSettings {
-                message: format!("cannot parse diagnostic settings: {error}"),
+            serde_json::from_slice(&bytes).map_err(|_| DiagnosticError::CorruptSettings {
+                reason: DiagnosticFailureReason::SettingsInvalid,
             })?;
         if stored.version != DIAGNOSTIC_SETTINGS_VERSION {
             return Err(DiagnosticError::CorruptSettings {
-                message: format!(
-                    "unsupported diagnostic settings version {}; expected {}",
-                    stored.version, DIAGNOSTIC_SETTINGS_VERSION
-                ),
+                reason: DiagnosticFailureReason::SettingsInvalid,
             });
         }
         Ok(stored.level)
@@ -521,12 +551,12 @@ impl DiagnosticLog {
             version: DIAGNOSTIC_SETTINGS_VERSION,
             level,
         })
-        .map_err(|error| DiagnosticError::WriteFailed {
-            message: format!("cannot encode diagnostic settings: {error}"),
+        .map_err(|_| DiagnosticError::WriteFailed {
+            reason: DiagnosticFailureReason::SettingsUnavailable,
         })?;
-        atomic_write_relative(&authority, Path::new("settings.json"), &body).map_err(|error| {
+        atomic_write_relative(&authority, Path::new("settings.json"), &body).map_err(|_| {
             DiagnosticError::WriteFailed {
-                message: format!("cannot persist diagnostic settings: {error}"),
+                reason: DiagnosticFailureReason::SettingsUnavailable,
             }
         })
     }
@@ -555,40 +585,41 @@ impl DiagnosticLog {
             event,
         };
         let mut line =
-            serde_json::to_string(&record).map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("cannot encode diagnostic event: {error}"),
+            serde_json::to_string(&record).map_err(|_| DiagnosticError::WriteFailed {
+                reason: DiagnosticFailureReason::EventInvalid,
             })?;
         line.push('\n');
         if line.len() > MAX_DIAGNOSTIC_RECORD_BYTES || line.len() > self.max_log_bytes {
             return Err(DiagnosticError::InvalidEvent {
-                message: "diagnostic event exceeds the local log bound".to_string(),
+                reason: DiagnosticFailureReason::EventInvalid,
             });
         }
 
         let active = self.log_relative(0);
         let current_bytes = authority
             .metadata_optional_relative(&active)
-            .map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("cannot inspect diagnostic log: {error}"),
+            .map_err(|_| DiagnosticError::WriteFailed {
+                reason: DiagnosticFailureReason::StorageUnavailable,
             })?
             .map_or(0, |metadata| metadata.len() as usize);
         if current_bytes.saturating_add(line.len()) > self.max_log_bytes {
             self.rotate(&authority)?;
         }
-        let mut file = authority.open_append_relative(&active).map_err(|error| {
-            DiagnosticError::WriteFailed {
-                message: format!("cannot open diagnostic log: {error}"),
-            }
-        })?;
+        let mut file =
+            authority
+                .open_append_relative(&active)
+                .map_err(|_| DiagnosticError::WriteFailed {
+                    reason: DiagnosticFailureReason::StorageUnavailable,
+                })?;
         file.write_all(line.as_bytes())
             .and_then(|()| file.flush())
-            .map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("cannot append diagnostic log: {error}"),
+            .map_err(|_| DiagnosticError::WriteFailed {
+                reason: DiagnosticFailureReason::StorageUnavailable,
             })?;
         authority
             .verify()
-            .map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("diagnostic directory changed after append: {error}"),
+            .map_err(|_| DiagnosticError::WriteFailed {
+                reason: DiagnosticFailureReason::AuthorityChanged,
             })
     }
 
@@ -598,19 +629,19 @@ impl DiagnosticLog {
             present.push(
                 authority
                     .metadata_optional_relative(&self.log_relative(slot))
-                    .map_err(|error| DiagnosticError::WriteFailed {
-                        message: format!("cannot inspect diagnostic log during rotation: {error}"),
+                    .map_err(|_| DiagnosticError::WriteFailed {
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     })?,
             );
         }
 
         let oldest = self.log_relative(self.retention - 1);
         if present[self.retention - 1].is_some() {
-            authority.remove_file_relative(&oldest).map_err(|error| {
-                DiagnosticError::WriteFailed {
-                    message: format!("cannot retire oldest diagnostic log: {error}"),
-                }
-            })?;
+            authority
+                .remove_file_relative(&oldest)
+                .map_err(|_| DiagnosticError::WriteFailed {
+                    reason: DiagnosticFailureReason::StorageUnavailable,
+                })?;
         }
         for slot in (1..self.retention).rev() {
             let previous = self.log_relative(slot - 1);
@@ -618,23 +649,23 @@ impl DiagnosticLog {
                 continue;
             };
             if metadata.len() > self.max_log_bytes as u64 {
-                authority.remove_file_relative(&previous).map_err(|error| {
+                authority.remove_file_relative(&previous).map_err(|_| {
                     DiagnosticError::WriteFailed {
-                        message: format!("cannot discard oversized diagnostic log: {error}"),
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     }
                 })?;
             } else {
                 authority
                     .rename_relative(&previous, &self.log_relative(slot))
-                    .map_err(|error| DiagnosticError::WriteFailed {
-                        message: format!("cannot rotate diagnostic log: {error}"),
+                    .map_err(|_| DiagnosticError::WriteFailed {
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     })?;
             }
         }
         authority
             .verify()
-            .map_err(|error| DiagnosticError::WriteFailed {
-                message: format!("diagnostic directory changed during rotation: {error}"),
+            .map_err(|_| DiagnosticError::WriteFailed {
+                reason: DiagnosticFailureReason::AuthorityChanged,
             })
     }
 
@@ -646,8 +677,7 @@ impl DiagnosticLog {
         const SUMMARY_RESERVE: usize = 96;
         if HEADER.len().saturating_add(SUMMARY_RESERVE) > self.max_export_bytes {
             return Err(DiagnosticError::ExportFailed {
-                message: "diagnostic export bound is too small for the structured bundle"
-                    .to_string(),
+                reason: DiagnosticFailureReason::DestinationUnavailable,
             });
         }
         let mut canonical_records = Vec::new();
@@ -655,12 +685,11 @@ impl DiagnosticLog {
         let mut omitted_files = 0_u64;
         for slot in (0..self.retention).rev() {
             let relative = self.log_relative(slot);
-            let Some(metadata) =
-                authority
-                    .metadata_optional_relative(&relative)
-                    .map_err(|error| DiagnosticError::ExportFailed {
-                        message: format!("cannot inspect diagnostic log for export: {error}"),
-                    })?
+            let Some(metadata) = authority
+                .metadata_optional_relative(&relative)
+                .map_err(|_| DiagnosticError::ExportFailed {
+                    reason: DiagnosticFailureReason::StorageUnavailable,
+                })?
             else {
                 continue;
             };
@@ -671,8 +700,8 @@ impl DiagnosticLog {
             let Some(mut file) =
                 authority
                     .open_optional_file_relative(&relative)
-                    .map_err(|error| DiagnosticError::ExportFailed {
-                        message: format!("cannot open diagnostic log for export: {error}"),
+                    .map_err(|_| DiagnosticError::ExportFailed {
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     })?
             else {
                 continue;
@@ -681,8 +710,8 @@ impl DiagnosticLog {
             Read::by_ref(&mut file)
                 .take(self.max_log_bytes as u64 + 1)
                 .read_to_end(&mut bytes)
-                .map_err(|error| DiagnosticError::ExportFailed {
-                    message: format!("cannot read diagnostic export: {error}"),
+                .map_err(|_| DiagnosticError::ExportFailed {
+                    reason: DiagnosticFailureReason::StorageUnavailable,
                 })?;
             if bytes.len() > self.max_log_bytes {
                 omitted_files = omitted_files.saturating_add(1);
@@ -707,8 +736,8 @@ impl DiagnosticLog {
                     continue;
                 };
                 let mut canonical =
-                    serde_json::to_vec(&record).map_err(|error| DiagnosticError::ExportFailed {
-                        message: format!("cannot encode diagnostic export record: {error}"),
+                    serde_json::to_vec(&record).map_err(|_| DiagnosticError::ExportFailed {
+                        reason: DiagnosticFailureReason::EventInvalid,
                     })?;
                 canonical.push(b'\n');
                 if canonical.len() > MAX_DIAGNOSTIC_RECORD_BYTES {
@@ -741,11 +770,11 @@ impl DiagnosticLog {
         bundle.extend_from_slice(summary.as_bytes());
         authority
             .verify()
-            .map_err(|error| DiagnosticError::ExportFailed {
-                message: format!("diagnostic directory changed during export: {error}"),
+            .map_err(|_| DiagnosticError::ExportFailed {
+                reason: DiagnosticFailureReason::AuthorityChanged,
             })?;
-        atomic_write(destination, &bundle).map_err(|error| DiagnosticError::ExportFailed {
-            message: format!("cannot write diagnostic export: {error}"),
+        atomic_write(destination, &bundle).map_err(|_| DiagnosticError::ExportFailed {
+            reason: DiagnosticFailureReason::DestinationUnavailable,
         })
     }
 
@@ -760,8 +789,8 @@ impl DiagnosticLog {
             present.push(
                 authority
                     .metadata_optional_relative(&self.log_relative(slot))
-                    .map_err(|error| DiagnosticError::ClearFailed {
-                        message: format!("cannot inspect diagnostic log before clear: {error}"),
+                    .map_err(|_| DiagnosticError::ClearFailed {
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     })?
                     .is_some(),
             );
@@ -770,50 +799,45 @@ impl DiagnosticLog {
             if exists {
                 authority
                     .remove_file_relative(&self.log_relative(slot))
-                    .map_err(|error| DiagnosticError::ClearFailed {
-                        message: format!("cannot clear diagnostic log: {error}"),
+                    .map_err(|_| DiagnosticError::ClearFailed {
+                        reason: DiagnosticFailureReason::StorageUnavailable,
                     })?;
             }
         }
         authority
             .verify()
-            .map_err(|error| DiagnosticError::ClearFailed {
-                message: format!("diagnostic directory changed during clear: {error}"),
+            .map_err(|_| DiagnosticError::ClearFailed {
+                reason: DiagnosticFailureReason::AuthorityChanged,
             })?;
         Ok(level)
     }
 }
 
-fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, String> {
+fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, DiagnosticFailureReason> {
     let mut cursor = directory;
     let mut missing = Vec::<OsString>::new();
     let mut authority = loop {
         match fs::symlink_metadata(cursor) {
             Ok(_) => {
                 break SourceRoot::capture(cursor.to_path_buf())
-                    .map_err(|error| error.to_string())?
+                    .map_err(|_| DiagnosticFailureReason::AuthorityUnavailable)?
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let name = cursor
                     .file_name()
-                    .ok_or_else(|| "diagnostic directory has no existing ancestor".to_string())?;
+                    .ok_or(DiagnosticFailureReason::AuthorityUnavailable)?;
                 missing.push(name.to_os_string());
-                cursor = cursor.parent().ok_or_else(|| {
-                    "diagnostic directory has no existing parent authority".to_string()
-                })?;
+                cursor = cursor
+                    .parent()
+                    .ok_or(DiagnosticFailureReason::AuthorityUnavailable)?;
             }
-            Err(error) => {
-                return Err(format!(
-                    "cannot inspect diagnostic directory {}: {error}",
-                    cursor.display()
-                ))
-            }
+            Err(_) => return Err(DiagnosticFailureReason::AuthorityUnavailable),
         }
     };
     for component in missing.iter().rev() {
         authority = authority
             .create_or_capture_directory_relative(Path::new(component))
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| DiagnosticFailureReason::AuthorityUnavailable)?;
     }
     Ok(authority)
 }
@@ -822,8 +846,8 @@ pub(crate) fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, Diagnost
     app.path()
         .app_data_dir()
         .map(|directory| directory.join("diagnostics"))
-        .map_err(|error| DiagnosticError::WriteFailed {
-            message: format!("cannot resolve diagnostic directory: {error}"),
+        .map_err(|_| DiagnosticError::WriteFailed {
+            reason: DiagnosticFailureReason::AuthorityUnavailable,
         })
 }
 
@@ -831,17 +855,17 @@ fn diagnostic_info(log: &DiagnosticLog) -> Result<DiagnosticInfo, DiagnosticErro
     Ok(diagnostic_info_with_level(log, log.level()?))
 }
 
-fn diagnostic_info_with_level(log: &DiagnosticLog, level: DiagnosticLevel) -> DiagnosticInfo {
+fn diagnostic_info_with_level(_log: &DiagnosticLog, level: DiagnosticLevel) -> DiagnosticInfo {
     DiagnosticInfo {
         level,
-        directory: log.directory().to_string_lossy().into_owned(),
         max_file_bytes: MAX_LOG_BYTES as u32,
-        retained_files: LOG_RETENTION as u32,
+        max_retained_files: LOG_RETENTION as u32,
         max_export_bytes: MAX_EXPORT_BYTES as u32,
     }
 }
 
-/// Return the exact local log location and documented bounds.
+/// Return the local diagnostic policy and bounds without exposing filesystem
+/// authority.
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn diagnostics_info(
@@ -879,9 +903,9 @@ pub(crate) fn reveal_diagnostics(
     state: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), DiagnosticError> {
     state.reveal_with(|directory| {
-        tauri_plugin_opener::open_path(directory, None::<&str>).map_err(|error| {
+        tauri_plugin_opener::open_path(directory, None::<&str>).map_err(|_| {
             DiagnosticError::RevealFailed {
-                message: format!("cannot reveal diagnostic directory: {error}"),
+                reason: DiagnosticFailureReason::DestinationUnavailable,
             }
         })
     })
@@ -904,21 +928,19 @@ pub(crate) async fn export_diagnostics(
     else {
         return Ok(DiagnosticExport {
             status: DiagnosticExportStatus::Cancelled,
-            path: None,
             bytes_written: 0,
         });
     };
 
     state.export_to(&destination)?;
     let bytes_written = fs::metadata(&destination)
-        .map_err(|error| DiagnosticError::ExportFailed {
-            message: format!("cannot inspect diagnostic export: {error}"),
+        .map_err(|_| DiagnosticError::ExportFailed {
+            reason: DiagnosticFailureReason::DestinationUnavailable,
         })?
         .len()
         .min(u64::from(u32::MAX)) as u32;
     Ok(DiagnosticExport {
         status: DiagnosticExportStatus::Exported,
-        path: Some(destination.to_string_lossy().into_owned()),
         bytes_written,
     })
 }
@@ -993,8 +1015,9 @@ mod tests {
     use crate::file_lock::AdvisoryFileLock;
 
     use super::{
-        DiagnosticError, DiagnosticEvent, DiagnosticIndexPhase, DiagnosticLevel, DiagnosticLog,
-        DiagnosticsState, MAX_EXPORT_BYTES,
+        diagnostic_info, DiagnosticError, DiagnosticEvent, DiagnosticExport,
+        DiagnosticExportStatus, DiagnosticFailureReason, DiagnosticIndexPhase, DiagnosticLevel,
+        DiagnosticLog, DiagnosticsState, MAX_EXPORT_BYTES,
     };
 
     fn assert_sidecar_blocks(
@@ -1048,6 +1071,45 @@ mod tests {
             "every retained file respects the configured byte bound"
         );
         assert!(!temp.path().join("mdreader.log.3").exists());
+    }
+
+    #[test]
+    fn generic_diagnostic_contracts_and_debug_never_expose_native_or_secret_context() {
+        let temp = tempdir().expect("tempdir");
+        let sentinel_directory = temp.path().join("token-document-dsn-bound-value");
+        fs::create_dir(&sentinel_directory).expect("create diagnostics directory");
+        let log = DiagnosticLog::new(&sentinel_directory);
+        let log_debug = format!("{log:?}");
+        assert!(!log_debug.contains("token-document-dsn-bound-value"));
+        assert!(!log_debug.contains(&temp.path().to_string_lossy().into_owned()));
+
+        let info = serde_json::to_value(diagnostic_info(&log).expect("diagnostic info"))
+            .expect("serialize info");
+        assert!(info.get("directory").is_none());
+        assert!(info.get("max_retained_files").is_some());
+        assert!(info.get("retained_files").is_none());
+
+        let export = serde_json::to_value(DiagnosticExport {
+            status: DiagnosticExportStatus::Exported,
+            bytes_written: 12,
+        })
+        .expect("serialize export");
+        assert!(export.get("path").is_none());
+
+        let error = DiagnosticError::WriteFailed {
+            reason: DiagnosticFailureReason::StorageUnavailable,
+        };
+        for surface in [
+            format!("{error:?}"),
+            error.to_string(),
+            serde_json::to_string(&error).expect("serialize error"),
+        ] {
+            assert!(!surface.contains("postgres://"));
+            assert!(!surface.contains("token"));
+            assert!(!surface.contains("document"));
+            assert!(!surface.contains("bound-value"));
+            assert!(!surface.contains("/Users/private"));
+        }
     }
 
     #[test]

@@ -42,7 +42,11 @@ const h = vi.hoisted(() => ({
   grant: vi.fn(async (sourceId: string) =>
     sourceId === 'c'.repeat(64) ? CANONICAL_ROOT : '/unexpected',
   ),
-  mark: vi.fn(async () => ({ version: 1, sources: [] })),
+  mark: vi.fn(async () => ({
+    version: 3,
+    sources: [],
+    cleanup: { kind: 'complete' as const },
+  })),
 }));
 
 const INTERACTIVE_SOURCE: LibrarySourceDto = {
@@ -80,43 +84,44 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
 vi.mock('../platform/settings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/settings.js')>();
   const settingsBackend = {
-    listSources: vi.fn(async () => ({ version: 2, sources: [SOURCE, INTERACTIVE_SOURCE] })),
+    listSources: vi.fn(async () => ({
+      version: 3,
+      sources: [SOURCE, INTERACTIVE_SOURCE],
+      cleanup: { kind: 'complete' as const },
+    })),
     pickAndAddSource: vi.fn(async () => ({ source: INTERACTIVE_SOURCE, added: true })),
     reconcileRestore: vi.fn(async () => null),
     markActive: h.mark,
     forgetSource: vi.fn(async (sourceId: string) => {
       h.forgottenSourceIds.push(sourceId);
       return {
-        version: 2,
+        version: 3,
         sources: [SOURCE, INTERACTIVE_SOURCE].filter((source) => source.id !== sourceId),
+        cleanup: { kind: 'complete' as const },
       };
     }),
     diagnosticsInfo: vi.fn(async () => ({
       level: 'standard' as const,
-      directory: '/local/diagnostics',
       max_file_bytes: 256 * 1_024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1_024,
     })),
     setDiagnosticLevel: vi.fn(async (level: 'errors' | 'standard' | 'verbose') => ({
       level,
-      directory: '/local/diagnostics',
       max_file_bytes: 256 * 1_024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1_024,
     })),
     recordDiagnosticEvent: vi.fn(async () => {}),
     revealDiagnostics: vi.fn(async () => {}),
     exportDiagnostics: vi.fn(async () => ({
       status: 'cancelled' as const,
-      path: null,
       bytes_written: 0,
     })),
     clearDiagnostics: vi.fn(async () => ({
       level: 'standard' as const,
-      directory: '/local/diagnostics',
       max_file_bytes: 256 * 1_024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1_024,
     })),
   };

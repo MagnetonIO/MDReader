@@ -6,7 +6,7 @@
 //! are queried together. Paths are canonicalized before admission and persisted
 //! as native OS units so a lossy webview display string is never the authority.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
@@ -21,7 +21,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 2;
+pub(crate) const LIBRARY_VERSION: u32 = 3;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -37,6 +37,22 @@ pub(crate) enum LibraryError {
     CorruptRegistry { message: String },
     UnsupportedVersion { found: u32, expected: u32 },
     PersistFailed { message: String },
+    CleanupFailed { reason: LibraryCleanupReason },
+    NeedsNativeRepick,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LibraryCleanupReason {
+    ManagedStateUnavailable,
+    RollbackFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum LibraryCleanupStatus {
+    Complete,
+    Pending { source_count: u32 },
 }
 
 impl std::fmt::Display for LibraryError {
@@ -77,6 +93,17 @@ impl std::fmt::Display for LibraryError {
                 formatter,
                 "unsupported library registry version {found}; expected {expected}"
             ),
+            Self::CleanupFailed { reason } => write!(
+                formatter,
+                "library source cleanup failed: {}",
+                match reason {
+                    LibraryCleanupReason::ManagedStateUnavailable => {
+                        "managed-state-unavailable"
+                    }
+                    LibraryCleanupReason::RollbackFailed => "rollback-failed",
+                }
+            ),
+            Self::NeedsNativeRepick => formatter.write_str("needs-native-repick"),
         }
     }
 }
@@ -88,6 +115,7 @@ impl std::error::Error for LibraryError {}
 pub(crate) enum LibraryIndexState {
     Present,
     NotCreated,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -125,6 +153,7 @@ pub(crate) struct LibrarySourceDto {
 pub(crate) struct LibrarySnapshot {
     pub version: u32,
     pub sources: Vec<LibrarySourceDto>,
+    pub cleanup: LibraryCleanupStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -283,6 +312,13 @@ impl NativePath {
     }
 }
 
+fn new_source_id() -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"mdreader-library-source-id-v1\0");
+    hasher.update(uuid::Uuid::new_v4().as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LibrarySource {
@@ -330,6 +366,8 @@ struct StoredLibrary {
     version: u32,
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    #[serde(default)]
+    cleanup_pending: Vec<PendingCleanup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,10 +385,26 @@ struct LibrarySourceV1 {
     path: NativePath,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV2 {
+    version: u32,
+    active_source_id: Option<String>,
+    sources: Vec<LibrarySource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PendingCleanup {
+    source_id: String,
+    tombstone: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    cleanup_pending: Vec<PendingCleanup>,
 }
 
 impl LibraryRegistry {
@@ -358,6 +412,7 @@ impl LibraryRegistry {
         Self {
             active_source_id: None,
             sources: Vec::new(),
+            cleanup_pending: Vec::new(),
         }
     }
 
@@ -394,23 +449,27 @@ impl LibraryRegistry {
                 message: error.to_string(),
             })?;
         let native = NativePath::capture(&canonical);
-        let source_id = native.source_id();
         if let Some(source) = self
             .sources
             .iter_mut()
-            .find(|source| source.id == source_id)
+            .find(|source| source.identity.as_ref() == Some(&admitted.identity))
         {
-            if source.identity.is_none() {
+            if source.path != native {
                 source.path = native;
-                source.identity = Some(admitted.identity);
                 return Ok(source.clone());
             }
-            return Err(LibraryError::DuplicateRoot { source_id });
+            return Err(LibraryError::DuplicateRoot {
+                source_id: source.id.clone(),
+            });
         }
         if self.sources.len() >= MAX_LIBRARY_SOURCES {
             return Err(LibraryError::InvalidRoot {
                 message: format!("library is limited to {MAX_LIBRARY_SOURCES} local roots"),
             });
+        }
+        let mut source_id = new_source_id();
+        while self.sources.iter().any(|source| source.id == source_id) {
+            source_id = new_source_id();
         }
         let source = LibrarySource {
             id: source_id,
@@ -560,15 +619,19 @@ impl LibraryRegistry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 state: self.source_state(&source.id)?.into(),
-                index_state: bound_root
-                    .as_ref()
-                    .map_or(LibraryIndexState::NotCreated, |root| {
-                        if crate::engine::db_path_under(app_data, root).is_file() {
+                index_state: source.identity.as_ref().map_or(
+                    LibraryIndexState::Unknown,
+                    |identity| {
+                        let db = mdreader_ingest::workspace_index_path_for_stable_identity(
+                            app_data, identity,
+                        );
+                        if db.is_file() {
                             LibraryIndexState::Present
                         } else {
                             LibraryIndexState::NotCreated
                         }
-                    }),
+                    },
+                ),
                 active: bound_root
                     .as_ref()
                     .is_some_and(|root| active_root == Some(root)),
@@ -578,7 +641,18 @@ impl LibraryRegistry {
         Ok(LibrarySnapshot {
             version: LIBRARY_VERSION,
             sources,
+            cleanup: self.cleanup_status(),
         })
+    }
+
+    fn cleanup_status(&self) -> LibraryCleanupStatus {
+        if self.cleanup_pending.is_empty() {
+            LibraryCleanupStatus::Complete
+        } else {
+            LibraryCleanupStatus::Pending {
+                source_count: self.cleanup_pending.len().try_into().unwrap_or(u32::MAX),
+            }
+        }
     }
 
     pub(crate) fn reconcile_restore(
@@ -645,6 +719,9 @@ impl LibraryRegistry {
         if version.version == 1 {
             return Self::migrate_v1(path, &bytes);
         }
+        if version.version == 2 {
+            return Self::migrate_v2(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -655,17 +732,12 @@ impl LibraryRegistry {
             serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
                 message: format!("cannot parse library registry: {error}"),
             })?;
-        Self::validate_membership(
-            stored.active_source_id.as_deref(),
-            stored
-                .sources
-                .iter()
-                .map(|source| (&source.id, &source.path)),
-            stored.sources.len(),
-        )?;
+        Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
         Ok(Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
+            cleanup_pending: stored.cleanup_pending,
         })
     }
 
@@ -674,7 +746,7 @@ impl LibraryRegistry {
             serde_json::from_slice(bytes).map_err(|error| LibraryError::CorruptRegistry {
                 message: format!("cannot parse V1 library registry: {error}"),
             })?;
-        Self::validate_membership(
+        Self::validate_legacy_membership(
             stored.active_source_id.as_deref(),
             stored
                 .sources
@@ -683,19 +755,27 @@ impl LibraryRegistry {
             stored.sources.len(),
         )?;
 
-        quarantine_v1_workspaces(path, &stored.sources)?;
-        let sources = stored
+        let rebound = stored
             .sources
-            .into_iter()
+            .iter()
             .map(|source| {
                 let native_path = source.path.restore()?;
-                let identity = SourceRoot::capture(native_path)
-                    .ok()
-                    .map(|root| root.identity);
+                let root = SourceRoot::capture(native_path).map_err(|_| {
+                    LibraryError::CorruptRegistry {
+                        message: "legacy library source requires a native re-pick".to_string(),
+                    }
+                })?;
+                Ok((source, root.identity))
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        quarantine_v1_workspaces(path, &stored.sources)?;
+        let sources = rebound
+            .into_iter()
+            .map(|(source, identity)| {
                 Ok(LibrarySource {
-                    id: source.id,
-                    path: source.path,
-                    identity,
+                    id: new_source_id(),
+                    path: source.path.clone(),
+                    identity: Some(identity),
                 })
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
@@ -705,12 +785,75 @@ impl LibraryRegistry {
             // from inheriting that weaker authorization.
             active_source_id: None,
             sources,
+            cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
         Ok(migrated)
     }
 
-    fn validate_membership<'a>(
+    fn migrate_v2(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibraryV2 =
+            serde_json::from_slice(bytes).map_err(|error| LibraryError::CorruptRegistry {
+                message: format!("cannot parse V2 library registry: {error}"),
+            })?;
+        Self::validate_legacy_membership(
+            stored.active_source_id.as_deref(),
+            stored
+                .sources
+                .iter()
+                .map(|source| (&source.id, &source.path)),
+            stored.sources.len(),
+        )?;
+        if stored
+            .sources
+            .iter()
+            .any(|source| source.identity.is_none())
+        {
+            return Err(LibraryError::CorruptRegistry {
+                message: "legacy library source requires a native re-pick".to_string(),
+            });
+        }
+
+        let mut id_map = HashMap::with_capacity(stored.sources.len());
+        let sources = stored
+            .sources
+            .iter()
+            .map(|source| {
+                let id = new_source_id();
+                id_map.insert(source.id.clone(), id.clone());
+                LibrarySource {
+                    id,
+                    path: source.path.clone(),
+                    identity: source.identity.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let migrated = Self {
+            active_source_id: stored
+                .active_source_id
+                .as_ref()
+                .and_then(|old| id_map.get(old).cloned()),
+            sources,
+            cleanup_pending: Vec::new(),
+        };
+        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
+
+        let app_data = path.parent().ok_or_else(|| LibraryError::PersistFailed {
+            message: "library registry has no parent directory".to_string(),
+        })?;
+        let moves = migrate_v2_managed_workspaces(app_data, &stored.sources)?;
+        if let Err(error) = migrated.save_to(path) {
+            if rollback_managed_moves(&moves).is_err() {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::RollbackFailed,
+                });
+            }
+            return Err(error);
+        }
+        Ok(migrated)
+    }
+
+    fn validate_legacy_membership<'a>(
         active_source_id: Option<&str>,
         sources: impl Iterator<Item = (&'a String, &'a NativePath)>,
         source_count: usize,
@@ -741,7 +884,93 @@ impl LibraryRegistry {
         Ok(())
     }
 
+    fn validate_membership(
+        active_source_id: Option<&str>,
+        sources: &[LibrarySource],
+    ) -> Result<(), LibraryError> {
+        if sources.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry {
+                message: "library registry exceeds its source bound".to_string(),
+            });
+        }
+        let mut ids = HashSet::new();
+        for (index, source) in sources.iter().enumerate() {
+            let path = source.path.restore()?;
+            let valid_id = source.id.len() == 64
+                && source
+                    .id
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            let identity =
+                source
+                    .identity
+                    .as_ref()
+                    .ok_or_else(|| LibraryError::CorruptRegistry {
+                        message: "library registry source identity is missing".to_string(),
+                    })?;
+            if !path.is_absolute()
+                || !valid_id
+                || !ids.insert(source.id.as_str())
+                || sources[..index]
+                    .iter()
+                    .any(|prior| prior.identity.as_ref() == Some(identity))
+            {
+                return Err(LibraryError::CorruptRegistry {
+                    message: "library registry contains a malformed or duplicate source"
+                        .to_string(),
+                });
+            }
+        }
+        if active_source_id.is_some_and(|active| !ids.contains(active)) {
+            return Err(LibraryError::CorruptRegistry {
+                message: "library registry active source is not a member".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_pending_cleanup(
+        pending: &[PendingCleanup],
+        sources: &[LibrarySource],
+    ) -> Result<(), LibraryError> {
+        if pending.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry {
+                message: "library cleanup ledger exceeds its source bound".to_string(),
+            });
+        }
+        let mut source_ids = HashSet::new();
+        let mut tombstones = HashSet::new();
+        for entry in pending {
+            let valid_source_id = entry.source_id.len() == 64
+                && entry
+                    .source_id
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            let valid_tombstone = entry.tombstone.len() == 64
+                && entry
+                    .tombstone
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+            if !valid_source_id
+                || !valid_tombstone
+                || !source_ids.insert(entry.source_id.as_str())
+                || !tombstones.insert(entry.tombstone.as_str())
+                || sources.iter().any(|source| source.id == entry.source_id)
+            {
+                return Err(LibraryError::CorruptRegistry {
+                    message: "library cleanup ledger is malformed".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
+        Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
+        Self::validate_pending_cleanup(&self.cleanup_pending, &self.sources)?;
         let parent = path.parent().ok_or_else(|| LibraryError::PersistFailed {
             message: "library registry has no parent directory".to_string(),
         })?;
@@ -752,6 +981,7 @@ impl LibraryRegistry {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
             sources: self.sources.clone(),
+            cleanup_pending: self.cleanup_pending.clone(),
         })
         .map_err(|error| LibraryError::PersistFailed {
             message: format!("cannot encode library registry: {error}"),
@@ -896,6 +1126,70 @@ fn quarantine_v1_workspaces(
     Ok(())
 }
 
+fn migrate_v2_managed_workspaces(
+    app_data: &Path,
+    sources: &[LibrarySource],
+) -> Result<Vec<(PathBuf, PathBuf)>, LibraryError> {
+    let mut moves = Vec::new();
+    for source in sources {
+        let identity = source
+            .identity
+            .as_ref()
+            .ok_or_else(|| LibraryError::CorruptRegistry {
+                message: "legacy library source requires a native re-pick".to_string(),
+            })?;
+        let path = source.path.restore()?;
+        let old = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+            app_data, &path, identity,
+        )
+        .parent()
+        .ok_or_else(|| LibraryError::PersistFailed {
+            message: "legacy managed workspace has no parent".to_string(),
+        })?
+        .to_path_buf();
+        let new = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or_else(|| LibraryError::PersistFailed {
+                message: "managed workspace has no parent".to_string(),
+            })?
+            .to_path_buf();
+        if old == new {
+            continue;
+        }
+        let old_metadata = match fs::symlink_metadata(&old) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                rollback_managed_moves(&moves).ok();
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                });
+            }
+        };
+        if old_metadata.file_type().is_symlink() || !old_metadata.is_dir() || new.exists() {
+            rollback_managed_moves(&moves).ok();
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        if fs::rename(&old, &new).is_err() {
+            rollback_managed_moves(&moves).ok();
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        moves.push((old, new));
+    }
+    Ok(moves)
+}
+
+fn rollback_managed_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), ()> {
+    for (old, new) in moves.iter().rev() {
+        fs::rename(new, old).map_err(|_| ())?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct LibraryStore {
     registry_path: PathBuf,
@@ -926,7 +1220,10 @@ impl LibraryStore {
         operation: impl FnOnce(&LibraryRegistry) -> Result<T, LibraryError>,
     ) -> Result<T, LibraryError> {
         let _lease = self.acquire()?;
-        let registry = LibraryRegistry::load_from(&self.registry_path)?;
+        let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+        let app_data = self.app_data()?;
+        let mut cleanup = |path: &Path| fs::remove_dir_all(path);
+        self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)?;
         operation(&registry)
     }
 
@@ -936,9 +1233,256 @@ impl LibraryStore {
     ) -> Result<T, LibraryError> {
         let _lease = self.acquire()?;
         let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+        let app_data = self.app_data()?;
+        let mut cleanup = |path: &Path| fs::remove_dir_all(path);
+        self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)?;
         let result = operation(&mut registry)?;
         registry.save_to(&self.registry_path)?;
         Ok(result)
+    }
+
+    fn app_data(&self) -> Result<PathBuf, LibraryError> {
+        self.registry_path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| LibraryError::PersistFailed {
+                message: "library registry has no parent directory".to_string(),
+            })
+    }
+
+    fn forget_source(
+        &self,
+        source_id: &str,
+        active_root: Option<&SourceRoot>,
+        app_data: &Path,
+    ) -> Result<LibraryCleanupStatus, LibraryError> {
+        self.forget_source_with_cleanup_ops(
+            source_id,
+            active_root,
+            app_data,
+            |from, to| fs::rename(from, to),
+            |path| fs::remove_dir_all(path),
+        )
+    }
+
+    fn forget_source_with_cleanup_ops(
+        &self,
+        source_id: &str,
+        active_root: Option<&SourceRoot>,
+        app_data: &Path,
+        rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        mut cleanup: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<LibraryCleanupStatus, LibraryError> {
+        let _lease = self.acquire()?;
+        if self.app_data()?.as_path() != app_data {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+        self.retry_pending_cleanup_locked(&mut registry, app_data, &mut cleanup)?;
+        let source =
+            registry
+                .source_for(source_id)
+                .ok_or_else(|| LibraryError::SourceNotFound {
+                    source_id: source_id.to_string(),
+                })?;
+        let identity = source
+            .identity
+            .as_ref()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?;
+        let managed = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
+        let mut updated = registry.clone();
+        updated.forget(source_id, active_root)?;
+
+        let metadata = match fs::symlink_metadata(&managed) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(_) => {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })
+            }
+        };
+        let Some(metadata) = metadata else {
+            updated.save_to(&self.registry_path)?;
+            return Ok(updated.cleanup_status());
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+
+        let staging_root = app_data.join("managed-delete-staging");
+        fs::create_dir_all(&staging_root).map_err(|_| LibraryError::CleanupFailed {
+            reason: LibraryCleanupReason::ManagedStateUnavailable,
+        })?;
+        let staging_metadata =
+            fs::symlink_metadata(&staging_root).map_err(|_| LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?;
+        if staging_metadata.file_type().is_symlink() || !staging_metadata.is_dir() {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        let staged = staging_root.join(source_id);
+        match fs::symlink_metadata(&staged) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })
+            }
+        }
+        rename(&managed, &staged).map_err(|_| LibraryError::CleanupFailed {
+            reason: LibraryCleanupReason::ManagedStateUnavailable,
+        })?;
+        let tombstone = staged
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_string();
+        updated.cleanup_pending.push(PendingCleanup {
+            source_id: source_id.to_string(),
+            tombstone,
+        });
+
+        if let Err(error) = updated.save_to(&self.registry_path) {
+            if fs::rename(&staged, &managed).is_err() {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::RollbackFailed,
+                });
+            }
+            return Err(error);
+        }
+
+        if cleanup(&staged).is_err() {
+            return Ok(updated.cleanup_status());
+        }
+        let persisted_pending_count = updated.cleanup_pending.len();
+        updated
+            .cleanup_pending
+            .retain(|entry| entry.source_id != source_id);
+        if updated.save_to(&self.registry_path).is_err() {
+            return Ok(LibraryCleanupStatus::Pending {
+                source_count: u32::try_from(persisted_pending_count).unwrap_or(u32::MAX),
+            });
+        }
+        Ok(updated.cleanup_status())
+    }
+
+    #[cfg(test)]
+    fn retry_pending_cleanup_with(
+        &self,
+        app_data: &Path,
+        mut cleanup: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<LibraryCleanupStatus, LibraryError> {
+        let _lease = self.acquire()?;
+        if self.app_data()?.as_path() != app_data {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+        self.retry_pending_cleanup_locked(&mut registry, app_data, &mut cleanup)
+    }
+
+    fn retry_pending_cleanup_locked(
+        &self,
+        registry: &mut LibraryRegistry,
+        app_data: &Path,
+        cleanup: &mut impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<LibraryCleanupStatus, LibraryError> {
+        self.recover_interrupted_quarantines_locked(registry, app_data)?;
+        let mut retained = Vec::new();
+        for pending in &registry.cleanup_pending {
+            let tombstone = app_data
+                .join("managed-delete-staging")
+                .join(&pending.tombstone);
+            let completed = match fs::symlink_metadata(&tombstone) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => false,
+                Ok(_) => cleanup(&tombstone).is_ok(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Err(_) => false,
+            };
+            if !completed {
+                retained.push(pending.clone());
+            }
+        }
+        if retained != registry.cleanup_pending {
+            registry.cleanup_pending = retained;
+            registry.save_to(&self.registry_path)?;
+        }
+        Ok(registry.cleanup_status())
+    }
+
+    fn recover_interrupted_quarantines_locked(
+        &self,
+        registry: &mut LibraryRegistry,
+        app_data: &Path,
+    ) -> Result<(), LibraryError> {
+        let mut recovered = Vec::new();
+        for source in &registry.sources {
+            let staged = app_data.join("managed-delete-staging").join(&source.id);
+            let staged_metadata = match fs::symlink_metadata(&staged) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(LibraryError::CleanupFailed {
+                        reason: LibraryCleanupReason::ManagedStateUnavailable,
+                    })
+                }
+            };
+            if staged_metadata.file_type().is_symlink() || !staged_metadata.is_dir() {
+                continue;
+            }
+            let identity = source
+                .identity
+                .as_ref()
+                .ok_or(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })?;
+            let managed_database =
+                mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity);
+            let managed = managed_database
+                .parent()
+                .ok_or(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })?;
+            match fs::symlink_metadata(managed) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    recovered.push(source.id.clone());
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    return Err(LibraryError::CleanupFailed {
+                        reason: LibraryCleanupReason::ManagedStateUnavailable,
+                    })
+                }
+            }
+        }
+        if recovered.is_empty() {
+            return Ok(());
+        }
+        for source_id in recovered {
+            registry.forget(&source_id, None)?;
+            registry.cleanup_pending.push(PendingCleanup {
+                tombstone: source_id.clone(),
+                source_id,
+            });
+        }
+        registry.save_to(&self.registry_path)
     }
 
     fn reconcile_restore_or_migrate(
@@ -963,7 +1507,9 @@ impl LibraryStore {
         };
 
         if registry_exists {
-            let registry = LibraryRegistry::load_from(&self.registry_path)?;
+            let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+            let mut cleanup = |path: &Path| fs::remove_dir_all(path);
+            self.retry_pending_cleanup_locked(&mut registry, app_data, &mut cleanup)?;
             let source_id = registry.reconcile_restore(requested_root)?;
             return source_id
                 .map(|source_id| {
@@ -980,12 +1526,18 @@ impl LibraryStore {
         }
 
         let Some(requested_root) = requested_root else {
-            return Ok(None);
+            return Err(LibraryError::NeedsNativeRepick);
         };
+        let canonical =
+            fs::canonicalize(requested_root).map_err(|_| LibraryError::NeedsNativeRepick)?;
+        if canonical != requested_root || !validated_legacy_index_evidence(app_data, requested_root)
+        {
+            return Err(LibraryError::NeedsNativeRepick);
+        }
         let mut registry = LibraryRegistry::empty();
-        let source = match registry.add_root(requested_root) {
+        let source = match registry.add_root(&canonical) {
             Ok(source) => source,
-            Err(LibraryError::InvalidRoot { .. }) => return Ok(None),
+            Err(LibraryError::InvalidRoot { .. }) => return Err(LibraryError::NeedsNativeRepick),
             Err(error) => return Err(error),
         };
         registry.activation_root(&source.id)?;
@@ -996,6 +1548,43 @@ impl LibraryStore {
             .into_iter()
             .find(|candidate| candidate.id == source.id))
     }
+}
+
+fn validated_legacy_index_evidence(app_data: &Path, requested_root: &Path) -> bool {
+    let database = v1_workspace_dir(app_data, requested_root).join("catdb.db");
+    let Ok(metadata) = fs::symlink_metadata(&database) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return false;
+    }
+    let Ok(canonical_app_data) = fs::canonicalize(app_data) else {
+        return false;
+    };
+    let Ok(canonical_database) = fs::canonicalize(&database) else {
+        return false;
+    };
+    if !canonical_database.starts_with(&canonical_app_data) {
+        return false;
+    }
+
+    let flags =
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let Ok(connection) = rusqlite::Connection::open_with_flags(&canonical_database, flags) else {
+        return false;
+    };
+    let mut statement = match connection.prepare(
+        "SELECT name FROM sqlite_master \
+         WHERE type='table' AND name IN ('objects','documents','operation_log')",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) else {
+        return false;
+    };
+    let names = rows.filter_map(Result::ok).collect::<HashSet<_>>();
+    names.len() == 3
 }
 
 fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
@@ -1087,7 +1676,15 @@ pub(crate) fn reconcile_library_restore(
 ) -> Result<Option<LibrarySourceDto>, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    LibraryStore::new(path)
+    reconcile_library_restore_at(path, app_data, session_root)
+}
+
+fn reconcile_library_restore_at(
+    registry_path: PathBuf,
+    app_data: PathBuf,
+    session_root: Option<String>,
+) -> Result<Option<LibrarySourceDto>, LibraryError> {
+    LibraryStore::new(registry_path)
         .reconcile_restore_or_migrate(session_root.as_deref().map(Path::new), &app_data)
 }
 
@@ -1153,8 +1750,8 @@ pub(crate) fn mark_library_source_active(
     })
 }
 
-/// Forget membership only. The active epoch is protected, and this command
-/// never addresses either the user's source directory or the per-root index.
+/// Forget one inactive membership and exactly its private CatDB-managed state.
+/// The user's source directory is never addressed by cleanup.
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn forget_library_source(
@@ -1166,10 +1763,9 @@ pub(crate) fn forget_library_source(
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
-    LibraryStore::new(path).update(|registry| {
-        registry.forget(&source_id, active.as_ref())?;
-        registry.snapshot(&app_data, active.as_ref())
-    })
+    let store = LibraryStore::new(path);
+    store.forget_source(&source_id, active.as_ref(), &app_data)?;
+    store.read(|registry| registry.snapshot(&app_data, active.as_ref()))
 }
 
 pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
@@ -1246,6 +1842,19 @@ mod tests {
         app_data.join("workspaces").join(hash)
     }
 
+    fn create_legacy_catdb_index(path: &Path) {
+        fs::create_dir_all(path.parent().expect("legacy index parent"))
+            .expect("create legacy workspace");
+        let connection = rusqlite::Connection::open(path).expect("open legacy CatDB index");
+        connection
+            .execute_batch(
+                "CREATE TABLE objects (id TEXT PRIMARY KEY);
+                 CREATE TABLE documents (id TEXT PRIMARY KEY);
+                 CREATE TABLE operation_log (seq INTEGER PRIMARY KEY);",
+            )
+            .expect("create exact legacy evidence tables");
+    }
+
     #[test]
     fn duplicate_and_non_directory_roots_are_rejected_without_mutating_membership() {
         let temp = tempdir().expect("tempdir");
@@ -1268,6 +1877,84 @@ mod tests {
         ));
         assert_eq!(registry.sources().len(), 1);
         assert_eq!(registry.sources()[0].id, first.id);
+    }
+
+    #[test]
+    fn repicking_a_renamed_filesystem_object_preserves_its_opaque_source_identity() {
+        let temp = tempdir().expect("tempdir");
+        let original = mkdir(temp.path(), "original");
+        let mut registry = LibraryRegistry::empty();
+        let admitted = registry.add_root(&original).expect("add original root");
+        let path_derived =
+            NativePath::capture(&fs::canonicalize(&original).expect("canonical original root"))
+                .source_id();
+
+        assert_ne!(
+            admitted.id, path_derived,
+            "a renderer-visible path must not determine membership identity"
+        );
+
+        let renamed = temp.path().join("renamed");
+        fs::rename(&original, &renamed).expect("rename exact admitted filesystem object");
+        let repicked = registry
+            .add_root(&renamed)
+            .expect("same retained object updates its address");
+
+        assert_eq!(repicked.id, admitted.id);
+        assert_eq!(registry.sources().len(), 1);
+        assert_eq!(
+            registry
+                .path_for(&admitted.id)
+                .expect("updated source address"),
+            fs::canonicalize(&renamed).expect("canonical renamed root")
+        );
+    }
+
+    #[test]
+    fn same_path_object_replacement_gets_a_new_source_identity() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        let original = registry.add_root(&root).expect("add original object");
+
+        let retired = temp.path().join("retired");
+        fs::rename(&root, &retired).expect("retire original object");
+        fs::create_dir(&root).expect("create replacement at same path");
+        let replacement = registry.add_root(&root).expect("add replacement object");
+
+        assert_ne!(replacement.id, original.id);
+        assert_eq!(registry.sources().len(), 2);
+        assert!(matches!(
+            registry.source_state(&original.id),
+            Ok(LibrarySourceState::Unreadable { .. })
+        ));
+        assert_eq!(
+            registry
+                .activation_path(&replacement.id)
+                .expect("replacement activates"),
+            fs::canonicalize(&root).expect("canonical replacement")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_alias_of_a_member_never_creates_duplicate_membership() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let alias = temp.path().join("alias");
+        symlink(&root, &alias).expect("create source alias");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add real path");
+
+        assert_eq!(
+            registry.add_root(&alias),
+            Err(LibraryError::DuplicateRoot {
+                source_id: source.id.clone()
+            })
+        );
+        assert_eq!(registry.sources().len(), 1);
     }
 
     #[test]
@@ -1346,7 +2033,7 @@ mod tests {
     }
 
     #[test]
-    fn active_source_cannot_be_forgotten_and_forget_never_deletes_user_or_index_data() {
+    fn refusing_to_forget_an_active_source_preserves_user_and_managed_state() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let user_file = root.join("keep.md");
@@ -1492,9 +2179,13 @@ mod tests {
             LibraryRegistry::load_from(&registry_path).expect("migrate supported v1 registry");
 
         assert_eq!(registry.sources().len(), 1, "membership is preserved");
-        assert_eq!(registry.sources()[0].id, source_id);
+        let migrated_source_id = registry.sources()[0].id.clone();
+        assert_ne!(
+            migrated_source_id, source_id,
+            "path-derived V1 identity is replaced by an opaque membership ID"
+        );
         assert!(
-            registry.activation_root(&source_id).is_ok(),
+            registry.activation_root(&migrated_source_id).is_ok(),
             "an available source is rebound to its current filesystem identity"
         );
         assert_eq!(
@@ -1518,7 +2209,7 @@ mod tests {
         assert!(
             !crate::engine::db_path_under(
                 &app_data,
-                &registry.activation_root(&source_id).unwrap()
+                &registry.activation_root(&migrated_source_id).unwrap()
             )
             .exists(),
             "identity-keyed V2 starts from a clean index instead of adopting path-keyed rows"
@@ -1526,7 +2217,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_v1_membership_survives_migration_and_can_be_forgotten_or_readmitted() {
+    fn unavailable_v1_membership_fails_closed_until_native_identity_can_be_rebound() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
         fs::create_dir(&app_data).expect("create app data");
@@ -1550,37 +2241,109 @@ mod tests {
         .expect("write v1 registry");
         fs::remove_dir(&root).expect("take source offline before migration");
 
-        let mut registry =
-            LibraryRegistry::load_from(&registry_path).expect("offline membership migrates");
-        let snapshot = registry
-            .snapshot(&app_data, None)
-            .expect("offline source remains listable");
-        assert_eq!(snapshot.sources.len(), 1);
         assert!(matches!(
-            snapshot.sources[0].state,
-            super::LibraryAvailability::Missing { .. }
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CorruptRegistry { ref message })
+                if message == "legacy library source requires a native re-pick"
         ));
         assert_eq!(
-            snapshot.sources[0].index_state,
-            LibraryIndexState::NotCreated
+            serde_json::from_slice::<serde_json::Value>(
+                &fs::read(&registry_path).expect("legacy registry remains")
+            )
+            .expect("parse unchanged legacy registry")["version"],
+            serde_json::json!(1)
         );
-        assert!(matches!(
-            registry.activation_root(&source_id),
-            Err(LibraryError::SourceUnavailable { .. })
-        ));
-
-        let mut forgettable = registry.clone();
-        forgettable
-            .forget(&source_id, None)
-            .expect("offline migrated membership can be forgotten");
-        assert!(forgettable.sources().is_empty());
 
         fs::create_dir(&root).expect("source returns");
-        let rebound = registry
-            .add_root(&root)
-            .expect("re-picking a migration-pending source binds its identity");
-        assert_eq!(rebound.id, source_id, "membership identity is stable");
-        assert!(registry.activation_root(&source_id).is_ok());
+        let registry =
+            LibraryRegistry::load_from(&registry_path).expect("migration succeeds when locatable");
+        assert_eq!(registry.sources().len(), 1);
+        assert_ne!(registry.sources()[0].id, source_id);
+        assert!(registry.activation_root(&registry.sources()[0].id).is_ok());
+    }
+
+    #[test]
+    fn version_two_path_ids_and_managed_state_migrate_once_to_stable_identity_keys() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let admitted = bound_root(&root);
+        let native = NativePath::capture(&admitted.path);
+        let path_id = native.source_id();
+        let v2 = serde_json::json!({
+            "version": 2,
+            "active_source_id": path_id.clone(),
+            "sources": [{
+                "id": path_id.clone(),
+                "path": native,
+                "identity": admitted.identity.clone(),
+            }],
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&v2).expect("encode V2 registry"),
+        )
+        .expect("write V2 registry");
+        let old_db = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+            &app_data,
+            &admitted.path,
+            &admitted.identity,
+        );
+        fs::create_dir_all(old_db.parent().expect("old managed workspace"))
+            .expect("create old managed workspace");
+        fs::write(&old_db, b"index").expect("write old index");
+        fs::write(old_db.with_file_name("proposals.db"), b"proposals")
+            .expect("write old proposals");
+
+        let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate V2");
+        let opaque_id = migrated.sources()[0].id.clone();
+        assert_ne!(opaque_id, path_id);
+        assert_eq!(migrated.restore_source_id(), Some(opaque_id.as_str()));
+        let new_db = mdreader_ingest::workspace_index_path_for_stable_identity(
+            &app_data,
+            &admitted.identity,
+        );
+        assert!(!old_db.exists());
+        assert_eq!(fs::read(&new_db).expect("migrated index"), b"index");
+        assert_eq!(
+            fs::read(new_db.with_file_name("proposals.db")).expect("migrated proposals"),
+            b"proposals"
+        );
+
+        let second = LibraryRegistry::load_from(&registry_path).expect("idempotent reload");
+        assert_eq!(second.sources()[0].id, opaque_id);
+    }
+
+    #[test]
+    fn version_two_migration_without_identity_fails_closed_and_preserves_bytes() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("app-data/library.json");
+        fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("create app data");
+        let root = mkdir(temp.path(), "notes");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let native = NativePath::capture(&canonical);
+        let path_id = native.source_id();
+        let v2 = serde_json::json!({
+            "version": 2,
+            "active_source_id": null,
+            "sources": [{
+                "id": path_id,
+                "path": native,
+                "identity": null,
+            }],
+        });
+        let before = serde_json::to_vec_pretty(&v2).expect("encode V2 registry");
+        fs::write(&registry_path, &before).expect("write V2 registry");
+
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CorruptRegistry { ref message })
+                if message == "legacy library source requires a native re-pick"
+        ));
+        assert_eq!(fs::read(&registry_path).expect("read unchanged V2"), before);
     }
 
     #[test]
@@ -1619,6 +2382,323 @@ mod tests {
             .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot after index");
         assert_eq!(after.sources[0].index_state, LibraryIndexState::Present);
+    }
+
+    #[test]
+    fn snapshot_reports_identity_keyed_managed_index_while_source_is_offline() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let app_data = temp.path().join("app-data");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&root).expect("add root");
+        let admitted = bound_root(&root);
+        let db = crate::engine::db_path_under(&app_data, &admitted);
+        fs::create_dir_all(db.parent().expect("managed workspace parent"))
+            .expect("create managed workspace");
+        fs::write(&db, b"existing index").expect("write managed index");
+
+        fs::rename(&root, temp.path().join("renamed-offline"))
+            .expect("make stored address unavailable");
+        let snapshot = registry
+            .snapshot(&app_data, None)
+            .expect("offline membership remains listable");
+
+        assert!(matches!(
+            snapshot.sources[0].state,
+            super::LibraryAvailability::Missing { .. }
+        ));
+        assert_eq!(
+            snapshot.sources[0].index_state,
+            LibraryIndexState::Present,
+            "managed state remains locatable from persisted stable identity"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_source_removes_only_its_managed_workspace_and_preserves_user_bytes() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let document = root.join("keep.md");
+        fs::write(&document, b"# keep\nsentinel body").expect("write user document");
+        let before = fs::metadata(&document)
+            .expect("document metadata")
+            .modified()
+            .expect("document mtime");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let admitted = bound_root(&root);
+        let managed = crate::engine::db_path_under(&app_data, &admitted)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(managed.join("cache")).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"index").expect("write index");
+        fs::write(managed.join("proposals.db"), b"proposals").expect("write proposals");
+        fs::write(managed.join("cache/materialized"), b"cache").expect("write cache");
+        registry.save_to(&registry_path).expect("save registry");
+
+        LibraryStore::new(registry_path.clone())
+            .forget_source(&source.id, None, &app_data)
+            .expect("forget source and managed state");
+
+        assert!(!managed.exists(), "all source-managed state is removed");
+        assert!(LibraryRegistry::load_from(&registry_path)
+            .expect("load post-forget registry")
+            .sources()
+            .is_empty());
+        assert_eq!(
+            fs::read(&document).expect("read untouched user document"),
+            b"# keep\nsentinel body"
+        );
+        assert_eq!(
+            fs::metadata(&document)
+                .expect("document metadata after forget")
+                .modified()
+                .expect("document mtime after forget"),
+            before
+        );
+    }
+
+    #[test]
+    fn managed_cleanup_failure_after_quarantine_stays_pending_and_retries_after_restart() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let document = root.join("keep.md");
+        fs::write(&document, b"# unchanged").expect("write user document");
+        let before = fs::metadata(&document)
+            .expect("document metadata")
+            .modified()
+            .expect("document mtime");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        let admitted = bound_root(&root);
+        let managed = crate::engine::db_path_under(&app_data, &admitted)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(managed.join("cache")).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"index").expect("write managed index");
+        fs::write(managed.join("cache/materialized"), b"cached rows").expect("write cache");
+        registry.save_to(&registry_path).expect("save registry");
+
+        let source_path = fs::canonicalize(&root).expect("canonical user root");
+        let store = LibraryStore::new(registry_path.clone());
+        let status = store
+            .forget_source_with_cleanup_ops(
+                &source.id,
+                None,
+                &app_data,
+                |from, to| fs::rename(from, to),
+                |tombstone| {
+                    assert_ne!(tombstone, source_path);
+                    assert!(tombstone.starts_with(app_data.join("managed-delete-staging")));
+                    fs::remove_file(tombstone.join("catdb.db"))?;
+                    fs::remove_file(tombstone.join("cache/materialized"))?;
+                    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                },
+            )
+            .expect("a post-quarantine failure is a durable pending outcome");
+
+        assert_eq!(
+            status,
+            super::LibraryCleanupStatus::Pending { source_count: 1 }
+        );
+        assert!(!managed.exists(), "quarantined state is never reactivated");
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("load cleanup ledger")
+                .sources()
+                .len(),
+            0,
+            "membership stays removed while cleanup is pending"
+        );
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("reload removed membership")
+                .activation_root(&source.id),
+            Err(LibraryError::SourceNotFound { .. })
+        ));
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("load durable cleanup ledger")
+                .snapshot(&app_data, None)
+                .expect("snapshot reports pending")
+                .cleanup,
+            super::LibraryCleanupStatus::Pending { source_count: 1 }
+        );
+        assert_eq!(
+            fs::read(&document).expect("user document untouched"),
+            b"# unchanged"
+        );
+
+        let restarted = LibraryStore::new(registry_path);
+        let snapshot = restarted
+            .read(|registry| registry.snapshot(&app_data, None))
+            .expect("the normal next read deterministically finishes the tombstone");
+        assert_eq!(snapshot.cleanup, super::LibraryCleanupStatus::Complete);
+        assert_eq!(
+            fs::read(&document).expect("user document remains untouched"),
+            b"# unchanged"
+        );
+        assert_eq!(
+            fs::metadata(&document)
+                .expect("document metadata after cleanup retry")
+                .modified()
+                .expect("document mtime after cleanup retry"),
+            before
+        );
+    }
+
+    #[test]
+    fn managed_cleanup_failure_before_quarantine_preserves_membership_and_state() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        let admitted = bound_root(&root);
+        let managed = crate::engine::db_path_under(&app_data, &admitted)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(&managed).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"index").expect("write managed index");
+        registry.save_to(&registry_path).expect("save registry");
+
+        let error = LibraryStore::new(registry_path.clone())
+            .forget_source_with_cleanup_ops(
+                &source.id,
+                None,
+                &app_data,
+                |_, _| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                |_| panic!("delete must not run when the atomic quarantine rename fails"),
+            )
+            .expect_err("pre-quarantine failure remains an explicit refusal");
+
+        assert_eq!(
+            error,
+            LibraryError::CleanupFailed {
+                reason: super::LibraryCleanupReason::ManagedStateUnavailable
+            }
+        );
+        let loaded = LibraryRegistry::load_from(&registry_path).expect("load unchanged registry");
+        assert_eq!(loaded.sources().len(), 1);
+        assert_eq!(loaded.sources()[0].id, source.id);
+        assert_eq!(
+            fs::read(managed.join("catdb.db")).expect("managed state stays addressable"),
+            b"index"
+        );
+    }
+
+    #[test]
+    fn restart_recovers_a_crash_between_quarantine_rename_and_registry_publish() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        let managed = crate::engine::db_path_under(&app_data, &bound_root(&root))
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(&managed).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"index").expect("write index");
+        registry
+            .save_to(&registry_path)
+            .expect("save pre-forget registry");
+        let staged = app_data.join("managed-delete-staging").join(&source.id);
+        fs::create_dir_all(staged.parent().expect("staging parent")).expect("create staging");
+        fs::rename(&managed, &staged).expect("simulate the completed atomic quarantine rename");
+
+        let store = LibraryStore::new(registry_path.clone());
+        let status = store
+            .retry_pending_cleanup_with(&app_data, |_| {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            })
+            .expect("startup reconstructs the pending ledger from the deterministic tombstone");
+
+        assert_eq!(
+            status,
+            super::LibraryCleanupStatus::Pending { source_count: 1 }
+        );
+        let recovered =
+            LibraryRegistry::load_from(&registry_path).expect("load recovered registry");
+        assert!(recovered.sources().is_empty());
+        assert!(staged.exists());
+        assert!(!managed.exists());
+
+        assert_eq!(
+            store
+                .retry_pending_cleanup_with(&app_data, |path| fs::remove_dir_all(path))
+                .expect("later startup finishes recovered cleanup"),
+            super::LibraryCleanupStatus::Complete
+        );
+        assert!(!staged.exists());
+    }
+
+    #[test]
+    fn forgetting_one_source_never_addresses_another_sources_managed_state() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let first_root = mkdir(temp.path(), "first");
+        let second_root = mkdir(temp.path(), "second");
+        let mut registry = LibraryRegistry::empty();
+        let first = registry.add_root(&first_root).expect("add first");
+        registry.add_root(&second_root).expect("add second");
+        let first_managed = crate::engine::db_path_under(&app_data, &bound_root(&first_root))
+            .parent()
+            .expect("first workspace")
+            .to_path_buf();
+        let second_managed = crate::engine::db_path_under(&app_data, &bound_root(&second_root))
+            .parent()
+            .expect("second workspace")
+            .to_path_buf();
+        fs::create_dir_all(&first_managed).expect("create first workspace");
+        fs::create_dir_all(&second_managed).expect("create second workspace");
+        fs::write(first_managed.join("catdb.db"), b"first").expect("write first");
+        fs::write(second_managed.join("catdb.db"), b"second").expect("write second");
+        registry.save_to(&registry_path).expect("save registry");
+
+        let status = LibraryStore::new(registry_path.clone())
+            .forget_source(&first.id, None, &app_data)
+            .expect("forget first");
+
+        assert_eq!(status, super::LibraryCleanupStatus::Complete);
+        assert!(!first_managed.exists());
+        assert_eq!(
+            fs::read(second_managed.join("catdb.db")).expect("second remains exact"),
+            b"second"
+        );
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("load one-source registry")
+                .sources()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn offline_source_without_managed_index_reports_not_created() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let app_data = temp.path().join("app-data");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&root).expect("add source");
+        fs::rename(&root, temp.path().join("offline")).expect("take source offline");
+
+        let snapshot = registry.snapshot(&app_data, None).expect("snapshot");
+        assert_eq!(
+            snapshot.sources[0].index_state,
+            LibraryIndexState::NotCreated
+        );
     }
 
     #[test]
@@ -1781,6 +2861,8 @@ mod tests {
         let root = mkdir(temp.path(), "legacy-notes");
         let canonical = fs::canonicalize(&root).expect("canonical legacy root");
         let store = LibraryStore::new(registry_path.clone());
+        let legacy_workspace = legacy_v1_workspace_path(&app_data, &canonical);
+        create_legacy_catdb_index(&legacy_workspace.join("catdb.db"));
 
         let first = store
             .reconcile_restore_or_migrate(Some(&canonical), &app_data)
@@ -1848,10 +2930,10 @@ mod tests {
         let missing = temp.path().join("missing");
         let store = LibraryStore::new(registry_path.clone());
 
-        assert!(store
-            .reconcile_restore_or_migrate(Some(&missing), &app_data)
-            .expect("missing legacy root is a typed clean refusal")
-            .is_none());
+        assert_eq!(
+            store.reconcile_restore_or_migrate(Some(&missing), &app_data),
+            Err(LibraryError::NeedsNativeRepick)
+        );
         assert!(
             !registry_path.exists(),
             "a refused migration does not consume or fabricate registry state"
@@ -1868,6 +2950,27 @@ mod tests {
             fs::read(&registry_path).expect("corrupt bytes remain"),
             b"{corrupt",
             "corruption is never replaced by a session-derived registry"
+        );
+    }
+
+    #[test]
+    fn command_boundary_refuses_existing_outsider_without_backend_legacy_evidence() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let outsider = mkdir(temp.path(), "existing-outsider");
+
+        assert_eq!(
+            super::reconcile_library_restore_at(
+                registry_path.clone(),
+                app_data,
+                Some(outsider.to_string_lossy().into_owned())
+            ),
+            Err(LibraryError::NeedsNativeRepick)
+        );
+        assert!(
+            !registry_path.exists(),
+            "the command boundary creates no membership or registry authority"
         );
     }
 }

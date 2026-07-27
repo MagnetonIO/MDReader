@@ -154,53 +154,55 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     restore_candidate: active,
   });
   const listSources = vi.fn(async () => ({
-    version: 1,
+    version: 3,
     sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
+    cleanup: { kind: 'complete' as const },
   }));
   const pickAndAddSource = vi.fn(async () => ({
     source: source(h.pickedPath, h.pickedPath === '/ws'),
     added: true,
   }));
   const markActive = vi.fn(async () => ({
-    version: 1,
+    version: 3,
     sources: [
       source('/ws', h.pickedPath === '/ws'),
       source('/ws-b', h.pickedPath === '/ws-b'),
       source('/ws-c', h.pickedPath === '/ws-c'),
     ],
+    cleanup: { kind: 'complete' as const },
   }));
   const settingsBackend = {
     listSources,
     pickAndAddSource,
     reconcileRestore: vi.fn(async () => null),
     markActive,
-    forgetSource: vi.fn(async () => ({ version: 1, sources: [] })),
+    forgetSource: vi.fn(async () => ({
+      version: 3,
+      sources: [],
+      cleanup: { kind: 'complete' as const },
+    })),
     diagnosticsInfo: vi.fn(async () => ({
       level: 'standard' as const,
-      directory: '/local/logs',
       max_file_bytes: 256 * 1024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1024,
     })),
     setDiagnosticLevel: vi.fn(async (level: 'errors' | 'standard' | 'verbose') => ({
       level,
-      directory: '/local/logs',
       max_file_bytes: 256 * 1024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1024,
     })),
     recordDiagnosticEvent: vi.fn(async () => {}),
     revealDiagnostics: vi.fn(async () => {}),
     exportDiagnostics: vi.fn(async () => ({
       status: 'cancelled' as const,
-      path: null,
       bytes_written: 0,
     })),
     clearDiagnostics: vi.fn(async () => ({
       level: 'standard' as const,
-      directory: '/local/logs',
       max_file_bytes: 256 * 1024,
-      retained_files: 3,
+      max_retained_files: 3,
       max_export_bytes: 512 * 1024,
     })),
   };

@@ -82,7 +82,11 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     reconcileLibraryRestore: vi.fn(async () => source),
     watchLibrarySource: vi.fn(async () => ({ root: source.path, generation: 1 })),
     grantLibrarySource: vi.fn(async () => source.path),
-    markLibrarySourceActive: vi.fn(async () => ({ version: 1, sources: [{ ...source, active: true }] })),
+    markLibrarySourceActive: vi.fn(async () => ({
+      version: 3,
+      sources: [{ ...source, active: true }],
+      cleanup: { kind: 'complete' as const },
+    })),
     recordDiagnosticEventNonBlocking: vi.fn(),
   };
 });

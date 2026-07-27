@@ -1614,10 +1614,9 @@ mod tests {
         }
     }
 
-    fn synthetic_db_path(base: &Path, path: PathBuf, device: u64, inode: u64) -> PathBuf {
-        mdreader_ingest::workspace_index_path_for_identity(
+    fn synthetic_db_path(base: &Path, _path: PathBuf, device: u64, inode: u64) -> PathBuf {
+        mdreader_ingest::workspace_index_path_for_stable_identity(
             base,
-            &path,
             &SourceRootIdentity::Unix { device, inode },
         )
     }
@@ -2061,9 +2060,9 @@ mod tests {
                 remedy,
             } => {
                 assert!(path.contains("locked"), "it names the folder: {path}");
-                assert!(
-                    reason.to_lowercase().contains("permission denied"),
-                    "it carries the OS's own reason: {reason}"
+                assert_eq!(
+                    reason, "permission-denied",
+                    "it carries a bounded path-free reason code"
                 );
                 assert!(
                     !remedy.is_empty(),

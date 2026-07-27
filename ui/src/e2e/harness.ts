@@ -82,17 +82,17 @@ function mockLibrarySource() {
 
 function mockLibrarySnapshot() {
   return {
-    version: 1,
+    version: 3,
     sources: mockLibraryAdded ? [mockLibrarySource()] : [],
+    cleanup: { kind: 'complete' },
   };
 }
 
 function mockDiagnosticInfo() {
   return {
     level: mockDiagnosticLevel,
-    directory: '/Users/reader/Library/Logs/MDReader',
     max_file_bytes: 256 * 1024,
-    retained_files: 3,
+    max_retained_files: 3,
     max_export_bytes: 512 * 1024,
   };
 }

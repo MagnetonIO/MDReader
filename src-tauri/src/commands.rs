@@ -1438,7 +1438,7 @@ mod tests {
 
         let error = grant_workspace_path_exact(&expected, &workspace)
             .expect_err("degraded grant must refuse replacement identity");
-        assert!(!error.is_empty() && error.contains("identity"));
+        assert_eq!(error, "identity-changed");
         let after = workspace.current().expect("prior epoch remains");
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.root, prior);
@@ -1554,7 +1554,7 @@ mod tests {
         )
         .expect_err("post-validation substitution must be refused");
 
-        assert!(!error.is_empty() && error.contains("identity"));
+        assert_eq!(error, "symlink-or-reparse");
         let after = workspace.current().expect("prior epoch remains");
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.root, prior);
@@ -1620,7 +1620,7 @@ mod tests {
         )
         .expect_err("post-watcher substitution must be refused");
 
-        assert!(!error.is_empty() && error.contains("identity"));
+        assert_eq!(error, "symlink-or-reparse");
         let after = workspace.current().expect("prior epoch remains");
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.root, prior);
@@ -1683,7 +1683,7 @@ mod tests {
         )
         .expect_err("pre-publication substitution must be refused");
 
-        assert!(!error.is_empty() && error.contains("identity"));
+        assert_eq!(error, "symlink-or-reparse");
         let after = workspace.current().expect("prior epoch remains");
         assert!(Arc::ptr_eq(&before, &after));
         assert_eq!(after.root, prior);

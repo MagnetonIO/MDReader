@@ -319,8 +319,9 @@ async function realLibrarySource() {
 
 async function realLibrarySnapshot() {
   return {
-    version: 1,
+    version: 3,
     sources: realLibraryAdded ? [await realLibrarySource()] : [],
+    cleanup: { kind: 'complete' },
   };
 }
 
@@ -490,9 +491,8 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
     case 'diagnostics_info':
       return {
         level: realDiagnosticLevel,
-        directory: 'browser-harness://local-diagnostics',
         max_file_bytes: 256 * 1024,
-        retained_files: 3,
+        max_retained_files: 3,
         max_export_bytes: 512 * 1024,
       };
 
@@ -502,14 +502,13 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
       }).level;
       return {
         level: realDiagnosticLevel,
-        directory: 'browser-harness://local-diagnostics',
         max_file_bytes: 256 * 1024,
-        retained_files: 3,
+        max_retained_files: 3,
         max_export_bytes: 512 * 1024,
       };
 
     case 'export_diagnostics':
-      return { status: 'cancelled', path: null, bytes_written: 0 };
+      return { status: 'cancelled', bytes_written: 0 };
 
     case 'clear_diagnostics':
       if (!(args as { confirmed: boolean }).confirmed) {
@@ -517,9 +516,8 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
       }
       return {
         level: realDiagnosticLevel,
-        directory: 'browser-harness://local-diagnostics',
         max_file_bytes: 256 * 1024,
-        retained_files: 3,
+        max_retained_files: 3,
         max_export_bytes: 512 * 1024,
       };
 

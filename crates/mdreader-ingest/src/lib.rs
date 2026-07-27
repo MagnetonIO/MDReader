@@ -30,8 +30,8 @@ pub use parse::{
 pub use proposals::ProposalStore;
 pub use scan::{scan_root, scan_source_root, ScanOptions, ScannedFile};
 pub use source_root::{
-    workspace_index_path, workspace_index_path_for_identity, SourceRoot, SourceRootError,
-    SourceRootIdentity,
+    legacy_workspace_index_path_for_path_identity, workspace_index_path,
+    workspace_index_path_for_stable_identity, SourceRoot, SourceRootError, SourceRootIdentity,
 };
 pub use source_view::{parse_source_document, source_document};
 

@@ -60,23 +60,31 @@ function errorMessage(cause: unknown): string {
       return 'This library was written by an unsupported MDReader version.';
     case 'invalid-root':
     case 'persist-failed':
+    case 'cleanup-failed':
+    case 'needs-native-repick':
+      return 'MDReader could not finish the local library operation. Try again.';
     case 'corrupt-settings':
+      return 'The local diagnostics settings could not be read.';
     case 'invalid-event':
+      return 'The diagnostic event was rejected.';
     case 'write-failed':
+      return 'MDReader could not write the local diagnostic log.';
     case 'export-failed':
+      return 'MDReader could not export the local diagnostic bundle.';
     case 'clear-failed':
+      return 'MDReader could not clear the local diagnostic logs.';
     case 'reveal-failed':
-      return 'message' in detail ? detail.message : 'The request could not be completed.';
+      return 'MDReader could not reveal the local diagnostics folder.';
     case 'confirmation-required':
       return 'Confirm before clearing diagnostic logs.';
     case 'source-not-found':
       return 'That source is no longer part of the library.';
     case 'source-unavailable':
-      return detail.reason;
+      return 'That source is unavailable. Re-add the folder if it moved.';
     case 'grant-mismatch':
       return 'The source did not become active, so its restore preference was not changed.';
     case 'open-failed':
-      return detail.message;
+      return 'MDReader could not open that source.';
     default:
       return 'The request could not be completed.';
   }
@@ -87,11 +95,11 @@ function sourceState(source: LibrarySourceDto): { label: string; unavailable: bo
     case 'available':
       return { label: 'Available', unavailable: false };
     case 'missing':
-      return { label: source.state.reason || 'Folder not found', unavailable: true };
+      return { label: 'Folder not found', unavailable: true };
     case 'unreadable':
-      return { label: source.state.reason || 'Folder cannot be read', unavailable: true };
+      return { label: 'Folder cannot be read', unavailable: true };
     case 'not-directory':
-      return { label: source.state.reason || 'No longer a folder', unavailable: true };
+      return { label: 'No longer a folder', unavailable: true };
   }
 }
 
@@ -396,7 +404,11 @@ export function SettingsSheet({
                           {state.label}
                         </span>
                         <span>
-                          {source.index_state === 'present' ? 'Index on disk' : 'Index not created'}
+                          {source.index_state === 'present'
+                            ? 'Index on disk'
+                            : source.index_state === 'not-created'
+                              ? 'Index not created'
+                              : 'Index status unavailable'}
                         </span>
                         {source.active ? <span>{activityLabel(watcher, importState)}</span> : null}
                       </div>
@@ -419,7 +431,7 @@ export function SettingsSheet({
                           title={
                             source.active
                               ? 'Activate another source before forgetting this one'
-                              : 'Forgets membership only; files and index remain'
+                              : 'Removes this entry and its local MDReader index; your files stay'
                           }
                           onClick={() => forget(source)}
                         >
@@ -431,8 +443,16 @@ export function SettingsSheet({
                 );
               })}
             </div>
+            {library?.cleanup.kind === 'pending' ? (
+              <p className="settings-footnote settings-state--warning" role="status">
+                Finishing local cleanup for {library.cleanup.source_count}{' '}
+                {library.cleanup.source_count === 1 ? 'source' : 'sources'}. Your folders are not
+                affected.
+              </p>
+            ) : null}
             <p className="settings-footnote">
-              Forget removes this library entry only. It never deletes the folder or its files.
+              Forget removes the library entry and MDReader’s private index. It never deletes the
+              folder or its files.
             </p>
           </section>
 
@@ -475,14 +495,12 @@ export function SettingsSheet({
 
             {diagnostics ? (
               <div className="diagnostic-card">
-                <div className="diagnostic-card__location">
-                  <span>Stored locally in</span>
-                  <code title={diagnostics.directory}>{diagnostics.directory}</code>
-                </div>
+                <div className="diagnostic-card__location">Stored locally on this device</div>
                 <div className="diagnostic-card__bounds">
                   {readableBytes(diagnostics.max_file_bytes)} per file ·{' '}
-                  {diagnostics.retained_files} files · {readableBytes(diagnostics.max_export_bytes)}{' '}
-                  export
+                  up to {diagnostics.max_retained_files}{' '}
+                  {diagnostics.max_retained_files === 1 ? 'file' : 'files'} ·{' '}
+                  {readableBytes(diagnostics.max_export_bytes)} export
                 </div>
                 <div className="diagnostic-card__actions">
                   <button
