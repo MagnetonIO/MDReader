@@ -4,6 +4,10 @@ The public demo image is a reproducible input to the CatDB evidence surface,
 not an automatically floating runtime.
 
 - Builder and runtime bases are pinned to multi-platform OCI index digests.
+- Local image validation uses the Docker host's native architecture. Cloudflare
+  currently admits `linux/amd64` container images, so its Wrangler dry run must
+  execute on a native amd64 runner; Apple Silicon hosts fail closed instead of
+  invoking emulation.
 - The Rust builder version matches `rust-toolchain.toml`.
 - Dependency resolution is locked; compilation runs offline after the
   explicit locked fetch.
