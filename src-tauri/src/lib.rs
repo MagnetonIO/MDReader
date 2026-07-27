@@ -57,6 +57,7 @@ const MENU_CLOSE_WINDOW: &str = "mdreader:close-window";
 /// it blocks the webview's asset loads, layer-tree commits and key events for as
 /// long as it takes. See `tests::no_command_runs_on_the_ui_thread`, which
 /// enforces it.
+#[cfg(not(mobile))]
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -110,6 +111,37 @@ fn specta_builder() -> Builder<tauri::Wry> {
             updater::install_update,
         ])
         .events(collect_events![commands::FsChanged, commands::WatchError])
+}
+
+/// The mobile native boundary is intentionally smaller than the generated
+/// desktop TypeScript vocabulary. Unknown commands are rejected by Tauri
+/// before reaching application code, so content mutation cannot be recovered
+/// by a compromised webview.
+#[cfg(mobile)]
+fn mobile_specta_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new().commands(collect_commands![
+        commands::ping,
+        cloud_accounts::list_cloud_sources,
+        cloud_accounts::query_cloud_documents,
+        mobile_enterprise::mobile_enterprise_connection,
+        mobile_enterprise::mobile_enterprise_request,
+        federation::query_federated_document,
+        overlay::list_schemas,
+        overlay::project_corpus,
+        overlay::describe_schema,
+        overlay::inspect_span,
+        overlay::check_constraints,
+        mapping::list_mappings,
+        mapping::inspect_mapping,
+        mapping::compose_mappings,
+        mapping::diff_schema_versions,
+        mapping::inspect_migration,
+    ])
+}
+
+#[cfg(mobile)]
+fn specta_builder() -> Builder<tauri::Wry> {
+    mobile_specta_builder()
 }
 
 /// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the

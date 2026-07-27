@@ -1788,7 +1788,7 @@ fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bo
         CloudProvider::GoogleDrive => {
             #[cfg(feature = "google-drive-connector")]
             {
-                scopes.contains(catdb_connector_google_drive::GOOGLE_DRIVE_FILE_SCOPE)
+                scopes.contains(catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE)
             }
             #[cfg(not(feature = "google-drive-connector"))]
             {
@@ -2047,9 +2047,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        execute_cloud_query, CloudAccountService, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudProvider, CloudSourceConfig, CloudSourceError,
-        CredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        execute_cloud_query, oauth_scope_is_sufficient, CloudAccountService, CloudConnectionState,
+        CloudCredentialResolver, CloudDocumentQueryResponse, CloudProvider, CloudSourceConfig,
+        CloudSourceError, CredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -2160,6 +2160,22 @@ mod tests {
             [7; 32],
         )
         .expect("valid test credentials")
+    }
+
+    #[test]
+    fn drive_scope_validation_accepts_only_the_document_read_scope() {
+        assert!(oauth_scope_is_sufficient(
+            CloudProvider::GoogleDrive,
+            Some(catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE),
+        ));
+        assert!(!oauth_scope_is_sufficient(
+            CloudProvider::GoogleDrive,
+            Some(concat!("https://www.googleapis.com/auth/drive.", "file")),
+        ));
+        assert!(!oauth_scope_is_sufficient(
+            CloudProvider::GoogleDrive,
+            Some("https://www.googleapis.com/auth/drive.metadata.readonly"),
+        ));
     }
 
     #[cfg(feature = "google-drive-connector")]
