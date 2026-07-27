@@ -16,10 +16,15 @@ const CARGO_ARGS = [
   '--lib',
 ];
 
-function cargoCheck(tauriConfig: string | undefined) {
+function cargoCheck(
+  tauriConfig: string | undefined,
+  sourceCommit: string | undefined = undefined,
+) {
   const env = { ...process.env };
   if (tauriConfig === undefined) delete env.TAURI_CONFIG;
   else env.TAURI_CONFIG = tauriConfig;
+  if (sourceCommit === undefined) delete env.MDREADER_SOURCE_COMMIT;
+  else env.MDREADER_SOURCE_COMMIT = sourceCommit;
   return spawnSync('cargo', CARGO_ARGS, {
     cwd: REPO_ROOT,
     env,
@@ -43,12 +48,21 @@ test(
       /e2e-build requires Tauri bundle identity dev\.mdreader\.app\.e2e/i,
     );
 
+    const isolatedConfig = JSON.stringify({
+      productName: 'MDReader E2E',
+      mainBinaryName: 'mdreader-e2e',
+      identifier: 'dev.mdreader.app.e2e',
+    });
+    const unbound = cargoCheck(isolatedConfig);
+    assert.notEqual(unbound.status, 0, 'unbound E2E source unexpectedly compiled');
+    assert.match(
+      `${unbound.stdout}\n${unbound.stderr}`,
+      /e2e-build requires MDREADER_SOURCE_COMMIT/i,
+    );
+
     const isolated = cargoCheck(
-      JSON.stringify({
-        productName: 'MDReader E2E',
-        mainBinaryName: 'mdreader-e2e',
-        identifier: 'dev.mdreader.app.e2e',
-      }),
+      isolatedConfig,
+      '0123456789abcdef0123456789abcdef01234567',
     );
     assert.equal(
       isolated.status,

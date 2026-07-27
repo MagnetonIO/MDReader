@@ -17,8 +17,10 @@ import { test } from 'node:test';
 
 import {
   androidCapabilitiesFor,
+  desktopCapabilitiesFor,
   iosCapabilitiesFor,
   validateAndroidApk,
+  validateDesktopAppBinary,
 } from './capabilities.ts';
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
@@ -34,6 +36,42 @@ function buildManifest(sourceCommit = SOURCE_COMMIT): string {
       profile: 'e2e-build',
     })}:MDREADER_E2E_BUILD_MANIFEST_END`;
 }
+
+test('desktop artifact validation binds the launched binary to the reviewed commit', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mdreader-desktop-artifact-'));
+  const binary = join(root, 'mdreader-e2e');
+  try {
+    await writeFile(binary, Buffer.from(`binary:${buildManifest()}`));
+    await chmod(binary, 0o755);
+    assert.equal(validateDesktopAppBinary(binary, SOURCE_COMMIT), binary);
+    assert.deepEqual(desktopCapabilitiesFor(binary, SOURCE_COMMIT), {
+      'tauri:options': { application: binary },
+      browserName: 'wry',
+    });
+    assert.throws(
+      () =>
+        validateDesktopAppBinary(
+          binary,
+          '89abcdef0123456789abcdef0123456789abcdef',
+        ),
+      /does not match source commit/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('every desktop runner validates the reviewed binary before launch or seed', async () => {
+  const [desktopConfig, macosRunner] = await Promise.all([
+    readFile(join(import.meta.dirname, 'config', 'wdio.desktop.conf.ts'), 'utf8'),
+    readFile(join(import.meta.dirname, 'runners', 'macos.ts'), 'utf8'),
+  ]);
+  assert.match(desktopConfig, /capabilities:\s*\[desktopCapabilitiesFor\(\)\]/);
+  const validation = macosRunner.indexOf('validateDesktopAppBinary(opts.binary)');
+  const seed = macosRunner.indexOf('withNativeRunArtifacts(');
+  assert.ok(validation >= 0, 'macOS runner does not validate its binary');
+  assert.ok(seed > validation, 'macOS runner validates only after it can seed state');
+});
 
 function compiledAndroidManifest(packageName = E2E_BUNDLE_IDENTIFIER): Buffer {
   const strings = ['manifest', 'package', packageName];

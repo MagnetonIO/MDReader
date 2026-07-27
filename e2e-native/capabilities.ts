@@ -144,6 +144,30 @@ export function desktopAppBinary(): string {
   return process.platform === 'win32' ? `${base}.exe` : base;
 }
 
+/** Validate the exact desktop executable before a runner may seed or launch it. */
+export function validateDesktopAppBinary(
+  artifact: string,
+  sourceCommit = expectedSourceCommit(),
+): string {
+  if (!isAbsolute(artifact)) {
+    throw new Error(`desktop E2E application must be an absolute path: ${artifact}`);
+  }
+  let metadata;
+  try {
+    metadata = lstatSync(artifact);
+  } catch {
+    throw new Error(`desktop E2E application does not exist: ${artifact}`);
+  }
+  if (!metadata.isFile() || metadata.size === 0) {
+    throw new Error(`desktop E2E application is empty or invalid: ${artifact}`);
+  }
+  if (process.platform !== 'win32' && (metadata.mode & 0o111) === 0) {
+    throw new Error(`desktop E2E application is not executable: ${artifact}`);
+  }
+  validateEmbeddedBuildManifest(readFileSync(artifact), sourceCommit);
+  return artifact;
+}
+
 /**
  * macOS — appium-mac2-driver (XCUITest). Attaches to the running app by bundle id
  * (the harness pre-launches it with the hash-embed env + seeded workspace). Used
@@ -164,11 +188,18 @@ export const macosCapabilities: WebdriverIO.Capabilities = {
  * covers them). `tauri:options.application` is the binary to launch.
  * CI-validated-pending (cannot run on the macOS dev box).
  */
-export const desktopCapabilities: WebdriverIO.Capabilities = {
-  'tauri:options': { application: desktopAppBinary() },
-  // A W3C-valid but webview-agnostic browserName; tauri-driver ignores it.
-  browserName: 'wry',
-} as WebdriverIO.Capabilities;
+export function desktopCapabilitiesFor(
+  artifact = desktopAppBinary(),
+  sourceCommit = expectedSourceCommit(),
+): WebdriverIO.Capabilities {
+  return {
+    'tauri:options': {
+      application: validateDesktopAppBinary(artifact, sourceCommit),
+    },
+    // A W3C-valid but webview-agnostic browserName; tauri-driver ignores it.
+    browserName: 'wry',
+  } as WebdriverIO.Capabilities;
+}
 
 /**
  * Windows NATIVE shell — appium-windows-driver (WinAppDriver). FOLLOW-UP stub: this

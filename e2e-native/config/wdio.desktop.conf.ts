@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FLOW_CONFIG } from '../flows.ts';
-import { desktopCapabilities } from '../capabilities.ts';
+import { desktopCapabilitiesFor } from '../capabilities.ts';
 import { clearSeed, createE2EProfile, seedWorkspace } from '../seed.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +39,7 @@ export const config: WebdriverIO.Config = {
   path: '/',
   specs: [join(E2E_ROOT, 'specs', 'desktop.e2e.ts')],
   maxInstances: 1,
-  capabilities: [desktopCapabilities],
+  capabilities: [desktopCapabilitiesFor()],
   logLevel: 'info',
   bail: 0,
   waitforTimeout: 15_000,

@@ -1,7 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     println!("cargo:rerun-if-changed=tauri.conf.json");
-    if std::env::var_os("CARGO_FEATURE_E2E_BUILD").is_some() {
+    let e2e_build = std::env::var_os("CARGO_FEATURE_E2E_BUILD").is_some();
+    if e2e_build {
         let base: serde_json::Value = serde_json::from_str(include_str!("tauri.conf.json"))
             .expect("tauri.conf.json must contain valid JSON");
         let overlay = std::env::var("TAURI_CONFIG").ok().map(|value| {
@@ -33,33 +34,27 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MDREADER_RELEASE_SOURCE_COMMIT");
     println!("cargo:rustc-env=MDREADER_RELEASE_SOURCE_COMMIT={release_source_commit}");
 
-    let source_commit = if release_source_commit != unset_release_commit {
+    let source_commit = if e2e_build {
+        let source_commit = std::env::var("MDREADER_SOURCE_COMMIT")
+            .expect("e2e-build requires MDREADER_SOURCE_COMMIT");
+        assert!(
+            source_commit.len() == 40
+                && source_commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "MDREADER_SOURCE_COMMIT must be a lowercase 40-character Git SHA"
+        );
+        if release_source_commit != unset_release_commit {
+            assert_eq!(
+                source_commit, release_source_commit,
+                "release and E2E source commits must identify the same checkout"
+            );
+        }
+        source_commit
+    } else if release_source_commit != unset_release_commit {
         release_source_commit
     } else {
-        std::env::var("MDREADER_SOURCE_COMMIT")
-            .ok()
-            .filter(|value| {
-                value.len() == 40
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
-            .or_else(|| {
-                std::process::Command::new("git")
-                    .args(["rev-parse", "HEAD"])
-                    .output()
-                    .ok()
-                    .filter(|output| output.status.success())
-                    .and_then(|output| String::from_utf8(output.stdout).ok())
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| {
-                        value.len() == 40
-                            && value
-                                .bytes()
-                                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                    })
-            })
-            .unwrap_or_else(|| "unbound-source-commit".to_string())
+        "unbound-source-commit".to_owned()
     };
     println!("cargo:rustc-env=MDREADER_SOURCE_COMMIT={source_commit}");
     println!("cargo:rerun-if-env-changed=MDREADER_SOURCE_COMMIT");

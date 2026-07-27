@@ -6,10 +6,10 @@
   "description": "Milestone PT — the UNIFIED Appium + WebdriverIO GUI functional-test harness for MDReader across desktop (macOS/Windows/Linux) and mobile (iOS/Android). One runner + shared behavioural spec (flows.ts) + per-driver adapters. Deliberately OUTSIDE the pnpm workspace: its Appium/WebdriverIO toolchain installs on demand (locally + in CI) and never bloats the root lockfile. The macOS leg (appium-mac2-driver) additionally shells out to a compiled Swift AX helper to read WKWebView's accessibility tree, which no WebDriver surface exposes.",
   "scripts": {
     "appium:driver:macos": "appium driver install mac2",
-    "build:e2e": "pnpm --filter '@mdreader/app...' run build && pnpm --filter @mdreader/app tauri build --bundles app --features e2e-build --config src-tauri/tauri.e2e.conf.json",
+    "build:e2e": "node build-e2e.mjs",
     "smoke:macos": "node --experimental-strip-types --no-warnings runners/macos.ts",
-    "test:build-identity": "tsx --test build-identity.test.ts",
-    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts mobile-fixture.test.ts",
+    "test:build-identity": "tsx --test build-identity.test.ts build-e2e.test.ts",
+    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts mobile-fixture.test.ts build-e2e.test.ts",
     "test:desktop": "wdio run ./config/wdio.desktop.conf.ts",
     "test:ios": "wdio run ./config/wdio.ios.conf.ts",
     "test:android": "wdio run ./config/wdio.android.conf.ts",

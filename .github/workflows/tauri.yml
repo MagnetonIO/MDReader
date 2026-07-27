@@ -17,6 +17,9 @@ concurrency:
   group: tauri-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  MDREADER_SOURCE_COMMIT: ${{ github.sha }}
+
 jobs:
   check:
     name: cargo check (${{ matrix.os }})

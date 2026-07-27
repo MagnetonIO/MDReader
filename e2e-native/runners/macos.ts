@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
 import { E2E_PROCESS_NAME, E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
+import { validateDesktopAppBinary } from '../capabilities.ts';
 import {
   appConfigDir,
   clearSeed,
@@ -167,6 +168,7 @@ async function main(): Promise<number> {
   }
   try {
     assertE2EBundle(opts.app, opts.profile);
+    validateDesktopAppBinary(opts.binary);
   } catch (err) {
     console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
