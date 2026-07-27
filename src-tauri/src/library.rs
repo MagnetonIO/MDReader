@@ -941,7 +941,9 @@ fn recover_v2_engine_source_id(
     let db_path = workspace.join("catdb.db");
     let db_metadata = match fs::symlink_metadata(&db_path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(LibraryError::CorruptRegistry)
+        }
         Err(_) => return Err(LibraryError::CorruptRegistry),
     };
     if db_metadata.file_type().is_symlink() || !db_metadata.is_file() {
@@ -953,6 +955,7 @@ fn recover_v2_engine_source_id(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|_| LibraryError::CorruptRegistry)?;
+    validate_v2_catdb_index(&connection)?;
     let mut statement = connection
         .prepare("SELECT source_id, root_path FROM sources ORDER BY source_id LIMIT 2")
         .map_err(|_| LibraryError::CorruptRegistry)?;
@@ -966,8 +969,8 @@ fn recover_v2_engine_source_id(
     let [(stored_source_id, stored_root)] = rows.as_slice() else {
         return Err(LibraryError::CorruptRegistry);
     };
-    let expected_root = source_path.to_str().ok_or(LibraryError::CorruptRegistry)?;
-    if stored_root != expected_root {
+    let expected_root = source_path.display().to_string();
+    if *stored_root != expected_root {
         return Err(LibraryError::CorruptRegistry);
     }
     let source_id =
@@ -976,6 +979,77 @@ fn recover_v2_engine_source_id(
         return Err(LibraryError::CorruptRegistry);
     }
     Ok(Some(source_id))
+}
+
+fn validate_v2_catdb_index(connection: &rusqlite::Connection) -> Result<(), LibraryError> {
+    const CATDB_SCHEMA_VERSION: i64 = 7;
+    const REQUIRED_TABLES: &[&str] = &[
+        "schema_defs",
+        "mapping_defs",
+        "realizations",
+        "sources",
+        "index_versions",
+        "catalog_versions",
+        "jobs",
+        "documents",
+        "objects",
+        "morphisms",
+        "operation_log",
+        "sections",
+        "chunks",
+        "links",
+        "chunk_fts",
+        "operation_log_anchor",
+        "catalog_schema_contents",
+        "catalog_schema_versions",
+        "catalog_mapping_versions",
+        "catalog_source_versions",
+        "catalog_policy_versions",
+        "catalog_revisions",
+        "catalog_revision_schema_versions",
+        "catalog_revision_mapping_versions",
+        "catalog_revision_source_versions",
+        "catalog_revision_policy_versions",
+        "catalog_head",
+    ];
+
+    let version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    if version != CATDB_SCHEMA_VERSION {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    for table in REQUIRED_TABLES {
+        let present = connection
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
+                 )",
+                [table],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| LibraryError::CorruptRegistry)?;
+        if !present {
+            return Err(LibraryError::CorruptRegistry);
+        }
+    }
+    let quick_check = connection
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    if quick_check != "ok" {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    let mut foreign_key_check = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|_| LibraryError::CorruptRegistry)?;
+    if foreign_key_check
+        .query([])
+        .and_then(|mut rows| rows.next().map(|row| row.is_some()))
+        .map_err(|_| LibraryError::CorruptRegistry)?
+    {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    Ok(())
 }
 
 fn managed_directory_present(path: &Path) -> Result<bool, LibraryError> {
@@ -1753,6 +1827,7 @@ mod tests {
         (old, new)
     }
 
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn create_authentic_v2_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
         let engine = catdb_engine::EmbeddedCatDb::open(
             catdb_engine::EngineConfig::new(
@@ -1874,10 +1949,7 @@ mod tests {
         );
     }
 
-    // APFS rejects arbitrary non-UTF-8 directory names at creation time, so
-    // this authentic filesystem/engine migration runs on Unix platforms that
-    // can actually manufacture the historical path.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     #[test]
     fn symlink_alias_of_a_member_never_creates_duplicate_membership() {
         use std::os::unix::fs::symlink;
@@ -2425,7 +2497,10 @@ mod tests {
         assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
     }
 
-    #[cfg(unix)]
+    // APFS rejects arbitrary non-UTF-8 directory names at creation time, so
+    // this authentic filesystem/engine migration runs on Unix platforms that
+    // can actually manufacture the historical path.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn version_two_non_utf8_root_recovers_the_engine_persisted_path_representation() {
         use std::os::unix::ffi::OsStringExt;
