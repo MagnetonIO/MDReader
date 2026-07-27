@@ -39,6 +39,10 @@ export const commands = {
 	 *  main thread; the dialog plugin pumps the picker on the event loop.
 	 */
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
+	listCloudSources: () => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("list_cloud_sources")),
+	connectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("connect_cloud_source", { provider })),
+	setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("set_cloud_source_enabled", { provider, enabled })),
+	disconnectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("disconnect_cloud_source", { provider })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -383,6 +387,25 @@ export type BoostsDto = {
 	recency: number | null,
 	/**  Graph proximity to a `linked-to:` document. */
 	graph: number | null,
+};
+
+export type CloudConnectionState = "disconnected" | "connected" | "reauthorize";
+
+export type CloudProvider = "google-drive" | "dropbox";
+
+export type CloudSourceDto = {
+	id: string,
+	provider: CloudProvider,
+	label: string,
+	connection: CloudConnectionState,
+	enabled: boolean,
+};
+
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "provider-rejected" };
+
+export type CloudSourcesSnapshot = {
+	version: number,
+	sources: CloudSourceDto[],
 };
 
 /**  Why a chain did not produce a validated composite. */

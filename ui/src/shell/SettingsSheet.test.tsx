@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  CloudProvider,
+  CloudSourcesSnapshot,
   DiagnosticInfo,
   DiagnosticLevel,
   LibrarySnapshot,
@@ -64,27 +66,16 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
   };
 }
 
-type CloudProvider = 'google-drive' | 'dropbox';
-type CloudConnectionState = 'disconnected' | 'connected' | 'reauthorize';
-
-interface CloudSource {
-  provider: CloudProvider;
-  label: string;
-  connection: CloudConnectionState;
-  enabled: boolean;
-}
-
-interface CloudSnapshot {
-  sources: CloudSource[];
-}
-
 function cloudBackend(
-  initial: CloudSnapshot,
+  initial: CloudSourcesSnapshot,
 ): SettingsBackend & {
-  listCloudSources: () => Promise<CloudSnapshot>;
-  connectCloudSource: (provider: CloudProvider) => Promise<CloudSnapshot>;
-  setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => Promise<CloudSnapshot>;
-  disconnectCloudSource: (provider: CloudProvider) => Promise<CloudSnapshot>;
+  listCloudSources: () => Promise<CloudSourcesSnapshot>;
+  connectCloudSource: (provider: CloudProvider) => Promise<CloudSourcesSnapshot>;
+  setCloudSourceEnabled: (
+    provider: CloudProvider,
+    enabled: boolean,
+  ) => Promise<CloudSourcesSnapshot>;
+  disconnectCloudSource: (provider: CloudProvider) => Promise<CloudSourcesSnapshot>;
 } {
   let snapshot = initial;
   return {
@@ -92,6 +83,7 @@ function cloudBackend(
     listCloudSources: async () => snapshot,
     connectCloudSource: async (provider) => {
       snapshot = {
+        ...snapshot,
         sources: snapshot.sources.map((source) =>
           source.provider === provider
             ? { ...source, connection: 'connected', enabled: true }
@@ -102,6 +94,7 @@ function cloudBackend(
     },
     setCloudSourceEnabled: async (provider, enabled) => {
       snapshot = {
+        ...snapshot,
         sources: snapshot.sources.map((source) =>
           source.provider === provider ? { ...source, enabled } : source,
         ),
@@ -110,6 +103,7 @@ function cloudBackend(
     },
     disconnectCloudSource: async (provider) => {
       snapshot = {
+        ...snapshot,
         sources: snapshot.sources.map((source) =>
           source.provider === provider
             ? { ...source, connection: 'disconnected', enabled: false }
@@ -167,14 +161,17 @@ describe('Settings sheet', () => {
 
   it('pauses a connected cloud source without disconnecting its account', async () => {
     const api = cloudBackend({
+      version: 1,
       sources: [
         {
+          id: 'b'.repeat(64),
           provider: 'google-drive',
           label: 'Google Drive',
           connection: 'connected',
           enabled: true,
         },
         {
+          id: '',
           provider: 'dropbox',
           label: 'Dropbox',
           connection: 'disconnected',
@@ -210,14 +207,17 @@ describe('Settings sheet', () => {
 
   it('connects Dropbox through the app account flow and includes it in the Library', async () => {
     const api = cloudBackend({
+      version: 1,
       sources: [
         {
+          id: '',
           provider: 'google-drive',
           label: 'Google Drive',
           connection: 'disconnected',
           enabled: false,
         },
         {
+          id: '',
           provider: 'dropbox',
           label: 'Dropbox',
           connection: 'disconnected',

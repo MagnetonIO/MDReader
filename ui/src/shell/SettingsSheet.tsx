@@ -87,6 +87,27 @@ function errorMessage(cause: unknown): string {
       return 'The source did not become active, so its restore preference was not changed.';
     case 'open-failed':
       return 'MDReader could not open that source.';
+    case 'client-configuration-missing':
+      return 'This MDReader build is missing the provider sign-in configuration.';
+    case 'credential-unavailable':
+      return 'The operating system credential store is unavailable.';
+    case 'credential-missing':
+      return 'Sign in again before enabling this source.';
+    case 'oauth-callback-unavailable':
+      return 'MDReader could not open its local sign-in callback. Close another sign-in attempt and try again.';
+    case 'oauth-state-mismatch':
+    case 'oauth-invalid-callback':
+      return 'The provider sign-in response could not be verified. Nothing was connected.';
+    case 'oauth-denied':
+      return 'The provider sign-in was cancelled or denied.';
+    case 'oauth-timeout':
+      return 'Provider sign-in timed out. Try again.';
+    case 'oauth-transport':
+    case 'provider-rejected':
+      return 'The provider could not complete sign-in. Try again.';
+    case 'invalid-configuration':
+    case 'rollback-failed':
+      return 'MDReader could not safely update the cloud source. Nothing was connected.';
     default:
       return 'The request could not be completed.';
   }

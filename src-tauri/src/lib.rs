@@ -9,6 +9,7 @@
 #[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
 compile_error!("the direct updater cannot be compiled into the isolated E2E application");
 
+mod cloud_accounts;
 mod commands;
 mod diagnostics;
 mod engine;
@@ -52,6 +53,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
+            cloud_accounts::list_cloud_sources,
+            cloud_accounts::connect_cloud_source,
+            cloud_accounts::set_cloud_source_enabled,
+            cloud_accounts::disconnect_cloud_source,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -160,6 +165,7 @@ pub fn run() {
         .manage(federation::FederationRuntime::default())
         .manage(WatcherState::default())
         .manage(LibraryState::default())
+        .manage(cloud_accounts::CloudAccountsState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             let diagnostics =
@@ -253,6 +259,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cloud_account_commands_are_registered_and_generated_for_the_renderer() {
+        let registry = include_str!("lib.rs");
+        let bindings = include_str!("../../ui/src/bindings.ts");
+        for (rust_command, invoke_name) in [
+            (
+                "cloud_accounts::list_cloud_sources,",
+                "\"list_cloud_sources\"",
+            ),
+            (
+                "cloud_accounts::connect_cloud_source,",
+                "\"connect_cloud_source\"",
+            ),
+            (
+                "cloud_accounts::set_cloud_source_enabled,",
+                "\"set_cloud_source_enabled\"",
+            ),
+            (
+                "cloud_accounts::disconnect_cloud_source,",
+                "\"disconnect_cloud_source\"",
+            ),
+        ] {
+            assert!(registry.contains(rust_command), "missing {rust_command}");
+            assert!(bindings.contains(invoke_name), "missing {invoke_name}");
+        }
+    }
+
     /// THE first-paint guarantee, enforced by construction.
     ///
     /// Tauri dispatches a command that is neither `async fn` nor marked
@@ -276,6 +309,7 @@ mod tests {
         let mut checked = 0;
         for (module, source) in [
             ("commands.rs", include_str!("commands.rs")),
+            ("cloud_accounts.rs", include_str!("cloud_accounts.rs")),
             ("diagnostics.rs", include_str!("diagnostics.rs")),
             ("engine.rs", include_str!("engine.rs")),
             ("library.rs", include_str!("library.rs")),

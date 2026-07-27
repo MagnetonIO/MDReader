@@ -8,6 +8,10 @@
 
 import {
   commands,
+  type CloudProvider,
+  type CloudSourceDto,
+  type CloudSourceError,
+  type CloudSourcesSnapshot,
   type DiagnosticError,
   type DiagnosticEvent,
   type DiagnosticExport,
@@ -21,6 +25,9 @@ import {
 } from '../bindings';
 
 export type {
+  CloudProvider,
+  CloudSourceDto,
+  CloudSourcesSnapshot,
   DiagnosticEvent,
   DiagnosticExport,
   DiagnosticInfo,
@@ -30,33 +37,15 @@ export type {
   PickedLibrarySource,
 };
 
-/** Cloud account families exposed as MDReader Library sources. */
-export type CloudProvider = 'google-drive' | 'dropbox';
-
-/** Renderer-facing connection state; provider credentials never cross IPC. */
-export type CloudConnectionState = 'disconnected' | 'connected' | 'reauthorize';
-
-/**
- * Settings view of a cloud source. This intentionally omits secret references,
- * access tokens, refresh tokens, and provider record identifiers.
- */
-export interface CloudSourceView {
-  provider: CloudProvider;
-  label: string;
-  connection: CloudConnectionState;
-  enabled: boolean;
-}
-
-/** Complete cloud-source state returned after every account operation. */
-export interface CloudSourcesView {
-  sources: CloudSourceView[];
-}
+/** Generated native contract aliases retained for Settings component callers. */
+export type CloudSourceView = CloudSourceDto;
+export type CloudSourcesView = CloudSourcesSnapshot;
 
 /** Preserve a backend's typed error for UI copy and tests without stringifying it. */
 export class SettingsCommandError<T> extends Error {
   readonly detail: T;
 
-  constructor(area: 'library' | 'diagnostics', detail: T) {
+  constructor(area: 'library' | 'diagnostics' | 'cloud', detail: T) {
     super(`${area} command failed`);
     this.name = 'SettingsCommandError';
     this.detail = detail;
@@ -69,6 +58,10 @@ function libraryFailure(error: LibraryError): never {
 
 function diagnosticFailure(error: DiagnosticError): never {
   throw new SettingsCommandError('diagnostics', error);
+}
+
+function cloudFailure(error: CloudSourceError): never {
+  throw new SettingsCommandError('cloud', error);
 }
 
 export interface SettingsBackend {
@@ -177,6 +170,37 @@ export async function clearDiagnostics(confirmed: boolean): Promise<DiagnosticIn
   return result.data;
 }
 
+export async function listCloudSources(): Promise<CloudSourcesSnapshot> {
+  const result = await commands.listCloudSources();
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
+export async function connectCloudSource(
+  provider: CloudProvider,
+): Promise<CloudSourcesSnapshot> {
+  const result = await commands.connectCloudSource(provider);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
+export async function setCloudSourceEnabled(
+  provider: CloudProvider,
+  enabled: boolean,
+): Promise<CloudSourcesSnapshot> {
+  const result = await commands.setCloudSourceEnabled(provider, enabled);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
+export async function disconnectCloudSource(
+  provider: CloudProvider,
+): Promise<CloudSourcesSnapshot> {
+  const result = await commands.disconnectCloudSource(provider);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
 export const settingsBackend: SettingsBackend = {
   listSources: listLibrarySources,
   pickAndAddSource: pickAndAddLibrarySource,
@@ -189,6 +213,10 @@ export const settingsBackend: SettingsBackend = {
   revealDiagnostics,
   exportDiagnostics,
   clearDiagnostics,
+  listCloudSources,
+  connectCloudSource,
+  setCloudSourceEnabled,
+  disconnectCloudSource,
 };
 
 /**
