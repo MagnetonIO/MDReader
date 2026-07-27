@@ -41,6 +41,7 @@ const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
 const MAX_ANDROID_TOTAL_NATIVE_LIBRARY_BYTES = 1024 * 1024 * 1024;
 const MAX_ANDROID_NATIVE_LIBRARIES = 64;
 const MAX_ANDROID_NON_NATIVE_EXECUTABLE_BYTES = 516 * 1024 * 1024;
+const ANDROID_APP_LIBRARY = 'lib/x86_64/libmdreader_app_lib.so';
 
 interface E2eBuildManifest {
   schema: 1;
@@ -114,17 +115,24 @@ async function validateAndroidArchive(
       `compiled AndroidManifest.xml package must be ${E2E_BUNDLE_IDENTIFIER}`,
     );
   }
-  const manifests: E2eBuildManifest[] = [];
-  for (const library of scan.nativeLibraries) {
-    if (library.embeddedManifest !== null) {
-      manifests.push(
-        validateEmbeddedBuildManifest(library.embeddedManifest, expectedCommit),
-      );
-    }
-  }
-  if (manifests.length !== 1) {
+  const appLibrary = scan.nativeLibraries.find(
+    (library) => library.name === ANDROID_APP_LIBRARY,
+  );
+  if (appLibrary === undefined || appLibrary.embeddedManifest === null) {
     throw new Error(
-      `expected one native library with an E2E build manifest; found ${manifests.length}`,
+      `MDReader app library ${ANDROID_APP_LIBRARY} has no embedded E2E build manifest`,
+    );
+  }
+  validateEmbeddedBuildManifest(appLibrary.embeddedManifest, expectedCommit);
+  if (
+    scan.nativeLibraries.some(
+      (library) =>
+        library.name !== ANDROID_APP_LIBRARY &&
+        library.embeddedManifest !== null,
+    )
+  ) {
+    throw new Error(
+      `only the MDReader app library ${ANDROID_APP_LIBRARY} may contain the E2E build manifest`,
     );
   }
 }

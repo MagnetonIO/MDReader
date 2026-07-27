@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   createReadStream,
@@ -22,8 +23,47 @@ const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_DEX_BYTES = 256 * 1024 * 1024;
 const MAX_TOTAL_DEX_BYTES = 512 * 1024 * 1024;
 const MAX_DEX_FILES = 64;
+const MAX_DEX_MAP_ITEMS = 256;
+const DEX_MAP_TYPES = new Set([
+  0x0000,
+  0x0001,
+  0x0002,
+  0x0003,
+  0x0004,
+  0x0005,
+  0x0006,
+  0x0007,
+  0x0008,
+  0x1000,
+  0x1001,
+  0x1002,
+  0x1003,
+  0x2000,
+  0x2001,
+  0x2002,
+  0x2003,
+  0x2004,
+  0x2005,
+  0x2006,
+  0xf000,
+]);
 const MAX_EMBEDDED_BUILD_MANIFEST_BYTES = 16 * 1024;
+const MAX_OTHER_MEMBER_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_OTHER_BYTES = 256 * 1024 * 1024;
 const MAX_COMPRESSION_OVERHEAD_BYTES = 64 * 1024;
+const ELF64_HEADER_BYTES = 64;
+const ELF64_PROGRAM_HEADER_BYTES = 56;
+const MAX_ELF_PROGRAM_HEADERS = 128;
+const MAX_ELF_PREFIX_BYTES =
+  ELF64_HEADER_BYTES + ELF64_PROGRAM_HEADER_BYTES * MAX_ELF_PROGRAM_HEADERS;
+const ZIP_FLAG_ENCRYPTED = 0x0001;
+const ZIP_FLAG_COMPRESSION_OPTION_1 = 0x0002;
+const ZIP_FLAG_COMPRESSION_OPTION_2 = 0x0004;
+const ZIP_FLAG_DATA_DESCRIPTOR = 0x0008;
+const ZIP_FLAG_UTF8 = 0x0800;
+const ZIP_ALWAYS_SUPPORTED_FLAGS = ZIP_FLAG_DATA_DESCRIPTOR | ZIP_FLAG_UTF8;
+const ZIP_DEFLATE_ONLY_FLAGS =
+  ZIP_FLAG_COMPRESSION_OPTION_1 | ZIP_FLAG_COMPRESSION_OPTION_2;
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
 const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
@@ -77,6 +117,40 @@ function decodeMemberName(bytes) {
     return name;
   } catch {
     fail('APK ZIP member name is not valid UTF-8');
+  }
+}
+
+function validateMemberPath(name) {
+  if (
+    name.includes('\\') ||
+    name.startsWith('/') ||
+    /^[A-Za-z]:/.test(name)
+  ) {
+    fail(`APK ZIP member path is unsafe: ${name}`);
+  }
+  const parts = name.split('/');
+  const isDirectory = parts.at(-1) === '';
+  if (isDirectory) parts.pop();
+  if (
+    parts.length === 0 ||
+    parts.some((part) => part.length === 0 || part === '.' || part === '..')
+  ) {
+    fail(`APK ZIP member path is unsafe: ${name}`);
+  }
+  return isDirectory;
+}
+
+function validateMemberEncoding(name, flags, method) {
+  if ((flags & ZIP_FLAG_ENCRYPTED) !== 0) {
+    fail('encrypted APK members are unsupported');
+  }
+  if (method !== 0 && method !== 8) {
+    fail(`APK member ${name} uses an unsupported compression method`);
+  }
+  const allowedFlags =
+    ZIP_ALWAYS_SUPPORTED_FLAGS | (method === 8 ? ZIP_DEFLATE_ONLY_FLAGS : 0);
+  if ((flags & ~allowedFlags) !== 0) {
+    fail(`APK member ${name} uses unsupported ZIP flags`);
   }
 }
 
@@ -192,6 +266,8 @@ function inspectArchive(handle, limits) {
     }
     const nameBytes = readExactly(handle, nameLength, offset + 46);
     const name = decodeMemberName(nameBytes);
+    const isDirectory = validateMemberPath(name);
+    validateMemberEncoding(name, flags, method);
     if (names.has(name)) fail(`APK contains duplicate ZIP member ${name}`);
     names.add(name);
     const extra = readExactly(handle, extraLength, offset + 46 + nameLength);
@@ -206,6 +282,7 @@ function inspectArchive(handle, limits) {
       uncompressedSize,
       localOffset,
       dataOffset: 0,
+      isDirectory,
     });
     offset += recordLength;
   }
@@ -242,6 +319,14 @@ function inspectArchive(handle, limits) {
       fail('APK ZIP local and central member metadata disagree');
     }
     const usesDataDescriptor = (localFlags & 0x0008) !== 0;
+    if (
+      usesDataDescriptor &&
+      (localCrc32 !== 0 ||
+        localCompressedSize !== 0 ||
+        localUncompressedSize !== 0)
+    ) {
+      fail('APK ZIP data descriptor local CRC and sizes must be zero');
+    }
     if (
       !usesDataDescriptor &&
       (localCrc32 !== descriptor.crc32 ||
@@ -341,6 +426,8 @@ function inspectArchive(handle, limits) {
   const nativeLibraries = descriptors.filter((descriptor) =>
     /^lib\/x86_64\/[^/]+\.so$/.test(descriptor.name),
   );
+  const selected = new Set([...manifests, ...dexEntries, ...nativeLibraries]);
+  const otherEntries = descriptors.filter((descriptor) => !selected.has(descriptor));
   if (manifests.length !== 1) fail('compiled AndroidManifest.xml is missing');
   if (dexEntries.length === 0) fail('compiled DEX application code is missing');
   if (dexEntries.length > MAX_DEX_FILES) {
@@ -353,13 +440,30 @@ function inspectArchive(handle, limits) {
   if (manifests[0].uncompressedSize > MAX_MANIFEST_BYTES) {
     fail('compiled AndroidManifest.xml exceeds the artifact safety bound');
   }
+  if (
+    manifests[0].compressedSize >
+    MAX_MANIFEST_BYTES + MAX_COMPRESSION_OVERHEAD_BYTES
+  ) {
+    fail('compressed AndroidManifest.xml exceeds the artifact safety bound');
+  }
 
   let declaredNativeBytes = 0;
   let declaredDexBytes = 0;
-  let compressedWorkBytes = manifests[0].compressedSize;
+  let declaredOtherBytes = 0;
+  let compressedWorkBytes = 0;
+  for (const descriptor of descriptors) {
+    compressedWorkBytes = checkedAdd(
+      compressedWorkBytes,
+      descriptor.compressedSize,
+      'Android compressed archive work exceeds the artifact safety bound',
+    );
+  }
   for (const dex of dexEntries) {
     if (dex.uncompressedSize > MAX_DEX_BYTES) {
       fail('Android DEX file exceeds the artifact safety bound');
+    }
+    if (dex.compressedSize > MAX_DEX_BYTES + MAX_COMPRESSION_OVERHEAD_BYTES) {
+      fail('compressed Android DEX file exceeds the artifact safety bound');
     }
     declaredDexBytes = checkedAdd(
       declaredDexBytes,
@@ -369,11 +473,6 @@ function inspectArchive(handle, limits) {
     if (declaredDexBytes > MAX_TOTAL_DEX_BYTES) {
       fail('Android aggregate DEX bytes exceed the artifact safety bound');
     }
-    compressedWorkBytes = checkedAdd(
-      compressedWorkBytes,
-      dex.compressedSize,
-      'Android compressed archive work exceeds the artifact safety bound',
-    );
   }
   for (const library of nativeLibraries) {
     if (library.uncompressedSize > limits.maximumNative) {
@@ -395,11 +494,29 @@ function inspectArchive(handle, limits) {
     if (library.compressedSize > maximumCompressedLibrary) {
       fail('Android compressed native library exceeds the artifact safety bound');
     }
-    compressedWorkBytes = checkedAdd(
-      compressedWorkBytes,
-      library.compressedSize,
-      'Android compressed archive work exceeds the artifact safety bound',
+  }
+  for (const descriptor of otherEntries) {
+    if (descriptor.uncompressedSize > MAX_OTHER_MEMBER_BYTES) {
+      fail('Android non-executable member exceeds the artifact safety bound');
+    }
+    declaredOtherBytes = checkedAdd(
+      declaredOtherBytes,
+      descriptor.uncompressedSize,
+      'Android aggregate declared non-executable member bytes exceed the artifact safety bound',
     );
+    if (declaredOtherBytes > MAX_TOTAL_OTHER_BYTES) {
+      fail(
+        'Android aggregate declared non-executable member bytes exceed the artifact safety bound',
+      );
+    }
+    const maximumCompressedMember = checkedAdd(
+      MAX_OTHER_MEMBER_BYTES,
+      MAX_COMPRESSION_OVERHEAD_BYTES,
+      'Android compressed non-executable member safety bound is invalid',
+    );
+    if (descriptor.compressedSize > maximumCompressedMember) {
+      fail('Android compressed non-executable member exceeds the artifact safety bound');
+    }
   }
   const maximumCompressedWork = checkedAdd(
     checkedAdd(
@@ -408,8 +525,12 @@ function inspectArchive(handle, limits) {
       'Android compressed archive work safety bound is invalid',
     ),
     checkedAdd(
-      MAX_TOTAL_DEX_BYTES,
-      (nativeLibraries.length + dexEntries.length + 1) * MAX_COMPRESSION_OVERHEAD_BYTES,
+      checkedAdd(
+        MAX_TOTAL_DEX_BYTES,
+        MAX_TOTAL_OTHER_BYTES,
+        'Android compressed archive work safety bound is invalid',
+      ),
+      descriptors.length * MAX_COMPRESSION_OVERHEAD_BYTES,
       'Android compressed archive work safety bound is invalid',
     ),
     'Android compressed archive work safety bound is invalid',
@@ -417,7 +538,13 @@ function inspectArchive(handle, limits) {
   if (compressedWorkBytes > maximumCompressedWork) {
     fail('Android compressed archive work exceeds the artifact safety bound');
   }
-  return { size, manifest: manifests[0], dexEntries, nativeLibraries };
+  return {
+    size,
+    manifest: manifests[0],
+    dexEntries,
+    nativeLibraries,
+    otherEntries,
+  };
 }
 
 const CRC32_TABLE = Array.from({ length: 256 }, (_, value) => {
@@ -485,27 +612,36 @@ class EmbeddedBuildManifestScanner {
 }
 
 async function scanMember(apkPath, descriptor, kind, totals, limits) {
-  if ((descriptor.flags & 0x0001) !== 0) fail('encrypted APK members are unsupported');
-  if (descriptor.method !== 0 && descriptor.method !== 8) {
-    fail(`APK member ${descriptor.name} uses an unsupported compression method`);
-  }
+  validateMemberEncoding(descriptor.name, descriptor.flags, descriptor.method);
   const perMemberMaximum =
     kind === 'manifest'
       ? MAX_MANIFEST_BYTES
       : kind === 'dex'
         ? MAX_DEX_BYTES
-        : limits.maximumNative;
+        : kind === 'native'
+          ? limits.maximumNative
+          : MAX_OTHER_MEMBER_BYTES;
   let memberBytes = 0;
   let crc = 0xffffffff;
   const chunks = kind === 'manifest' ? [] : null;
   const embedded = kind === 'native' ? new EmbeddedBuildManifestScanner() : null;
+  const dex = kind === 'dex' ? new DexStreamValidator(descriptor.name) : null;
   let prefix = Buffer.alloc(0);
+  const prefixLimit = kind === 'native' ? MAX_ELF_PREFIX_BYTES : 0;
 
   const consume = (chunk) => {
+    const streamLabel =
+      kind === 'native'
+        ? 'Android native library'
+        : kind === 'dex'
+          ? 'Android DEX'
+          : kind === 'other'
+            ? 'Android non-executable member'
+            : 'compiled AndroidManifest.xml';
     memberBytes = checkedAdd(
       memberBytes,
       chunk.length,
-      `${kind === 'native' ? 'Android native library' : 'compiled AndroidManifest.xml'} stream exceeds the artifact safety bound`,
+      `${streamLabel} stream exceeds the artifact safety bound`,
     );
     totals.decompressed = checkedAdd(
       totals.decompressed,
@@ -516,7 +652,11 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
       fail(
         kind === 'native'
           ? 'Android native library stream exceeds the artifact safety bound'
-          : 'compiled AndroidManifest.xml exceeds the artifact safety bound',
+          : kind === 'dex'
+            ? 'Android DEX stream exceeds the artifact safety bound'
+            : kind === 'other'
+              ? 'Android non-executable member stream exceeds the artifact safety bound'
+              : 'compiled AndroidManifest.xml exceeds the artifact safety bound',
       );
     }
     if (totals.decompressed > totals.maximumDecompressed) {
@@ -540,16 +680,31 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
       if (totals.dex > MAX_TOTAL_DEX_BYTES) {
         fail('Android aggregate DEX stream exceeds the artifact safety bound');
       }
+    } else if (kind === 'other') {
+      totals.other = checkedAdd(
+        totals.other,
+        chunk.length,
+        'Android aggregate non-executable member stream exceeds the artifact safety bound',
+      );
+      if (totals.other > MAX_TOTAL_OTHER_BYTES) {
+        fail(
+          'Android aggregate non-executable member stream exceeds the artifact safety bound',
+        );
+      }
     }
     crc = updateCrc32(crc, chunk);
     if (chunks) chunks.push(Buffer.from(chunk));
-    if (prefix.byteLength < 112) {
+    if (prefix.byteLength < prefixLimit) {
       prefix = Buffer.concat([
         prefix,
-        chunk.subarray(0, Math.min(chunk.byteLength, 112 - prefix.byteLength)),
+        chunk.subarray(
+          0,
+          Math.min(chunk.byteLength, prefixLimit - prefix.byteLength),
+        ),
       ]);
     }
     embedded?.push(chunk);
+    dex?.push(chunk);
   };
 
   if (descriptor.compressedSize > 0) {
@@ -568,6 +723,15 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
   if (((crc ^ 0xffffffff) >>> 0) !== descriptor.crc32) {
     fail(`APK member ${descriptor.name} checksum is invalid`);
   }
+  if (
+    descriptor.isDirectory &&
+    (memberBytes !== 0 ||
+      descriptor.compressedSize !== 0 ||
+      descriptor.uncompressedSize !== 0)
+  ) {
+    fail(`APK ZIP directory member ${descriptor.name} is not empty`);
+  }
+  dex?.finish(memberBytes);
   return {
     bytes: chunks ? Buffer.concat(chunks, memberBytes) : null,
     embeddedManifest: embedded?.finish() ?? null,
@@ -736,29 +900,263 @@ function parseApplicationId(xml) {
   return applicationId;
 }
 
-function validateDexHeader(name, prefix, streamedBytes) {
-  if (
-    prefix.byteLength < 8 ||
-    !prefix.subarray(0, 4).equals(Buffer.from([0x64, 0x65, 0x78, 0x0a])) ||
-    prefix[7] !== 0
-  ) {
-    fail(`APK member ${name} has invalid DEX magic`);
+function updateAdler32(state, bytes) {
+  const modulus = 65_521;
+  let a = state.a;
+  let b = state.b;
+  for (const byte of bytes) {
+    a = (a + byte) % modulus;
+    b = (b + a) % modulus;
   }
-  const version = prefix.subarray(4, 7).toString('ascii');
-  if (!['035', '037', '038', '039', '040', '041'].includes(version)) {
-    fail(`APK member ${name} has unsupported DEX version ${version}`);
+  state.a = a;
+  state.b = b;
+}
+
+function copyStreamRange(target, targetOffset, rangeOffset, chunk, chunkOffset) {
+  const start = Math.max(rangeOffset, chunkOffset);
+  const end = Math.min(rangeOffset + target.byteLength, chunkOffset + chunk.byteLength);
+  if (start >= end) return;
+  chunk.copy(
+    target,
+    targetOffset + start - rangeOffset,
+    start - chunkOffset,
+    end - chunkOffset,
+  );
+}
+
+class DexStreamValidator {
+  constructor(name) {
+    this.name = name;
+    this.offset = 0;
+    this.header = Buffer.alloc(112);
+    this.headerReady = false;
+    this.mapOffset = null;
+    this.mapCapture = Buffer.alloc(4 + MAX_DEX_MAP_ITEMS * 12);
+    this.signature = createHash('sha1');
+    this.adler = { a: 1, b: 0 };
+    this.sections = [];
   }
-  if (
-    prefix.byteLength < 44 ||
-    prefix.readUInt32LE(32) !== streamedBytes ||
-    prefix.readUInt32LE(36) !== 112 ||
-    prefix.readUInt32LE(40) !== 0x12345678
-  ) {
-    fail(`APK member ${name} has an invalid DEX header`);
+
+  push(chunk) {
+    const chunkOffset = this.offset;
+    const chunkEnd = checkedAdd(
+      chunkOffset,
+      chunk.byteLength,
+      `APK member ${this.name} DEX stream exceeds the artifact safety bound`,
+    );
+    if (chunkEnd > 32) {
+      this.signature.update(chunk.subarray(Math.max(0, 32 - chunkOffset)));
+    }
+    if (chunkEnd > 12) {
+      updateAdler32(this.adler, chunk.subarray(Math.max(0, 12 - chunkOffset)));
+    }
+    copyStreamRange(this.header, 0, 0, chunk, chunkOffset);
+    this.offset = chunkEnd;
+    if (!this.headerReady && this.offset >= this.header.byteLength) {
+      this.initializeHeader();
+    }
+    if (this.mapOffset !== null) {
+      copyStreamRange(this.mapCapture, 0, this.mapOffset, chunk, chunkOffset);
+    }
+  }
+
+  initializeHeader() {
+    if (
+      !this.header.subarray(0, 4).equals(Buffer.from([0x64, 0x65, 0x78, 0x0a])) ||
+      this.header[7] !== 0
+    ) {
+      fail(`APK member ${this.name} has invalid DEX magic`);
+    }
+    const version = this.header.subarray(4, 7).toString('ascii');
+    if (!['035', '037', '038', '039', '040'].includes(version)) {
+      fail(`APK member ${this.name} has unsupported DEX version ${version}`);
+    }
+    if (
+      this.header.readUInt32LE(36) !== this.header.byteLength ||
+      this.header.readUInt32LE(40) !== 0x12345678
+    ) {
+      fail(`APK member ${this.name} has an invalid DEX header`);
+    }
+    const fileSize = this.header.readUInt32LE(32);
+    const dataSize = this.header.readUInt32LE(104);
+    const dataOffset = this.header.readUInt32LE(108);
+    const dataEnd = checkedAdd(
+      dataOffset,
+      dataSize,
+      `APK member ${this.name} has an invalid DEX data section`,
+    );
+    if (
+      fileSize < this.header.byteLength ||
+      dataOffset < this.header.byteLength ||
+      dataOffset % 4 !== 0 ||
+      dataEnd !== fileSize
+    ) {
+      fail(`APK member ${this.name} has an invalid DEX data section`);
+    }
+    const linkSize = this.header.readUInt32LE(44);
+    const linkOffset = this.header.readUInt32LE(48);
+    if (
+      (linkSize === 0) !== (linkOffset === 0) ||
+      (linkSize > 0 &&
+        (linkOffset < dataOffset ||
+          checkedAdd(
+            linkOffset,
+            linkSize,
+            `APK member ${this.name} has an invalid DEX link section`,
+          ) > fileSize))
+    ) {
+      fail(`APK member ${this.name} has an invalid DEX link section`);
+    }
+    const fixedSections = [
+      { type: 0x0001, label: 'string identifiers', sizeAt: 56, offsetAt: 60, width: 4 },
+      { type: 0x0002, label: 'type identifiers', sizeAt: 64, offsetAt: 68, width: 4 },
+      { type: 0x0003, label: 'prototype identifiers', sizeAt: 72, offsetAt: 76, width: 12 },
+      { type: 0x0004, label: 'field identifiers', sizeAt: 80, offsetAt: 84, width: 8 },
+      { type: 0x0005, label: 'method identifiers', sizeAt: 88, offsetAt: 92, width: 8 },
+      { type: 0x0006, label: 'class definitions', sizeAt: 96, offsetAt: 100, width: 32 },
+    ];
+    let previousEnd = this.header.byteLength;
+    for (const section of fixedSections) {
+      const size = this.header.readUInt32LE(section.sizeAt);
+      const offset = this.header.readUInt32LE(section.offsetAt);
+      if ((size === 0) !== (offset === 0)) {
+        fail(`APK member ${this.name} has an invalid DEX section: ${section.label}`);
+      }
+      if (size === 0) {
+        this.sections.push({ type: section.type, size, offset });
+        continue;
+      }
+      const byteLength = size * section.width;
+      if (!Number.isSafeInteger(byteLength)) {
+        fail(`APK member ${this.name} has an invalid DEX section: ${section.label}`);
+      }
+      const end = checkedAdd(
+        offset,
+        byteLength,
+        `APK member ${this.name} has an invalid DEX section: ${section.label}`,
+      );
+      if (
+        offset % 4 !== 0 ||
+        offset < previousEnd ||
+        end > dataOffset
+      ) {
+        fail(`APK member ${this.name} has an invalid DEX section: ${section.label}`);
+      }
+      previousEnd = end;
+      this.sections.push({ type: section.type, size, offset });
+    }
+    this.mapOffset = this.header.readUInt32LE(52);
+    if (
+      this.mapOffset < dataOffset ||
+      this.mapOffset % 4 !== 0 ||
+      this.mapOffset + 4 > fileSize
+    ) {
+      fail(`APK member ${this.name} has an invalid DEX map`);
+    }
+    this.headerReady = true;
+  }
+
+  finish(streamedBytes) {
+    if (!this.headerReady) {
+      fail(`APK member ${this.name} has an invalid DEX header`);
+    }
+    if (this.header.readUInt32LE(32) !== streamedBytes) {
+      fail(`APK member ${this.name} has an invalid DEX header`);
+    }
+    if (!this.signature.digest().equals(this.header.subarray(12, 32))) {
+      fail(`APK member ${this.name} has an invalid DEX signature (SHA-1)`);
+    }
+    const checksum = (((this.adler.b << 16) | this.adler.a) >>> 0);
+    if (checksum !== this.header.readUInt32LE(8)) {
+      fail(`APK member ${this.name} has an invalid DEX checksum (Adler32)`);
+    }
+    const availableMapBytes = streamedBytes - this.mapOffset;
+    if (availableMapBytes < 4) {
+      fail(`APK member ${this.name} has an invalid DEX map`);
+    }
+    const count = this.mapCapture.readUInt32LE(0);
+    if (count < 2 || count > MAX_DEX_MAP_ITEMS) {
+      fail(`APK member ${this.name} has an invalid DEX map`);
+    }
+    const mapBytes = checkedAdd(
+      4,
+      count * 12,
+      `APK member ${this.name} has an invalid DEX map`,
+    );
+    if (mapBytes > availableMapBytes) {
+      fail(`APK member ${this.name} has an invalid DEX map`);
+    }
+    const items = new Map();
+    let previousOffset = -1;
+    for (let index = 0; index < count; index += 1) {
+      const itemOffset = 4 + index * 12;
+      const type = this.mapCapture.readUInt16LE(itemOffset);
+      const unused = this.mapCapture.readUInt16LE(itemOffset + 2);
+      const size = this.mapCapture.readUInt32LE(itemOffset + 4);
+      const offset = this.mapCapture.readUInt32LE(itemOffset + 8);
+      if (
+        unused !== 0 ||
+        size === 0 ||
+        !DEX_MAP_TYPES.has(type) ||
+        items.has(type) ||
+        offset <= previousOffset ||
+        offset >= streamedBytes ||
+        (type > 0x0000 && type < 0x1000 && offset < this.header.byteLength) ||
+        (type >= 0x1000 && offset < this.header.readUInt32LE(108))
+      ) {
+        fail(`APK member ${this.name} has an invalid DEX map`);
+      }
+      items.set(type, { size, offset });
+      previousOffset = offset;
+    }
+    const headerItem = items.get(0x0000);
+    const mapItem = items.get(0x1000);
+    if (
+      headerItem?.size !== 1 ||
+      headerItem.offset !== 0 ||
+      mapItem?.size !== 1 ||
+      mapItem.offset !== this.mapOffset
+    ) {
+      fail(`APK member ${this.name} has an invalid DEX map`);
+    }
+    for (const section of this.sections) {
+      const item = items.get(section.type);
+      if (
+        section.size === 0
+          ? item !== undefined
+          : item?.size !== section.size || item.offset !== section.offset
+      ) {
+        fail(`APK member ${this.name} has a DEX map that disagrees with its header`);
+      }
+    }
+    for (const [type, width] of [
+      [0x0007, 4],
+      [0x0008, 8],
+    ]) {
+      const item = items.get(type);
+      if (
+        item !== undefined &&
+        checkedAdd(
+          item.offset,
+          item.size * width,
+          `APK member ${this.name} has an invalid DEX identifier section`,
+        ) > this.header.readUInt32LE(108)
+      ) {
+        fail(`APK member ${this.name} has an invalid DEX identifier section`);
+      }
+    }
   }
 }
 
-function validateX86_64ElfHeader(name, prefix) {
+function readElfU64(name, bytes, offset) {
+  const value = bytes.readBigUInt64LE(offset);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    fail(`APK member ${name} has an ELF program header outside bounds`);
+  }
+  return Number(value);
+}
+
+function validateX86_64Elf(name, prefix, streamedBytes) {
   if (
     prefix.byteLength < 64 ||
     !prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
@@ -769,13 +1167,93 @@ function validateX86_64ElfHeader(name, prefix) {
     prefix[4] !== 2 ||
     prefix[5] !== 1 ||
     prefix[6] !== 1 ||
+    prefix.readUInt16LE(16) !== 3 ||
     prefix.readUInt32LE(20) !== 1 ||
-    prefix.readUInt16LE(52) < 64
+    prefix.readUInt16LE(52) !== ELF64_HEADER_BYTES
   ) {
-    fail(`APK member ${name} is not a supported 64-bit little-endian ELF library`);
+    fail(
+      `APK member ${name} is not a supported 64-bit little-endian ELF shared object`,
+    );
   }
   if (prefix.readUInt16LE(18) !== 0x003e) {
     fail(`APK member ${name} has the wrong ELF machine for x86_64`);
+  }
+  const programOffset = readElfU64(name, prefix, 32);
+  const programEntrySize = prefix.readUInt16LE(54);
+  const programCount = prefix.readUInt16LE(56);
+  const programBytes = programEntrySize * programCount;
+  if (
+    programOffset !== ELF64_HEADER_BYTES ||
+    programEntrySize !== ELF64_PROGRAM_HEADER_BYTES ||
+    programCount === 0 ||
+    programCount > MAX_ELF_PROGRAM_HEADERS ||
+    !Number.isSafeInteger(programBytes) ||
+    checkedAdd(
+      programOffset,
+      programBytes,
+      `APK member ${name} has an ELF program header outside bounds`,
+    ) > streamedBytes ||
+    prefix.byteLength < programOffset + programBytes
+  ) {
+    fail(`APK member ${name} has an invalid ELF program header table`);
+  }
+  const sectionOffset = readElfU64(name, prefix, 40);
+  const sectionEntrySize = prefix.readUInt16LE(58);
+  const sectionCount = prefix.readUInt16LE(60);
+  if (
+    (sectionCount === 0) !== (sectionOffset === 0) ||
+    (sectionCount > 0 &&
+      (sectionEntrySize < 64 ||
+        checkedAdd(
+          sectionOffset,
+          sectionEntrySize * sectionCount,
+          `APK member ${name} has an ELF section header outside bounds`,
+        ) > streamedBytes))
+  ) {
+    fail(`APK member ${name} has an ELF section header outside bounds`);
+  }
+  const loadSegments = [];
+  const dynamicSegments = [];
+  for (let index = 0; index < programCount; index += 1) {
+    const offset = programOffset + index * programEntrySize;
+    const type = prefix.readUInt32LE(offset);
+    const fileOffset = readElfU64(name, prefix, offset + 8);
+    const virtualAddress = readElfU64(name, prefix, offset + 16);
+    const fileSize = readElfU64(name, prefix, offset + 32);
+    const memorySize = readElfU64(name, prefix, offset + 40);
+    const alignment = readElfU64(name, prefix, offset + 48);
+    const fileEnd = checkedAdd(
+      fileOffset,
+      fileSize,
+      `APK member ${name} has an ELF program header outside bounds`,
+    );
+    if (
+      fileEnd > streamedBytes ||
+      memorySize < fileSize ||
+      (alignment > 1 &&
+        (!Number.isInteger(Math.log2(alignment)) ||
+          fileOffset % alignment !== virtualAddress % alignment))
+    ) {
+      fail(`APK member ${name} has an ELF program header outside bounds`);
+    }
+    if (type === 1) loadSegments.push({ start: fileOffset, end: fileEnd });
+    if (type === 2) dynamicSegments.push({ start: fileOffset, end: fileEnd });
+  }
+  if (loadSegments.length === 0) {
+    fail(`APK member ${name} has no PT_LOAD program header`);
+  }
+  if (dynamicSegments.length !== 1) {
+    fail(`APK member ${name} must have exactly one PT_DYNAMIC program header`);
+  }
+  const dynamic = dynamicSegments[0];
+  if (
+    dynamic.end <= dynamic.start ||
+    (dynamic.end - dynamic.start) % 16 !== 0 ||
+    !loadSegments.some(
+      (load) => load.start <= dynamic.start && load.end >= dynamic.end,
+    )
+  ) {
+    fail(`APK member ${name} has a PT_DYNAMIC segment outside PT_LOAD bounds`);
   }
 }
 
@@ -800,13 +1278,18 @@ export async function scanAndroidArchive(apk, limits) {
       decompressed: 0,
       native: 0,
       dex: 0,
+      other: 0,
       maximumDecompressed: checkedAdd(
         checkedAdd(
           limits.maximumAggregateNative,
           MAX_MANIFEST_BYTES,
           'Android aggregate decompressed safety bound is invalid',
         ),
-        MAX_TOTAL_DEX_BYTES,
+        checkedAdd(
+          MAX_TOTAL_DEX_BYTES,
+          MAX_TOTAL_OTHER_BYTES,
+          'Android aggregate decompressed safety bound is invalid',
+        ),
         'Android aggregate decompressed safety bound is invalid',
       ),
     };
@@ -827,7 +1310,6 @@ export async function scanAndroidArchive(apk, limits) {
       if (!scanned.sizeMatches) {
         fail(`APK member ${descriptor.name} uncompressed size disagrees with its directory`);
       }
-      validateDexHeader(descriptor.name, scanned.prefix, scanned.streamedBytes);
       dexFiles.push({
         name: descriptor.name,
         declaredSize: descriptor.uncompressedSize,
@@ -844,7 +1326,11 @@ export async function scanAndroidArchive(apk, limits) {
         totals,
         limits,
       );
-      validateX86_64ElfHeader(descriptor.name, scanned.prefix);
+      validateX86_64Elf(
+        descriptor.name,
+        scanned.prefix,
+        scanned.streamedBytes,
+      );
       nativeLibraries.push({
         name: descriptor.name,
         declaredSize: descriptor.uncompressedSize,
@@ -857,6 +1343,20 @@ export async function scanAndroidArchive(apk, limits) {
     }
     if (sizeMismatch !== null) {
       fail(`APK member ${sizeMismatch} uncompressed size disagrees with its directory`);
+    }
+    for (const descriptor of archive.otherEntries) {
+      const scanned = await scanMember(
+        apk,
+        descriptor,
+        'other',
+        totals,
+        limits,
+      );
+      if (!scanned.sizeMatches) {
+        fail(
+          `APK member ${descriptor.name} uncompressed size disagrees with its directory`,
+        );
+      }
     }
     return {
       applicationId,

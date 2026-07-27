@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   appendFile,
   chmod,
@@ -97,17 +98,51 @@ function compiledAndroidManifest(packageName = E2E_BUNDLE_IDENTIFIER): Buffer {
   return Buffer.concat([xml, body]);
 }
 
+function adler32(bytes: Buffer): number {
+  const modulus = 65_521;
+  let a = 1;
+  let b = 0;
+  for (const byte of bytes) {
+    a = (a + byte) % modulus;
+    b = (b + a) % modulus;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+function sealDex(dex: Buffer): Buffer {
+  createHash('sha1').update(dex.subarray(32)).digest().copy(dex, 12);
+  dex.writeUInt32LE(adler32(dex.subarray(12)), 8);
+  return dex;
+}
+
 function dexFile(version = '035'): Buffer {
-  const dex = Buffer.alloc(112);
+  const dex = Buffer.alloc(140);
   dex.write(`dex\n${version}\0`, 0, 'ascii');
   dex.writeUInt32LE(dex.byteLength, 32);
   dex.writeUInt32LE(112, 36);
   dex.writeUInt32LE(0x12345678, 40);
-  return dex;
+  dex.writeUInt32LE(112, 52);
+  dex.writeUInt32LE(28, 104);
+  dex.writeUInt32LE(112, 108);
+  dex.writeUInt32LE(2, 112);
+  dex.writeUInt16LE(0x0000, 116);
+  dex.writeUInt32LE(1, 120);
+  dex.writeUInt32LE(0, 124);
+  dex.writeUInt16LE(0x1000, 128);
+  dex.writeUInt32LE(1, 132);
+  dex.writeUInt32LE(112, 136);
+  return sealDex(dex);
 }
 
 function elfLibrary(payload: Buffer, machine = 0x3e, validMagic = true): Buffer {
-  const header = Buffer.alloc(64);
+  const programHeaderOffset = 64;
+  const programHeaderSize = 56;
+  const programHeaderCount = 2;
+  const dynamicOffset =
+    programHeaderOffset + programHeaderSize * programHeaderCount;
+  const dynamic = Buffer.alloc(16);
+  const fileSize = dynamicOffset + dynamic.byteLength + payload.byteLength;
+  const header = Buffer.alloc(fileSize);
   header.set(validMagic ? [0x7f, 0x45, 0x4c, 0x46] : [0, 0, 0, 0], 0);
   header[4] = 2;
   header[5] = 1;
@@ -115,8 +150,33 @@ function elfLibrary(payload: Buffer, machine = 0x3e, validMagic = true): Buffer 
   header.writeUInt16LE(3, 16);
   header.writeUInt16LE(machine, 18);
   header.writeUInt32LE(1, 20);
-  header.writeUInt16LE(header.byteLength, 52);
-  return Buffer.concat([header, payload]);
+  header.writeBigUInt64LE(BigInt(programHeaderOffset), 32);
+  header.writeUInt16LE(64, 52);
+  header.writeUInt16LE(programHeaderSize, 54);
+  header.writeUInt16LE(programHeaderCount, 56);
+
+  header.writeUInt32LE(1, programHeaderOffset);
+  header.writeUInt32LE(4, programHeaderOffset + 4);
+  header.writeBigUInt64LE(0n, programHeaderOffset + 8);
+  header.writeBigUInt64LE(0n, programHeaderOffset + 16);
+  header.writeBigUInt64LE(0n, programHeaderOffset + 24);
+  header.writeBigUInt64LE(BigInt(fileSize), programHeaderOffset + 32);
+  header.writeBigUInt64LE(BigInt(fileSize), programHeaderOffset + 40);
+  header.writeBigUInt64LE(4_096n, programHeaderOffset + 48);
+
+  const dynamicProgramHeader = programHeaderOffset + programHeaderSize;
+  header.writeUInt32LE(2, dynamicProgramHeader);
+  header.writeUInt32LE(4, dynamicProgramHeader + 4);
+  header.writeBigUInt64LE(BigInt(dynamicOffset), dynamicProgramHeader + 8);
+  header.writeBigUInt64LE(BigInt(dynamicOffset), dynamicProgramHeader + 16);
+  header.writeBigUInt64LE(BigInt(dynamicOffset), dynamicProgramHeader + 24);
+  header.writeBigUInt64LE(BigInt(dynamic.byteLength), dynamicProgramHeader + 32);
+  header.writeBigUInt64LE(BigInt(dynamic.byteLength), dynamicProgramHeader + 40);
+  header.writeBigUInt64LE(8n, dynamicProgramHeader + 48);
+
+  dynamic.copy(header, dynamicOffset);
+  payload.copy(header, dynamicOffset + dynamic.byteLength);
+  return header;
 }
 
 const exec = promisify(execFile);
@@ -129,6 +189,7 @@ async function fakeAndroidArtifact(
   nativeMachine = 0x3e,
   dex = dexFile(),
   validElfMagic = true,
+  nativeLibraryFile?: Buffer,
 ): Promise<{
   apk: string;
   root: string;
@@ -147,7 +208,8 @@ async function fakeAndroidArtifact(
   await writeFile(join(payload, 'classes.dex'), dex);
   await writeFile(
     join(payload, 'lib', 'x86_64', 'libmdreader_app_lib.so'),
-    elfLibrary(nativeLibrary, nativeMachine, validElfMagic),
+    nativeLibraryFile ??
+      elfLibrary(nativeLibrary, nativeMachine, validElfMagic),
   );
   for (const [name, bytes] of extraNativeLibraries) {
     await writeFile(join(payload, 'lib', 'x86_64', name), elfLibrary(bytes));
@@ -373,6 +435,18 @@ async function setLocalU32(
   const bytes = await readFile(apk);
   const record = zipRecord(bytes, member);
   bytes.writeUInt32LE(value, record.localOffset + fieldOffset);
+  await writeFile(apk, bytes);
+}
+
+async function setLocalU16(
+  apk: string,
+  member: string,
+  fieldOffset: number,
+  value: number,
+): Promise<void> {
+  const bytes = await readFile(apk);
+  const record = zipRecord(bytes, member);
+  bytes.writeUInt16LE(value, record.localOffset + fieldOffset);
   await writeFile(apk, bytes);
 }
 
@@ -640,6 +714,94 @@ test('Android validation rejects an unsupported DEX version', async () => {
   }
 });
 
+test('Android validation rejects a DEX with a forged Adler-32 checksum', async () => {
+  const dex = dexFile();
+  dex.writeUInt32LE((dex.readUInt32LE(8) ^ 0xffffffff) >>> 0, 8);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX checksum/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX with a forged SHA-1 signature', async () => {
+  const dex = dexFile();
+  dex[12] ^= 0xff;
+  dex.writeUInt32LE(adler32(dex.subarray(12)), 8);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX signature/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX map outside the declared data section', async () => {
+  const dex = dexFile();
+  dex.writeUInt32LE(dex.byteLength - 2, 52);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX map/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX fixed-width section outside the file', async () => {
+  const dex = dexFile();
+  dex.writeUInt32LE(1, 56);
+  dex.writeUInt32LE(dex.byteLength - 2, 60);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX section/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation rejects a native library without ELF magic', async () => {
   const artifact = await fakeAndroidArtifact(
     Buffer.from(buildManifest()),
@@ -654,6 +816,113 @@ test('Android validation rejects a native library without ELF magic', async () =
     await assert.rejects(
       async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       /ELF magic/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an x86_64 ELF that is not a shared object', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeUInt16LE(2, 16);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ELF shared object/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an ELF shared object without PT_LOAD', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeUInt32LE(0, 64);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /PT_LOAD/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an ELF shared object without PT_DYNAMIC', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeUInt32LE(0, 120);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /PT_DYNAMIC/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an ELF program segment outside the library', async () => {
+  const library = elfLibrary(Buffer.from(buildManifest()));
+  library.writeBigUInt64LE(BigInt(library.byteLength + 1), 64 + 32);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.alloc(0),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dexFile(),
+    true,
+    library,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ELF program header.*bounds/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation binds the build manifest to the MDReader app library', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from('no build manifest'),
+    [['libdependency.so', Buffer.from(buildManifest())]],
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /MDReader app library.*build manifest/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });
@@ -705,12 +974,160 @@ test('Android validation rejects clear-bit local sizes that disagree with centra
   }
 });
 
+test('Android validation requires zero local CRC and sizes when a data descriptor is used', async () => {
+  const artifact = await descriptorAndroidArtifact();
+  try {
+    await setLocalU32(artifact.apk, 'AndroidManifest.xml', 14, 1);
+    await setLocalU32(artifact.apk, 'AndroidManifest.xml', 18, 2);
+    await setLocalU32(artifact.apk, 'AndroidManifest.xml', 22, 3);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /data descriptor.*local.*zero/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
 test('Android validation accepts a bounded signed data descriptor', async () => {
   const artifact = await descriptorAndroidArtifact();
   try {
     assert.equal(
       await validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       artifact.apk,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an unsafe path on an unselected ZIP member', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [['aa/evil', Buffer.from('opaque')]],
+  );
+  try {
+    await renameZipMember(artifact.apk, 'aa/evil', '../evil');
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ZIP member path/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects encryption on an unselected ZIP member', async () => {
+  const member = 'assets/opaque.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.from('opaque')]],
+  );
+  try {
+    await setCentralU16(artifact.apk, member, 8, 0x0001);
+    await setLocalU16(artifact.apk, member, 6, 0x0001);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /encrypted APK members/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects an unsupported method on an unselected ZIP member', async () => {
+  const member = 'assets/opaque.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.from('opaque')]],
+  );
+  try {
+    await setCentralU16(artifact.apk, member, 10, 99);
+    await setLocalU16(artifact.apk, member, 8, 99);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /unsupported compression method/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation checks the CRC of an unselected ZIP member', async () => {
+  const member = 'assets/opaque.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.from('opaque')]],
+  );
+  try {
+    await setCentralU32(artifact.apk, member, 16, 0);
+    await setLocalU32(artifact.apk, member, 14, 0);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /checksum is invalid/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation bounds the declared size of an unselected ZIP member', async () => {
+  const member = 'assets/opaque.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.from('opaque')]],
+  );
+  try {
+    await setDeclaredSize(artifact.apk, member, 512 * 1024 * 1024);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /non-executable member exceeds the artifact safety bound/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation bounds aggregate declared unselected ZIP bytes', async () => {
+  const members = Array.from(
+    { length: 5 },
+    (_, index) => `assets/opaque-${index}.bin`,
+  );
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    members.map((member) => [member, Buffer.from('opaque')]),
+  );
+  try {
+    for (const member of members) {
+      await setDeclaredSize(artifact.apk, member, 60 * 1024 * 1024);
+    }
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /aggregate declared non-executable member bytes exceed the artifact safety bound/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation checks the actual size of an unselected ZIP member', async () => {
+  const member = 'assets/opaque.bin';
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [[member, Buffer.from('opaque')]],
+  );
+  try {
+    await setDeclaredSize(artifact.apk, member, 1);
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /uncompressed size disagrees with its directory/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });
