@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type {
@@ -104,11 +104,30 @@ it('reads a provider-owned document in the main Library with semantic evidence',
   expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toContain(
     'drive-file-1',
   );
+  const inspector = within(
+    screen.getByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+  );
+  expect(inspector.getByText('Complete')).toBeTruthy();
+  expect(inspector.getByText('Cloud note.md')).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+  expect(screen.getByText(source.id)).toBeTruthy();
+  expect(screen.getByText('virtual · live')).toBeTruthy();
+  expect(screen.getByText('1 scanned · 1 returned')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Provenance' }));
   expect(await screen.findByText(`${source.id}.body`)).toBeTruthy();
+  expect(
+    screen.getAllByText(
+      'Provider google-drive · record drive-file-1 · mapping mapping-v1 · observed at 2027-01-15T08:00:00.000Z',
+    ),
+  ).toHaveLength(3);
+
   fireEvent.click(screen.getByRole('tab', { name: 'Schema' }));
   expect(screen.getByText('library · vschema-v7')).toBeTruthy();
+  expect(screen.getByText(/read-only external source evidence/i)).toBeTruthy();
+  expect(screen.getByText(/not the provider-owned document/i)).toBeTruthy();
+  expect(screen.queryByText(/filesystem, Git, and frontmatter evidence/i)).toBeNull();
   expect(query).toHaveBeenCalledWith(
     'google-drive',
     [{ field: 'path', operator: 'eq', value: 'drive-file-1' }],

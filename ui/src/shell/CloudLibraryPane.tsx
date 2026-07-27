@@ -77,10 +77,14 @@ function normalizeCloudDocument(
       attribute: field.field,
       verdict: provider.observation,
       value: provider.observation === 'observed' ? value : null,
-      reason:
+      reason: [
+        `Provider ${provider.provider}`,
+        `record ${provider.record_key}`,
+        `mapping ${provider.mapping_version}`,
         provider.observed_at_ms === null
-          ? null
-          : `Observed at ${new Date(provider.observed_at_ms).toISOString()}`,
+          ? 'observed time unavailable'
+          : `observed at ${new Date(provider.observed_at_ms).toISOString()}`,
+      ].join(' · '),
       declaredFallback: [] as string[],
     }));
     const winner = field.providers.find((provider) => provider.observation === 'observed');
@@ -221,11 +225,14 @@ export function CloudLibraryPane({
         DOCUMENT_FIELDS,
         requestId(invocation, request),
       );
-      const selected = answer.rows.find((candidate) => candidate.record_key === row.record_key);
+      const selected = answer.rows.find(
+        (candidate) =>
+          candidate.source_id === source.id && candidate.record_key === row.record_key,
+      );
       if (!selected) throw new Error('The provider did not return the selected document.');
       return normalizeCloudDocument(answer, selected);
     },
-    [requestId, row.record_key, source.provider],
+    [requestId, row.record_key, source.id, source.provider],
   );
   const cancelInspector = useCallback(
     async (invocation: string, request: string) => {

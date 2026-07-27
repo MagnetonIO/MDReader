@@ -252,15 +252,26 @@ function ProvenanceTab({ answer }: { answer: FederatedDocument }) {
 
 function SchemaTab({ answer }: { answer: FederatedDocument }) {
   const version = `${answer.schema.name} · v${answer.schema.version}`;
+  const localSources = new Set(['filesystem', 'git', 'frontmatter']);
+  const isLocalMarkdown =
+    answer.sources.length > 0 && answer.sources.every((source) => localSources.has(source.source));
   return (
     <div className="document-schema">
       <h3>{version}</h3>
       <p className="lens-mono">{answer.schema.checksum}</p>
-      <p>
-        This semantic view assembles one Document from filesystem, Git, and frontmatter evidence.
-        Changing the semantic view changes the semantic interpretation, not the Markdown file or
-        its format.
-      </p>
+      {isLocalMarkdown ? (
+        <p>
+          This semantic view assembles one Document from filesystem, Git, and frontmatter evidence.
+          Changing the semantic view changes the semantic interpretation, not the Markdown file or
+          its format.
+        </p>
+      ) : (
+        <p>
+          This semantic view assembles one Document from read-only external source evidence.
+          Changing the semantic view changes the semantic interpretation, not the provider-owned
+          document or its format.
+        </p>
+      )}
       <dl>
         <div>
           <dt>Entity</dt>
