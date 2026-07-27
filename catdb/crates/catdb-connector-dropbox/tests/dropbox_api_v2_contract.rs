@@ -1,0 +1,693 @@
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use async_trait::async_trait;
+use catdb_connector_dropbox::{
+    DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAvailability,
+    DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError, DropboxCursorKey,
+    DropboxEndpoint, DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse,
+    DropboxKnownRevision, DropboxOAuthPkce, DropboxRefreshCredential, DropboxRuntimeSecrets,
+    DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxSourceConfig,
+    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec,
+    DROPBOX_CONTENT_READ_SCOPE, DROPBOX_METADATA_READ_SCOPE,
+};
+use catdb_connectors::{
+    read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
+};
+use catdb_query::{EntityQuery, EntityTarget};
+
+#[derive(Clone)]
+struct ScriptedTransport {
+    state: Arc<Mutex<ScriptState>>,
+}
+
+struct ScriptState {
+    steps: VecDeque<ScriptStep>,
+    requests: Vec<DropboxHttpRequest>,
+}
+
+enum ScriptStep {
+    Response(DropboxHttpResponse),
+    Pending,
+}
+
+impl ScriptedTransport {
+    fn new(steps: impl IntoIterator<Item = ScriptStep>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ScriptState {
+                steps: steps.into_iter().collect(),
+                requests: Vec::new(),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<DropboxHttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+#[async_trait]
+impl DropboxTransport for ScriptedTransport {
+    async fn send(
+        &self,
+        request: DropboxHttpRequest,
+    ) -> Result<DropboxHttpResponse, DropboxTransportError> {
+        let step = {
+            let mut state = self.state.lock().unwrap();
+            state.requests.push(request);
+            state.steps.pop_front().expect("fixture script exhausted")
+        };
+        match step {
+            ScriptStep::Response(response) => Ok(response),
+            ScriptStep::Pending => std::future::pending().await,
+        }
+    }
+}
+
+fn response(status: u16, body: impl Into<Vec<u8>>) -> ScriptStep {
+    ScriptStep::Response(
+        DropboxHttpResponse::new(status, BTreeMap::new(), body.into())
+            .expect("bounded fixture response"),
+    )
+}
+
+fn response_with_headers(
+    status: u16,
+    headers: impl IntoIterator<Item = (&'static str, String)>,
+    body: impl Into<Vec<u8>>,
+) -> ScriptStep {
+    ScriptStep::Response(
+        DropboxHttpResponse::new(
+            status,
+            headers
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect(),
+            body.into(),
+        )
+        .expect("bounded fixture response"),
+    )
+}
+
+fn config() -> DropboxSourceConfig {
+    DropboxSourceConfig::new(
+        "dropbox-library",
+        "dropbox",
+        "Document",
+        "/knowledge",
+        DropboxAuthorizationMode::FullDropbox,
+        DropboxSecretReference::new("keychain/mdreader/dropbox").unwrap(),
+    )
+    .unwrap()
+}
+
+fn source(
+    transport: ScriptedTransport,
+) -> (DropboxSource, ScriptedTransport) {
+    let source = DropboxSource::open_with_transport(
+        PinnedDropboxSourceSpec::new(config(), "dropbox-schema-v1").unwrap(),
+        DropboxRuntimeSecrets::new(
+            DropboxAccessToken::new("fixture-access-token").unwrap(),
+            DropboxCursorKey::new([0x51; 32]),
+        ),
+        Arc::new(transport.clone()),
+    )
+    .unwrap();
+    (source, transport)
+}
+
+fn query() -> EntityQuery {
+    EntityQuery {
+        target: EntityTarget::Entity("dropbox.Document".to_string()),
+        filters: Vec::new(),
+    }
+}
+
+fn context_with_id(
+    query_id: uuid::Uuid,
+    page_size: usize,
+    row_budget: usize,
+    byte_budget: usize,
+    cancellation: CancellationToken,
+) -> ReadContext {
+    ReadContext::new(
+        query_id,
+        Instant::now() + Duration::from_secs(2),
+        row_budget,
+        byte_budget,
+        page_size,
+        cancellation,
+    )
+    .unwrap()
+}
+
+fn context(page_size: usize, row_budget: usize, byte_budget: usize) -> ReadContext {
+    context_with_id(
+        uuid::Uuid::new_v4(),
+        page_size,
+        row_budget,
+        byte_budget,
+        CancellationToken::new(),
+    )
+}
+
+fn plan(source: &DropboxSource, projected: &[&str]) -> catdb_connectors::SourcePlan {
+    source
+        .compile(
+            &query(),
+            &projected
+                .iter()
+                .map(|field| (*field).to_string())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+}
+
+fn list_page(entries: serde_json::Value, cursor: &str, has_more: bool) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "entries": entries,
+        "cursor": cursor,
+        "has_more": has_more
+    }))
+    .unwrap()
+}
+
+fn file(path: &str, name: &str, rev: &str, content_hash: &str) -> serde_json::Value {
+    serde_json::json!({
+        ".tag": "file",
+        "name": name,
+        "path_lower": path,
+        "path_display": path,
+        "id": format!("id:{name}"),
+        "client_modified": "2026-07-20T12:34:56Z",
+        "server_modified": "2026-07-20T12:34:57Z",
+        "rev": rev,
+        "size": 22,
+        "content_hash": content_hash
+    })
+}
+
+fn download_header(path: &str, name: &str, rev: &str, content_hash: &str) -> String {
+    file(path, name, rev, content_hash).to_string()
+}
+
+#[test]
+fn pkce_uses_exact_read_scopes_without_a_client_secret_or_fictional_folder_scope() {
+    let pkce = DropboxOAuthPkce::new(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "state-123",
+        "http://127.0.0.1:41004/oauth/callback",
+    )
+    .unwrap();
+    assert_eq!(
+        pkce.code_challenge(),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    );
+    let authorization = pkce.authorization_url("desktop-client").unwrap();
+    assert!(authorization.contains("code_challenge_method=S256"));
+    assert!(authorization.contains("token_access_type=offline"));
+    assert!(authorization.contains("state=state-123"));
+    assert!(authorization.contains("scope=files.metadata.read+files.content.read"));
+    assert!(!authorization.contains("client_secret"));
+    assert!(!authorization.contains("folder_scope"));
+    assert_eq!(
+        config().oauth_scopes(),
+        [DROPBOX_METADATA_READ_SCOPE, DROPBOX_CONTENT_READ_SCOPE]
+    );
+
+    let app_folder = DropboxSourceConfig::new(
+        "dropbox-app-folder",
+        "dropbox",
+        "Document",
+        "",
+        DropboxAuthorizationMode::AppFolder,
+        DropboxSecretReference::new("keychain/mdreader/dropbox-app").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(app_folder.oauth_scopes(), config().oauth_scopes());
+}
+
+#[tokio::test]
+async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
+    let first_markdown = file("/knowledge/one.md", "one.md", "r1", "hash-1");
+    let binary = file("/knowledge/report.pdf", "report.pdf", "r2", "hash-2");
+    let second_text = file("/knowledge/two.txt", "two.txt", "r3", "hash-3");
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            list_page(serde_json::json!([first_markdown, binary]), "cursor-1", true),
+        ),
+        response_with_headers(
+            200,
+            [(
+                "Dropbox-API-Result",
+                download_header("/knowledge/one.md", "one.md", "r1", "hash-1"),
+            )],
+            b"# One\n\nMarkdown body\n".to_vec(),
+        ),
+        response(
+            200,
+            list_page(serde_json::json!([second_text]), "cursor-2", false),
+        ),
+        response_with_headers(
+            200,
+            [(
+                "Dropbox-API-Result",
+                download_header("/knowledge/two.txt", "two.txt", "r3", "hash-3"),
+            )],
+            b"plain text body\n".to_vec(),
+        ),
+    ]);
+    let (source, transport) = source(transport);
+
+    let answer = read(
+        &source,
+        &query(),
+        &[
+            "id".to_string(),
+            "name".to_string(),
+            "path".to_string(),
+            "body".to_string(),
+        ],
+        &context(2, 10, 64 * 1024),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(answer.scanned, 3);
+    assert_eq!(answer.rows.len(), 3);
+    assert_eq!(answer.rows[0].key, "/knowledge/one.md");
+    assert_eq!(answer.rows[0].value["body"], "# One\n\nMarkdown body\n");
+    assert!(answer.rows[1].value.get("body").is_none());
+    assert_eq!(answer.rows[2].value["body"], "plain text body\n");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].endpoint(), DropboxEndpoint::Api);
+    assert_eq!(requests[0].path(), "/2/files/list_folder");
+    assert_eq!(
+        requests[0].json_body()["path"],
+        serde_json::Value::String("/knowledge".to_string())
+    );
+    assert_eq!(requests[0].json_body()["recursive"], true);
+    assert_eq!(requests[1].endpoint(), DropboxEndpoint::Content);
+    assert_eq!(requests[1].path(), "/2/files/download");
+    assert_eq!(requests[2].path(), "/2/files/list_folder/continue");
+    assert_eq!(requests[2].json_body()["cursor"], "cursor-1");
+    assert_eq!(requests[3].endpoint(), DropboxEndpoint::Content);
+    assert!(requests.iter().all(|request| request.method() == DropboxHttpMethod::Post));
+    assert!(requests.iter().all(|request| !request.path().contains("upload")));
+}
+
+#[tokio::test]
+async fn download_result_must_match_the_requested_path_id_and_revision() {
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            list_page(
+                serde_json::json!([file(
+                    "/knowledge/one.md",
+                    "one.md",
+                    "r1",
+                    "hash-1"
+                )]),
+                "cursor-1",
+                false,
+            ),
+        ),
+        response_with_headers(
+            200,
+            [(
+                "Dropbox-API-Result",
+                download_header("/knowledge/other.md", "other.md", "r9", "hash-9"),
+            )],
+            b"wrong bytes\n".to_vec(),
+        ),
+    ]);
+    let (source, transport) = source(transport);
+
+    let error = source
+        .execute_page(&plan(&source, &["body"]), None, &context(10, 10, 4096))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, SourceError::Malformed { .. }));
+    assert_eq!(transport.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn bound_query_cursor_rejects_replay_wrong_query_and_tampering_before_http() {
+    let transport = ScriptedTransport::new([response(
+        200,
+        list_page(
+            serde_json::json!([file(
+                "/knowledge/report.pdf",
+                "report.pdf",
+                "r2",
+                "hash-2"
+            )]),
+            "cursor-1",
+            true,
+        ),
+    )]);
+    let (source, transport) = source(transport);
+    let query_id = uuid::Uuid::new_v4();
+    let first_context =
+        context_with_id(query_id, 1, 10, 4096, CancellationToken::new());
+    let source_plan = plan(&source, &["name"]);
+    let first = source
+        .execute_page(&source_plan, None, &first_context)
+        .await
+        .unwrap();
+    let cursor = first.next_cursor.expect("provider continuation");
+    assert_eq!(transport.requests().len(), 1);
+
+    let wrong_query = context_with_id(
+        uuid::Uuid::new_v4(),
+        1,
+        10,
+        4096,
+        CancellationToken::new(),
+    );
+    assert_eq!(
+        source
+            .execute_page(&source_plan, Some(&cursor), &wrong_query)
+            .await,
+        Err(SourceError::InvalidCursor)
+    );
+    assert_eq!(transport.requests().len(), 1);
+
+    let mut tampered = cursor.as_bytes().to_vec();
+    *tampered.last_mut().unwrap() ^= 0x01;
+    let tampered = SourceCursor::new(tampered).unwrap();
+    assert_eq!(
+        source
+            .execute_page(&source_plan, Some(&tampered), &first_context)
+            .await,
+        Err(SourceError::InvalidCursor)
+    );
+    assert_eq!(transport.requests().len(), 1);
+
+    assert_eq!(
+        source
+            .execute_page(&source_plan, Some(&cursor), &first_context)
+            .await,
+        Err(SourceError::InvalidCursor)
+    );
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn incremental_changes_distinguish_unchanged_upsert_delete_and_reset() {
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            serde_json::to_vec(&serde_json::json!({"cursor":"checkpoint-0"})).unwrap(),
+        ),
+        response(
+            200,
+            list_page(
+                serde_json::json!([
+                    file("/knowledge/same.md", "same.md", "r1", "hash-1"),
+                    file("/knowledge/new.md", "new.md", "r2", "hash-2"),
+                    {".tag":"deleted","name":"gone.md","path_lower":"/knowledge/gone.md","path_display":"/knowledge/gone.md"}
+                ]),
+                "checkpoint-1",
+                false,
+            ),
+        ),
+        response(
+            409,
+            serde_json::to_vec(&serde_json::json!({
+                "error_summary":"reset/...",
+                "error":{".tag":"reset"}
+            }))
+            .unwrap(),
+        ),
+    ]);
+    let (source, transport) = source(transport);
+    let read_context = context(10, 20, 64 * 1024);
+    let start = source.start_change_tracking(&read_context).await.unwrap();
+    let known = BTreeMap::from([
+        (
+            "/knowledge/same.md".to_string(),
+            DropboxKnownRevision::new("r1", "hash-1").unwrap(),
+        ),
+        (
+            "/knowledge/gone.md".to_string(),
+            DropboxKnownRevision::new("old", "old-hash").unwrap(),
+        ),
+    ]);
+    let page = source
+        .read_changes(&start, &known, &read_context)
+        .await
+        .unwrap();
+    let checkpoint = match page {
+        DropboxChangeOutcome::Page {
+            events,
+            next_cursor,
+            checkpoint,
+        } => {
+            assert_eq!(
+                events,
+                vec![
+                    DropboxChangeEvent::Unchanged {
+                        path_lower: "/knowledge/same.md".to_string()
+                    },
+                    DropboxChangeEvent::Upserted {
+                        path_lower: "/knowledge/new.md".to_string(),
+                        rev: "r2".to_string(),
+                        content_hash: "hash-2".to_string(),
+                    },
+                    DropboxChangeEvent::Deleted {
+                        path_lower: "/knowledge/gone.md".to_string()
+                    },
+                ]
+            );
+            assert!(next_cursor.is_none());
+            checkpoint.expect("durable checkpoint only after exhaustion")
+        }
+        other => panic!("unexpected change outcome: {other:?}"),
+    };
+
+    assert_eq!(
+        source
+            .read_changes(&checkpoint, &known, &read_context)
+            .await
+            .unwrap(),
+        DropboxChangeOutcome::RebuildRequired
+    );
+    assert_eq!(transport.requests().len(), 3);
+    assert_eq!(transport.requests()[0].path(), "/2/files/list_folder/get_latest_cursor");
+    assert_eq!(transport.requests()[1].path(), "/2/files/list_folder/continue");
+    assert_eq!(transport.requests()[2].path(), "/2/files/list_folder/continue");
+}
+
+#[derive(Clone)]
+struct RefreshingResolver {
+    refresh_count: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl DropboxSecretResolver for RefreshingResolver {
+    async fn resolve(
+        &self,
+        _reference: &DropboxSecretReference,
+    ) -> Result<DropboxRuntimeSecrets, DropboxConnectorError> {
+        unreachable!("fixture opens from explicit initial secrets")
+    }
+
+    async fn refresh(
+        &self,
+        _reference: &DropboxSecretReference,
+        _refresh: &DropboxRefreshCredential,
+    ) -> Result<DropboxAccessGrant, DropboxConnectorError> {
+        self.refresh_count.fetch_add(1, Ordering::SeqCst);
+        DropboxAccessGrant::new(
+            DropboxAccessToken::new("refreshed-token").unwrap(),
+            Some(SystemTime::now() + Duration::from_secs(600)),
+        )
+    }
+}
+
+#[derive(Clone)]
+struct ConcurrentUnauthorizedTransport {
+    barrier: Arc<tokio::sync::Barrier>,
+    requests: Arc<Mutex<Vec<DropboxHttpRequest>>>,
+}
+
+#[async_trait]
+impl DropboxTransport for ConcurrentUnauthorizedTransport {
+    async fn send(
+        &self,
+        request: DropboxHttpRequest,
+    ) -> Result<DropboxHttpResponse, DropboxTransportError> {
+        let generation = request.credential_generation();
+        self.requests.lock().unwrap().push(request);
+        if generation == 0 {
+            self.barrier.wait().await;
+            return DropboxHttpResponse::new(401, BTreeMap::new(), b"{}".to_vec());
+        }
+        DropboxHttpResponse::new(
+            200,
+            BTreeMap::new(),
+            list_page(serde_json::json!([]), "done", false),
+        )
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_401s_share_one_refresh_and_each_read_retries_once() {
+    let resolver = Arc::new(RefreshingResolver {
+        refresh_count: Arc::new(AtomicUsize::new(0)),
+    });
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let transport = Arc::new(ConcurrentUnauthorizedTransport {
+        barrier: Arc::new(tokio::sync::Barrier::new(2)),
+        requests: requests.clone(),
+    });
+    let source = Arc::new(
+        DropboxSource::open_with_resolver_and_transport(
+            PinnedDropboxSourceSpec::new(config(), "dropbox-schema-v1").unwrap(),
+            DropboxRuntimeSecrets::refreshable(
+                DropboxAccessGrant::new(
+                    DropboxAccessToken::new("expired-token").unwrap(),
+                    Some(SystemTime::now() + Duration::from_secs(600)),
+                )
+                .unwrap(),
+                DropboxRefreshCredential::new("refresh-secret").unwrap(),
+                DropboxCursorKey::new([0x51; 32]),
+            ),
+            resolver.clone(),
+            transport,
+        )
+        .unwrap(),
+    );
+    let source_plan = plan(&source, &["name"]);
+    let left = {
+        let source = source.clone();
+        let source_plan = source_plan.clone();
+        tokio::spawn(async move {
+            source
+                .execute_page(&source_plan, None, &context(10, 10, 4096))
+                .await
+        })
+    };
+    let right = {
+        let source = source.clone();
+        let source_plan = source_plan.clone();
+        tokio::spawn(async move {
+            source
+                .execute_page(&source_plan, None, &context(10, 10, 4096))
+                .await
+        })
+    };
+    left.await.unwrap().unwrap();
+    right.await.unwrap().unwrap();
+    assert_eq!(resolver.refresh_count.load(Ordering::SeqCst), 1);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests.iter().filter(|request| request.credential_generation() == 0).count(),
+        2
+    );
+    assert_eq!(
+        requests.iter().filter(|request| request.credential_generation() == 1).count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_timeout_and_cancellation_remain_typed() {
+    let rate_limited = ScriptedTransport::new([response_with_headers(
+        429,
+        [("retry-after", "3".to_string())],
+        b"{}".to_vec(),
+    )]);
+    let (source, _) = source(rate_limited);
+    assert_eq!(
+        source
+            .execute_page(&plan(&source, &["name"]), None, &context(10, 10, 4096))
+            .await,
+        Err(SourceError::RateLimited {
+            source_id: source.id().clone(),
+            retry_after_ms: Some(3_000),
+        })
+    );
+
+    let pending = ScriptedTransport::new([ScriptStep::Pending]);
+    let (source, _) = source(pending);
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_millis(20),
+        10,
+        4096,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        source
+            .execute_page(&plan(&source, &["name"]), None, &deadline_context)
+            .await,
+        Err(SourceError::DeadlineExceeded)
+    );
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = context_with_id(uuid::Uuid::new_v4(), 10, 10, 4096, cancellation);
+    assert_eq!(
+        source
+            .execute_page(&plan(&source, &["name"]), None, &cancelled)
+            .await,
+        Err(SourceError::Cancelled)
+    );
+}
+
+#[test]
+fn source_spec_and_debug_are_secret_free_and_surface_is_read_only() {
+    let transport = ScriptedTransport::new([]);
+    let (source, _) = source(transport);
+    let spec = source.source_spec().to_string();
+    assert!(spec.contains("keychain/mdreader/dropbox"));
+    assert!(!spec.contains("fixture-access-token"));
+    assert!(!format!("{source:?}").contains("fixture-access-token"));
+    assert_eq!(source.availability_evidence(), DropboxAvailability::FixtureValidated);
+
+    let source_text = include_str!("../src/lib.rs").to_ascii_lowercase();
+    for forbidden in [
+        "/2/files/upload",
+        "/2/files/delete",
+        "/2/files/move",
+        "/2/files/copy",
+        "/2/sharing/",
+        "arbitrary_rpc",
+    ] {
+        assert!(!source_text.contains(forbidden), "mutation surface: {forbidden}");
+    }
+}
+
+#[test]
+fn request_construction_refuses_non_dropbox_origins_redirects_and_header_injection() {
+    let transport = catdb_connector_dropbox::ReqwestDropboxTransport::new().unwrap();
+    assert_eq!(
+        transport.api_origin().as_str(),
+        "https://api.dropboxapi.com/"
+    );
+    assert_eq!(
+        transport.content_origin().as_str(),
+        "https://content.dropboxapi.com/"
+    );
+    assert!(!transport.follows_redirects());
+
+    assert!(DropboxSourceConfig::new(
+        "dropbox",
+        "dropbox",
+        "Document",
+        "/knowledge\nAuthorization: bearer stolen",
+        DropboxAuthorizationMode::FullDropbox,
+        DropboxSecretReference::new("keychain/dropbox").unwrap(),
+    )
+    .is_err());
+}
