@@ -595,6 +595,7 @@ impl DriveOAuthPkce {
             .append_pair("access_type", "offline")
             .append_pair("prompt", "consent")
             .append_pair("trigger_onepick", "true")
+            .append_pair("allow_multiple", "true")
             .append_pair("allow_folder_selection", "true");
         Ok(url.into())
     }

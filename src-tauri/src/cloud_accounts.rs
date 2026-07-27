@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use url::Url;
+use url::{Position, Url};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::library::LibraryStore;
@@ -3584,7 +3585,14 @@ pub(crate) async fn connect_cloud_source(
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     let _operation = state.operations.lock().await;
     let client_id = oauth_client_id(provider)?;
-    let (listener, redirect_uri) = bind_oauth_callback_listener(provider).await?;
+    let callback_configuration = oauth_callback_configuration(
+        provider,
+        match provider {
+            CloudProvider::GoogleDrive => None,
+            CloudProvider::Dropbox => option_env!("MDREADER_DROPBOX_REDIRECT_URI"),
+        },
+    )?;
+    let (listener, redirect_uri) = bind_oauth_callback_listener(callback_configuration).await?;
     let (verifier, oauth_state) = new_pkce_material();
     let attempt = OAuthAttempt::new(provider, verifier, oauth_state, redirect_uri.clone())?;
     let authorization_url = attempt.authorization_url(client_id)?;
@@ -3632,21 +3640,95 @@ fn expires_at_unix_seconds(expires_in_seconds: u64) -> Result<u64, CloudSourceEr
         .ok_or(CloudSourceError::InvalidConfiguration)
 }
 
-async fn bind_oauth_callback_listener(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DropboxRedirectConfiguration {
+    redirect_uri: String,
+    socket_addr: SocketAddr,
+}
+
+impl DropboxRedirectConfiguration {
+    fn redirect_uri(&self) -> &str {
+        &self.redirect_uri
+    }
+
+    fn socket_addr(&self) -> SocketAddr {
+        self.socket_addr
+    }
+}
+
+fn dropbox_redirect_configuration(
+    configured: Option<&str>,
+) -> Result<DropboxRedirectConfiguration, CloudSourceError> {
+    let configured = configured
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(CloudSourceError::ClientConfigurationMissing)?;
+    let redirect = Url::parse(configured).map_err(|_| CloudSourceError::InvalidConfiguration)?;
+    if redirect.scheme() != "http"
+        || !redirect.username().is_empty()
+        || redirect.password().is_some()
+        || redirect.query().is_some()
+        || redirect.fragment().is_some()
+        || redirect.path() != "/oauth/dropbox"
+    {
+        return Err(CloudSourceError::InvalidConfiguration);
+    }
+    let authority = configured
+        .strip_prefix("http://")
+        .and_then(|value| value.strip_suffix("/oauth/dropbox"))
+        .ok_or(CloudSourceError::InvalidConfiguration)?;
+    let socket_addr = authority
+        .parse::<SocketAddr>()
+        .map_err(|_| CloudSourceError::InvalidConfiguration)?;
+    if !socket_addr.ip().is_loopback() || socket_addr.port() == 0 {
+        return Err(CloudSourceError::InvalidConfiguration);
+    }
+    Ok(DropboxRedirectConfiguration {
+        redirect_uri: configured.to_string(),
+        socket_addr,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OAuthCallbackConfiguration {
+    GoogleDrive,
+    Dropbox(DropboxRedirectConfiguration),
+}
+
+fn oauth_callback_configuration(
     provider: CloudProvider,
+    dropbox_redirect_uri: Option<&str>,
+) -> Result<OAuthCallbackConfiguration, CloudSourceError> {
+    match provider {
+        CloudProvider::GoogleDrive => Ok(OAuthCallbackConfiguration::GoogleDrive),
+        CloudProvider::Dropbox => dropbox_redirect_configuration(dropbox_redirect_uri)
+            .map(OAuthCallbackConfiguration::Dropbox),
+    }
+}
+
+async fn bind_oauth_callback_listener(
+    configuration: OAuthCallbackConfiguration,
 ) -> Result<(TcpListener, String), CloudSourceError> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?;
-    let port = listener
-        .local_addr()
-        .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?
-        .port();
-    let path = match provider {
-        CloudProvider::GoogleDrive => "/oauth/google-drive",
-        CloudProvider::Dropbox => "/oauth/dropbox",
-    };
-    Ok((listener, format!("http://127.0.0.1:{port}{path}")))
+    match configuration {
+        OAuthCallbackConfiguration::GoogleDrive => {
+            let listener = TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?;
+            let port = listener
+                .local_addr()
+                .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?
+                .port();
+            Ok((
+                listener,
+                format!("http://127.0.0.1:{port}/oauth/google-drive"),
+            ))
+        }
+        OAuthCallbackConfiguration::Dropbox(configuration) => {
+            let listener = TcpListener::bind(configuration.socket_addr())
+                .await
+                .map_err(|_| CloudSourceError::OauthCallbackUnavailable)?;
+            Ok((listener, configuration.redirect_uri().to_string()))
+        }
+    }
 }
 
 fn new_pkce_material() -> (String, String) {
@@ -3722,17 +3804,7 @@ async fn receive_oauth_callback(
         .filter(|target| target.starts_with('/') && !target.starts_with("//"))
         .ok_or(CloudSourceError::OauthInvalidCallback)?;
     let redirect = Url::parse(redirect_uri).map_err(|_| CloudSourceError::OauthInvalidCallback)?;
-    let callback = format!(
-        "{}://{}:{}{}",
-        redirect.scheme(),
-        redirect
-            .host_str()
-            .ok_or(CloudSourceError::OauthInvalidCallback)?,
-        redirect
-            .port()
-            .ok_or(CloudSourceError::OauthInvalidCallback)?,
-        target
-    );
+    let callback = format!("{}{}", &redirect[..Position::BeforePath], target);
     let body = b"MDReader received the authorization response. You can return to the app.";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
@@ -3786,13 +3858,13 @@ async fn exchange_authorization_code(
         CloudProvider::GoogleDrive => GOOGLE_TOKEN_ENDPOINT,
         CloudProvider::Dropbox => DROPBOX_TOKEN_ENDPOINT,
     };
-    let form = [
-        ("client_id", client_id),
-        ("code", authorization.code()),
-        ("code_verifier", attempt.verifier()?),
-        ("grant_type", "authorization_code"),
-        ("redirect_uri", attempt.redirect_uri()),
-    ];
+    let verifier = attempt.verifier()?;
+    let form = authorization_code_token_form(
+        client_id,
+        authorization.code(),
+        verifier,
+        attempt.redirect_uri(),
+    );
     let response = client
         .post(endpoint)
         .form(&form)
@@ -3833,6 +3905,21 @@ async fn exchange_authorization_code(
     })
 }
 
+fn authorization_code_token_form<'a>(
+    client_id: &'a str,
+    code: &'a str,
+    verifier: &'a str,
+    redirect_uri: &'a str,
+) -> [(&'static str, &'a str); 5] {
+    [
+        ("client_id", client_id),
+        ("code", code),
+        ("code_verifier", verifier),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+    ]
+}
+
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 async fn exchange_refresh_token(
     provider: CloudProvider,
@@ -3855,13 +3942,10 @@ async fn exchange_refresh_token(
         CloudProvider::GoogleDrive => GOOGLE_TOKEN_ENDPOINT,
         CloudProvider::Dropbox => DROPBOX_TOKEN_ENDPOINT,
     };
+    let form = refresh_token_form(client_id, refresh_token);
     let response = client
         .post(endpoint)
-        .form(&[
-            ("client_id", client_id),
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-        ])
+        .form(&form)
         .send()
         .await
         .map_err(|_| CloudSourceError::OauthTransport)?;
@@ -3892,6 +3976,17 @@ async fn exchange_refresh_token(
         access_token: Zeroizing::new(response.access_token),
         expires_at_unix_seconds: expires_at_unix_seconds(expires_in_seconds)?,
     })
+}
+
+fn refresh_token_form<'a>(
+    client_id: &'a str,
+    refresh_token: &'a str,
+) -> [(&'static str, &'a str); 3] {
+    [
+        ("client_id", client_id),
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+    ]
 }
 
 fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bool {
@@ -4172,14 +4267,18 @@ mod tests {
         SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
     };
     use tempfile::tempdir;
+    use tokio::net::TcpListener;
+    use url::Url;
 
     use super::{
-        admit_library_query, bind_identity_bound_local_sources, bind_oauth_callback_listener,
-        execute_cloud_query, CloudAccountService, CloudAccountsState, CloudCompleteness,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
-        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
-        MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
+        bind_oauth_callback_listener, dropbox_redirect_configuration, execute_cloud_query,
+        oauth_callback_configuration, refresh_token_form, CloudAccountService,
+        CloudAccountsState, CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
+        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
+        SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -5886,16 +5985,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dropbox_redirect_configuration_distinguishes_missing_from_invalid_values() {
+        for missing in [None, Some(""), Some(" \t")] {
+            assert_eq!(
+                dropbox_redirect_configuration(missing),
+                Err(CloudSourceError::ClientConfigurationMissing)
+            );
+        }
+        for invalid in [
+            "https://127.0.0.1:53682/oauth/dropbox",
+            "http://127.0.0.1/oauth/dropbox",
+            "http://127.0.0.1:0/oauth/dropbox",
+            "http://192.0.2.1:53682/oauth/dropbox",
+            "http://user@127.0.0.1:53682/oauth/dropbox",
+            "http://127.0.0.1:53682/oauth/dropbox?source=test",
+            "http://127.0.0.1:53682/oauth/dropbox#fragment",
+            "http://127.0.0.1:53682/oauth/dropbox/",
+            "http://127.0.0.1:53682/oauth/google-drive",
+        ] {
+            assert_eq!(
+                dropbox_redirect_configuration(Some(invalid)),
+                Err(CloudSourceError::InvalidConfiguration),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn dropbox_redirect_configuration_preserves_the_exact_loopback_uri() {
+        for configured in [
+            "http://127.0.0.1:53682/oauth/dropbox",
+            "http://127.0.0.1:80/oauth/dropbox",
+            "http://[::1]:53683/oauth/dropbox",
+        ] {
+            let redirect =
+                dropbox_redirect_configuration(Some(configured)).expect("valid redirect");
+            assert_eq!(redirect.redirect_uri(), configured);
+            assert_ne!(redirect.socket_addr().port(), 0);
+            assert!(redirect.socket_addr().ip().is_loopback());
+        }
+    }
+
     #[tokio::test]
-    async fn oauth_callback_uses_the_port_reserved_for_this_attempt() {
-        let (first_listener, first_redirect) =
-            bind_oauth_callback_listener(CloudProvider::GoogleDrive)
-                .await
-                .expect("first callback listener");
-        let (second_listener, second_redirect) =
-            bind_oauth_callback_listener(CloudProvider::GoogleDrive)
-                .await
-                .expect("second callback listener");
+    async fn google_callback_uses_a_random_reserved_port_for_each_attempt() {
+        let (first_listener, first_redirect) = bind_oauth_callback_listener(
+            oauth_callback_configuration(CloudProvider::GoogleDrive, None)
+                .expect("Google callback configuration"),
+        )
+        .await
+        .expect("first callback listener");
+        let (second_listener, second_redirect) = bind_oauth_callback_listener(
+            oauth_callback_configuration(CloudProvider::GoogleDrive, None)
+                .expect("Google callback configuration"),
+        )
+        .await
+        .expect("second callback listener");
 
         let first_port = first_listener
             .local_addr()
@@ -5919,6 +6064,171 @@ mod tests {
             second_redirect,
             format!("http://127.0.0.1:{second_port}/oauth/google-drive")
         );
+    }
+
+    #[tokio::test]
+    async fn dropbox_callback_binds_the_exact_configured_address_and_fails_if_occupied() {
+        let reservation = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("reserve callback port");
+        let occupied = reservation.local_addr().expect("reserved address");
+        let redirect_uri = format!("http://{occupied}/oauth/dropbox");
+        let configuration =
+            oauth_callback_configuration(CloudProvider::Dropbox, Some(&redirect_uri))
+                .expect("Dropbox callback configuration");
+        assert!(matches!(
+            bind_oauth_callback_listener(configuration).await,
+            Err(CloudSourceError::OauthCallbackUnavailable)
+        ));
+        drop(reservation);
+
+        let configuration =
+            oauth_callback_configuration(CloudProvider::Dropbox, Some(&redirect_uri))
+                .expect("Dropbox callback configuration");
+        let (listener, bound_redirect) = bind_oauth_callback_listener(configuration)
+            .await
+            .expect("exact Dropbox callback listener");
+        assert_eq!(listener.local_addr().expect("bound address"), occupied);
+        assert_eq!(bound_redirect, redirect_uri);
+    }
+
+    #[test]
+    fn oauth_authorization_urls_and_token_forms_emit_required_fields_once() {
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::Dropbox] {
+            let redirect_uri = match provider {
+                CloudProvider::GoogleDrive => "http://127.0.0.1:53681/oauth/google-drive",
+                CloudProvider::Dropbox => "http://127.0.0.1:53682/oauth/dropbox",
+            };
+            let attempt =
+                OAuthAttempt::new(provider, "a".repeat(64), "expected-state", redirect_uri)
+                    .expect("valid OAuth attempt");
+            let authorization =
+                Url::parse(&attempt.authorization_url("desktop-client").expect("URL"))
+                    .expect("parse authorization URL");
+            let parameters = authorization.query_pairs().collect::<Vec<_>>();
+            for required in [
+                "client_id",
+                "redirect_uri",
+                "response_type",
+                "scope",
+                "code_challenge",
+                "code_challenge_method",
+                "state",
+            ] {
+                assert_eq!(
+                    parameters.iter().filter(|(key, _)| key == required).count(),
+                    1,
+                    "{provider:?} authorization URL field {required}"
+                );
+            }
+            assert_eq!(
+                parameters
+                    .iter()
+                    .filter(|(key, value)| {
+                        key == "redirect_uri" && value.as_ref() == redirect_uri
+                    })
+                    .count(),
+                1
+            );
+            assert!(!parameters.iter().any(|(key, _)| key == "client_secret"));
+            match provider {
+                CloudProvider::GoogleDrive => {
+                    for (key, value) in [
+                        ("access_type", "offline"),
+                        ("prompt", "consent"),
+                        ("trigger_onepick", "true"),
+                        ("allow_multiple", "true"),
+                        ("allow_folder_selection", "true"),
+                    ] {
+                        assert_eq!(
+                            parameters
+                                .iter()
+                                .filter(|(candidate_key, candidate_value)| {
+                                    candidate_key == key && candidate_value == value
+                                })
+                                .count(),
+                            1,
+                            "Google authorization URL field {key}"
+                        );
+                    }
+                }
+                CloudProvider::Dropbox => {
+                    assert_eq!(
+                        parameters
+                            .iter()
+                            .filter(|(key, value)| {
+                                key == "token_access_type" && value == "offline"
+                            })
+                            .count(),
+                        1,
+                        "Dropbox authorization URL must request an offline token once"
+                    );
+                }
+            }
+        }
+
+        let authorization_form = authorization_code_token_form(
+            "desktop-client",
+            "provider-code",
+            "pkce-verifier",
+            "http://127.0.0.1:53682/oauth/dropbox",
+        );
+        for required in [
+            "client_id",
+            "code",
+            "code_verifier",
+            "grant_type",
+            "redirect_uri",
+        ] {
+            assert_eq!(
+                authorization_form
+                    .iter()
+                    .filter(|(key, _)| *key == required)
+                    .count(),
+                1,
+                "authorization-code token field {required}"
+            );
+        }
+        assert_eq!(
+            authorization_form
+                .iter()
+                .filter(|(key, value)| { *key == "grant_type" && *value == "authorization_code" })
+                .count(),
+            1
+        );
+        assert_eq!(
+            authorization_form
+                .iter()
+                .filter(|(key, value)| {
+                    *key == "redirect_uri" && *value == "http://127.0.0.1:53682/oauth/dropbox"
+                })
+                .count(),
+            1,
+            "the authorization-code exchange must preserve the registered redirect URI"
+        );
+        assert!(!authorization_form
+            .iter()
+            .any(|(key, _)| *key == "client_secret"));
+
+        let refresh_form = refresh_token_form("desktop-client", "refresh-token");
+        for required in ["client_id", "grant_type", "refresh_token"] {
+            assert_eq!(
+                refresh_form
+                    .iter()
+                    .filter(|(key, _)| *key == required)
+                    .count(),
+                1,
+                "refresh token field {required}"
+            );
+        }
+        assert_eq!(
+            refresh_form
+                .iter()
+                .filter(|(key, value)| *key == "grant_type" && *value == "refresh_token")
+                .count(),
+            1
+        );
+        assert!(!refresh_form.iter().any(|(key, _)| *key == "client_secret"));
     }
 
     #[test]
