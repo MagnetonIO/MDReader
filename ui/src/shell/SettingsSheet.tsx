@@ -170,6 +170,7 @@ export function SettingsSheet({
   const confirmDialogRef = useRef<HTMLDivElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmWasOpenRef = useRef(false);
+  const cloudRequestIds = useRef<Partial<Record<CloudProvider, string>>>({});
   const invokingFocusRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
@@ -190,8 +191,15 @@ export function SettingsSheet({
 
   useEffect(() => {
     closeRef.current?.focus();
-    return () => invokingFocusRef.current?.focus();
-  }, []);
+    return () => {
+      invokingFocusRef.current?.focus();
+      if (backend.cancelCloudDocumentQuery) {
+        for (const requestId of Object.values(cloudRequestIds.current)) {
+          void backend.cancelCloudDocumentQuery(requestId);
+        }
+      }
+    };
+  }, [backend]);
 
   useEffect(() => {
     if (confirmClear) {
@@ -336,14 +344,28 @@ export function SettingsSheet({
   const browseCloud = useCallback(
     (provider: CloudProvider) => {
       if (!backend.queryCloudDocuments) return;
+      const requestId = `browse:${provider}:${globalThis.crypto.randomUUID()}`;
+      const previous = cloudRequestIds.current[provider];
+      cloudRequestIds.current[provider] = requestId;
       void run(
         `browse:${provider}`,
-        () =>
-          backend.queryCloudDocuments!(
+        async () => {
+          if (previous && backend.cancelCloudDocumentQuery) {
+            await backend.cancelCloudDocumentQuery(previous);
+          }
+          try {
+            return await backend.queryCloudDocuments!(
             provider,
             [],
             ['id', 'name', 'modifiedAt', 'size'],
-          ),
+              requestId,
+            );
+          } finally {
+            if (cloudRequestIds.current[provider] === requestId) {
+              delete cloudRequestIds.current[provider];
+            }
+          }
+        },
         (response) =>
           setCloudDocuments((current) => ({
             ...current,

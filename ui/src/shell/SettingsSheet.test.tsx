@@ -82,6 +82,7 @@ function cloudBackend(
     provider: CloudProvider,
     filters: CloudFilterInput[],
     fields: string[],
+    requestId: string,
   ) => Promise<CloudDocumentQueryResponse>;
 } {
   let snapshot = initial;
@@ -123,6 +124,29 @@ function cloudBackend(
       query_id: 'query-1',
       provider,
       schema_version: 'mdreader.Document/v1',
+      version_pins: {
+        catalog_version: 5,
+        schema_version: 'mdreader.Document/v1',
+        schema_checksum: 'a'.repeat(64),
+        mapping_version: 'mdreader.Document.cloud-mapping/v1',
+        connector_version: `${provider}/v1`,
+        source_version: 'b'.repeat(64),
+        policy_version: 'mdreader.read-only/v1',
+      },
+      completeness: 'complete' as const,
+      sources: [
+        {
+          source_id: 'b'.repeat(64),
+          outcome: {
+            kind: 'ran' as const,
+            mode: 'virtual' as const,
+            scanned: 1,
+            returned: 1,
+            pushed: [],
+            residual: [],
+          },
+        },
+      ],
       scanned: 1,
       rows: [
         {
@@ -134,9 +158,17 @@ function cloudBackend(
             modifiedAt: 1_800_000_000_000,
             size: 2048,
           },
+          provenance: ['id', 'name', 'modifiedAt', 'size'].map((field) => ({
+            field,
+            source_id: 'b'.repeat(64),
+            record_key: 'provider-record-1',
+            mapping_version: 'mdreader.Document.cloud-mapping/v1',
+            observation: 'observed' as const,
+          })),
         },
       ],
     })),
+    cancelCloudDocumentQuery: vi.fn(async () => true),
   };
 }
 
@@ -304,6 +336,7 @@ describe('Settings sheet', () => {
       'google-drive',
       [],
       ['id', 'name', 'modifiedAt', 'size'],
+      expect.stringMatching(/^browse:google-drive:/),
     );
   });
 

@@ -96,7 +96,9 @@ export interface SettingsBackend {
     provider: CloudProvider,
     filters: CloudFilterInput[],
     fields: string[],
+    requestId: string,
   ) => Promise<CloudDocumentQueryResponse>;
+  cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
@@ -214,8 +216,15 @@ export async function queryCloudDocuments(
   provider: CloudProvider,
   filters: CloudFilterInput[],
   fields: string[],
+  requestId: string,
 ): Promise<CloudDocumentQueryResponse> {
-  const result = await commands.queryCloudDocuments(provider, filters, fields);
+  const result = await commands.queryCloudDocuments(requestId, provider, filters, fields);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
+export async function cancelCloudDocumentQuery(requestId: string): Promise<boolean> {
+  const result = await commands.cancelCloudDocumentQuery(requestId);
   if (result.status === 'error') return cloudFailure(result.error);
   return result.data;
 }
@@ -237,6 +246,7 @@ export const settingsBackend: SettingsBackend = {
   setCloudSourceEnabled,
   disconnectCloudSource,
   queryCloudDocuments,
+  cancelCloudDocumentQuery,
 };
 
 /**

@@ -5,23 +5,17 @@
 //! credential-vault boundary. Pausing excludes a source from reads without
 //! revoking it; disconnecting removes only MDReader-managed state.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[cfg(test)]
-use std::sync::Mutex;
-
-#[cfg(any(
-    test,
-    feature = "google-drive-connector",
-    feature = "dropbox-connector"
-))]
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -36,6 +30,7 @@ use crate::library::LibraryStore;
 const CLOUD_REGISTRY_VERSION: u32 = 1;
 const MAX_CLOUD_SOURCES: usize = 2;
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
+const MAX_CLOUD_REQUEST_ID_BYTES: usize = 128;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const MAX_AUTHORIZATION_CODE_BYTES: usize = 4 * 1024;
 const MAX_DRIVE_SELECTIONS: usize = 512;
@@ -57,6 +52,10 @@ const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_DOCUMENT_SCHEMA_VERSION: &str = "mdreader.Document/v1";
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v1";
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_READ_POLICY_VERSION: &str = "mdreader.read-only/v1";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropboxapi.com/oauth2/token";
@@ -131,6 +130,64 @@ pub(crate) struct CloudDocumentRow {
     pub record_key: String,
     #[specta(type = specta_typescript::Unknown)]
     pub fields: serde_json::Value,
+    pub provenance: Vec<CloudFieldProvenance>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudObservation {
+    Observed,
+    ObservedNothing,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct CloudFieldProvenance {
+    pub field: String,
+    pub source_id: String,
+    pub record_key: String,
+    pub mapping_version: String,
+    pub observation: CloudObservation,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudCompleteness {
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudExecutionMode {
+    Virtual,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum CloudSourceOutcome {
+    Ran {
+        mode: CloudExecutionMode,
+        scanned: u32,
+        returned: u32,
+        pushed: Vec<String>,
+        residual: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct CloudSourceReport {
+    pub source_id: String,
+    pub outcome: CloudSourceOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct CloudVersionPins {
+    pub catalog_version: u32,
+    pub schema_version: String,
+    pub schema_checksum: String,
+    pub mapping_version: String,
+    pub connector_version: String,
+    pub source_version: String,
+    pub policy_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq)]
@@ -138,6 +195,9 @@ pub(crate) struct CloudDocumentQueryResponse {
     pub query_id: String,
     pub provider: CloudProvider,
     pub schema_version: String,
+    pub version_pins: CloudVersionPins,
+    pub completeness: CloudCompleteness,
+    pub sources: Vec<CloudSourceReport>,
     pub scanned: u32,
     pub rows: Vec<CloudDocumentRow>,
 }
@@ -175,6 +235,41 @@ pub(crate) enum CloudSourceError {
     QueryInvalid {
         detail: String,
     },
+    QueryCancelled,
+    QueryDeadlineExceeded,
+    QueryTimeout {
+        source_id: String,
+    },
+    QueryAuthentication {
+        source_id: String,
+    },
+    QueryRateLimited {
+        source_id: String,
+        retry_after_ms: Option<u32>,
+    },
+    QueryIncomplete {
+        source_id: String,
+    },
+    QueryTransport {
+        source_id: String,
+    },
+    QuerySourceCancelled {
+        source_id: String,
+    },
+    QueryLimitExceeded,
+    QueryRefused {
+        source_id: String,
+        reason: CloudQueryRefusal,
+    },
+    QueryReadFailed {
+        source_id: String,
+    },
+    QuerySchemaDrift {
+        source_id: String,
+        expected: String,
+        observed: String,
+    },
+    QueryInvalidResponse,
     #[allow(dead_code)]
     QueryFailed {
         detail: String,
@@ -184,6 +279,16 @@ pub(crate) enum CloudSourceError {
         not(feature = "dropbox-connector")
     ))]
     ConnectorUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudQueryRefusal {
+    Unavailable,
+    UnknownEntity,
+    UnobservableAttribute,
+    UnsupportedFilter,
+    UnsupportedPolicy,
 }
 
 impl fmt::Display for CloudSourceError {
@@ -210,6 +315,19 @@ impl fmt::Display for CloudSourceError {
             Self::ProviderRejected => "cloud-oauth-provider-rejected",
             Self::SourcePaused => "cloud-source-paused",
             Self::QueryInvalid { .. } => "cloud-query-invalid",
+            Self::QueryCancelled => "cloud-query-cancelled",
+            Self::QueryDeadlineExceeded => "cloud-query-deadline-exceeded",
+            Self::QueryTimeout { .. } => "cloud-query-source-timeout",
+            Self::QueryAuthentication { .. } => "cloud-query-authentication-failed",
+            Self::QueryRateLimited { .. } => "cloud-query-rate-limited",
+            Self::QueryIncomplete { .. } => "cloud-query-incomplete",
+            Self::QueryTransport { .. } => "cloud-query-transport-failed",
+            Self::QuerySourceCancelled { .. } => "cloud-query-source-cancelled",
+            Self::QueryLimitExceeded => "cloud-query-limit-exceeded",
+            Self::QueryRefused { .. } => "cloud-query-refused",
+            Self::QueryReadFailed { .. } => "cloud-query-read-failed",
+            Self::QuerySchemaDrift { .. } => "cloud-query-schema-drift",
+            Self::QueryInvalidResponse => "cloud-query-invalid-response",
             Self::QueryFailed { .. } => "cloud-query-failed",
             #[cfg(any(
                 not(feature = "google-drive-connector"),
@@ -835,8 +953,89 @@ impl VerifiedAuthorization {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct CloudAccountsState(tokio::sync::Mutex<()>);
+#[derive(Debug)]
+struct ActiveCloudQuery {
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+#[derive(Debug)]
+struct CloudQueryHandle {
+    request_id: String,
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+pub(crate) struct CloudAccountsState {
+    operations: tokio::sync::Mutex<()>,
+    active_queries: Mutex<HashMap<String, ActiveCloudQuery>>,
+    next_query_serial: AtomicU64,
+}
+
+impl Default for CloudAccountsState {
+    fn default() -> Self {
+        Self {
+            operations: tokio::sync::Mutex::new(()),
+            active_queries: Mutex::new(HashMap::new()),
+            next_query_serial: AtomicU64::new(1),
+        }
+    }
+}
+
+impl CloudAccountsState {
+    fn begin_query(&self, request_id: &str) -> Result<CloudQueryHandle, CloudSourceError> {
+        if request_id.is_empty()
+            || request_id.len() > MAX_CLOUD_REQUEST_ID_BYTES
+            || request_id.chars().any(char::is_control)
+        {
+            return Err(CloudSourceError::QueryInvalid {
+                detail: "cloud query request ID is invalid".to_string(),
+            });
+        }
+        let serial = self.next_query_serial.fetch_add(1, Ordering::SeqCst);
+        let cancellation = catdb_connectors::CancellationToken::new();
+        let mut active = self
+            .active_queries
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+        if let Some(retired) = active.insert(
+            request_id.to_string(),
+            ActiveCloudQuery {
+                serial,
+                cancellation: cancellation.clone(),
+            },
+        ) {
+            retired.cancellation.cancel();
+        }
+        Ok(CloudQueryHandle {
+            request_id: request_id.to_string(),
+            serial,
+            cancellation,
+        })
+    }
+
+    fn finish_query(&self, query: &CloudQueryHandle) {
+        if let Ok(mut active) = self.active_queries.lock() {
+            if active
+                .get(&query.request_id)
+                .is_some_and(|entry| entry.serial == query.serial)
+            {
+                active.remove(&query.request_id);
+            }
+        }
+    }
+
+    fn cancel_query(&self, request_id: &str) -> bool {
+        let Ok(mut active) = self.active_queries.lock() else {
+            return false;
+        };
+        let Some(query) = active.remove(request_id) else {
+            return false;
+        };
+        query.cancellation.cancel();
+        true
+    }
+}
 
 #[derive(Clone)]
 struct KeyringCredentialVault {
@@ -1174,6 +1373,7 @@ fn map_dropbox_credential_error(
 #[specta::specta]
 pub(crate) async fn query_cloud_documents(
     app: AppHandle,
+    request_id: String,
     provider: CloudProvider,
     filters: Vec<CloudFilterInput>,
     fields: Vec<String>,
@@ -1181,76 +1381,122 @@ pub(crate) async fn query_cloud_documents(
 ) -> Result<CloudDocumentQueryResponse, CloudSourceError> {
     #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
     {
-        let _ = (app, provider, filters, fields, state);
+        let _ = (app, request_id, provider, filters, fields, state);
         Err(CloudSourceError::ConnectorUnavailable)
     }
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     {
-        let _operation = state.0.lock().await;
-        let (record, vault) = blocking_cloud_operation(app, move |registry, vault| {
-            let record = CloudAccountService::new(registry, &vault).active_record(provider)?;
-            Ok((record, vault))
-        })
-        .await?;
-        let resolver = Arc::new(CloudCredentialResolver::new(
-            provider,
-            record.credential_reference.clone(),
-            Arc::new(vault),
-        ));
+        let query = state.begin_query(&request_id)?;
+        let result = async {
+            let _operation = tokio::select! {
+                _ = query.cancellation.cancelled() => {
+                    return Err(CloudSourceError::QueryCancelled);
+                }
+                operation = state.operations.lock() => operation,
+            };
+            let (record, vault) = blocking_cloud_operation(app, move |registry, vault| {
+                let record = CloudAccountService::new(registry, &vault).active_record(provider)?;
+                Ok((record, vault))
+            })
+            .await?;
+            let resolver = Arc::new(CloudCredentialResolver::new(
+                provider,
+                record.credential_reference.clone(),
+                Arc::new(vault),
+            ));
 
-        match record.config {
-            #[cfg(feature = "google-drive-connector")]
-            CloudSourceConfig::GoogleDrive { selections } => {
-                let selections = drive_selections(selections)?;
-                let reference = catdb_connector_google_drive::DriveSecretReference::new(
-                    record.credential_reference,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let config = catdb_connector_google_drive::DriveSourceConfig::new(
-                    record.id, "mdreader", "Document", selections, reference,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
-                    config,
-                    CLOUD_DOCUMENT_SCHEMA_VERSION,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let source = catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
+            match record.config {
+                #[cfg(feature = "google-drive-connector")]
+                CloudSourceConfig::GoogleDrive { selections } => {
+                    let selections = drive_selections(selections)?;
+                    let reference = catdb_connector_google_drive::DriveSecretReference::new(
+                        record.credential_reference,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let config = catdb_connector_google_drive::DriveSourceConfig::new(
+                        record.id, "mdreader", "Document", selections, reference,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
+                        config,
+                        CLOUD_DOCUMENT_SCHEMA_VERSION,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let source =
+                        catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
+                            .await
+                            .map_err(|error| query_failed(error.to_string()))?;
+                    execute_cloud_query(
+                        provider,
+                        &source,
+                        filters,
+                        fields,
+                        query.cancellation.clone(),
+                    )
                     .await
-                    .map_err(|error| query_failed(error.to_string()))?;
-                execute_cloud_query(provider, &source, filters, fields).await
-            }
-            #[cfg(not(feature = "google-drive-connector"))]
-            CloudSourceConfig::GoogleDrive { .. } => Err(CloudSourceError::ConnectorUnavailable),
-            #[cfg(feature = "dropbox-connector")]
-            CloudSourceConfig::Dropbox => {
-                let reference = catdb_connector_dropbox::DropboxSecretReference::new(
-                    record.credential_reference,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let config = catdb_connector_dropbox::DropboxSourceConfig::new(
-                    record.id,
-                    "mdreader",
-                    "Document",
-                    "",
-                    catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
-                    reference,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
-                    config,
-                    CLOUD_DOCUMENT_SCHEMA_VERSION,
-                )
-                .map_err(|error| query_invalid(error.to_string()))?;
-                let source = catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
+                }
+                #[cfg(not(feature = "google-drive-connector"))]
+                CloudSourceConfig::GoogleDrive { .. } => {
+                    Err(CloudSourceError::ConnectorUnavailable)
+                }
+                #[cfg(feature = "dropbox-connector")]
+                CloudSourceConfig::Dropbox => {
+                    let reference = catdb_connector_dropbox::DropboxSecretReference::new(
+                        record.credential_reference,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let config = catdb_connector_dropbox::DropboxSourceConfig::new(
+                        record.id,
+                        "mdreader",
+                        "Document",
+                        "",
+                        catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
+                        reference,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
+                        config,
+                        CLOUD_DOCUMENT_SCHEMA_VERSION,
+                    )
+                    .map_err(|error| query_invalid(error.to_string()))?;
+                    let source =
+                        catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
+                            .await
+                            .map_err(|error| query_failed(error.to_string()))?;
+                    execute_cloud_query(
+                        provider,
+                        &source,
+                        filters,
+                        fields,
+                        query.cancellation.clone(),
+                    )
                     .await
-                    .map_err(|error| query_failed(error.to_string()))?;
-                execute_cloud_query(provider, &source, filters, fields).await
+                }
+                #[cfg(not(feature = "dropbox-connector"))]
+                CloudSourceConfig::Dropbox => Err(CloudSourceError::ConnectorUnavailable),
             }
-            #[cfg(not(feature = "dropbox-connector"))]
-            CloudSourceConfig::Dropbox => Err(CloudSourceError::ConnectorUnavailable),
         }
+        .await;
+        state.finish_query(&query);
+        result
     }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn cancel_cloud_document_query(
+    request_id: String,
+    state: tauri::State<'_, CloudAccountsState>,
+) -> Result<bool, CloudSourceError> {
+    if request_id.is_empty()
+        || request_id.len() > MAX_CLOUD_REQUEST_ID_BYTES
+        || request_id.chars().any(char::is_control)
+    {
+        return Err(CloudSourceError::QueryInvalid {
+            detail: "cloud query request ID is invalid".to_string(),
+        });
+    }
+    Ok(state.cancel_query(&request_id))
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1264,6 +1510,85 @@ fn query_invalid(detail: impl Into<String>) -> CloudSourceError {
 fn query_failed(detail: impl Into<String>) -> CloudSourceError {
     CloudSourceError::QueryFailed {
         detail: bounded_error_detail(detail.into()),
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn map_query_source_error(error: catdb_connectors::SourceError) -> CloudSourceError {
+    use catdb_connectors::SourceError;
+
+    let source = |source_id: catdb_connectors::SourceId| source_id.to_string();
+    match error {
+        SourceError::Cancelled => CloudSourceError::QueryCancelled,
+        SourceError::DeadlineExceeded => CloudSourceError::QueryDeadlineExceeded,
+        SourceError::StatementTimeout { source_id } => CloudSourceError::QueryTimeout {
+            source_id: source(source_id),
+        },
+        SourceError::Authentication { source_id } => CloudSourceError::QueryAuthentication {
+            source_id: source(source_id),
+        },
+        SourceError::RateLimited {
+            source_id,
+            retry_after_ms,
+        } => CloudSourceError::QueryRateLimited {
+            source_id: source(source_id),
+            retry_after_ms: retry_after_ms.map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+        },
+        SourceError::IncompleteSearch { source_id } => CloudSourceError::QueryIncomplete {
+            source_id: source(source_id),
+        },
+        SourceError::Transport { source_id } => CloudSourceError::QueryTransport {
+            source_id: source(source_id),
+        },
+        SourceError::SourceCancelled { source_id } => CloudSourceError::QuerySourceCancelled {
+            source_id: source(source_id),
+        },
+        SourceError::UnsupportedRowLevelSecurity { source_id } => CloudSourceError::QueryRefused {
+            source_id: source(source_id),
+            reason: CloudQueryRefusal::UnsupportedPolicy,
+        },
+        SourceError::InvalidReadContext
+        | SourceError::RowBudgetExceeded
+        | SourceError::ByteBudgetExceeded
+        | SourceError::CursorTooLarge { .. }
+        | SourceError::InvalidCursor
+        | SourceError::ResourceLimit { .. } => CloudSourceError::QueryLimitExceeded,
+        SourceError::Unavailable { source_id, .. } => CloudSourceError::QueryRefused {
+            source_id: source(source_id),
+            reason: CloudQueryRefusal::Unavailable,
+        },
+        SourceError::UnknownEntity { source_id, .. } => CloudSourceError::QueryRefused {
+            source_id: source(source_id),
+            reason: CloudQueryRefusal::UnknownEntity,
+        },
+        SourceError::UnobservableAttribute { source_id, .. } => CloudSourceError::QueryRefused {
+            source_id: source(source_id),
+            reason: CloudQueryRefusal::UnobservableAttribute,
+        },
+        SourceError::UnsupportedFilter { source_id, .. } => CloudSourceError::QueryRefused {
+            source_id: source(source_id),
+            reason: CloudQueryRefusal::UnsupportedFilter,
+        },
+        SourceError::SchemaDrift {
+            source_id,
+            expected,
+            observed,
+        } => CloudSourceError::QuerySchemaDrift {
+            source_id: source(source_id),
+            expected,
+            observed,
+        },
+        SourceError::UnrepresentablePath { source_id, .. }
+        | SourceError::Containment { source_id, .. }
+        | SourceError::Read { source_id, .. }
+        | SourceError::Malformed { source_id, .. } => CloudSourceError::QueryReadFailed {
+            source_id: source(source_id),
+        },
+        SourceError::WorkerFailed
+        | SourceError::InvalidPlan { .. }
+        | SourceError::ForeignPlan { .. }
+        | SourceError::AttributeConflict { .. }
+        | SourceError::EmptyFederation => CloudSourceError::QueryInvalidResponse,
     }
 }
 
@@ -1319,6 +1644,7 @@ async fn execute_cloud_query(
     source: &dyn catdb_connectors::DataSource,
     filters: Vec<CloudFilterInput>,
     fields: Vec<String>,
+    cancellation: catdb_connectors::CancellationToken,
 ) -> Result<CloudDocumentQueryResponse, CloudSourceError> {
     if filters.len() > MAX_CLOUD_QUERY_FILTERS
         || fields.is_empty()
@@ -1379,6 +1705,19 @@ async fn execute_cloud_query(
         &vocabulary,
     )
     .map_err(|error| query_invalid(error.to_string()))?;
+    let plan = source
+        .compile(&query, &fields)
+        .map_err(map_query_source_error)?;
+    let pushed = plan
+        .pushed_attrs()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let residual = plan
+        .residual_attrs()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let query_id = uuid::Uuid::new_v4();
     let context = catdb_connectors::ReadContext::new(
         query_id,
@@ -1388,17 +1727,20 @@ async fn execute_cloud_query(
         CLOUD_QUERY_WORK_BUDGET,
         CLOUD_QUERY_BYTE_BUDGET,
         CLOUD_QUERY_PAGE_SIZE,
-        catdb_connectors::CancellationToken::new(),
+        cancellation,
     )
     .map_err(|error| query_failed(error.to_string()))?;
     let answer = catdb_connectors::read(source, &query, &fields, &context)
         .await
-        .map_err(|error| query_failed(error.to_string()))?;
+        .map_err(map_query_source_error)?;
     if answer.source != *source.id() {
         return Err(query_failed(
             "cloud connector returned an answer under a different source identity",
         ));
     }
+    let scanned = u32::try_from(answer.scanned)
+        .map_err(|_| query_failed("cloud query scan count exceeds the application contract"))?;
+    let source_id = answer.source.to_string();
     let rows = answer
         .rows
         .into_iter()
@@ -1408,19 +1750,49 @@ async fn execute_cloud_query(
                     "cloud connector returned a row with an invalid source, entity, or value",
                 ));
             }
+            let row_source = row.source.to_string();
+            let provenance = fields
+                .iter()
+                .map(|field| CloudFieldProvenance {
+                    field: field.clone(),
+                    source_id: row_source.clone(),
+                    record_key: row.key.clone(),
+                    mapping_version: CLOUD_DOCUMENT_MAPPING_VERSION.to_string(),
+                    observation: if row.value.get(field).is_some() {
+                        CloudObservation::Observed
+                    } else {
+                        CloudObservation::ObservedNothing
+                    },
+                })
+                .collect();
             Ok(CloudDocumentRow {
-                source_id: row.source.to_string(),
+                source_id: row_source,
                 record_key: row.key,
                 fields: row.value,
+                provenance,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let returned = u32::try_from(rows.len())
+        .map_err(|_| query_failed("cloud query row count exceeds the application contract"))?;
+    let version_pins = cloud_version_pins(provider, source)?;
     let response = CloudDocumentQueryResponse {
         query_id: query_id.to_string(),
         provider,
         schema_version: CLOUD_DOCUMENT_SCHEMA_VERSION.to_string(),
-        scanned: u32::try_from(answer.scanned)
-            .map_err(|_| query_failed("cloud query scan count exceeds the application contract"))?,
+        version_pins,
+        completeness: CloudCompleteness::Complete,
+        sources: vec![CloudSourceReport {
+            source_id,
+            outcome: CloudSourceOutcome::Ran {
+                mode: CloudExecutionMode::Virtual,
+                scanned,
+                returned,
+                pushed,
+                residual,
+            },
+        }],
+        scanned,
         rows,
     };
     let encoded = serde_json::to_vec(&response)
@@ -1431,13 +1803,37 @@ async fn execute_cloud_query(
     Ok(response)
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn cloud_version_pins(
+    provider: CloudProvider,
+    source: &dyn catdb_connectors::DataSource,
+) -> Result<CloudVersionPins, CloudSourceError> {
+    let schema =
+        serde_json::to_vec(source.schema()).map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+    let source_spec = serde_json::to_vec(&source.source_spec())
+        .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+    let connector_version = match provider {
+        CloudProvider::GoogleDrive => "google-drive/v1",
+        CloudProvider::Dropbox => "dropbox/v1",
+    };
+    Ok(CloudVersionPins {
+        catalog_version: crate::library::LIBRARY_VERSION,
+        schema_version: CLOUD_DOCUMENT_SCHEMA_VERSION.to_string(),
+        schema_checksum: blake3::hash(&schema).to_hex().to_string(),
+        mapping_version: CLOUD_DOCUMENT_MAPPING_VERSION.to_string(),
+        connector_version: connector_version.to_string(),
+        source_version: blake3::hash(&source_spec).to_hex().to_string(),
+        policy_version: CLOUD_READ_POLICY_VERSION.to_string(),
+    })
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn list_cloud_sources(
     app: AppHandle,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.0.lock().await;
+    let _operation = state.operations.lock().await;
     blocking_cloud_operation(app, |registry, vault| {
         CloudAccountService::new(registry, &vault).snapshot()
     })
@@ -1452,7 +1848,7 @@ pub(crate) async fn set_cloud_source_enabled(
     enabled: bool,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.0.lock().await;
+    let _operation = state.operations.lock().await;
     blocking_cloud_operation(app, move |registry, vault| {
         CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)
     })
@@ -1466,7 +1862,7 @@ pub(crate) async fn disconnect_cloud_source(
     provider: CloudProvider,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.0.lock().await;
+    let _operation = state.operations.lock().await;
     blocking_cloud_operation(app, move |registry, vault| {
         CloudAccountService::new(registry, &vault).disconnect(provider)
     })
@@ -1480,7 +1876,7 @@ pub(crate) async fn connect_cloud_source(
     provider: CloudProvider,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.0.lock().await;
+    let _operation = state.operations.lock().await;
     let client_id = oauth_client_id(provider)?;
     let (listener, redirect_uri) = bind_oauth_callback_listener(provider).await?;
     let (verifier, oauth_state) = new_pkce_material();
@@ -2063,9 +2459,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        bind_oauth_callback_listener, execute_cloud_query, CloudAccountService,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse, CloudProvider,
-        CloudSourceConfig, CloudSourceError, CredentialVault, MemoryCredentialVault, OAuthAttempt,
+        bind_oauth_callback_listener, execute_cloud_query, CloudAccountService, CloudAccountsState,
+        CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudSourceConfig,
+        CloudSourceError, CloudSourceOutcome, CredentialVault, MemoryCredentialVault, OAuthAttempt,
         SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
@@ -2244,6 +2641,7 @@ mod tests {
             &FakeCloudSource::empty(7),
             Vec::new(),
             vec!["path".to_string()],
+            catdb_connectors::CancellationToken::new(),
         )
         .await
         .expect("successful empty query");
@@ -2253,6 +2651,18 @@ mod tests {
                 query_id: empty.query_id.clone(),
                 provider: CloudProvider::Dropbox,
                 schema_version: "mdreader.Document/v1".to_string(),
+                version_pins: empty.version_pins.clone(),
+                completeness: CloudCompleteness::Complete,
+                sources: vec![super::CloudSourceReport {
+                    source_id: "cloud-test".to_string(),
+                    outcome: CloudSourceOutcome::Ran {
+                        mode: CloudExecutionMode::Virtual,
+                        scanned: 7,
+                        returned: 0,
+                        pushed: Vec::new(),
+                        residual: Vec::new(),
+                    },
+                }],
                 scanned: 7,
                 rows: Vec::new(),
             }
@@ -2263,13 +2673,34 @@ mod tests {
             &FakeCloudSource::refusing(),
             Vec::new(),
             vec!["path".to_string()],
+            catdb_connectors::CancellationToken::new(),
         )
         .await;
         assert!(matches!(
             failure,
-            Err(CloudSourceError::QueryFailed { detail })
-                if detail == "source `cloud-test` transport failed"
+            Err(CloudSourceError::QueryTransport { source_id })
+                if source_id == "cloud-test"
         ));
+    }
+
+    #[test]
+    fn cloud_query_request_ids_make_cancellation_reachable_before_completion() {
+        let state = CloudAccountsState::default();
+        let first = state
+            .begin_query("browse:google-drive")
+            .expect("first query");
+        let second = state
+            .begin_query("browse:google-drive")
+            .expect("replacement query");
+
+        assert!(
+            first.cancellation.is_cancelled(),
+            "a replacement request must cancel the retired connector read"
+        );
+        assert!(!second.cancellation.is_cancelled());
+        assert!(state.cancel_query("browse:google-drive"));
+        assert!(second.cancellation.is_cancelled());
+        assert!(!state.cancel_query("browse:google-drive"));
     }
 
     #[test]
