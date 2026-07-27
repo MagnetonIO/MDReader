@@ -43,7 +43,7 @@ const h = vi.hoisted(() => ({
     sourceId === 'c'.repeat(64) ? CANONICAL_ROOT : '/unexpected',
   ),
   mark: vi.fn(async () => ({
-    version: 3,
+    version: 4,
     sources: [],
     cleanup: { kind: 'complete' as const },
   })),
@@ -85,7 +85,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/settings.js')>();
   const settingsBackend = {
     listSources: vi.fn(async () => ({
-      version: 3,
+      version: 4,
       sources: [SOURCE, INTERACTIVE_SOURCE],
       cleanup: { kind: 'complete' as const },
     })),
@@ -95,7 +95,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     forgetSource: vi.fn(async (sourceId: string) => {
       h.forgottenSourceIds.push(sourceId);
       return {
-        version: 3,
+        version: 4,
         sources: [SOURCE, INTERACTIVE_SOURCE].filter((source) => source.id !== sourceId),
         cleanup: { kind: 'complete' as const },
       };

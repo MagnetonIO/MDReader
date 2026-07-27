@@ -7,9 +7,6 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::fs;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(test)]
@@ -30,7 +27,7 @@ use tokio::net::TcpListener;
 use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::file_lock::AdvisoryFileLock;
+use crate::library::LibraryStore;
 
 const CLOUD_REGISTRY_VERSION: u32 = 1;
 const MAX_CLOUD_SOURCES: usize = 2;
@@ -295,7 +292,7 @@ pub(crate) trait CredentialVault {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CloudSourceRecord {
+pub(crate) struct CloudSourceRecord {
     id: String,
     provider: CloudProvider,
     label: String,
@@ -304,181 +301,61 @@ struct CloudSourceRecord {
     config: CloudSourceConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredCloudRegistry {
-    version: u32,
-    sources: Vec<CloudSourceRecord>,
-}
-
-#[derive(Debug, Clone)]
-struct CloudRegistry {
-    sources: Vec<CloudSourceRecord>,
-}
-
-impl CloudRegistry {
-    fn empty() -> Self {
-        Self {
-            sources: Vec::new(),
-        }
+pub(crate) fn validate_cloud_source_records(
+    sources: &[CloudSourceRecord],
+) -> Result<(), CloudSourceError> {
+    if sources.len() > MAX_CLOUD_SOURCES {
+        return Err(CloudSourceError::CorruptRegistry);
     }
-
-    fn load(path: &Path) -> Result<Self, CloudSourceError> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::empty());
-            }
-            Err(_) => return Err(CloudSourceError::PersistFailed),
-        };
-        let stored: StoredCloudRegistry =
-            serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::CorruptRegistry)?;
-        if stored.version != CLOUD_REGISTRY_VERSION {
-            return Err(CloudSourceError::UnsupportedVersion {
-                found: stored.version,
-                expected: CLOUD_REGISTRY_VERSION,
-            });
-        }
-        let registry = Self {
-            sources: stored.sources,
-        };
-        registry.validate()?;
-        Ok(registry)
-    }
-
-    fn validate(&self) -> Result<(), CloudSourceError> {
-        if self.sources.len() > MAX_CLOUD_SOURCES {
+    let mut ids = HashSet::new();
+    let mut providers = HashSet::new();
+    let mut references = HashSet::new();
+    for source in sources {
+        let valid_id = source.id.len() == 64
+            && source
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        let valid_reference = !source.credential_reference.is_empty()
+            && source.credential_reference.len() <= 256
+            && !source.credential_reference.chars().any(char::is_control);
+        if !valid_id
+            || !valid_reference
+            || source.label != source.provider.label()
+            || source.config.provider() != source.provider
+            || source.config.validate().is_err()
+            || !ids.insert(source.id.as_str())
+            || !providers.insert(source.provider)
+            || !references.insert(source.credential_reference.as_str())
+        {
             return Err(CloudSourceError::CorruptRegistry);
         }
-        let mut ids = HashSet::new();
-        let mut providers = HashSet::new();
-        let mut references = HashSet::new();
-        for source in &self.sources {
-            let valid_id = source.id.len() == 64
-                && source
-                    .id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
-            let valid_reference = !source.credential_reference.is_empty()
-                && source.credential_reference.len() <= 256
-                && !source.credential_reference.chars().any(char::is_control);
-            if !valid_id
-                || !valid_reference
-                || source.label != source.provider.label()
-                || source.config.provider() != source.provider
-                || source.config.validate().is_err()
-                || !ids.insert(source.id.as_str())
-                || !providers.insert(source.provider)
-                || !references.insert(source.credential_reference.as_str())
-            {
-                return Err(CloudSourceError::CorruptRegistry);
-            }
-        }
-        Ok(())
     }
-
-    fn persist(&self, path: &Path) -> Result<(), CloudSourceError> {
-        self.validate()?;
-        let parent = path.parent().ok_or(CloudSourceError::PersistFailed)?;
-        fs::create_dir_all(parent).map_err(|_| CloudSourceError::PersistFailed)?;
-        let bytes = serde_json::to_vec_pretty(&StoredCloudRegistry {
-            version: CLOUD_REGISTRY_VERSION,
-            sources: self.sources.clone(),
-        })
-        .map_err(|_| CloudSourceError::PersistFailed)?;
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(parent).map_err(|_| CloudSourceError::PersistFailed)?;
-        temporary
-            .write_all(&bytes)
-            .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|_| CloudSourceError::PersistFailed)?;
-        temporary
-            .persist(path)
-            .map(|_| ())
-            .map_err(|_| CloudSourceError::PersistFailed)
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct FileCloudRegistry {
-    path: PathBuf,
-    #[cfg(test)]
-    fail_next_persist: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl FileCloudRegistry {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            #[cfg(test)]
-            fail_next_persist: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    fn begin(&self) -> Result<CloudRegistryTransaction<'_>, CloudSourceError> {
-        let lock_path = self.path.with_extension("lock");
-        let lock =
-            AdvisoryFileLock::acquire(&lock_path).map_err(|_| CloudSourceError::PersistFailed)?;
-        let registry = CloudRegistry::load(&self.path)?;
-        Ok(CloudRegistryTransaction {
-            store: self,
-            _lock: lock,
-            registry,
-        })
-    }
-
-    #[cfg(test)]
-    fn fail_next_persist(&self) {
-        self.fail_next_persist
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-struct CloudRegistryTransaction<'a> {
-    store: &'a FileCloudRegistry,
-    _lock: AdvisoryFileLock,
-    registry: CloudRegistry,
-}
-
-impl CloudRegistryTransaction<'_> {
-    fn commit(self) -> Result<(), CloudSourceError> {
-        #[cfg(test)]
-        if self
-            .store
-            .fail_next_persist
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(CloudSourceError::PersistFailed);
-        }
-        self.registry.persist(&self.store.path)
-    }
+    Ok(())
 }
 
 pub(crate) struct CloudAccountService<'a, V> {
-    registry: FileCloudRegistry,
+    registry: LibraryStore,
     vault: &'a V,
 }
 
 impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
-    pub(crate) fn new(registry: FileCloudRegistry, vault: &'a V) -> Self {
+    pub(crate) fn new(registry: LibraryStore, vault: &'a V) -> Self {
         Self { registry, vault }
     }
 
     pub(crate) fn snapshot(&self) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        let transaction = self.registry.begin()?;
-        self.snapshot_registry(&transaction.registry)
+        self.registry
+            .read_cloud(|sources| self.snapshot_records(sources))
     }
 
-    fn snapshot_registry(
+    fn snapshot_records(
         &self,
-        registry: &CloudRegistry,
+        records: &[CloudSourceRecord],
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
         let mut sources = Vec::with_capacity(MAX_CLOUD_SOURCES);
         for provider in CloudProvider::all() {
-            let record = registry
-                .sources
-                .iter()
-                .find(|source| source.provider == provider);
+            let record = records.iter().find(|source| source.provider == provider);
             let (id, connection, enabled) = match record {
                 None => (String::new(), CloudConnectionState::Disconnected, false),
                 Some(record) => match self.vault.get(&record.credential_reference)? {
@@ -514,40 +391,44 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         if config.provider() != provider {
             return Err(CloudSourceError::InvalidConfiguration);
         }
-        let mut transaction = self.registry.begin()?;
-        let existing_index = transaction
-            .registry
-            .sources
-            .iter()
-            .position(|source| source.provider == provider);
-        let (id, credential_reference) = existing_index.map_or_else(
-            || {
-                let id = new_source_id();
-                let reference = format!("cloud-credential-{id}");
-                (id, reference)
-            },
-            |index| {
-                let source = &transaction.registry.sources[index];
-                (source.id.clone(), source.credential_reference.clone())
-            },
-        );
-        let previous = self.vault.get(&credential_reference)?;
-        self.vault.set(&credential_reference, &secret)?;
-        let record = CloudSourceRecord {
-            id,
-            provider,
-            label: provider.label().to_string(),
-            enabled: true,
-            credential_reference: credential_reference.clone(),
-            config,
-        };
-        if let Some(index) = existing_index {
-            transaction.registry.sources[index] = record;
-        } else {
-            transaction.registry.sources.push(record);
-        }
-        if let Err(error) = transaction.commit() {
-            self.restore_secret(&credential_reference, previous.as_ref())?;
+        let mut rollback = None;
+        let update = self.registry.update_cloud(|sources| {
+            let existing_index = sources
+                .iter()
+                .position(|source| source.provider == provider);
+            let (id, credential_reference) = existing_index.map_or_else(
+                || {
+                    let id = new_source_id();
+                    let reference = format!("cloud-credential-{id}");
+                    (id, reference)
+                },
+                |index| {
+                    let source = &sources[index];
+                    (source.id.clone(), source.credential_reference.clone())
+                },
+            );
+            let previous = self.vault.get(&credential_reference)?;
+            self.vault.set(&credential_reference, &secret)?;
+            rollback = Some((credential_reference.clone(), previous));
+            let record = CloudSourceRecord {
+                id,
+                provider,
+                label: provider.label().to_string(),
+                enabled: true,
+                credential_reference,
+                config,
+            };
+            if let Some(index) = existing_index {
+                sources[index] = record;
+            } else {
+                sources.push(record);
+            }
+            Ok(())
+        });
+        if let Err(error) = update {
+            if let Some((reference, previous)) = rollback.as_ref() {
+                self.restore_secret(reference, previous.as_ref())?;
+            }
             return Err(error);
         }
         self.snapshot()
@@ -558,18 +439,17 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         provider: CloudProvider,
         enabled: bool,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        let mut transaction = self.registry.begin()?;
-        let record = transaction
-            .registry
-            .sources
-            .iter_mut()
-            .find(|source| source.provider == provider)
-            .ok_or(CloudSourceError::SourceNotFound)?;
-        if enabled && self.vault.get(&record.credential_reference)?.is_none() {
-            return Err(CloudSourceError::CredentialMissing);
-        }
-        record.enabled = enabled;
-        transaction.commit()?;
+        self.registry.update_cloud(|sources| {
+            let record = sources
+                .iter_mut()
+                .find(|source| source.provider == provider)
+                .ok_or(CloudSourceError::SourceNotFound)?;
+            if enabled && self.vault.get(&record.credential_reference)?.is_none() {
+                return Err(CloudSourceError::CredentialMissing);
+            }
+            record.enabled = enabled;
+            Ok(())
+        })?;
         self.snapshot()
     }
 
@@ -577,23 +457,25 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         &self,
         provider: CloudProvider,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        let mut transaction = self.registry.begin()?;
-        let Some(index) = transaction
-            .registry
-            .sources
-            .iter()
-            .position(|source| source.provider == provider)
-        else {
-            return self.snapshot_registry(&transaction.registry);
-        };
-        let reference = transaction.registry.sources[index]
-            .credential_reference
-            .clone();
-        let previous = self.vault.get(&reference)?;
-        self.vault.delete(&reference)?;
-        transaction.registry.sources.remove(index);
-        if let Err(error) = transaction.commit() {
-            self.restore_secret(&reference, previous.as_ref())?;
+        let mut rollback = None;
+        let update = self.registry.update_cloud(|sources| {
+            let Some(index) = sources
+                .iter()
+                .position(|source| source.provider == provider)
+            else {
+                return Ok(());
+            };
+            let reference = sources[index].credential_reference.clone();
+            let previous = self.vault.get(&reference)?;
+            self.vault.delete(&reference)?;
+            rollback = Some((reference, previous));
+            sources.remove(index);
+            Ok(())
+        });
+        if let Err(error) = update {
+            if let Some((reference, previous)) = rollback.as_ref() {
+                self.restore_secret(reference, previous.as_ref())?;
+            }
             return Err(error);
         }
         self.snapshot()
@@ -926,7 +808,7 @@ impl CredentialVault for KeyringCredentialVault {
 
 async fn blocking_cloud_operation<T: Send + 'static>(
     app: AppHandle,
-    operation: impl FnOnce(FileCloudRegistry, KeyringCredentialVault) -> Result<T, CloudSourceError>
+    operation: impl FnOnce(LibraryStore, KeyringCredentialVault) -> Result<T, CloudSourceError>
         + Send
         + 'static,
 ) -> Result<T, CloudSourceError> {
@@ -936,10 +818,7 @@ async fn blocking_cloud_operation<T: Send + 'static>(
             .app_data_dir()
             .map_err(|_| CloudSourceError::PersistFailed)?;
         let vault = KeyringCredentialVault::new(&app.config().identifier)?;
-        operation(
-            FileCloudRegistry::new(app_data.join("cloud-sources.json")),
-            vault,
-        )
+        operation(LibraryStore::new(app_data.join("library.json")), vault)
     })
     .await
     .map_err(|_| CloudSourceError::PersistFailed)?
@@ -1482,8 +1361,9 @@ mod tests {
 
     use super::{
         CloudAccountService, CloudConnectionState, CloudProvider, CloudSourceConfig,
-        CloudSourceError, FileCloudRegistry, MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        CloudSourceError, MemoryCredentialVault, OAuthAttempt, SecretBundle,
     };
+    use crate::library::{LibraryRegistry, LibraryStore};
 
     fn google_config() -> CloudSourceConfig {
         CloudSourceConfig::GoogleDrive {
@@ -1506,10 +1386,8 @@ mod tests {
         let provider_file = temp.path().join("provider-owned.md");
         fs::write(&provider_file, "provider remains authoritative").expect("provider fixture");
         let vault = MemoryCredentialVault::default();
-        let service = CloudAccountService::new(
-            FileCloudRegistry::new(temp.path().join("cloud-sources.json")),
-            &vault,
-        );
+        let service =
+            CloudAccountService::new(LibraryStore::new(temp.path().join("library.json")), &vault);
 
         service
             .install(CloudProvider::GoogleDrive, google_config(), credentials())
@@ -1549,10 +1427,33 @@ mod tests {
     }
 
     #[test]
+    fn cloud_account_updates_preserve_existing_local_library_membership() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("notes");
+        fs::create_dir(&local_root).expect("local source");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&local_root).expect("admit local source");
+        registry
+            .save_to(&registry_path)
+            .expect("persist local source");
+        let vault = MemoryCredentialVault::default();
+        let service = CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault);
+
+        service
+            .install(CloudProvider::GoogleDrive, google_config(), credentials())
+            .expect("connect Drive");
+
+        let restored = LibraryRegistry::load_from(&registry_path).expect("unified registry");
+        assert_eq!(restored.sources().len(), 1);
+        assert_eq!(restored.cloud_sources.len(), 1);
+    }
+
+    #[test]
     fn disconnect_restores_the_credential_when_registry_publication_fails() {
         let temp = tempdir().expect("temporary directory");
         let vault = MemoryCredentialVault::default();
-        let registry = FileCloudRegistry::new(temp.path().join("cloud-sources.json"));
+        let registry = LibraryStore::new(temp.path().join("library.json"));
         let service = CloudAccountService::new(registry.clone(), &vault);
         service
             .install(
@@ -1561,7 +1462,7 @@ mod tests {
                 credentials(),
             )
             .expect("install connected source");
-        registry.fail_next_persist();
+        registry.fail_next_cloud_persist();
 
         assert_eq!(
             service.disconnect(CloudProvider::Dropbox),
@@ -1640,10 +1541,9 @@ mod tests {
     #[test]
     fn persisted_and_debug_forms_never_expose_token_material() {
         let temp = tempdir().expect("temporary directory");
-        let registry_path = temp.path().join("cloud-sources.json");
+        let registry_path = temp.path().join("library.json");
         let vault = MemoryCredentialVault::default();
-        let service =
-            CloudAccountService::new(FileCloudRegistry::new(registry_path.clone()), &vault);
+        let service = CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault);
         let secret = credentials();
 
         assert_eq!(format!("{secret:?}"), "SecretBundle([redacted])");
@@ -1654,6 +1554,19 @@ mod tests {
         let persisted = fs::read_to_string(registry_path).expect("read registry");
         assert!(!persisted.contains("access-token-value"));
         assert!(!persisted.contains("refresh-token-value"));
+        let registry: serde_json::Value =
+            serde_json::from_str(&persisted).expect("unified Library registry");
+        assert_eq!(
+            registry["cloud_sources"]
+                .as_array()
+                .expect("cloud membership")
+                .len(),
+            1
+        );
+        assert!(
+            !temp.path().join("cloud-sources.json").exists(),
+            "cloud membership must not create a parallel source registry"
+        );
         assert!(!format!("{:?}", service.snapshot().expect("snapshot")).contains("picked_file_123"));
     }
 
@@ -1661,10 +1574,8 @@ mod tests {
     fn a_missing_vault_entry_is_reauthorization_not_a_connected_source() {
         let temp = tempdir().expect("temporary directory");
         let vault = MemoryCredentialVault::default();
-        let service = CloudAccountService::new(
-            FileCloudRegistry::new(temp.path().join("cloud-sources.json")),
-            &vault,
-        );
+        let service =
+            CloudAccountService::new(LibraryStore::new(temp.path().join("library.json")), &vault);
         service
             .install(
                 CloudProvider::Dropbox,

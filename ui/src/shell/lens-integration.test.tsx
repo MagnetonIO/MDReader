@@ -99,7 +99,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     watchLibrarySource: vi.fn(async () => ({ root: source.path, generation: 1 })),
     grantLibrarySource: vi.fn(async () => source.path),
     markLibrarySourceActive: vi.fn(async () => ({
-      version: 3,
+      version: 4,
       sources: [{ ...source, active: true }],
       cleanup: { kind: 'complete' as const },
     })),

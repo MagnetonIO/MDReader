@@ -82,7 +82,7 @@ function mockLibrarySource() {
 
 function mockLibrarySnapshot() {
   return {
-    version: 3,
+    version: 4,
     sources: mockLibraryAdded ? [mockLibrarySource()] : [],
     cleanup: { kind: 'complete' },
   };

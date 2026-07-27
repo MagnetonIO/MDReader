@@ -319,7 +319,7 @@ async function realLibrarySource() {
 
 async function realLibrarySnapshot() {
   return {
-    version: 3,
+    version: 4,
     sources: realLibraryAdded ? [await realLibrarySource()] : [],
     cleanup: { kind: 'complete' },
   };

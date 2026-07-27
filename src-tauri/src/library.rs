@@ -18,10 +18,11 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, CloudSourceRecord};
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 3;
+pub(crate) const LIBRARY_VERSION: u32 = 4;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -323,6 +324,17 @@ struct StoredLibrary {
     version: u32,
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    cloud_sources: Vec<CloudSourceRecord>,
+    #[serde(default)]
+    cleanup_pending: Vec<PendingCleanup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV3 {
+    version: u32,
+    active_source_id: Option<String>,
+    sources: Vec<LibrarySource>,
     #[serde(default)]
     cleanup_pending: Vec<PendingCleanup>,
 }
@@ -392,6 +404,7 @@ struct PendingCleanup {
 pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    pub(crate) cloud_sources: Vec<CloudSourceRecord>,
     cleanup_pending: Vec<PendingCleanup>,
 }
 
@@ -400,6 +413,7 @@ impl LibraryRegistry {
         Self {
             active_source_id: None,
             sources: Vec::new(),
+            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         }
     }
@@ -663,6 +677,9 @@ impl LibraryRegistry {
         if version.version == 2 {
             return Self::migrate_v2(path, &bytes);
         }
+        if version.version == 3 {
+            return Self::migrate_v3(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -672,10 +689,13 @@ impl LibraryRegistry {
         let stored: StoredLibrary =
             serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        validate_cloud_source_records(&stored.cloud_sources)
+            .map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
         Ok(Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
+            cloud_sources: stored.cloud_sources,
             cleanup_pending: stored.cleanup_pending,
         })
     }
@@ -700,6 +720,7 @@ impl LibraryRegistry {
             // filesystem object. Legacy managed bytes were quarantined above
             // and are never inherited by the object currently at that path.
             sources: Vec::new(),
+            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
@@ -761,6 +782,7 @@ impl LibraryRegistry {
                 .as_ref()
                 .and_then(|old| id_map.get(old).cloned()),
             sources,
+            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
@@ -774,6 +796,21 @@ impl LibraryRegistry {
             }
             return Err(error);
         }
+        Ok(migrated)
+    }
+
+    fn migrate_v3(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibraryV3 =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
+        let migrated = Self {
+            active_source_id: stored.active_source_id,
+            sources: stored.sources,
+            cloud_sources: Vec::new(),
+            cleanup_pending: stored.cleanup_pending,
+        };
+        migrated.save_to(path)?;
         Ok(migrated)
     }
 
@@ -876,6 +913,8 @@ impl LibraryRegistry {
 
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
         Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
+        validate_cloud_source_records(&self.cloud_sources)
+            .map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_pending_cleanup(&self.cleanup_pending, &self.sources)?;
         let parent = path.parent().ok_or(LibraryError::PersistFailed)?;
         fs::create_dir_all(parent).map_err(|_| LibraryError::PersistFailed)?;
@@ -883,6 +922,7 @@ impl LibraryRegistry {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
             sources: self.sources.clone(),
+            cloud_sources: self.cloud_sources.clone(),
             cleanup_pending: self.cleanup_pending.clone(),
         })
         .map_err(|_| LibraryError::PersistFailed)?;
@@ -1229,13 +1269,19 @@ fn rollback_managed_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), ()> {
 }
 
 #[derive(Debug, Clone)]
-struct LibraryStore {
+pub(crate) struct LibraryStore {
     registry_path: PathBuf,
+    #[cfg(test)]
+    fail_next_cloud_persist: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LibraryStore {
-    fn new(registry_path: PathBuf) -> Self {
-        Self { registry_path }
+    pub(crate) fn new(registry_path: PathBuf) -> Self {
+        Self {
+            registry_path,
+            #[cfg(test)]
+            fail_next_cloud_persist: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 
     fn lock_path(&self) -> Result<PathBuf, LibraryError> {
@@ -1273,6 +1319,55 @@ impl LibraryStore {
         let result = operation(&mut registry)?;
         registry.save_to(&self.registry_path)?;
         Ok(result)
+    }
+
+    pub(crate) fn read_cloud<T>(
+        &self,
+        operation: impl FnOnce(&[CloudSourceRecord]) -> Result<T, CloudSourceError>,
+    ) -> Result<T, CloudSourceError> {
+        let _lease = self
+            .acquire()
+            .map_err(|_| CloudSourceError::PersistFailed)?;
+        let mut registry =
+            LibraryRegistry::load_from(&self.registry_path).map_err(map_library_cloud_error)?;
+        let app_data = self.app_data().map_err(map_library_cloud_error)?;
+        let mut cleanup = |path: &Path| fs::remove_dir_all(path);
+        self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)
+            .map_err(map_library_cloud_error)?;
+        operation(&registry.cloud_sources)
+    }
+
+    pub(crate) fn update_cloud<T>(
+        &self,
+        operation: impl FnOnce(&mut Vec<CloudSourceRecord>) -> Result<T, CloudSourceError>,
+    ) -> Result<T, CloudSourceError> {
+        let _lease = self
+            .acquire()
+            .map_err(|_| CloudSourceError::PersistFailed)?;
+        let mut registry =
+            LibraryRegistry::load_from(&self.registry_path).map_err(map_library_cloud_error)?;
+        let app_data = self.app_data().map_err(map_library_cloud_error)?;
+        let mut cleanup = |path: &Path| fs::remove_dir_all(path);
+        self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)
+            .map_err(map_library_cloud_error)?;
+        let result = operation(&mut registry.cloud_sources)?;
+        #[cfg(test)]
+        if self
+            .fail_next_cloud_persist
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CloudSourceError::PersistFailed);
+        }
+        registry
+            .save_to(&self.registry_path)
+            .map_err(map_library_cloud_error)?;
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_cloud_persist(&self) {
+        self.fail_next_cloud_persist
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn app_data(&self) -> Result<PathBuf, LibraryError> {
@@ -1551,6 +1646,16 @@ impl LibraryStore {
         // what SQLite-shaped files happen to exist in app data. Only the native
         // picker may create the first membership.
         Err(LibraryError::NeedsNativeRepick)
+    }
+}
+
+fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
+    match error {
+        LibraryError::CorruptRegistry => CloudSourceError::CorruptRegistry,
+        LibraryError::UnsupportedVersion { found, expected } => {
+            CloudSourceError::UnsupportedVersion { found, expected }
+        }
+        _ => CloudSourceError::PersistFailed,
     }
 }
 
@@ -2839,7 +2944,7 @@ mod tests {
     }
 
     #[test]
-    fn version_three_requires_non_nil_unique_engine_source_ids() {
+    fn version_four_requires_non_nil_unique_engine_source_ids() {
         let temp = tempdir().expect("tempdir");
         let registry_path = temp.path().join("app-data/library.json");
         let mut registry = LibraryRegistry::empty();
@@ -2849,10 +2954,10 @@ mod tests {
         registry
             .add_root(&mkdir(temp.path(), "two"))
             .expect("add second source");
-        registry.save_to(&registry_path).expect("save valid V3");
+        registry.save_to(&registry_path).expect("save valid V4");
         let valid: serde_json::Value =
-            serde_json::from_slice(&fs::read(&registry_path).expect("read valid V3 registry"))
-                .expect("parse valid V3 registry");
+            serde_json::from_slice(&fs::read(&registry_path).expect("read valid V4 registry"))
+                .expect("parse valid V4 registry");
 
         let mut duplicate = valid.clone();
         let sources = duplicate["sources"].as_array_mut().expect("source array");
@@ -2860,9 +2965,9 @@ mod tests {
         sources[1]["engine_source_id"] = first_id;
         fs::write(
             &registry_path,
-            serde_json::to_vec_pretty(&duplicate).expect("encode duplicate V3"),
+            serde_json::to_vec_pretty(&duplicate).expect("encode duplicate V4"),
         )
-        .expect("write duplicate V3");
+        .expect("write duplicate V4");
         assert!(matches!(
             LibraryRegistry::load_from(&registry_path),
             Err(LibraryError::CorruptRegistry)
@@ -2873,13 +2978,53 @@ mod tests {
             serde_json::json!("00000000-0000-0000-0000-000000000000");
         fs::write(
             &registry_path,
-            serde_json::to_vec_pretty(&nil).expect("encode nil V3"),
+            serde_json::to_vec_pretty(&nil).expect("encode nil V4"),
         )
-        .expect("write nil V3");
+        .expect("write nil V4");
         assert!(matches!(
             LibraryRegistry::load_from(&registry_path),
             Err(LibraryError::CorruptRegistry)
         ));
+    }
+
+    #[test]
+    fn version_three_migrates_once_into_the_unified_cloud_library_registry() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("app-data/library.json");
+        let mut registry = LibraryRegistry::empty();
+        registry
+            .add_root(&mkdir(temp.path(), "notes"))
+            .expect("add local source");
+        registry.save_to(&registry_path).expect("save V4 registry");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read registry"))
+                .expect("parse registry");
+        legacy["version"] = serde_json::json!(3);
+        legacy
+            .as_object_mut()
+            .expect("registry object")
+            .remove("cloud_sources");
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&legacy).expect("encode V3"),
+        )
+        .expect("write V3");
+
+        let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate V3");
+        assert_eq!(migrated.sources().len(), 1);
+        assert!(migrated.cloud_sources.is_empty());
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
+                .expect("parse migrated registry");
+        assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
+        assert_eq!(persisted["cloud_sources"], serde_json::json!([]));
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("migration is idempotent")
+                .sources()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -2904,7 +3049,7 @@ mod tests {
             before
         );
         assert!(old_db.is_file(), "managed move was rolled back");
-        assert!(!new_db.exists(), "failed publish leaves no V3 managed path");
+        assert!(!new_db.exists(), "failed publish leaves no V4 managed path");
     }
 
     #[test]

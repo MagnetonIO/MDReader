@@ -154,7 +154,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     restore_candidate: active,
   });
   const listSources = vi.fn(async () => ({
-    version: 3,
+    version: 4,
     sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
     cleanup: { kind: 'complete' as const },
   }));
@@ -163,7 +163,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     added: true,
   }));
   const markActive = vi.fn(async () => ({
-    version: 3,
+    version: 4,
     sources: [
       source('/ws', h.pickedPath === '/ws'),
       source('/ws-b', h.pickedPath === '/ws-b'),
@@ -177,7 +177,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     reconcileRestore: vi.fn(async () => null),
     markActive,
     forgetSource: vi.fn(async () => ({
-      version: 3,
+      version: 4,
       sources: [],
       cleanup: { kind: 'complete' as const },
     })),

@@ -26,7 +26,7 @@ const SOURCE: LibrarySourceDto = {
 };
 
 const SNAPSHOT: LibrarySnapshot = {
-  version: 3,
+  version: 4,
   sources: [SOURCE],
   cleanup: { kind: 'complete' },
 };
@@ -46,7 +46,7 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
     reconcileRestore: vi.fn(async () => null),
     markActive: vi.fn(async () => SNAPSHOT),
     forgetSource: vi.fn(async () => ({
-      version: 3,
+      version: 4,
       sources: [],
       cleanup: { kind: 'complete' as const },
     })),
@@ -294,7 +294,7 @@ describe('Settings sheet', () => {
     );
 
     await act(async () => {
-      release({ version: 3, sources: [], cleanup: { kind: 'complete' } });
+      release({ version: 4, sources: [], cleanup: { kind: 'complete' } });
       await pending;
     });
   });
@@ -315,7 +315,7 @@ describe('Settings sheet', () => {
     };
     const api = backend({
       listSources: vi.fn(async () => ({
-        version: 3,
+        version: 4,
         sources: [active, missing],
         cleanup: { kind: 'complete' as const },
       })),
@@ -413,7 +413,7 @@ describe('Settings sheet', () => {
   it('keeps a failed managed-state deletion visible as pending local cleanup', async () => {
     const api = backend({
       listSources: vi.fn(async () => ({
-        version: 3,
+        version: 4,
         sources: [],
         cleanup: { kind: 'pending' as const, source_count: 2 },
       })),
