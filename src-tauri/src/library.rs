@@ -1980,7 +1980,7 @@ mod tests {
     ) {
         assert!(matches!(
             LibraryRegistry::load_from(registry_path),
-            Err(LibraryError::CorruptRegistry { .. }) | Err(LibraryError::CleanupFailed { .. })
+            Err(LibraryError::CorruptRegistry) | Err(LibraryError::CleanupFailed { .. })
         ));
         assert_eq!(
             fs::read(registry_path).expect("read unchanged V2 registry"),
@@ -2006,7 +2006,7 @@ mod tests {
         assert_eq!(duplicate, LibraryError::DuplicateRoot);
         assert!(matches!(
             registry.add_root(&file),
-            Err(LibraryError::InvalidRoot { .. })
+            Err(LibraryError::InvalidRoot)
         ));
         assert_eq!(registry.sources().len(), 1);
         assert_eq!(registry.sources()[0].id, first.id);
@@ -2059,7 +2059,7 @@ mod tests {
         assert_eq!(registry.sources().len(), 2);
         assert!(matches!(
             registry.source_state(&original.id),
-            Ok(LibrarySourceState::Unreadable { .. })
+            Ok(LibrarySourceState::Unreadable)
         ));
         assert_eq!(
             registry
@@ -2114,12 +2114,12 @@ mod tests {
         fs::remove_dir(&root).expect("remove source only");
         assert!(matches!(
             registry.source_state(&source.id),
-            Ok(LibrarySourceState::Missing { .. })
+            Ok(LibrarySourceState::Missing)
         ));
         assert_eq!(registry.sources().len(), 1, "missing source remains known");
 
         let denied = classify_probe_error(io::Error::from(io::ErrorKind::PermissionDenied));
-        assert!(matches!(denied, LibrarySourceState::Unreadable { .. }));
+        assert!(matches!(denied, LibrarySourceState::Unreadable));
     }
 
     #[test]
@@ -2229,7 +2229,7 @@ mod tests {
         fs::write(&file, b"{ definitely not json").expect("write corrupt registry");
         assert!(matches!(
             LibraryRegistry::load_from(&file),
-            Err(LibraryError::CorruptRegistry { .. })
+            Err(LibraryError::CorruptRegistry)
         ));
 
         fs::write(
@@ -2807,7 +2807,7 @@ mod tests {
         .expect("write duplicate V3");
         assert!(matches!(
             LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CorruptRegistry { .. })
+            Err(LibraryError::CorruptRegistry)
         ));
 
         let mut nil = valid;
@@ -2820,7 +2820,7 @@ mod tests {
         .expect("write nil V3");
         assert!(matches!(
             LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CorruptRegistry { .. })
+            Err(LibraryError::CorruptRegistry)
         ));
     }
 
@@ -2985,7 +2985,7 @@ mod tests {
 
         assert!(matches!(
             registry.mark_active(&source.id, Some(&other_root)),
-            Err(LibraryError::GrantMismatch { .. })
+            Err(LibraryError::GrantMismatch)
         ));
         assert!(registry.restore_source_id().is_none());
 
@@ -3030,7 +3030,7 @@ mod tests {
 
         assert!(matches!(
             snapshot.sources[0].state,
-            super::LibraryAvailability::Missing { .. }
+            super::LibraryAvailability::Missing
         ));
         assert_eq!(
             snapshot.sources[0].index_state,
@@ -3145,7 +3145,7 @@ mod tests {
             LibraryRegistry::load_from(&registry_path)
                 .expect("reload removed membership")
                 .activation_root(&source.id),
-            Err(LibraryError::SourceNotFound { .. })
+            Err(LibraryError::SourceNotFound)
         ));
         assert_eq!(
             LibraryRegistry::load_from(&registry_path)
@@ -3357,7 +3357,7 @@ mod tests {
         fs::remove_dir(&root).expect("make source unavailable");
         assert!(matches!(
             registry.activation_path(&source.id),
-            Err(LibraryError::SourceUnavailable { .. })
+            Err(LibraryError::SourceUnavailable)
         ));
     }
 
@@ -3384,13 +3384,13 @@ mod tests {
         assert!(
             matches!(
                 registry.source_state(&source.id),
-                Ok(LibrarySourceState::Unreadable { .. })
+                Ok(LibrarySourceState::Unreadable)
             ),
             "a path now resolving to a different canonical root is unavailable"
         );
         assert!(matches!(
             registry.activation_path(&source.id),
-            Err(LibraryError::SourceUnavailable { .. })
+            Err(LibraryError::SourceUnavailable)
         ));
         assert_eq!(
             registry
@@ -3474,7 +3474,7 @@ mod tests {
 
         assert!(matches!(
             LibraryStore::new(registry_path).read(|_| Ok(())),
-            Err(LibraryError::PersistFailed { .. })
+            Err(LibraryError::PersistFailed)
         ));
     }
 
@@ -3553,7 +3553,7 @@ mod tests {
         let available = mkdir(temp.path(), "available");
         assert!(matches!(
             store.reconcile_restore_or_migrate(Some(&available), &app_data),
-            Err(LibraryError::CorruptRegistry { .. })
+            Err(LibraryError::CorruptRegistry)
         ));
         assert_eq!(
             fs::read(&registry_path).expect("corrupt bytes remain"),
