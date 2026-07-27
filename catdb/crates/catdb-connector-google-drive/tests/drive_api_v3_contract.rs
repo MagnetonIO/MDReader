@@ -104,6 +104,17 @@ fn shared_drive_config() -> DriveSourceConfig {
     config().with_shared_drive("shared-drive-7").unwrap()
 }
 
+fn selected_file_config() -> DriveSourceConfig {
+    DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![DriveSelection::file("selected-file")],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap()
+}
+
 fn source(
     transport: ScriptedTransport,
     config: DriveSourceConfig,
@@ -306,8 +317,13 @@ async fn rejected_remote_page_token_is_invalid_cursor_not_transport_or_empty() {
         ]),
         config(),
     );
+    let query_id = uuid::Uuid::new_v4();
     let page = source
-        .execute_page(&plan(&source, &["id"]), None, &context(1, 4, 64 * 1024))
+        .execute_page(
+            &plan(&source, &["id"]),
+            None,
+            &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -315,17 +331,86 @@ async fn rejected_remote_page_token_is_invalid_cursor_not_transport_or_empty() {
             .execute_page(
                 &plan(&source, &["id"]),
                 page.next_cursor.as_ref(),
-                &context_with_id(
-                    uuid::Uuid::new_v4(),
-                    1,
-                    4,
-                    64 * 1024,
-                    CancellationToken::new()
-                ),
+                &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
             )
             .await,
         Err(SourceError::InvalidCursor)
     ));
+}
+
+#[tokio::test]
+async fn selected_file_ids_use_files_get_instead_of_an_unsupported_list_query_term() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-file",
+        "name":"selected.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"8",
+        "md5Checksum":"selected-checksum",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::new([response(200, metadata)]),
+        selected_file_config(),
+    );
+    let page = source
+        .execute_page(
+            &plan(&source, &["id", "name"]),
+            None,
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(page.scanned, 1);
+    assert_eq!(page.rows[0].key, "selected-file");
+    assert_eq!(
+        transport.requests()[0].path(),
+        "/drive/v3/files/selected-file?fields=id%2Cname%2CmimeType%2CmodifiedTime%2Csize%2Cmd5Checksum%2Cparents%2Ctrashed&supportsAllDrives=true"
+    );
+    assert!(!transport.requests()[0].path().contains("q=id"));
+}
+
+#[tokio::test]
+async fn provider_empty_pages_with_continuations_are_followed_inside_one_bounded_page() {
+    let empty = listing(serde_json::json!([]), Some("sparse-next"), false);
+    let populated = listing(
+        serde_json::json!([{
+            "id":"later",
+            "name":"later.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:56Z",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        None,
+        false,
+    );
+    let (source, transport) = source(
+        ScriptedTransport::new([response(200, empty), response(200, populated)]),
+        DriveSourceConfig::new(
+            "drive-library",
+            "drive",
+            "Document",
+            vec![DriveSelection::folder("selected-folder")],
+            DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+        )
+        .unwrap(),
+    );
+    let page = source
+        .execute_page(&plan(&source, &["id"]), None, &context(1, 2, 64 * 1024))
+        .await
+        .unwrap();
+
+    assert_eq!(page.scanned, 1);
+    assert_eq!(page.rows[0].key, "later");
+    assert!(page.next_cursor.is_none());
+    assert_eq!(transport.requests().len(), 2);
+    assert!(transport.requests()[1]
+        .path()
+        .contains("pageToken=sparse-next"));
 }
 
 #[tokio::test]
