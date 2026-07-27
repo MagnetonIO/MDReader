@@ -43,6 +43,7 @@ const MAX_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONFIGURED_SELECTIONS: usize = 512;
 const MAX_SELECTION_ID_BYTES: usize = 256;
 const MAX_CHANGE_EVENTS: usize = 1_000;
+const MAX_EMPTY_PROVIDER_PAGES: usize = 32;
 const CURSOR_VERSION: u8 = 1;
 const QUERY_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-query-cursor\0";
 const CHANGE_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-change-cursor\0";
@@ -72,7 +73,7 @@ impl fmt::Debug for DriveSecretReference {
 }
 
 /// One Drive item explicitly selected for an MDReader Library.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DriveSelection {
     /// A specific Picker-selected file.
@@ -85,6 +86,15 @@ pub enum DriveSelection {
         /// Stable Google Drive folder id.
         id: String,
     },
+}
+
+impl fmt::Debug for DriveSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File { .. } => formatter.write_str("DriveSelection::File([redacted-id])"),
+            Self::Folder { .. } => formatter.write_str("DriveSelection::Folder([redacted-id])"),
+        }
+    }
 }
 
 impl DriveSelection {
@@ -110,7 +120,7 @@ impl DriveSelection {
 }
 
 /// Immutable, non-secret Google Drive source configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveSourceConfig {
     source_id: String,
     catdb_schema: String,
@@ -118,6 +128,20 @@ pub struct DriveSourceConfig {
     selections: Vec<DriveSelection>,
     credential_reference: DriveSecretReference,
     shared_drive_id: Option<String>,
+}
+
+impl fmt::Debug for DriveSourceConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveSourceConfig")
+            .field("source_id", &self.source_id)
+            .field("catdb_schema", &self.catdb_schema)
+            .field("catdb_entity", &self.catdb_entity)
+            .field("selection_count", &self.selections.len())
+            .field("credential_reference", &self.credential_reference)
+            .field("shared_drive", &self.shared_drive_id.is_some())
+            .finish()
+    }
 }
 
 impl DriveSourceConfig {
@@ -671,7 +695,13 @@ struct QueryCursorPayload {
     schema_version: String,
     plan_digest: String,
     query_id: Uuid,
-    page_token: String,
+    selected_file_index: usize,
+    folder_page_token: Option<String>,
+}
+
+struct QueryPosition {
+    selected_file_index: usize,
+    folder_page_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -960,7 +990,7 @@ impl DriveSource {
                 "files(id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed),nextPageToken,incompleteSearch".to_string(),
             ),
             ("pageSize", page_size.to_string()),
-            ("q", self.selection_query()),
+            ("q", self.folder_selection_query()),
             ("spaces", "drive".to_string()),
             ("supportsAllDrives", "true".to_string()),
         ];
@@ -975,19 +1005,33 @@ impl DriveSource {
         encoded_path("/drive/v3/files", params)
     }
 
-    fn selection_query(&self) -> String {
-        let mut clauses = Vec::new();
-        for selection in &self.spec.config.selections {
-            match selection {
-                DriveSelection::File { id } => {
-                    clauses.push(format!("id = '{}'", escape_query_literal(id)));
-                }
+    fn folder_selection_query(&self) -> String {
+        let clauses = self
+            .spec
+            .config
+            .selections
+            .iter()
+            .filter_map(|selection| match selection {
+                DriveSelection::File { .. } => None,
                 DriveSelection::Folder { id } => {
-                    clauses.push(format!("'{}' in parents", escape_query_literal(id)));
+                    Some(format!("'{}' in parents", escape_query_literal(id)))
                 }
-            }
-        }
+            })
+            .collect::<Vec<_>>();
         format!("trashed = false and ({})", clauses.join(" or "))
+    }
+
+    fn metadata_path(&self, file_id: &str) -> String {
+        encoded_path(
+            &format!("/drive/v3/files/{}", encode_path_segment(file_id)),
+            vec![
+                (
+                    "fields",
+                    "id,name,mimeType,modifiedTime,size,md5Checksum,parents,trashed".to_string(),
+                ),
+                ("supportsAllDrives", "true".to_string()),
+            ],
+        )
     }
 
     fn body_path(&self, file: &DriveFile) -> Option<String> {
@@ -995,10 +1039,7 @@ impl DriveSource {
         match file.mime_type.as_str() {
             "application/vnd.google-apps.document" => Some(encoded_path(
                 &format!("/drive/v3/files/{encoded_id}/export"),
-                vec![
-                    ("mimeType", "text/plain".to_string()),
-                    ("supportsAllDrives", "true".to_string()),
-                ],
+                vec![("mimeType", "text/plain".to_string())],
             )),
             "text/markdown" | "text/plain" => Some(encoded_path(
                 &format!("/drive/v3/files/{encoded_id}"),
@@ -1075,9 +1116,15 @@ impl DriveSource {
         &self,
         plan: &SourcePlan,
         query_id: Uuid,
-        page_token: String,
+        selected_file_index: usize,
+        folder_page_token: Option<String>,
     ) -> Result<SourceCursor, SourceError> {
-        validate_provider_token(&page_token)?;
+        if let Some(page_token) = &folder_page_token {
+            validate_provider_token(page_token)?;
+        }
+        if selected_file_index > self.selected_file_ids().len() {
+            return Err(SourceError::InvalidCursor);
+        }
         let payload = QueryCursorPayload {
             version: CURSOR_VERSION,
             connector: "catdb-google-drive-source/v1".to_string(),
@@ -1085,7 +1132,8 @@ impl DriveSource {
             schema_version: self.spec.schema_version.clone(),
             plan_digest: plan_digest(plan)?,
             query_id,
-            page_token,
+            selected_file_index,
+            folder_page_token,
         };
         let authentication_tag = self.authenticate(QUERY_CURSOR_DOMAIN, &payload)?;
         let bytes = serde_json::to_vec(&CursorEnvelope {
@@ -1101,7 +1149,7 @@ impl DriveSource {
         plan: &SourcePlan,
         cursor: &SourceCursor,
         query_id: Uuid,
-    ) -> Result<String, SourceError> {
+    ) -> Result<QueryPosition, SourceError> {
         let envelope: CursorEnvelope<QueryCursorPayload> =
             serde_json::from_slice(cursor.as_bytes()).map_err(|_| SourceError::InvalidCursor)?;
         if !self.verify(
@@ -1117,8 +1165,41 @@ impl DriveSource {
         {
             return Err(SourceError::InvalidCursor);
         }
-        validate_provider_token(&envelope.payload.page_token)?;
-        Ok(envelope.payload.page_token)
+        if envelope.payload.selected_file_index > self.selected_file_ids().len() {
+            return Err(SourceError::InvalidCursor);
+        }
+        if let Some(page_token) = &envelope.payload.folder_page_token {
+            validate_provider_token(page_token)?;
+            if envelope.payload.selected_file_index != self.selected_file_ids().len()
+                || !self.has_folder_selections()
+            {
+                return Err(SourceError::InvalidCursor);
+            }
+        }
+        Ok(QueryPosition {
+            selected_file_index: envelope.payload.selected_file_index,
+            folder_page_token: envelope.payload.folder_page_token,
+        })
+    }
+
+    fn selected_file_ids(&self) -> Vec<&str> {
+        self.spec
+            .config
+            .selections
+            .iter()
+            .filter_map(|selection| match selection {
+                DriveSelection::File { id } => Some(id.as_str()),
+                DriveSelection::Folder { .. } => None,
+            })
+            .collect()
+    }
+
+    fn has_folder_selections(&self) -> bool {
+        self.spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| matches!(selection, DriveSelection::Folder { .. }))
     }
 
     fn encode_change_cursor(&self, page_token: &str) -> Result<DriveChangeCursor, SourceError> {
@@ -1189,6 +1270,57 @@ impl DriveSource {
         Ok(mac.verify_slice(tag).is_ok())
     }
 
+    async fn observe_file(
+        &self,
+        file: DriveFile,
+        plan: &SourcePlan,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+    ) -> Result<Option<SourceRow>, SourceError> {
+        context.check()?;
+        file.validate(self.model.id())?;
+        if file.trashed {
+            return Ok(None);
+        }
+        let needs_body = plan
+            .projected
+            .iter()
+            .map(String::as_str)
+            .chain(plan.residual_attrs())
+            .any(|field| field == "body");
+        let mut value = file.to_value(self.model.id())?;
+        if needs_body {
+            if let Some(path) = self.body_path(&file) {
+                let body = self
+                    .send(self.request(path), context, physical_bytes)
+                    .await?;
+                if body.status != 200 {
+                    return Err(self.map_http_failure(&body));
+                }
+                let text =
+                    String::from_utf8(body.body).map_err(|_| self.malformed("body encoding"))?;
+                value
+                    .as_object_mut()
+                    .ok_or_else(|| self.malformed("file"))?
+                    .insert("body".to_string(), serde_json::Value::String(text));
+            }
+        }
+        if !plan.residual.iter().all(|residual| residual.passes(&value)) {
+            return Ok(None);
+        }
+        let mut projected = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| self.malformed("file"))?;
+        projected.retain(|field, _| plan.projected.contains(field));
+        Ok(Some(SourceRow {
+            source: self.model.id().clone(),
+            entity: self.model.entity().to_string(),
+            key: file.id,
+            value: serde_json::Value::Object(projected),
+        }))
+    }
+
     fn malformed(&self, attr: &'static str) -> SourceError {
         SourceError::Malformed {
             source_id: self.model.id().clone(),
@@ -1245,89 +1377,118 @@ impl DataSource for DriveSource {
         if page_size == 0 {
             return Err(SourceError::RowBudgetExceeded);
         }
-        let page_token = cursor
+        let mut position = cursor
             .map(|cursor| self.decode_query_cursor(plan, cursor, context.query_id()))
-            .transpose()?;
+            .transpose()?
+            .unwrap_or(QueryPosition {
+                selected_file_index: 0,
+                folder_page_token: None,
+            });
         let mut physical_bytes = 0usize;
-        let response = self
-            .send(
-                self.request(self.list_path(page_token.as_deref(), page_size)),
-                context,
-                &mut physical_bytes,
-            )
-            .await?;
-        if response.status == 400 && cursor.is_some() {
-            return Err(SourceError::InvalidCursor);
-        }
-        if response.status != 200 {
-            return Err(self.map_http_failure(&response));
-        }
-        let list: DriveListResponse =
-            serde_json::from_slice(&response.body).map_err(|_| self.malformed("files"))?;
-        if list.incomplete_search {
-            return Err(SourceError::IncompleteSearch {
-                source_id: self.model.id().clone(),
-            });
-        }
-        if list.files.len() > page_size {
-            return Err(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "Drive page rows",
-            });
-        }
-        let scanned = list.files.len();
-        let needs_body = plan
-            .projected
-            .iter()
-            .map(String::as_str)
-            .chain(plan.residual_attrs())
-            .any(|field| field == "body");
-        let mut rows = Vec::with_capacity(scanned);
-        for file in list.files {
+        let selected_file_ids = self.selected_file_ids();
+        let mut scanned = 0usize;
+        let mut rows = Vec::with_capacity(page_size);
+        while position.selected_file_index < selected_file_ids.len() && scanned < page_size {
             context.check()?;
-            file.validate(self.model.id())?;
-            if file.trashed {
+            let expected_id = selected_file_ids[position.selected_file_index];
+            let response = self
+                .send(
+                    self.request(self.metadata_path(expected_id)),
+                    context,
+                    &mut physical_bytes,
+                )
+                .await?;
+            scanned += 1;
+            position.selected_file_index += 1;
+            if response.status == 404 {
                 continue;
             }
-            let mut value = file.to_value(self.model.id())?;
-            if needs_body {
-                if let Some(path) = self.body_path(&file) {
-                    let body = self
-                        .send(self.request(path), context, &mut physical_bytes)
-                        .await?;
-                    if body.status != 200 {
-                        return Err(self.map_http_failure(&body));
-                    }
-                    let text = String::from_utf8(body.body)
-                        .map_err(|_| self.malformed("body encoding"))?;
-                    value
-                        .as_object_mut()
-                        .ok_or_else(|| self.malformed("file"))?
-                        .insert("body".to_string(), serde_json::Value::String(text));
+            if response.status != 200 {
+                return Err(self.map_http_failure(&response));
+            }
+            let file: DriveFile =
+                serde_json::from_slice(&response.body).map_err(|_| self.malformed("file"))?;
+            if file.id != expected_id {
+                return Err(self.malformed("selected file identity"));
+            }
+            if let Some(row) = self
+                .observe_file(file, plan, context, &mut physical_bytes)
+                .await?
+            {
+                rows.push(row);
+            }
+        }
+
+        let selected_files_exhausted = position.selected_file_index == selected_file_ids.len();
+        let mut empty_provider_pages = 0usize;
+        let mut folders_exhausted = !self.has_folder_selections();
+        while selected_files_exhausted && !folders_exhausted && scanned < page_size {
+            context.check()?;
+            let remaining = page_size - scanned;
+            let response = self
+                .send(
+                    self.request(self.list_path(position.folder_page_token.as_deref(), remaining)),
+                    context,
+                    &mut physical_bytes,
+                )
+                .await?;
+            if response.status == 400 && position.folder_page_token.is_some() {
+                return Err(SourceError::InvalidCursor);
+            }
+            if response.status != 200 {
+                return Err(self.map_http_failure(&response));
+            }
+            let list: DriveListResponse =
+                serde_json::from_slice(&response.body).map_err(|_| self.malformed("files"))?;
+            if list.incomplete_search {
+                return Err(SourceError::IncompleteSearch {
+                    source_id: self.model.id().clone(),
+                });
+            }
+            if list.files.len() > remaining {
+                return Err(SourceError::ResourceLimit {
+                    source_id: self.model.id().clone(),
+                    resource: "Drive page rows",
+                });
+            }
+            scanned += list.files.len();
+            for file in list.files {
+                if let Some(row) = self
+                    .observe_file(file, plan, context, &mut physical_bytes)
+                    .await?
+                {
+                    rows.push(row);
                 }
             }
-            if !plan.residual.iter().all(|residual| residual.passes(&value)) {
+            position.folder_page_token = list.next_page_token;
+            folders_exhausted = position.folder_page_token.is_none();
+            if scanned == 0 && !folders_exhausted {
+                empty_provider_pages += 1;
+                if empty_provider_pages > MAX_EMPTY_PROVIDER_PAGES {
+                    return Err(SourceError::ResourceLimit {
+                        source_id: self.model.id().clone(),
+                        resource: "empty Drive continuation pages",
+                    });
+                }
                 continue;
             }
-            let mut projected = value
-                .as_object()
-                .cloned()
-                .ok_or_else(|| self.malformed("file"))?;
-            projected.retain(|field, _| plan.projected.contains(field));
-            rows.push(SourceRow {
-                source: self.model.id().clone(),
-                entity: self.model.entity().to_string(),
-                key: file.id,
-                value: serde_json::Value::Object(projected),
-            });
+            break;
         }
-        let next_cursor = list
-            .next_page_token
-            .map(|token| self.encode_query_cursor(plan, context.query_id(), token))
-            .transpose()?;
-        if next_cursor.is_some() && scanned == 0 {
-            return Err(SourceError::InvalidCursor);
-        }
+
+        let has_more = position.selected_file_index < selected_file_ids.len() || !folders_exhausted;
+        let next_cursor = if has_more {
+            if scanned == 0 {
+                return Err(SourceError::InvalidCursor);
+            }
+            Some(self.encode_query_cursor(
+                plan,
+                context.query_id(),
+                position.selected_file_index,
+                position.folder_page_token,
+            )?)
+        } else {
+            None
+        };
         Ok(SourcePage {
             source: self.model.id().clone(),
             scanned,
@@ -1568,7 +1729,7 @@ fn redacted_path(path: &str) -> String {
             let pairs = url
                 .query_pairs()
                 .map(|(name, value)| {
-                    if name == "pageToken" {
+                    if matches!(name.as_ref(), "pageToken" | "q" | "driveId") {
                         (name.into_owned(), "[redacted]".to_string())
                     } else {
                         (name.into_owned(), value.into_owned())
@@ -1577,9 +1738,18 @@ fn redacted_path(path: &str) -> String {
                 .collect::<Vec<_>>();
             url.set_query(None);
             url.query_pairs_mut().extend_pairs(pairs);
+            let path = if let Some(rest) = url.path().strip_prefix("/drive/v3/files/") {
+                let suffix = rest
+                    .find('/')
+                    .map(|index| &rest[index..])
+                    .unwrap_or_default();
+                format!("/drive/v3/files/[redacted-id]{suffix}")
+            } else {
+                url.path().to_string()
+            };
             format!(
                 "{}{}",
-                url.path(),
+                path,
                 url.query()
                     .map(|query| format!("?{query}"))
                     .unwrap_or_default()
