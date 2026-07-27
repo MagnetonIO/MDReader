@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
@@ -141,16 +141,65 @@ export function CloudLibraryPane({
   query,
   cancel,
 }: CloudLibraryPaneProps) {
-  const values = fieldsOf(row);
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const cancelRef = useRef(cancel);
+  cancelRef.current = cancel;
+  const [resolvedRow, setResolvedRow] = useState<CloudDocumentRow | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const values = fieldsOf(resolvedRow ?? row);
   const title =
     typeof values.title === 'string' && values.title.length > 0 ? values.title : row.record_key;
-  const body = typeof values.body === 'string' ? values.body : '';
+  const body =
+    resolvedRow && typeof fieldsOf(resolvedRow).body === 'string'
+      ? (fieldsOf(resolvedRow).body as string)
+      : null;
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const platform = useMemo(() => createReaderPlatform(null), []);
 
   useEffect(() => {
+    let retired = false;
+    const bodyRequestId =
+      `cloud-reader:${source.provider}:${source.id}:${row.record_key}:` +
+      globalThis.crypto.randomUUID();
+    setResolvedRow(null);
+    setReadError(null);
+    void queryRef
+      .current(
+        source.provider,
+        [{ field: 'path', operator: 'eq', value: row.record_key }],
+        DOCUMENT_FIELDS,
+        bodyRequestId,
+      )
+      .then((answer) => {
+        if (retired) return;
+        const selected = answer.rows.find(
+          (candidate) =>
+            candidate.source_id === source.id && candidate.record_key === row.record_key,
+        );
+        if (!selected || typeof fieldsOf(selected).body !== 'string') {
+          throw new Error('The provider did not return the selected document body.');
+        }
+        setResolvedRow(selected);
+      })
+      .catch((cause: unknown) => {
+        if (retired) return;
+        setReadError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      retired = true;
+      void cancelRef.current(bodyRequestId);
+    };
+  }, [row.record_key, source.id, source.provider]);
+
+  useEffect(() => {
     let current = true;
     setDoc(null);
+    if (body === null) {
+      return () => {
+        current = false;
+      };
+    }
     void parseMarkdownAuto(body).then((parsed) => {
       if (current) setDoc(parsed);
     });
@@ -166,7 +215,7 @@ export function CloudLibraryPane({
   );
   const queryInspector = useCallback(
     async (_path: string, invocation: string, request: string) => {
-      const answer = await query(
+      const answer = await queryRef.current(
         source.provider,
         [{ field: 'path', operator: 'eq', value: row.record_key }],
         DOCUMENT_FIELDS,
@@ -176,13 +225,13 @@ export function CloudLibraryPane({
       if (!selected) throw new Error('The provider did not return the selected document.');
       return normalizeCloudDocument(answer, selected);
     },
-    [query, requestId, row.record_key, source.provider],
+    [requestId, row.record_key, source.provider],
   );
   const cancelInspector = useCallback(
     async (invocation: string, request: string) => {
-      await cancel(requestId(invocation, request));
+      await cancelRef.current(requestId(invocation, request));
     },
-    [cancel, requestId],
+    [requestId],
   );
 
   return (
@@ -198,7 +247,11 @@ export function CloudLibraryPane({
           <a href={originalUrl(source.provider, row.record_key)} target="_blank" rel="noreferrer">
             Open original
           </a>
-          <button type="button" onClick={() => saveCopy(title, body)}>
+          <button
+            type="button"
+            disabled={body === null}
+            onClick={() => body && saveCopy(title, body)}
+          >
             Download
           </button>
         </div>
@@ -207,12 +260,16 @@ export function CloudLibraryPane({
         </p>
         <div className="reader-body">
           <div className="reader-host">
-            {doc ? (
+            {readError ? (
+              <div className="reader-empty">
+                <p className="reader-empty__hint">Could not read this document: {readError}</p>
+              </div>
+            ) : doc ? (
               <PlatformProvider platform={platform}>
                 <MarkdownReader doc={doc} />
               </PlatformProvider>
             ) : (
-              <div className="reader-empty">Loading provider-owned content…</div>
+              <div className="reader-empty">Reading provider-owned content…</div>
             )}
           </div>
         </div>

@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type {
   CloudDocumentQueryResponse,
+  CloudFilterInput,
+  CloudProvider,
   CloudSourceDto,
 } from '../bindings.js';
 import { CloudLibraryPane } from './CloudLibraryPane.js';
@@ -78,10 +80,18 @@ afterEach(cleanup);
 
 it('reads a provider-owned document in the main Library with semantic evidence', async () => {
   const query = vi.fn(async () => response);
+  const listingRow = {
+    ...response.rows[0]!,
+    fields: {
+      path: 'drive-file-1',
+      title: 'Cloud note.md',
+    },
+    provenance: response.rows[0]!.provenance.filter((field) => field.field !== 'body'),
+  };
   render(
     <CloudLibraryPane
       source={source}
-      row={response.rows[0]!}
+      row={listingRow}
       query={query}
       cancel={vi.fn(async () => false)}
     />,
@@ -105,4 +115,61 @@ it('reads a provider-owned document in the main Library with semantic evidence',
     expect.arrayContaining(['path', 'title', 'body']),
     expect.stringContaining('document-inspector-'),
   );
+});
+
+it('retires a delayed body read when another cloud document replaces it', async () => {
+  let releaseFirst!: (answer: CloudDocumentQueryResponse) => void;
+  const first = new Promise<CloudDocumentQueryResponse>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const current = {
+    ...response,
+    query_id: 'query-current',
+    rows: [
+      {
+        ...response.rows[0]!,
+        record_key: 'drive-file-2',
+        fields: {
+          path: 'drive-file-2',
+          title: 'Current.md',
+          body: '# Current\n\nCurrent provider body.',
+        },
+      },
+    ],
+  };
+  const query = vi
+    .fn<
+      (
+        provider: CloudProvider,
+        filters: CloudFilterInput[],
+        fields: string[],
+        requestId: string,
+      ) => Promise<CloudDocumentQueryResponse>
+    >()
+    .mockImplementation((_provider, filters) =>
+      filters[0]?.value === 'drive-file-1' ? first : Promise.resolve(current),
+    );
+  const cancel = vi.fn(async () => true);
+  const rendered = render(
+    <CloudLibraryPane
+      source={source}
+      row={{ ...response.rows[0]!, fields: { title: 'Retired.md', path: 'drive-file-1' } }}
+      query={query}
+      cancel={cancel}
+    />,
+  );
+  rendered.rerender(
+    <CloudLibraryPane
+      source={source}
+      row={{ ...current.rows[0]!, fields: { title: 'Current.md', path: 'drive-file-2' } }}
+      query={query}
+      cancel={cancel}
+    />,
+  );
+
+  expect(await screen.findByText('Current provider body.')).toBeTruthy();
+  releaseFirst(response);
+  await Promise.resolve();
+  expect(screen.queryByText('Provider-owned body.')).toBeNull();
+  expect(cancel).toHaveBeenCalledWith(expect.stringContaining('drive-file-1'));
 });
