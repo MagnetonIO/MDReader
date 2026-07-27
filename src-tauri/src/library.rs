@@ -915,13 +915,14 @@ fn recover_v2_engine_source_id(
     app_data: &Path,
     source: &LibrarySourceV2,
 ) -> Result<Option<uuid::Uuid>, LibraryError> {
-    recover_v2_engine_source_id_with_hook(app_data, source, |_| {})
+    recover_v2_engine_source_id_with_hooks(app_data, source, |_| {}, |_| {})
 }
 
-fn recover_v2_engine_source_id_with_hook(
+fn recover_v2_engine_source_id_with_hooks(
     app_data: &Path,
     source: &LibrarySourceV2,
     before_open: impl FnOnce(&Path),
+    after_open: impl FnOnce(&Path),
 ) -> Result<Option<uuid::Uuid>, LibraryError> {
     let identity = source
         .identity
@@ -981,6 +982,7 @@ fn recover_v2_engine_source_id_with_hook(
             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|_| LibraryError::CorruptRegistry)?;
+    after_open(&db_path);
     let opened_file =
         same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
     if checked_file != opened_file {
@@ -2787,10 +2789,15 @@ mod tests {
         let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
         let original_parked = old_db.with_file_name("checked-original.db");
         let source = v2_source(&root);
-        let recovered = super::recover_v2_engine_source_id_with_hook(&app_data, &source, |_| {
-            fs::rename(&old_db, &original_parked).expect("park checked file");
-            fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
-        });
+        let recovered = super::recover_v2_engine_source_id_with_hooks(
+            &app_data,
+            &source,
+            |_| {
+                fs::rename(&old_db, &original_parked).expect("park checked file");
+                fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
+            },
+            |_| {},
+        );
 
         assert_eq!(
             recovered,
@@ -2799,6 +2806,43 @@ mod tests {
         );
         assert!(original_parked.is_file());
         assert!(old_db.is_file());
+    }
+
+    #[test]
+    fn version_two_recovery_reads_checked_file_across_regular_file_aba_swap() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
+        let original_source_id = create_authentic_v2_index(&old_db, &root);
+
+        let replacement_db = temp.path().join("replacement/catdb.db");
+        let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
+        let original_parked = old_db.with_file_name("checked-original.db");
+        let replacement_parked = replacement_db.with_file_name("opened-replacement.db");
+        let source = v2_source(&root);
+
+        let recovered = super::recover_v2_engine_source_id_with_hooks(
+            &app_data,
+            &source,
+            |_| {
+                fs::rename(&old_db, &original_parked).expect("park checked original");
+                fs::rename(&replacement_db, &old_db).expect("install replacement before open");
+            },
+            |_| {
+                fs::rename(&old_db, &replacement_parked).expect("park opened replacement");
+                fs::rename(&original_parked, &old_db).expect("restore checked original");
+            },
+        );
+
+        assert_eq!(
+            recovered,
+            Ok(Some(original_source_id)),
+            "the UUID from the transient replacement DB ({replacement_source_id}) must never be adopted"
+        );
+        assert!(old_db.is_file());
+        assert!(replacement_parked.is_file());
     }
 
     #[test]
