@@ -10,11 +10,9 @@ import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
   settingsBackend,
-  type CloudDocumentRow,
-  type CloudDocumentQueryResponse,
   type CloudProvider,
-  type CloudSourceDto,
   type CloudSourcesView,
+  type ConnectedCatdbState,
   type DiagnosticInfo,
   type DiagnosticLevel,
   type LibrarySnapshot,
@@ -34,11 +32,6 @@ export interface SettingsSheetProps {
   watcher: WatcherStatus;
   importState: ImportState | null;
   onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
-  onOpenCloudDocument?: (
-    source: CloudSourceDto,
-    response: CloudDocumentQueryResponse,
-    row: CloudDocumentRow,
-  ) => void;
   onSourceIntent?: () => void;
   onClose: () => void;
 }
@@ -155,42 +148,11 @@ function activityLabel(watcher: WatcherStatus, importState: ImportState | null):
   return 'Idle';
 }
 
-function cloudField(
-  response: CloudDocumentQueryResponse,
-  rowIndex: number,
-  field: string,
-): unknown {
-  const fields = response.rows[rowIndex]?.fields;
-  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return undefined;
-  return (fields as Record<string, unknown>)[field];
-}
-
-function cloudOriginalUrl(provider: CloudProvider, recordKey: string): string {
-  if (provider === 'google-drive') {
-    return `https://drive.google.com/open?id=${encodeURIComponent(recordKey)}`;
-  }
-  return `https://www.dropbox.com/home${recordKey
-    .split('/')
-    .map((part) => encodeURIComponent(part))
-    .join('/')}`;
-}
-
-function saveCloudCopy(name: string, body: string): void {
-  const safeName = name.replaceAll(/[/\\:\0]/g, '-').slice(0, 240) || 'document.md';
-  const url = URL.createObjectURL(new Blob([body], { type: 'text/markdown;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = safeName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 export function SettingsSheet({
   backend = settingsBackend,
   watcher,
   importState,
   onActivateSource,
-  onOpenCloudDocument,
   onSourceIntent = () => {},
   onClose,
 }: SettingsSheetProps) {
@@ -200,19 +162,13 @@ export function SettingsSheet({
   const confirmDialogRef = useRef<HTMLDivElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmWasOpenRef = useRef(false);
-  const cloudRequestIds = useRef<Partial<Record<CloudProvider, string>>>({});
   const operationSerials = useRef(new Map<string, number>());
   const invokingFocusRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
-  const [cloudDocuments, setCloudDocuments] = useState<
-    Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
-  >({});
-  const [openCloudDocuments, setOpenCloudDocuments] = useState<
-    Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
-  >({});
+  const [connectedCatdb, setConnectedCatdb] = useState<ConnectedCatdbState | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -230,11 +186,17 @@ export function SettingsSheet({
       for (const [key, serial] of operationSerials.current) {
         operationSerials.current.set(key, serial + 1);
       }
-      if (backend.cancelCloudDocumentQuery) {
-        for (const requestId of Object.values(cloudRequestIds.current)) {
-          void backend.cancelCloudDocumentQuery(requestId);
-        }
-      }
+    };
+  }, [backend]);
+
+  useEffect(() => {
+    if (!backend.connectedCatdbState) return;
+    let live = true;
+    void backend.connectedCatdbState().then((state) => {
+      if (live) setConnectedCatdb(state);
+    });
+    return () => {
+      live = false;
     };
   }, [backend]);
 
@@ -371,90 +333,10 @@ export function SettingsSheet({
         () => cloudControls.disconnect(provider),
         (snapshot) => {
           setCloudSources(snapshot);
-          setCloudDocuments((current) => {
-            const next = { ...current };
-            delete next[provider];
-            return next;
-          });
         },
       );
     },
     [cloudControls, run],
-  );
-
-  const browseCloud = useCallback(
-    (provider: CloudProvider) => {
-      if (!backend.queryCloudDocuments) return;
-      const requestId = `browse:${provider}:${globalThis.crypto.randomUUID()}`;
-      const previous = cloudRequestIds.current[provider];
-      cloudRequestIds.current[provider] = requestId;
-      void run(
-        `browse:${provider}`,
-        async () => {
-          if (previous && backend.cancelCloudDocumentQuery) {
-            await backend.cancelCloudDocumentQuery(previous);
-          }
-          try {
-            return await backend.queryCloudDocuments!(
-            provider,
-            [],
-            ['path', 'title', 'modifiedAt', 'size'],
-              requestId,
-            );
-          } finally {
-            if (cloudRequestIds.current[provider] === requestId) {
-              delete cloudRequestIds.current[provider];
-            }
-          }
-        },
-        (response) =>
-          setCloudDocuments((current) => ({
-            ...current,
-            [provider]: response,
-          })),
-      );
-    },
-    [backend, run],
-  );
-
-  const openCloudDocument = useCallback(
-    (source: CloudSourceDto, recordKey: string) => {
-      if (!backend.queryCloudDocuments) return;
-      const provider = source.provider;
-      const requestId = `read:${provider}:${globalThis.crypto.randomUUID()}`;
-      const previous = cloudRequestIds.current[provider];
-      cloudRequestIds.current[provider] = requestId;
-      const fields = ['path', 'title', 'modifiedAt', 'size', 'body'];
-      void run(
-        `read:${provider}`,
-        async () => {
-          if (previous && backend.cancelCloudDocumentQuery) {
-            await backend.cancelCloudDocumentQuery(previous);
-          }
-          try {
-            return await backend.queryCloudDocuments!(
-              provider,
-              [{ field: 'path', operator: 'eq', value: recordKey }],
-              fields,
-              requestId,
-            );
-          } finally {
-            if (cloudRequestIds.current[provider] === requestId) {
-              delete cloudRequestIds.current[provider];
-            }
-          }
-        },
-        (response) => {
-          setOpenCloudDocuments((current) => ({
-            ...current,
-            [provider]: response,
-          }));
-          const row = response.rows.find((candidate) => candidate.record_key === recordKey);
-          if (row) onOpenCloudDocument?.(source, response, row);
-        },
-      );
-    },
-    [backend, onOpenCloudDocument, run],
   );
 
   const setLevel = useCallback(
@@ -712,11 +594,6 @@ export function SettingsSheet({
                   {cloudSources?.sources.map((source) => {
                     const connected = source.connection !== 'disconnected';
                     const reconnect = source.connection === 'reauthorize';
-                    const documents = cloudDocuments[source.provider];
-                    const openDocument = openCloudDocuments[source.provider];
-                    const openRow = openDocument?.rows[0];
-                    const openName = openDocument ? cloudField(openDocument, 0, 'title') : undefined;
-                    const openBody = openDocument ? cloudField(openDocument, 0, 'body') : undefined;
                     return (
                       <article className="cloud-source" key={source.provider}>
                         <div className="cloud-source__copy">
@@ -737,18 +614,6 @@ export function SettingsSheet({
                         <div className="cloud-source__actions">
                           {connected ? (
                             <>
-                              {!reconnect && source.enabled && backend.queryCloudDocuments ? (
-                                <button
-                                  type="button"
-                                  disabled={
-                                    busy !== null && busy !== `browse:${source.provider}`
-                                  }
-                                  aria-label={`Browse ${source.label}`}
-                                  onClick={() => browseCloud(source.provider)}
-                                >
-                                  {busy === `browse:${source.provider}` ? 'Loading…' : 'Browse'}
-                                </button>
-                              ) : null}
                               {!reconnect ? (
                                 <button
                                   type="button"
@@ -796,116 +661,6 @@ export function SettingsSheet({
                             </button>
                           )}
                         </div>
-                        {documents && source.enabled ? (
-                          <div
-                            className="cloud-source__documents"
-                            aria-label={`${source.label} documents`}
-                          >
-                            <div className="cloud-source__documents-heading">
-                              <strong>
-                                {documents.rows.length}{' '}
-                                {documents.rows.length === 1 ? 'document' : 'documents'}
-                              </strong>
-                              <span>from {source.label}</span>
-                            </div>
-                            {documents.rows.length === 0 ? (
-                              <p>No Markdown or text documents were found.</p>
-                            ) : (
-                              <ul>
-                                {documents.rows.slice(0, 8).map((row, index) => {
-                                  const name = cloudField(documents, index, 'title');
-                                  const modifiedAt = cloudField(documents, index, 'modifiedAt');
-                                  const size = cloudField(documents, index, 'size');
-                                  return (
-                                    <li key={`${row.source_id}:${row.record_key}`}>
-                                      <button
-                                        type="button"
-                                        className="cloud-source__document"
-                                        disabled={busy !== null}
-                                        onClick={() =>
-                                          openCloudDocument(source, row.record_key)
-                                        }
-                                      >
-                                        <span>
-                                          {typeof name === 'string' ? name : row.record_key}
-                                        </span>
-                                      <small>
-                                        {typeof size === 'number'
-                                          ? readableBytes(size)
-                                          : 'Size unavailable'}
-                                        {typeof modifiedAt === 'number'
-                                          ? ` · ${new Date(modifiedAt).toLocaleDateString()}`
-                                          : ''}
-                                      </small>
-                                      </button>
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            )}
-                            {documents.rows.length > 8 ? (
-                              <p>Showing the first 8 documents.</p>
-                            ) : null}
-                            {openRow && typeof openBody === 'string' ? (
-                              <section
-                                className="cloud-source__reader"
-                                aria-label={`${typeof openName === 'string' ? openName : openRow.record_key} preview`}
-                              >
-                                <header>
-                                  <div>
-                                    <strong>
-                                      {typeof openName === 'string'
-                                        ? openName
-                                        : openRow.record_key}
-                                    </strong>
-                                    <span>Read-only · {source.label}</span>
-                                  </div>
-                                  <div>
-                                    <a
-                                      href={cloudOriginalUrl(source.provider, openRow.record_key)}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
-                                      Open original
-                                    </a>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        saveCloudCopy(
-                                          typeof openName === 'string'
-                                            ? openName
-                                            : 'document.md',
-                                          openBody,
-                                        )
-                                      }
-                                    >
-                                      Download
-                                    </button>
-                                  </div>
-                                </header>
-                                <pre>{openBody}</pre>
-                                <dl>
-                                  <div>
-                                    <dt>Schema</dt>
-                                    <dd>{openDocument.version_pins.schema_version}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>Mapping</dt>
-                                    <dd>{openDocument.version_pins.mapping_version}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>Connector</dt>
-                                    <dd>{openDocument.version_pins.connector_version}</dd>
-                                  </div>
-                                  <div>
-                                    <dt>Source</dt>
-                                    <dd>{openRow.source_id.slice(0, 12)}</dd>
-                                  </div>
-                                </dl>
-                              </section>
-                            ) : null}
-                          </div>
-                        ) : null}
                       </article>
                     );
                   })}
@@ -914,6 +669,40 @@ export function SettingsSheet({
                   Pausing keeps the account connected. Disconnecting removes its saved credentials.
                   Neither action changes files in Drive or Dropbox.
                 </p>
+              </div>
+            ) : null}
+            {connectedCatdb ? (
+              <div className="cloud-sources">
+                <div className="cloud-sources__heading">
+                  <div>
+                    <h3>Connected CatDB</h3>
+                    <p>
+                      Sign in to a CatDB workspace to choose the database and warehouse sources
+                      your account can read.
+                    </p>
+                  </div>
+                </div>
+                <article className="cloud-source">
+                  <div className="cloud-source__copy">
+                    <div className="cloud-source__title">
+                      <h4>CatDB workspace</h4>
+                    </div>
+                    <p>
+                      This app has no authenticated source-descriptor endpoint. Direct database
+                      credentials are never stored in MDReader.
+                    </p>
+                  </div>
+                  <div className="cloud-source__actions">
+                    <button
+                      type="button"
+                      disabled
+                      aria-label="Connect CatDB workspace"
+                      data-unavailable-reason={connectedCatdb.reason}
+                    >
+                      Connect
+                    </button>
+                  </div>
+                </article>
               </div>
             ) : null}
           </section>

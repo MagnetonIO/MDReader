@@ -47,10 +47,14 @@ import {
   recordDiagnosticEventNonBlocking,
   settingsBackend,
   watchLibrarySource,
-  type CloudDocumentQueryResponse,
   type CloudSourceDto,
   type LibrarySourceDto,
 } from '../platform/settings.js';
+import type {
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
+} from '../bindings.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
@@ -65,13 +69,10 @@ import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
 import { CloudLibraryPane } from './CloudLibraryPane.js';
-import {
-  createCloudSelectionController,
-  type HydratedCloudSelection,
-} from './cloud-selection.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
+import { hydrateLibrary } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -130,42 +131,27 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cloudDocument, setCloudDocument] =
-    useState<HydratedCloudSelection | null>(null);
+  const [cloudDocument, setCloudDocument] = useState<{
+    source: CloudSourceDto;
+    member: LibrarySourceExecution;
+    row: EntityRow;
+    evidence: LibraryEntityQueryResponse_Serialize;
+  } | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourceDto[]>([]);
-  const [cloudDocuments, setCloudDocuments] = useState<
-    Partial<Record<CloudSourceDto['provider'], CloudDocumentQueryResponse>>
-  >({});
+  const [libraryEvidence, setLibraryEvidence] =
+    useState<LibraryEntityQueryResponse_Serialize | null>(null);
   const [cloudSearch, setCloudSearch] = useState('');
   const [cloudLoading, setCloudLoading] = useState(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
   const cloudRefreshGeneration = useRef(0);
-  const cloudRefreshRequests = useRef<string[]>([]);
-  const cloudSelection = useMemo(
-    () =>
-      createCloudSelectionController({
-        query: async (provider, filters, fields, requestId) => {
-          if (!settingsBackend.queryCloudDocuments) {
-            throw new Error('Cloud document queries are unavailable.');
-          }
-          return settingsBackend.queryCloudDocuments(provider, filters, fields, requestId);
-        },
-        cancel: async (requestId) =>
-          settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false,
-        publish: setCloudDocument,
-        fail: setCloudError,
-      }),
-    [],
-  );
+  const cloudRefreshRequest = useRef<string | null>(null);
   const clearCloudDocument = useCallback(() => {
-    cloudSelection.cancel();
     setCloudDocument(null);
-  }, [cloudSelection]);
+  }, []);
 
   useEffect(() => {
     clearCloudDocument();
   }, [activeTabId, clearCloudDocument]);
-  useEffect(() => () => cloudSelection.cancel(), [cloudSelection]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -199,64 +185,29 @@ export function AppShell() {
     if (
       !settingsBackend.prepareCloudCatalog ||
       !settingsBackend.listCloudSources ||
-      !settingsBackend.queryCloudDocuments
+      !settingsBackend.queryLibraryDocuments
     ) {
       return;
     }
     const generation = cloudRefreshGeneration.current + 1;
     cloudRefreshGeneration.current = generation;
-    if (settingsBackend.cancelCloudDocumentQuery) {
-      await Promise.allSettled(
-        cloudRefreshRequests.current.map((requestId) =>
-          settingsBackend.cancelCloudDocumentQuery!(requestId),
-        ),
-      );
+    if (settingsBackend.cancelCloudDocumentQuery && cloudRefreshRequest.current) {
+      await settingsBackend.cancelCloudDocumentQuery(cloudRefreshRequest.current);
     }
     setCloudLoading(true);
     setCloudError(null);
     try {
-      await settingsBackend.prepareCloudCatalog();
-      if (cloudRefreshGeneration.current !== generation) return;
-      const snapshot = await settingsBackend.listCloudSources();
-      if (cloudRefreshGeneration.current !== generation) return;
-      setCloudSources(snapshot.sources);
-      const readable = snapshot.sources.filter(
-        (source) => source.connection === 'connected' && source.enabled,
-      );
-      const readableRequestIds = readable.map(
-        (source) => `library:${source.provider}:${globalThis.crypto.randomUUID()}`,
-      );
-      cloudRefreshRequests.current = readableRequestIds;
-      const answers = await Promise.allSettled(
-        readable.map(async (source, index) => ({
-          provider: source.provider,
-          response: await settingsBackend.queryCloudDocuments!(
-            source.provider,
-            [],
-            ['path', 'title', 'modifiedAt', 'size'],
-            readableRequestIds[index]!,
-          ),
-        })),
+      const requestId = `library:${globalThis.crypto.randomUUID()}`;
+      cloudRefreshRequest.current = requestId;
+      const { sources, evidence: answer } = await hydrateLibrary(
+        settingsBackend,
+        requestId,
       );
       if (cloudRefreshGeneration.current !== generation) return;
-      const next: Partial<
-        Record<CloudSourceDto['provider'], CloudDocumentQueryResponse>
-      > = {};
-      let failures = 0;
-      for (const answer of answers) {
-        if (answer.status === 'fulfilled') {
-          next[answer.value.provider] = answer.value.response;
-        } else {
-          failures += 1;
-        }
-      }
-      setCloudDocuments(next);
-      if (failures > 0) {
-        setCloudError(
-          failures === 1
-            ? 'One connected source could not be read.'
-            : `${failures} connected sources could not be read.`,
-        );
+      setCloudSources(sources);
+      setLibraryEvidence(answer);
+      if (answer.answer.completeness.state === 'partial') {
+        setCloudError('Some Library sources could not answer this query.');
       }
     } catch {
       if (cloudRefreshGeneration.current === generation) {
@@ -264,7 +215,7 @@ export function AppShell() {
       }
     } finally {
       if (cloudRefreshGeneration.current === generation) {
-        cloudRefreshRequests.current = [];
+        cloudRefreshRequest.current = null;
         setCloudLoading(false);
       }
     }
@@ -276,11 +227,11 @@ export function AppShell() {
     return () => {
       cloudRefreshGeneration.current += 1;
       if (settingsBackend.cancelCloudDocumentQuery) {
-        for (const requestId of cloudRefreshRequests.current) {
-          void settingsBackend.cancelCloudDocumentQuery(requestId);
+        if (cloudRefreshRequest.current) {
+          void settingsBackend.cancelCloudDocumentQuery(cloudRefreshRequest.current);
         }
       }
-      cloudRefreshRequests.current = [];
+      cloudRefreshRequest.current = null;
     };
   }, [hydrated, refreshCloudLibrary]);
 
@@ -1815,14 +1766,16 @@ export function AppShell() {
           onOpenRecent={openRef}
           isIgnored={isIgnored}
           cloudSources={cloudSources}
-          cloudDocuments={cloudDocuments}
+          libraryEvidence={libraryEvidence}
           cloudSearch={cloudSearch}
           cloudLoading={cloudLoading}
           cloudError={cloudError}
           onCloudSearch={setCloudSearch}
-          onOpenCloud={(source, _response, row) => {
+          onOpenCloud={(source, member, row) => {
             setCloudError(null);
-            void cloudSelection.select(source, row);
+            if (libraryEvidence) {
+              setCloudDocument({ source, member, row, evidence: libraryEvidence });
+            }
           }}
           onRefreshCloud={() => void refreshCloudLibrary()}
         />
@@ -1943,19 +1896,6 @@ export function AppShell() {
           watcher={watcher}
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
-          onOpenCloudDocument={(source, response, row) => {
-            setCloudSources((current) => {
-              const withoutSource = current.filter((candidate) => candidate.id !== source.id);
-              return [...withoutSource, source];
-            });
-            setCloudDocuments((current) => ({
-              ...current,
-              [source.provider]: response,
-            }));
-            setCloudError(null);
-            void cloudSelection.select(source, row);
-            setSettingsOpen(false);
-          }}
           onSourceIntent={beginSourceIntent}
           onClose={() => {
             setSettingsOpen(false);

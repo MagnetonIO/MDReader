@@ -8,8 +8,6 @@
 
 import {
   commands,
-  type CloudDocumentRow,
-  type CloudDocumentQueryResponse,
   type CloudFilterInput,
   type CloudProvider,
   type CloudCatalogReady,
@@ -21,8 +19,8 @@ import {
   type DiagnosticExport,
   type DiagnosticInfo,
   type DiagnosticLevel,
-  type EntityQueryResponse,
   type EntityQueryRequest_Deserialize,
+  type LibraryEntityQueryResponse_Serialize,
   type LibraryError,
   type LibrarySnapshot,
   type LibrarySourceDto,
@@ -32,8 +30,6 @@ import {
 
 export type {
   CloudProvider,
-  CloudDocumentRow,
-  CloudDocumentQueryResponse,
   CloudFilterInput,
   CloudSourceDto,
   CloudSourcesSnapshot,
@@ -73,6 +69,24 @@ function cloudFailure(error: CloudSourceError): never {
   throw new SettingsCommandError('cloud', error);
 }
 
+/**
+ * Connected CatDB is admitted only through an authenticated server session
+ * that can return the source descriptors permitted to that principal.
+ */
+export type ConnectedCatdbState = {
+  kind: 'connected-catdb';
+  state: 'unavailable';
+  reason: 'authenticated-descriptor-endpoint-required';
+};
+
+export async function connectedCatdbState(): Promise<ConnectedCatdbState> {
+  return {
+    kind: 'connected-catdb',
+    state: 'unavailable',
+    reason: 'authenticated-descriptor-endpoint-required',
+  };
+}
+
 export interface SettingsBackend {
   listSources: () => Promise<LibrarySnapshot>;
   pickAndAddSource: () => Promise<PickedLibrarySource>;
@@ -98,20 +112,15 @@ export interface SettingsBackend {
     enabled: boolean,
   ) => Promise<CloudSourcesView>;
   disconnectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
-  queryCloudDocuments?: (
-    provider: CloudProvider,
+  queryLibraryDocuments?: (
+    workspaceId: string,
     filters: CloudFilterInput[],
     fields: string[],
     requestId: string,
-  ) => Promise<CloudDocumentQueryResponse>;
-  queryCloudEntity?: (
-    provider: CloudProvider,
-    filters: CloudFilterInput[],
-    fields: string[],
-    requestId: string,
-    evidence: CloudDocumentQueryResponse,
-  ) => Promise<EntityQueryResponse>;
+    sourceIds?: string[],
+  ) => Promise<LibraryEntityQueryResponse_Serialize>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
+  connectedCatdbState?: () => Promise<ConnectedCatdbState>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
@@ -231,28 +240,18 @@ export async function disconnectCloudSource(
   return result.data;
 }
 
-export async function queryCloudDocuments(
-  provider: CloudProvider,
+/** Execute one immutable CatDB query over the selected Library memberships. */
+export async function queryLibraryDocuments(
+  workspaceId: string,
   filters: CloudFilterInput[],
   fields: string[],
   requestId: string,
-): Promise<CloudDocumentQueryResponse> {
-  const result = await commands.queryCloudDocuments(requestId, provider, filters, fields);
-  if (result.status === 'error') return cloudFailure(result.error);
-  return result.data;
-}
-
-export async function queryCloudEntity(
-  provider: CloudProvider,
-  filters: CloudFilterInput[],
-  fields: string[],
-  requestId: string,
-  evidence: CloudDocumentQueryResponse,
-): Promise<EntityQueryResponse> {
+  sourceIds?: string[],
+): Promise<LibraryEntityQueryResponse_Serialize> {
   const request: EntityQueryRequest_Deserialize = {
-    workspace_id: evidence.workspace_id,
-    catalog_revision_id: evidence.version_pins.catalog_version,
-    schema_version_id: evidence.version_pins.schema_version,
+    workspace_id: workspaceId,
+    catalog_revision_id: null,
+    schema_version_id: null,
     entity: 'document.Document',
     select: fields,
     filters: filters.map((filter) => ({
@@ -261,14 +260,14 @@ export async function queryCloudEntity(
       value: filter.value,
     })),
     order_by: [],
-    source_ids: null,
+    source_ids: sourceIds ?? null,
     max_staleness_ms: null,
-    require_complete: true,
+    require_complete: false,
     page_size: 1_000,
     limit: 1_000,
     cursor: null,
   };
-  const result = await commands.entityQuery(requestId, provider, request);
+  const result = await commands.queryLibraryDocuments(requestId, request);
   if (result.status === 'error') return cloudFailure(result.error);
   return result.data;
 }
@@ -296,9 +295,9 @@ export const settingsBackend: SettingsBackend = {
   connectCloudSource,
   setCloudSourceEnabled,
   disconnectCloudSource,
-  queryCloudDocuments,
-  queryCloudEntity,
+  queryLibraryDocuments,
   cancelCloudDocumentQuery,
+  connectedCatdbState,
 };
 
 /**

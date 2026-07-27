@@ -2,8 +2,9 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, expect, it } from 'vitest';
 
 import type {
-  CloudDocumentQueryResponse,
   CloudSourceDto,
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
 } from '../bindings.js';
 import { CloudLibraryPane } from './CloudLibraryPane.js';
 
@@ -15,74 +16,74 @@ const source: CloudSourceDto = {
   enabled: true,
 };
 
-const response: CloudDocumentQueryResponse = {
-  query_id: 'query-1',
-  provider: 'google-drive',
-  workspace_id: '00000000-0000-4000-8000-000000000010',
-  schema_version: 'schema-v7',
-  version_pins: {
-    catalog_version: '00000000-0000-4000-8000-000000000003',
-    schema_version: '00000000-0000-4000-8000-000000000004',
-    schema_checksum: 'b'.repeat(64),
-    source_schema_version: '00000000-0000-4000-8000-000000000005',
-    source_schema_checksum: 'c'.repeat(64),
-    mapping_version: '00000000-0000-4000-8000-000000000006',
-    mapping_checksum: 'd'.repeat(64),
-    connector_version: 'google-drive/v1',
-    source_version: '00000000-0000-4000-8000-000000000007',
-    source_checksum: 'e'.repeat(64),
-    policy_version: '00000000-0000-4000-8000-000000000008',
-    policy_checksum: 'f'.repeat(64),
+const SOURCE_VERSION = '00000000-0000-4000-8000-000000000007';
+const MAPPING_VERSION = '00000000-0000-4000-8000-000000000006';
+
+const row: EntityRow = {
+  record_key: 'drive-file-1',
+  fields: {
+    path: 'drive-file-1',
+    title: 'Cloud note.md',
+    body: '# Cloud note\n\nProvider-owned body.',
   },
-  completeness: 'complete',
-  scanned: 1,
-  sources: [
-    {
-      source_id: source.id,
-      freshness_ms: 0,
-      outcome: {
-        kind: 'ran',
-        mode: 'virtual',
-        scanned: 1,
-        returned: 1,
-        pushed: ['path'],
-        residual: [],
-      },
-    },
-  ],
-  rows: [
-    {
-      source_id: source.id,
-      record_key: 'drive-file-1',
-      fields: {
-        path: 'drive-file-1',
-        title: 'Cloud note.md',
-        body: '# Cloud note\n\nProvider-owned body.',
-      },
-      provenance: ['path', 'title', 'body'].map((field) => ({
+  provenance: Object.fromEntries(
+    [
+      ['path', 'id', 'drive-file-1'],
+      ['title', 'name', 'Cloud note.md'],
+      ['body', 'body', '# Cloud note\n\nProvider-owned body.'],
+    ].map(([field, physicalAttribute, value]) => [
+      field,
+      {
         field,
         selected: 0,
-        providers: [
+        considered: [
           {
-            provider: 'google-drive' as const,
-            source_id: source.id,
+            source_version_id: SOURCE_VERSION,
             record_key: 'drive-file-1',
-            mapping_version: '00000000-0000-4000-8000-000000000006',
-            physical_attribute:
-              field === 'path' ? 'id' : field === 'title' ? 'name' : field,
-            observation: {
-              kind: 'observed-value' as const,
-              value:
-                field === 'path'
-                  ? 'drive-file-1'
-                  : field === 'title'
-                    ? 'Cloud note.md'
-                    : '# Cloud note\n\nProvider-owned body.',
-            },
+            mapping_version_id: MAPPING_VERSION,
+            physical_attribute: physicalAttribute,
             observed_at_ms: 1_800_000_000_000,
+            state: { state: 'observed_value' as const, value },
           },
         ],
-      })),
+      },
+    ]),
+  ),
+};
+
+const response: LibraryEntityQueryResponse_Serialize = {
+  answer: {
+    query_id: '00000000-0000-4000-8000-000000000001',
+    pins: {
+      catalog_resolver_id: '00000000-0000-4000-8000-000000000002',
+      catalog_revision_id: '00000000-0000-4000-8000-000000000003',
+      schema_version_id: '00000000-0000-4000-8000-000000000004',
+      physical_schema_version_ids: ['00000000-0000-4000-8000-000000000005'],
+      mapping_version_ids: [MAPPING_VERSION],
+      source_version_ids: [SOURCE_VERSION],
+      policy_version_ids: ['00000000-0000-4000-8000-000000000008'],
+    },
+    rows: [row],
+    sources: [
+      {
+        source_id: source.id,
+        source_version_id: SOURCE_VERSION,
+        outcome: 'ran',
+        freshness_ms: 0,
+        scanned: 1,
+        returned: 1,
+      },
+    ],
+    completeness: { state: 'complete' },
+    next_cursor: null,
+  },
+  memberships: [
+    {
+      membership_id: '00000000-0000-4000-8000-000000000010',
+      name: 'Google Drive',
+      kind: 'google-drive',
+      source_ids: [source.id],
+      editable: false,
     },
   ],
 };
@@ -93,7 +94,7 @@ it('reads and inspects one hydrated provider response without a second query', a
   render(
     <CloudLibraryPane
       source={source}
-      row={response.rows[0]!}
+      row={row}
       evidence={response}
     />,
   );
@@ -105,32 +106,35 @@ it('reads and inspects one hydrated provider response without a second query', a
   expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toContain(
     'drive-file-1',
   );
+  expect(
+    screen.queryByRole('complementary', { name: 'Semantic Inspector' }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
   const inspector = within(
-    screen.getByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+    screen.getByRole('complementary', { name: 'Semantic Inspector' }),
   );
   expect(inspector.getByText('Complete')).toBeTruthy();
   expect(inspector.getByText('Cloud note.md')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Sources' }));
   expect(screen.getByText(source.id)).toBeTruthy();
-  expect(screen.getByText('virtual · 0 ms freshness')).toBeTruthy();
+  expect(screen.getByText('0 ms freshness')).toBeTruthy();
   expect(screen.getByText('1 scanned · 1 returned')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Provenance' }));
-  expect(await screen.findByText(`${source.id}.body`)).toBeTruthy();
-  expect(screen.getByText(`${source.id}.name`)).toBeTruthy();
-  expect(screen.getByText(`${source.id}.id`)).toBeTruthy();
-  expect(screen.queryByText(`${source.id}.title`)).toBeNull();
+  expect(await screen.findByText(`${SOURCE_VERSION}.body`)).toBeTruthy();
+  expect(screen.getByText(`${SOURCE_VERSION}.name`)).toBeTruthy();
+  expect(screen.getByText(`${SOURCE_VERSION}.id`)).toBeTruthy();
+  expect(screen.queryByText(`${SOURCE_VERSION}.title`)).toBeNull();
   expect(
     screen.getAllByText(
-      'provider google-drive · record drive-file-1 · mapping 00000000-0000-4000-8000-000000000006 · observed_at_ms 1800000000000',
+      'record drive-file-1 · mapping 00000000-0000-4000-8000-000000000006',
     ),
   ).toHaveLength(3);
 
-  fireEvent.click(screen.getByRole('tab', { name: 'Versions' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Schema' }));
   expect(screen.getByText('00000000-0000-4000-8000-000000000003')).toBeTruthy();
   expect(screen.getByText('00000000-0000-4000-8000-000000000004')).toBeTruthy();
-  expect(screen.getByText('b'.repeat(64))).toBeTruthy();
   expect(screen.getByText('00000000-0000-4000-8000-000000000005')).toBeTruthy();
   expect(screen.getByText('00000000-0000-4000-8000-000000000006')).toBeTruthy();
   expect(screen.getByText('00000000-0000-4000-8000-000000000007')).toBeTruthy();
@@ -141,79 +145,69 @@ it('reads and inspects one hydrated provider response without a second query', a
 
 it('renders backend-authored null, absence, unobservable reason, reports, and pins exactly', () => {
   const exactRow = {
-    ...response.rows[0]!,
+    ...row,
     fields: {
       path: 'drive-file-1',
       title: null,
       body: '# Null title',
     },
-    provenance: [
-      {
+    provenance: {
+      title: {
         field: 'title',
         selected: 0,
-        providers: [
+        considered: [
           {
-            ...response.rows[0]!.provenance[0]!.providers[0]!,
+            ...row.provenance.path!.considered[0]!,
             physical_attribute: 'name',
-            observation: { kind: 'observed-null' as const },
+            state: { state: 'observed_null' as const },
           },
         ],
       },
-      {
+      revision: {
         field: 'revision',
         selected: null,
-        providers: [
+        considered: [
           {
-            ...response.rows[0]!.provenance[0]!.providers[0]!,
+            ...row.provenance.path!.considered[0]!,
             physical_attribute: 'revisionId',
-            observation: {
-              kind: 'observed-nothing' as const,
-              reason: 'provider response omitted revisionId',
-            },
+            state: { state: 'field_unseen' as const },
           },
         ],
       },
-      {
+      author: {
         field: 'author',
         selected: null,
-        providers: [
+        considered: [
           {
-            ...response.rows[0]!.provenance[0]!.providers[0]!,
+            ...row.provenance.path!.considered[0]!,
             physical_attribute: null,
-            observation: {
-              kind: 'unobservable' as const,
-              reason: 'pinned mapping has no author attribute',
+            state: {
+              state: 'not_asked' as const,
+              value: { reason: 'pinned mapping has no author attribute' },
             },
             observed_at_ms: null,
           },
         ],
       },
-      response.rows[0]!.provenance[2]!,
-    ],
-  };
-  const exactResponse: CloudDocumentQueryResponse = {
-    ...response,
-    version_pins: {
-      ...response.version_pins,
-      connector_version: 'google-drive/exact-r9',
-      policy_checksum: '9'.repeat(64),
+      body: row.provenance.body!,
     },
-    sources: [
-      {
-        source_id: source.id,
-        freshness_ms: 4_321,
-        outcome: {
-          kind: 'ran',
-          mode: 'virtual',
+  };
+  const exactResponse: LibraryEntityQueryResponse_Serialize = {
+    ...response,
+    answer: {
+      ...response.answer,
+      sources: [
+        {
+          source_id: source.id,
+          source_version_id: SOURCE_VERSION,
+          freshness_ms: 4_321,
+          outcome: 'ran',
           scanned: 19,
           returned: 1,
-          pushed: ['path', 'title'],
-          residual: ['body'],
         },
-      },
-    ],
-    scanned: 19,
-    rows: [exactRow],
+      ],
+      rows: [exactRow],
+    },
   };
 
   render(
@@ -224,46 +218,43 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
     />,
   );
 
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
   const inspector = within(
-    screen.getByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+    screen.getByRole('complementary', { name: 'Semantic Inspector' }),
   );
   expect(inspector.getByText('null')).toBeTruthy();
   expect(inspector.getAllByText('No selected provider')).toHaveLength(2);
 
   fireEvent.click(inspector.getByRole('tab', { name: 'Sources' }));
-  expect(inspector.getByText('virtual · 4321 ms freshness')).toBeTruthy();
+  expect(inspector.getByText('4321 ms freshness')).toBeTruthy();
   expect(inspector.getByText('19 scanned · 1 returned')).toBeTruthy();
-  expect(inspector.getByText('pushed path, title · residual body')).toBeTruthy();
 
   fireEvent.click(inspector.getByRole('tab', { name: 'Provenance' }));
-  expect(inspector.getByText('observed null · selected')).toBeTruthy();
-  expect(inspector.getByText('observed nothing')).toBeTruthy();
-  expect(inspector.getByText('provider response omitted revisionId')).toBeTruthy();
-  expect(inspector.getByText('unobservable')).toBeTruthy();
-  expect(inspector.getByText('pinned mapping has no author attribute')).toBeTruthy();
-  expect(inspector.queryByText('not consulted')).toBeNull();
+  expect(inspector.getByText('observed null')).toBeTruthy();
+  expect(inspector.getByText('field not observed')).toBeTruthy();
+  expect(inspector.getByText('not asked · pinned mapping has no author attribute')).toBeTruthy();
+  expect(inspector.queryByText('record not observed')).toBeNull();
 
-  fireEvent.click(inspector.getByRole('tab', { name: 'Versions' }));
-  expect(inspector.getByText('google-drive/exact-r9')).toBeTruthy();
-  expect(inspector.getByText('9'.repeat(64))).toBeTruthy();
+  fireEvent.click(inspector.getByRole('tab', { name: 'Schema' }));
+  expect(inspector.getByText(SOURCE_VERSION)).toBeTruthy();
 });
 
 it('never mounts Semantic Inspector for a row that was not body-hydrated', () => {
   const unhydrated = {
-    ...response.rows[0]!,
+    ...row,
     fields: { path: 'drive-file-1', title: 'Unavailable.md' },
   };
   render(
     <CloudLibraryPane
       source={source}
       row={unhydrated}
-      evidence={{ ...response, rows: [unhydrated] }}
+      evidence={{ ...response, answer: { ...response.answer, rows: [unhydrated] } }}
     />,
   );
 
   expect(screen.getByText(/provider body is unavailable/i)).toBeTruthy();
   expect(
-    screen.queryByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+    screen.queryByRole('complementary', { name: 'Semantic Inspector' }),
   ).toBeNull();
 });
 
@@ -275,40 +266,47 @@ it('preserves a valid 4 KiB Dropbox record key in the hydrated Inspector evidenc
     provider: 'dropbox',
     label: 'Dropbox',
   };
-  const answer: CloudDocumentQueryResponse = {
+  const answer: LibraryEntityQueryResponse_Serialize = {
     ...response,
-    provider: 'dropbox',
-    rows: [
-      {
-        ...response.rows[0]!,
-        record_key: recordKey,
-        fields: { path: recordKey, title: 'Long path.md', body: '# Long path' },
-        provenance: response.rows[0]!.provenance.map((field) => ({
-          ...field,
-          providers: field.providers.map((provider) => ({
-            ...provider,
-            provider: 'dropbox' as const,
-            record_key: recordKey,
-            observation:
-              field.field === 'path'
-                ? { kind: 'observed-value' as const, value: recordKey }
-                : provider.observation,
-          })),
-        })),
-      },
-    ],
+    answer: {
+      ...response.answer,
+      rows: [
+        {
+          ...row,
+          record_key: recordKey,
+          fields: { path: recordKey, title: 'Long path.md', body: '# Long path' },
+          provenance: Object.fromEntries(
+            Object.entries(row.provenance).map(([field, evidence]) => [
+              field,
+              {
+                ...evidence,
+                considered: evidence.considered.map((provider) => ({
+                  ...provider,
+                  record_key: recordKey,
+                  state:
+                    field === 'path'
+                      ? { state: 'observed_value' as const, value: recordKey }
+                      : provider.state,
+                })),
+              },
+            ]),
+          ),
+        },
+      ],
+    },
   };
   render(
     <CloudLibraryPane
       source={dropboxSource}
-      row={answer.rows[0]!}
+      row={answer.answer.rows[0]!}
       evidence={answer}
     />,
   );
 
   expect(await screen.findByText('Long path')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
   const inspector = within(
-    screen.getByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+    screen.getByRole('complementary', { name: 'Semantic Inspector' }),
   );
   expect(inspector.getAllByText(recordKey)).toHaveLength(2);
 });

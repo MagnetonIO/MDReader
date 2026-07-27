@@ -76,6 +76,7 @@ catdb-api-types = { path = "../../../catdb/crates/catdb-api-types", features = [
 catdb-provenance = { path = "../../../catdb/crates/catdb-provenance", features = ["specta"] }
 catdb-connectors = { path = "../../../catdb/crates/catdb-connectors" }
 catdb-federation = { path = "../../../catdb/crates/catdb-federation" }
+catdb-policy = { path = "../../../catdb/crates/catdb-policy" }
 catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
 catdb-query = { path = "../../../catdb/crates/catdb-query" }
 catdb-validation = { path = "../../../catdb/crates/catdb-validation" }

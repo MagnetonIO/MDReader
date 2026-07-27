@@ -2,8 +2,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
-  CloudDocumentQueryResponse,
-  CloudFilterInput,
   CloudProvider,
   CloudSourcesSnapshot,
   DiagnosticInfo,
@@ -70,86 +68,6 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
   };
 }
 
-function cloudResponse(
-  provider: CloudProvider,
-  fields: string[],
-  name = 'Research note.md',
-  recordKey = 'provider-record-1',
-): CloudDocumentQueryResponse {
-  const values: Record<string, unknown> = {
-    path: recordKey,
-    title: name,
-    modifiedAt: 1_800_000_000_000,
-    size: 2048,
-    ...(fields.includes('body')
-      ? {
-          body: `# ${name}\n\nConnected source content.`,
-        }
-      : {}),
-  };
-  return {
-    query_id: `query-${recordKey}`,
-    provider,
-    workspace_id: 'workspace-v1',
-    schema_version: 'mdreader.Document/v1',
-    version_pins: {
-      catalog_version: 'catalog-v5',
-      schema_version: 'mdreader.Document/v1',
-      schema_checksum: 'a'.repeat(64),
-      source_schema_version: 'provider-schema-v1',
-      source_schema_checksum: 'e'.repeat(64),
-      mapping_version: 'mdreader.Document.cloud-mapping/v1',
-      mapping_checksum: 'b'.repeat(64),
-      connector_version: `${provider}/v1`,
-      source_version: 'source-v1',
-      source_checksum: 'c'.repeat(64),
-      policy_version: 'mdreader.read-only/v1',
-      policy_checksum: 'd'.repeat(64),
-    },
-    completeness: 'complete',
-    sources: [
-      {
-        source_id: 'b'.repeat(64),
-        freshness_ms: 0,
-        outcome: {
-          kind: 'ran',
-          mode: 'virtual',
-          scanned: 1,
-          returned: 1,
-          pushed: [],
-          residual: [],
-        },
-      },
-    ],
-    scanned: 1,
-    rows: [
-      {
-        source_id: 'b'.repeat(64),
-        record_key: recordKey,
-        fields: values,
-        provenance: fields.map((field) => ({
-          field,
-          selected: 0,
-          providers: [
-            {
-              provider,
-              source_id: 'b'.repeat(64),
-              record_key: recordKey,
-              mapping_version: 'mdreader.Document.cloud-mapping/v1',
-              physical_attribute: field,
-              observation: {
-                kind: 'observed-value' as const,
-                value: values[field],
-              },
-              observed_at_ms: 1_800_000_000_000,
-            },
-          ],
-        })),
-      },
-    ],
-  };
-}
-
 function cloudBackend(
   initial: CloudSourcesSnapshot,
 ): SettingsBackend & {
@@ -160,12 +78,6 @@ function cloudBackend(
     enabled: boolean,
   ) => Promise<CloudSourcesSnapshot>;
   disconnectCloudSource: (provider: CloudProvider) => Promise<CloudSourcesSnapshot>;
-  queryCloudDocuments: (
-    provider: CloudProvider,
-    filters: CloudFilterInput[],
-    fields: string[],
-    requestId: string,
-  ) => Promise<CloudDocumentQueryResponse>;
 } {
   let snapshot = initial;
   return {
@@ -202,10 +114,6 @@ function cloudBackend(
       };
       return snapshot;
     },
-    queryCloudDocuments: vi.fn(
-      async (provider: CloudProvider, _filters: CloudFilterInput[], fields: string[]) =>
-        cloudResponse(provider, fields),
-    ),
     cancelCloudDocumentQuery: vi.fn(async () => true),
   };
 }
@@ -337,7 +245,7 @@ describe('Settings sheet', () => {
     expect(includeDropbox.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('reads connected cloud documents through the native typed-query boundary', async () => {
+  it('owns cloud account membership without issuing document queries', async () => {
     const api = cloudBackend({
       version: 1,
       sources: [
@@ -367,62 +275,20 @@ describe('Settings sheet', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Browse Google Drive' }));
-    expect(await screen.findByText('Research note.md')).toBeTruthy();
-    expect(screen.getByLabelText('Google Drive documents').textContent).toContain('2 KiB');
-    expect(api.queryCloudDocuments).toHaveBeenCalledWith(
-      'google-drive',
-      [],
-      ['path', 'title', 'modifiedAt', 'size'],
-      expect.stringMatching(/^browse:google-drive:/),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /Research note\.md/ }));
-    expect(
-      (await screen.findByRole('region', { name: 'Research note.md preview' })).textContent,
-    ).toContain('Connected source content.');
-    expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toBe(
-      'https://drive.google.com/open?id=provider-record-1',
-    );
-    expect(screen.getByText('mdreader.Document.cloud-mapping/v1')).toBeTruthy();
+    expect(await screen.findByRole('switch', {
+      name: 'Include Google Drive in Library',
+    })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Browse Google Drive' })).toBeNull();
   });
 
-  it('does not publish a stale cloud browse completion after its replacement', async () => {
-    let releaseFirst!: (response: CloudDocumentQueryResponse) => void;
-    const first = new Promise<CloudDocumentQueryResponse>((resolve) => {
-      releaseFirst = resolve;
+  it('keeps Connected CatDB typed-unavailable until an authenticated descriptor endpoint exists', async () => {
+    const api = backend({
+      connectedCatdbState: vi.fn(async () => ({
+        kind: 'connected-catdb' as const,
+        state: 'unavailable' as const,
+        reason: 'authenticated-descriptor-endpoint-required' as const,
+      })),
     });
-    const api = cloudBackend({
-      version: 1,
-      sources: [
-        {
-          id: 'b'.repeat(64),
-          provider: 'google-drive',
-          label: 'Google Drive',
-          connection: 'connected',
-          enabled: true,
-        },
-        {
-          id: '',
-          provider: 'dropbox',
-          label: 'Dropbox',
-          connection: 'disconnected',
-          enabled: false,
-        },
-      ],
-    });
-    api.queryCloudDocuments = vi
-      .fn<typeof api.queryCloudDocuments>()
-      .mockImplementationOnce(() => first)
-      .mockResolvedValueOnce(
-        cloudResponse(
-          'google-drive',
-          ['path', 'title', 'modifiedAt', 'size'],
-          'Current.md',
-          'current',
-        ),
-      );
-
     render(
       <SettingsSheet
         backend={api}
@@ -433,25 +299,13 @@ describe('Settings sheet', () => {
       />,
     );
 
-    const browse = await screen.findByRole('button', { name: 'Browse Google Drive' });
-    fireEvent.click(browse);
-    fireEvent.click(browse);
-    expect(await screen.findByText('Current.md')).toBeTruthy();
-
-    await act(async () => {
-      releaseFirst(
-        cloudResponse(
-          'google-drive',
-          ['path', 'title', 'modifiedAt', 'size'],
-          'Retired.md',
-          'retired',
-        ),
-      );
-      await first;
-    });
-
-    expect(screen.getByText('Current.md')).toBeTruthy();
-    expect(screen.queryByText('Retired.md')).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Connected CatDB' })).toBeTruthy();
+    const connect = screen.getByRole('button', { name: 'Connect CatDB workspace' });
+    expect(connect.hasAttribute('disabled')).toBe(true);
+    expect(connect.getAttribute('data-unavailable-reason')).toBe(
+      'authenticated-descriptor-endpoint-required',
+    );
+    expect(screen.getByText(/Direct database credentials are never stored/i)).toBeTruthy();
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {

@@ -1,7 +1,11 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { CloudDocumentQueryResponse, CloudSourceDto } from '../bindings.js';
+import type {
+  CloudSourceDto,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
+} from '../bindings.js';
 import { Sidebar } from './Sidebar.js';
 
 afterEach(cleanup);
@@ -14,49 +18,61 @@ it('navigates connected read-through sources from the primary Library rail', () 
     connection: 'connected',
     enabled: true,
   };
-  const response: CloudDocumentQueryResponse = {
-    query_id: 'sidebar-query',
-    provider: 'dropbox',
-    workspace_id: 'workspace-v1',
-    schema_version: 'schema-v1',
-    version_pins: {
-      catalog_version: 'catalog-v1',
-      schema_version: 'schema-v1',
-      schema_checksum: 'b'.repeat(64),
-      source_schema_version: 'source-schema-v1',
-      source_schema_checksum: 'c'.repeat(64),
-      mapping_version: 'mapping-v1',
-      mapping_checksum: 'd'.repeat(64),
-      connector_version: 'dropbox/v1',
-      source_version: 'source-v1',
-      source_checksum: 'e'.repeat(64),
-      policy_version: 'policy-v1',
-      policy_checksum: 'f'.repeat(64),
-    },
-    completeness: 'complete',
-    sources: [
-    {
-      source_id: source.id,
-      freshness_ms: 0,
-      outcome: {
-          kind: 'ran',
-          mode: 'virtual',
+  const member: LibrarySourceExecution = {
+    membership_id: '00000000-0000-4000-8000-000000000011',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    source_ids: ['00000000-0000-4000-8000-000000000012'],
+    editable: false,
+  };
+  const response: LibraryEntityQueryResponse_Serialize = {
+    memberships: [member],
+    answer: {
+      query_id: '00000000-0000-4000-8000-000000000013',
+      pins: {
+        catalog_resolver_id: '00000000-0000-4000-8000-000000000014',
+        catalog_revision_id: '00000000-0000-4000-8000-000000000015',
+        schema_version_id: '00000000-0000-4000-8000-000000000016',
+        physical_schema_version_ids: ['00000000-0000-4000-8000-000000000017'],
+        mapping_version_ids: ['00000000-0000-4000-8000-000000000018'],
+        source_version_ids: ['00000000-0000-4000-8000-000000000019'],
+        policy_version_ids: ['00000000-0000-4000-8000-000000000020'],
+      },
+      completeness: { state: 'complete' },
+      sources: [
+        {
+          source_id: member.source_ids[0]!,
+          source_version_id: '00000000-0000-4000-8000-000000000019',
+          freshness_ms: 0,
+          outcome: 'ran',
           scanned: 1,
           returned: 1,
-          pushed: [],
-          residual: [],
         },
-      },
-    ],
-    scanned: 1,
-    rows: [
-      {
-        source_id: source.id,
-        record_key: '/notes/cloud.md',
-        fields: { title: 'Cloud note.md', path: '/notes/cloud.md' },
-        provenance: [],
-      },
-    ],
+      ],
+      rows: [
+        {
+          record_key: '/notes/cloud.md',
+          fields: { title: 'Cloud note.md', path: '/notes/cloud.md' },
+          provenance: {
+            path: {
+              field: 'path',
+              selected: 0,
+              considered: [
+                {
+                  source_version_id: '00000000-0000-4000-8000-000000000019',
+                  record_key: '/notes/cloud.md',
+                  mapping_version_id: '00000000-0000-4000-8000-000000000018',
+                  physical_attribute: 'path',
+                  observed_at_ms: 1,
+                  state: { state: 'observed_value', value: '/notes/cloud.md' },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      next_cursor: null,
+    },
   };
   const open = vi.fn();
   render(
@@ -71,7 +87,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
       onOpenFile={vi.fn()}
       onOpenRecent={vi.fn()}
       cloudSources={[source]}
-      cloudDocuments={{ dropbox: response }}
+      libraryEvidence={response}
       cloudSearch=""
       onCloudSearch={vi.fn()}
       onOpenCloud={open}
@@ -82,5 +98,5 @@ it('navigates connected read-through sources from the primary Library rail', () 
   expect(screen.getByRole('navigation', { name: 'Connected Library sources' })).toBeTruthy();
   expect(screen.getByText('Read-through · not locally indexed')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Open Cloud note.md from Dropbox' }));
-  expect(open).toHaveBeenCalledWith(source, response, response.rows[0]);
+  expect(open).toHaveBeenCalledWith(source, member, response.answer.rows[0]);
 });

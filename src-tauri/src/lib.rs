@@ -16,6 +16,7 @@ mod engine;
 mod federation;
 mod file_lock;
 mod library;
+mod library_query;
 mod mapping;
 mod overlay;
 mod search;
@@ -59,6 +60,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::disconnect_cloud_source,
             cloud_accounts::prepare_cloud_catalog,
             cloud_accounts::entity_query,
+            cloud_accounts::query_library_documents,
             cloud_accounts::query_cloud_documents,
             cloud_accounts::cancel_cloud_document_query,
             library::list_library_sources,

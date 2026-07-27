@@ -4,14 +4,15 @@
 
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type {
-  CloudDocumentQueryResponse,
-  CloudDocumentRow,
-  CloudProvider,
   CloudSourceDto,
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
 } from '../bindings.js';
 import { FolderIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
+import { rowsForMember } from './library-documents.js';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -28,15 +29,15 @@ export interface SidebarProps {
   onOpenRecent: (ref: DocRef) => void;
   isIgnored?: (path: string) => boolean;
   cloudSources?: CloudSourceDto[];
-  cloudDocuments?: Partial<Record<CloudProvider, CloudDocumentQueryResponse>>;
+  libraryEvidence?: LibraryEntityQueryResponse_Serialize | null;
   cloudSearch?: string;
   cloudLoading?: boolean;
   cloudError?: string | null;
   onCloudSearch?: (value: string) => void;
   onOpenCloud?: (
     source: CloudSourceDto,
-    response: CloudDocumentQueryResponse,
-    row: CloudDocumentRow,
+    member: LibrarySourceExecution,
+    row: EntityRow,
   ) => void;
   onRefreshCloud?: () => void;
 }
@@ -85,7 +86,7 @@ export function Sidebar({
   onOpenRecent,
   isIgnored,
   cloudSources = [],
-  cloudDocuments = {},
+  libraryEvidence = null,
   cloudSearch = '',
   cloudLoading = false,
   cloudError = null,
@@ -160,17 +161,21 @@ export function Sidebar({
           ) : null}
           {cloudError ? <p className="cloud-library__error">{cloudError}</p> : null}
           {connectedSources.map((source) => {
-            const response = cloudDocuments[source.provider];
+            const memberKind =
+              source.provider === 'google-drive' ? 'google-drive' : 'dropbox';
+            const member = libraryEvidence?.memberships.find(
+              (candidate) => candidate.kind === memberKind,
+            );
             const rows =
-              response?.rows.filter((row) => {
+              (libraryEvidence && member
+                ? rowsForMember(libraryEvidence, member)
+                : []
+              ).filter((row) => {
                 if (!search) return true;
-                const fields =
-                  row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields)
-                    ? (row.fields as Record<string, unknown>)
-                    : {};
+                const fields = row.fields;
                 const title = typeof fields.title === 'string' ? fields.title : row.record_key;
                 return title.toLocaleLowerCase().includes(search);
-              }) ?? [];
+              });
             return (
               <section className="cloud-library__source" key={source.id}>
                 <div>
@@ -181,24 +186,20 @@ export function Sidebar({
                 </div>
                 {source.connection === 'reauthorize' ? (
                   <p>Sign in again from Settings to read this source.</p>
-                ) : !source.enabled ? null : response ? (
+                ) : !source.enabled ? null : libraryEvidence && member ? (
                   rows.length > 0 ? (
                     <ul>
                       {rows.map((row) => {
                         const fields =
-                          row.fields &&
-                          typeof row.fields === 'object' &&
-                          !Array.isArray(row.fields)
-                            ? (row.fields as Record<string, unknown>)
-                            : {};
+                          row.fields;
                         const title =
                           typeof fields.title === 'string' ? fields.title : row.record_key;
                         return (
-                          <li key={`${row.source_id}:${row.record_key}`}>
+                          <li key={`${member.membership_id}:${row.record_key}`}>
                             <button
                               type="button"
                               aria-label={`Open ${title} from ${source.label}`}
-                              onClick={() => onOpenCloud?.(source, response, row)}
+                              onClick={() => onOpenCloud?.(source, member, row)}
                             >
                               {title}
                             </button>

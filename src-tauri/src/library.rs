@@ -1,10 +1,10 @@
-//! Backend-owned local-library membership.
+//! Backend-owned Library membership.
 //!
-//! The active CatDB engine remains deliberately single-root. This registry says
-//! which local Markdown roots MDReader knows about and which successfully
-//! granted root is the restore candidate; it does not claim that their indexes
-//! are queried together. Paths are canonicalized before admission and persisted
-//! as native OS units so a lossy webview display string is never the authority.
+//! The active editing engine remains deliberately single-root. Query execution
+//! takes one immutable snapshot of this registry and may read every enabled
+//! local or cloud member together. Paths are canonicalized before admission and
+//! persisted as native OS units so a lossy webview display string is never the
+//! authority.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -143,6 +143,13 @@ pub(crate) struct LibrarySnapshot {
     pub sources: Vec<LibrarySourceDto>,
     pub cloud_sources: Vec<LibraryCloudSourceDto>,
     pub cleanup: LibraryCleanupStatus,
+}
+
+/// Immutable source membership captured under the Library registry lease.
+#[derive(Debug, Clone)]
+pub(crate) struct LibraryQuerySnapshot {
+    pub local_sources: Vec<LocalFolderSource>,
+    pub cloud_sources: Vec<CloudSourceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -1596,6 +1603,26 @@ impl LibraryStore {
         operation(&registry)
     }
 
+    /// Capture local and enabled cloud membership under one registry lease.
+    ///
+    /// Credential material is deliberately absent. The caller first validates
+    /// `EntityQueryRequest.source_ids` against this snapshot and only then
+    /// resolves credentials for the selected cloud members.
+    pub(crate) fn read_query_snapshot(&self) -> Result<LibraryQuerySnapshot, LibraryError> {
+        self.read(|registry| {
+            Ok(LibraryQuerySnapshot {
+                local_sources: registry.local_sources().cloned().collect(),
+                cloud_sources: registry
+                    .sources
+                    .iter()
+                    .filter_map(LibrarySource::cloud)
+                    .filter(|source| source.enabled())
+                    .cloned()
+                    .collect(),
+            })
+        })
+    }
+
     fn update<T>(
         &self,
         operation: impl FnOnce(&mut LibraryRegistry) -> Result<T, LibraryError>,
@@ -1957,7 +1984,7 @@ impl LibraryStore {
     }
 }
 
-fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
+pub(crate) fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
     match error {
         LibraryError::CorruptRegistry => CloudSourceError::CorruptRegistry,
         LibraryError::UnsupportedVersion { found, expected } => {

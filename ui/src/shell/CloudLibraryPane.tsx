@@ -4,21 +4,21 @@ import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
 
 import type {
-  CloudDocumentQueryResponse,
-  CloudDocumentRow,
   CloudProvider,
   CloudSourceDto,
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
 } from '../bindings.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { CloudSemanticInspector } from './CloudSemanticInspector.js';
 
 export interface CloudLibraryPaneProps {
   source: CloudSourceDto;
-  row: CloudDocumentRow;
-  evidence: CloudDocumentQueryResponse;
+  row: EntityRow;
+  evidence: LibraryEntityQueryResponse_Serialize;
 }
 
-function fieldsOf(row: CloudDocumentRow): Record<string, unknown> {
+function fieldsOf(row: EntityRow): Record<string, unknown> {
   if (!row.fields || typeof row.fields !== 'object' || Array.isArray(row.fields)) return {};
   return row.fields as Record<string, unknown>;
 }
@@ -50,15 +50,19 @@ export function CloudLibraryPane({
 }: CloudLibraryPaneProps) {
   const values = fieldsOf(row);
   const title =
-    typeof values.title === 'string' && values.title.length > 0 ? values.title : row.record_key;
+    typeof values.title === 'string' && values.title.length > 0
+      ? values.title
+      : row.record_key;
   const body =
     typeof values.body === 'string' ? values.body : null;
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const platform = useMemo(() => createReaderPlatform(null), []);
 
   useEffect(() => {
     let current = true;
     setDoc(null);
+    setInspectorOpen(false);
     if (body === null) {
       return () => {
         current = false;
@@ -82,6 +86,15 @@ export function CloudLibraryPane({
             <span className="breadcrumb__leaf">{title}</span>
           </nav>
           <span className="cloud-reader__state">Read-only</span>
+          {body !== null ? (
+            <button
+              type="button"
+              aria-expanded={inspectorOpen}
+              onClick={() => setInspectorOpen((open) => !open)}
+            >
+              {inspectorOpen ? 'Close Inspector' : 'Inspect'}
+            </button>
+          ) : null}
           <a href={originalUrl(source.provider, row.record_key)} target="_blank" rel="noreferrer">
             Open original
           </a>
@@ -114,9 +127,12 @@ export function CloudLibraryPane({
           </div>
         </div>
       </div>
-      {body !== null ? (
-        <aside className="cloud-reader__inspector" aria-label="Cloud Semantic Inspector">
-          <CloudSemanticInspector evidence={evidence} row={row} />
+      {body !== null && inspectorOpen ? (
+        <aside className="cloud-reader__inspector" aria-label="Semantic Inspector">
+          <CloudSemanticInspector
+            evidence={evidence.answer}
+            row={row}
+          />
         </aside>
       ) : null}
     </>

@@ -1,0 +1,93 @@
+import type {
+  CloudSourceDto,
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
+} from '../bindings.js';
+import type { SettingsBackend } from '../platform/settings.js';
+
+export const LIBRARY_DOCUMENT_FIELDS = [
+  'providerId',
+  'title',
+  'author',
+  'path',
+  'mediaType',
+  'modifiedAt',
+  'size',
+  'revision',
+  'checksum',
+  'body',
+] as const;
+
+export interface HydratedLibrary {
+  sources: CloudSourceDto[];
+  evidence: LibraryEntityQueryResponse_Serialize;
+}
+
+/**
+ * Resolve one Library snapshot and hydrate it through exactly one CatDB
+ * entity-query call. Provider-specific query methods are intentionally absent
+ * from this contract, so callers cannot concatenate independent answers.
+ */
+export async function hydrateLibrary(
+  backend: Pick<
+    SettingsBackend,
+    'prepareCloudCatalog' | 'listCloudSources' | 'queryLibraryDocuments'
+  >,
+  requestId: string,
+): Promise<HydratedLibrary> {
+  if (
+    !backend.prepareCloudCatalog ||
+    !backend.listCloudSources ||
+    !backend.queryLibraryDocuments
+  ) {
+    throw new Error('Library queries are unavailable.');
+  }
+  const catalog = await backend.prepareCloudCatalog();
+  const snapshot = await backend.listCloudSources();
+  const evidence = await backend.queryLibraryDocuments(
+    catalog.workspace_id,
+    [],
+    [...LIBRARY_DOCUMENT_FIELDS],
+    requestId,
+  );
+  return { sources: snapshot.sources, evidence };
+}
+
+export interface HydratedLibrarySelection {
+  member: LibrarySourceExecution;
+  row: EntityRow;
+  evidence: LibraryEntityQueryResponse_Serialize;
+}
+
+function selectedSourceVersion(row: EntityRow): string | null {
+  const path = row.provenance.path;
+  if (!path || path.selected === null) return null;
+  return path.considered[path.selected]?.source_version_id ?? null;
+}
+
+/** Resolve a row to the membership that supplied its semantic path identity. */
+export function memberForRow(
+  evidence: LibraryEntityQueryResponse_Serialize,
+  row: EntityRow,
+): LibrarySourceExecution | null {
+  const sourceVersionId = selectedSourceVersion(row);
+  if (sourceVersionId === null) return null;
+  const sourceId = evidence.answer.sources.find(
+    (source) => source.source_version_id === sourceVersionId,
+  )?.source_id;
+  if (!sourceId) return null;
+  return (
+    evidence.memberships.find((membership) => membership.source_ids.includes(sourceId)) ?? null
+  );
+}
+
+/** Rows whose identity was supplied by this exact Library membership. */
+export function rowsForMember(
+  evidence: LibraryEntityQueryResponse_Serialize,
+  member: LibrarySourceExecution,
+): EntityRow[] {
+  return evidence.answer.rows.filter(
+    (row) => memberForRow(evidence, row)?.membership_id === member.membership_id,
+  );
+}
