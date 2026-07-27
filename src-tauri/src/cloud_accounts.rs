@@ -52,7 +52,6 @@ const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_DOCUMENT_SCHEMA_VERSION: &str = "mdreader.Document/v1";
-#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 pub(crate) const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v1";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_READ_POLICY_VERSION: &str = "mdreader.read-only/v1";
