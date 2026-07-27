@@ -465,6 +465,25 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
   });
 
+  test('listing rejects an unknown source outcome before admitting the service', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    listing.sources[0]!.outcome =
+      'invented-terminal-state' as EntityQueryResponse['sources'][number]['outcome'];
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
   test('listing retains exact provider order while different fields select different winners', async () => {
     const listing = queryResponse({
       path: 'papers/federated.md',

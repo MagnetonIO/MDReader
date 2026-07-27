@@ -5,6 +5,25 @@ const MAX_FIELD_COUNT = 64;
 const MAX_OBSERVATIONS_PER_FIELD = 64;
 const MAX_TEXT = 1_024;
 
+type SourceOutcome = EntityQueryResponse['sources'][number]['outcome'];
+
+const SOURCE_OUTCOMES = {
+  ran: true,
+  refused: true,
+  stale: true,
+  runtime_refused: true,
+  budget_exceeded: true,
+  authentication_failed: true,
+  transport_failed: true,
+  source_cancelled: true,
+  schema_drift: true,
+  source_failed: true,
+  protocol_failed: true,
+  timed_out: true,
+  source_timed_out: true,
+  cancelled: true,
+} as const satisfies Record<SourceOutcome, true>;
+
 export interface MobileDocumentProvenance {
   pins: EntityQueryResponse['pins'];
   fields: EntityRow['provenance'];
@@ -31,6 +50,10 @@ function boundedStrings(value: unknown): value is string[] {
 
 function nonNegative(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function sourceOutcome(value: unknown): value is SourceOutcome {
+  return typeof value === 'string' && Object.hasOwn(SOURCE_OUTCOMES, value);
 }
 
 function validState(value: unknown): boolean {
@@ -103,7 +126,7 @@ export function mobileProvenanceOf(
       (source.freshness_ms !== null &&
         source.freshness_ms !== undefined &&
         !nonNegative(source.freshness_ms)) ||
-      typeof source.outcome !== 'string'
+      !sourceOutcome(source.outcome)
     ) {
       return null;
     }

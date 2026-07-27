@@ -30,6 +30,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { scanAndroidArchive } from './apk-manifest-scanner.mjs';
 import { E2E_BUNDLE_IDENTIFIER, E2E_PROCESS_NAME, FLOW_CONFIG } from './flows.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -39,8 +40,7 @@ const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
 const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
 const MAX_ANDROID_TOTAL_NATIVE_LIBRARY_BYTES = 1024 * 1024 * 1024;
 const MAX_ANDROID_NATIVE_LIBRARIES = 64;
-const MAX_ANDROID_MANIFEST_BYTES = 4 * 1024 * 1024;
-const APK_MANIFEST_SCANNER = join(HERE, 'apk-manifest-scanner.mjs');
+const MAX_ANDROID_NON_NATIVE_EXECUTABLE_BYTES = 516 * 1024 * 1024;
 
 interface E2eBuildManifest {
   schema: 1;
@@ -98,121 +98,35 @@ export function validateEmbeddedBuildManifest(
   return manifest as E2eBuildManifest;
 }
 
-function scanAndroidArchive(
+async function validateAndroidArchive(
   apk: string,
   expectedCommit: string,
   maximumNativeLibraryBytes: number,
   maximumTotalNativeLibraryBytes: number,
-): E2eBuildManifest[] {
-  const scanBytes = execFileSync(
-    process.execPath,
-    [
-      APK_MANIFEST_SCANNER,
-      apk,
-      String(maximumNativeLibraryBytes),
-      String(maximumTotalNativeLibraryBytes),
-      String(MAX_ANDROID_NATIVE_LIBRARIES),
-    ],
-    {
-      encoding: null,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024,
-    },
-  );
-  let scan: unknown;
-  try {
-    scan = JSON.parse(scanBytes.toString('utf8'));
-  } catch {
-    throw new Error('Android native library scanner returned an invalid result');
+): Promise<void> {
+  const scan = await scanAndroidArchive(apk, {
+    maximumNative: maximumNativeLibraryBytes,
+    maximumAggregateNative: maximumTotalNativeLibraryBytes,
+    maximumLibraries: MAX_ANDROID_NATIVE_LIBRARIES,
+  });
+  if (scan.applicationId !== E2E_BUNDLE_IDENTIFIER) {
+    throw new Error(
+      `compiled AndroidManifest.xml package must be ${E2E_BUNDLE_IDENTIFIER}`,
+    );
   }
-  const scanRecord =
-    typeof scan === 'object' && scan !== null
-      ? (scan as Record<string, unknown>)
-      : null;
-  const applicationId = scanRecord?.application_id;
-  const manifestStreamedBytes = scanRecord?.manifest_streamed_bytes;
-  const aggregateStreamedBytes = scanRecord?.aggregate_streamed_bytes;
-  const libraries = scanRecord?.native_libraries;
-  if (
-    !scanRecord ||
-    applicationId !== E2E_BUNDLE_IDENTIFIER ||
-    typeof manifestStreamedBytes !== 'number' ||
-    !Number.isSafeInteger(manifestStreamedBytes) ||
-    manifestStreamedBytes <= 0 ||
-    manifestStreamedBytes > MAX_ANDROID_MANIFEST_BYTES ||
-    typeof aggregateStreamedBytes !== 'number' ||
-    !Number.isSafeInteger(aggregateStreamedBytes) ||
-    aggregateStreamedBytes < manifestStreamedBytes ||
-    aggregateStreamedBytes >
-      maximumTotalNativeLibraryBytes + MAX_ANDROID_MANIFEST_BYTES ||
-    !Array.isArray(libraries) ||
-    libraries.length === 0 ||
-    libraries.length > MAX_ANDROID_NATIVE_LIBRARIES
-  ) {
-    throw new Error('Android native library scanner returned an invalid result');
-  }
-  let nativeStreamedBytes = 0;
-  let nativeDeclaredBytes = 0;
-  const names = new Set<string>();
   const manifests: E2eBuildManifest[] = [];
-  for (const libraryValue of libraries) {
-    const library =
-      typeof libraryValue === 'object' && libraryValue !== null
-        ? (libraryValue as Record<string, unknown>)
-        : null;
-    const name = library?.name;
-    const declaredSize = library?.declared_size;
-    const streamedBytes = library?.streamed_bytes;
-    const encodedManifest = library?.manifest_base64;
-    if (
-      !library ||
-      typeof name !== 'string' ||
-      !/^lib\/x86_64\/[^/]+\.so$/.test(name) ||
-      names.has(name) ||
-      typeof declaredSize !== 'number' ||
-      !Number.isSafeInteger(declaredSize) ||
-      declaredSize < 0 ||
-      declaredSize > maximumNativeLibraryBytes ||
-      typeof streamedBytes !== 'number' ||
-      !Number.isSafeInteger(streamedBytes) ||
-      streamedBytes < 0 ||
-      streamedBytes > maximumNativeLibraryBytes ||
-      streamedBytes !== declaredSize ||
-      !(encodedManifest === null || typeof encodedManifest === 'string')
-    ) {
-      throw new Error('Android native library scanner returned an invalid result');
-    }
-    names.add(name);
-    nativeDeclaredBytes += declaredSize;
-    nativeStreamedBytes += streamedBytes;
-    if (
-      !Number.isSafeInteger(nativeDeclaredBytes) ||
-      nativeDeclaredBytes > maximumTotalNativeLibraryBytes ||
-      !Number.isSafeInteger(nativeStreamedBytes) ||
-      nativeStreamedBytes > maximumTotalNativeLibraryBytes
-    ) {
-      throw new Error('Android native library scanner returned an invalid result');
-    }
-    if (typeof encodedManifest === 'string') {
-      if (encodedManifest.length > 32 * 1024) {
-        throw new Error('Android native library scanner returned an invalid result');
-      }
-      const manifestBytes = Buffer.from(encodedManifest, 'base64');
-      if (manifestBytes.toString('base64') !== encodedManifest) {
-        throw new Error('Android native library scanner returned an invalid result');
-      }
-      manifests.push(validateEmbeddedBuildManifest(manifestBytes, expectedCommit));
+  for (const library of scan.nativeLibraries) {
+    if (library.embeddedManifest !== null) {
+      manifests.push(
+        validateEmbeddedBuildManifest(library.embeddedManifest, expectedCommit),
+      );
     }
   }
-  if (
-    aggregateStreamedBytes !== manifestStreamedBytes + nativeStreamedBytes ||
-    manifests.length !== 1
-  ) {
+  if (manifests.length !== 1) {
     throw new Error(
       `expected one native library with an E2E build manifest; found ${manifests.length}`,
     );
   }
-  return manifests;
 }
 
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
@@ -372,12 +286,12 @@ export function validateIosApp(
 }
 
 /** Validate the exact x86_64 Android package used by the emulator Appium leg. */
-export function validateAndroidApk(
+export async function validateAndroidApk(
   artifact: string | undefined,
-  sourceCommit = expectedSourceCommit(),
+  sourceCommit: string,
   maximumNativeLibraryBytes = MAX_ANDROID_NATIVE_LIBRARY_BYTES,
   maximumTotalNativeLibraryBytes = MAX_ANDROID_TOTAL_NATIVE_LIBRARY_BYTES,
-): string {
+): Promise<string> {
   if (!Number.isSafeInteger(maximumNativeLibraryBytes) || maximumNativeLibraryBytes <= 0) {
     throw new Error('Android native library safety bound must be a positive integer');
   }
@@ -385,7 +299,7 @@ export function validateAndroidApk(
     !Number.isSafeInteger(maximumTotalNativeLibraryBytes) ||
     maximumTotalNativeLibraryBytes <= 0 ||
     maximumTotalNativeLibraryBytes >
-      Number.MAX_SAFE_INTEGER - MAX_ANDROID_MANIFEST_BYTES
+      Number.MAX_SAFE_INTEGER - MAX_ANDROID_NON_NATIVE_EXECUTABLE_BYTES
   ) {
     throw new Error('Android aggregate native library safety bound must be a positive integer');
   }
@@ -422,7 +336,7 @@ export function validateAndroidApk(
     throw new Error(`MDREADER_ANDROID_APP is not an APK/ZIP package: ${apk}`);
   }
   try {
-    scanAndroidArchive(
+    await validateAndroidArchive(
       apk,
       sourceCommit,
       maximumNativeLibraryBytes,
@@ -456,15 +370,15 @@ export function iosCapabilitiesFor(
 }
 
 /** Android — appium-uiautomator2-driver against a validated debug APK. */
-export function androidCapabilitiesFor(
+export async function androidCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_ANDROID_APP,
   sourceCommit = expectedSourceCommit(),
-): WebdriverIO.Capabilities {
+): Promise<WebdriverIO.Capabilities> {
   return {
     platformName: 'Android',
     'appium:automationName': 'UiAutomator2',
     'appium:deviceName': process.env.MDREADER_ANDROID_DEVICE ?? 'emulator-5554',
-    'appium:app': validateAndroidApk(artifact, sourceCommit),
+    'appium:app': await validateAndroidApk(artifact, sourceCommit),
     'appium:appPackage': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
     'appium:ensureWebviewsHavePages': true,

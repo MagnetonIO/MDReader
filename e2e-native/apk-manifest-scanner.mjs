@@ -8,24 +8,6 @@ import {
 import { TextDecoder } from 'node:util';
 import { createInflateRaw } from 'node:zlib';
 
-const [apk, maximumNativeText, maximumAggregateNativeText, maximumLibrariesText] =
-  process.argv.slice(2);
-const maximumNative = Number(maximumNativeText);
-const maximumAggregateNative = Number(maximumAggregateNativeText);
-const maximumLibraries = Number(maximumLibrariesText);
-if (
-  !apk ||
-  !Number.isSafeInteger(maximumNative) ||
-  maximumNative <= 0 ||
-  !Number.isSafeInteger(maximumAggregateNative) ||
-  maximumAggregateNative <= 0 ||
-  !Number.isSafeInteger(maximumLibraries) ||
-  maximumLibraries <= 0
-) {
-  process.stderr.write('invalid Android archive scanner arguments\n');
-  process.exit(2);
-}
-
 const CENTRAL_SIGNATURE = 0x02014b50;
 const EOCD_SIGNATURE = 0x06054b50;
 const LOCAL_SIGNATURE = 0x04034b50;
@@ -37,6 +19,9 @@ const MAX_ARCHIVE_ENTRIES = 16_384;
 const MAX_MEMBER_NAME_BYTES = 4_096;
 const MAX_LOCAL_METADATA_BYTES = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+const MAX_DEX_BYTES = 256 * 1024 * 1024;
+const MAX_TOTAL_DEX_BYTES = 512 * 1024 * 1024;
+const MAX_DEX_FILES = 64;
 const MAX_EMBEDDED_BUILD_MANIFEST_BYTES = 16 * 1024;
 const MAX_COMPRESSION_OVERHEAD_BYTES = 64 * 1024;
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
@@ -112,7 +97,7 @@ function findEocd(handle, size) {
   fail('APK ZIP central directory is missing');
 }
 
-function inspectArchive(apkPath, handle) {
+function inspectArchive(handle, limits) {
   const size = fstatSync(handle).size;
   if (!Number.isSafeInteger(size) || size < 22) fail('APK ZIP metadata is truncated');
   const eocd = findEocd(handle, size);
@@ -227,6 +212,7 @@ function inspectArchive(apkPath, handle) {
   if (offset !== centralEnd) fail('APK ZIP central directory is invalid');
 
   let localMetadataBytes = 0;
+  const localRegions = [];
   for (const descriptor of descriptors) {
     if (descriptor.localOffset + 30 > centralOffset) {
       fail('APK ZIP local member header is outside the data region');
@@ -237,6 +223,7 @@ function inspectArchive(apkPath, handle) {
     }
     const localFlags = local.readUInt16LE(6);
     const localMethod = local.readUInt16LE(8);
+    const localCrc32 = local.readUInt32LE(14);
     const localCompressedSize = local.readUInt32LE(18);
     const localUncompressedSize = local.readUInt32LE(22);
     const localNameLength = local.readUInt16LE(26);
@@ -253,6 +240,15 @@ function inspectArchive(apkPath, handle) {
       localNameLength !== descriptor.nameBytes.length
     ) {
       fail('APK ZIP local and central member metadata disagree');
+    }
+    const usesDataDescriptor = (localFlags & 0x0008) !== 0;
+    if (
+      !usesDataDescriptor &&
+      (localCrc32 !== descriptor.crc32 ||
+        localCompressedSize !== descriptor.compressedSize ||
+        localUncompressedSize !== descriptor.uncompressedSize)
+    ) {
+      fail('APK ZIP local and central member CRC or sizes disagree');
     }
     const localMetadataLength = checkedAdd(
       30,
@@ -294,7 +290,46 @@ function inspectArchive(apkPath, handle) {
     if (dataEnd > centralOffset) {
       fail('APK ZIP member data exceeds the artifact safety bound');
     }
+    let regionEnd = dataEnd;
+    if (usesDataDescriptor) {
+      const first = readExactly(handle, 4, dataEnd).readUInt32LE(0);
+      const hasSignature = first === 0x08074b50;
+      const descriptorLength = hasSignature ? 16 : 12;
+      const dataDescriptor = readExactly(handle, descriptorLength, dataEnd);
+      const valueOffset = hasSignature ? 4 : 0;
+      const describedCrc32 = dataDescriptor.readUInt32LE(valueOffset);
+      const describedCompressedSize = dataDescriptor.readUInt32LE(valueOffset + 4);
+      const describedUncompressedSize = dataDescriptor.readUInt32LE(valueOffset + 8);
+      if (
+        describedCrc32 !== descriptor.crc32 ||
+        describedCompressedSize !== descriptor.compressedSize ||
+        describedUncompressedSize !== descriptor.uncompressedSize
+      ) {
+        fail('APK ZIP data descriptor disagrees with the central directory');
+      }
+      regionEnd = checkedAdd(
+        dataEnd,
+        descriptorLength,
+        'APK ZIP data descriptor exceeds the artifact safety bound',
+      );
+      if (regionEnd > centralOffset) {
+        fail('APK ZIP data descriptor exceeds the artifact safety bound');
+      }
+    }
     descriptor.dataOffset = dataOffset;
+    localRegions.push({
+      start: descriptor.localOffset,
+      end: regionEnd,
+      name: descriptor.name,
+    });
+  }
+  localRegions.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < localRegions.length; index += 1) {
+    if (localRegions[index].start < localRegions[index - 1].end) {
+      fail(
+        `APK ZIP local member regions overlap: ${localRegions[index - 1].name} and ${localRegions[index].name}`,
+      );
+    }
   }
 
   const manifests = descriptors.filter(
@@ -308,8 +343,11 @@ function inspectArchive(apkPath, handle) {
   );
   if (manifests.length !== 1) fail('compiled AndroidManifest.xml is missing');
   if (dexEntries.length === 0) fail('compiled DEX application code is missing');
+  if (dexEntries.length > MAX_DEX_FILES) {
+    fail('Android DEX file count exceeds the artifact safety bound');
+  }
   if (nativeLibraries.length === 0) fail('x86_64 emulator native library is missing');
-  if (nativeLibraries.length > maximumLibraries) {
+  if (nativeLibraries.length > limits.maximumLibraries) {
     fail('Android native library count exceeds the artifact safety bound');
   }
   if (manifests[0].uncompressedSize > MAX_MANIFEST_BYTES) {
@@ -317,9 +355,28 @@ function inspectArchive(apkPath, handle) {
   }
 
   let declaredNativeBytes = 0;
+  let declaredDexBytes = 0;
   let compressedWorkBytes = manifests[0].compressedSize;
+  for (const dex of dexEntries) {
+    if (dex.uncompressedSize > MAX_DEX_BYTES) {
+      fail('Android DEX file exceeds the artifact safety bound');
+    }
+    declaredDexBytes = checkedAdd(
+      declaredDexBytes,
+      dex.uncompressedSize,
+      'Android aggregate DEX bytes exceed the artifact safety bound',
+    );
+    if (declaredDexBytes > MAX_TOTAL_DEX_BYTES) {
+      fail('Android aggregate DEX bytes exceed the artifact safety bound');
+    }
+    compressedWorkBytes = checkedAdd(
+      compressedWorkBytes,
+      dex.compressedSize,
+      'Android compressed archive work exceeds the artifact safety bound',
+    );
+  }
   for (const library of nativeLibraries) {
-    if (library.uncompressedSize > maximumNative) {
+    if (library.uncompressedSize > limits.maximumNative) {
       fail('Android declared native library exceeds the artifact safety bound');
     }
     declaredNativeBytes = checkedAdd(
@@ -327,11 +384,11 @@ function inspectArchive(apkPath, handle) {
       library.uncompressedSize,
       'Android aggregate declared native library bytes exceed the artifact safety bound',
     );
-    if (declaredNativeBytes > maximumAggregateNative) {
+    if (declaredNativeBytes > limits.maximumAggregateNative) {
       fail('Android aggregate declared native library bytes exceed the artifact safety bound');
     }
     const maximumCompressedLibrary = checkedAdd(
-      maximumNative,
+      limits.maximumNative,
       MAX_COMPRESSION_OVERHEAD_BYTES,
       'Android compressed native library safety bound is invalid',
     );
@@ -346,17 +403,21 @@ function inspectArchive(apkPath, handle) {
   }
   const maximumCompressedWork = checkedAdd(
     checkedAdd(
-      maximumAggregateNative,
+      limits.maximumAggregateNative,
       MAX_MANIFEST_BYTES,
       'Android compressed archive work safety bound is invalid',
     ),
-    (nativeLibraries.length + 1) * MAX_COMPRESSION_OVERHEAD_BYTES,
+    checkedAdd(
+      MAX_TOTAL_DEX_BYTES,
+      (nativeLibraries.length + dexEntries.length + 1) * MAX_COMPRESSION_OVERHEAD_BYTES,
+      'Android compressed archive work safety bound is invalid',
+    ),
     'Android compressed archive work safety bound is invalid',
   );
   if (compressedWorkBytes > maximumCompressedWork) {
     fail('Android compressed archive work exceeds the artifact safety bound');
   }
-  return { size, manifest: manifests[0], nativeLibraries };
+  return { size, manifest: manifests[0], dexEntries, nativeLibraries };
 }
 
 const CRC32_TABLE = Array.from({ length: 256 }, (_, value) => {
@@ -423,16 +484,22 @@ class EmbeddedBuildManifestScanner {
   }
 }
 
-async function scanMember(apkPath, descriptor, kind, totals) {
+async function scanMember(apkPath, descriptor, kind, totals, limits) {
   if ((descriptor.flags & 0x0001) !== 0) fail('encrypted APK members are unsupported');
   if (descriptor.method !== 0 && descriptor.method !== 8) {
     fail(`APK member ${descriptor.name} uses an unsupported compression method`);
   }
-  const perMemberMaximum = kind === 'manifest' ? MAX_MANIFEST_BYTES : maximumNative;
+  const perMemberMaximum =
+    kind === 'manifest'
+      ? MAX_MANIFEST_BYTES
+      : kind === 'dex'
+        ? MAX_DEX_BYTES
+        : limits.maximumNative;
   let memberBytes = 0;
   let crc = 0xffffffff;
   const chunks = kind === 'manifest' ? [] : null;
   const embedded = kind === 'native' ? new EmbeddedBuildManifestScanner() : null;
+  let prefix = Buffer.alloc(0);
 
   const consume = (chunk) => {
     memberBytes = checkedAdd(
@@ -461,12 +528,27 @@ async function scanMember(apkPath, descriptor, kind, totals) {
         chunk.length,
         'Android aggregate native library stream exceeds the artifact safety bound',
       );
-      if (totals.native > maximumAggregateNative) {
+      if (totals.native > limits.maximumAggregateNative) {
         fail('Android aggregate native library stream exceeds the artifact safety bound');
+      }
+    } else if (kind === 'dex') {
+      totals.dex = checkedAdd(
+        totals.dex,
+        chunk.length,
+        'Android aggregate DEX stream exceeds the artifact safety bound',
+      );
+      if (totals.dex > MAX_TOTAL_DEX_BYTES) {
+        fail('Android aggregate DEX stream exceeds the artifact safety bound');
       }
     }
     crc = updateCrc32(crc, chunk);
     if (chunks) chunks.push(Buffer.from(chunk));
+    if (prefix.byteLength < 112) {
+      prefix = Buffer.concat([
+        prefix,
+        chunk.subarray(0, Math.min(chunk.byteLength, 112 - prefix.byteLength)),
+      ]);
+    }
     embedded?.push(chunk);
   };
 
@@ -489,6 +571,7 @@ async function scanMember(apkPath, descriptor, kind, totals) {
   return {
     bytes: chunks ? Buffer.concat(chunks, memberBytes) : null,
     embeddedManifest: embedded?.finish() ?? null,
+    prefix,
     sizeMatches: memberBytes === descriptor.uncompressedSize,
     streamedBytes: memberBytes,
   };
@@ -653,16 +736,77 @@ function parseApplicationId(xml) {
   return applicationId;
 }
 
-async function main() {
+function validateDexHeader(name, prefix, streamedBytes) {
+  if (
+    prefix.byteLength < 8 ||
+    !prefix.subarray(0, 4).equals(Buffer.from([0x64, 0x65, 0x78, 0x0a])) ||
+    prefix[7] !== 0
+  ) {
+    fail(`APK member ${name} has invalid DEX magic`);
+  }
+  const version = prefix.subarray(4, 7).toString('ascii');
+  if (!['035', '037', '038', '039', '040', '041'].includes(version)) {
+    fail(`APK member ${name} has unsupported DEX version ${version}`);
+  }
+  if (
+    prefix.byteLength < 44 ||
+    prefix.readUInt32LE(32) !== streamedBytes ||
+    prefix.readUInt32LE(36) !== 112 ||
+    prefix.readUInt32LE(40) !== 0x12345678
+  ) {
+    fail(`APK member ${name} has an invalid DEX header`);
+  }
+}
+
+function validateX86_64ElfHeader(name, prefix) {
+  if (
+    prefix.byteLength < 64 ||
+    !prefix.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
+  ) {
+    fail(`APK member ${name} has invalid ELF magic`);
+  }
+  if (
+    prefix[4] !== 2 ||
+    prefix[5] !== 1 ||
+    prefix[6] !== 1 ||
+    prefix.readUInt32LE(20) !== 1 ||
+    prefix.readUInt16LE(52) < 64
+  ) {
+    fail(`APK member ${name} is not a supported 64-bit little-endian ELF library`);
+  }
+  if (prefix.readUInt16LE(18) !== 0x003e) {
+    fail(`APK member ${name} has the wrong ELF machine for x86_64`);
+  }
+}
+
+export async function scanAndroidArchive(apk, limits) {
+  if (
+    typeof apk !== 'string' ||
+    apk.length === 0 ||
+    !limits ||
+    !Number.isSafeInteger(limits.maximumNative) ||
+    limits.maximumNative <= 0 ||
+    !Number.isSafeInteger(limits.maximumAggregateNative) ||
+    limits.maximumAggregateNative <= 0 ||
+    !Number.isSafeInteger(limits.maximumLibraries) ||
+    limits.maximumLibraries <= 0
+  ) {
+    fail('invalid Android archive scanner arguments');
+  }
   const handle = openSync(apk, 'r');
   try {
-    const archive = inspectArchive(apk, handle);
+    const archive = inspectArchive(handle, limits);
     const totals = {
       decompressed: 0,
       native: 0,
+      dex: 0,
       maximumDecompressed: checkedAdd(
-        maximumAggregateNative,
-        MAX_MANIFEST_BYTES,
+        checkedAdd(
+          limits.maximumAggregateNative,
+          MAX_MANIFEST_BYTES,
+          'Android aggregate decompressed safety bound is invalid',
+        ),
+        MAX_TOTAL_DEX_BYTES,
         'Android aggregate decompressed safety bound is invalid',
       ),
     };
@@ -671,11 +815,25 @@ async function main() {
       archive.manifest,
       'manifest',
       totals,
+      limits,
     );
     if (!manifest.sizeMatches) {
       fail('APK member AndroidManifest.xml uncompressed size disagrees with its directory');
     }
     const applicationId = parseApplicationId(manifest.bytes);
+    const dexFiles = [];
+    for (const descriptor of archive.dexEntries) {
+      const scanned = await scanMember(apk, descriptor, 'dex', totals, limits);
+      if (!scanned.sizeMatches) {
+        fail(`APK member ${descriptor.name} uncompressed size disagrees with its directory`);
+      }
+      validateDexHeader(descriptor.name, scanned.prefix, scanned.streamedBytes);
+      dexFiles.push({
+        name: descriptor.name,
+        declaredSize: descriptor.uncompressedSize,
+        streamedBytes: scanned.streamedBytes,
+      });
+    }
     const nativeLibraries = [];
     let sizeMismatch = null;
     for (const descriptor of archive.nativeLibraries) {
@@ -684,15 +842,14 @@ async function main() {
         descriptor,
         'native',
         totals,
+        limits,
       );
+      validateX86_64ElfHeader(descriptor.name, scanned.prefix);
       nativeLibraries.push({
         name: descriptor.name,
-        declared_size: descriptor.uncompressedSize,
-        streamed_bytes: scanned.streamedBytes,
-        manifest_base64:
-          scanned.embeddedManifest === null
-            ? null
-            : scanned.embeddedManifest.toString('base64'),
+        declaredSize: descriptor.uncompressedSize,
+        streamedBytes: scanned.streamedBytes,
+        embeddedManifest: scanned.embeddedManifest,
       });
       if (!scanned.sizeMatches && sizeMismatch === null) {
         sizeMismatch = descriptor.name;
@@ -702,19 +859,13 @@ async function main() {
       fail(`APK member ${sizeMismatch} uncompressed size disagrees with its directory`);
     }
     return {
-      application_id: applicationId,
-      manifest_streamed_bytes: manifest.streamedBytes,
-      aggregate_streamed_bytes: totals.decompressed,
-      native_libraries: nativeLibraries,
+      applicationId,
+      manifestStreamedBytes: manifest.streamedBytes,
+      aggregateStreamedBytes: totals.decompressed,
+      dexFiles,
+      nativeLibraries,
     };
   } finally {
     closeSync(handle);
   }
-}
-
-try {
-  process.stdout.write(JSON.stringify(await main()));
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 2;
 }

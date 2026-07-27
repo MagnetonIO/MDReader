@@ -28,7 +28,7 @@ export const config: WebdriverIO.Config = {
   runner: 'local',
   specs: [join(E2E_ROOT, 'specs', 'mobile.e2e.ts')],
   maxInstances: 1,
-  capabilities: [androidCapabilitiesFor()],
+  capabilities: [await androidCapabilitiesFor()],
   logLevel: 'info',
   bail: 0,
   waitforTimeout: 15_000,
