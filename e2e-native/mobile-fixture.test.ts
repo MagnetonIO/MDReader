@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import {
   MOBILE_FIXTURE_IDS,
-  MOBILE_FIXTURE_SESSION,
+  MOBILE_FIXTURE_BEARER,
   startMobileFixtureServer,
 } from './mobile-fixture.ts';
 
@@ -14,9 +14,13 @@ test('the isolated fixture serves the real session/entity-query contract and for
     assert.equal(refused.status, 403);
 
     const headers = {
-      'X-MDReader-Session-Reference': MOBILE_FIXTURE_SESSION,
+      authorization: `Bearer ${MOBILE_FIXTURE_BEARER}`,
       'content-type': 'application/json',
     };
+    const legacy = await fetch(`${fixture.origin}/v1/session`, {
+      headers: { 'X-MDReader-Session-Reference': MOBILE_FIXTURE_BEARER },
+    });
+    assert.equal(legacy.status, 403);
     const session = await fetch(`${fixture.origin}/v1/session`, { headers });
     assert.equal(session.status, 200);
     assert.deepEqual(await session.json(), {

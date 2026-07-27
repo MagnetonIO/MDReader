@@ -168,6 +168,7 @@ pub(crate) enum CloudSourceError {
     OauthTimeout,
     OauthTransport,
     OauthRateLimited {
+        #[specta(type = Option<f64>)]
         retry_after_ms: Option<u64>,
     },
     ProviderRejected,

@@ -6,13 +6,9 @@
  * offline cache; it is test evidence, never a production-provider claim.
  */
 
-import { $, $$, browser, expect } from '@wdio/globals';
+import { $, browser, expect } from '@wdio/globals';
 
-import {
-  MOBILE_FIXTURE_IDS,
-  MOBILE_FIXTURE_ORIGIN,
-  MOBILE_FIXTURE_SESSION,
-} from '../mobile-fixture.ts';
+import { MOBILE_FIXTURE_IDS } from '../mobile-fixture.ts';
 
 /** Switch the Appium session into the app's WEBVIEW context (the HTML UI). */
 async function switchToWebview(b: WebdriverIO.Browser): Promise<void> {
@@ -56,10 +52,8 @@ describe('MDReader native mobile product flow', () => {
     await expect(await $('h2=Dropbox')).toExist();
     await expect(await $('h2=Enterprise CatDB server')).toExist();
     await expect(await $('input[type="password"]')).not.toExist();
-    await (await $('input[type="url"]')).setValue(MOBILE_FIXTURE_ORIGIN);
-    const textInputs = await $$('input:not([type]), input[type="text"]');
-    await textInputs[0]!.setValue(MOBILE_FIXTURE_SESSION);
-    await (await $('button=Use server')).click();
+    await expect(await $('input[type="url"]')).not.toExist();
+    await expect(await $('button=Use server')).not.toExist();
     await expect(await $('p*=Connected to Enterprise Document library')).toExist();
     await (await $('button=Library')).click();
     await expect(await $('button=mobile-e2e.md')).toExist();

@@ -24,6 +24,58 @@ import {
   type OfflineDocumentEntry,
 } from './offline-cache';
 
+const provenance = {
+  pins: {
+    catalog_resolver_id: 'resolver-1',
+    catalog_revision_id: 'catalog-1',
+    schema_version_id: 'schema-1',
+    physical_schema_version_ids: ['physical-1'],
+    source_version_ids: ['source-version-1', 'source-version-2'],
+    mapping_version_ids: ['mapping-1', 'mapping-2'],
+    policy_version_ids: ['policy-1'],
+  },
+  fields: {
+    body: {
+      field: 'body',
+      selected: 0,
+      considered: [
+        {
+          source_version_id: 'source-version-1',
+          record_key: 'document-1',
+          mapping_version_id: 'mapping-1',
+          observed_at_ms: 990,
+          state: { state: 'observed_value' as const, value: '# Safe' },
+        },
+        {
+          source_version_id: 'source-version-2',
+          record_key: 'document-1',
+          mapping_version_id: 'mapping-2',
+          observed_at_ms: null,
+          state: { state: 'not_asked' as const, value: { reason: 'policy' } },
+        },
+      ],
+    },
+  },
+  sources: [
+    {
+      source_id: 'source-1',
+      source_version_id: 'source-version-1',
+      scanned: 1,
+      returned: 1,
+      freshness_ms: 0,
+      outcome: 'ran' as const,
+    },
+    {
+      source_id: 'source-2',
+      source_version_id: 'source-version-2',
+      scanned: 0,
+      returned: 0,
+      freshness_ms: null,
+      outcome: 'refused' as const,
+    },
+  ],
+};
+
 function entry(
   sourceId: string,
   revision: string,
@@ -41,6 +93,7 @@ function entry(
     expiresAt: cachedAt + 1_000,
     content: '# Safe',
     bytes: 6,
+    provenance,
     ...overrides,
   };
 }
@@ -65,7 +118,7 @@ afterEach(() => {
 describe('bounded mobile offline cache', () => {
   test('a late older write cannot replace a newer observed revision', async () => {
     persistence.raw = {
-      version: 2,
+      version: 3,
       entries: [entry('source-1', 'blake3:new', 2_000)],
     };
 
@@ -79,7 +132,7 @@ describe('bounded mobile offline cache', () => {
 
   test('a revoked source identity cannot read a same-path entry after another source is admitted', async () => {
     persistence.raw = {
-      version: 2,
+      version: 3,
       entries: [entry('revoked-source', 'blake3:a', 1_000)],
     };
 
@@ -90,7 +143,7 @@ describe('bounded mobile offline cache', () => {
 
   test('a re-grant with a new root version cannot read the prior grant cache entry', async () => {
     persistence.raw = {
-      version: 2,
+      version: 3,
       entries: [entry('source-1', 'blake3:a', 1_000)],
     };
 
@@ -106,6 +159,7 @@ describe('bounded mobile offline cache', () => {
     const first = entry('source-1', 'blake3:first', 1_000);
     const second = entry('source-1', 'blake3:second', 1_100, {
       document: { id: 'document-2', path: '/notes/second.md' },
+      provenance: null,
     });
 
     expect(await Promise.all([writeOfflineDocument(first), writeOfflineDocument(second)])).toEqual([
@@ -123,7 +177,7 @@ describe('bounded mobile offline cache', () => {
 
   test('source kind and document id are part of the cache key even when ids and paths collide', async () => {
     persistence.raw = {
-      version: 2,
+      version: 3,
       entries: [entry('shared-id', 'blake3:a', 1_000)],
     };
 
@@ -143,5 +197,35 @@ describe('bounded mobile offline cache', () => {
         1_050,
       ),
     ).toEqual({ status: 'miss' });
+  });
+
+  test('restores complete pinned field provenance from the identity-bound cache entry', async () => {
+    persistence.raw = {
+      version: 3,
+      entries: [entry('source-1', 'blake3:a', 1_000)],
+    };
+
+    const cached = await readOfflineDocument(identity('source-1'), 1_050);
+    expect(cached).toMatchObject({
+      status: 'hit',
+      entry: { provenance },
+    });
+  });
+
+  test('rejects malformed or identity-inconsistent cached provenance', async () => {
+    const malformed = structuredClone(provenance);
+    malformed.fields.body.considered[0]!.source_version_id = 'unpinned-source-version';
+    persistence.raw = {
+      version: 3,
+      entries: [
+        entry('source-1', 'blake3:a', 1_000, {
+          provenance: malformed,
+        }),
+      ],
+    };
+
+    await expect(readOfflineDocument(identity('source-1'), 1_050)).resolves.toEqual({
+      status: 'corrupt',
+    });
   });
 });

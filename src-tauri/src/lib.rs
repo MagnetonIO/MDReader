@@ -9,6 +9,16 @@
 #[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
 compile_error!("the direct updater cannot be compiled into the isolated E2E application");
 
+#[cfg(feature = "e2e-build")]
+#[used]
+static E2E_BUILD_MANIFEST: &str = concat!(
+    "MDREADER_E2E_BUILD_MANIFEST:",
+    "{\"schema\":1,\"source_commit\":\"",
+    env!("MDREADER_SOURCE_COMMIT"),
+    "\",\"bundle_identifier\":\"dev.mdreader.app.e2e\",\"profile\":\"e2e-build\"}",
+    ":MDREADER_E2E_BUILD_MANIFEST_END",
+);
+
 mod cloud_accounts;
 mod commands;
 mod diagnostics;
@@ -17,6 +27,7 @@ mod federation;
 mod file_lock;
 mod library;
 mod mapping;
+mod mobile_enterprise;
 mod overlay;
 mod search;
 mod updater;
@@ -58,6 +69,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::set_cloud_source_enabled,
             cloud_accounts::disconnect_cloud_source,
             cloud_accounts::query_cloud_documents,
+            mobile_enterprise::mobile_enterprise_connection,
+            mobile_enterprise::mobile_enterprise_request,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -168,6 +181,7 @@ pub fn run() {
         .manage(WatcherState::default())
         .manage(LibraryState::default())
         .manage(cloud_accounts::CloudAccountsState::default())
+        .manage(mobile_enterprise::MobileEnterpriseState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             let diagnostics =
@@ -292,6 +306,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mobile_enterprise_transport_is_registered_without_a_browser_credential_header() {
+        let registry = include_str!("lib.rs");
+        let bindings = include_str!("../../ui/src/bindings.ts");
+        let adapter = include_str!("../../ui/src/mobile/mobile-source-adapter.ts");
+        for (rust_command, invoke_name) in [
+            (
+                "mobile_enterprise::mobile_enterprise_connection,",
+                "\"mobile_enterprise_connection\"",
+            ),
+            (
+                "mobile_enterprise::mobile_enterprise_request,",
+                "\"mobile_enterprise_request\"",
+            ),
+        ] {
+            assert!(registry.contains(rust_command), "missing {rust_command}");
+            assert!(bindings.contains(invoke_name), "missing {invoke_name}");
+        }
+        assert!(!adapter.contains("X-MDReader-Session-Reference"));
+        assert!(!adapter.contains("Authorization"));
+        assert!(!adapter.contains("fetch.bind(globalThis)"));
+    }
+
     /// THE first-paint guarantee, enforced by construction.
     ///
     /// Tauri dispatches a command that is neither `async fn` nor marked
@@ -323,6 +360,7 @@ mod tests {
             ("federation.rs", include_str!("federation.rs")),
             ("overlay.rs", include_str!("overlay.rs")),
             ("mapping.rs", include_str!("mapping.rs")),
+            ("mobile_enterprise.rs", include_str!("mobile_enterprise.rs")),
             ("updater.rs", include_str!("updater.rs")),
         ] {
             let file: syn::File = syn::parse_str(source).expect("module parses");

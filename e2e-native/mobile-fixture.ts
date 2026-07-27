@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 export const MOBILE_FIXTURE_HOST = '127.0.0.1';
 export const MOBILE_FIXTURE_PORT = 47_865;
-export const MOBILE_FIXTURE_SESSION = 'mdreader-e2e-session';
+export const MOBILE_FIXTURE_BEARER = 'mdreader-e2e-bearer';
 export const MOBILE_FIXTURE_ORIGIN = `http://${MOBILE_FIXTURE_HOST}:${MOBILE_FIXTURE_PORT}`;
 export const MOBILE_FIXTURE_IDS = {
   deployment: '00000000-0000-0000-0000-000000000201',
@@ -115,7 +115,7 @@ export async function startMobileFixtureServer(
   let documentReads = 0;
   const server = createServer((request, response) => {
     void (async () => {
-      if (request.headers['x-mdreader-session-reference'] !== MOBILE_FIXTURE_SESSION) {
+      if (request.headers.authorization !== `Bearer ${MOBILE_FIXTURE_BEARER}`) {
         json(response, 403, { error: 'refused', message: 'session refused' });
         return;
       }
