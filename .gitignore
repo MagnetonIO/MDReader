@@ -3,6 +3,7 @@
 
 # Rust
 target/
+/target
 **/*.rs.bk
 
 # Node / frontend (Tauri + Next side, scaffolded by later tasks)
