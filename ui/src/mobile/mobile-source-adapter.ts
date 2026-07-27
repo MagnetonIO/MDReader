@@ -451,7 +451,12 @@ export function createEnterpriseMobileSourceAdapter(
           !response ||
           response.rows.length > MAX_LIBRARY_DOCUMENTS ||
           response.next_cursor != null ||
-          response.completeness.state !== 'complete'
+          response.completeness.state !== 'complete' ||
+          !mobileProvenanceOf({
+            pins: response.pins,
+            fields: {},
+            sources: response.sources,
+          })
         ) {
           return {
             status: 'invalid-response',
@@ -460,8 +465,16 @@ export function createEnterpriseMobileSourceAdapter(
         }
         const documents: MobileLibraryDocument[] = [];
         for (const row of response.rows) {
+          const provenance = mobileProvenanceOf(
+            {
+              pins: response.pins,
+              fields: row.provenance,
+              sources: response.sources,
+            },
+            row.record_key,
+          );
           const document = documentOf(response, workspaceId, source, row);
-          if (!document) {
+          if (!provenance || !document) {
             return {
               status: 'invalid-response',
               message: 'The Enterprise server returned an invalid semantic response.',

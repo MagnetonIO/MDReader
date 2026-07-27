@@ -381,6 +381,131 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     expect(readBody).not.toHaveProperty('source_ids');
   });
 
+  test('listing rejects a pinned source omitted from source reports before admitting the service', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    addSecondProvider(listing);
+    listing.sources.pop();
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('listing rejects duplicate provider observations that omit a pinned source', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    addSecondProvider(listing);
+    const title = listing.rows[0]!.provenance.title;
+    if (!title) throw new Error('fixture title provenance is missing');
+    title.considered = [
+      structuredClone(title.considered[0]!),
+      structuredClone(title.considered[0]!),
+    ];
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('listing rejects provider observations reordered relative to pinned source order', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    addSecondProvider(listing);
+    const size = listing.rows[0]!.provenance.size;
+    if (!size) throw new Error('fixture size provenance is missing');
+    size.considered.reverse();
+    size.selected = 1;
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('listing rejects source reports reordered relative to pinned source order', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    addSecondProvider(listing);
+    listing.sources.reverse();
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('listing retains exact provider order while different fields select different winners', async () => {
+    const listing = queryResponse({
+      path: 'papers/federated.md',
+      title: 'Federated title',
+      size: 19,
+    });
+    addSecondProvider(listing);
+    const title = listing.rows[0]!.provenance.title;
+    if (!title) throw new Error('fixture title provenance is missing');
+    title.considered[0] = {
+      source_version_id: IDS.sourceVersion,
+      record_key: 'document-1',
+      mapping_version_id: IDS.mapping,
+      observed_at_ms: 1_234,
+      state: { state: 'field_unseen' },
+    };
+    title.considered[1] = {
+      source_version_id: IDS.sourceVersion2,
+      record_key: 'document-1',
+      mapping_version_id: IDS.mapping2,
+      observed_at_ms: 1_234,
+      state: { state: 'observed_value', value: 'Federated title' },
+    };
+    title.selected = 1;
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toMatchObject({
+      status: 'ready',
+      documents: [
+        {
+          document: { id: 'document-1', path: 'papers/federated.md' },
+          title: 'Federated title',
+          size: 19,
+        },
+      ],
+    });
+  });
+
   test('rejects a pinned source that is omitted from source reports and field provenance', async () => {
     const listing = queryResponse({
       path: 'papers/architecture.md',
