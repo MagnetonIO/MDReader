@@ -6,7 +6,7 @@ const GOOGLE_CLIENT_ID =
   /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
 const DROPBOX_CLIENT_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const DROPBOX_REDIRECT =
-  /^http:\/\/(127(?:\.[0-9]{1,3}){3}|\[::1\]):([1-9][0-9]{0,4})\/oauth\/dropbox$/;
+  /^http:\/\/(127(?:\.(?:0|[1-9][0-9]{0,2})){3}|\[::1\]):([1-9][0-9]{0,4})\/oauth\/dropbox$/;
 
 const inputs = [
   {
