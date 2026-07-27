@@ -57,6 +57,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::connect_cloud_source,
             cloud_accounts::set_cloud_source_enabled,
             cloud_accounts::disconnect_cloud_source,
+            cloud_accounts::query_cloud_documents,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -279,6 +280,10 @@ mod tests {
             (
                 "cloud_accounts::disconnect_cloud_source,",
                 "\"disconnect_cloud_source\"",
+            ),
+            (
+                "cloud_accounts::query_cloud_documents,",
+                "\"query_cloud_documents\"",
             ),
         ] {
             assert!(registry.contains(rust_command), "missing {rust_command}");

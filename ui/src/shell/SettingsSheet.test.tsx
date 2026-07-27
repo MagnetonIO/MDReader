@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
+  CloudDocumentQueryResponse,
+  CloudFilterInput,
   CloudProvider,
   CloudSourcesSnapshot,
   DiagnosticInfo,
@@ -76,6 +78,11 @@ function cloudBackend(
     enabled: boolean,
   ) => Promise<CloudSourcesSnapshot>;
   disconnectCloudSource: (provider: CloudProvider) => Promise<CloudSourcesSnapshot>;
+  queryCloudDocuments: (
+    provider: CloudProvider,
+    filters: CloudFilterInput[],
+    fields: string[],
+  ) => Promise<CloudDocumentQueryResponse>;
 } {
   let snapshot = initial;
   return {
@@ -112,6 +119,24 @@ function cloudBackend(
       };
       return snapshot;
     },
+    queryCloudDocuments: vi.fn(async (provider) => ({
+      query_id: 'query-1',
+      provider,
+      schema_version: 'mdreader.Document/v1',
+      scanned: 1,
+      rows: [
+        {
+          source_id: 'b'.repeat(64),
+          record_key: 'provider-record-1',
+          fields: {
+            id: 'provider-record-1',
+            name: 'Research note.md',
+            modifiedAt: 1_800_000_000_000,
+            size: 2048,
+          },
+        },
+      ],
+    })),
   };
 }
 
@@ -240,6 +265,46 @@ describe('Settings sheet', () => {
       name: 'Include Dropbox in Library',
     });
     expect(includeDropbox.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('reads connected cloud documents through the native typed-query boundary', async () => {
+    const api = cloudBackend({
+      version: 1,
+      sources: [
+        {
+          id: 'b'.repeat(64),
+          provider: 'google-drive',
+          label: 'Google Drive',
+          connection: 'connected',
+          enabled: true,
+        },
+        {
+          id: '',
+          provider: 'dropbox',
+          label: 'Dropbox',
+          connection: 'disconnected',
+          enabled: false,
+        },
+      ],
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Browse Google Drive' }));
+    expect(await screen.findByText('Research note.md')).toBeTruthy();
+    expect(screen.getByLabelText('Google Drive documents').textContent).toContain('2 KiB');
+    expect(api.queryCloudDocuments).toHaveBeenCalledWith(
+      'google-drive',
+      [],
+      ['id', 'name', 'modifiedAt', 'size'],
+    );
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {

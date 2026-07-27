@@ -75,6 +75,7 @@ catdb-core = { path = "../../../catdb/crates/catdb-core" }
 catdb-connectors = { path = "../../../catdb/crates/catdb-connectors" }
 catdb-federation = { path = "../../../catdb/crates/catdb-federation" }
 catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
+catdb-query = { path = "../../../catdb/crates/catdb-query" }
 catdb-validation = { path = "../../../catdb/crates/catdb-validation" }
 mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }

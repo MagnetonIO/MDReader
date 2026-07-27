@@ -444,6 +444,57 @@ body {
   font: 600 10px/1 var(--font-ui);
 }
 
+.cloud-source__documents {
+  grid-column: 1 / -1;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.cloud-source__documents-heading {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.cloud-source__documents-heading strong {
+  font-size: 11px;
+}
+
+.cloud-source__documents-heading span,
+.cloud-source__documents p {
+  color: var(--color-faint);
+  font-size: 10px;
+}
+
+.cloud-source__documents ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cloud-source__documents li {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+  color: var(--color-fg);
+  font-size: 11px;
+}
+
+.cloud-source__documents li > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-source__documents small {
+  flex: none;
+  color: var(--color-faint);
+  font: 500 9px/1.4 var(--font-ui);
+}
+
 .source-switch {
   position: relative;
   width: 38px;

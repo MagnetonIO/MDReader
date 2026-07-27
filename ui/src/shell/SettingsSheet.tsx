@@ -10,6 +10,7 @@ import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
   settingsBackend,
+  type CloudDocumentQueryResponse,
   type CloudProvider,
   type CloudSourcesView,
   type DiagnosticInfo,
@@ -93,6 +94,8 @@ function errorMessage(cause: unknown): string {
       return 'The operating system credential store is unavailable.';
     case 'credential-missing':
       return 'Sign in again before enabling this source.';
+    case 'source-paused':
+      return 'Include this source in the Library before reading it.';
     case 'oauth-callback-unavailable':
       return 'MDReader could not open its local sign-in callback. Close another sign-in attempt and try again.';
     case 'oauth-state-mismatch':
@@ -105,6 +108,10 @@ function errorMessage(cause: unknown): string {
     case 'oauth-transport':
     case 'provider-rejected':
       return 'The provider could not complete sign-in. Try again.';
+    case 'query-invalid':
+      return detail.detail;
+    case 'query-failed':
+      return `MDReader could not read that source. ${detail.detail}`;
     case 'invalid-configuration':
     case 'rollback-failed':
       return 'MDReader could not safely update the cloud source. Nothing was connected.';
@@ -139,6 +146,16 @@ function activityLabel(watcher: WatcherStatus, importState: ImportState | null):
   return 'Idle';
 }
 
+function cloudField(
+  response: CloudDocumentQueryResponse,
+  rowIndex: number,
+  field: string,
+): unknown {
+  const fields = response.rows[rowIndex]?.fields;
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return undefined;
+  return (fields as Record<string, unknown>)[field];
+}
+
 export function SettingsSheet({
   backend = settingsBackend,
   watcher,
@@ -158,6 +175,9 @@ export function SettingsSheet({
   );
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
+  const [cloudDocuments, setCloudDocuments] = useState<
+    Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
+  >({});
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -300,10 +320,38 @@ export function SettingsSheet({
       void run(
         `disconnect:${provider}`,
         () => cloudControls.disconnect(provider),
-        setCloudSources,
+        (snapshot) => {
+          setCloudSources(snapshot);
+          setCloudDocuments((current) => {
+            const next = { ...current };
+            delete next[provider];
+            return next;
+          });
+        },
       );
     },
     [cloudControls, run],
+  );
+
+  const browseCloud = useCallback(
+    (provider: CloudProvider) => {
+      if (!backend.queryCloudDocuments) return;
+      void run(
+        `browse:${provider}`,
+        () =>
+          backend.queryCloudDocuments!(
+            provider,
+            [],
+            ['id', 'name', 'modifiedAt', 'size'],
+          ),
+        (response) =>
+          setCloudDocuments((current) => ({
+            ...current,
+            [provider]: response,
+          })),
+      );
+    },
+    [backend, run],
   );
 
   const setLevel = useCallback(
@@ -449,8 +497,7 @@ export function SettingsSheet({
                 <h2 id="settings-library">Library</h2>
               </div>
               <p>
-                Local Markdown folders form one library. The current engine opens one source at a
-                time.
+                Add the Markdown sources you want to read and search as one Library.
               </p>
             </div>
 
@@ -562,6 +609,7 @@ export function SettingsSheet({
                   {cloudSources?.sources.map((source) => {
                     const connected = source.connection !== 'disconnected';
                     const reconnect = source.connection === 'reauthorize';
+                    const documents = cloudDocuments[source.provider];
                     return (
                       <article className="cloud-source" key={source.provider}>
                         <div className="cloud-source__copy">
@@ -582,6 +630,16 @@ export function SettingsSheet({
                         <div className="cloud-source__actions">
                           {connected ? (
                             <>
+                              {!reconnect && source.enabled && backend.queryCloudDocuments ? (
+                                <button
+                                  type="button"
+                                  disabled={busy !== null}
+                                  aria-label={`Browse ${source.label}`}
+                                  onClick={() => browseCloud(source.provider)}
+                                >
+                                  {busy === `browse:${source.provider}` ? 'Loading…' : 'Browse'}
+                                </button>
+                              ) : null}
                               {!reconnect ? (
                                 <button
                                   type="button"
@@ -629,6 +687,47 @@ export function SettingsSheet({
                             </button>
                           )}
                         </div>
+                        {documents && source.enabled ? (
+                          <div
+                            className="cloud-source__documents"
+                            aria-label={`${source.label} documents`}
+                          >
+                            <div className="cloud-source__documents-heading">
+                              <strong>
+                                {documents.rows.length}{' '}
+                                {documents.rows.length === 1 ? 'document' : 'documents'}
+                              </strong>
+                              <span>from {source.label}</span>
+                            </div>
+                            {documents.rows.length === 0 ? (
+                              <p>No Markdown or text documents were found.</p>
+                            ) : (
+                              <ul>
+                                {documents.rows.slice(0, 8).map((row, index) => {
+                                  const name = cloudField(documents, index, 'name');
+                                  const modifiedAt = cloudField(documents, index, 'modifiedAt');
+                                  const size = cloudField(documents, index, 'size');
+                                  return (
+                                    <li key={`${row.source_id}:${row.record_key}`}>
+                                      <span>{typeof name === 'string' ? name : row.record_key}</span>
+                                      <small>
+                                        {typeof size === 'number'
+                                          ? readableBytes(size)
+                                          : 'Size unavailable'}
+                                        {typeof modifiedAt === 'number'
+                                          ? ` · ${new Date(modifiedAt).toLocaleDateString()}`
+                                          : ''}
+                                      </small>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                            {documents.rows.length > 8 ? (
+                              <p>Showing the first 8 documents.</p>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </article>
                     );
                   })}

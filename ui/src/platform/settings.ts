@@ -8,6 +8,8 @@
 
 import {
   commands,
+  type CloudDocumentQueryResponse,
+  type CloudFilterInput,
   type CloudProvider,
   type CloudSourceDto,
   type CloudSourceError,
@@ -26,6 +28,8 @@ import {
 
 export type {
   CloudProvider,
+  CloudDocumentQueryResponse,
+  CloudFilterInput,
   CloudSourceDto,
   CloudSourcesSnapshot,
   DiagnosticEvent,
@@ -88,6 +92,11 @@ export interface SettingsBackend {
     enabled: boolean,
   ) => Promise<CloudSourcesView>;
   disconnectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
+  queryCloudDocuments?: (
+    provider: CloudProvider,
+    filters: CloudFilterInput[],
+    fields: string[],
+  ) => Promise<CloudDocumentQueryResponse>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
@@ -201,6 +210,16 @@ export async function disconnectCloudSource(
   return result.data;
 }
 
+export async function queryCloudDocuments(
+  provider: CloudProvider,
+  filters: CloudFilterInput[],
+  fields: string[],
+): Promise<CloudDocumentQueryResponse> {
+  const result = await commands.queryCloudDocuments(provider, filters, fields);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
 export const settingsBackend: SettingsBackend = {
   listSources: listLibrarySources,
   pickAndAddSource: pickAndAddLibrarySource,
@@ -217,6 +236,7 @@ export const settingsBackend: SettingsBackend = {
   connectCloudSource,
   setCloudSourceEnabled,
   disconnectCloudSource,
+  queryCloudDocuments,
 };
 
 /**

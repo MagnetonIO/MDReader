@@ -43,6 +43,7 @@ export const commands = {
 	connectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("connect_cloud_source", { provider })),
 	setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("set_cloud_source_enabled", { provider, enabled })),
 	disconnectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("disconnect_cloud_source", { provider })),
+	queryCloudDocuments: (provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { provider, filters, fields })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -391,6 +392,28 @@ export type BoostsDto = {
 
 export type CloudConnectionState = "disconnected" | "connected" | "reauthorize";
 
+export type CloudDocumentQueryResponse = {
+	query_id: string,
+	provider: CloudProvider,
+	schema_version: string,
+	scanned: number,
+	rows: CloudDocumentRow[],
+};
+
+export type CloudDocumentRow = {
+	source_id: string,
+	record_key: string,
+	fields: unknown,
+};
+
+export type CloudFilterInput = {
+	field: string,
+	operator: CloudFilterOperator,
+	value: string,
+};
+
+export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
+
 export type CloudProvider = "google-drive" | "dropbox";
 
 export type CloudSourceDto = {
@@ -401,7 +424,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "provider-rejected" };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
 
 export type CloudSourcesSnapshot = {
 	version: number,

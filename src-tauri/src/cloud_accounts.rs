@@ -7,7 +7,11 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::time::Duration;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use std::sync::Arc;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use std::sync::Mutex;
@@ -37,6 +41,22 @@ const MAX_AUTHORIZATION_CODE_BYTES: usize = 4 * 1024;
 const MAX_DRIVE_SELECTIONS: usize = 512;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_DRIVE_METADATA_BYTES: usize = 64 * 1024;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const MAX_CLOUD_QUERY_FILTERS: usize = 16;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const MAX_CLOUD_QUERY_FIELDS: usize = 16;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_QUERY_WORK_BUDGET: usize = 10_000;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_QUERY_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_QUERY_PAGE_SIZE: usize = 100;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_DOCUMENT_SCHEMA_VERSION: &str = "mdreader.Document/v1";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const GOOGLE_REDIRECT_URI: &str = "http://127.0.0.1:53681/oauth/google-drive";
 const DROPBOX_REDIRECT_URI: &str = "http://127.0.0.1:53682/oauth/dropbox";
@@ -88,6 +108,42 @@ pub(crate) struct CloudSourcesSnapshot {
     pub sources: Vec<CloudSourceDto>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudFilterOperator {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Glob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloudFilterInput {
+    pub field: String,
+    pub operator: CloudFilterOperator,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq)]
+pub(crate) struct CloudDocumentRow {
+    pub source_id: String,
+    pub record_key: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub fields: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq)]
+pub(crate) struct CloudDocumentQueryResponse {
+    pub query_id: String,
+    pub provider: CloudProvider,
+    pub schema_version: String,
+    pub scanned: u32,
+    pub rows: Vec<CloudDocumentRow>,
+}
+
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum CloudSourceError {
@@ -111,7 +167,20 @@ pub(crate) enum CloudSourceError {
     OauthDenied,
     OauthTimeout,
     OauthTransport,
+    OauthRateLimited {
+        retry_after_ms: Option<u64>,
+    },
     ProviderRejected,
+    #[allow(dead_code)]
+    SourcePaused,
+    #[allow(dead_code)]
+    QueryInvalid {
+        detail: String,
+    },
+    #[allow(dead_code)]
+    QueryFailed {
+        detail: String,
+    },
     #[cfg(any(
         not(feature = "google-drive-connector"),
         not(feature = "dropbox-connector")
@@ -139,7 +208,11 @@ impl fmt::Display for CloudSourceError {
             Self::OauthDenied => "cloud-oauth-denied",
             Self::OauthTimeout => "cloud-oauth-timeout",
             Self::OauthTransport => "cloud-oauth-transport-failed",
+            Self::OauthRateLimited { .. } => "cloud-oauth-rate-limited",
             Self::ProviderRejected => "cloud-oauth-provider-rejected",
+            Self::SourcePaused => "cloud-source-paused",
+            Self::QueryInvalid { .. } => "cloud-query-invalid",
+            Self::QueryFailed { .. } => "cloud-query-failed",
             #[cfg(any(
                 not(feature = "google-drive-connector"),
                 not(feature = "dropbox-connector")
@@ -242,7 +315,7 @@ pub(crate) struct SecretBundle {
     access_token: String,
     refresh_token: String,
     #[zeroize(skip)]
-    expires_in_seconds: u64,
+    expires_at_unix_seconds: u64,
     cursor_key: [u8; 32],
 }
 
@@ -250,13 +323,13 @@ impl SecretBundle {
     pub(crate) fn new(
         access_token: impl Into<String>,
         refresh_token: impl Into<String>,
-        expires_in_seconds: u64,
+        expires_at_unix_seconds: u64,
         cursor_key: [u8; 32],
     ) -> Result<Self, CloudSourceError> {
         let bundle = Self {
             access_token: access_token.into(),
             refresh_token: refresh_token.into(),
-            expires_in_seconds,
+            expires_at_unix_seconds,
             cursor_key,
         };
         bundle.validate()?;
@@ -269,12 +342,19 @@ impl SecretBundle {
         };
         if !valid_secret(&self.access_token)
             || !valid_secret(&self.refresh_token)
-            || self.expires_in_seconds == 0
+            || self.expires_at_unix_seconds == 0
             || self.cursor_key.iter().all(|byte| *byte == 0)
         {
             return Err(CloudSourceError::InvalidConfiguration);
         }
         Ok(())
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn expires_at(&self) -> Result<SystemTime, CloudSourceError> {
+        UNIX_EPOCH
+            .checked_add(Duration::from_secs(self.expires_at_unix_seconds))
+            .ok_or(CloudSourceError::InvalidConfiguration)
     }
 }
 
@@ -284,7 +364,7 @@ impl fmt::Debug for SecretBundle {
     }
 }
 
-pub(crate) trait CredentialVault {
+pub(crate) trait CredentialVault: Send + Sync {
     fn get(&self, reference: &str) -> Result<Option<SecretBundle>, CloudSourceError>;
     fn set(&self, reference: &str, secret: &SecretBundle) -> Result<(), CloudSourceError>;
     fn delete(&self, reference: &str) -> Result<(), CloudSourceError>;
@@ -347,6 +427,27 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     pub(crate) fn snapshot(&self) -> Result<CloudSourcesSnapshot, CloudSourceError> {
         self.registry
             .read_cloud(|sources| self.snapshot_records(sources))
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn active_record(
+        &self,
+        provider: CloudProvider,
+    ) -> Result<CloudSourceRecord, CloudSourceError> {
+        self.registry.read_cloud(|sources| {
+            let record = sources
+                .iter()
+                .find(|source| source.provider == provider)
+                .cloned()
+                .ok_or(CloudSourceError::SourceNotFound)?;
+            if !record.enabled {
+                return Err(CloudSourceError::SourcePaused);
+            }
+            if self.vault.get(&record.credential_reference)?.is_none() {
+                return Err(CloudSourceError::CredentialMissing);
+            }
+            Ok(record)
+        })
     }
 
     fn snapshot_records(
@@ -528,7 +629,7 @@ impl OAuthAttempt {
         #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
         {
             let _ = (provider, verifier.into(), state.into(), redirect_uri.into());
-            return Err(CloudSourceError::ConnectorUnavailable);
+            Err(CloudSourceError::ConnectorUnavailable)
         }
         #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
         {
@@ -571,7 +672,7 @@ impl OAuthAttempt {
         #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
         {
             let _ = (&self.pkce, client_id);
-            return Err(CloudSourceError::ConnectorUnavailable);
+            Err(CloudSourceError::ConnectorUnavailable)
         }
         #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
         match &self.pkce {
@@ -590,7 +691,7 @@ impl OAuthAttempt {
         #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
         {
             let _ = &self.pkce;
-            return Err(CloudSourceError::ConnectorUnavailable);
+            Err(CloudSourceError::ConnectorUnavailable)
         }
         #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
         match &self.pkce {
@@ -608,7 +709,7 @@ impl OAuthAttempt {
         #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
         {
             let _ = (&self.pkce, callback);
-            return Err(CloudSourceError::ConnectorUnavailable);
+            Err(CloudSourceError::ConnectorUnavailable)
         }
         #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
         {
@@ -725,6 +826,7 @@ impl VerifiedAuthorization {
 #[derive(Default)]
 pub(crate) struct CloudAccountsState(tokio::sync::Mutex<()>);
 
+#[derive(Clone)]
 struct KeyringCredentialVault {
     service: String,
 }
@@ -824,6 +926,495 @@ async fn blocking_cloud_operation<T: Send + 'static>(
     .map_err(|_| CloudSourceError::PersistFailed)?
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+#[derive(Clone)]
+struct CloudCredentialResolver {
+    provider: CloudProvider,
+    reference: String,
+    vault: Arc<dyn CredentialVault>,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+impl CloudCredentialResolver {
+    fn new(provider: CloudProvider, reference: String, vault: Arc<dyn CredentialVault>) -> Self {
+        Self {
+            provider,
+            reference,
+            vault,
+        }
+    }
+
+    async fn load(&self) -> Result<SecretBundle, CloudSourceError> {
+        let vault = self.vault.clone();
+        let reference = self.reference.clone();
+        tauri::async_runtime::spawn_blocking(move || vault.get(&reference))
+            .await
+            .map_err(|_| CloudSourceError::CredentialUnavailable)?
+            .and_then(|secret| secret.ok_or(CloudSourceError::CredentialMissing))
+    }
+
+    async fn store(&self, secret: SecretBundle) -> Result<(), CloudSourceError> {
+        let vault = self.vault.clone();
+        let reference = self.reference.clone();
+        tauri::async_runtime::spawn_blocking(move || vault.set(&reference, &secret))
+            .await
+            .map_err(|_| CloudSourceError::CredentialUnavailable)?
+    }
+
+    async fn refresh_bundle(
+        &self,
+        refresh_credential: &str,
+    ) -> Result<SecretBundle, CloudSourceError> {
+        let mut secret = self.load().await?;
+        if secret.refresh_token != refresh_credential {
+            return Err(CloudSourceError::CredentialMissing);
+        }
+        let refreshed = exchange_refresh_token(self.provider, refresh_credential).await?;
+        secret.access_token = refreshed.access_token.to_string();
+        secret.expires_at_unix_seconds = refreshed.expires_at_unix_seconds;
+        secret.validate()?;
+        self.store(secret.clone()).await?;
+        Ok(secret)
+    }
+}
+
+#[cfg(feature = "google-drive-connector")]
+#[async_trait::async_trait]
+impl catdb_connector_google_drive::DriveSecretResolver for CloudCredentialResolver {
+    async fn resolve(
+        &self,
+        reference: &catdb_connector_google_drive::DriveSecretReference,
+    ) -> Result<
+        catdb_connector_google_drive::DriveRuntimeSecrets,
+        catdb_connector_google_drive::DriveConnectorError,
+    > {
+        let expected =
+            catdb_connector_google_drive::DriveSecretReference::new(self.reference.clone())?;
+        if self.provider != CloudProvider::GoogleDrive || reference != &expected {
+            return Err(catdb_connector_google_drive::DriveConnectorError::InvalidSecret);
+        }
+        let secret = self.load().await.map_err(map_drive_credential_error)?;
+        drive_runtime_secrets(secret)
+    }
+
+    async fn refresh(
+        &self,
+        reference: &catdb_connector_google_drive::DriveSecretReference,
+        credential: &catdb_connector_google_drive::DriveRefreshCredential,
+    ) -> Result<
+        catdb_connector_google_drive::DriveAccessGrant,
+        catdb_connector_google_drive::DriveConnectorError,
+    > {
+        let expected =
+            catdb_connector_google_drive::DriveSecretReference::new(self.reference.clone())?;
+        if self.provider != CloudProvider::GoogleDrive || reference != &expected {
+            return Err(catdb_connector_google_drive::DriveConnectorError::InvalidSecret);
+        }
+        let secret = self
+            .refresh_bundle(credential.expose_for_exchange())
+            .await
+            .map_err(map_drive_credential_error)?;
+        drive_access_grant(&secret)
+    }
+}
+
+#[cfg(feature = "dropbox-connector")]
+#[async_trait::async_trait]
+impl catdb_connector_dropbox::DropboxSecretResolver for CloudCredentialResolver {
+    async fn resolve(
+        &self,
+        reference: &catdb_connector_dropbox::DropboxSecretReference,
+    ) -> Result<
+        catdb_connector_dropbox::DropboxRuntimeSecrets,
+        catdb_connector_dropbox::DropboxConnectorError,
+    > {
+        let expected =
+            catdb_connector_dropbox::DropboxSecretReference::new(self.reference.clone())?;
+        if self.provider != CloudProvider::Dropbox || reference != &expected {
+            return Err(catdb_connector_dropbox::DropboxConnectorError::InvalidSecret);
+        }
+        let secret = self.load().await.map_err(map_dropbox_credential_error)?;
+        dropbox_runtime_secrets(secret)
+    }
+
+    async fn refresh(
+        &self,
+        reference: &catdb_connector_dropbox::DropboxSecretReference,
+        credential: &catdb_connector_dropbox::DropboxRefreshCredential,
+    ) -> Result<
+        catdb_connector_dropbox::DropboxAccessGrant,
+        catdb_connector_dropbox::DropboxConnectorError,
+    > {
+        let expected =
+            catdb_connector_dropbox::DropboxSecretReference::new(self.reference.clone())?;
+        if self.provider != CloudProvider::Dropbox || reference != &expected {
+            return Err(catdb_connector_dropbox::DropboxConnectorError::InvalidSecret);
+        }
+        let secret = self
+            .refresh_bundle(credential.expose_for_exchange())
+            .await
+            .map_err(map_dropbox_credential_error)?;
+        dropbox_access_grant(&secret)
+    }
+}
+
+#[cfg(feature = "google-drive-connector")]
+fn drive_access_grant(
+    secret: &SecretBundle,
+) -> Result<
+    catdb_connector_google_drive::DriveAccessGrant,
+    catdb_connector_google_drive::DriveConnectorError,
+> {
+    catdb_connector_google_drive::DriveAccessGrant::new(
+        catdb_connector_google_drive::DriveAccessToken::new(secret.access_token.clone())?,
+        Some(
+            secret
+                .expires_at()
+                .map_err(|_| catdb_connector_google_drive::DriveConnectorError::InvalidSecret)?,
+        ),
+    )
+}
+
+#[cfg(feature = "google-drive-connector")]
+fn drive_runtime_secrets(
+    secret: SecretBundle,
+) -> Result<
+    catdb_connector_google_drive::DriveRuntimeSecrets,
+    catdb_connector_google_drive::DriveConnectorError,
+> {
+    Ok(
+        catdb_connector_google_drive::DriveRuntimeSecrets::refreshable(
+            drive_access_grant(&secret)?,
+            catdb_connector_google_drive::DriveRefreshCredential::new(
+                secret.refresh_token.clone(),
+            )?,
+            catdb_connector_google_drive::DriveCursorKey::new(secret.cursor_key),
+        ),
+    )
+}
+
+#[cfg(feature = "dropbox-connector")]
+fn dropbox_access_grant(
+    secret: &SecretBundle,
+) -> Result<
+    catdb_connector_dropbox::DropboxAccessGrant,
+    catdb_connector_dropbox::DropboxConnectorError,
+> {
+    catdb_connector_dropbox::DropboxAccessGrant::new(
+        catdb_connector_dropbox::DropboxAccessToken::new(secret.access_token.clone())?,
+        Some(
+            secret
+                .expires_at()
+                .map_err(|_| catdb_connector_dropbox::DropboxConnectorError::InvalidSecret)?,
+        ),
+    )
+}
+
+#[cfg(feature = "dropbox-connector")]
+fn dropbox_runtime_secrets(
+    secret: SecretBundle,
+) -> Result<
+    catdb_connector_dropbox::DropboxRuntimeSecrets,
+    catdb_connector_dropbox::DropboxConnectorError,
+> {
+    Ok(catdb_connector_dropbox::DropboxRuntimeSecrets::refreshable(
+        dropbox_access_grant(&secret)?,
+        catdb_connector_dropbox::DropboxRefreshCredential::new(secret.refresh_token.clone())?,
+        catdb_connector_dropbox::DropboxCursorKey::new(secret.cursor_key),
+    ))
+}
+
+#[cfg(feature = "google-drive-connector")]
+fn map_drive_credential_error(
+    error: CloudSourceError,
+) -> catdb_connector_google_drive::DriveConnectorError {
+    match error {
+        CloudSourceError::OauthTransport => {
+            catdb_connector_google_drive::DriveConnectorError::Transport
+        }
+        CloudSourceError::OauthRateLimited { retry_after_ms } => {
+            catdb_connector_google_drive::DriveConnectorError::RateLimited { retry_after_ms }
+        }
+        _ => catdb_connector_google_drive::DriveConnectorError::InvalidSecret,
+    }
+}
+
+#[cfg(feature = "dropbox-connector")]
+fn map_dropbox_credential_error(
+    error: CloudSourceError,
+) -> catdb_connector_dropbox::DropboxConnectorError {
+    match error {
+        CloudSourceError::OauthTransport => {
+            catdb_connector_dropbox::DropboxConnectorError::Transport
+        }
+        CloudSourceError::OauthRateLimited { retry_after_ms } => {
+            catdb_connector_dropbox::DropboxConnectorError::RateLimited { retry_after_ms }
+        }
+        _ => catdb_connector_dropbox::DropboxConnectorError::InvalidSecret,
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn query_cloud_documents(
+    app: AppHandle,
+    provider: CloudProvider,
+    filters: Vec<CloudFilterInput>,
+    fields: Vec<String>,
+    state: tauri::State<'_, CloudAccountsState>,
+) -> Result<CloudDocumentQueryResponse, CloudSourceError> {
+    #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
+    {
+        let _ = (app, provider, filters, fields, state);
+        Err(CloudSourceError::ConnectorUnavailable)
+    }
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    {
+        let _operation = state.0.lock().await;
+        let (record, vault) = blocking_cloud_operation(app, move |registry, vault| {
+            let record = CloudAccountService::new(registry, &vault).active_record(provider)?;
+            Ok((record, vault))
+        })
+        .await?;
+        let resolver = Arc::new(CloudCredentialResolver::new(
+            provider,
+            record.credential_reference.clone(),
+            Arc::new(vault),
+        ));
+
+        match record.config {
+            #[cfg(feature = "google-drive-connector")]
+            CloudSourceConfig::GoogleDrive { selections } => {
+                let selections = drive_selections(selections)?;
+                let reference = catdb_connector_google_drive::DriveSecretReference::new(
+                    record.credential_reference,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let config = catdb_connector_google_drive::DriveSourceConfig::new(
+                    record.id, "mdreader", "Document", selections, reference,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
+                    config,
+                    CLOUD_DOCUMENT_SCHEMA_VERSION,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let source = catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
+                    .await
+                    .map_err(|error| query_failed(error.to_string()))?;
+                execute_cloud_query(provider, &source, filters, fields).await
+            }
+            #[cfg(not(feature = "google-drive-connector"))]
+            CloudSourceConfig::GoogleDrive { .. } => Err(CloudSourceError::ConnectorUnavailable),
+            #[cfg(feature = "dropbox-connector")]
+            CloudSourceConfig::Dropbox => {
+                let reference = catdb_connector_dropbox::DropboxSecretReference::new(
+                    record.credential_reference,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let config = catdb_connector_dropbox::DropboxSourceConfig::new(
+                    record.id,
+                    "mdreader",
+                    "Document",
+                    "",
+                    catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
+                    reference,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
+                    config,
+                    CLOUD_DOCUMENT_SCHEMA_VERSION,
+                )
+                .map_err(|error| query_invalid(error.to_string()))?;
+                let source = catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
+                    .await
+                    .map_err(|error| query_failed(error.to_string()))?;
+                execute_cloud_query(provider, &source, filters, fields).await
+            }
+            #[cfg(not(feature = "dropbox-connector"))]
+            CloudSourceConfig::Dropbox => Err(CloudSourceError::ConnectorUnavailable),
+        }
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn query_invalid(detail: impl Into<String>) -> CloudSourceError {
+    CloudSourceError::QueryInvalid {
+        detail: bounded_error_detail(detail.into()),
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn query_failed(detail: impl Into<String>) -> CloudSourceError {
+    CloudSourceError::QueryFailed {
+        detail: bounded_error_detail(detail.into()),
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn bounded_error_detail(detail: String) -> String {
+    let detail: String = detail
+        .chars()
+        .filter(|character| !character.is_control() || *character == ' ')
+        .take(2_048)
+        .collect();
+    if detail.is_empty() {
+        "source operation failed".to_string()
+    } else {
+        detail
+    }
+}
+
+#[cfg(feature = "google-drive-connector")]
+fn drive_selections(
+    selections: Vec<DriveItemSelection>,
+) -> Result<Vec<catdb_connector_google_drive::DriveSelection>, CloudSourceError> {
+    selections
+        .into_iter()
+        .map(
+            |selection| match (selection.folder, selection.resource_key) {
+                (true, Some(key)) => {
+                    catdb_connector_google_drive::DriveSelection::folder_with_resource_key(
+                        selection.id,
+                        key,
+                    )
+                }
+                (true, None) => Ok(catdb_connector_google_drive::DriveSelection::folder(
+                    selection.id,
+                )),
+                (false, Some(key)) => {
+                    catdb_connector_google_drive::DriveSelection::file_with_resource_key(
+                        selection.id,
+                        key,
+                    )
+                }
+                (false, None) => Ok(catdb_connector_google_drive::DriveSelection::file(
+                    selection.id,
+                )),
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| query_invalid(error.to_string()))
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+async fn execute_cloud_query(
+    provider: CloudProvider,
+    source: &dyn catdb_connectors::DataSource,
+    filters: Vec<CloudFilterInput>,
+    fields: Vec<String>,
+) -> Result<CloudDocumentQueryResponse, CloudSourceError> {
+    if filters.len() > MAX_CLOUD_QUERY_FILTERS
+        || fields.is_empty()
+        || fields.len() > MAX_CLOUD_QUERY_FIELDS
+    {
+        return Err(query_invalid("cloud query bounds are invalid"));
+    }
+    let valid_text = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 4_096
+            && !value.chars().any(|character| character.is_control())
+    };
+    if filters
+        .iter()
+        .any(|filter| !valid_text(&filter.field) || !valid_text(&filter.value))
+        || fields.iter().any(|field| !valid_text(field))
+    {
+        return Err(query_invalid(
+            "cloud query contains an invalid field or value",
+        ));
+    }
+    let unique_fields: HashSet<&str> = fields.iter().map(String::as_str).collect();
+    if unique_fields.len() != fields.len() {
+        return Err(query_invalid("cloud query projects a field more than once"));
+    }
+
+    let entities = source
+        .schema()
+        .entities
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let [entity] = entities.as_slice() else {
+        return Err(query_failed(
+            "cloud connector does not expose exactly one Document entity",
+        ));
+    };
+    let target = format!("{}.{}", source.schema().name, entity);
+    let vocabulary = catdb_query::EntityVocabulary::derive(&[source.schema().clone()]);
+    let filter_inputs = filters
+        .into_iter()
+        .map(|filter| catdb_query::EntityFilterInput {
+            field: filter.field,
+            op: match filter.operator {
+                CloudFilterOperator::Eq => catdb_query::AttrOp::Eq,
+                CloudFilterOperator::Lt => catdb_query::AttrOp::Lt,
+                CloudFilterOperator::Le => catdb_query::AttrOp::Le,
+                CloudFilterOperator::Gt => catdb_query::AttrOp::Gt,
+                CloudFilterOperator::Ge => catdb_query::AttrOp::Ge,
+                CloudFilterOperator::Glob => catdb_query::AttrOp::Glob,
+            },
+            value: filter.value,
+        })
+        .collect::<Vec<_>>();
+    let query = catdb_query::validate_entity_request(
+        catdb_query::EntityTarget::Entity(target.clone()),
+        &filter_inputs,
+        &vocabulary,
+    )
+    .map_err(|error| query_invalid(error.to_string()))?;
+    let query_id = uuid::Uuid::new_v4();
+    let context = catdb_connectors::ReadContext::new(
+        query_id,
+        Instant::now()
+            .checked_add(CLOUD_QUERY_DEADLINE)
+            .ok_or_else(|| query_failed("cloud query deadline overflow"))?,
+        CLOUD_QUERY_WORK_BUDGET,
+        CLOUD_QUERY_BYTE_BUDGET,
+        CLOUD_QUERY_PAGE_SIZE,
+        catdb_connectors::CancellationToken::new(),
+    )
+    .map_err(|error| query_failed(error.to_string()))?;
+    let answer = catdb_connectors::read(source, &query, &fields, &context)
+        .await
+        .map_err(|error| query_failed(error.to_string()))?;
+    if answer.source != *source.id() {
+        return Err(query_failed(
+            "cloud connector returned an answer under a different source identity",
+        ));
+    }
+    let rows = answer
+        .rows
+        .into_iter()
+        .map(|row| {
+            if row.source != answer.source || row.entity != target || !row.value.is_object() {
+                return Err(query_failed(
+                    "cloud connector returned a row with an invalid source, entity, or value",
+                ));
+            }
+            Ok(CloudDocumentRow {
+                source_id: row.source.to_string(),
+                record_key: row.key,
+                fields: row.value,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let response = CloudDocumentQueryResponse {
+        query_id: query_id.to_string(),
+        provider,
+        schema_version: CLOUD_DOCUMENT_SCHEMA_VERSION.to_string(),
+        scanned: u32::try_from(answer.scanned)
+            .map_err(|_| query_failed("cloud query scan count exceeds the application contract"))?,
+        rows,
+    };
+    let encoded = serde_json::to_vec(&response)
+        .map_err(|_| query_failed("cloud query response is invalid"))?;
+    if encoded.len() > CLOUD_QUERY_RESPONSE_BYTE_BUDGET {
+        return Err(query_failed("cloud query response byte budget exceeded"));
+    }
+    Ok(response)
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn list_cloud_sources(
@@ -896,7 +1487,7 @@ pub(crate) async fn connect_cloud_source(
     let secret = SecretBundle::new(
         token.access_token.as_str().to_owned(),
         token.refresh_token.as_str().to_owned(),
-        token.expires_in_seconds,
+        expires_at_unix_seconds(token.expires_in_seconds)?,
         new_cursor_key(),
     )?;
     blocking_cloud_operation(app, move |registry, vault| {
@@ -922,6 +1513,15 @@ fn oauth_redirect_uri(provider: CloudProvider) -> &'static str {
         CloudProvider::GoogleDrive => GOOGLE_REDIRECT_URI,
         CloudProvider::Dropbox => DROPBOX_REDIRECT_URI,
     }
+}
+
+fn expires_at_unix_seconds(expires_in_seconds: u64) -> Result<u64, CloudSourceError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CloudSourceError::InvalidConfiguration)?
+        .as_secs()
+        .checked_add(expires_in_seconds)
+        .ok_or(CloudSourceError::InvalidConfiguration)
 }
 
 fn oauth_callback_address(provider: CloudProvider) -> (&'static str, u16) {
@@ -1046,6 +1646,12 @@ struct OAuthToken {
     expires_in_seconds: u64,
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct RefreshedOAuthToken {
+    access_token: Zeroizing<String>,
+    expires_at_unix_seconds: u64,
+}
+
 async fn exchange_authorization_code(
     provider: CloudProvider,
     client_id: &str,
@@ -1075,6 +1681,11 @@ async fn exchange_authorization_code(
         .send()
         .await
         .map_err(|_| CloudSourceError::OauthTransport)?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(CloudSourceError::OauthRateLimited {
+            retry_after_ms: retry_after_ms(response.headers()),
+        });
+    }
     let bytes = bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES).await?;
     let response: OAuthTokenResponse =
         serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
@@ -1094,13 +1705,74 @@ async fn exchange_authorization_code(
     SecretBundle::new(
         response.access_token.clone(),
         refresh_token.clone(),
-        expires_in_seconds,
+        expires_at_unix_seconds(expires_in_seconds)?,
         [1; 32],
     )?;
     Ok(OAuthToken {
         access_token: Zeroizing::new(response.access_token),
         refresh_token: Zeroizing::new(refresh_token),
         expires_in_seconds,
+    })
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+async fn exchange_refresh_token(
+    provider: CloudProvider,
+    refresh_token: &str,
+) -> Result<RefreshedOAuthToken, CloudSourceError> {
+    let client_id = oauth_client_id(provider)?;
+    if refresh_token.is_empty()
+        || refresh_token.len() > 16 * 1024
+        || refresh_token.chars().any(char::is_control)
+    {
+        return Err(CloudSourceError::CredentialMissing);
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|_| CloudSourceError::OauthTransport)?;
+    let endpoint = match provider {
+        CloudProvider::GoogleDrive => GOOGLE_TOKEN_ENDPOINT,
+        CloudProvider::Dropbox => DROPBOX_TOKEN_ENDPOINT,
+    };
+    let response = client
+        .post(endpoint)
+        .form(&[
+            ("client_id", client_id),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ])
+        .send()
+        .await
+        .map_err(|_| CloudSourceError::OauthTransport)?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(CloudSourceError::OauthRateLimited {
+            retry_after_ms: retry_after_ms(response.headers()),
+        });
+    }
+    let bytes = bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES).await?;
+    let response: OAuthTokenResponse =
+        serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
+    let expires_in_seconds = response
+        .expires_in
+        .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
+        .ok_or(CloudSourceError::ProviderRejected)?;
+    if response.access_token.is_empty()
+        || response.access_token.len() > 16 * 1024
+        || response.access_token.chars().any(char::is_control)
+        || !response.token_type.eq_ignore_ascii_case("bearer")
+        || response
+            .scope
+            .as_deref()
+            .is_some_and(|scope| !oauth_scope_is_sufficient(provider, Some(scope)))
+    {
+        return Err(CloudSourceError::ProviderRejected);
+    }
+    Ok(RefreshedOAuthToken {
+        access_token: Zeroizing::new(response.access_token),
+        expires_at_unix_seconds: expires_at_unix_seconds(expires_in_seconds)?,
     })
 }
 
@@ -1134,6 +1806,16 @@ fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bo
             }
         }
     }
+}
+
+fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000)
 }
 
 async fn bounded_provider_response(
@@ -1355,15 +2037,109 @@ impl CredentialVault for MemoryCredentialVault {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Arc};
 
+    use catdb_connectors::{
+        DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError,
+        SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
+    };
     use tempfile::tempdir;
 
     use super::{
-        CloudAccountService, CloudConnectionState, CloudProvider, CloudSourceConfig,
-        CloudSourceError, MemoryCredentialVault, OAuthAttempt, SecretBundle,
+        execute_cloud_query, CloudAccountService, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudProvider, CloudSourceConfig, CloudSourceError,
+        CredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
+
+    struct FakeCloudSource {
+        model: SourceModel,
+        result: Result<(usize, Vec<SourceRow>), SourceError>,
+    }
+
+    impl FakeCloudSource {
+        fn empty(scanned: usize) -> Self {
+            Self {
+                model: SourceModel::new(
+                    SourceId::new("cloud-test"),
+                    "mdreader",
+                    "Document",
+                    vec![SourceAttr::text("path"), SourceAttr::text("name")],
+                ),
+                result: Ok((scanned, Vec::new())),
+            }
+        }
+
+        fn refusing() -> Self {
+            Self {
+                model: SourceModel::new(
+                    SourceId::new("cloud-test"),
+                    "mdreader",
+                    "Document",
+                    vec![SourceAttr::text("path")],
+                ),
+                result: Err(SourceError::Transport {
+                    source_id: SourceId::new("cloud-test"),
+                }),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DataSource for FakeCloudSource {
+        fn id(&self) -> &SourceId {
+            self.model.id()
+        }
+
+        fn schema(&self) -> &catdb_core::Schema {
+            self.model.schema()
+        }
+
+        fn capabilities(&self) -> &SourceCapabilities {
+            self.model.capabilities()
+        }
+
+        fn source_spec(&self) -> serde_json::Value {
+            serde_json::json!({"connector": "fake-cloud-source"})
+        }
+
+        async fn freshness(&self, context: &ReadContext) -> Result<SourceFreshness, SourceError> {
+            context.check()?;
+            Ok(SourceFreshness {
+                observed_at_ms: 1,
+                freshness_ms: 0,
+            })
+        }
+
+        fn compile(
+            &self,
+            query: &catdb_query::EntityQuery,
+            authorized_fields: &[String],
+        ) -> Result<SourcePlan, SourceError> {
+            self.model.compile(query, authorized_fields)
+        }
+
+        async fn execute_page(
+            &self,
+            _plan: &SourcePlan,
+            cursor: Option<&SourceCursor>,
+            context: &ReadContext,
+        ) -> Result<SourcePage, SourceError> {
+            context.check()?;
+            if cursor.is_some() {
+                return Err(SourceError::InvalidCursor);
+            }
+            let (scanned, rows) = self.result.clone()?;
+            Ok(SourcePage {
+                source: self.model.id().clone(),
+                scanned,
+                rows,
+                next_cursor: None,
+                observed_at_ms: 1,
+                freshness_ms: 0,
+            })
+        }
+    }
 
     fn google_config() -> CloudSourceConfig {
         CloudSourceConfig::GoogleDrive {
@@ -1376,8 +2152,106 @@ mod tests {
     }
 
     fn credentials() -> SecretBundle {
-        SecretBundle::new("access-token-value", "refresh-token-value", 3_600, [7; 32])
-            .expect("valid test credentials")
+        SecretBundle::new(
+            "access-token-value",
+            "refresh-token-value",
+            4_000_000_000,
+            [7; 32],
+        )
+        .expect("valid test credentials")
+    }
+
+    #[cfg(feature = "google-drive-connector")]
+    #[tokio::test]
+    async fn drive_runtime_resolves_only_the_registered_vault_reference() {
+        use catdb_connector_google_drive::{
+            DriveConnectorError, DriveSecretReference, DriveSecretResolver,
+        };
+
+        let vault = Arc::new(MemoryCredentialVault::default());
+        vault
+            .set("keyring://drive", &credentials())
+            .expect("seed credential");
+        let resolver = CloudCredentialResolver::new(
+            CloudProvider::GoogleDrive,
+            "keyring://drive".to_string(),
+            vault,
+        );
+
+        assert!(resolver
+            .resolve(&DriveSecretReference::new("keyring://drive").expect("reference"))
+            .await
+            .is_ok());
+        assert!(matches!(
+            resolver
+                .resolve(&DriveSecretReference::new("keyring://other").expect("reference"))
+                .await,
+            Err(DriveConnectorError::InvalidSecret)
+        ));
+    }
+
+    #[cfg(feature = "dropbox-connector")]
+    #[tokio::test]
+    async fn dropbox_runtime_resolves_only_the_registered_vault_reference() {
+        use catdb_connector_dropbox::{
+            DropboxConnectorError, DropboxSecretReference, DropboxSecretResolver,
+        };
+
+        let vault = Arc::new(MemoryCredentialVault::default());
+        vault
+            .set("keyring://dropbox", &credentials())
+            .expect("seed credential");
+        let resolver = CloudCredentialResolver::new(
+            CloudProvider::Dropbox,
+            "keyring://dropbox".to_string(),
+            vault,
+        );
+
+        assert!(resolver
+            .resolve(&DropboxSecretReference::new("keyring://dropbox").expect("reference"))
+            .await
+            .is_ok());
+        assert!(matches!(
+            resolver
+                .resolve(&DropboxSecretReference::new("keyring://other").expect("reference"))
+                .await,
+            Err(DropboxConnectorError::InvalidSecret)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cloud_query_keeps_an_empty_answer_distinct_from_a_source_failure() {
+        let empty = execute_cloud_query(
+            CloudProvider::Dropbox,
+            &FakeCloudSource::empty(7),
+            Vec::new(),
+            vec!["path".to_string()],
+        )
+        .await
+        .expect("successful empty query");
+        assert_eq!(
+            empty,
+            CloudDocumentQueryResponse {
+                query_id: empty.query_id.clone(),
+                provider: CloudProvider::Dropbox,
+                schema_version: "mdreader.Document/v1".to_string(),
+                scanned: 7,
+                rows: Vec::new(),
+            }
+        );
+
+        let failure = execute_cloud_query(
+            CloudProvider::Dropbox,
+            &FakeCloudSource::refusing(),
+            Vec::new(),
+            vec!["path".to_string()],
+        )
+        .await;
+        assert!(matches!(
+            failure,
+            Err(CloudSourceError::QueryFailed { detail })
+                if detail == "source `cloud-test` transport failed"
+        ));
     }
 
     #[test]
@@ -1526,7 +2400,7 @@ mod tests {
         let malformed = serde_json::json!({
             "access_token": "",
             "refresh_token": "refresh-token-value",
-            "expires_in_seconds": 3_600,
+            "expires_at_unix_seconds": 4_000_000_000_u64,
             "cursor_key": vec![7_u8; 32],
         });
         let secret: SecretBundle =
@@ -1535,6 +2409,27 @@ mod tests {
         assert_eq!(
             secret.validate(),
             Err(CloudSourceError::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn credential_expiry_is_absolute_and_survives_serialization() {
+        let secret = credentials();
+        let encoded = serde_json::to_string(&secret).expect("serialize credential");
+        assert!(
+            !encoded.contains("expires_in_seconds"),
+            "a relative lifetime cannot survive an application restart"
+        );
+        let restored: SecretBundle =
+            serde_json::from_str(&encoded).expect("restore serialized credential");
+        assert_eq!(
+            restored
+                .expires_at()
+                .expect("absolute expiry")
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("after epoch")
+                .as_secs(),
+            4_000_000_000
         );
     }
 
