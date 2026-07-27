@@ -20,7 +20,13 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -110,7 +116,8 @@ function plistValue(path: string, key: string): string {
   }).trim();
 }
 
-function validateIosApp(artifact: string | undefined): string {
+/** Validate the exact unsigned arm64 iOS Simulator bundle used by Appium. */
+export function validateIosApp(artifact: string | undefined): string {
   const app = requiredAbsoluteArtifact('MDREADER_IOS_APP', artifact);
   let appMetadata;
   try {
@@ -149,10 +156,39 @@ function validateIosApp(artifact: string | undefined): string {
   if (!executableMetadata.isFile() || executableMetadata.size === 0) {
     throw new Error(`MDREADER_IOS_APP executable is empty or invalid: ${executable}`);
   }
+  if ((executableMetadata.mode & 0o111) === 0) {
+    throw new Error(`MDREADER_IOS_APP executable is not executable: ${executable}`);
+  }
+  try {
+    const kind = execFileSync('/usr/bin/file', ['-b', executable], {
+      encoding: 'utf8',
+    });
+    if (!kind.includes('Mach-O 64-bit executable') || !kind.includes('arm64')) {
+      throw new Error(`expected an arm64 Mach-O executable; found ${kind.trim()}`);
+    }
+    const architectures = execFileSync('/usr/bin/lipo', ['-archs', executable], {
+      encoding: 'utf8',
+    })
+      .trim()
+      .split(/\s+/);
+    if (architectures.length !== 1 || architectures[0] !== 'arm64') {
+      throw new Error(`expected only the arm64 Simulator ABI; found ${architectures.join(' ')}`);
+    }
+    const build = execFileSync('/usr/bin/xcrun', ['vtool', '-show-build', executable], {
+      encoding: 'utf8',
+    });
+    if (!/platform\s+IOSSIMULATOR\b/.test(build)) {
+      throw new Error('Mach-O does not target the iOS Simulator platform');
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`MDREADER_IOS_APP executable is not a valid arm64 Simulator Mach-O: ${detail}`);
+  }
   return app;
 }
 
-function validateAndroidApk(artifact: string | undefined): string {
+/** Validate the exact x86_64 Android package used by the emulator Appium leg. */
+export function validateAndroidApk(artifact: string | undefined): string {
   const apk = requiredAbsoluteArtifact('MDREADER_ANDROID_APP', artifact);
   let metadata;
   try {
@@ -164,6 +200,68 @@ function validateAndroidApk(artifact: string | undefined): string {
     throw new Error(`MDREADER_ANDROID_APP must point to an APK file: ${apk}`);
   }
   if (metadata.size === 0) throw new Error(`MDREADER_ANDROID_APP is empty: ${apk}`);
+  const magic = Buffer.alloc(4);
+  let handle: number | undefined;
+  let magicBytes = 0;
+  try {
+    handle = openSync(apk, 'r');
+    magicBytes = readSync(handle, magic, 0, magic.byteLength, 0);
+  } finally {
+    if (handle !== undefined) closeSync(handle);
+  }
+  if (
+    magicBytes !== 4 ||
+    magic[0] !== 0x50 ||
+    magic[1] !== 0x4b ||
+    !(
+      (magic[2] === 0x03 && magic[3] === 0x04) ||
+      (magic[2] === 0x05 && magic[3] === 0x06) ||
+      (magic[2] === 0x07 && magic[3] === 0x08)
+    )
+  ) {
+    throw new Error(`MDREADER_ANDROID_APP is not an APK/ZIP package: ${apk}`);
+  }
+  try {
+    const manifest = execFileSync('unzip', ['-p', apk, 'AndroidManifest.xml'], {
+      encoding: null,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (
+      manifest.length < 8 ||
+      manifest[0] !== 0x03 ||
+      manifest[1] !== 0x00 ||
+      manifest[2] !== 0x08 ||
+      manifest[3] !== 0x00
+    ) {
+      throw new Error('AndroidManifest.xml is not compiled Android binary XML');
+    }
+    const identifier = execFileSync(
+      'apkanalyzer',
+      ['manifest', 'application-id', apk],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    if (identifier !== E2E_BUNDLE_IDENTIFIER) {
+      throw new Error(
+        `expected ${E2E_BUNDLE_IDENTIFIER}; found ${identifier || '(missing application id)'}`,
+      );
+    }
+    const files = execFileSync('apkanalyzer', ['files', 'list', apk], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (!/(^|\n)\/?AndroidManifest\.xml(\n|$)/.test(files)) {
+      throw new Error('compiled AndroidManifest.xml is missing');
+    }
+    if (!/(^|\n)\/?classes(?:\d+)?\.dex(\n|$)/.test(files)) {
+      throw new Error('compiled DEX application code is missing');
+    }
+    if (!/(^|\n)\/?lib\/x86_64\/[^/\n]+\.so(\n|$)/.test(files)) {
+      throw new Error('x86_64 emulator native library is missing');
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`MDREADER_ANDROID_APP has an invalid manifest or x86_64 APK: ${detail}`);
+  }
   return apk;
 }
 

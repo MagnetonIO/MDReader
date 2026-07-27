@@ -267,11 +267,30 @@ jobs:
         with:
           targets: aarch64-apple-ios-sim
 
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Prepare disposable iOS E2E worktree
+        shell: bash
+        run: |
+          fingerprint=$(
+            git ls-files -z apps/mdreader/src-tauri/gen/apple \
+              | xargs -0 shasum -a 256 \
+              | shasum -a 256 \
+              | cut -d ' ' -f 1
+          )
+          worktree="$RUNNER_TEMP/mdreader-ios-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "$worktree" "$GITHUB_SHA"
+          printf 'MDREADER_PRODUCTION_APPLE_FINGERPRINT=%s\n' "$fingerprint" >> "$GITHUB_ENV"
+          printf 'MDREADER_IOS_E2E_WORKTREE=%s\n' "$worktree" >> "$GITHUB_ENV"
+
+      - name: Install workspace dependencies in disposable worktree
+        shell: bash
+        run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE"
+          pnpm install --frozen-lockfile
 
       - name: Initialize and build unsigned iOS Simulator archive
+        shell: bash
         run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE"
           pnpm --filter @mdreader/app tauri ios init --ci
           pnpm --filter @mdreader/app tauri ios build \
             --debug \
@@ -285,22 +304,15 @@ jobs:
       - name: Validate and export iOS app
         shell: bash
         run: |
-          app="apps/mdreader/src-tauri/gen/apple/build/mdreader-app_iOS.xcarchive/Products/Applications/MDReader E2E.app"
+          app="$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/src-tauri/gen/apple/build/mdreader-app_iOS.xcarchive/Products/Applications/MDReader E2E.app"
           if [[ ! -d "$app" ]]; then
             echo "expected archived iOS app is missing: $app" >&2
             exit 1
           fi
-          plist="$app/Info.plist"
-          identifier=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$plist")
-          executable=$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$plist")
-          [[ "$identifier" == "dev.mdreader.app.e2e" ]] || {
-            echo "unexpected iOS bundle identifier: $identifier" >&2
-            exit 1
-          }
-          [[ -s "$app/$executable" ]] || {
-            echo "missing or empty iOS executable: $app/$executable" >&2
-            exit 1
-          }
+          node --experimental-strip-types --no-warnings \
+            "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native/validate-artifact.ts" \
+            ios \
+            "$app"
           printf 'MDREADER_IOS_APP=%s\n' "$app" >> "$GITHUB_ENV"
 
       - name: Select an available iPhone Simulator
@@ -327,20 +339,54 @@ jobs:
           NODE
 
       - name: Install e2e-native toolchain
-        working-directory: apps/mdreader/e2e-native
-        run: npm install
+        shell: bash
+        run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          npm install
 
       - name: Typecheck the GUI harness
-        working-directory: apps/mdreader/e2e-native
-        run: pnpm run typecheck
+        shell: bash
+        run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          pnpm run typecheck
 
       - name: Verify artifact and seed guards
-        working-directory: apps/mdreader/e2e-native
-        run: pnpm run test:seed
+        shell: bash
+        run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          pnpm run test:seed
 
       - name: Run iOS e2e (Simulator)
-        working-directory: apps/mdreader/e2e-native
-        run: pnpm run test:ios
+        shell: bash
+        run: |
+          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          pnpm run test:ios
+
+      - name: Verify production Apple tree and remove disposable worktree
+        if: always()
+        shell: bash
+        run: |
+          status=0
+          fingerprint=$(
+            git ls-files -z apps/mdreader/src-tauri/gen/apple \
+              | xargs -0 shasum -a 256 \
+              | shasum -a 256 \
+              | cut -d ' ' -f 1
+          )
+          [[ "$fingerprint" == "$MDREADER_PRODUCTION_APPLE_FINGERPRINT" ]] || {
+            echo "production Apple target changed during the E2E build" >&2
+            status=1
+          }
+          git diff --exit-code -- apps/mdreader/src-tauri/gen/apple || status=1
+          test -z "$(git status --porcelain --untracked-files=all -- apps/mdreader/src-tauri/gen/apple)" \
+            || status=1
+          grep -F 'PRODUCT_BUNDLE_IDENTIFIER: dev.mdreader.app' \
+            apps/mdreader/src-tauri/gen/apple/project.yml \
+            || status=1
+          if [[ -n "${MDREADER_IOS_E2E_WORKTREE:-}" && -d "$MDREADER_IOS_E2E_WORKTREE" ]]; then
+            git worktree remove --force "$MDREADER_IOS_E2E_WORKTREE" || status=1
+          fi
+          exit "$status"
 
   android-e2e:
     name: Android e2e (debug APK + appium-uiautomator2)
@@ -397,16 +443,11 @@ jobs:
             echo "expected exactly one Android APK; found $count" >&2
             exit 1
           fi
-          apk="$apks"
-          [[ -s "$apk" ]] || {
-            echo "Android APK is empty: $apk" >&2
-            exit 1
-          }
-          identifier=$(apkanalyzer manifest application-id "$apk")
-          [[ "$identifier" == "dev.mdreader.app.e2e" ]] || {
-            echo "unexpected Android application id: $identifier" >&2
-            exit 1
-          }
+          apk=$(realpath "$apks")
+          node --experimental-strip-types --no-warnings \
+            apps/mdreader/e2e-native/validate-artifact.ts \
+            android \
+            "$apk"
           printf 'MDREADER_ANDROID_APP=%s\n' "$apk" >> "$GITHUB_ENV"
 
       - name: Install e2e-native toolchain
