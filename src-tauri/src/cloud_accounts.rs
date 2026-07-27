@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
 use std::sync::{
@@ -54,7 +54,9 @@ const CLOUD_QUERY_PAGE_SIZE: usize = 100;
 const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
-pub(crate) const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v1";
+pub(crate) const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v2";
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_READ_POLICY_VERSION: &str = "mdreader.cloud-read/v2";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_MAPPING_VERSION_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_6d_61_70_5f_01_00);
@@ -166,6 +168,7 @@ pub(crate) struct CloudDocumentRow {
 pub(crate) enum CloudObservation {
     Observed,
     ObservedNothing,
+    Unobservable,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -175,10 +178,10 @@ pub(crate) struct CloudConsideredProvider {
     pub record_key: String,
     pub mapping_version: String,
     /// Exact physical provider attribute selected by the validated mapping.
-    pub physical_attribute: String,
+    pub physical_attribute: Option<String>,
     pub observation: CloudObservation,
-    #[specta(type = f64)]
-    pub observed_at_ms: i64,
+    #[specta(type = Option<f64>)]
+    pub observed_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -572,10 +575,8 @@ impl CloudSourceRecord {
         self.contract.as_ref()
     }
 
-    pub(crate) fn ensure_contract(&mut self) {
-        if self.contract.is_none() {
-            self.contract = Some(crate::library::LibrarySourceContract::cloud(self.provider));
-        }
+    pub(crate) fn refresh_contract(&mut self) {
+        self.contract = Some(crate::library::LibrarySourceContract::cloud(self.provider));
     }
 }
 
@@ -1064,6 +1065,17 @@ impl Default for CloudAccountsState {
 }
 
 impl CloudAccountsState {
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    async fn advance_catalog(&self, authority: &CloudExecutionAuthority) {
+        let mut cached = self.catalog.lock().await;
+        let Some(catalog) = cached.as_mut() else {
+            return;
+        };
+        if catalog.schema_version == authority.pins.schema_version {
+            catalog.catalog_version = authority.pins.catalog_version.clone();
+        }
+    }
+
     fn begin_query(&self, request_id: &str) -> Result<CloudQueryHandle, CloudSourceError> {
         if request_id.is_empty()
             || request_id.len() > MAX_CLOUD_REQUEST_ID_BYTES
@@ -1482,7 +1494,7 @@ async fn query_cloud_documents_inner(
                 }
                 operation = state.operations.lock() => operation,
             };
-            let catalog = ensure_cloud_catalog(&app, &state).await?;
+            let catalog = ensure_cloud_catalog(&app, state).await?;
             let (record, vault) = blocking_cloud_operation(app, move |registry, vault| {
                 let record = CloudAccountService::new(registry, &vault).active_record(provider)?;
                 Ok((record, vault))
@@ -1522,6 +1534,7 @@ async fn query_cloud_documents_inner(
                         &catalog,
                         &read_authority,
                     )?;
+                    state.advance_catalog(&authority).await;
                     execute_cloud_query(
                         provider,
                         &source,
@@ -1566,6 +1579,7 @@ async fn query_cloud_documents_inner(
                         &catalog,
                         &read_authority,
                     )?;
+                    state.advance_catalog(&authority).await;
                     execute_cloud_query(
                         provider,
                         &source,
@@ -1645,24 +1659,42 @@ fn shared_entity_response(
                                     .get(&field.field)
                                     .cloned()
                                     .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                let physical_attribute = provider
+                                    .physical_attribute
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                let observed_at_ms = provider
+                                    .observed_at_ms
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
                                 Ok(FieldObservation::observed(
                                     source_version_id,
                                     provider.record_key,
                                     mapping_version_id,
-                                    provider.observed_at_ms,
+                                    observed_at_ms,
                                     value,
                                 )
-                                .with_physical_attribute(provider.physical_attribute))
+                                .with_physical_attribute(physical_attribute))
                             }
                             CloudObservation::ObservedNothing => {
+                                let physical_attribute = provider
+                                    .physical_attribute
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
+                                let observed_at_ms = provider
+                                    .observed_at_ms
+                                    .ok_or(CloudSourceError::QueryInvalidResponse)?;
                                 Ok(FieldObservation::field_unseen(
                                     source_version_id,
                                     provider.record_key,
                                     mapping_version_id,
-                                    provider.observed_at_ms,
+                                    observed_at_ms,
                                 )
-                                .with_physical_attribute(provider.physical_attribute))
+                                .with_physical_attribute(physical_attribute))
                             }
+                            CloudObservation::Unobservable => Ok(FieldObservation::not_asked(
+                                source_version_id,
+                                provider.record_key,
+                                mapping_version_id,
+                                "the provider mapping does not expose this Document field",
+                            )),
                         })
                         .collect::<Result<Vec<_>, CloudSourceError>>()?;
                     let selected = considered.iter().position(|observation| {
@@ -1738,14 +1770,14 @@ pub(crate) async fn entity_query(
         request
             .validate()
             .map_err(|error| query_invalid(error.to_string()))?;
-        if request.entity != "library.Document"
+        if request.entity != "document.Document"
             || request.cursor.is_some()
             || request.source_ids.is_some()
             || request.max_staleness_ms.is_some()
             || !request.order_by.is_empty()
         {
             return Err(query_invalid(
-                "cloud Library supports library.Document without cursor, source selection, staleness constraint, or ordering",
+                "cloud Library supports document.Document without cursor, source selection, staleness constraint, or ordering",
             ));
         }
         let catalog = ensure_cloud_catalog(&app, &state).await?;
@@ -1947,6 +1979,7 @@ fn drive_selections(
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CloudCatalogAuthority {
+    catalog_path: Option<PathBuf>,
     workspace_id: uuid::Uuid,
     catalog_version: String,
     schema_version: String,
@@ -1978,7 +2011,10 @@ impl CloudReadAuthority {
             .contract
             .as_ref()
             .ok_or(CloudSourceError::QueryCatalogInvalid)?;
-        if !record.enabled || !contract.permits_read_only() {
+        if !record.enabled
+            || !contract.permits_read_only()
+            || contract.mapping_version != CLOUD_DOCUMENT_MAPPING_VERSION
+        {
             return Err(CloudSourceError::QueryRefused {
                 source_id: record.id.clone(),
                 reason: CloudQueryRefusal::UnsupportedPolicy,
@@ -2129,6 +2165,7 @@ fn open_cloud_catalog(
         }
     };
     Ok(CloudCatalogAuthority {
+        catalog_path: Some(path.to_path_buf()),
         workspace_id,
         catalog_version: revision.revision_id.to_string(),
         schema_version: schema_version_id.to_string(),
@@ -2221,6 +2258,7 @@ fn resolve_cloud_catalog_authority(
         return Err(CloudSourceError::QueryCatalogInvalid);
     }
     Ok(CloudCatalogAuthority {
+        catalog_path: None,
         workspace_id: uuid::Uuid::from_u128(1),
         catalog_version: revision.revision_id.to_string(),
         schema_version: version.schema_version_id.to_string(),
@@ -2235,6 +2273,155 @@ fn content_version(namespace: &uuid::Uuid, spec: &serde_json::Value) -> (String,
         uuid::Uuid::new_v5(namespace, checksum.as_bytes()).to_string(),
         checksum,
     )
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct CloudExecutionSpecs {
+    mapping: serde_json::Value,
+    physical_schema: serde_json::Value,
+    source: serde_json::Value,
+    policy: serde_json::Value,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn persist_cloud_execution_pins(
+    path: &Path,
+    catalog: &CloudCatalogAuthority,
+    source: &dyn catdb_connectors::DataSource,
+    specs: CloudExecutionSpecs,
+    pins: &CloudVersionPins,
+) -> Result<String, CloudSourceError> {
+    use catdb_storage::{
+        CatalogDraft, Compatibility, MappingCapability, MappingVersion, PolicyVersion,
+        SchemaContent, SchemaVersion, SourceVersion,
+    };
+
+    let store = catdb_storage_sqlite::SqliteStore::open(path)
+        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+    let head = store
+        .latest_catalog_revision_now()
+        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+        .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+    let canonical_content = SchemaContent::new(
+        serde_json::to_value(mdreader_domain::library::document_schema())
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?,
+    );
+    if canonical_content.checksum != catalog.schema_checksum {
+        return Err(CloudSourceError::QueryCatalogInvalid);
+    }
+    let canonical_version = SchemaVersion {
+        schema_version_id: parse_pin(&catalog.schema_version)?,
+        name: mdreader_domain::library::SCHEMA.to_string(),
+        content_id: canonical_content.content_id,
+        compatibility: Compatibility::Backward,
+    };
+    let physical_content = SchemaContent::new(specs.physical_schema);
+    if physical_content.checksum != pins.source_schema_checksum {
+        return Err(CloudSourceError::QueryCatalogInvalid);
+    }
+    let physical_version = SchemaVersion {
+        schema_version_id: parse_pin(&pins.source_schema_version)?,
+        name: source.schema().name.to_string(),
+        content_id: physical_content.content_id,
+        compatibility: Compatibility::Backward,
+    };
+    let mapping_version = MappingVersion {
+        mapping_version_id: parse_pin(&pins.mapping_version)?,
+        name: CLOUD_DOCUMENT_MAPPING_VERSION.to_string(),
+        source_schema_version_id: physical_version.schema_version_id,
+        target_schema_version_id: canonical_version.schema_version_id,
+        spec: specs.mapping,
+        checksum: pins.mapping_checksum.clone(),
+        capability: MappingCapability::ReadOnly,
+    };
+    let source_version = SourceVersion {
+        source_version_id: parse_pin(&pins.source_version)?,
+        source_id: uuid::Uuid::new_v5(
+            &CLOUD_SOURCE_VERSION_NAMESPACE,
+            source.id().as_str().as_bytes(),
+        ),
+        spec: specs.source,
+        checksum: pins.source_checksum.clone(),
+    };
+    let policy_version = PolicyVersion {
+        policy_version_id: parse_pin(&pins.policy_version)?,
+        name: CLOUD_READ_POLICY_VERSION.to_string(),
+        spec: specs.policy,
+        checksum: pins.policy_checksum.clone(),
+    };
+    mapping_version
+        .verify()
+        .and_then(|()| source_version.verify())
+        .and_then(|()| policy_version.verify())
+        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+
+    let schema_ids = vec![
+        canonical_version.schema_version_id,
+        physical_version.schema_version_id,
+    ];
+    let exact_head = head.schema_version_ids == schema_ids
+        && head.mapping_version_ids == [mapping_version.mapping_version_id]
+        && head.source_version_ids == [source_version.source_version_id]
+        && head.policy_version_ids == [policy_version.policy_version_id];
+    if exact_head {
+        let stored_canonical = store
+            .get_schema_version_now(canonical_version.schema_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        let stored_physical = store
+            .get_schema_version_now(physical_version.schema_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        let stored_mapping = store
+            .get_mapping_version_now(mapping_version.mapping_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        let stored_source = store
+            .get_source_version_now(source_version.source_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        let stored_policy = store
+            .get_policy_version_now(policy_version.policy_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        if stored_canonical != canonical_version
+            || stored_physical != physical_version
+            || stored_mapping != mapping_version
+            || stored_source != source_version
+            || stored_policy != policy_version
+        {
+            return Err(CloudSourceError::QueryCatalogInvalid);
+        }
+        return Ok(head.revision_id.to_string());
+    }
+
+    let revision_spec = serde_json::json!({
+        "parent": head.revision_id,
+        "schemas": schema_ids,
+        "mapping": mapping_version.mapping_version_id,
+        "source": source_version.source_version_id,
+        "policy": policy_version.policy_version_id,
+    });
+    let revision_id = uuid::Uuid::new_v5(
+        &CLOUD_CATALOG_REVISION_NAMESPACE,
+        catdb_storage::catalog_content_checksum(&revision_spec).as_bytes(),
+    );
+    let revision = store
+        .publish_catalog_now(
+            Some(head.revision_id),
+            CatalogDraft {
+                revision_id,
+                actor: "mdreader-cloud-library".to_string(),
+                timestamp: cloud_catalog_timestamp_ms()?,
+                schema_contents: vec![canonical_content, physical_content],
+                schema_versions: vec![canonical_version, physical_version],
+                mapping_versions: vec![mapping_version],
+                source_versions: vec![source_version],
+                policy_versions: vec![policy_version],
+            },
+        )
+        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+    Ok(revision.revision_id.to_string())
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -2278,23 +2465,35 @@ fn resolve_cloud_execution_authority(
     let (policy_version, policy_checksum) =
         content_version(&CLOUD_POLICY_VERSION_NAMESPACE, &policy_spec);
 
-    Ok(CloudExecutionAuthority {
-        mapping,
-        pins: CloudVersionPins {
-            catalog_version: catalog.catalog_version.clone(),
-            schema_version: catalog.schema_version.clone(),
-            schema_checksum: catalog.schema_checksum.clone(),
-            source_schema_version,
-            source_schema_checksum,
-            mapping_version,
-            mapping_checksum,
-            connector_version: read.connector_version.clone(),
-            source_version,
-            source_checksum,
-            policy_version,
-            policy_checksum,
-        },
-    })
+    let mut pins = CloudVersionPins {
+        catalog_version: catalog.catalog_version.clone(),
+        schema_version: catalog.schema_version.clone(),
+        schema_checksum: catalog.schema_checksum.clone(),
+        source_schema_version,
+        source_schema_checksum,
+        mapping_version,
+        mapping_checksum,
+        connector_version: read.connector_version.clone(),
+        source_version,
+        source_checksum,
+        policy_version,
+        policy_checksum,
+    };
+    if let Some(path) = catalog.catalog_path.as_deref() {
+        pins.catalog_version = persist_cloud_execution_pins(
+            path,
+            catalog,
+            source,
+            CloudExecutionSpecs {
+                mapping: mapping_spec,
+                physical_schema: source_schema_spec,
+                source: source_spec,
+                policy: policy_spec,
+            },
+            &pins,
+        )?;
+    }
+    Ok(CloudExecutionAuthority { mapping, pins })
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -2468,14 +2667,12 @@ async fn execute_cloud_query(
             let provenance = fields
                 .iter()
                 .map(|field| {
-                    let physical_attribute = provider_field(&authority.mapping, field)
-                        .ok_or_else(|| {
-                            query_failed(format!(
-                                "cloud Document field `{field}` has no validated provider mapping"
-                            ))
-                        })?
-                        .to_string();
-                    let observed = raw_fields.get(&physical_attribute).cloned();
+                    let physical_attribute =
+                        provider_field(&authority.mapping, field).map(str::to_string);
+                    let observed = physical_attribute
+                        .as_ref()
+                        .and_then(|attribute| raw_fields.get(attribute))
+                        .cloned();
                     if let Some(value) = observed.as_ref() {
                         document_fields.insert(field.clone(), value.clone());
                     }
@@ -2487,12 +2684,16 @@ async fn execute_cloud_query(
                             record_key: row.key.clone(),
                             mapping_version: authority.pins.mapping_version.clone(),
                             physical_attribute,
-                            observation: if observed.is_some() {
-                                CloudObservation::Observed
-                            } else {
-                                CloudObservation::ObservedNothing
+                            observation: match (
+                                provider_field(&authority.mapping, field),
+                                observed.is_some(),
+                            ) {
+                                (Some(_), true) => CloudObservation::Observed,
+                                (Some(_), false) => CloudObservation::ObservedNothing,
+                                (None, _) => CloudObservation::Unobservable,
                             },
-                            observed_at_ms: freshness.observed_at_ms,
+                            observed_at_ms: provider_field(&authority.mapping, field)
+                                .map(|_| freshness.observed_at_ms),
                         }],
                     })
                 })
@@ -3371,6 +3572,73 @@ mod tests {
         assert!(path.exists(), "the cloud catalog is CatDB-managed state");
     }
 
+    #[test]
+    fn cloud_catalog_persists_the_exact_mapping_source_and_policy_pins_it_returns() {
+        let root = tempdir().expect("cloud catalog directory");
+        let path = root.path().join("cloud-library.catdb");
+        let catalog = super::open_cloud_catalog(&path, uuid::Uuid::from_u128(0xc10d))
+            .expect("establish cloud catalog");
+        let source = FakeCloudSource::one_row();
+        let authority = super::resolve_cloud_execution_authority(
+            CloudProvider::Dropbox,
+            &source,
+            &catalog,
+            &super::CloudReadAuthority {
+                source_id: source.id().to_string(),
+                connector_version: "dropbox/v2".to_string(),
+            },
+        )
+        .expect("persist execution authority");
+        let store = catdb_storage_sqlite::SqliteStore::open(&path).expect("reopen cloud catalog");
+        let head = store
+            .latest_catalog_revision_now()
+            .expect("catalog head")
+            .expect("catalog revision");
+
+        assert_eq!(
+            head.revision_id.to_string(),
+            authority.pins.catalog_version,
+            "the response must pin the revision that owns its execution versions"
+        );
+        let mapping_id =
+            uuid::Uuid::parse_str(&authority.pins.mapping_version).expect("mapping pin");
+        let source_id = uuid::Uuid::parse_str(&authority.pins.source_version).expect("source pin");
+        let policy_id = uuid::Uuid::parse_str(&authority.pins.policy_version).expect("policy pin");
+        assert!(head.mapping_version_ids.contains(&mapping_id));
+        assert!(head.source_version_ids.contains(&source_id));
+        assert!(head.policy_version_ids.contains(&policy_id));
+
+        let mapping = store
+            .get_mapping_version_now(mapping_id)
+            .expect("mapping lookup")
+            .expect("persisted mapping");
+        assert_eq!(mapping.checksum, authority.pins.mapping_checksum);
+        assert_eq!(
+            mapping.source_schema_version_id.to_string(),
+            authority.pins.source_schema_version
+        );
+        assert_eq!(
+            mapping.target_schema_version_id.to_string(),
+            authority.pins.schema_version
+        );
+        assert_eq!(
+            store
+                .get_source_version_now(source_id)
+                .expect("source lookup")
+                .expect("persisted source")
+                .checksum,
+            authority.pins.source_checksum
+        );
+        assert_eq!(
+            store
+                .get_policy_version_now(policy_id)
+                .expect("policy lookup")
+                .expect("persisted policy")
+                .checksum,
+            authority.pins.policy_checksum
+        );
+    }
+
     fn test_execution_authority(
         provider: CloudProvider,
         source: &dyn DataSource,
@@ -3628,6 +3896,54 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unmapped_unobservable_and_observed_null_are_distinct_provenance_states() {
+        let mut source = FakeCloudSource::one_row();
+        source.result = Ok((
+            1,
+            vec![SourceRow {
+                source: SourceId::new("cloud-test"),
+                entity: "mdreader.Document".to_string(),
+                key: "/null-title.md".to_string(),
+                value: serde_json::json!({
+                    "id": "provider-record-1",
+                    "path": "/null-title.md",
+                    "name": null,
+                    "modifiedAt": 1,
+                    "size": 1,
+                    "rev": "1",
+                    "contentHash": "abc",
+                    "body": "# Null title",
+                }),
+            }],
+        ));
+        let authority = test_execution_authority(CloudProvider::Dropbox, &source);
+        let cloud = execute_cloud_query(
+            CloudProvider::Dropbox,
+            &source,
+            &authority,
+            Vec::new(),
+            vec!["title".to_string(), "mediaType".to_string()],
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("unmapped fields remain queryable as absence evidence");
+        let shared = super::shared_entity_response(cloud).expect("shared entity response");
+        let title = &shared.rows[0].provenance["title"].considered()[0];
+        let media_type = &shared.rows[0].provenance["mediaType"].considered()[0];
+
+        assert_eq!(
+            title.state().kind(),
+            catdb_provenance::ObservationKind::ObservedNull
+        );
+        assert_eq!(
+            media_type.state().kind(),
+            catdb_provenance::ObservationKind::NotAsked
+        );
+        assert_eq!(media_type.physical_attribute(), None);
+        assert_eq!(media_type.observed_at_ms(), None);
+    }
+
     #[test]
     fn drive_and_dropbox_provenance_uses_their_real_renamed_attributes() {
         let drive = FakeCloudSource {
@@ -3750,6 +4066,11 @@ mod tests {
             .expect("pause source");
 
         let paused = service.snapshot().expect("paused snapshot");
+        assert_eq!(
+            paused.sources.len(),
+            2,
+            "Settings reads must retain the full supported-provider listing"
+        );
         let drive = paused
             .sources
             .iter()
@@ -3830,8 +4151,12 @@ mod tests {
             "local-folder/v1"
         );
         assert_eq!(
+            sources[0]["contract"]["mapping_version"],
+            "mdreader.Document.local-folder/v2"
+        );
+        assert_eq!(
             sources[1]["contract"]["mapping_version"],
-            "mdreader.Document.cloud-mapping/v1"
+            "mdreader.Document.cloud-mapping/v2"
         );
         assert_eq!(sources[1]["contract"]["index_policy"], "read-through");
         assert_eq!(sources[1]["contract"]["capabilities"]["write"], false);
@@ -3866,13 +4191,15 @@ mod tests {
         {
             let local_record = local.as_object_mut().expect("local source");
             local_record.remove("kind");
-            local_record.remove("contract");
+            local_record.get_mut("contract").expect("local contract")["mapping_version"] =
+                serde_json::json!("mdreader.Document.local-folder/v1");
         }
         let mut drive = entries.remove(0);
         {
             let drive_record = drive.as_object_mut().expect("Drive source");
             drive_record.remove("kind");
-            drive_record.remove("contract");
+            drive_record.get_mut("contract").expect("Drive contract")["mapping_version"] =
+                serde_json::json!("mdreader.Document.cloud-mapping/v1");
         }
         legacy["version"] = serde_json::json!(4);
         legacy["sources"] = serde_json::json!([local]);
@@ -3889,10 +4216,58 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
                 .expect("parse migrated registry");
-        assert_eq!(persisted["version"], serde_json::json!(5));
+        assert_eq!(persisted["version"], serde_json::json!(6));
         assert!(persisted.get("cloud_sources").is_none());
         assert_eq!(persisted["sources"][0]["kind"], "local-folder");
         assert_eq!(persisted["sources"][1]["kind"], "google-drive");
+        assert_eq!(
+            persisted["sources"][0]["contract"]["mapping_version"],
+            "mdreader.Document.local-folder/v2"
+        );
+        assert_eq!(
+            persisted["sources"][1]["contract"]["mapping_version"],
+            "mdreader.Document.cloud-mapping/v2"
+        );
+    }
+
+    #[test]
+    fn version_five_contracts_migrate_to_the_unified_document_contract() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("notes");
+        fs::create_dir(&local_root).expect("local source");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&local_root).expect("admit local source");
+        registry
+            .save_to(&registry_path)
+            .expect("persist current registry");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read registry"))
+                .expect("parse registry");
+        legacy["version"] = serde_json::json!(5);
+        legacy["sources"][0]["contract"]["connector_version"] =
+            serde_json::json!("local-folder/v1");
+        legacy["sources"][0]["contract"]["mapping_version"] =
+            serde_json::json!("mdreader.Document.local-folder/v1");
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&legacy).expect("encode V5 registry"),
+        )
+        .expect("write V5 registry");
+
+        LibraryRegistry::load_from(&registry_path).expect("migrate V5 registry");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
+                .expect("parse migrated registry");
+        assert_eq!(persisted["version"], serde_json::json!(6));
+        assert_eq!(
+            persisted["sources"][0]["contract"]["connector_version"],
+            "local-folder/v1"
+        );
+        assert_eq!(
+            persisted["sources"][0]["contract"]["mapping_version"],
+            "mdreader.Document.local-folder/v2"
+        );
     }
 
     #[test]

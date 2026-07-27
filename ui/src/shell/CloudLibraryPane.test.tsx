@@ -187,7 +187,7 @@ it('reads a provider-owned document in the main Library with semantic evidence',
 
   fireEvent.click(screen.getByRole('tab', { name: 'Schema' }));
   expect(
-    screen.getByText('library · v00000000-0000-4000-8000-000000000004'),
+    screen.getByText('document · v00000000-0000-4000-8000-000000000004'),
   ).toBeTruthy();
   expect(screen.getByText(/read-only external source evidence/i)).toBeTruthy();
   expect(screen.getByText(/not the provider-owned document/i)).toBeTruthy();

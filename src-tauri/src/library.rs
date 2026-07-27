@@ -22,7 +22,7 @@ use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, Clo
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 5;
+pub(crate) const LIBRARY_VERSION: u32 = 6;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -328,7 +328,7 @@ impl LibrarySourceContract {
                 open_original: true,
                 download: false,
             },
-            mapping_version: "mdreader.Document.local-folder/v1".to_string(),
+            mapping_version: "mdreader.Document.local-folder/v2".to_string(),
             index_policy: LibraryIndexPolicy::Managed,
         }
     }
@@ -377,10 +377,8 @@ pub(crate) struct LocalFolderSource {
 }
 
 impl LocalFolderSource {
-    fn ensure_contract(&mut self) {
-        if self.contract.is_none() {
-            self.contract = Some(LibrarySourceContract::local_folder());
-        }
+    fn refresh_contract(&mut self) {
+        self.contract = Some(LibrarySourceContract::local_folder());
     }
 }
 
@@ -454,6 +452,13 @@ impl LibrarySource {
         match source.provider() {
             crate::cloud_accounts::CloudProvider::GoogleDrive => Self::GoogleDrive(source),
             crate::cloud_accounts::CloudProvider::Dropbox => Self::Dropbox(source),
+        }
+    }
+
+    fn refresh_contract(&mut self) {
+        match self {
+            Self::LocalFolder(source) => source.refresh_contract(),
+            Self::GoogleDrive(source) | Self::Dropbox(source) => source.refresh_contract(),
         }
     }
 }
@@ -873,6 +878,9 @@ impl LibraryRegistry {
         if version.version == 4 {
             return Self::migrate_v4(path, &bytes);
         }
+        if version.version == 5 {
+            return Self::migrate_v5(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -888,6 +896,23 @@ impl LibraryRegistry {
             sources: stored.sources,
             cleanup_pending: stored.cleanup_pending,
         })
+    }
+
+    fn migrate_v5(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibrary =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        let mut migrated = Self {
+            active_source_id: stored.active_source_id,
+            sources: stored.sources,
+            cleanup_pending: stored.cleanup_pending,
+        };
+        for source in &mut migrated.sources {
+            source.refresh_contract();
+        }
+        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
+        Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
+        migrated.save_to(path)?;
+        Ok(migrated)
     }
 
     fn migrate_v1(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
@@ -992,7 +1017,7 @@ impl LibraryRegistry {
         let mut stored: StoredLibraryV3 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         for source in &mut stored.sources {
-            source.ensure_contract();
+            source.refresh_contract();
         }
         Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         Self::validate_pending_local_cleanup(&stored.cleanup_pending, &stored.sources)?;
@@ -1013,10 +1038,10 @@ impl LibraryRegistry {
         let mut stored: StoredLibraryV4 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         for source in &mut stored.sources {
-            source.ensure_contract();
+            source.refresh_contract();
         }
         for source in &mut stored.cloud_sources {
-            source.ensure_contract();
+            source.refresh_contract();
         }
         Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         validate_cloud_source_records(&stored.cloud_sources)

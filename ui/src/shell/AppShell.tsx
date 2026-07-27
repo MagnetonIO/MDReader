@@ -140,6 +140,10 @@ export function AppShell() {
   const [cloudError, setCloudError] = useState<string | null>(null);
   const cloudRefreshGeneration = useRef(0);
   const cloudRefreshRequests = useRef<string[]>([]);
+
+  useEffect(() => {
+    setCloudDocument(null);
+  }, [activeTabId]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -1011,6 +1015,7 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
+    setCloudDocument(null);
     useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
   }, []);
@@ -1020,6 +1025,7 @@ export function AppShell() {
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
+      setCloudDocument(null);
       if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
@@ -1799,7 +1805,10 @@ export function AppShell() {
         />
 
         <main className="shell__main">
-          <TabStrip onRequestClose={requestCloseTab} />
+          <TabStrip
+            onLocalIntent={() => setCloudDocument(null)}
+            onRequestClose={requestCloseTab}
+          />
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''

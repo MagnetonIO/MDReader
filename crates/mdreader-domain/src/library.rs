@@ -1,10 +1,8 @@
 //! The canonical document shape used by MDReader's multi-source Library.
 //!
-//! Local P8 federation keeps its deliberately narrow, path-keyed
-//! `document.Document` proof schema. A Library is wider: a remote document may
-//! have no filesystem path, while provider metadata still has to land
-//! somewhere rather than being silently discarded. `library.Document` is the
-//! application-facing shape shared by cloud sources.
+//! Filesystem, Git, frontmatter, Drive, and Dropbox all target the same
+//! path-keyed `document.Document` schema. Provider metadata lands in that one
+//! shape rather than creating a second application-facing document identity.
 
 use catdb_connectors::DataSource;
 use catdb_core::{
@@ -12,9 +10,9 @@ use catdb_core::{
 };
 
 /// The Library schema name.
-pub const SCHEMA: &str = "library";
+pub const SCHEMA: &str = crate::federated::SCHEMA;
 /// The Library document entity.
-pub const ENTITY: &str = "Document";
+pub const ENTITY: &str = crate::federated::ENTITY;
 
 /// One supported cloud source family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +23,7 @@ pub enum CloudDocumentSource {
     Dropbox,
 }
 
-/// A cloud source could not be mapped completely into `library.Document`.
+/// A cloud source could not be mapped completely into `document.Document`.
 #[derive(Debug, thiserror::Error)]
 pub enum CloudDocumentMappingError {
     /// The connector described something other than one `Document` entity.
@@ -59,27 +57,13 @@ pub enum CloudDocumentMappingError {
 
 /// The application-facing Library document schema.
 ///
-/// Every field is nullable because connector declarations model a field as
-/// observable for the source family, not guaranteed on every provider record.
-/// Stable object identity remains `(source_id, source_record_key)` and is
-/// carried outside the value object.
+/// The required `path` field is the semantic record key: a workspace-relative
+/// path for local documents, Drive file id for Drive, or provider path for
+/// Dropbox. Other fields are nullable because observability does not guarantee
+/// a value on every record. Stable cloud object identity also retains
+/// `(source_id, source_record_key)` outside the value object.
 pub fn document_schema() -> Schema {
-    let mut schema = Schema::new(SCHEMA, catdb_core::builtin::standard_typeside());
-    schema.add_entity(ENTITY);
-    for (name, ty) in [
-        ("providerId", "Text"),
-        ("title", "Text"),
-        ("path", "Text"),
-        ("mediaType", "Text"),
-        ("modifiedAt", "Timestamp"),
-        ("size", "Int"),
-        ("revision", "Text"),
-        ("checksum", "Text"),
-        ("body", "Text"),
-    ] {
-        schema.add_attribute(name, ENTITY, ty, true);
-    }
-    schema
+    crate::federated::document_schema()
 }
 
 /// Build the complete read-only mapping from one cloud connector declaration
@@ -208,7 +192,7 @@ mod tests {
         fn drive() -> Self {
             Self {
                 model: SourceModel::new(
-                    SourceId::new("drive"),
+                    SourceId::new("google-drive"),
                     "drive_physical",
                     ENTITY,
                     vec![
@@ -218,6 +202,26 @@ mod tests {
                         SourceAttr::parsed("modifiedAt", catdb_core::BaseType::Timestamp),
                         SourceAttr::parsed("size", catdb_core::BaseType::Int),
                         SourceAttr::text("checksum"),
+                        SourceAttr::text("body"),
+                    ],
+                ),
+            }
+        }
+
+        fn dropbox() -> Self {
+            Self {
+                model: SourceModel::new(
+                    SourceId::new("dropbox"),
+                    "dropbox_physical",
+                    ENTITY,
+                    vec![
+                        SourceAttr::text("id"),
+                        SourceAttr::text("name"),
+                        SourceAttr::text("path"),
+                        SourceAttr::parsed("modifiedAt", catdb_core::BaseType::Timestamp),
+                        SourceAttr::parsed("size", catdb_core::BaseType::Int),
+                        SourceAttr::text("rev"),
+                        SourceAttr::text("contentHash"),
                         SourceAttr::text("body"),
                     ],
                 ),
@@ -290,6 +294,47 @@ mod tests {
             mapping.mapping().attr_map[&"id".into()].attr.as_str(),
             "path"
         );
+    }
+
+    #[test]
+    fn every_library_source_targets_one_canonical_document_schema() {
+        assert_eq!(SCHEMA, crate::federated::SCHEMA);
+        assert_eq!(ENTITY, crate::federated::ENTITY);
+        assert_eq!(
+            document_schema(),
+            crate::federated::document_schema(),
+            "filesystem, Git, frontmatter, Drive, and Dropbox must not publish parallel Document concepts"
+        );
+    }
+
+    #[test]
+    fn cloud_precedence_is_pinned_to_the_validated_cloud_mappings() {
+        let drive = DeclaredSource::drive();
+        let dropbox = DeclaredSource::dropbox();
+        let drive_mapping =
+            cloud_document_mapping(&drive, CloudDocumentSource::GoogleDrive).expect("Drive maps");
+        let dropbox_mapping =
+            cloud_document_mapping(&dropbox, CloudDocumentSource::Dropbox).expect("Dropbox maps");
+
+        for entry in crate::federated::precedence().fields() {
+            for provider in &entry.order {
+                let mapping = match provider.source.as_str() {
+                    "google-drive" => &drive_mapping,
+                    "dropbox" => &dropbox_mapping,
+                    _ => continue,
+                };
+                assert_eq!(
+                    mapping
+                        .attr_map
+                        .get(&provider.attr)
+                        .unwrap_or_else(|| panic!("`{provider}` must be mapped"))
+                        .attr,
+                    entry.field,
+                    "`{provider}` must land on `{}`",
+                    entry.field
+                );
+            }
+        }
     }
 
     #[test]

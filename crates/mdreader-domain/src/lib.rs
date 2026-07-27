@@ -101,7 +101,7 @@ pub fn validate_all(prover: &dyn PathProver) -> ValidationReport {
         .into_iter()
         .chain(pipeline_core_schemas())
         .chain(overlay_schemas())
-        .chain([federated::document_schema(), library::document_schema()])
+        .chain([federated::document_schema()])
     {
         report.record_schema(&schema);
         report.record_equations(&schema, prover);
@@ -169,7 +169,7 @@ pub fn engine_registration(
         .into_iter()
         .chain(pipeline_core_schemas())
         .chain(overlay_schemas())
-        .chain([federated::document_schema(), library::document_schema()])
+        .chain([federated::document_schema()])
         .collect();
     DomainRegistration {
         name: crate_name().to_string(),
@@ -200,15 +200,19 @@ mod tests {
     #[test]
     fn engine_registration_carries_the_whole_domain() {
         let registration = engine_registration(Vec::new(), "test-chunker@1");
-        assert_eq!(registration.schemas.len(), 12);
+        assert_eq!(registration.schemas.len(), 11);
         assert!(registration
             .schemas
             .iter()
             .any(|schema| schema.name.as_str() == federated::SCHEMA));
-        assert!(registration
-            .schemas
-            .iter()
-            .any(|schema| schema.name.as_str() == library::SCHEMA));
+        assert_eq!(
+            registration
+                .schemas
+                .iter()
+                .filter(|schema| schema.name.as_str() == library::SCHEMA)
+                .count(),
+            1
+        );
         assert!(
             !registration
                 .approval_required_schemas
@@ -274,12 +278,12 @@ mod tests {
             "domain must validate cleanly:\n{}",
             report.error_messages().join("\n")
         );
-        // Ten pipeline/overlay schemas plus the federated and Library
-        // `Document` schemas, three mappings, and every builtin equation
-        // verdict recorded (fs has 1
+        // Ten pipeline/overlay schemas plus the one canonical `Document`
+        // schema, three mappings, and every builtin equation verdict recorded
+        // (fs has 1
         // equation, md and md_core have 2 each, and architecture_overlay has
         // its interface-ownership law).
-        assert_eq!(report.schemas.len(), 12);
+        assert_eq!(report.schemas.len(), 11);
         assert_eq!(report.mappings.len(), 3);
         assert_eq!(report.equations.len(), 6);
         assert!(report

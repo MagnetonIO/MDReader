@@ -310,7 +310,11 @@ async fn a_title_no_source_can_supply_is_absent_rather_than_defaulted() {
         .collect();
     assert_eq!(
         asked,
-        [("frontmatter.title".to_string(), "observed-nothing")]
+        [
+            ("frontmatter.title".to_string(), "observed-nothing"),
+            ("google-drive.name".to_string(), "not-asked"),
+            ("dropbox.name".to_string(), "not-asked"),
+        ]
     );
     assert!(title.explain().starts_with("`title` is absent"));
 

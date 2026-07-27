@@ -19,6 +19,7 @@ import { DocumentInspector } from './lens/DocumentInspector.js';
 const DOCUMENT_FIELDS = [
   'providerId',
   'title',
+  'author',
   'path',
   'mediaType',
   'modifiedAt',
@@ -98,7 +99,11 @@ function normalizeCloudDocument(
         provider.state.state === 'observed_value' ||
         provider.state.state === 'observed_null'
           ? 'observed'
-          : 'observed-nothing',
+          : provider.state.state === 'not_asked'
+            ? 'not-asked'
+            : provider.state.state === 'record_unseen'
+              ? 'did-not-see-document'
+              : 'observed-nothing',
       value:
         provider.state.state === 'observed_value'
           ? provider.state.value
@@ -128,7 +133,7 @@ function normalizeCloudDocument(
     queryId: response.query_id,
     completeness: response.completeness.state,
     schema: {
-      name: 'library',
+      name: 'document',
       version: response.pins.schema_version_id,
       checksum: cloudEvidence.version_pins.schema_checksum,
       entities: ['Document'],

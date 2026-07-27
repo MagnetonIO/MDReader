@@ -60,9 +60,13 @@ fn the_document_schema_validates_and_declares_the_concept_by_name() {
         [
             ("author", "Text", true),
             ("body", "Text", true),
+            ("checksum", "Text", true),
+            ("mediaType", "Text", true),
             ("modifiedAt", "Timestamp", true),
             // The natural key is the one thing a Document always has.
             ("path", "Text", false),
+            ("providerId", "Text", true),
+            ("revision", "Text", true),
             ("size", "Int", true),
             ("title", "Text", true),
         ]
@@ -252,17 +256,40 @@ fn coverage_reports_what_each_mapping_carries_and_leaves_unreached_by_name() {
         (
             FilesystemSource::ID,
             &["modifiedAt", "path", "size"],
-            &["author", "body", "title"],
+            &[
+                "author",
+                "body",
+                "checksum",
+                "mediaType",
+                "providerId",
+                "revision",
+                "title",
+            ],
         ),
         (
             GitSource::ID,
             &["author", "modifiedAt", "path"],
-            &["body", "size", "title"],
+            &[
+                "body",
+                "checksum",
+                "mediaType",
+                "providerId",
+                "revision",
+                "size",
+                "title",
+            ],
         ),
         (
             FrontmatterSource::ID,
             &["author", "body", "path", "title"],
-            &["modifiedAt", "size"],
+            &[
+                "checksum",
+                "mediaType",
+                "modifiedAt",
+                "providerId",
+                "revision",
+                "size",
+            ],
         ),
     ];
 
@@ -318,7 +345,7 @@ fn coverage_reports_what_each_mapping_carries_and_leaves_unreached_by_name() {
 /// Between them the three sources reach every attribute of the concept: the
 /// federation is not quietly leaving a declared field with no supplier.
 #[test]
-fn the_three_mappings_together_reach_every_document_attribute() {
+fn the_three_local_mappings_reach_every_locally_observable_document_attribute() {
     let (fs, git, front) = adapters();
     let federation = Federation::new(vec![&fs, &git, &front], &prover()).expect("declares");
     let mut reached: Vec<String> = federation
@@ -334,12 +361,15 @@ fn the_three_mappings_together_reach_every_document_attribute() {
         .collect();
     reached.sort();
     reached.dedup();
-    let mut declared: Vec<String> = federated::ATTRIBUTES
-        .iter()
-        .map(|(name, _, _)| (*name).to_string())
-        .collect();
-    declared.sort();
-    assert_eq!(reached, declared);
+    assert_eq!(
+        reached,
+        ["author", "body", "modifiedAt", "path", "size", "title"]
+    );
+    for cloud_only in ["checksum", "mediaType", "providerId", "revision"] {
+        assert!(federated::ATTRIBUTES
+            .iter()
+            .any(|(name, _, _)| *name == cloud_only));
+    }
 }
 
 /// What loss actually looks like, so that "no loss" above means something: a
@@ -501,9 +531,14 @@ fn declaring_a_federation_pins_precedence_and_mappings_against_each_other() {
 
     for entry in federation.precedence().fields() {
         for provider in &entry.order {
-            let binding = federation
-                .binding(&provider.source)
-                .unwrap_or_else(|| panic!("`{}` is not bound", provider.source));
+            let Some(binding) = federation.binding(&provider.source) else {
+                assert!(
+                    matches!(provider.source.as_str(), "google-drive" | "dropbox"),
+                    "only a cloud provider may be outside this local federation: `{}`",
+                    provider.source
+                );
+                continue;
+            };
             let target = binding
                 .mapping()
                 .mapping()
@@ -532,12 +567,28 @@ fn the_declared_precedence_names_its_sources_in_order() {
             .map(|provider| provider.source.to_string())
             .collect()
     };
-    assert_eq!(order("path"), ["filesystem", "git", "frontmatter"]);
-    assert_eq!(order("title"), ["frontmatter"]);
+    assert_eq!(
+        order("path"),
+        [
+            "filesystem",
+            "git",
+            "frontmatter",
+            "google-drive",
+            "dropbox"
+        ]
+    );
+    assert_eq!(order("title"), ["frontmatter", "google-drive", "dropbox"]);
     assert_eq!(order("author"), ["frontmatter", "git"]);
-    assert_eq!(order("modifiedAt"), ["filesystem", "git"]);
-    assert_eq!(order("size"), ["filesystem"]);
-    assert_eq!(order("body"), ["frontmatter"]);
+    assert_eq!(
+        order("modifiedAt"),
+        ["filesystem", "git", "google-drive", "dropbox"]
+    );
+    assert_eq!(order("size"), ["filesystem", "google-drive", "dropbox"]);
+    assert_eq!(order("body"), ["frontmatter", "google-drive", "dropbox"]);
+    assert_eq!(order("checksum"), ["google-drive", "dropbox"]);
+    assert_eq!(order("mediaType"), ["google-drive"]);
+    assert_eq!(order("providerId"), ["dropbox"]);
+    assert_eq!(order("revision"), ["dropbox"]);
 }
 
 /// `title`'s two candidates are one adapter's declared chain, recorded here

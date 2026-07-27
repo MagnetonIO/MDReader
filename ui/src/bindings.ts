@@ -412,7 +412,7 @@ export type CloudConsideredProvider = {
 	record_key: string,
 	mapping_version: string,
 	/**  Exact physical provider attribute selected by the validated mapping. */
-	physical_attribute: string,
+	physical_attribute: string | null,
 	observation: CloudObservation,
 	observed_at_ms: number | null,
 };
@@ -450,7 +450,7 @@ export type CloudFilterInput = {
 
 export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
 
-export type CloudObservation = "observed" | "observed-nothing";
+export type CloudObservation = "observed" | "observed-nothing" | "unobservable";
 
 export type CloudProvider = "google-drive" | "dropbox";
 

@@ -252,7 +252,7 @@ export async function queryCloudEntity(
     workspace_id: catalog.workspace_id,
     catalog_revision_id: catalog.catalog_revision_id,
     schema_version_id: catalog.schema_version_id,
-    entity: 'library.Document',
+    entity: 'document.Document',
     select: fields,
     filters: filters.map((filter) => ({
       field: filter.field,

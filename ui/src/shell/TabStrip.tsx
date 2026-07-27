@@ -30,10 +30,12 @@ import type { TabState } from '../stores/types.js';
 function SortableTab({
   tab,
   active,
+  onLocalIntent,
   onRequestClose,
 }: {
   tab: TabState;
   active: boolean;
+  onLocalIntent: () => void;
   onRequestClose: (tabId: string) => void;
 }) {
   const setActiveTab = useTabsStore((state) => state.setActiveTab);
@@ -64,11 +66,15 @@ function SortableTab({
       role="tab"
       aria-selected={active}
       title={tab.docRef.path}
-      onClick={() => setActiveTab(tab.id)}
+      onClick={() => {
+        onLocalIntent();
+        setActiveTab(tab.id);
+      }}
       onDoubleClick={() => togglePin(tab.id)}
       onAuxClick={(event) => {
         if (event.button === 1) {
           event.preventDefault();
+          onLocalIntent();
           onRequestClose(tab.id);
         }
       }}
@@ -85,6 +91,7 @@ function SortableTab({
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
+          onLocalIntent();
           onRequestClose(tab.id);
         }}
       >
@@ -95,12 +102,14 @@ function SortableTab({
 }
 
 export interface TabStripProps {
+  /** Retire any non-tab reader before a local tab action takes ownership. */
+  onLocalIntent: () => void;
   /** Request to close a tab — routed through the shell so a dirty tab prompts the
    *  unsaved-changes guard before it is torn down. */
   onRequestClose: (tabId: string) => void;
 }
 
-export function TabStrip({ onRequestClose }: TabStripProps) {
+export function TabStrip({ onLocalIntent, onRequestClose }: TabStripProps) {
   const tabs = useTabsStore((state) => state.tabs);
   const activeTabId = useTabsStore((state) => state.activeTabId);
   const reorderTabs = useTabsStore((state) => state.reorderTabs);
@@ -138,6 +147,7 @@ export function TabStrip({ onRequestClose }: TabStripProps) {
               key={tab.id}
               tab={tab}
               active={tab.id === activeTabId}
+              onLocalIntent={onLocalIntent}
               onRequestClose={onRequestClose}
             />
           ))}
