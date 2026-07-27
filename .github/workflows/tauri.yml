@@ -239,26 +239,15 @@ jobs:
         run: ./scripts/macos-smoke.sh
 
   # --------------------------------------------------------------------------
-  # Milestone PT — mobile legs of the UNIFIED harness (Appium).
-  #
-  # iOS via appium-xcuitest-driver (Simulator), Android via
-  # appium-uiautomator2-driver (emulator). Both run the SAME shared FLOW off the
-  # app's WEBVIEW context (see specs/mobile.e2e.ts) — one behavioural spec, phone
-  # to laptop.
-  #
-  # BLOCKED on P6: there is NO iOS/Android app build yet (the app has no mobile
-  # shell). The harness — capabilities, WEBVIEW-context adapter, wdio configs — is
-  # ready and CI-wired so these run the moment the P6 shell lands and supplies a
-  # built .app / .apk (via MDREADER_IOS_APP / MDREADER_ANDROID_APP).
-  #
-  # To avoid a promised-but-fake gate, both jobs are SKIPPED explicitly until the
-  # repo variable MDREADER_MOBILE_READY is set to 'true' (set it in the same PR
-  # that lands the P6 mobile shell). Skipped — never false-passing.
+  # Native mobile Appium legs. Each job builds its own E2E-identity artifact,
+  # validates the bundle/package before exporting it to WebdriverIO, and then
+  # exercises the mobile-specific shell flow. Repository variables keep these
+  # expensive jobs guarded; an enabled job fails on every missing native input.
   # --------------------------------------------------------------------------
   ios-e2e:
-    name: iOS e2e (unified wdio + appium-xcuitest) — blocked on P6 shell
+    name: iOS e2e (unsigned simulator + appium-xcuitest)
     needs: check
-    if: ${{ vars.MDREADER_MOBILE_READY == 'true' }}
+    if: ${{ vars.MDREADER_IOS_E2E_READY == 'true' }}
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -273,13 +262,69 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Setup Rust iOS Simulator target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      # P6 supplies the iOS build step here and exports MDREADER_IOS_APP to the
-      # built simulator .app. Until then this job is skipped by the `if` gate.
-      - name: Build MDReader iOS app (P6)
-        run: echo "P6 mobile shell provides the iOS build + MDREADER_IOS_APP" && exit 1
+      - name: Initialize and build unsigned iOS Simulator archive
+        run: |
+          pnpm --filter @mdreader/app tauri ios init --ci
+          pnpm --filter @mdreader/app tauri ios build \
+            --debug \
+            --target aarch64-sim \
+            --features e2e-build \
+            --config src-tauri/tauri.e2e.conf.json \
+            --no-sign \
+            --archive-only \
+            --ci
+
+      - name: Validate and export iOS app
+        shell: bash
+        run: |
+          app="apps/mdreader/src-tauri/gen/apple/build/mdreader-app_iOS.xcarchive/Products/Applications/MDReader E2E.app"
+          if [[ ! -d "$app" ]]; then
+            echo "expected archived iOS app is missing: $app" >&2
+            exit 1
+          fi
+          plist="$app/Info.plist"
+          identifier=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$plist")
+          executable=$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$plist")
+          [[ "$identifier" == "dev.mdreader.app.e2e" ]] || {
+            echo "unexpected iOS bundle identifier: $identifier" >&2
+            exit 1
+          }
+          [[ -s "$app/$executable" ]] || {
+            echo "missing or empty iOS executable: $app/$executable" >&2
+            exit 1
+          }
+          printf 'MDREADER_IOS_APP=%s\n' "$app" >> "$GITHUB_ENV"
+
+      - name: Select an available iPhone Simulator
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const runtimes = JSON.parse(
+            execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '--json'], {
+              encoding: 'utf8',
+            }),
+          ).devices;
+          const match = Object.entries(runtimes)
+            .flatMap(([runtime, devices]) => devices.map((device) => ({ runtime, device })))
+            .find(({ device }) => device.isAvailable && device.name.startsWith('iPhone'));
+          if (!match) throw new Error('no available iPhone Simulator');
+          const version = match.runtime.match(/iOS-(.+)$/)?.[1]?.replaceAll('-', '.');
+          if (!version) throw new Error(`cannot parse Simulator runtime ${match.runtime}`);
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `MDREADER_IOS_DEVICE=${match.device.name}\nMDREADER_IOS_VERSION=${version}\n`,
+          );
+          NODE
 
       - name: Install e2e-native toolchain
         working-directory: apps/mdreader/e2e-native
@@ -293,14 +338,18 @@ jobs:
         working-directory: apps/mdreader/e2e-native
         run: pnpm run typecheck
 
+      - name: Verify artifact and seed guards
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run test:seed
+
       - name: Run iOS e2e (Simulator)
         working-directory: apps/mdreader/e2e-native
         run: pnpm run test:ios
 
   android-e2e:
-    name: Android e2e (unified wdio + appium-uiautomator2) — blocked on P6 shell
+    name: Android e2e (debug APK + appium-uiautomator2)
     needs: check
-    if: ${{ vars.MDREADER_MOBILE_READY == 'true' }}
+    if: ${{ vars.MDREADER_ANDROID_E2E_READY == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -315,13 +364,54 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Rust Android emulator target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      # P6 supplies the Android build step here and exports MDREADER_ANDROID_APP to
-      # the built .apk. Until then this job is skipped by the `if` gate.
-      - name: Build MDReader Android app (P6)
-        run: echo "P6 mobile shell provides the Android build + MDREADER_ANDROID_APP" && exit 1
+      - name: Build MDReader Android debug APK
+        run: |
+          test -f apps/mdreader/src-tauri/gen/android/gradlew || {
+            echo "the committed Tauri Android project is missing" >&2
+            exit 1
+          }
+          pnpm --filter @mdreader/app tauri android build \
+            --debug \
+            --target x86_64 \
+            --features e2e-build \
+            --config src-tauri/tauri.e2e.conf.json \
+            --apk \
+            --ci
+
+      - name: Validate and export Android APK
+        shell: bash
+        run: |
+          apks=$(find apps/mdreader/src-tauri/gen/android -type f -name '*.apk' -print)
+          count=$(printf '%s\n' "$apks" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [[ "$count" -ne 1 ]]; then
+            echo "expected exactly one Android APK; found $count" >&2
+            exit 1
+          fi
+          apk="$apks"
+          [[ -s "$apk" ]] || {
+            echo "Android APK is empty: $apk" >&2
+            exit 1
+          }
+          identifier=$(apkanalyzer manifest application-id "$apk")
+          [[ "$identifier" == "dev.mdreader.app.e2e" ]] || {
+            echo "unexpected Android application id: $identifier" >&2
+            exit 1
+          }
+          printf 'MDREADER_ANDROID_APP=%s\n' "$apk" >> "$GITHUB_ENV"
 
       - name: Install e2e-native toolchain
         working-directory: apps/mdreader/e2e-native
@@ -334,6 +424,10 @@ jobs:
       - name: Typecheck the GUI harness
         working-directory: apps/mdreader/e2e-native
         run: pnpm run typecheck
+
+      - name: Verify artifact and seed guards
+        working-directory: apps/mdreader/e2e-native
+        run: pnpm run test:seed
 
       - name: Run Android e2e (emulator)
         uses: reactivecircus/android-emulator-runner@v2

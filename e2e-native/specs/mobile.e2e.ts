@@ -1,34 +1,22 @@
 /**
- * Milestone PT — the mobile leg of the UNIFIED harness (Appium: iOS + Android).
+ * Native mobile smoke over an Appium-provided WEBVIEW context.
  *
- * Drives the SAME shared `FLOW` off the mobile app's WEBVIEW context: iOS via
- * appium-xcuitest-driver (Simulator), Android via appium-uiautomator2-driver
- * (emulator). The adapter switches into the WEBVIEW context, then reads the same
- * DOM class names the desktop legs read — one behavioural spec, phone to laptop.
- *
- * BLOCKED on P6: the app currently has NO iOS/Android build (no mobile app shell),
- * so there is nothing for Appium to install/launch yet. This spec + its capability
- * sets + CI wiring are ready so the leg RUNS the moment the P6 shell lands — at
- * which point the only missing pieces are the built `.app`/`.apk` (supplied via
- * the `MDREADER_IOS_APP` / `MDREADER_ANDROID_APP` env the capabilities read).
- *
- * The native-window steps are inherently N/A on mobile (no draggable OS window),
- * so they register PENDING with a mobile-specific reason.
+ * This deliberately checks the mobile composition instead of replaying the
+ * desktop document flow: mobile currently has no durable folder grant or
+ * secure cloud sign-in, so manufacturing seeded documents would turn a
+ * scaffold into false native product evidence.
  */
 
-import { browser, expect } from '@wdio/globals';
-
-import { WINDOW_STEPS } from '../flows.ts';
-import { runFlow } from '../drivers/runner.ts';
-import { WebviewAdapter } from '../drivers/webview-adapter.ts';
+import { $, browser, expect } from '@wdio/globals';
 
 /** Switch the Appium session into the app's WEBVIEW context (the HTML UI). */
 async function switchToWebview(b: WebdriverIO.Browser): Promise<void> {
-  // Poll: the webview context can take a moment to appear after launch.
   const deadline = Date.now() + 30_000;
   for (;;) {
     const contexts = (await b.getContexts()) as unknown as string[];
-    const webview = contexts.find((c) => String(c).toUpperCase().includes('WEBVIEW'));
+    const webview = contexts.find((context) =>
+      String(context).toUpperCase().includes('WEBVIEW'),
+    );
     if (webview) {
       await b.switchContext(webview);
       return;
@@ -36,25 +24,41 @@ async function switchToWebview(b: WebdriverIO.Browser): Promise<void> {
     if (Date.now() >= deadline) {
       throw new Error(`no WEBVIEW context appeared (contexts: ${JSON.stringify(contexts)})`);
     }
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
-describe('MDReader mobile — unified FLOW over the webview context (Appium)', () => {
-  it('drives grant → index → open → search → provenance-jump in the WEBVIEW context', async () => {
-    const adapter = new WebviewAdapter({
-      browser,
-      name: `${(browser.capabilities as Record<string, unknown>)['platformName'] ?? 'mobile'} (Appium webview)`,
-      windowPendingReason: 'mobile has no draggable OS window; the native-window steps are desktop-only',
-      activate: switchToWebview,
-    });
-    const result = await runFlow(adapter);
-    if (!result.ok) throw new Error(`unified FLOW failed at step "${result.failedAt}"`);
-    expect(result.ok).toBe(true);
+describe('MDReader native mobile shell', () => {
+  before(async () => switchToWebview(browser));
+
+  it('mounts the four mobile tabs without desktop chrome', async () => {
+    const navigation = await $('nav[aria-label="Primary"]');
+    await expect(navigation).toHaveText('LibrarySearchSourcesSettings');
+    await expect(await $('button=Source')).not.toExist();
+    await expect(await $('button=Split')).not.toExist();
+    await expect(await $('button*=Check for updates')).not.toExist();
   });
 
-  for (const step of WINDOW_STEPS) {
-    if (step.kind === 'launch') continue;
-    it.skip(`${step.title} — N/A on mobile (no draggable OS window)`, () => undefined);
-  }
+  it('shows only truthful mobile source boundaries', async () => {
+    await (await $('button=Sources')).click();
+    await expect(await $('h1=Sources')).toExist();
+    await expect(await $('h2=Device folders')).toExist();
+    await expect(
+      await $('p=Unavailable until a durable mobile folder grant is implemented'),
+    ).toExist();
+    await expect(await $('button=Add folder')).not.toExist();
+    await expect(await $('h2=Google Drive')).toExist();
+    await expect(await $('h2=Dropbox')).toExist();
+    await expect(await $('h2=Enterprise CatDB server')).toExist();
+    await expect(await $('input[type="password"]')).not.toExist();
+  });
+
+  it('preserves System, Light, and Dark theme controls', async () => {
+    await (await $('button=Settings')).click();
+    for (const theme of ['System', 'Light', 'Dark']) {
+      await expect(await $(`span=${theme}`)).toExist();
+    }
+    await (await $('span=Dark')).click();
+    await expect(await $('html[data-theme="dark"]')).toExist();
+  });
 });
