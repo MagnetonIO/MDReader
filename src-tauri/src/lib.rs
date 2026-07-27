@@ -12,6 +12,7 @@ compile_error!("the direct updater cannot be compiled into the isolated E2E appl
 mod commands;
 mod diagnostics;
 mod engine;
+mod file_lock;
 mod library;
 mod mapping;
 mod overlay;

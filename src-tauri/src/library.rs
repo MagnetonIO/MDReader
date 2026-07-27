@@ -18,6 +18,8 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::file_lock::AdvisoryFileLock;
+
 pub(crate) const LIBRARY_VERSION: u32 = 1;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
@@ -365,11 +367,20 @@ impl LibraryRegistry {
             .ok_or_else(|| LibraryError::SourceNotFound {
                 source_id: source_id.to_string(),
             })?;
-        match fs::metadata(&path) {
+        let canonical = match fs::canonicalize(&path) {
+            Ok(canonical) => canonical,
+            Err(error) => return Ok(classify_probe_error(error)),
+        };
+        if canonical != path {
+            return Ok(LibrarySourceState::Unreadable {
+                reason: "the folder identity changed since it was added".to_string(),
+            });
+        }
+        match fs::metadata(&canonical) {
             Ok(metadata) if !metadata.is_dir() => Ok(LibrarySourceState::NotDirectory {
                 reason: "the stored root is no longer a directory".to_string(),
             }),
-            Ok(_) => match fs::read_dir(&path) {
+            Ok(_) => match fs::read_dir(&canonical) {
                 Ok(_) => Ok(LibrarySourceState::Available),
                 Err(error) => Ok(classify_probe_error(error)),
             },
@@ -611,6 +622,52 @@ impl LibraryRegistry {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LibraryStore {
+    registry_path: PathBuf,
+}
+
+impl LibraryStore {
+    fn new(registry_path: PathBuf) -> Self {
+        Self { registry_path }
+    }
+
+    fn lock_path(&self) -> Result<PathBuf, LibraryError> {
+        self.registry_path
+            .parent()
+            .map(|parent| parent.join("library.lock"))
+            .ok_or_else(|| LibraryError::PersistFailed {
+                message: "library registry has no parent directory".to_string(),
+            })
+    }
+
+    fn acquire(&self) -> Result<AdvisoryFileLock, LibraryError> {
+        AdvisoryFileLock::acquire(&self.lock_path()?).map_err(|error| LibraryError::PersistFailed {
+            message: format!("cannot acquire library registry lock: {error}"),
+        })
+    }
+
+    fn read<T>(
+        &self,
+        operation: impl FnOnce(&LibraryRegistry) -> Result<T, LibraryError>,
+    ) -> Result<T, LibraryError> {
+        let _lease = self.acquire()?;
+        let registry = LibraryRegistry::load_from(&self.registry_path)?;
+        operation(&registry)
+    }
+
+    fn update<T>(
+        &self,
+        operation: impl FnOnce(&mut LibraryRegistry) -> Result<T, LibraryError>,
+    ) -> Result<T, LibraryError> {
+        let _lease = self.acquire()?;
+        let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
+        let result = operation(&mut registry)?;
+        registry.save_to(&self.registry_path)?;
+        Ok(result)
+    }
+}
+
 fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
     let app_data = app
         .path()
@@ -642,7 +699,8 @@ pub(crate) fn list_library_sources(
 ) -> Result<LibrarySnapshot, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    LibraryRegistry::load_from(&path)?.snapshot(&app_data, active_root(&workspace).as_deref())
+    let active = active_root(&workspace);
+    LibraryStore::new(path).read(|registry| registry.snapshot(&app_data, active.as_deref()))
 }
 
 /// Open the real native folder picker and persist its canonical native path.
@@ -670,23 +728,21 @@ pub(crate) async fn pick_and_add_library_source(
 
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    let mut registry = LibraryRegistry::load_from(&path)?;
-    let (source_id, added) = match registry.add_root(&selected) {
-        Ok(source) => {
-            let id = source.id;
-            registry.save_to(&path)?;
-            (id, true)
-        }
-        Err(LibraryError::DuplicateRoot { source_id }) => (source_id, false),
-        Err(error) => return Err(error),
-    };
-    let snapshot = registry.snapshot(&app_data, active_root(&workspace).as_deref())?;
-    Ok(PickedLibrarySource {
-        source: snapshot
-            .sources
-            .into_iter()
-            .find(|source| source.id == source_id),
-        added,
+    let active = active_root(&workspace);
+    LibraryStore::new(path).update(|registry| {
+        let (source_id, added) = match registry.add_root(&selected) {
+            Ok(source) => (source.id, true),
+            Err(LibraryError::DuplicateRoot { source_id }) => (source_id, false),
+            Err(error) => return Err(error),
+        };
+        let snapshot = registry.snapshot(&app_data, active.as_deref())?;
+        Ok(PickedLibrarySource {
+            source: snapshot
+                .sources
+                .into_iter()
+                .find(|source| source.id == source_id),
+            added,
+        })
     })
 }
 
@@ -701,16 +757,17 @@ pub(crate) fn reconcile_library_restore(
 ) -> Result<Option<LibrarySourceDto>, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    let registry = LibraryRegistry::load_from(&path)?;
-    let source_id = registry.reconcile_restore(session_root.as_deref().map(Path::new))?;
-    let Some(source_id) = source_id else {
-        return Ok(None);
-    };
-    Ok(registry
-        .snapshot(&app_data, None)?
-        .sources
-        .into_iter()
-        .find(|source| source.id == source_id))
+    LibraryStore::new(path).read(|registry| {
+        let source_id = registry.reconcile_restore(session_root.as_deref().map(Path::new))?;
+        let Some(source_id) = source_id else {
+            return Ok(None);
+        };
+        Ok(registry
+            .snapshot(&app_data, None)?
+            .sources
+            .into_iter()
+            .find(|source| source.id == source_id))
+    })
 }
 
 /// Arm and commit a persisted member by source ID. The registry supplies the
@@ -727,10 +784,11 @@ pub(crate) fn watch_library_source(
 ) -> Result<crate::commands::WorkspaceGrant, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
-    let registry = LibraryRegistry::load_from(&path)?;
-    let native_root = registry.activation_path(&source_id)?;
-    crate::commands::watch_workspace_path(&app, &native_root, &workspace, &watcher)
-        .map_err(|message| LibraryError::OpenFailed { source_id, message })
+    LibraryStore::new(path).read(|registry| {
+        let native_root = registry.activation_path(&source_id)?;
+        crate::commands::watch_workspace_path_exact(&app, &native_root, &workspace, &watcher)
+            .map_err(|message| LibraryError::OpenFailed { source_id, message })
+    })
 }
 
 /// Degraded first-open path for a known member when its filesystem watcher
@@ -746,11 +804,12 @@ pub(crate) fn grant_library_source(
 ) -> Result<String, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
-    let registry = LibraryRegistry::load_from(&path)?;
-    let native_root = registry.activation_path(&source_id)?;
-    crate::commands::grant_workspace_path(&native_root, &workspace)
-        .map(|root| root.to_string_lossy().into_owned())
-        .map_err(|message| LibraryError::OpenFailed { source_id, message })
+    LibraryStore::new(path).read(|registry| {
+        let native_root = registry.activation_path(&source_id)?;
+        crate::commands::grant_workspace_path_exact(&native_root, &workspace)
+            .map(|root| root.to_string_lossy().into_owned())
+            .map_err(|message| LibraryError::OpenFailed { source_id, message })
+    })
 }
 
 /// Persist the restore candidate only after the existing watch/grant path has
@@ -766,11 +825,11 @@ pub(crate) fn mark_library_source_active(
 ) -> Result<LibrarySnapshot, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    let mut registry = LibraryRegistry::load_from(&path)?;
     let active = active_root(&workspace);
-    registry.mark_active(&source_id, active.as_deref())?;
-    registry.save_to(&path)?;
-    registry.snapshot(&app_data, active.as_deref())
+    LibraryStore::new(path).update(|registry| {
+        registry.mark_active(&source_id, active.as_deref())?;
+        registry.snapshot(&app_data, active.as_deref())
+    })
 }
 
 /// Forget membership only. The active epoch is protected, and this command
@@ -785,11 +844,11 @@ pub(crate) fn forget_library_source(
 ) -> Result<LibrarySnapshot, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
-    let mut registry = LibraryRegistry::load_from(&path)?;
     let active = active_root(&workspace);
-    registry.forget(&source_id, active.as_deref())?;
-    registry.save_to(&path)?;
-    registry.snapshot(&app_data, active.as_deref())
+    LibraryStore::new(path).update(|registry| {
+        registry.forget(&source_id, active.as_deref())?;
+        registry.snapshot(&app_data, active.as_deref())
+    })
 }
 
 pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
@@ -812,12 +871,15 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
     use super::{
         classify_probe_error, LibraryError, LibraryIndexState, LibraryRegistry, LibrarySourceState,
-        NativePath, LIBRARY_VERSION,
+        LibraryStore, NativePath, LIBRARY_VERSION,
     };
 
     fn mkdir(parent: &Path, name: &str) -> PathBuf {
@@ -1046,6 +1108,122 @@ mod tests {
         assert!(matches!(
             registry.activation_path(&source.id),
             Err(LibraryError::SourceUnavailable { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_substitution_invalidates_activation_and_the_restore_candidate() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let target = mkdir(temp.path(), "replacement");
+        let app_data = temp.path().join("app-data");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add member");
+        let admitted = fs::canonicalize(&root).expect("canonical admitted root");
+        registry
+            .mark_active(&source.id, Some(&admitted))
+            .expect("record restore candidate");
+
+        fs::remove_dir(&root).expect("remove admitted directory");
+        symlink(&target, &root).expect("replace admitted path with symlink");
+
+        assert!(
+            matches!(
+                registry.source_state(&source.id),
+                Ok(LibrarySourceState::Unreadable { .. })
+            ),
+            "a path now resolving to a different canonical root is unavailable"
+        );
+        assert!(matches!(
+            registry.activation_path(&source.id),
+            Err(LibraryError::SourceUnavailable { .. })
+        ));
+        assert_eq!(
+            registry
+                .reconcile_restore(Some(&admitted))
+                .expect("restore refusal is not registry corruption"),
+            None,
+            "a saved display path cannot restore a substituted source"
+        );
+
+        let replacement = fs::canonicalize(&target).expect("canonical replacement");
+        assert!(
+            !crate::engine::db_path_under(&app_data, &replacement).exists(),
+            "refusing substitution must not create an index for the target"
+        );
+        assert_eq!(
+            registry.restore_source_id(),
+            Some(source.id.as_str()),
+            "refusal does not silently rewrite the recorded restore identity"
+        );
+    }
+
+    #[test]
+    fn independent_registry_handles_serialize_the_full_read_modify_write_transaction() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("app-data/library.json");
+        let root_a = mkdir(temp.path(), "source-a");
+        let root_b = mkdir(temp.path(), "source-b");
+        let first = LibraryStore::new(registry_path.clone());
+        let second = LibraryStore::new(registry_path.clone());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_thread = thread::spawn(move || {
+            first.update(|registry| {
+                registry.add_root(&root_a)?;
+                entered_tx.send(()).expect("signal first mutation");
+                release_rx.recv().expect("release first mutation");
+                Ok(())
+            })
+        });
+        entered_rx.recv().expect("first mutation holds the lease");
+
+        let (second_done_tx, second_done_rx) = mpsc::channel();
+        let second_thread = thread::spawn(move || {
+            let result = second.update(|registry| {
+                registry.add_root(&root_b)?;
+                Ok(())
+            });
+            second_done_tx.send(()).expect("signal second mutation");
+            result
+        });
+
+        assert!(
+            second_done_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "a process-equivalent handle must block before loading stale state"
+        );
+        release_tx.send(()).expect("release first mutation");
+        first_thread
+            .join()
+            .expect("join first mutation")
+            .expect("first mutation succeeds");
+        second_thread
+            .join()
+            .expect("join second mutation")
+            .expect("second mutation succeeds");
+
+        let source_count = LibraryStore::new(registry_path)
+            .read(|registry| Ok(registry.sources().len()))
+            .expect("read serialized result");
+        assert_eq!(source_count, 2, "neither membership update is lost");
+    }
+
+    #[test]
+    fn registry_lock_failure_is_closed_before_reading_or_mutating_state() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("app-data/library.json");
+        let lock_path = temp.path().join("app-data/library.lock");
+        fs::create_dir_all(&lock_path).expect("occupy sidecar path with a directory");
+
+        assert!(matches!(
+            LibraryStore::new(registry_path).read(|_| Ok(())),
+            Err(LibraryError::PersistFailed { .. })
         ));
     }
 }

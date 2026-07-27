@@ -163,6 +163,11 @@ export function AppShell() {
   const commitSwitchRef = useRef<(folder: string, sourceId?: string) => Promise<boolean>>(() =>
     Promise.resolve(false),
   );
+  // Native watch/grant commands commit the backend epoch before their IPC
+  // promise resolves. Serialize the complete frontend transaction so a newer
+  // request cannot supersede an already-committed response and then fail while
+  // leaving the UI on a different root from the backend.
+  const switchQueueRef = useRef<Promise<void>>(Promise.resolve());
   // Latched once the window is committing to close, so the force-close runs at
   // most once. We force-close with destroy(), which tears the window down WITHOUT
   // re-firing onCloseRequested — but the flag stays as a cheap guard against a
@@ -467,52 +472,57 @@ export function AppShell() {
   // tab tears it down, so this must run only after any unsaved edits have been
   // resolved — the guard in `switchWorkspace` guarantees that.
   const commitSwitch = useCallback(
-    async (folder: string, sourceId?: string): Promise<boolean> => {
-      const sources = useSourcesStore.getState();
-      // `performSwitch` owns the two guarantees (same-root supersede; per-origin
-      // retirement against the post-commit root) — see switch-workspace.ts.
-      const committed = await performSwitch(folder, {
-        openRoot: (target) => openRoot(target, sourceId),
-        previousRoot: sources.root,
-        currentRoot: () => useSourcesStore.getState().root,
-        retireForeign: (root) => useTabsStore.getState().retireForeign(root),
-        addRecent: (ref, root) => sources.addRecent(ref, root),
-      });
-      if (!committed) return false;
+    (folder: string, sourceId?: string): Promise<boolean> => {
+      const run = async (): Promise<boolean> => {
+        const sources = useSourcesStore.getState();
+        // `performSwitch` owns the two guarantees (same-root supersede; per-origin
+        // retirement against the post-commit root) — see switch-workspace.ts.
+        const committed = await performSwitch(folder, {
+          openRoot: (target) => openRoot(target, sourceId),
+          previousRoot: sources.root,
+          currentRoot: () => useSourcesStore.getState().root,
+          retireForeign: (root) => useTabsStore.getState().retireForeign(root),
+          addRecent: (ref, root) => sources.addRecent(ref, root),
+        });
+        if (!committed) return false;
 
-      // Membership never grants access. The source-ID watch/grant transaction
-      // above committed the real backend epoch first; only now may the registry
-      // remember which already-admitted source should restore next launch.
-      if (sourceId) {
-        try {
-          await markLibrarySourceActive(sourceId);
-        } catch {
-          if (useSourcesStore.getState().root === folder) {
-            toast('Workspace opened, but its library restore preference could not be saved');
+        // Membership never grants access. The source-ID watch/grant transaction
+        // above committed the real backend epoch first; only now may the registry
+        // remember which already-admitted source should restore next launch.
+        if (sourceId) {
+          try {
+            await markLibrarySourceActive(sourceId);
+          } catch {
+            if (useSourcesStore.getState().root === folder) {
+              toast('Workspace opened, but its library restore preference could not be saved');
+            }
+            return useSourcesStore.getState().root === folder;
           }
-          return useSourcesStore.getState().root === folder;
+          activeSourceIdRef.current = sourceId;
+          recordDiagnosticEventNonBlocking({
+            kind: 'workspace',
+            source_id: sourceId,
+            active: true,
+          });
+          recordDiagnosticEventNonBlocking({
+            kind: 'watcher',
+            source_id: sourceId,
+            state: useSourcesStore.getState().watcher === 'watching' ? 'watching' : 'error',
+            error:
+              useSourcesStore.getState().watcher === 'watching' ? null : 'watcher-unavailable',
+          });
+        } else {
+          activeSourceIdRef.current = null;
         }
-        // A newer switch may have committed while the registry write was in
-        // flight. Do not attribute diagnostics or the active source identity to
-        // this stale continuation.
-        if (useSourcesStore.getState().root !== folder) return false;
-        activeSourceIdRef.current = sourceId;
-        recordDiagnosticEventNonBlocking({
-          kind: 'workspace',
-          source_id: sourceId,
-          active: true,
-        });
-        recordDiagnosticEventNonBlocking({
-          kind: 'watcher',
-          source_id: sourceId,
-          state: useSourcesStore.getState().watcher === 'watching' ? 'watching' : 'error',
-          error:
-            useSourcesStore.getState().watcher === 'watching' ? null : 'watcher-unavailable',
-        });
-      } else {
-        activeSourceIdRef.current = null;
-      }
-      return true;
+        return true;
+      };
+
+      const result = switchQueueRef.current.then(run, run);
+      switchQueueRef.current = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
     },
     [openRoot],
   );

@@ -60,13 +60,34 @@ const h = vi.hoisted(() => ({
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
   listGate: null as null | { promise: Promise<void>; resolve: () => void },
+  watchResponseGate: null as null | { promise: Promise<void>; resolve: () => void },
+  gatedWatchSourceId: null as string | null,
+  failedWatchSourceId: null as string | null,
+  backendRoot: null as string | null,
+  backendGeneration: 0,
+  searchRoots: [] as (string | null)[],
   seq: 0,
   pickedPath: '/ws',
   watch: vi.fn(async (root: string) => ({ root, generation: 1 })),
-  libraryWatch: vi.fn(async (sourceId: string) => ({
-    root: sourceId === 'a'.repeat(64) ? '/ws' : '/ws-b',
-    generation: sourceId === 'a'.repeat(64) ? 1 : 2,
-  })),
+  libraryWatch: vi.fn(async (sourceId: string) => {
+    if (h.failedWatchSourceId === sourceId) throw new Error('watch refused');
+    const root =
+      sourceId === 'a'.repeat(64)
+        ? '/ws'
+        : sourceId === 'b'.repeat(64)
+          ? '/ws-b'
+          : '/ws-c';
+    const generation =
+      sourceId === 'a'.repeat(64) ? 1 : sourceId === 'b'.repeat(64) ? 2 : 3;
+    // Model the native command's commit-before-response boundary: the backend
+    // epoch is already live even when delivery of the IPC result is delayed.
+    h.backendRoot = root;
+    h.backendGeneration = generation;
+    if (h.gatedWatchSourceId === sourceId && h.watchResponseGate) {
+      await h.watchResponseGate.promise;
+    }
+    return { root, generation };
+  }),
 }));
 
 vi.mock('../platform/fs.js', async (importOriginal) => {
@@ -110,15 +131,22 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
     startImport: vi.fn(async () => ({ phase: 'done', filesDone: 0, filesTotal: 0, chunks: 0, error: null })),
     pickWorkspaceFolder: vi.fn(async () => '/ws'),
     resolveWikilink: vi.fn(async () => ({ status: 'unresolved' as const })),
-    makeSearchAdapter: vi.fn(() => ({ search: vi.fn(async () => []), related: vi.fn(async () => []) })),
+    makeSearchAdapter: vi.fn(() => ({
+      search: vi.fn(async () => {
+        h.searchRoots.push(h.backendRoot);
+        return [];
+      }),
+      related: vi.fn(async () => []),
+    })),
   };
 });
 
 vi.mock('../platform/settings.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/settings.js')>();
   const source = (path: string, active: boolean) => ({
-    id: (path === '/ws' ? 'a' : 'b').repeat(64),
-    name: path === '/ws' ? 'Workspace' : 'Second workspace',
+    id: (path === '/ws' ? 'a' : path === '/ws-b' ? 'b' : 'c').repeat(64),
+    name:
+      path === '/ws' ? 'Workspace' : path === '/ws-b' ? 'Second workspace' : 'Third workspace',
     path,
     state: { kind: 'available' as const },
     index_state: 'present' as const,
@@ -127,7 +155,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
   });
   const listSources = vi.fn(async () => ({
     version: 1,
-    sources: [source('/ws', true), source('/ws-b', false)],
+    sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
   }));
   const pickAndAddSource = vi.fn(async () => ({
     source: source(h.pickedPath, h.pickedPath === '/ws'),
@@ -135,7 +163,11 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
   }));
   const markActive = vi.fn(async () => ({
     version: 1,
-    sources: [source('/ws', h.pickedPath === '/ws'), source('/ws-b', h.pickedPath === '/ws-b')],
+    sources: [
+      source('/ws', h.pickedPath === '/ws'),
+      source('/ws-b', h.pickedPath === '/ws-b'),
+      source('/ws-c', h.pickedPath === '/ws-c'),
+    ],
   }));
   const settingsBackend = {
     listSources,
@@ -178,7 +210,11 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     pickAndAddLibrarySource: pickAndAddSource,
     watchLibrarySource: h.libraryWatch,
     grantLibrarySource: vi.fn(async (sourceId: string) =>
-      sourceId === 'a'.repeat(64) ? '/ws' : '/ws-b',
+      sourceId === 'a'.repeat(64)
+        ? '/ws'
+        : sourceId === 'b'.repeat(64)
+          ? '/ws-b'
+          : '/ws-c',
     ),
     markLibrarySourceActive: markActive,
     reconcileLibraryRestore: settingsBackend.reconcileRestore,
@@ -260,6 +296,15 @@ async function openDirtyDoc() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  Element.prototype.scrollIntoView = vi.fn();
   h.disk.clear();
   h.saveCalls.length = 0;
   h.fsChanged = null;
@@ -268,6 +313,12 @@ beforeEach(() => {
   h.onClose = null;
   h.gate = null;
   h.listGate = null;
+  h.watchResponseGate = null;
+  h.gatedWatchSourceId = null;
+  h.failedWatchSourceId = null;
+  h.backendRoot = null;
+  h.backendGeneration = 0;
+  h.searchRoots.length = 0;
   h.closed = false;
   h.drainGate = null;
   h.seq = 0;
@@ -277,6 +328,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   useTabsStore.getState().reset();
   useSourcesStore.getState().reset();
   useSettingsStore.getState().reset();
@@ -346,6 +398,64 @@ describe('library source identity follows the committed backend epoch', () => {
       h.listGate!.resolve();
       await Promise.resolve();
     });
+  });
+
+  it('serializes a committed A response ahead of a newer failing B request', async () => {
+    render(<App />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    });
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws'));
+    expect(h.backendRoot).toBe('/ws');
+    expect(h.backendGeneration).toBe(1);
+
+    const delayedA = deferred();
+    h.gatedWatchSourceId = 'b'.repeat(64);
+    h.watchResponseGate = delayedA;
+    h.pickedPath = '/ws-b';
+    fireEvent.click(screen.getByTitle('Open folder…'));
+    await waitFor(() => expect(h.backendRoot).toBe('/ws-b'));
+    expect(useSourcesStore.getState().root).toBe('/ws');
+
+    h.failedWatchSourceId = 'c'.repeat(64);
+    h.pickedPath = '/ws-c';
+    fireEvent.click(screen.getByTitle('Open folder…'));
+
+    await act(async () => {
+      delayedA.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(h.libraryWatch).toHaveBeenCalledWith('c'.repeat(64)));
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-b'));
+
+    expect(h.backendRoot).toBe('/ws-b');
+    expect(h.backendGeneration).toBe(2);
+    expect(useSourcesStore.getState().watcher).toBe('watching');
+    expect(h.diagnosticEvents).toContainEqual({
+      kind: 'workspace',
+      source_id: 'b'.repeat(64),
+      active: true,
+    });
+    expect(h.diagnosticEvents).not.toContainEqual(
+      expect.objectContaining({ source_id: 'c'.repeat(64) }),
+    );
+
+    act(() => {
+      h.watchError?.({ message: 'current watcher failed', generation: 2 });
+    });
+    expect(useSourcesStore.getState().watcher).toBe('error');
+    expect(h.diagnosticEvents.at(-1)).toEqual({
+      kind: 'watcher',
+      source_id: 'b'.repeat(64),
+      state: 'error',
+      error: 'watcher-unavailable',
+    });
+
+    act(() => modKeyDown('k'));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'authoritative' } });
+    await waitFor(() => expect(h.searchRoots.at(-1)).toBe('/ws-b'));
+    expect(useSourcesStore.getState().root).toBe(h.searchRoots.at(-1));
   });
 });
 

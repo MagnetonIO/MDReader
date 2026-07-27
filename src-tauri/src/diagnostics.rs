@@ -18,6 +18,8 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::file_lock::AdvisoryFileLock;
+
 const DIAGNOSTIC_SETTINGS_VERSION: u32 = 1;
 pub(crate) const MAX_LOG_BYTES: usize = 256 * 1_024;
 pub(crate) const LOG_RETENTION: usize = 3;
@@ -227,6 +229,23 @@ pub(crate) struct DiagnosticLog {
     lock: Mutex<()>,
 }
 
+#[derive(Clone, Copy)]
+enum DiagnosticTransaction {
+    Write,
+    Export,
+    Clear,
+}
+
+impl DiagnosticTransaction {
+    fn error(self, message: String) -> DiagnosticError {
+        match self {
+            Self::Write => DiagnosticError::WriteFailed { message },
+            Self::Export => DiagnosticError::ExportFailed { message },
+            Self::Clear => DiagnosticError::ClearFailed { message },
+        }
+    }
+}
+
 impl DiagnosticLog {
     pub(crate) fn new(directory: impl AsRef<Path>) -> Self {
         Self::with_limits(directory, MAX_LOG_BYTES, LOG_RETENTION, MAX_EXPORT_BYTES)
@@ -255,6 +274,26 @@ impl DiagnosticLog {
         self.directory.join("settings.json")
     }
 
+    fn lock_path(&self) -> PathBuf {
+        self.directory.join("diagnostics.lock")
+    }
+
+    fn acquire_transaction(
+        &self,
+        transaction: DiagnosticTransaction,
+    ) -> Result<(std::sync::MutexGuard<'_, ()>, AdvisoryFileLock), DiagnosticError> {
+        let guard = self
+            .lock
+            .lock()
+            .map_err(|_| transaction.error("diagnostic log lock is poisoned".to_string()))?;
+        let lease = AdvisoryFileLock::acquire(&self.lock_path()).map_err(|error| {
+            transaction.error(format!(
+                "cannot acquire diagnostic transaction lock: {error}"
+            ))
+        })?;
+        Ok((guard, lease))
+    }
+
     fn log_path(&self, slot: usize) -> PathBuf {
         if slot == 0 {
             self.directory.join("mdreader.log")
@@ -265,9 +304,7 @@ impl DiagnosticLog {
 
     #[cfg(test)]
     pub(crate) fn log_files(&self) -> Result<Vec<PathBuf>, DiagnosticError> {
-        let _guard = self.lock.lock().map_err(|_| DiagnosticError::WriteFailed {
-            message: "diagnostic log lock is poisoned".to_string(),
-        })?;
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
         Ok((0..self.retention)
             .rev()
             .map(|slot| self.log_path(slot))
@@ -276,6 +313,11 @@ impl DiagnosticLog {
     }
 
     pub(crate) fn level(&self) -> Result<DiagnosticLevel, DiagnosticError> {
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
+        self.level_unlocked()
+    }
+
+    fn level_unlocked(&self) -> Result<DiagnosticLevel, DiagnosticError> {
         let path = self.settings_path();
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
@@ -304,9 +346,7 @@ impl DiagnosticLog {
     }
 
     pub(crate) fn set_level(&self, level: DiagnosticLevel) -> Result<(), DiagnosticError> {
-        let _guard = self.lock.lock().map_err(|_| DiagnosticError::WriteFailed {
-            message: "diagnostic log lock is poisoned".to_string(),
-        })?;
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
         fs::create_dir_all(&self.directory).map_err(|error| DiagnosticError::WriteFailed {
             message: format!("cannot create diagnostic directory: {error}"),
         })?;
@@ -324,12 +364,10 @@ impl DiagnosticLog {
 
     pub(crate) fn append(&self, event: DiagnosticEvent) -> Result<(), DiagnosticError> {
         event.validate()?;
-        if !self.level()?.permits(event.required_level()) {
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Write)?;
+        if !self.level_unlocked()?.permits(event.required_level()) {
             return Ok(());
         }
-        let _guard = self.lock.lock().map_err(|_| DiagnosticError::WriteFailed {
-            message: "diagnostic log lock is poisoned".to_string(),
-        })?;
         fs::create_dir_all(&self.directory).map_err(|error| DiagnosticError::WriteFailed {
             message: format!("cannot create diagnostic directory: {error}"),
         })?;
@@ -409,12 +447,7 @@ impl DiagnosticLog {
     }
 
     pub(crate) fn export_to(&self, destination: &Path) -> Result<(), DiagnosticError> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| DiagnosticError::ExportFailed {
-                message: "diagnostic log lock is poisoned".to_string(),
-            })?;
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Export)?;
         let mut bundle =
             b"MDReader local diagnostics bundle v1\nNo document or query contents are collected.\n\n"
                 .to_vec();
@@ -458,9 +491,7 @@ impl DiagnosticLog {
         if !confirmed {
             return Err(DiagnosticError::ConfirmationRequired);
         }
-        let _guard = self.lock.lock().map_err(|_| DiagnosticError::ClearFailed {
-            message: "diagnostic log lock is poisoned".to_string(),
-        })?;
+        let (_guard, _lease) = self.acquire_transaction(DiagnosticTransaction::Clear)?;
         for slot in 0..self.retention {
             let path = self.log_path(slot);
             match fs::remove_file(&path) {
@@ -663,13 +694,45 @@ pub(crate) fn redact_text(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
 
     use tempfile::tempdir;
+
+    use crate::file_lock::AdvisoryFileLock;
 
     use super::{
         redact_text, DiagnosticError, DiagnosticEvent, DiagnosticIndexPhase, DiagnosticLevel,
         DiagnosticLog, MAX_EXPORT_BYTES,
     };
+
+    fn assert_sidecar_blocks(
+        directory: &Path,
+        operation: impl FnOnce() -> Result<(), DiagnosticError> + Send + 'static,
+    ) {
+        let lease = AdvisoryFileLock::acquire(&directory.join("diagnostics.lock"))
+            .expect("hold diagnostics sidecar");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            started_tx.send(()).expect("signal operation start");
+            let result = operation();
+            done_tx.send(()).expect("signal operation completion");
+            result
+        });
+        started_rx.recv().expect("operation started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the operation must wait for the process-external sidecar lease"
+        );
+        drop(lease);
+        worker
+            .join()
+            .expect("join contending operation")
+            .expect("operation succeeds after release");
+    }
 
     #[test]
     fn redaction_removes_credentials_queries_and_raw_full_paths() {
@@ -809,5 +872,83 @@ mod tests {
             log.level(),
             Err(DiagnosticError::CorruptSettings { .. })
         ));
+    }
+
+    #[test]
+    fn independent_diagnostic_handles_contend_for_every_file_transaction_and_keep_bounds() {
+        let temp = tempdir().expect("tempdir");
+        let directory = temp.path().join("logs");
+        fs::create_dir_all(&directory).expect("create diagnostics directory");
+
+        let for_level = directory.clone();
+        assert_sidecar_blocks(&directory, move || {
+            DiagnosticLog::new(for_level).level().map(|_| ())
+        });
+        let for_set = directory.clone();
+        assert_sidecar_blocks(&directory, move || {
+            DiagnosticLog::new(for_set).set_level(DiagnosticLevel::Verbose)
+        });
+        let for_append = directory.clone();
+        assert_sidecar_blocks(&directory, move || {
+            DiagnosticLog::new(for_append).append(DiagnosticEvent::ApplicationStarted)
+        });
+        let for_export = directory.clone();
+        let export = temp.path().join("bundle.txt");
+        assert_sidecar_blocks(&directory, move || {
+            DiagnosticLog::new(for_export).export_to(&export)
+        });
+        let for_clear = directory.clone();
+        assert_sidecar_blocks(&directory, move || {
+            DiagnosticLog::new(for_clear).clear(true)
+        });
+
+        let first = Arc::new(DiagnosticLog::with_limits(&directory, 512, 3, 1_024));
+        let second = Arc::new(DiagnosticLog::with_limits(&directory, 512, 3, 1_024));
+        let mut workers = Vec::new();
+        for worker_id in 0..8_u32 {
+            let log = if worker_id % 2 == 0 {
+                Arc::clone(&first)
+            } else {
+                Arc::clone(&second)
+            };
+            workers.push(thread::spawn(move || {
+                for index in 0..25_u32 {
+                    log.append(DiagnosticEvent::Index {
+                        source_id: format!("{worker_id:064x}"),
+                        phase: DiagnosticIndexPhase::Done,
+                        files_done: index,
+                        files_total: 25,
+                        chunks: index,
+                        error: None,
+                    })?;
+                }
+                Ok::<(), DiagnosticError>(())
+            }));
+        }
+        for worker in workers {
+            worker
+                .join()
+                .expect("join diagnostic writer")
+                .expect("diagnostic writer succeeds");
+        }
+        let files = first.log_files().expect("list bounded files");
+        assert!(files.len() <= 3);
+        assert!(files
+            .iter()
+            .all(|path| { fs::metadata(path).expect("diagnostic metadata").len() <= 512 }));
+    }
+
+    #[test]
+    fn diagnostic_lock_failure_is_closed_before_any_file_mutation() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir(temp.path().join("diagnostics.lock"))
+            .expect("occupy lock sidecar with directory");
+        let log = DiagnosticLog::new(temp.path());
+
+        assert!(matches!(
+            log.append(DiagnosticEvent::ApplicationStarted),
+            Err(DiagnosticError::WriteFailed { .. })
+        ));
+        assert!(!temp.path().join("mdreader.log").exists());
     }
 }

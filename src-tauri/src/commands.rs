@@ -245,12 +245,21 @@ pub fn set_workspace(
     Ok(real.to_string_lossy().into_owned())
 }
 
-/// Establish a workspace grant from a native path. Library commands use this
-/// rather than reconstructing a path from the DTO's lossy display string.
-pub(crate) fn grant_workspace_path(root: &Path, state: &WorkspaceState) -> Result<PathBuf, String> {
-    let real = canonical_dir_path(root)?;
-    // A grant change is a new epoch (the revocation barrier), even on the
-    // degraded/no-watcher path.
+/// Establish a library grant only when the path still resolves to the exact
+/// canonical identity admitted by the registry. This deliberately rejects
+/// aliases: its input is already canonical, so a different result means the
+/// directory was substituted after validation.
+pub(crate) fn grant_workspace_path_exact(
+    expected_root: &Path,
+    state: &WorkspaceState,
+) -> Result<PathBuf, String> {
+    let real = canonical_dir_path(expected_root)?;
+    if real != expected_root {
+        return Err(format!(
+            "workspace root identity changed since library admission: {}",
+            expected_root.display()
+        ));
+    }
     state.switch(real.clone())?;
     Ok(real)
 }
@@ -739,17 +748,40 @@ pub(crate) fn watch_workspace_path(
     workspace: &WorkspaceState,
     state: &WatcherState,
 ) -> Result<WorkspaceGrant, String> {
+    watch_workspace_path_checked(app, root, workspace, state, false)
+}
+
+/// Library-only watcher path: the registry supplies an already-canonical root,
+/// and any different canonical result is a substitution that must fail before
+/// the watcher or epoch changes.
+pub(crate) fn watch_workspace_path_exact(
+    app: &AppHandle,
+    expected_root: &Path,
+    workspace: &WorkspaceState,
+    state: &WatcherState,
+) -> Result<WorkspaceGrant, String> {
+    watch_workspace_path_checked(app, expected_root, workspace, state, true)
+}
+
+fn watch_workspace_path_checked(
+    app: &AppHandle,
+    root: &Path,
+    workspace: &WorkspaceState,
+    state: &WatcherState,
+    require_exact_identity: bool,
+) -> Result<WorkspaceGrant, String> {
     let emit_app = app.clone();
     // The generation the watcher is armed under — filled by `commit_workspace`
     // (under the lock, matching the new epoch exactly) and read by the emit
     // closure so every event is tagged with the era it belongs to.
     let armed_gen = Arc::new(AtomicU64::new(0));
     let gen_for_closure = Arc::clone(&armed_gen);
-    let (granted, generation) = watch_and_commit_path(
+    let (granted, generation) = watch_and_commit_path_checked(
         root,
         workspace,
         state,
         &armed_gen,
+        require_exact_identity,
         move |result: DebounceEventResult| {
             let generation = gen_for_closure.load(Ordering::Acquire) as u32;
             match result {
@@ -804,6 +836,7 @@ fn watch_and_commit<F: DebounceEventHandler>(
     watch_and_commit_path(Path::new(root), workspace, watcher, armed_gen, on_event)
 }
 
+#[cfg(test)]
 fn watch_and_commit_path<F: DebounceEventHandler>(
     root: &Path,
     workspace: &WorkspaceState,
@@ -811,11 +844,37 @@ fn watch_and_commit_path<F: DebounceEventHandler>(
     armed_gen: &AtomicU64,
     on_event: F,
 ) -> Result<(PathBuf, u32), String> {
+    watch_and_commit_path_checked(root, workspace, watcher, armed_gen, false, on_event)
+}
+
+#[cfg(test)]
+fn watch_and_commit_path_exact<F: DebounceEventHandler>(
+    expected_root: &Path,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    armed_gen: &AtomicU64,
+    on_event: F,
+) -> Result<(PathBuf, u32), String> {
+    watch_and_commit_path_checked(expected_root, workspace, watcher, armed_gen, true, on_event)
+}
+
+fn watch_and_commit_path_checked<F: DebounceEventHandler>(
+    root: &Path,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    armed_gen: &AtomicU64,
+    require_exact_identity: bool,
+    on_event: F,
+) -> Result<(PathBuf, u32), String> {
     // A workspace SWITCH targets a NEW root that is not inside the old grant, so
     // resolve it independently: this command is the one that ESTABLISHES the grant.
-    // TOCTOU: the watch below arms after this check (accepted — see the
-    // module-level "TOCTOU" note; local single-user reader).
     let new_root = canonical_dir_path(root)?;
+    if require_exact_identity && new_root != root {
+        return Err(format!(
+            "workspace root identity changed since library admission: {}",
+            root.display()
+        ));
+    }
 
     // Build + arm the new watcher into a LOCAL, holding NO state lock across
     // construction. A failure here changes nothing — the previous grant + watcher
@@ -869,8 +928,9 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, commit_rename, read_doc_guarded, resolve_dir, resolve_doc, resolve_within,
-        save_doc_guarded, watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
+        canonical_dir, commit_rename, grant_workspace_path_exact, read_doc_guarded, resolve_dir,
+        resolve_doc, resolve_within, save_doc_guarded, watch_and_commit,
+        watch_and_commit_path_exact, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1139,6 +1199,96 @@ mod tests {
         assert_eq!(generation as u64, ws.generation());
         assert_eq!(armed_gen.load(Ordering::Acquire), ws.generation());
         assert!(generation >= 2, "advanced past the initial grant");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_library_grant_refuses_a_post_validation_symlink_swap_without_advancing_epoch() {
+        use std::os::unix::fs::symlink;
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        fs::create_dir_all(&replacement).expect("replacement root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let before = workspace.current().expect("prior epoch");
+
+        fs::remove_dir(&admitted).expect("remove admitted root");
+        symlink(&replacement, &admitted).expect("substitute symlink");
+
+        let error = grant_workspace_path_exact(&admitted, &workspace)
+            .expect_err("changed canonical identity must not be granted");
+        assert!(error.contains("identity changed"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(after.generation, before.generation);
+        assert!(
+            !crate::engine::db_path_under(&temp.path().join("app-data"), &replacement).exists(),
+            "a refused target never reaches index creation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_library_watch_refuses_a_post_validation_symlink_swap_without_replacing_the_watcher() {
+        use std::os::unix::fs::symlink;
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        let replacement = temp.path().join("replacement");
+        fs::create_dir_all(&prior).expect("prior root");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        fs::create_dir_all(&replacement).expect("replacement root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let replacement = fs::canonicalize(replacement).expect("canonical replacement");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let watcher = WatcherState(Mutex::new(None));
+        let armed_gen = AtomicU64::new(0);
+        watch_and_commit(
+            prior.to_str().expect("utf8 test path"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm prior watcher");
+        let before = workspace.current().expect("prior epoch");
+        let before_armed = armed_gen.load(Ordering::Acquire);
+        assert!(watcher.0.lock().expect("watcher lock").is_some());
+
+        fs::remove_dir(&admitted).expect("remove admitted root");
+        symlink(&replacement, &admitted).expect("substitute symlink");
+
+        let error = watch_and_commit_path_exact(
+            &admitted,
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect_err("changed canonical identity must not be watched");
+        assert!(error.contains("identity changed"));
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(armed_gen.load(Ordering::Acquire), before_armed);
+        assert!(watcher.0.lock().expect("watcher lock").is_some());
+        assert!(
+            !crate::engine::db_path_under(&temp.path().join("app-data"), &replacement).exists(),
+            "a refused target never reaches index creation"
+        );
     }
 
     #[test]
