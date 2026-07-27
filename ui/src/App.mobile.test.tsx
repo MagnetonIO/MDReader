@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import App from './App';
 import { useSettingsStore } from './stores/settings';
@@ -10,7 +10,7 @@ import { setTestPlatform } from './test/tauri-os';
 function installTauriRuntime(): void {
   Object.defineProperty(window, '__TAURI_INTERNALS__', {
     configurable: true,
-    value: {},
+    value: { invoke: vi.fn(() => new Promise(() => undefined)) },
   });
 }
 
@@ -122,6 +122,9 @@ describe('compile-time mobile composition', () => {
     fireEvent.click(screen.getByRole('button', { name: 'architecture.md' }));
     expect(screen.getByRole('main', { name: 'Reader' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Library' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Evidence' }));
+    expect(screen.getByRole('main', { name: 'Semantic Inspector' })).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).toBeNull();
     phone.unmount();
     useTabsStore.getState().reset();
 

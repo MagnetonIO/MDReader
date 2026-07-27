@@ -171,11 +171,12 @@ function validateAndroidApk(artifact: string | undefined): string {
 export function iosCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_IOS_APP,
 ): WebdriverIO.Capabilities {
+  const platformVersion = process.env.MDREADER_IOS_VERSION;
   return {
     platformName: 'iOS',
     'appium:automationName': 'XCUITest',
     'appium:deviceName': process.env.MDREADER_IOS_DEVICE ?? 'iPhone 17',
-    'appium:platformVersion': process.env.MDREADER_IOS_VERSION ?? '26.5',
+    ...(platformVersion ? { 'appium:platformVersion': platformVersion } : {}),
     'appium:app': validateIosApp(artifact),
     'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
