@@ -513,6 +513,17 @@ fn source_specs_and_debug_output_never_contain_runtime_credentials() {
     );
 }
 
+#[test]
+fn resource_keys_accept_bounded_header_safe_values_without_guessing_provider_grammar() {
+    assert!(
+        DriveSelection::file_with_resource_key("selected-file", "rk.dot~value=").is_ok(),
+        "visible non-delimiter bytes remain provider-defined"
+    );
+    assert!(DriveSelection::file_with_resource_key("selected-file", "rk,bad").is_err());
+    assert!(DriveSelection::file_with_resource_key("selected-file", "rk/bad").is_err());
+    assert!(DriveSelection::file_with_resource_key("selected-file", "rk\nbad").is_err());
+}
+
 #[tokio::test]
 async fn read_follows_every_page_and_preserves_examined_zero_as_success() {
     let first = listing(
