@@ -72,6 +72,23 @@ describe('compile-time mobile composition', () => {
     expect(screen.getByLabelText('Session reference')).toBeTruthy();
   });
 
+  test('Enterprise setup rejects embedded credentials and insecure remote origins', () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
+
+    const url = screen.getByLabelText('Server URL');
+    const session = screen.getByLabelText('Session reference');
+    fireEvent.change(session, { target: { value: 'managed-session-42' } });
+
+    fireEvent.change(url, { target: { value: 'https://admin:secret@catdb.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use server' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/must not include credentials/i);
+
+    fireEvent.change(url, { target: { value: 'http://catdb.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use server' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/https/i);
+  });
+
   test('Settings preserves the System, Light, and Dark native theme choices', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
