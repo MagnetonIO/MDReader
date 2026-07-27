@@ -22,8 +22,24 @@ export function resolveSourceCommit(
   return commit;
 }
 
+export function pnpmInvocation(
+  args,
+  platform = process.platform,
+  commandProcessor = process.env.ComSpec ?? 'cmd.exe',
+) {
+  if (platform !== 'win32') return { command: 'pnpm', args };
+  if (!args.every((argument) => /^[A-Za-z0-9@./:_-]+$/.test(argument))) {
+    throw new Error('refusing to pass an unsafe pnpm argument to cmd.exe');
+  }
+  return {
+    command: commandProcessor,
+    args: ['/d', '/s', '/c', ['pnpm', ...args].join(' ')],
+  };
+}
+
 function runPnpm(args, sourceCommit) {
-  const result = spawnSync(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', args, {
+  const invocation = pnpmInvocation(args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: REPO_ROOT,
     env: { ...process.env, MDREADER_SOURCE_COMMIT: sourceCommit },
     stdio: 'inherit',
