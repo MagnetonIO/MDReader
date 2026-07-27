@@ -31,6 +31,7 @@ use notify_debouncer_mini::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::AppHandle;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
@@ -715,6 +716,16 @@ fn save_doc_guarded_with_hooks(
 #[tauri::command]
 #[specta::specta]
 pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        // The dialog plugin does not expose directory selection on mobile. Do
+        // not substitute file selection or an unscoped path: both would make a
+        // path look authoritative without a durable OS directory grant.
+        let _ = app;
+        return Err("native-folder-picker-unavailable".to_owned());
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     let Some(path) = app
         .dialog()
         .file()
@@ -724,9 +735,12 @@ pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, Str
         return Ok(None);
     };
 
-    let real = std::fs::canonicalize(&path)
-        .map_err(|err| format!("cannot resolve {}: {err}", path.display()))?;
-    Ok(Some(real.to_string_lossy().into_owned()))
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let real = std::fs::canonicalize(&path)
+            .map_err(|err| format!("cannot resolve {}: {err}", path.display()))?;
+        Ok(Some(real.to_string_lossy().into_owned()))
+    }
 }
 
 // --------------------------------------------------------------------------
