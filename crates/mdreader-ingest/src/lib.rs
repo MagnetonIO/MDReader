@@ -28,8 +28,11 @@ pub use parse::{
     ParsedLink, ParsedSection, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };
 pub use proposals::ProposalStore;
-pub use scan::{scan_root, ScanOptions, ScannedFile};
-pub use source_root::{workspace_index_path, SourceRoot, SourceRootError, SourceRootIdentity};
+pub use scan::{scan_root, scan_source_root, ScanOptions, ScannedFile};
+pub use source_root::{
+    workspace_index_path, workspace_index_path_for_identity, SourceRoot, SourceRootError,
+    SourceRootIdentity,
+};
 pub use source_view::{parse_source_document, source_document};
 
 /// The fully composed MDReader domain registration: `mdreader-domain`'s
@@ -51,6 +54,30 @@ pub fn registration() -> DomainRegistration {
 pub fn registration_with_proposals(store: Arc<ProposalStore>) -> DomainRegistration {
     mdreader_domain::engine_registration(
         vec![Arc::new(MarkdownIngestor::new().with_proposal_store(store))],
+        CHUNKER_VERSION,
+    )
+}
+
+/// [`registration`] with its markdown ingestor bound to a retained local root.
+pub fn registration_with_source_root(root: SourceRoot) -> DomainRegistration {
+    mdreader_domain::engine_registration(
+        vec![Arc::new(MarkdownIngestor::new().with_source_root(root))],
+        CHUNKER_VERSION,
+    )
+}
+
+/// [`registration_with_proposals`] with every filesystem effect additionally
+/// bound to `root`'s retained directory authority.
+pub fn registration_with_proposals_and_source_root(
+    store: Arc<ProposalStore>,
+    root: SourceRoot,
+) -> DomainRegistration {
+    mdreader_domain::engine_registration(
+        vec![Arc::new(
+            MarkdownIngestor::new()
+                .with_proposal_store(store)
+                .with_source_root(root),
+        )],
         CHUNKER_VERSION,
     )
 }

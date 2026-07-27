@@ -715,3 +715,83 @@ async fn concurrent_imports_serialize_without_resurrecting_deletions() {
         "the equation check must have run"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_same_path_replacement_never_leaves_searchable_rows_in_a_bound_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("notes");
+    std::fs::create_dir(&root).unwrap();
+    write(&root, "original.md", "# Original\n\nadmitted-only-token\n");
+    let canonical = std::fs::canonicalize(&root).unwrap();
+    let admitted = mdreader_ingest::SourceRoot::capture(canonical.clone()).unwrap();
+
+    let db_dir = tempfile::tempdir().unwrap();
+    let engine = EmbeddedCatDb::open(
+        EngineConfig::new(
+            db_dir.path().join("catdb.db"),
+            Arc::new(HashEmbedder::new()),
+        )
+        .with_domain(mdreader_ingest::registration_with_source_root(
+            admitted.clone(),
+        ))
+        .with_actor("bound-source-test"),
+    )
+    .unwrap();
+
+    let moved = temp.path().join("moved-admitted");
+    std::fs::rename(&canonical, &moved).unwrap();
+    std::fs::create_dir(&canonical).unwrap();
+    write(
+        &canonical,
+        "replacement.md",
+        "# Replacement\n\nreplacement-only-token\n",
+    );
+
+    engine
+        .import(&canonical, ImportOptions::default())
+        .await
+        .expect_err("the path no longer names the retained source");
+    assert!(
+        engine.store().list_documents().unwrap().is_empty(),
+        "a refused replacement must not leave document rows behind"
+    );
+    assert!(
+        engine
+            .search("replacement-only-token", SearchOptions::default())
+            .await
+            .unwrap()
+            .is_empty(),
+        "replacement content must never become searchable"
+    );
+
+    std::fs::remove_file(canonical.join("replacement.md")).unwrap();
+    std::fs::remove_dir(&canonical).unwrap();
+    std::fs::rename(&moved, &canonical).unwrap();
+
+    engine
+        .import(&canonical, ImportOptions::default())
+        .await
+        .expect("the admitted object can be imported after its name is restored");
+    assert!(!engine
+        .search("admitted-only-token", SearchOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
+    let replacement_hits = engine
+        .search(
+            "replacement-only-token",
+            SearchOptions {
+                lexical_only: true,
+                ..SearchOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        replacement_hits
+            .iter()
+            .all(|hit| hit.file_path != "replacement.md"),
+        "no row from the same-path replacement survives: {replacement_hits:?}"
+    );
+}

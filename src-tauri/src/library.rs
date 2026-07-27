@@ -288,7 +288,17 @@ impl NativePath {
 pub(crate) struct LibrarySource {
     pub(crate) id: String,
     path: NativePath,
-    identity: SourceRootIdentity,
+    #[serde(deserialize_with = "deserialize_identity_binding")]
+    identity: Option<SourceRootIdentity>,
+}
+
+fn deserialize_identity_binding<'de, D>(
+    deserializer: D,
+) -> Result<Option<SourceRootIdentity>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SourceRootIdentity>::deserialize(deserializer)
 }
 
 impl LibrarySource {
@@ -297,9 +307,19 @@ impl LibrarySource {
     }
 
     fn root(&self) -> Result<SourceRoot, LibraryError> {
-        Ok(SourceRoot {
-            path: self.path()?,
-            identity: self.identity.clone(),
+        let identity = self
+            .identity
+            .clone()
+            .ok_or_else(|| LibraryError::SourceUnavailable {
+                source_id: self.id.clone(),
+                reason: "source identity requires re-admission after registry migration"
+                    .to_string(),
+            })?;
+        SourceRoot::restore(self.path()?, identity).map_err(|error| {
+            LibraryError::SourceUnavailable {
+                source_id: self.id.clone(),
+                reason: error.to_string(),
+            }
         })
     }
 }
@@ -310,6 +330,21 @@ struct StoredLibrary {
     version: u32,
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV1 {
+    version: u32,
+    active_source_id: Option<String>,
+    sources: Vec<LibrarySourceV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LibrarySourceV1 {
+    id: String,
+    path: NativePath,
 }
 
 #[derive(Debug, Clone)]
@@ -360,7 +395,16 @@ impl LibraryRegistry {
             })?;
         let native = NativePath::capture(&canonical);
         let source_id = native.source_id();
-        if self.sources.iter().any(|source| source.id == source_id) {
+        if let Some(source) = self
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+        {
+            if source.identity.is_none() {
+                source.path = native;
+                source.identity = Some(admitted.identity);
+                return Ok(source.clone());
+            }
             return Err(LibraryError::DuplicateRoot { source_id });
         }
         if self.sources.len() >= MAX_LIBRARY_SOURCES {
@@ -371,7 +415,7 @@ impl LibraryRegistry {
         let source = LibrarySource {
             id: source_id,
             path: native,
-            identity: admitted.identity,
+            identity: Some(admitted.identity),
         };
         self.sources.push(source.clone());
         Ok(source)
@@ -393,7 +437,14 @@ impl LibraryRegistry {
                 reason: "the folder identity changed since it was added".to_string(),
             });
         }
-        if let Err(error) = source.root()?.verify() {
+        let root = match source.root() {
+            Ok(root) => root,
+            Err(LibraryError::SourceUnavailable { reason, .. }) => {
+                return Ok(LibrarySourceState::Unreadable { reason })
+            }
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = root.verify() {
             return Ok(LibrarySourceState::Unreadable {
                 reason: error.to_string(),
             });
@@ -453,8 +504,11 @@ impl LibraryRegistry {
             .ok_or_else(|| LibraryError::SourceNotFound {
                 source_id: source_id.to_string(),
             })?;
-        let source_root = self.sources[index].root()?;
-        if active_root.is_some_and(|root| root == &source_root) {
+        let source = &self.sources[index];
+        let source_path = source.path()?;
+        if active_root.is_some_and(|root| {
+            source.identity.as_ref() == Some(&root.identity) && source_path == root.path
+        }) {
             return Err(LibraryError::ActiveSource {
                 source_id: source_id.to_string(),
             });
@@ -495,6 +549,7 @@ impl LibraryRegistry {
         let mut sources = Vec::with_capacity(self.sources.len());
         for source in &self.sources {
             let path = source.path()?;
+            let bound_root = source.root().ok();
             let name = path
                 .file_name()
                 .filter(|name| !name.is_empty())
@@ -505,14 +560,18 @@ impl LibraryRegistry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 state: self.source_state(&source.id)?.into(),
-                index_state: if crate::engine::db_path_under(app_data, &source.root()?).is_file() {
-                    LibraryIndexState::Present
-                } else {
-                    LibraryIndexState::NotCreated
-                },
-                active: active_root.is_some_and(|active| {
-                    active.path == path && active.identity == source.identity
-                }),
+                index_state: bound_root
+                    .as_ref()
+                    .map_or(LibraryIndexState::NotCreated, |root| {
+                        if crate::engine::db_path_under(app_data, root).is_file() {
+                            LibraryIndexState::Present
+                        } else {
+                            LibraryIndexState::NotCreated
+                        }
+                    }),
+                active: bound_root
+                    .as_ref()
+                    .is_some_and(|root| active_root == Some(root)),
                 restore_candidate: self.active_source_id.as_deref() == Some(source.id.as_str()),
             });
         }
@@ -583,6 +642,9 @@ impl LibraryRegistry {
             serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
                 message: format!("cannot parse library registry: {error}"),
             })?;
+        if version.version == 1 {
+            return Self::migrate_v1(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -593,17 +655,77 @@ impl LibraryRegistry {
             serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
                 message: format!("cannot parse library registry: {error}"),
             })?;
-        if stored.sources.len() > MAX_LIBRARY_SOURCES {
+        Self::validate_membership(
+            stored.active_source_id.as_deref(),
+            stored
+                .sources
+                .iter()
+                .map(|source| (&source.id, &source.path)),
+            stored.sources.len(),
+        )?;
+        Ok(Self {
+            active_source_id: stored.active_source_id,
+            sources: stored.sources,
+        })
+    }
+
+    fn migrate_v1(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibraryV1 =
+            serde_json::from_slice(bytes).map_err(|error| LibraryError::CorruptRegistry {
+                message: format!("cannot parse V1 library registry: {error}"),
+            })?;
+        Self::validate_membership(
+            stored.active_source_id.as_deref(),
+            stored
+                .sources
+                .iter()
+                .map(|source| (&source.id, &source.path)),
+            stored.sources.len(),
+        )?;
+
+        quarantine_v1_workspaces(path, &stored.sources)?;
+        let sources = stored
+            .sources
+            .into_iter()
+            .map(|source| {
+                let native_path = source.path.restore()?;
+                let identity = SourceRoot::capture(native_path)
+                    .ok()
+                    .map(|root| root.identity);
+                Ok(LibrarySource {
+                    id: source.id,
+                    path: source.path,
+                    identity,
+                })
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
+        let migrated = Self {
+            // V1's marker authenticated only a path. Requiring a successful
+            // V2 grant before recording it again prevents automatic restore
+            // from inheriting that weaker authorization.
+            active_source_id: None,
+            sources,
+        };
+        migrated.save_to(path)?;
+        Ok(migrated)
+    }
+
+    fn validate_membership<'a>(
+        active_source_id: Option<&str>,
+        sources: impl Iterator<Item = (&'a String, &'a NativePath)>,
+        source_count: usize,
+    ) -> Result<(), LibraryError> {
+        if source_count > MAX_LIBRARY_SOURCES {
             return Err(LibraryError::CorruptRegistry {
                 message: "library registry exceeds its source bound".to_string(),
             });
         }
         let mut ids = HashSet::new();
-        for source in &stored.sources {
-            let path = source.path()?;
+        for (source_id, native_path) in sources {
+            let path = native_path.restore()?;
             if !path.is_absolute()
-                || source.path.source_id() != source.id
-                || !ids.insert(&source.id)
+                || native_path.source_id() != *source_id
+                || !ids.insert(source_id.as_str())
             {
                 return Err(LibraryError::CorruptRegistry {
                     message: "library registry contains a malformed or duplicate source"
@@ -611,19 +733,12 @@ impl LibraryRegistry {
                 });
             }
         }
-        if stored
-            .active_source_id
-            .as_ref()
-            .is_some_and(|active| !ids.contains(active))
-        {
+        if active_source_id.is_some_and(|active| !ids.contains(active)) {
             return Err(LibraryError::CorruptRegistry {
                 message: "library registry active source is not a member".to_string(),
             });
         }
-        Ok(Self {
-            active_source_id: stored.active_source_id,
-            sources: stored.sources,
-        })
+        Ok(())
     }
 
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
@@ -659,6 +774,126 @@ impl LibraryRegistry {
                 message: format!("cannot publish library registry: {}", error.error),
             })
     }
+}
+
+/// Historical V1 path-only workspace location. This is intentionally kept
+/// local to migration code: new indexes must always use the identity-bound
+/// key in `mdreader-ingest`.
+fn v1_workspace_dir(app_data: &Path, root: &Path) -> PathBuf {
+    let hash = if let Some(root) = root.to_str() {
+        blake3::hash(root.as_bytes())
+    } else {
+        let mut hasher = blake3::Hasher::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            hasher.update(b"mdreader-unix-native-root-v1\0");
+            hasher.update(root.as_os_str().as_bytes());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            hasher.update(b"mdreader-windows-native-root-v1\0");
+            for unit in root.as_os_str().encode_wide() {
+                hasher.update(&unit.to_le_bytes());
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            hasher.update(b"mdreader-platform-native-root-v1\0");
+            hasher.update(root.to_string_lossy().as_bytes());
+        }
+        hasher.finalize()
+    }
+    .to_hex()
+    .to_string();
+    app_data.join("workspaces").join(hash)
+}
+
+/// Move every path-keyed V1 index directory, including its sibling
+/// `proposals.db`, into a recoverable quarantine before publishing V2. A crash
+/// after the rename is idempotent: retry observes the destination and the
+/// missing old location. Existing source and destination together are refused
+/// so migration never overwrites either copy.
+fn quarantine_v1_workspaces(
+    registry_path: &Path,
+    sources: &[LibrarySourceV1],
+) -> Result<(), LibraryError> {
+    let app_data = registry_path
+        .parent()
+        .ok_or_else(|| LibraryError::PersistFailed {
+            message: "library registry has no parent directory".to_string(),
+        })?;
+    let quarantine_root = app_data.join("legacy-v1-path-workspaces");
+
+    for source in sources {
+        let source_path = source.path.restore()?;
+        let legacy = v1_workspace_dir(app_data, &source_path);
+        let metadata = match fs::symlink_metadata(&legacy) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(LibraryError::PersistFailed {
+                    message: format!(
+                        "cannot inspect legacy workspace {}: {error}",
+                        legacy.display()
+                    ),
+                })
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(LibraryError::CorruptRegistry {
+                message: format!(
+                    "legacy workspace is not a real directory: {}",
+                    legacy.display()
+                ),
+            });
+        }
+
+        fs::create_dir_all(&quarantine_root).map_err(|error| LibraryError::PersistFailed {
+            message: format!("cannot create legacy workspace quarantine: {error}"),
+        })?;
+        let quarantine_metadata = fs::symlink_metadata(&quarantine_root).map_err(|error| {
+            LibraryError::PersistFailed {
+                message: format!("cannot inspect legacy workspace quarantine: {error}"),
+            }
+        })?;
+        if quarantine_metadata.file_type().is_symlink() || !quarantine_metadata.is_dir() {
+            return Err(LibraryError::PersistFailed {
+                message: "legacy workspace quarantine is not a real directory".to_string(),
+            });
+        }
+
+        let key = legacy
+            .file_name()
+            .ok_or_else(|| LibraryError::CorruptRegistry {
+                message: "legacy workspace path has no identity key".to_string(),
+            })?;
+        let destination = quarantine_root.join(key);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => {
+                return Err(LibraryError::PersistFailed {
+                    message: format!(
+                        "legacy workspace and quarantine both exist: {}",
+                        destination.display()
+                    ),
+                })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(LibraryError::PersistFailed {
+                    message: format!("cannot inspect legacy workspace quarantine target: {error}"),
+                })
+            }
+        }
+        fs::rename(&legacy, &destination).map_err(|error| LibraryError::PersistFailed {
+            message: format!(
+                "cannot quarantine legacy workspace {}: {error}",
+                legacy.display()
+            ),
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -786,7 +1021,7 @@ pub(crate) async fn pick_and_add_library_source(
 }
 
 /// Reconcile a persisted session root against available membership. Returning
-/// `None` means the caller must not call `set_workspace`/`watch_workspace`.
+/// `None` means no backend-owned source identity may be granted or watched.
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) fn reconcile_library_restore(
@@ -931,6 +1166,37 @@ mod tests {
     fn bound_root(path: &Path) -> SourceRoot {
         SourceRoot::capture(fs::canonicalize(path).expect("canonical source root"))
             .expect("capture source root identity")
+    }
+
+    fn legacy_v1_workspace_path(app_data: &Path, root: &Path) -> PathBuf {
+        let hash = if let Some(root) = root.to_str() {
+            blake3::hash(root.as_bytes())
+        } else {
+            let mut hasher = blake3::Hasher::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                hasher.update(b"mdreader-unix-native-root-v1\0");
+                hasher.update(root.as_os_str().as_bytes());
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStrExt;
+                hasher.update(b"mdreader-windows-native-root-v1\0");
+                for unit in root.as_os_str().encode_wide() {
+                    hasher.update(&unit.to_le_bytes());
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                hasher.update(b"mdreader-platform-native-root-v1\0");
+                hasher.update(root.to_string_lossy().as_bytes());
+            }
+            hasher.finalize()
+        }
+        .to_hex()
+        .to_string();
+        app_data.join("workspaces").join(hash)
     }
 
     #[test]
@@ -1141,20 +1407,133 @@ mod tests {
             Err(LibraryError::CorruptRegistry { ref message })
                 if message.contains("identity")
         ));
+    }
 
-        body["version"] = serde_json::json!(LIBRARY_VERSION - 1);
+    #[test]
+    fn version_one_registry_migrates_membership_and_quarantines_old_index_and_proposals() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let native = NativePath::capture(&canonical);
+        let source_id = native.source_id();
+        let v1 = serde_json::json!({
+            "version": 1,
+            "active_source_id": source_id,
+            "sources": [{
+                "id": source_id,
+                "path": native,
+            }],
+        });
         fs::write(
-            &file,
-            serde_json::to_vec_pretty(&body).expect("encode old version"),
+            &registry_path,
+            serde_json::to_vec_pretty(&v1).expect("encode v1 registry"),
         )
-        .expect("write old registry");
-        assert_eq!(
-            LibraryRegistry::load_from(&file).expect_err("old version must fail"),
-            LibraryError::UnsupportedVersion {
-                found: LIBRARY_VERSION - 1,
-                expected: LIBRARY_VERSION,
-            }
+        .expect("write v1 registry");
+
+        let legacy = legacy_v1_workspace_path(&app_data, &canonical);
+        fs::create_dir_all(&legacy).expect("create legacy workspace");
+        fs::write(legacy.join("catdb.db"), b"legacy index").expect("write legacy index");
+        fs::write(legacy.join("proposals.db"), b"legacy proposals")
+            .expect("write legacy proposals");
+        let legacy_key = legacy.file_name().expect("legacy key").to_os_string();
+        let quarantine = app_data.join("legacy-v1-path-workspaces").join(legacy_key);
+
+        let registry =
+            LibraryRegistry::load_from(&registry_path).expect("migrate supported v1 registry");
+
+        assert_eq!(registry.sources().len(), 1, "membership is preserved");
+        assert_eq!(registry.sources()[0].id, source_id);
+        assert!(
+            registry.activation_root(&source_id).is_ok(),
+            "an available source is rebound to its current filesystem identity"
         );
+        assert_eq!(
+            registry.restore_source_id(),
+            None,
+            "a path-only active marker cannot authorize a restore after migration"
+        );
+        assert!(!legacy.exists(), "the path-keyed workspace is never reused");
+        assert_eq!(
+            fs::read(quarantine.join("catdb.db")).expect("recover quarantined index"),
+            b"legacy index"
+        );
+        assert_eq!(
+            fs::read(quarantine.join("proposals.db")).expect("recover quarantined proposals"),
+            b"legacy proposals"
+        );
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
+                .expect("parse migrated registry");
+        assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
+        assert!(
+            !crate::engine::db_path_under(
+                &app_data,
+                &registry.activation_root(&source_id).unwrap()
+            )
+            .exists(),
+            "identity-keyed V2 starts from a clean index instead of adopting path-keyed rows"
+        );
+    }
+
+    #[test]
+    fn unavailable_v1_membership_survives_migration_and_can_be_forgotten_or_readmitted() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        fs::create_dir(&app_data).expect("create app data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "offline-notes");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let native = NativePath::capture(&canonical);
+        let source_id = native.source_id();
+        let v1 = serde_json::json!({
+            "version": 1,
+            "active_source_id": source_id,
+            "sources": [{
+                "id": source_id,
+                "path": native,
+            }],
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&v1).expect("encode v1 registry"),
+        )
+        .expect("write v1 registry");
+        fs::remove_dir(&root).expect("take source offline before migration");
+
+        let mut registry =
+            LibraryRegistry::load_from(&registry_path).expect("offline membership migrates");
+        let snapshot = registry
+            .snapshot(&app_data, None)
+            .expect("offline source remains listable");
+        assert_eq!(snapshot.sources.len(), 1);
+        assert!(matches!(
+            snapshot.sources[0].state,
+            super::LibraryAvailability::Missing { .. }
+        ));
+        assert_eq!(
+            snapshot.sources[0].index_state,
+            LibraryIndexState::NotCreated
+        );
+        assert!(matches!(
+            registry.activation_root(&source_id),
+            Err(LibraryError::SourceUnavailable { .. })
+        ));
+
+        let mut forgettable = registry.clone();
+        forgettable
+            .forget(&source_id, None)
+            .expect("offline migrated membership can be forgotten");
+        assert!(forgettable.sources().is_empty());
+
+        fs::create_dir(&root).expect("source returns");
+        let rebound = registry
+            .add_root(&root)
+            .expect("re-picking a migration-pending source binds its identity");
+        assert_eq!(rebound.id, source_id, "membership identity is stable");
+        assert!(registry.activation_root(&source_id).is_ok());
     }
 
     #[test]

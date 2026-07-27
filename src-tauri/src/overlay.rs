@@ -54,7 +54,7 @@ use mdreader_ingest::proposals::{
 };
 
 use crate::commands::WorkspaceState;
-use crate::engine::{Epoch, StaleEpoch};
+use crate::engine::Epoch;
 
 // --------------------------------------------------------------------------
 // Wire DTOs
@@ -657,7 +657,7 @@ fn list_schemas_guarded(
     // EPOCH-GUARDED
     epoch
         .finish(state, summaries)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 /// The corpus projected through one schema: its committed objects (with
@@ -755,7 +755,7 @@ fn project_corpus_guarded(
     // EPOCH-GUARDED
     epoch
         .finish(state, projection)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -791,7 +791,7 @@ fn describe_schema_guarded(
     // EPOCH-GUARDED
     epoch
         .finish(state, detail)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -826,7 +826,7 @@ fn inspect_span_guarded(
         // EPOCH-GUARDED
         return epoch
             .finish(state, Vec::new())
-            .map_err(|_| StaleEpoch::message());
+            .map_err(|error| error.to_string());
     };
     let relative = relative_to_root(&epoch, &query.path);
     let (start, end) = (
@@ -849,7 +849,7 @@ fn inspect_span_guarded(
     // EPOCH-GUARDED
     epoch
         .finish(state, facts)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 /// Accept a proposed fact and promote it into the overlay graph.
@@ -883,7 +883,7 @@ pub async fn approve_fact(
                 promoted: outcome.promoted.iter().map(ToString::to_string).collect(),
             },
         )
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 /// Reject a fact, and retract it if a previous approval had already committed
@@ -913,7 +913,7 @@ pub async fn reject_fact(
                 cascaded: outcome.cascaded.iter().map(ToString::to_string).collect(),
             },
         )
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -942,7 +942,7 @@ pub async fn check_constraints(
                     violations: Vec::new(),
                 },
             )
-            .map_err(|_| StaleEpoch::message());
+            .map_err(|error| error.to_string());
     };
     let report = db.check_equations().await.map_err(|err| err.to_string())?;
     let report = ConstraintReport {
@@ -952,7 +952,7 @@ pub async fn check_constraints(
     // EPOCH-GUARDED
     epoch
         .finish(&workspace, report)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -1200,6 +1200,27 @@ mod tests {
     // ----------------------------------------------------------------------
     // View As
     // ----------------------------------------------------------------------
+
+    #[test]
+    fn overlay_completion_keeps_source_identity_failure_distinct_from_a_switch() {
+        let temp = TempDir::new().expect("tempdir");
+        let granted = temp.path().join("notes");
+        fs::create_dir(&granted).expect("create granted root");
+        let granted = fs::canonicalize(granted).expect("canonical granted root");
+        let state = WorkspaceState::granted(granted.clone());
+        let moved = temp.path().join("moved-original");
+
+        let error = list_schemas_guarded(&state, || {
+            fs::rename(&granted, &moved).expect("move admitted root");
+            fs::create_dir(&granted).expect("create same-path replacement");
+        })
+        .expect_err("overlay result must refuse replacement of its source root");
+
+        assert!(
+            error.contains("identity"),
+            "identity refusal must not be flattened to a stale switch: {error}"
+        );
+    }
 
     /// The version and checksum are the ENGINE's, read back from what it
     /// persisted — not a number this module made up, and not a re-derivation

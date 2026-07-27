@@ -100,10 +100,14 @@ use tauri::{AppHandle, Manager, State};
 use catdb_embed::{EmbedError, EmbedResult, Embedder, FastembedEmbedder, HashEmbedder, ModelInfo};
 use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
-use mdreader_ingest::{registration_with_proposals, scan_root, ProposalStore, ScanOptions};
+use mdreader_ingest::{
+    registration_with_proposals_and_source_root, scan_source_root, ProposalStore, ScanOptions,
+};
 
 use crate::commands::{mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState};
-use mdreader_ingest::{SourceRoot, SourceRootIdentity};
+use mdreader_ingest::SourceRoot;
+#[cfg(test)]
+use mdreader_ingest::SourceRootIdentity;
 
 /// Default per-file size ceiling the ingest scan honors (mirrors the engine's
 /// `ImportOptions` default of 2 MiB); the fs-fallback listing uses the same
@@ -268,9 +272,12 @@ fn model_info_for(hash_embed: bool) -> ModelInfo {
 /// a fresh epoch — is a single atomic revocation barrier. Held as `Arc<Epoch>`
 /// so identity comparison (`Arc::ptr_eq`) is the "still current?" test.
 pub struct Epoch {
+    /// Retained filesystem authority for every effect in this epoch.
+    root_authority: SourceRoot,
     /// Canonical granted root (the workspace the engine keys and imports on).
     pub(crate) root: PathBuf,
     /// Stable filesystem-object identity captured from the admitted root.
+    #[cfg(test)]
     pub(crate) root_identity: SourceRootIdentity,
     /// Monotonic era number (advances on every switch); for logs/observability —
     /// `Arc::ptr_eq` is the authoritative identity.
@@ -300,9 +307,14 @@ impl Epoch {
     /// A fresh epoch for `root` at `generation`, with no engine yet and an idle
     /// status.
     pub(crate) fn new(root: SourceRoot, generation: u64) -> Arc<Self> {
+        let path = root.path.clone();
+        #[cfg(test)]
+        let identity = root.identity.clone();
         Arc::new(Self {
-            root: root.path,
-            root_identity: root.identity,
+            root_authority: root,
+            root: path,
+            #[cfg(test)]
+            root_identity: identity,
             generation,
             engine: OnceLock::new(),
             embedder: OnceLock::new(),
@@ -315,17 +327,14 @@ impl Epoch {
     /// Refuse this epoch when its canonical path no longer names the admitted
     /// filesystem object or has become a symlink/reparse point.
     pub(crate) fn validate_root(&self) -> Result<(), String> {
-        self.root_identity
-            .verify(&self.root)
+        self.root_authority
+            .verify()
             .map_err(|error| error.to_string())
     }
 
     /// Clone the path/identity pair as one authority value.
     pub(crate) fn source_root(&self) -> SourceRoot {
-        SourceRoot {
-            path: self.root.clone(),
-            identity: self.root_identity.clone(),
-        }
+        self.root_authority.clone()
     }
 
     /// This epoch's current import status.
@@ -398,23 +407,41 @@ impl Epoch {
         registry: &WorkspaceState,
         value: T,
     ) -> Result<T, StaleEpoch> {
-        if registry.is_current(self) {
-            Ok(value)
-        } else {
-            Err(StaleEpoch)
+        if !registry.is_current(self) {
+            return Err(StaleEpoch::Superseded);
         }
+        self.validate_root()
+            .map_err(StaleEpoch::SourceIdentityChanged)?;
+        Ok(value)
     }
 }
 
-/// The stale-epoch error returned by [`Epoch::finish`] — a switch superseded the
-/// epoch mid-command, so the value it guarded is a previous workspace's.
-pub(crate) struct StaleEpoch;
+/// The completion error returned by [`Epoch::finish`]. A switch can supersede
+/// the epoch, or the same path can stop naming the admitted filesystem object.
+/// Keeping those outcomes distinct prevents an identity refusal from being
+/// rendered as a benign stale/empty result.
+#[derive(Debug)]
+pub(crate) enum StaleEpoch {
+    /// A newer workspace epoch replaced this one.
+    Superseded,
+    /// The current epoch's admitted root was replaced or became inaccessible.
+    SourceIdentityChanged(String),
+}
 
 impl StaleEpoch {
-    /// The message a command surfaces when it discards a stale read/listing
-    /// (commands that instead fall back to a benign value ignore this).
-    pub(crate) fn message() -> String {
-        "workspace changed during the operation".to_string()
+    /// Whether this value is safe to discard as a superseded epoch rather than
+    /// an identity failure that must remain visible.
+    pub(crate) fn is_superseded(&self) -> bool {
+        matches!(self, Self::Superseded)
+    }
+}
+
+impl std::fmt::Display for StaleEpoch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Superseded => formatter.write_str("workspace changed during the operation"),
+            Self::SourceIdentityChanged(reason) => formatter.write_str(reason),
+        }
     }
 }
 
@@ -656,6 +683,23 @@ impl ListingError {
             }
         }
     }
+
+    fn from_source(path: &Path, error: &mdreader_ingest::SourceRootError) -> Self {
+        if matches!(
+            error,
+            mdreader_ingest::SourceRootError::PermissionDenied { .. }
+        ) {
+            Self::Unreadable {
+                path: path.display().to_string(),
+                reason: error.to_string(),
+                remedy: Self::REMEDY.to_string(),
+            }
+        } else {
+            Self::Failed {
+                message: error.to_string(),
+            }
+        }
+    }
 }
 
 impl From<String> for ListingError {
@@ -782,13 +826,17 @@ async fn build_embedder() -> Result<Arc<dyn Embedder>, String> {
 fn open_engine(
     db_path: &Path,
     embedder: Arc<dyn Embedder>,
+    source_root: SourceRoot,
 ) -> Result<(Arc<EmbeddedCatDb>, Arc<ProposalStore>), String> {
     let proposals = Arc::new(
         ProposalStore::open(proposals_path_beside(db_path))
             .map_err(|err| format!("open proposal store: {err}"))?,
     );
     let mut config = EngineConfig::new(db_path, embedder).with_actor("mdreader-app");
-    config.domains = vec![registration_with_proposals(Arc::clone(&proposals))];
+    config.domains = vec![registration_with_proposals_and_source_root(
+        Arc::clone(&proposals),
+        source_root,
+    )];
     let db = EmbeddedCatDb::open(config)
         .map(Arc::new)
         .map_err(|err| format!("open index: {err}"))?;
@@ -860,13 +908,19 @@ fn open_index_at(
     }
 
     let embedder = Arc::new(DeferredEmbedder::loading(configured_model_info()));
-    let (db, proposals) = open_engine(db_path, Arc::clone(&embedder) as Arc<dyn Embedder>)?;
+    let (db, proposals) = open_engine(
+        db_path,
+        Arc::clone(&embedder) as Arc<dyn Embedder>,
+        epoch.source_root(),
+    )?;
     epoch.validate_root()?;
 
     // EPOCH-GUARDED commit point: a switch during the open supersedes this epoch
     // — drop the freshly-opened index rather than install into a dead era.
-    if epoch.finish(workspace, ()).is_err() {
-        return Ok(None);
+    match epoch.finish(workspace, ()) {
+        Ok(()) => {}
+        Err(error) if error.is_superseded() => return Ok(None),
+        Err(error) => return Err(error.to_string()),
     }
 
     // Install into THIS epoch's slots (idempotent; `claim_active` serializes
@@ -973,16 +1027,20 @@ fn validate_import_root(epoch: &Epoch, root: &str) -> Result<(), String> {
 /// filesystem authority. Subdirectory requests retain the ordinary
 /// canonicalize-and-contain check.
 fn resolve_request_root(epoch: &Epoch, requested: &str) -> Result<PathBuf, String> {
-    if epoch.root.to_string_lossy() == requested {
+    if display_names_root(&epoch.root, requested) {
         return Ok(epoch.root.clone());
     }
     resolve_dir(&epoch.root, Path::new(requested))
 }
 
+fn display_names_root(root: &Path, requested: &str) -> bool {
+    root.to_string_lossy() == requested
+}
+
 /// Best-effort pre-scan for the file total shown while importing. A scan failure
 /// (e.g. permissions) just yields an unknown total, never an import failure.
-fn scan_count(root: &Path) -> u32 {
-    scan_root(root, &scan_options(true))
+fn scan_count(root: &SourceRoot) -> u32 {
+    scan_source_root(root, &scan_options(true))
         .map(|files| files.len() as u32)
         .unwrap_or(0)
 }
@@ -1037,9 +1095,7 @@ pub async fn start_import(
     // every other, funnels through the choke-point.
     if !claim_active(&epoch)? {
         // EPOCH-GUARDED
-        return Ok(epoch
-            .finish(&workspace, epoch.status())
-            .unwrap_or_else(|_| epoch.status()));
+        return finish_import_progress(&epoch, &workspace, epoch.status());
     }
     let _guard = ActiveGuard {
         epoch: Arc::clone(&epoch),
@@ -1051,19 +1107,13 @@ pub async fn start_import(
         Ok(Some(pair)) => pair,
         // A switch superseded this epoch during the open — abandon clean.
         // EPOCH-GUARDED
-        Ok(None) => {
-            return Ok(epoch
-                .finish(&workspace, epoch.status())
-                .unwrap_or_else(|_| epoch.status()))
-        }
+        Ok(None) => return finish_import_progress(&epoch, &workspace, epoch.status()),
         Err(err) => {
             // The index itself could not be opened — a genuine index failure.
             let failed = ImportProgress::failed(0, err);
             publish(&epoch, &workspace, &on_event, failed.clone());
             // EPOCH-GUARDED
-            return Ok(epoch
-                .finish(&workspace, failed)
-                .unwrap_or_else(|_| epoch.status()));
+            return finish_import_progress(&epoch, &workspace, failed);
         }
     };
 
@@ -1075,13 +1125,11 @@ pub async fn start_import(
         let unavailable = ImportProgress::model_unavailable(reason);
         publish(&epoch, &workspace, &on_event, unavailable.clone());
         // EPOCH-GUARDED
-        return Ok(epoch
-            .finish(&workspace, unavailable)
-            .unwrap_or_else(|_| epoch.status()));
+        return finish_import_progress(&epoch, &workspace, unavailable);
     }
 
     epoch.validate_root()?;
-    let total = scan_count(&epoch.root);
+    let total = scan_count(&epoch.source_root());
     publish(
         &epoch,
         &workspace,
@@ -1100,9 +1148,21 @@ pub async fn start_import(
     };
     publish(&epoch, &workspace, &on_event, final_status.clone());
     // EPOCH-GUARDED
-    Ok(epoch
-        .finish(&workspace, final_status)
-        .unwrap_or_else(|_| epoch.status()))
+    finish_import_progress(&epoch, &workspace, final_status)
+}
+
+/// Preserve the intentionally quiet cancellation of a superseded import while
+/// surfacing replacement of the current epoch's admitted root.
+fn finish_import_progress(
+    epoch: &Arc<Epoch>,
+    workspace: &WorkspaceState,
+    progress: ImportProgress,
+) -> Result<ImportProgress, String> {
+    match epoch.finish(workspace, progress) {
+        Ok(progress) => Ok(progress),
+        Err(error) if error.is_superseded() => Ok(epoch.status()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// The latest import status for the CURRENT workspace epoch — for the StatusBar's
@@ -1111,13 +1171,32 @@ pub async fn start_import(
 #[tauri::command(async)]
 #[specta::specta]
 pub fn import_status(workspace: State<'_, WorkspaceState>) -> Result<ImportProgress, String> {
+    import_status_guarded(&workspace, || {})
+}
+
+/// Poll the captured epoch and validate both epoch and source identity at the
+/// completion boundary. A superseding workspace switch intentionally yields
+/// idle for the new epoch; replacement of the current epoch's admitted root is
+/// an explicit refusal.
+fn import_status_guarded(
+    workspace: &WorkspaceState,
+    gate: impl FnOnce(),
+) -> Result<ImportProgress, String> {
     match workspace.current() {
         Some(epoch) => {
             let status = epoch.status();
+            gate();
             // EPOCH-GUARDED
-            Ok(epoch.finish(&workspace, status).unwrap_or_default())
+            match epoch.finish(workspace, status) {
+                Ok(status) => Ok(status),
+                Err(error) if error.is_superseded() => Ok(ImportProgress::default()),
+                Err(error) => Err(error.to_string()),
+            }
         }
-        None => Ok(ImportProgress::default()),
+        None => {
+            gate();
+            Ok(ImportProgress::default())
+        }
     }
 }
 
@@ -1148,38 +1227,56 @@ fn list_workspace_files_guarded(
     root: &str,
     gate: impl FnOnce(),
 ) -> Result<WorkspaceListing, ListingError> {
+    list_workspace_files_guarded_with_hooks(workspace, root, || {}, gate)
+}
+
+fn list_workspace_files_guarded_with_hooks(
+    workspace: &WorkspaceState,
+    root: &str,
+    before_listing: impl FnOnce(),
+    before_finish: impl FnOnce(),
+) -> Result<WorkspaceListing, ListingError> {
     // Capture the epoch ONCE — root + engine + status are one consistent snapshot.
     let epoch = workspace
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     epoch.validate_root()?;
-    // TOCTOU: the reads below run after this containment check (accepted — see
-    // the commands module's "TOCTOU" note; local single-user reader).
-    let root_path = resolve_request_root(&epoch, root)?;
+    let source = epoch.source_root();
+    let relative = if display_names_root(&source.path, root) {
+        PathBuf::new()
+    } else {
+        source
+            .relative_path(Path::new(root))
+            .map_err(|error| ListingError::from(error.to_string()))?
+    };
+    source
+        .verify_directory_relative(&relative)
+        .map_err(|error| ListingError::from_source(&source.path.join(&relative), &error))?;
 
+    before_listing();
     // Serve from the index once THIS epoch's import has finished and its engine is
     // installed (both from the captured epoch, so no stale-engine window). Once
     // built the index is authoritative: report `from_index` even with zero docs
     // (an empty workspace), rather than masquerading as the fs fallback (#7).
     let listing = match (epoch.status().is_done(), epoch.engine.get()) {
         (true, Some(db)) => WorkspaceListing {
-            entries: index_listing(db, &epoch.root, &root_path)?,
+            entries: index_listing(db, &source, &relative)?,
             from_index: true,
         },
         _ => WorkspaceListing {
-            entries: fs_listing(&root_path)?,
+            entries: fs_listing(&source, &relative)?,
             from_index: false,
         },
     };
 
-    gate();
+    before_finish();
     epoch.validate_root()?;
     // EPOCH-GUARDED (both paths funnel through the ONE choke-point): a switch
     // during the read supersedes this epoch — discard rather than surface a
     // previous workspace's listing.
     epoch
         .finish(workspace, listing)
-        .map_err(|_| ListingError::from(StaleEpoch::message()))
+        .map_err(|error| ListingError::from(error.to_string()))
 }
 
 /// Build sidebar rows from the index's documents, filtered to those under
@@ -1187,8 +1284,8 @@ fn list_workspace_files_guarded(
 /// (root-relative) document path.
 fn index_listing(
     db: &EmbeddedCatDb,
-    src_root: &Path,
-    req_root: &Path,
+    source: &SourceRoot,
+    requested: &Path,
 ) -> Result<Vec<FileEntry>, ListingError> {
     let docs = db
         .store()
@@ -1196,11 +1293,13 @@ fn index_listing(
         .map_err(|err| format!("list documents: {err}"))?;
     let mut entries = Vec::new();
     for doc in docs {
-        let abs = src_root.join(&doc.file_path);
-        if !abs.starts_with(req_root) {
+        let relative = Path::new(&doc.file_path);
+        if !relative.starts_with(requested) {
             continue;
         }
-        entries.push(file_entry(&abs, false));
+        let abs = source.path.join(relative);
+        let metadata = source.metadata_relative(relative).ok();
+        entries.push(file_entry(&abs, false, metadata.as_ref()));
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(entries)
@@ -1216,27 +1315,31 @@ fn index_listing(
 /// "we walked this folder and it holds no markdown" and "we were not allowed to
 /// walk this folder" are different answers, and only the first one is an empty
 /// workspace. An empty `Ok` here is therefore always the genuine empty case.
-fn fs_listing(root: &Path) -> Result<Vec<FileEntry>, ListingError> {
-    let kept: HashSet<String> = scan_root(root, &scan_options(true))
-        .map_err(|err| ListingError::from_walk(root, &err))?
+fn fs_listing(source: &SourceRoot, requested: &Path) -> Result<Vec<FileEntry>, ListingError> {
+    let kept: HashSet<String> = scan_source_root(source, &scan_options(true))
+        .map_err(|err| ListingError::from_walk(&source.path.join(requested), &err))?
         .into_iter()
+        .filter(|file| Path::new(&file.rel).starts_with(requested))
         .map(|file| file.rel)
         .collect();
-    let all =
-        scan_root(root, &scan_options(false)).map_err(|err| ListingError::from_walk(root, &err))?;
+    let all = scan_source_root(source, &scan_options(false))
+        .map_err(|err| ListingError::from_walk(&source.path.join(requested), &err))?;
 
     let mut entries = Vec::new();
-    for file in all {
+    for file in all
+        .into_iter()
+        .filter(|file| Path::new(&file.rel).starts_with(requested))
+    {
         let ignored = !kept.contains(&file.rel);
-        entries.push(file_entry(&file.abs, ignored));
+        let metadata = file.metadata().ok();
+        entries.push(file_entry(&file.abs, ignored, metadata.as_ref()));
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(entries)
 }
 
 /// Assemble one [`FileEntry`] from an absolute path, statting it best-effort.
-fn file_entry(abs: &Path, ignored: bool) -> FileEntry {
-    let meta = std::fs::metadata(abs).ok();
+fn file_entry(abs: &Path, ignored: bool, metadata: Option<&std::fs::Metadata>) -> FileEntry {
     FileEntry {
         path: abs.to_string_lossy().into_owned(),
         name: abs
@@ -1248,8 +1351,8 @@ fn file_entry(abs: &Path, ignored: bool) -> FileEntry {
             .parent()
             .map(|parent| parent.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        mtime: mtime_millis(meta.as_ref().and_then(|m| m.modified().ok())),
-        size: meta.map(|m| m.len() as f64).unwrap_or(0.0),
+        mtime: mtime_millis(metadata.and_then(|value| value.modified().ok())),
+        size: metadata.map(|value| value.len() as f64).unwrap_or(0.0),
         ignored,
     }
 }
@@ -1314,9 +1417,11 @@ fn resolve_wikilink_guarded(
     // EPOCH-GUARDED: a switch during resolution supersedes this epoch — its result
     // is discarded to `unresolved` (silently-clean) rather than surfacing a
     // previous workspace's document.
-    Ok(epoch
-        .finish(workspace, resolution)
-        .unwrap_or_else(|_| WikiResolution::unresolved()))
+    match epoch.finish(workspace, resolution) {
+        Ok(resolution) => Ok(resolution),
+        Err(error) if error.is_superseded() => Ok(WikiResolution::unresolved()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Compute the resolution of `target` against `epoch`'s index (the no-engine,
@@ -1509,40 +1614,37 @@ mod tests {
         }
     }
 
-    fn synthetic_root(path: PathBuf, device: u64, inode: u64) -> SourceRoot {
-        SourceRoot {
-            path,
-            identity: SourceRootIdentity::Unix { device, inode },
-        }
+    fn synthetic_db_path(base: &Path, path: PathBuf, device: u64, inode: u64) -> PathBuf {
+        mdreader_ingest::workspace_index_path_for_identity(
+            base,
+            &path,
+            &SourceRootIdentity::Unix { device, inode },
+        )
     }
 
     #[test]
     fn db_path_is_deterministic_and_isolated_from_the_corpus() {
         let base = Path::new("/data");
-        let root = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 11);
-        let a = db_path_under(base, &root);
-        let b = db_path_under(base, &root);
+        let root = PathBuf::from("/Users/me/notes");
+        let a = synthetic_db_path(base, root.clone(), 7, 11);
+        let b = synthetic_db_path(base, root.clone(), 7, 11);
         assert_eq!(a, b, "same root maps to the same db file");
         assert!(a.starts_with("/data/workspaces"));
         assert!(a.ends_with("catdb.db"));
         // A different root maps somewhere else — never inside the corpus.
-        let other = db_path_under(
-            base,
-            &synthetic_root(PathBuf::from("/Users/me/other"), 7, 12),
-        );
+        let other = synthetic_db_path(base, PathBuf::from("/Users/me/other"), 7, 12);
         assert_ne!(a, other);
-        assert!(!a.starts_with(&root.path));
+        assert!(!a.starts_with(&root));
     }
 
     #[test]
     fn the_root_key_requires_object_identity_not_only_the_canonical_path() {
         let base = Path::new("/data");
-        let admitted = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 11);
-        let replacement = synthetic_root(PathBuf::from("/Users/me/notes"), 7, 12);
+        let admitted = synthetic_db_path(base, PathBuf::from("/Users/me/notes"), 7, 11);
+        let replacement = synthetic_db_path(base, PathBuf::from("/Users/me/notes"), 7, 12);
 
         assert_ne!(
-            db_path_under(base, &admitted),
-            db_path_under(base, &replacement),
+            admitted, replacement,
             "a replacement at the same path must not inherit the admitted index"
         );
     }
@@ -1554,18 +1656,13 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let base = Path::new("/data");
-        let first = synthetic_root(
-            PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xff])),
-            7,
-            11,
+        let first = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xff]));
+        let second = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xfe]));
+        assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+        assert_ne!(
+            synthetic_db_path(base, first, 7, 11),
+            synthetic_db_path(base, second, 7, 12)
         );
-        let second = synthetic_root(
-            PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xfe])),
-            7,
-            12,
-        );
-        assert_eq!(first.path.to_string_lossy(), second.path.to_string_lossy());
-        assert_ne!(db_path_under(base, &first), db_path_under(base, &second));
     }
 
     #[test]
@@ -1615,7 +1712,8 @@ mod tests {
         fs::create_dir_all(root.join("generated")).unwrap();
         fs::write(root.join("generated/skip.md"), "# Skip").unwrap();
 
-        let entries = fs_listing(&root).unwrap();
+        let source = SourceRoot::capture(root.clone()).unwrap();
+        let entries = fs_listing(&source, Path::new("")).unwrap();
         let by_name = |name: &str| entries.iter().find(|e| e.name == name).cloned();
 
         let keep = by_name("keep.md").expect("keep.md listed");
@@ -1653,7 +1751,8 @@ mod tests {
         assert_eq!(report.files_scanned, 2);
 
         // Index listing reconstructs absolute paths under the source root.
-        let entries = index_listing(&db, &root, &root).unwrap();
+        let source = SourceRoot::capture(root.clone()).unwrap();
+        let entries = index_listing(&db, &source, Path::new("")).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().all(|e| !e.ignored));
 
@@ -1693,7 +1792,8 @@ mod tests {
             .build()
             .unwrap();
         let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
-        let (db, _proposals) = open_engine(&db_path, embedder).expect("open engine");
+        let source_root = SourceRoot::capture(root.clone()).expect("capture source root");
+        let (db, _proposals) = open_engine(&db_path, embedder, source_root).expect("open engine");
         rt.block_on(db.import(&root, ImportOptions::default()))
             .expect("import corpus");
 
@@ -1815,6 +1915,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fallback_listing_uses_retained_authority_across_a_same_path_replacement() {
+        let temp = TempDir::new().expect("tempdir");
+        let granted = temp.path().join("notes");
+        fs::create_dir(&granted).expect("create granted root");
+        fs::write(granted.join("original.md"), "# original").expect("write original");
+        let granted = fs::canonicalize(granted).expect("canonical granted root");
+        let ws = WorkspaceState::granted(granted.clone());
+        let moved = temp.path().join("moved-original");
+
+        let listing = list_workspace_files_guarded_with_hooks(
+            &ws,
+            granted.to_str().expect("utf8 root"),
+            || {
+                fs::rename(&granted, &moved).expect("move admitted root before listing");
+                fs::create_dir(&granted).expect("create same-path replacement");
+                fs::write(granted.join("replacement.md"), "# replacement")
+                    .expect("write replacement");
+            },
+            || {
+                fs::remove_file(granted.join("replacement.md")).expect("remove replacement file");
+                fs::remove_dir(&granted).expect("remove replacement root");
+                fs::rename(&moved, &granted).expect("restore admitted root before completion");
+            },
+        )
+        .expect("listing stays bound to retained authority");
+
+        let names: Vec<&str> = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["original.md"]);
+    }
+
+    #[test]
+    fn finish_revalidates_identity_even_when_the_same_epoch_arc_is_current() {
+        let (_temp, _granted, moved, ws) = replaced_workspace();
+        let epoch = ws.current().expect("active epoch");
+
+        assert!(
+            epoch.finish(&ws, ()).is_err(),
+            "Arc identity alone must not publish a value after the admitted root was replaced"
+        );
+        assert_eq!(
+            fs::read_to_string(moved.join("original.md")).expect("original object remains"),
+            "# original"
+        );
+    }
+
+    #[test]
+    fn import_status_surfaces_an_identity_change_instead_of_defaulting_to_idle() {
+        let temp = TempDir::new().expect("tempdir");
+        let granted = temp.path().join("notes");
+        fs::create_dir(&granted).expect("create granted root");
+        let granted = fs::canonicalize(granted).expect("canonical granted root");
+        let ws = WorkspaceState::granted(granted.clone());
+        let epoch = ws.current().expect("active epoch");
+        record_status(&epoch, &ImportProgress::importing(3));
+        let moved = temp.path().join("moved-original");
+
+        let error = import_status_guarded(&ws, || {
+            fs::rename(&granted, &moved).expect("move admitted root");
+            fs::create_dir(&granted).expect("create same-path replacement");
+        })
+        .expect_err("identity failure must not be rendered as idle");
+
+        assert!(
+            error.contains("identity"),
+            "the typed identity refusal remains visible: {error}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_lossy_display_of_a_native_epoch_root_resolves_back_to_the_epoch_root() {
@@ -1826,21 +1999,10 @@ mod tests {
         // epoch may originate on any Unix filesystem. This helper performs no
         // I/O for the exact-root case, so exercise the native identity directly.
         let native_root = PathBuf::from("/").join(native);
-        let epoch = Epoch::new(
-            SourceRoot {
-                path: native_root.clone(),
-                identity: SourceRootIdentity::Unix {
-                    device: 0,
-                    inode: 0,
-                },
-            },
-            1,
-        );
         let display = native_root.to_string_lossy();
 
-        assert_eq!(
-            resolve_request_root(&epoch, &display).unwrap(),
-            native_root,
+        assert!(
+            display_names_root(&native_root, &display),
             "the display string identifies the already-granted native root; it is never re-canonicalized as authority"
         );
     }

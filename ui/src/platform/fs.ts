@@ -184,17 +184,6 @@ function normalizeResolution(resolution: BindingWikiResolution): WikiResolution 
 }
 
 /**
- * Grant `root` as the active workspace (canonicalized backend-side); every
- * subsequent read/list/watch is confined to it. Resolves to the canonical path.
- * Throws on backend error (e.g. the folder no longer exists).
- */
-export async function setWorkspace(root: string): Promise<string> {
-  const result = await commands.setWorkspace(root);
-  if (result.status === 'error') throw new Error(result.error);
-  return result.data;
-}
-
-/**
  * List the markdown files under `root`, from the engine index once an import has
  * finished (gitignored files already dropped) or a live filesystem scan before
  * then (gitignored files flagged for dimming).
@@ -311,28 +300,14 @@ export async function saveDoc(
 }
 
 /**
- * Open the native folder picker; resolves to the chosen (canonical) path or
- * `null` when cancelled. Does NOT grant the folder — the grant is adopted only
- * when the caller commits via {@link watchWorkspace}. Throws on backend error.
+ * Open the legacy native folder picker; resolves to the chosen (canonical) path
+ * or `null` when cancelled. This never grants authority. Product flows use
+ * `pickAndAddLibrarySource`, which returns an opaque source ID.
  */
 export async function pickWorkspaceFolder(): Promise<string | null> {
   const result = await commands.pickWorkspaceFolder();
   if (result.status === 'error') throw new Error(result.error);
   return result.data;
-}
-
-/**
- * The atomic "switch workspace" operation: begin watching `root`, adopt it as
- * the grant (advancing the root generation), and resolve to its canonical path
- * PLUS the generation the watcher was armed under — all in one awaited round-trip
- * (no separate {@link setWorkspace} to sequence). The generation is the reference
- * the frontend filters `fs-changed` / `watch-error` events against. Throws on
- * backend error, leaving the previous workspace fully intact.
- */
-export async function watchWorkspace(root: string): Promise<WorkspaceGrant> {
-  const result = await commands.watchWorkspace(root);
-  if (result.status === 'error') throw new Error(result.error);
-  return { root: result.data.root, generation: result.data.generation };
 }
 
 /** Subscribe to debounced filesystem changes. Returns an unlisten function. */

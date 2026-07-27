@@ -87,10 +87,11 @@ use uuid::Uuid;
 
 use crate::parse::{parse_markdown_with_limit, ParsedDocument, CHUNK_TOKEN_LIMIT};
 use crate::proposals::ProposalStore;
-use crate::scan::{scan_root, ScanOptions, ScannedFile};
+use crate::scan::{scan_root, scan_source_root, ScanOptions, ScannedFile};
 use crate::source_view::source_document;
+use crate::SourceRoot;
 
-/// The markdown ingest pipeline. Stateless; safe to share.
+/// The immutable markdown ingest pipeline. Safe to share between imports.
 #[derive(Debug)]
 pub struct MarkdownIngestor {
     /// Token limit at which sections split into multiple chunks.
@@ -100,6 +101,7 @@ pub struct MarkdownIngestor {
     /// all — there would be nowhere to put its output, and the one place it
     /// must never go is the authoritative graph.
     proposals: Option<Arc<ProposalStore>>,
+    source_root: Option<SourceRoot>,
 }
 
 impl MarkdownIngestor {
@@ -109,6 +111,7 @@ impl MarkdownIngestor {
         Self {
             chunk_token_limit: CHUNK_TOKEN_LIMIT,
             proposals: None,
+            source_root: None,
         }
     }
 
@@ -122,6 +125,7 @@ impl MarkdownIngestor {
         Self {
             chunk_token_limit,
             proposals: None,
+            source_root: None,
         }
     }
 
@@ -136,6 +140,12 @@ impl MarkdownIngestor {
     /// into the graph.
     pub fn with_proposal_store(mut self, store: Arc<ProposalStore>) -> Self {
         self.proposals = Some(store);
+        self
+    }
+
+    /// Bind every scan and file read to an already-admitted source-root handle.
+    pub fn with_source_root(mut self, root: SourceRoot) -> Self {
+        self.source_root = Some(root);
         self
     }
 }
@@ -320,7 +330,21 @@ impl Ingestor for MarkdownIngestor {
             max_file_size: req.source.max_file_size,
             respect_gitignore: req.source.respect_gitignore,
         };
-        let files = scan_root(&req.root, &scan_options)?;
+        let files = match &self.source_root {
+            Some(root) => {
+                if req.root != root.path {
+                    return Err(catdb_engine::EngineError::Ingest(format!(
+                        "import root {} is not the retained source {}",
+                        req.root.display(),
+                        root.path.display()
+                    )));
+                }
+                root.verify()
+                    .map_err(|error| catdb_engine::EngineError::Ingest(error.to_string()))?;
+                scan_source_root(root, &scan_options)?
+            }
+            None => scan_root(&req.root, &scan_options)?,
+        };
 
         // EVERYTHING below is scoped to THIS import's source: stored state,
         // rename claiming, deletion, and link resolution all read
@@ -363,7 +387,7 @@ impl Ingestor for MarkdownIngestor {
 
         for file in &files {
             stats.files_scanned += 1;
-            let bytes = std::fs::read(&file.abs)?;
+            let bytes = file.read()?;
             let content_hash = blake3_file(&bytes);
             let text = String::from_utf8_lossy(&bytes);
             let unchanged = stored_by_path
@@ -483,6 +507,10 @@ impl Ingestor for MarkdownIngestor {
                     .record(&extraction)
                     .map_err(|err| catdb_engine::EngineError::Ingest(err.to_string()))?;
             }
+        }
+        if let Some(root) = &self.source_root {
+            root.verify()
+                .map_err(|error| catdb_engine::EngineError::Ingest(error.to_string()))?;
         }
         Ok(stats)
     }

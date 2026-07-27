@@ -3,7 +3,15 @@
 //! extension selection, with per-file git-repo identity detection.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::Match;
+
+use crate::source_root::{SourceEntryKind, SourceRoot};
 
 /// Scanner configuration, derived from the catalog source row and import
 /// options.
@@ -19,7 +27,7 @@ pub struct ScanOptions {
 }
 
 /// One scannable markdown file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ScannedFile {
     /// Absolute path on disk.
     pub abs: PathBuf,
@@ -28,6 +36,30 @@ pub struct ScannedFile {
     /// Repository identity: the name of the nearest enclosing git root under
     /// the scan root, or the root's own name as a synthetic repo.
     pub repo: String,
+    authority: Option<Arc<File>>,
+}
+
+impl ScannedFile {
+    /// Read the exact opened file selected by the scan.
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        match &self.authority {
+            Some(file) => {
+                let mut file = file.try_clone()?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            }
+            None => std::fs::read(&self.abs),
+        }
+    }
+
+    /// Read metadata from the same opened file authority selected by the scan.
+    pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        match &self.authority {
+            Some(file) => file.metadata(),
+            None => std::fs::metadata(&self.abs),
+        }
+    }
 }
 
 fn is_markdown(path: &Path, include_mdx: bool) -> bool {
@@ -144,15 +176,174 @@ pub fn scan_root(root: &Path, options: &ScanOptions) -> std::io::Result<Vec<Scan
             abs: path.to_path_buf(),
             rel,
             repo,
+            authority: None,
         });
     }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
 
+/// Scan through a retained source-root authority.
+///
+/// Directory enumeration and every selected file handle are descriptor-relative,
+/// so replacing the admitted root path or a descendant with a symlink cannot
+/// redirect the import to a different filesystem object.
+pub fn scan_source_root(
+    root: &SourceRoot,
+    options: &ScanOptions,
+) -> std::io::Result<Vec<ScannedFile>> {
+    let synthetic = root
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "root".to_string());
+    let mut out = Vec::new();
+    scan_bound_dir(root, Path::new(""), options, &synthetic, &[], &mut out)?;
+    out.sort_by(|left, right| left.rel.cmp(&right.rel));
+    Ok(out)
+}
+
+fn source_io(error: crate::SourceRootError) -> std::io::Error {
+    let kind = if matches!(error, crate::SourceRootError::PermissionDenied { .. }) {
+        std::io::ErrorKind::PermissionDenied
+    } else {
+        std::io::ErrorKind::Other
+    };
+    std::io::Error::new(kind, error.to_string())
+}
+
+fn load_ignore(root: &SourceRoot, directory: &Path, name: &str) -> std::io::Result<Gitignore> {
+    let relative = directory.join(name);
+    let read = root.read_relative(&relative).map_err(source_io)?;
+    let text = String::from_utf8_lossy(&read.bytes);
+    let mut builder = GitignoreBuilder::new(directory);
+    for line in text.lines() {
+        builder
+            .add_line(Some(root.path.join(&relative)), line)
+            .map_err(std::io::Error::other)?;
+    }
+    builder.build().map_err(std::io::Error::other)
+}
+
+fn declared_ignore(
+    root: &SourceRoot,
+    directory: &Path,
+    entries: &[crate::source_root::SourceEntry],
+    name: &str,
+) -> std::io::Result<Option<Gitignore>> {
+    let Some(entry) = entries.iter().find(|entry| entry.name == name) else {
+        return Ok(None);
+    };
+    if entry.kind != SourceEntryKind::File {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "ignore policy is not a regular file: {}",
+                root.path.join(directory).join(name).display()
+            ),
+        ));
+    }
+    load_ignore(root, directory, name).map(Some)
+}
+
+fn ignored_by(matchers: &[Gitignore], relative: &Path, is_dir: bool) -> bool {
+    for matcher in matchers.iter().rev() {
+        match matcher.matched(relative, is_dir) {
+            Match::Ignore(_) => return true,
+            Match::Whitelist(_) => return false,
+            Match::None => {}
+        }
+    }
+    false
+}
+
+fn scan_bound_dir(
+    root: &SourceRoot,
+    relative: &Path,
+    options: &ScanOptions,
+    inherited_repo: &str,
+    inherited_matchers: &[Gitignore],
+    out: &mut Vec<ScannedFile>,
+) -> std::io::Result<()> {
+    let entries = root.read_dir_relative(relative).map_err(source_io)?;
+    let mut matchers: Vec<Gitignore> = inherited_matchers.to_vec();
+    if let Some(context) = declared_ignore(root, relative, &entries, ".contextignore")? {
+        matchers.push(context);
+    }
+    if options.respect_gitignore {
+        if let Some(gitignore) = declared_ignore(root, relative, &entries, ".gitignore")? {
+            matchers.push(gitignore);
+        }
+        if entries
+            .iter()
+            .any(|entry| entry.name == ".git" && entry.kind == SourceEntryKind::Directory)
+        {
+            let git = relative.join(".git");
+            let git_entries = root.read_dir_relative(&git).map_err(source_io)?;
+            if git_entries
+                .iter()
+                .any(|entry| entry.name == "info" && entry.kind == SourceEntryKind::Directory)
+            {
+                let info = git.join("info");
+                let info_entries = root.read_dir_relative(&info).map_err(source_io)?;
+                if let Some(exclude) = declared_ignore(root, &info, &info_entries, "exclude")? {
+                    matchers.push(exclude);
+                }
+            }
+        }
+    }
+
+    let has_git = entries.iter().any(|entry| entry.name == ".git");
+    let repo = if has_git {
+        relative
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| inherited_repo.to_string())
+    } else {
+        inherited_repo.to_string()
+    };
+
+    for entry in entries {
+        let name = entry.name;
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let child = relative.join(&name);
+        let is_dir = entry.kind == SourceEntryKind::Directory;
+        if ignored_by(&matchers, &child, is_dir) {
+            continue;
+        }
+        match entry.kind {
+            SourceEntryKind::Directory => {
+                scan_bound_dir(root, &child, options, &repo, &matchers, out)?;
+            }
+            SourceEntryKind::File
+                if entry.size <= options.max_file_size
+                    && is_markdown(&child, options.include_mdx) =>
+            {
+                let authority = root.open_file_relative(&child).map_err(source_io)?;
+                let rel = child
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push(ScannedFile {
+                    abs: root.path.join(&child),
+                    rel,
+                    repo: repo.clone(),
+                    authority: Some(Arc::new(authority)),
+                });
+            }
+            SourceEntryKind::File | SourceEntryKind::SymlinkOrReparse | SourceEntryKind::Other => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SourceRoot;
 
     fn write(root: &Path, rel: &str, content: &str) {
         let path = root.join(rel);
@@ -189,6 +380,56 @@ mod tests {
         .unwrap();
         let rels: Vec<&str> = with_mdx.iter().map(|f| f.rel.as_str()).collect();
         assert_eq!(rels, vec!["a.markdown", "b.md", "d.mdx"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_scan_reads_the_retained_root_and_never_indexes_a_same_path_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notes");
+        std::fs::create_dir(&root).unwrap();
+        write(&root, "original.md", "# original");
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        let admitted = SourceRoot::capture(canonical.clone()).unwrap();
+
+        let moved = temp.path().join("moved-original");
+        std::fs::rename(&canonical, &moved).unwrap();
+        std::fs::create_dir(&canonical).unwrap();
+        write(&canonical, "replacement.md", "# replacement");
+
+        let scanned = scan_source_root(&admitted, &opts()).expect("scan retained authority");
+        let rels: Vec<&str> = scanned.iter().map(|file| file.rel.as_str()).collect();
+        assert_eq!(rels, vec!["original.md"]);
+        assert_eq!(
+            scanned[0].read().expect("read retained file"),
+            b"# original"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bound_scan_does_not_treat_an_unreadable_ignore_file_as_absent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), "keep.md", "# keep");
+        write(temp.path(), ".contextignore", "drafts/\n");
+        let canonical = std::fs::canonicalize(temp.path()).unwrap();
+        let admitted = SourceRoot::capture(canonical).unwrap();
+        let ignore = temp.path().join(".contextignore");
+        let mut permissions = std::fs::metadata(&ignore).unwrap().permissions();
+        permissions.set_mode(0o000);
+        std::fs::set_permissions(&ignore, permissions).unwrap();
+
+        let result = scan_source_root(&admitted, &opts());
+
+        let mut permissions = std::fs::metadata(&ignore).unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&ignore, permissions).unwrap();
+        assert!(
+            result.is_err(),
+            "an ignore policy that cannot be read must fail closed rather than scan as if it were absent"
+        );
     }
 
     #[test]

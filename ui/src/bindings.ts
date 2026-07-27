@@ -8,14 +8,6 @@ export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
 	/**
-	 *  Grant (or re-grant) `root` as the active workspace, returning its
-	 *  canonicalized absolute path. Called by the frontend when a workspace is
-	 *  restored from a persisted session (the folder picker grants directly). Every
-	 *  subsequent `read_doc`/`list_workspace_files`/`watch_workspace` is confined to
-	 *  this root.
-	 */
-	setWorkspace: (root: string) => typedError<string, string>(__TAURI_INVOKE("set_workspace", { root })),
-	/**
 	 *  Read a single markdown document from within the granted workspace. Thin:
 	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
 	 *  Rejects paths outside the workspace, non-files, and non-markdown extensions.
@@ -42,27 +34,11 @@ export const commands = {
 	/**
 	 *  Open the native folder picker and return the chosen absolute path
 	 *  (canonicalized), or `None` when the user cancels. This does NOT mutate the
-	 *  workspace grant: the grant is adopted only when the frontend commits to the
-	 *  folder via [`watch_workspace`], so a pick that is later abandoned leaves the
-	 *  active workspace untouched. Async so blocking on the dialog never parks the
+	 *  workspace grant: product admission uses the library source command, so the
+	 *  returned display path carries no authority. Async so blocking on the dialog never parks the
 	 *  main thread; the dialog plugin pumps the picker on the event loop.
 	 */
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
-	/**
-	 *  Begin watching `root` recursively, emitting a debounced
-	 *  `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
-	 *  the granted workspace, and **return its canonical path**. This is the ONE
-	 *  atomic "switch workspace" operation the UI awaits: the new root becomes the
-	 *  grant *and* the live watcher together (advancing the root generation), or
-	 *  neither does — so the caller never has to sequence a separate `set_workspace`
-	 *  against the watcher arming. A `root` that cannot be resolved, or whose watch
-	 *  fails to arm, leaves BOTH the previous grant and the previous watcher fully
-	 *  intact and returns the error — the caller stays on the old workspace, and
-	 *  backend state can never diverge (a live watcher on one root while the grant
-	 *  names another). Runtime failures *during* watching are surfaced separately
-	 *  via `mdreader://watch-error`.
-	 */
-	watchWorkspace: (root: string) => typedError<WorkspaceGrant, string>(__TAURI_INVOKE("watch_workspace", { root })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -77,7 +53,7 @@ export const commands = {
 	pickAndAddLibrarySource: () => typedError<PickedLibrarySource, LibraryError>(__TAURI_INVOKE("pick_and_add_library_source")),
 	/**
 	 *  Reconcile a persisted session root against available membership. Returning
-	 *  `None` means the caller must not call `set_workspace`/`watch_workspace`.
+	 *  `None` means no backend-owned source identity may be granted or watched.
 	 */
 	reconcileLibraryRestore: (sessionRoot: string | null) => typedError<{
 	id: string,
@@ -1428,7 +1404,7 @@ export type ViolationDto = {
 /**
  *  Payload for the `mdreader://watch-error` event — a *runtime* watcher failure
  *  (raised from the notify callback, distinct from the command-time errors
- *  `watch_workspace` returns). The frontend surfaces it as a degraded watcher
+ *  the library watch command returns). The frontend surfaces it as a degraded watcher
  *  status in the StatusBar.
  */
 export type WatchError = {
@@ -1472,7 +1448,7 @@ export type WikiResolution = {
 
 /**
  *  The canonical grant plus the generation the watcher was armed under, returned
- *  by [`watch_workspace`]. The frontend adopts `generation` as the reference it
+ *  by the library-source watch transaction. The frontend adopts `generation` as the reference it
  *  filters `mdreader://fs-changed` / `mdreader://watch-error` events against.
  */
 export type WorkspaceGrant = {

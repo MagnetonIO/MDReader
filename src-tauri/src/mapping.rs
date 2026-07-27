@@ -56,7 +56,7 @@ use catdb_engine::{
 };
 
 use crate::commands::WorkspaceState;
-use crate::engine::{Epoch, StaleEpoch};
+use crate::engine::Epoch;
 
 /// The bounds the desktop surface inspects under.
 ///
@@ -480,7 +480,7 @@ fn list_mappings_guarded(
     // EPOCH-GUARDED
     epoch
         .finish(state, summaries)
-        .map_err(|_| StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 /// One mapping's full coverage: every source concept, where it lands, what it
@@ -513,7 +513,7 @@ fn inspect_mapping_guarded(
     let dto = coverage_dto(&report);
     gate();
     // EPOCH-GUARDED
-    epoch.finish(state, dto).map_err(|_| StaleEpoch::message())
+    epoch.finish(state, dto).map_err(|error| error.to_string())
 }
 
 /// Compose a chain of registered mappings into a single validated mapping, and
@@ -614,7 +614,7 @@ fn compose_mappings_guarded(
     };
     gate();
     // EPOCH-GUARDED
-    epoch.finish(state, dto).map_err(|_| StaleEpoch::message())
+    epoch.finish(state, dto).map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -655,7 +655,7 @@ fn diff_schema_versions_guarded(
     let dto = diff_dto(&diff);
     gate();
     // EPOCH-GUARDED
-    epoch.finish(state, dto).map_err(|_| StaleEpoch::message())
+    epoch.finish(state, dto).map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -718,7 +718,7 @@ fn inspect_migration_guarded(
     let dto = plan_dto(mapping, &plan);
     gate();
     // EPOCH-GUARDED
-    epoch.finish(state, dto).map_err(|_| StaleEpoch::message())
+    epoch.finish(state, dto).map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -1218,4 +1218,32 @@ fn current(state: &WorkspaceState) -> Result<Arc<Epoch>, String> {
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     epoch.validate_root()?;
     Ok(epoch)
+}
+
+#[cfg(test)]
+mod completion_identity_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn mapping_completion_keeps_source_identity_failure_distinct_from_a_switch() {
+        let temp = TempDir::new().expect("tempdir");
+        let granted = temp.path().join("notes");
+        fs::create_dir(&granted).expect("create granted root");
+        let granted = fs::canonicalize(granted).expect("canonical granted root");
+        let state = WorkspaceState::granted(granted.clone());
+        let moved = temp.path().join("moved-original");
+
+        let error = list_mappings_guarded(&state, || {
+            fs::rename(&granted, &moved).expect("move admitted root");
+            fs::create_dir(&granted).expect("create same-path replacement");
+        })
+        .expect_err("mapping result must refuse replacement of its source root");
+
+        assert!(
+            error.contains("identity"),
+            "identity refusal must not be flattened to a stale switch: {error}"
+        );
+    }
 }

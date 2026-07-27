@@ -11,29 +11,12 @@
 //! ## Workspace containment
 //!
 //! Filesystem access is confined to a single *granted* workspace root, held in
-//! [`WorkspaceState`]. The grant is established by [`set_workspace`] (session
-//! restore, and to read back the canonical path) and by [`watch_workspace`],
-//! which adopts its target root as the grant *atomically with* arming the
-//! watcher — so the stored root and the live watcher can never diverge. The
-//! native folder picker ([`pick_workspace_folder`]) only *returns* a path; it
-//! never mutates the grant, so a pick that is later abandoned (e.g. the watcher
-//! fails to arm) leaves the active workspace untouched. Every path-taking command
-//! canonicalizes both the granted root and the candidate path and rejects
-//! anything that does not `starts_with(root)` *after* canonicalization.
-//! Canonicalization resolves `..` segments and symlinks, so this single check
-//! defeats path traversal AND symlink-escape (a symlink living inside the
-//! workspace but pointing outside it resolves to its real, outside target and is
-//! rejected).
-//!
-//! ## TOCTOU (accepted)
-//!
-//! Containment canonicalizes the path, then the command reads/walks/watches the
-//! resolved path in a *separate* step, so a path could in principle be swapped
-//! between the check and the use. For a LOCAL single-user desktop reader (not a
-//! multi-tenant service) this race is proportionately minor — there is no other
-//! tenant to win it — so it is accepted rather than locked against. Each affected
-//! command ([`read_doc`], [`watch_workspace`], and the engine module's listing)
-//! notes it at the use site.
+//! [`WorkspaceState`]. Only backend-owned library membership can establish that
+//! grant. Admission retains the opened root authority and every read, save, and
+//! import resolves beneath that handle without following descendant links.
+//! Watching and epoch publication commit together; completion revalidates both
+//! the epoch and the stored root identity. The legacy native picker
+//! ([`pick_workspace_folder`]) only returns display text and can never grant it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -122,6 +105,7 @@ impl WorkspaceState {
     /// advancing the generation. THE revocation barrier: the returned `Arc` is the
     /// new current era; any epoch captured before this call is now stale. Returns
     /// the new epoch.
+    #[cfg(test)]
     pub(crate) fn switch(&self, root: PathBuf) -> Result<Arc<crate::engine::Epoch>, String> {
         let root = SourceRoot::capture(root).map_err(|error| error.to_string())?;
         self.switch_bound(root)
@@ -134,15 +118,7 @@ impl WorkspaceState {
         &self,
         root: SourceRoot,
     ) -> Result<Arc<crate::engine::Epoch>, String> {
-        let mut slot = self
-            .current
-            .lock()
-            .map_err(|_| "workspace state poisoned".to_string())?;
-        root.verify().map_err(|error| error.to_string())?;
-        let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
-        let epoch = crate::engine::Epoch::new(root, generation);
-        *slot = Some(Arc::clone(&epoch));
-        Ok(epoch)
+        switch_bound_with_hook(self, root, || {})
     }
 
     /// Test helper: a state already granting `root` (generation 1).
@@ -152,6 +128,27 @@ impl WorkspaceState {
         state.switch(root).expect("grant test root");
         state
     }
+}
+
+/// Publication core for an already-admitted root. The hook is a deterministic
+/// test seam located exactly after the verification that formerly preceded the
+/// epoch swap with no further check.
+fn switch_bound_with_hook(
+    state: &WorkspaceState,
+    root: SourceRoot,
+    after_final_verification: impl FnOnce(),
+) -> Result<Arc<crate::engine::Epoch>, String> {
+    let mut slot = state
+        .current
+        .lock()
+        .map_err(|_| "workspace state poisoned".to_string())?;
+    root.verify().map_err(|error| error.to_string())?;
+    after_final_verification();
+    root.verify().map_err(|error| error.to_string())?;
+    let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    let epoch = crate::engine::Epoch::new(root, generation);
+    *slot = Some(Arc::clone(&epoch));
+    Ok(epoch)
 }
 
 /// Canonicalize `candidate` and confirm it stays within the (already
@@ -174,6 +171,7 @@ pub(crate) fn resolve_within(root: &Path, candidate: &Path) -> Result<PathBuf, S
 
 /// Resolve a *readable document* path: contained in `root`, an existing file,
 /// and a markdown document. Rejects everything else (directories, non-`.md`).
+#[cfg(test)]
 fn resolve_doc(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let real = resolve_within(root, path)?;
     if !real.is_file() {
@@ -195,9 +193,9 @@ pub(crate) fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
     Ok(real)
 }
 
-/// Canonicalize `root` and confirm it is an existing directory — the check
-/// [`set_workspace`] uses to establish a workspace grant from webview text (as
-/// opposed to validating a candidate against an existing grant).
+/// Canonicalize `root` and confirm it is an existing directory. Used for picker
+/// display and tests only; webview text never establishes a workspace grant.
+#[cfg(test)]
 pub(crate) fn canonical_dir(root: &str) -> Result<PathBuf, String> {
     canonical_dir_path(Path::new(root))
 }
@@ -235,28 +233,6 @@ pub fn ping(msg: String) -> PingResponse {
         echoed: msg,
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
-}
-
-// --------------------------------------------------------------------------
-// set_workspace
-// --------------------------------------------------------------------------
-
-/// Grant (or re-grant) `root` as the active workspace, returning its
-/// canonicalized absolute path. Called by the frontend when a workspace is
-/// restored from a persisted session (the folder picker grants directly). Every
-/// subsequent `read_doc`/`list_workspace_files`/`watch_workspace` is confined to
-/// this root.
-#[tauri::command(async)]
-#[specta::specta]
-pub fn set_workspace(
-    root: String,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<String, String> {
-    let real = canonical_dir(&root)?;
-    // A grant change is a new epoch (the revocation barrier), even on the
-    // degraded/no-watcher path.
-    state.switch(real.clone())?;
-    Ok(real.to_string_lossy().into_owned())
 }
 
 /// Establish a library grant only when the path still resolves to the exact
@@ -335,37 +311,47 @@ fn read_doc_guarded(
     path: &str,
     gate: impl FnOnce(),
 ) -> Result<DocPayload, String> {
+    read_doc_guarded_with_hooks(state, path, || {}, gate)
+}
+
+fn read_doc_guarded_with_hooks(
+    state: &WorkspaceState,
+    path: &str,
+    before_read: impl FnOnce(),
+    before_finish: impl FnOnce(),
+) -> Result<DocPayload, String> {
     // Capture the epoch ONCE; validate + read against its grant.
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     epoch.validate_root()?;
-    // TOCTOU: the read below runs after this containment check (accepted — see the
-    // module-level "TOCTOU" note; local single-user reader).
-    let real = resolve_doc(&epoch.root, Path::new(path))?;
-    epoch.validate_root()?;
-
-    let bytes = std::fs::read(&real).map_err(|err| format!("read {path}: {err}"))?;
-    let hash = blake3::hash(&bytes).to_hex().to_string();
-    let mtime = mtime_millis(
-        std::fs::metadata(&real)
-            .ok()
-            .and_then(|m| m.modified().ok()),
-    );
+    let source = epoch.source_root();
+    let relative = source
+        .relative_path(Path::new(path))
+        .map_err(|error| error.to_string())?;
+    if !is_markdown(&relative) {
+        return Err(format!("not a markdown document: {path}"));
+    }
+    before_read();
+    let read = source
+        .read_relative(&relative)
+        .map_err(|error| error.to_string())?;
+    let hash = blake3::hash(&read.bytes).to_hex().to_string();
+    let mtime = mtime_millis(read.modified);
 
     let payload = DocPayload {
-        content: String::from_utf8_lossy(&bytes).into_owned(),
+        content: String::from_utf8_lossy(&read.bytes).into_owned(),
         mtime,
         hash,
     };
 
-    gate();
+    before_finish();
     epoch.validate_root()?;
     // EPOCH-GUARDED: a switch during the read supersedes this epoch — discard the
     // (old-root) bytes rather than surfacing them under the new workspace.
     epoch
         .finish(state, payload)
-        .map_err(|_| crate::engine::StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -437,9 +423,14 @@ fn temp_filename() -> String {
 /// and return the temp path. Split out from the rename so the "crash before the
 /// rename" case is directly testable: the original stays intact while only the
 /// temp is present.
-fn stage_temp(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+fn stage_temp(root: &SourceRoot, dest: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = dest
+        .parent()
+        .ok_or_else(|| format!("no parent directory for {}", dest.display()))?;
     let tmp = dir.join(temp_filename());
-    let mut file = std::fs::File::create(&tmp).map_err(|err| format!("stage temp file: {err}"))?;
+    let mut file = root
+        .create_new_relative(&tmp)
+        .map_err(|err| format!("stage temp file: {err}"))?;
     file.write_all(bytes)
         .map_err(|err| format!("write temp file: {err}"))?;
     // fsync the bytes before the rename so a power-loss after the rename can't
@@ -453,21 +444,26 @@ fn stage_temp(dir: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
 /// atomic on a single filesystem, so a reader (or a crash) only ever sees the
 /// whole old file or the whole new one, never a half-written document. A rename
 /// failure removes the orphaned temp rather than leaking it.
-fn commit_rename(tmp: &Path, dest: &Path) -> Result<(), String> {
-    match std::fs::rename(tmp, dest) {
+fn commit_rename(root: &SourceRoot, tmp: &Path, dest: &Path) -> Result<(), String> {
+    match root.rename_relative(tmp, dest) {
         Ok(()) => Ok(()),
         Err(err) => {
-            let _ = std::fs::remove_file(tmp);
-            Err(format!("commit save for {}: {err}", dest.display()))
+            let _ = root.remove_file_relative(tmp);
+            Err(format!(
+                "commit save for {}: {err}",
+                root.path.join(dest).display()
+            ))
         }
     }
 }
 
 /// Reads `path`'s current bytes and returns their blake3 hex digest — the digest
 /// [`read_doc`]/[`save_doc`] agree on.
-fn hash_on_disk(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
+fn hash_on_disk(root: &SourceRoot, path: &Path) -> Result<String, String> {
+    let read = root
+        .read_relative(path)
+        .map_err(|err| format!("read {}: {err}", root.path.join(path).display()))?;
+    Ok(blake3::hash(&read.bytes).to_hex().to_string())
 }
 
 /// The stable per-DIRECTORY save-lock sidecar: `<dir>/.mdreader.savelock`. ONE
@@ -502,14 +498,11 @@ struct SaveLock(std::fs::File);
 impl SaveLock {
     /// Open (creating if needed) the target's sidecar lock and block until its
     /// exclusive advisory lock is held.
-    fn acquire(target: &Path) -> Result<Self, String> {
+    fn acquire(root: &SourceRoot, target: &Path) -> Result<Self, String> {
         let sidecar = savelock_path(target)
             .ok_or_else(|| format!("no lock path for {}", target.display()))?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&sidecar)
+        let file = root
+            .open_lock_relative(&sidecar)
             .map_err(|err| format!("open save lock {}: {err}", sidecar.display()))?;
         fs2::FileExt::lock_exclusive(&file)
             .map_err(|err| format!("lock save for {}: {err}", target.display()))?;
@@ -575,8 +568,33 @@ fn save_doc_guarded(
     content: &str,
     expected_hash: &str,
     force: bool,
-    commit: impl FnOnce(&Path, &Path) -> Result<(), String>,
+    commit: impl FnOnce(&SourceRoot, &Path, &Path) -> Result<(), String>,
     before_rename: impl FnOnce(),
+    before_finish: impl FnOnce(),
+) -> Result<SaveOutcome, String> {
+    save_doc_guarded_with_hooks(
+        state,
+        path,
+        content,
+        expected_hash,
+        force,
+        commit,
+        before_rename,
+        || {},
+        before_finish,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_doc_guarded_with_hooks(
+    state: &WorkspaceState,
+    path: &str,
+    content: &str,
+    expected_hash: &str,
+    force: bool,
+    commit: impl FnOnce(&SourceRoot, &Path, &Path) -> Result<(), String>,
+    before_rename: impl FnOnce(),
+    after_final_verification: impl FnOnce(),
     before_finish: impl FnOnce(),
 ) -> Result<SaveOutcome, String> {
     // Capture the epoch ONCE; validate + guard + write against its grant.
@@ -584,10 +602,13 @@ fn save_doc_guarded(
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     epoch.validate_root()?;
-    // TOCTOU: the read/write below run after this containment check (accepted —
-    // see the module-level "TOCTOU" note; local single-user reader).
-    let real = resolve_doc(&epoch.root, Path::new(path))?;
-    epoch.validate_root()?;
+    let source = epoch.source_root();
+    let relative = source
+        .relative_path(Path::new(path))
+        .map_err(|error| error.to_string())?;
+    if !is_markdown(&relative) {
+        return Err(format!("not a markdown document: {path}"));
+    }
 
     // Serialize the ENTIRE check → temp-write → rename window against other
     // cooperating writers (a second `save_doc`, the engine) with an exclusive
@@ -596,31 +617,28 @@ fn save_doc_guarded(
     // the lock immediately before the swap — together these close the
     // compare-then-rename TOCTOU: a write that lands between our check and the
     // rename is caught and the swap is refused (the external bytes stay intact).
-    let _lock = SaveLock::acquire(&real)?;
+    let _lock = SaveLock::acquire(&source, &relative)?;
 
     // Hash guard (under the lock): unless force-overwriting, the file's current
     // bytes must still hash to what the buffer was anchored to.
-    let current_hash = hash_on_disk(&real)?;
+    let current_hash = hash_on_disk(&source, &relative)?;
     if !force && current_hash != expected_hash {
         before_finish();
         epoch.validate_root()?;
         // EPOCH-GUARDED
         return epoch
             .finish(state, SaveOutcome::conflict(current_hash))
-            .map_err(|_| crate::engine::StaleEpoch::message());
+            .map_err(|error| error.to_string());
     }
 
     // Stage the new bytes into a sibling temp (still holding the lock).
     let bytes = content.as_bytes();
     let new_hash = blake3::hash(bytes).to_hex().to_string();
-    let dir = real
-        .parent()
-        .ok_or_else(|| format!("no parent directory for {}", real.display()))?;
-    let tmp = stage_temp(dir, bytes)?;
+    let tmp = stage_temp(&source, &relative, bytes)?;
 
     before_rename();
     if let Err(error) = epoch.validate_root() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = source.remove_file_relative(&tmp);
         return Err(error);
     }
 
@@ -628,23 +646,26 @@ fn save_doc_guarded(
     // between our check and now (a non-cooperating external writer) changes the
     // hash → refuse the rename so its content survives, and report the conflict.
     if !force {
-        let now_hash = hash_on_disk(&real)?;
+        let now_hash = hash_on_disk(&source, &relative)?;
         if now_hash != current_hash {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = source.remove_file_relative(&tmp);
             before_finish();
             epoch.validate_root()?;
             // EPOCH-GUARDED
             return epoch
                 .finish(state, SaveOutcome::conflict(now_hash))
-                .map_err(|_| crate::engine::StaleEpoch::message());
+                .map_err(|error| error.to_string());
         }
     }
 
-    commit(&tmp, &real)?;
+    epoch.validate_root()?;
+    after_final_verification();
+    commit(&source, &tmp, &relative)?;
     let mtime = mtime_millis(
-        std::fs::metadata(&real)
+        source
+            .read_relative(&relative)
             .ok()
-            .and_then(|meta| meta.modified().ok()),
+            .and_then(|read| read.modified),
     );
     let outcome = SaveOutcome::saved(new_hash, mtime);
 
@@ -655,7 +676,7 @@ fn save_doc_guarded(
     // not be handed to the new workspace, so discard the outcome.
     epoch
         .finish(state, outcome)
-        .map_err(|_| crate::engine::StaleEpoch::message())
+        .map_err(|error| error.to_string())
 }
 
 // --------------------------------------------------------------------------
@@ -664,9 +685,8 @@ fn save_doc_guarded(
 
 /// Open the native folder picker and return the chosen absolute path
 /// (canonicalized), or `None` when the user cancels. This does NOT mutate the
-/// workspace grant: the grant is adopted only when the frontend commits to the
-/// folder via [`watch_workspace`], so a pick that is later abandoned leaves the
-/// active workspace untouched. Async so blocking on the dialog never parks the
+/// workspace grant: product admission uses the library source command, so the
+/// returned display path carries no authority. Async so blocking on the dialog never parks the
 /// main thread; the dialog plugin pumps the picker on the event loop.
 #[tauri::command]
 #[specta::specta]
@@ -686,7 +706,7 @@ pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, Str
 }
 
 // --------------------------------------------------------------------------
-// watch_workspace
+// Library-source watcher
 // --------------------------------------------------------------------------
 
 /// Payload for the `mdreader://fs-changed` event. tauri-specta emits a typed
@@ -707,7 +727,7 @@ pub struct FsChanged {
 
 /// Payload for the `mdreader://watch-error` event — a *runtime* watcher failure
 /// (raised from the notify callback, distinct from the command-time errors
-/// `watch_workspace` returns). The frontend surfaces it as a degraded watcher
+/// the library watch command returns). The frontend surfaces it as a degraded watcher
 /// status in the StatusBar.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 #[tauri_specta(event_name = "mdreader://watch-error")]
@@ -721,7 +741,7 @@ pub struct WatchError {
 }
 
 /// The canonical grant plus the generation the watcher was armed under, returned
-/// by [`watch_workspace`]. The frontend adopts `generation` as the reference it
+/// by the library-source watch transaction. The frontend adopts `generation` as the reference it
 /// filters `mdreader://fs-changed` / `mdreader://watch-error` events against.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct WorkspaceGrant {
@@ -742,41 +762,6 @@ struct ActiveWatcher {
 /// The live watcher and the exact root object it was armed against.
 #[derive(Default)]
 pub struct WatcherState(Mutex<Option<ActiveWatcher>>);
-
-/// Begin watching `root` recursively, emitting a debounced
-/// `mdreader://fs-changed` for every markdown file that changes, adopt `root` as
-/// the granted workspace, and **return its canonical path**. This is the ONE
-/// atomic "switch workspace" operation the UI awaits: the new root becomes the
-/// grant *and* the live watcher together (advancing the root generation), or
-/// neither does — so the caller never has to sequence a separate `set_workspace`
-/// against the watcher arming. A `root` that cannot be resolved, or whose watch
-/// fails to arm, leaves BOTH the previous grant and the previous watcher fully
-/// intact and returns the error — the caller stays on the old workspace, and
-/// backend state can never diverge (a live watcher on one root while the grant
-/// names another). Runtime failures *during* watching are surfaced separately
-/// via `mdreader://watch-error`.
-#[tauri::command(async)]
-#[specta::specta]
-pub fn watch_workspace(
-    app: AppHandle,
-    root: String,
-    workspace: tauri::State<'_, WorkspaceState>,
-    state: tauri::State<'_, WatcherState>,
-) -> Result<WorkspaceGrant, String> {
-    watch_workspace_path(&app, Path::new(&root), &workspace, &state)
-}
-
-/// Native-path counterpart to [`watch_workspace`]. It preserves the exact same
-/// arm-then-commit transaction and event tagging while keeping a library root in
-/// backend-native form from registry lookup through epoch adoption.
-pub(crate) fn watch_workspace_path(
-    app: &AppHandle,
-    root: &Path,
-    workspace: &WorkspaceState,
-    state: &WatcherState,
-) -> Result<WorkspaceGrant, String> {
-    watch_workspace_path_checked(app, root, workspace, state, None)
-}
 
 /// Library-only watcher path: the registry supplies an already-canonical root,
 /// and any different canonical result is a substitution that must fail before
@@ -869,7 +854,7 @@ fn watch_workspace_path_checked(
     })
 }
 
-/// The workspace-switch core, factored out of [`watch_workspace`] so it is
+/// The workspace-switch core, factored out of the library watcher so it is
 /// exercisable without an `AppHandle` (the handle is only needed to build the
 /// production `on_event` sink; tests pass a no-op). Resolves `root`, arms a fresh
 /// watcher into a *local*, and — only on success — commits the new grant + new
@@ -975,13 +960,7 @@ fn prepare_source_root(
     }
     match expected_identity {
         Some(identity) => {
-            identity
-                .verify(&new_root)
-                .map_err(|error| error.to_string())?;
-            Ok(SourceRoot {
-                path: new_root,
-                identity: identity.clone(),
-            })
+            SourceRoot::restore(new_root, identity.clone()).map_err(|error| error.to_string())
         }
         None => SourceRoot::capture(new_root).map_err(|error| error.to_string()),
     }
@@ -1015,10 +994,16 @@ fn watch_and_commit_bound<F: DebounceEventHandler>(
     // The watcher may have armed after the path was substituted. Revalidate the
     // opened object now, then once more inside the atomic publication section.
     new_root.verify().map_err(|error| error.to_string())?;
-    before_epoch_publication();
 
     let granted_path = new_root.path.clone();
-    let generation = commit_workspace(workspace, watcher, new_root, debouncer, armed_gen)?;
+    let generation = commit_workspace(
+        workspace,
+        watcher,
+        new_root,
+        debouncer,
+        armed_gen,
+        before_epoch_publication,
+    )?;
     Ok((granted_path, generation))
 }
 
@@ -1038,6 +1023,7 @@ fn commit_workspace(
     new_root: SourceRoot,
     debouncer: Debouncer<RecommendedWatcher>,
     armed_gen: &AtomicU64,
+    after_final_verification: impl FnOnce(),
 ) -> Result<u32, String> {
     let mut watcher_slot = watcher
         .0
@@ -1047,6 +1033,8 @@ fn commit_workspace(
         .current
         .lock()
         .map_err(|_| "workspace state poisoned".to_string())?;
+    new_root.verify().map_err(|error| error.to_string())?;
+    after_final_verification();
     new_root.verify().map_err(|error| error.to_string())?;
     // Both locks held — neither write below can fail, so the swap is atomic. The
     // watcher's armed generation is published to match the new epoch exactly, so
@@ -1065,8 +1053,9 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, commit_rename, grant_workspace_path_exact, read_doc_guarded, resolve_dir,
-        resolve_doc, resolve_within, save_doc_guarded, watch_and_commit,
+        canonical_dir, commit_rename, grant_workspace_path_exact, read_doc_guarded,
+        read_doc_guarded_with_hooks, resolve_dir, resolve_doc, resolve_within, save_doc_guarded,
+        save_doc_guarded_with_hooks, switch_bound_with_hook, watch_and_commit,
         watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks, DebounceEventResult,
         WatcherState, WorkspaceState,
     };
@@ -1356,6 +1345,35 @@ mod tests {
         assert!(second.generation > first.generation);
         assert_eq!(second.root_identity, first.root_identity);
         assert!(second.validate_root().is_ok());
+    }
+
+    #[test]
+    fn switch_bound_revalidates_after_its_final_verification_before_publication() {
+        use std::sync::Arc;
+
+        let temp = TempDir::new().expect("tempdir");
+        let prior = temp.path().join("prior");
+        let admitted = temp.path().join("admitted");
+        fs::create_dir(&prior).expect("create prior root");
+        fs::create_dir(&admitted).expect("create admitted root");
+        let prior = fs::canonicalize(prior).expect("canonical prior");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted");
+        let expected = SourceRoot::capture(admitted.clone()).expect("capture admitted root");
+        let moved = temp.path().join("moved-admitted");
+        let workspace = WorkspaceState::granted(prior.clone());
+        let before = workspace.current().expect("prior epoch");
+
+        let error = switch_bound_with_hook(&workspace, expected, || {
+            fs::rename(&admitted, &moved).expect("move admitted object after verification");
+            fs::create_dir(&admitted).expect("create same-path replacement");
+        })
+        .err()
+        .expect("a substitution in the final publication window must be refused");
+
+        assert!(error.contains("identity"), "explicit refusal: {error}");
+        let after = workspace.current().expect("prior epoch remains");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, prior);
     }
 
     #[cfg(unix)]
@@ -1703,6 +1721,45 @@ mod tests {
         assert_eq!(ws.root().unwrap(), root_b);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn read_uses_retained_authority_when_the_root_name_is_replaced_after_resolution() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("create root");
+        fs::write(root.join("note.md"), "# admitted").expect("write admitted document");
+        let root = fs::canonicalize(root).expect("canonical root");
+        let workspace = WorkspaceState::granted(root.clone());
+        let moved = temp.path().join("moved-admitted");
+
+        let before_root = root.clone();
+        let before_moved = moved.clone();
+        let after_root = root.clone();
+        let after_moved = moved.clone();
+        let payload = read_doc_guarded_with_hooks(
+            &workspace,
+            root.join("note.md").to_str().expect("utf8 test path"),
+            move || {
+                fs::rename(&before_root, &before_moved).expect("move admitted root");
+                fs::create_dir(&before_root).expect("create replacement root");
+                fs::write(before_root.join("note.md"), "# replacement")
+                    .expect("write replacement document");
+            },
+            move || {
+                fs::remove_file(after_root.join("note.md")).expect("remove replacement document");
+                fs::remove_dir(&after_root).expect("remove replacement root");
+                fs::rename(&after_moved, &after_root).expect("restore admitted root name");
+            },
+        )
+        .expect("the admitted object is read and its name is restored before completion");
+
+        assert_eq!(payload.content, "# admitted");
+        assert_eq!(
+            fs::read_to_string(root.join("note.md")).expect("admitted document remains"),
+            "# admitted"
+        );
+    }
+
     fn replaced_docs_workspace() -> (TempDir, WorkspaceState, PathBuf, PathBuf) {
         let temp = TempDir::new().expect("tempdir");
         let root = temp.path().join("notes");
@@ -1761,6 +1818,56 @@ mod tests {
         assert_eq!(
             fs::read_to_string(moved.join("note.md")).expect("original untouched"),
             "# original"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_publishes_through_the_retained_parent_after_final_root_verification() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("create root");
+        fs::write(root.join("note.md"), "# admitted").expect("write admitted document");
+        let root = fs::canonicalize(root).expect("canonical root");
+        let workspace = WorkspaceState::granted(root.clone());
+        let moved = temp.path().join("moved-admitted");
+
+        let hook_root = root.clone();
+        let hook_moved = moved.clone();
+        let finish_root = root.clone();
+        let finish_moved = moved.clone();
+        let outcome = save_doc_guarded_with_hooks(
+            &workspace,
+            root.join("note.md").to_str().expect("utf8 test path"),
+            "# saved",
+            &hash_of(b"# admitted"),
+            false,
+            commit_rename,
+            || {},
+            move || {
+                fs::rename(&hook_root, &hook_moved).expect("move admitted root");
+                fs::create_dir(&hook_root).expect("create replacement root");
+                fs::write(hook_root.join("note.md"), "# replacement")
+                    .expect("write replacement document");
+            },
+            move || {
+                assert_eq!(
+                    fs::read_to_string(finish_root.join("note.md"))
+                        .expect("replacement remains readable"),
+                    "# replacement",
+                    "descriptor-relative publish never touched the replacement"
+                );
+                fs::remove_file(finish_root.join("note.md")).expect("remove replacement document");
+                fs::remove_dir(&finish_root).expect("remove replacement root");
+                fs::rename(&finish_moved, &finish_root).expect("restore admitted root name");
+            },
+        )
+        .expect("save remains bound to the retained source object");
+
+        assert_eq!(outcome.status, "saved");
+        assert_eq!(
+            fs::read_to_string(root.join("note.md")).expect("read restored admitted document"),
+            "# saved"
         );
     }
 
@@ -1918,10 +2025,11 @@ mod tests {
 
         // Injected publisher: perform the ATOMIC swap, then crash. A reader after the
         // crash must see the whole new file — never a half-written one.
-        let commit_then_crash = |tmp: &Path, dest: &Path| -> Result<(), String> {
-            commit_rename(tmp, dest)?;
-            panic!("crash the instant the atomic swap completed");
-        };
+        let commit_then_crash =
+            |root: &SourceRoot, tmp: &Path, dest: &Path| -> Result<(), String> {
+                commit_rename(root, tmp, dest)?;
+                panic!("crash the instant the atomic swap completed");
+            };
 
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
@@ -2175,9 +2283,7 @@ mod tests {
         // The barrier-creators and the non-workspace commands are exempt.
         const EXEMPT: &[&str] = &[
             "ping",                  // no workspace data
-            "set_workspace",         // CREATES the epoch (the barrier itself)
             "pick_workspace_folder", // only returns a picked path
-            "watch_workspace",       // CREATES the epoch + arms the watcher
         ];
         // Built at runtime so this literal never appears in the scanned source
         // (which would self-match); the test module is excluded regardless. The

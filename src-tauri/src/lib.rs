@@ -47,11 +47,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
-            commands::set_workspace,
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
-            commands::watch_workspace,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -225,6 +223,20 @@ mod tests {
         export_bindings(&specta_builder()).expect("failed to export typescript bindings");
     }
 
+    #[test]
+    fn raw_path_grant_commands_are_neither_registered_nor_bound() {
+        let registry = include_str!("lib.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production registry");
+        assert!(!registry.contains("commands::set_workspace"));
+        assert!(!registry.contains("commands::watch_workspace,"));
+
+        let bindings = include_str!("../../ui/src/bindings.ts");
+        assert!(!bindings.contains("__TAURI_INVOKE(\"set_workspace\""));
+        assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
+    }
+
     /// THE first-paint guarantee, enforced by construction.
     ///
     /// Tauri dispatches a command that is neither `async fn` nor marked
@@ -237,7 +249,7 @@ mod tests {
     /// window, and if it lands before the first layer-tree commit the window never
     /// paints at all (a blank frame, dead to the keyboard, at 0% CPU).
     ///
-    /// The startup path invokes commands before first paint (`watch_workspace`,
+    /// The startup path invokes commands before first paint (`watch_library_source`,
     /// then `list_workspace_files`), so ANY command that can block — on I/O, on a
     /// lock, on a permission prompt, on the engine — is a first-paint hazard.
     /// Rather than audit which ones are "fast enough", every command is dispatched

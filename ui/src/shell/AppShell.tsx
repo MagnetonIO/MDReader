@@ -17,9 +17,7 @@ import {
   makeSearchAdapter,
   readDoc,
   saveDoc,
-  setWorkspace,
   startImport,
-  watchWorkspace,
   type WorkspaceFile,
 } from '../platform/fs.js';
 import { SearchPalette } from '@mdreader/ui';
@@ -182,7 +180,7 @@ export function AppShell() {
   // So a late continuation for an older root can never overwrite newer state.
   const openEpochRef = useRef(0);
   // The backend generation the CURRENT watcher was armed under (from
-  // watchWorkspace). Watcher events/errors carry the generation they were armed
+  // watchLibrarySource). Watcher events/errors carry the generation they were armed
   // under; we discard mismatches so a previous watcher's still-draining events
   // can't drive — or fail — the new workspace. `-1` = no watcher yet.
   const watcherGenRef = useRef(-1);
@@ -341,15 +339,12 @@ export function AppShell() {
   }, [reindexer]);
 
   // Open `folder` as the active workspace; resolves to `true` once the store
-  // reflects it as the active root. In a Tauri shell the watcher is armed FIRST:
-  // watch_workspace canonicalizes the folder, arms the watcher, and adopts it as
-  // the granted root — atomically — so a switch that fails to arm leaves the
-  // previous grant + watcher intact and we stay on the old workspace (no
-  // half-switch, no backend divergence). A FIRST open (or a re-open of the same
-  // root) whose watch fails still degrades gracefully: the folder is granted
-  // independently and read, just without live-reload. Never closes tabs — a
-  // workspace *switch* is the caller's concern (see `switchWorkspace`), so
-  // session restore reuses this without disturbing the session it just hydrated.
+  // reflects it as the active root. In a Tauri shell, only an opaque library
+  // source ID can arm the watcher and establish the backend grant. The
+  // watch-and-grant transaction is atomic, so a switch that fails to arm leaves
+  // the previous grant and watcher intact. A first open (or same-root reopen)
+  // whose watch fails may use the backend's source-ID degraded grant, without
+  // live reload. Never closes tabs — a workspace switch is the caller's concern.
   const openRoot = useCallback(
     async (folder: string, sourceId?: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
@@ -378,17 +373,23 @@ export function AppShell() {
         return true;
       }
 
+      if (!sourceId) {
+        loadingGateRef.current.fail(epoch, loadingSink);
+        if (openEpochRef.current === epoch) {
+          toast('This folder must be admitted through the library before it can be opened');
+        }
+        return false;
+      }
+
       let grant: { root: string; generation: number };
       try {
         // The ONE atomic switch: arms the watcher, adopts `folder` as the grant
-        // (advancing the epoch), and returns the canonical root + the generation
-        // the watcher was armed under — no separate set_workspace to sequence.
+        // (advancing the epoch), and returns the canonical root plus the
+        // generation the watcher was armed under.
         // A registry member is activated by opaque source ID, letting the
         // backend carry its native PathBuf straight into the watcher/epoch
         // transaction. `folder` remains display text only.
-        grant = sourceId
-          ? await watchLibrarySource(sourceId)
-          : await watchWorkspace(folder);
+        grant = await watchLibrarySource(sourceId);
       } catch {
         if (isSwitch) {
           // A real switch that could not arm: stay entirely on the old workspace.
@@ -410,22 +411,15 @@ export function AppShell() {
         // First open / same-root reopen: grant independently, read degraded.
         let g: string;
         try {
-          g = sourceId
-            ? await grantLibrarySource(sourceId)
-            : await setWorkspace(folder);
+          g = await grantLibrarySource(sourceId);
         } catch {
           // A registry member that can no longer be resolved must remain closed;
           // never turn its lossy DTO path into an independent grant.
-          if (sourceId) {
-            loadingGateRef.current.fail(epoch, loadingSink);
-            if (openEpochRef.current === epoch) {
-              toast('Could not open this library source');
-            }
-            return false;
+          loadingGateRef.current.fail(epoch, loadingSink);
+          if (openEpochRef.current === epoch) {
+            toast('Could not open this library source');
           }
-          // Legacy/raw first-open edge: retain the historical best-effort display
-          // path in non-library callers.
-          g = folder;
+          return false;
         }
         // A newer open superseded this one during the await → abandon its store
         // mutations (the newer open owns the workspace now).

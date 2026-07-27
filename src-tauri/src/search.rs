@@ -45,9 +45,10 @@ use catdb_engine::{
     EmbeddedCatDb, HitBoosts, HitExplain, ProvenanceChain, RelatedComponents, RelatedDoc,
     SearchHit, SearchOptions,
 };
+use mdreader_ingest::SourceRoot;
 
 use crate::commands::{mtime_millis, WorkspaceState};
-use crate::engine::{Epoch, Semantic};
+use crate::engine::{Epoch, Semantic, StaleEpoch};
 
 // --------------------------------------------------------------------------
 // Wire DTOs
@@ -296,9 +297,15 @@ fn basename(rel: &str) -> String {
 
 /// Build a wire hit from an engine [`SearchHit`], reconstructing the absolute
 /// path under `src_root` and statting the file for its mtime.
-fn hit_dto(src_root: &Path, hit: SearchHit) -> SearchHitDto {
-    let abs = src_root.join(&hit.file_path);
-    let mtime = mtime_millis(std::fs::metadata(&abs).ok().and_then(|m| m.modified().ok()));
+fn hit_dto(src_root: &SourceRoot, hit: SearchHit) -> SearchHitDto {
+    let relative = Path::new(&hit.file_path);
+    let abs = src_root.path.join(relative);
+    let mtime = mtime_millis(
+        src_root
+            .metadata_relative(relative)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok()),
+    );
     SearchHitDto {
         chunk_id: hit.chunk_id.to_string(),
         document_id: hit.document_id.to_string(),
@@ -389,12 +396,13 @@ async fn search_over(
         // No engine yet (import not finished): honestly empty (guarded).
         epoch.validate_root()?;
         // EPOCH-GUARDED
-        return Ok(epoch
-            .finish(workspace, SearchResults::empty())
-            .unwrap_or_else(|_| SearchResults::empty()));
+        return finish_discarding_superseded(
+            epoch.finish(workspace, SearchResults::empty()),
+            SearchResults::empty(),
+        );
     };
 
-    let src_root = epoch.root.clone();
+    let src_root = epoch.source_root();
     // Whether the vector arm can run. Only reported when it was actually wanted:
     // a caller that asked for `lexical_only` got exactly the ranking it asked for.
     let unavailable = if options.lexical_only {
@@ -443,9 +451,7 @@ async fn search_over(
     // workspace — return an empty list (silently-clean), never the stale hits
     // and never a spurious error the palette would show as a filter failure. The
     // generation-tagged batches above are the streaming counterpart of this.
-    Ok(epoch
-        .finish(workspace, results)
-        .unwrap_or_else(|_| SearchResults::empty()))
+    finish_discarding_superseded(epoch.finish(workspace, results), SearchResults::empty())
 }
 
 impl SearchResults {
@@ -473,7 +479,7 @@ fn semantic_unavailable(epoch: &Epoch) -> Option<String> {
 /// Run one engine search pass and lift its hits onto the wire DTO.
 async fn run_phase(
     db: &EmbeddedCatDb,
-    src_root: &Path,
+    src_root: &SourceRoot,
     query: &str,
     options: SearchOptions,
 ) -> Result<Vec<SearchHitDto>, String> {
@@ -497,15 +503,32 @@ fn stream(
     epoch.validate_root()?;
     let generation = epoch.generation as u32;
     // EPOCH-GUARDED: only stream while this epoch is the current era.
-    if epoch.finish(workspace, ()).is_ok() {
-        sink(SearchBatch {
-            phase: phase.to_string(),
-            hits: hits.to_vec(),
-            generation,
-            semantic_unavailable: semantic_unavailable.map(str::to_string),
-        });
+    match epoch.finish(workspace, ()) {
+        Ok(()) => {
+            sink(SearchBatch {
+                phase: phase.to_string(),
+                hits: hits.to_vec(),
+                generation,
+                semantic_unavailable: semantic_unavailable.map(str::to_string),
+            });
+        }
+        Err(error) if error.is_superseded() => {}
+        Err(error) => return Err(error.to_string()),
     }
     Ok(())
+}
+
+/// Preserve the intentionally quiet behavior for a superseded epoch while
+/// keeping a same-epoch source-identity refusal visible to the caller.
+fn finish_discarding_superseded<T>(
+    result: Result<T, StaleEpoch>,
+    superseded_value: T,
+) -> Result<T, String> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_superseded() => Ok(superseded_value),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -545,7 +568,7 @@ pub async fn explain_query(
     let Some(db) = epoch.db() else {
         epoch.validate_root()?;
         // EPOCH-GUARDED
-        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
+        return finish_discarding_superseded(epoch.finish(&workspace, Vec::new()), Vec::new());
     };
 
     if let Some(reason) = semantic_unavailable(&epoch) {
@@ -556,7 +579,7 @@ pub async fn explain_query(
 
     let hits = run_phase(
         &db,
-        &epoch.root,
+        &epoch.source_root(),
         &query,
         SearchOptions {
             limit,
@@ -570,7 +593,7 @@ pub async fn explain_query(
 
     // EPOCH-GUARDED: a switch mid-query means these hits belong to a previous
     // workspace.
-    Ok(epoch.finish(&workspace, hits).unwrap_or_default())
+    finish_discarding_superseded(epoch.finish(&workspace, hits), Vec::new())
 }
 
 // --------------------------------------------------------------------------
@@ -600,7 +623,7 @@ pub async fn related(
     let Some(db) = epoch.db() else {
         epoch.validate_root()?;
         // EPOCH-GUARDED
-        return Ok(epoch.finish(&workspace, Vec::new()).unwrap_or_default());
+        return finish_discarding_superseded(epoch.finish(&workspace, Vec::new()), Vec::new());
     };
 
     let src_root = epoch.root.clone();
@@ -629,7 +652,7 @@ pub async fn related(
 
     // EPOCH-GUARDED: a switch mid-lookup yields an empty rail (silently-clean),
     // never a previous workspace's related list nor a spurious error.
-    Ok(epoch.finish(&workspace, related).unwrap_or_default())
+    finish_discarding_superseded(epoch.finish(&workspace, related), Vec::new())
 }
 
 #[cfg(test)]
@@ -647,6 +670,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = fs::canonicalize(dir.path()).unwrap();
         (dir, root)
+    }
+
+    fn retained(path: &Path) -> SourceRoot {
+        SourceRoot::capture(path.to_path_buf()).expect("capture source root")
     }
 
     /// A real in-memory engine over a hash embedder (no model download), with
@@ -742,7 +769,7 @@ mod tests {
             snippet: "hi".to_string(),
             explain: None,
         };
-        let dto = hit_dto(&root, hit);
+        let dto = hit_dto(&retained(&root), hit);
         assert_eq!(dto.abs_path, file.to_string_lossy());
         assert_eq!(dto.name, "page.md");
         assert_eq!(dto.start_line, 3);
@@ -788,7 +815,7 @@ mod tests {
         let hits = rt
             .block_on(run_phase(
                 &db,
-                &root,
+                &retained(&root),
                 "storage engine",
                 opts.engine_options(false),
             ))
@@ -854,7 +881,7 @@ mod tests {
         let err = rt
             .block_on(run_phase(
                 &db,
-                &root,
+                &retained(&root),
                 "bogusfield:value",
                 opts.engine_options(true),
             ))
@@ -889,7 +916,7 @@ mod tests {
         let hits = rt
             .block_on(run_phase(
                 &db,
-                &root,
+                &retained(&root),
                 "storage engine",
                 SearchOptions {
                     limit: 10,
@@ -926,7 +953,7 @@ mod tests {
         let plain = rt
             .block_on(run_phase(
                 &db,
-                &root,
+                &retained(&root),
                 "storage engine",
                 SearchOptions {
                     limit: 10,
