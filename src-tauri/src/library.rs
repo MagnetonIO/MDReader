@@ -707,6 +707,14 @@ impl LibraryRegistry {
     }
 
     fn migrate_v2(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        Self::migrate_v2_with_persist(path, bytes, Self::save_to)
+    }
+
+    fn migrate_v2_with_persist(
+        path: &Path,
+        bytes: &[u8],
+        persist: impl FnOnce(&Self, &Path) -> Result<(), LibraryError>,
+    ) -> Result<Self, LibraryError> {
         let stored: StoredLibraryV2 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_legacy_membership(
@@ -758,7 +766,7 @@ impl LibraryRegistry {
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
 
         let moves = migrate_v2_managed_workspaces(app_data, &stored.sources)?;
-        if let Err(error) = migrated.save_to(path) {
+        if let Err(error) = persist(&migrated, path) {
             if rollback_managed_moves(&moves).is_err() {
                 return Err(LibraryError::CleanupFailed {
                     reason: LibraryCleanupReason::RollbackFailed,
@@ -907,6 +915,14 @@ fn recover_v2_engine_source_id(
     app_data: &Path,
     source: &LibrarySourceV2,
 ) -> Result<Option<uuid::Uuid>, LibraryError> {
+    recover_v2_engine_source_id_with_hook(app_data, source, |_| {})
+}
+
+fn recover_v2_engine_source_id_with_hook(
+    app_data: &Path,
+    source: &LibrarySourceV2,
+    before_open: impl FnOnce(&Path),
+) -> Result<Option<uuid::Uuid>, LibraryError> {
     let identity = source
         .identity
         .as_ref()
@@ -950,6 +966,7 @@ fn recover_v2_engine_source_id(
         return Err(LibraryError::CorruptRegistry);
     }
 
+    before_open(&db_path);
     let connection = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1827,7 +1844,6 @@ mod tests {
         (old, new)
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
     fn create_authentic_v2_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
         let engine = catdb_engine::EmbeddedCatDb::open(
             catdb_engine::EngineConfig::new(
@@ -1849,6 +1865,15 @@ mod tests {
             .expect("list authentic V2 source");
         assert_eq!(sources.len(), 1);
         sources[0].source_id
+    }
+
+    fn v2_source(root: &SourceRoot) -> super::LibrarySourceV2 {
+        let path = NativePath::capture(&root.path);
+        super::LibrarySourceV2 {
+            id: path.source_id(),
+            path,
+            identity: Some(root.identity.clone()),
+        }
     }
 
     fn assert_v2_refusal_preserves_managed_state(
@@ -2525,6 +2550,249 @@ mod tests {
         assert_eq!(migrated.sources()[0].engine_source_id(), source_id);
         assert!(!old_db.exists());
         assert!(new_db.is_file());
+    }
+
+    #[test]
+    fn version_two_recovers_after_crash_moved_workspace_before_registry_publish() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        let source_id = create_authentic_v2_index(&old_db, &root);
+        fs::rename(
+            old_db.parent().expect("old workspace"),
+            new_db.parent().expect("new workspace"),
+        )
+        .expect("simulate crash after managed move and before registry publish");
+
+        let migrated =
+            LibraryRegistry::load_from(&registry_path).expect("restart completes migration");
+
+        assert_eq!(migrated.sources().len(), 1);
+        assert_eq!(migrated.sources()[0].engine_source_id(), source_id);
+        assert!(!old_db.exists());
+        assert!(new_db.is_file());
+    }
+
+    #[test]
+    fn version_two_refuses_ambiguous_old_and_new_managed_locations() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let before = fs::read(&registry_path).expect("read V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        create_authentic_v2_index(&old_db, &root);
+        fs::create_dir_all(new_db.parent().expect("new workspace"))
+            .expect("create ambiguous new workspace");
+        fs::write(&new_db, b"second managed candidate").expect("write ambiguous candidate");
+
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CleanupFailed { .. })
+        ));
+        assert_eq!(fs::read(&registry_path).expect("unchanged registry"), before);
+        assert!(old_db.is_file());
+        assert!(new_db.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_two_refuses_symlinked_and_non_regular_catdb_db() {
+        use std::os::unix::fs::symlink;
+
+        for kind in ["symlink", "directory"] {
+            let temp = tempdir().expect("tempdir");
+            let app_data = temp.path().join("app-data");
+            let registry_path = app_data.join("library.json");
+            let root = bound_root(&mkdir(temp.path(), "notes"));
+            super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+            let before = fs::read(&registry_path).expect("read V2 registry");
+            let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+            fs::create_dir_all(old_db.parent().expect("old workspace"))
+                .expect("create old workspace");
+            if kind == "symlink" {
+                let outside = temp.path().join("outside.db");
+                fs::write(&outside, b"outside bytes").expect("write outside target");
+                symlink(&outside, &old_db).expect("substitute symlinked DB");
+            } else {
+                fs::create_dir(&old_db).expect("substitute directory DB");
+            }
+
+            assert_v2_refusal_preserves_managed_state(
+                &registry_path,
+                &before,
+                &old_db,
+                &new_db,
+            );
+        }
+    }
+
+    #[test]
+    fn version_two_refuses_malformed_or_ambiguous_source_rows_and_path_mismatch() {
+        for kind in ["malformed-db", "zero", "multiple", "non-uuid", "path-mismatch"] {
+            let temp = tempdir().expect("tempdir");
+            let app_data = temp.path().join("app-data");
+            let registry_path = app_data.join("library.json");
+            let root = bound_root(&mkdir(temp.path(), "notes"));
+            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+            super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+            let before = fs::read(&registry_path).expect("read V2 registry");
+            let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+
+            if kind == "malformed-db" {
+                fs::create_dir_all(old_db.parent().expect("old workspace"))
+                    .expect("create old workspace");
+                fs::write(&old_db, b"not sqlite").expect("write malformed DB");
+            } else {
+                create_authentic_v2_index(&old_db, &root);
+                let connection =
+                    rusqlite::Connection::open(&old_db).expect("open authentic index for mutation");
+                match kind {
+                    "zero" => {
+                        connection
+                            .execute("DELETE FROM sources", [])
+                            .expect("remove source");
+                    }
+                    "multiple" => {
+                        connection
+                            .execute(
+                                "INSERT INTO sources
+                                 SELECT ?1, root_path, enabled, watch, include_globs,
+                                        exclude_globs, max_file_size, respect_gitignore,
+                                        embed_policy
+                                   FROM sources LIMIT 1",
+                                [uuid::Uuid::new_v4().to_string()],
+                            )
+                            .expect("insert second source");
+                    }
+                    "non-uuid" => {
+                        connection
+                            .execute("UPDATE sources SET source_id = 'not-a-uuid'", [])
+                            .expect("malform source UUID");
+                    }
+                    "path-mismatch" => {
+                        connection
+                            .execute("UPDATE sources SET root_path = '/renderer/claim'", [])
+                            .expect("mismatch source root");
+                    }
+                    _ => unreachable!("covered cases"),
+                }
+            }
+
+            assert_v2_refusal_preserves_managed_state(
+                &registry_path,
+                &before,
+                &old_db,
+                &new_db,
+            );
+        }
+    }
+
+    #[test]
+    fn version_three_requires_non_nil_unique_engine_source_ids() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("app-data/library.json");
+        let mut registry = LibraryRegistry::empty();
+        registry
+            .add_root(&mkdir(temp.path(), "one"))
+            .expect("add first source");
+        registry
+            .add_root(&mkdir(temp.path(), "two"))
+            .expect("add second source");
+        registry.save_to(&registry_path).expect("save valid V3");
+        let valid: serde_json::Value = serde_json::from_slice(
+            &fs::read(&registry_path).expect("read valid V3 registry"),
+        )
+        .expect("parse valid V3 registry");
+
+        let mut duplicate = valid.clone();
+        let sources = duplicate["sources"].as_array_mut().expect("source array");
+        let first_id = sources[0]["engine_source_id"].clone();
+        sources[1]["engine_source_id"] = first_id;
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&duplicate).expect("encode duplicate V3"),
+        )
+        .expect("write duplicate V3");
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CorruptRegistry { .. })
+        ));
+
+        let mut nil = valid;
+        nil["sources"][0]["engine_source_id"] =
+            serde_json::json!("00000000-0000-0000-0000-000000000000");
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&nil).expect("encode nil V3"),
+        )
+        .expect("write nil V3");
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CorruptRegistry { .. })
+        ));
+    }
+
+    #[test]
+    fn version_two_save_failure_rolls_managed_move_back_before_returning() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let before = fs::read(&registry_path).expect("read V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        create_authentic_v2_index(&old_db, &root);
+
+        let result = LibraryRegistry::migrate_v2_with_persist(
+            &registry_path,
+            &before,
+            |_, _| Err(LibraryError::PersistFailed),
+        );
+
+        assert!(matches!(result, Err(LibraryError::PersistFailed)));
+        assert_eq!(fs::read(&registry_path).expect("unchanged registry"), before);
+        assert!(old_db.is_file(), "managed move was rolled back");
+        assert!(!new_db.exists(), "failed publish leaves no V3 managed path");
+    }
+
+    #[test]
+    fn version_two_recovery_refuses_regular_file_swap_between_check_and_open() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
+        create_authentic_v2_index(&old_db, &root);
+
+        let replacement_dir = temp.path().join("replacement");
+        let replacement_db = replacement_dir.join("catdb.db");
+        let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
+        let original_parked = old_db.with_file_name("checked-original.db");
+        let source = v2_source(&root);
+        let recovered = super::recover_v2_engine_source_id_with_hook(
+            &app_data,
+            &source,
+            |_| {
+                fs::rename(&old_db, &original_parked).expect("park checked file");
+                fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
+            },
+        );
+
+        assert_eq!(
+            recovered,
+            Err(LibraryError::CorruptRegistry),
+            "the UUID from the path-substituted DB ({replacement_source_id}) must never be adopted"
+        );
+        assert!(original_parked.is_file());
+        assert!(old_db.is_file());
     }
 
     #[test]
