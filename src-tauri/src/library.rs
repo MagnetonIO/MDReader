@@ -297,6 +297,14 @@ where
 }
 
 impl LibrarySource {
+    /// Stable CatDB source identity derived from this opaque Library
+    /// membership, never from its current filesystem address.
+    pub(crate) fn engine_source_id(&self) -> uuid::Uuid {
+        const LIBRARY_SOURCE_NAMESPACE: uuid::Uuid =
+            uuid::Uuid::from_u128(0x8fbd_af35_46d0_5d78_a3c1_f46a3f8727b2);
+        uuid::Uuid::new_v5(&LIBRARY_SOURCE_NAMESPACE, self.id.as_bytes())
+    }
+
     pub(crate) fn path(&self) -> Result<PathBuf, LibraryError> {
         self.path.restore()
     }
@@ -1427,8 +1435,18 @@ pub(crate) fn watch_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
-        crate::commands::watch_workspace_path_exact(&app, &native_root, &workspace, &watcher)
-            .map_err(|_| LibraryError::OpenFailed)
+        let engine_source_id = registry
+            .source_for(&source_id)
+            .ok_or(LibraryError::SourceNotFound)?
+            .engine_source_id();
+        crate::commands::watch_workspace_path_exact_with_source(
+            &app,
+            &native_root,
+            engine_source_id,
+            &workspace,
+            &watcher,
+        )
+        .map_err(|_| LibraryError::OpenFailed)
     })
 }
 
@@ -1447,9 +1465,17 @@ pub(crate) fn grant_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
-        crate::commands::grant_workspace_path_exact(&native_root, &workspace)
-            .map(|root| root.to_string_lossy().into_owned())
-            .map_err(|_| LibraryError::OpenFailed)
+        let engine_source_id = registry
+            .source_for(&source_id)
+            .ok_or(LibraryError::SourceNotFound)?
+            .engine_source_id();
+        crate::commands::grant_workspace_path_exact_with_source(
+            &native_root,
+            engine_source_id,
+            &workspace,
+        )
+        .map(|root| root.to_string_lossy().into_owned())
+        .map_err(|_| LibraryError::OpenFailed)
     })
 }
 

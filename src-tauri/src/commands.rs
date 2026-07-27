@@ -114,11 +114,22 @@ impl WorkspaceState {
     /// Install a root whose identity was captured by the owning admission path.
     /// Revalidation occurs while the epoch slot is held, immediately before
     /// publication, so a replacement cannot slip between capture and commit.
+    #[cfg(test)]
     pub(crate) fn switch_bound(
         &self,
         root: SourceRoot,
     ) -> Result<Arc<crate::engine::Epoch>, String> {
-        switch_bound_with_hook(self, root, || {})
+        self.switch_bound_with_source(root, None)
+    }
+
+    /// Install an admitted root with an optional application-owned CatDB
+    /// source identity.
+    pub(crate) fn switch_bound_with_source(
+        &self,
+        root: SourceRoot,
+        source_id: Option<uuid::Uuid>,
+    ) -> Result<Arc<crate::engine::Epoch>, String> {
+        switch_bound_with_hook(self, root, source_id, || {})
     }
 
     /// Test helper: a state already granting `root` (generation 1).
@@ -136,6 +147,7 @@ impl WorkspaceState {
 fn switch_bound_with_hook(
     state: &WorkspaceState,
     root: SourceRoot,
+    source_id: Option<uuid::Uuid>,
     after_final_verification: impl FnOnce(),
 ) -> Result<Arc<crate::engine::Epoch>, String> {
     let mut slot = state
@@ -146,7 +158,7 @@ fn switch_bound_with_hook(
     after_final_verification();
     root.verify().map_err(|error| error.to_string())?;
     let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
-    let epoch = crate::engine::Epoch::new(root, generation);
+    let epoch = crate::engine::Epoch::new_with_source(root, generation, source_id);
     *slot = Some(Arc::clone(&epoch));
     Ok(epoch)
 }
@@ -239,12 +251,24 @@ pub fn ping(msg: String) -> PingResponse {
 /// canonical identity admitted by the registry. This deliberately rejects
 /// aliases: its input is already canonical, so a different result means the
 /// directory was substituted after validation.
+#[cfg(test)]
 pub(crate) fn grant_workspace_path_exact(
     expected_root: &SourceRoot,
     state: &WorkspaceState,
 ) -> Result<PathBuf, String> {
     let root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
     state.switch_bound(root.clone())?;
+    Ok(root.path)
+}
+
+/// Library-only grant carrying the backend-owned stable CatDB source identity.
+pub(crate) fn grant_workspace_path_exact_with_source(
+    expected_root: &SourceRoot,
+    source_id: uuid::Uuid,
+    state: &WorkspaceState,
+) -> Result<PathBuf, String> {
+    let root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
+    state.switch_bound_with_source(root.clone(), Some(source_id))?;
     Ok(root.path)
 }
 
@@ -763,12 +787,11 @@ struct ActiveWatcher {
 #[derive(Default)]
 pub struct WatcherState(Mutex<Option<ActiveWatcher>>);
 
-/// Library-only watcher path: the registry supplies an already-canonical root,
-/// and any different canonical result is a substitution that must fail before
-/// the watcher or epoch changes.
-pub(crate) fn watch_workspace_path_exact(
+/// Library-only watch carrying the backend-owned stable CatDB source identity.
+pub(crate) fn watch_workspace_path_exact_with_source(
     app: &AppHandle,
     expected_root: &SourceRoot,
+    source_id: uuid::Uuid,
     workspace: &WorkspaceState,
     state: &WatcherState,
 ) -> Result<WorkspaceGrant, String> {
@@ -778,6 +801,7 @@ pub(crate) fn watch_workspace_path_exact(
         workspace,
         state,
         Some(&expected_root.identity),
+        Some(source_id),
     )
 }
 
@@ -787,6 +811,7 @@ fn watch_workspace_path_checked(
     workspace: &WorkspaceState,
     state: &WatcherState,
     expected_identity: Option<&SourceRootIdentity>,
+    source_id: Option<uuid::Uuid>,
 ) -> Result<WorkspaceGrant, String> {
     let source_root = prepare_source_root(root, expected_identity)?;
     let event_root = source_root.clone();
@@ -800,6 +825,7 @@ fn watch_workspace_path_checked(
     let declined_for_closure = Arc::clone(&declined);
     let (granted, generation) = watch_and_commit_bound(
         source_root,
+        source_id,
         workspace,
         state,
         &armed_gen,
@@ -883,6 +909,7 @@ fn watch_and_commit_path<F: DebounceEventHandler>(
     let source_root = prepare_source_root(root, None)?;
     watch_and_commit_bound(
         source_root,
+        None,
         workspace,
         watcher,
         armed_gen,
@@ -935,6 +962,7 @@ fn watch_and_commit_path_exact_with_hooks<
     let source_root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
     watch_and_commit_bound(
         source_root,
+        None,
         workspace,
         watcher,
         armed_gen,
@@ -971,6 +999,7 @@ fn prepare_source_root(
 #[allow(clippy::too_many_arguments)]
 fn watch_and_commit_bound<F: DebounceEventHandler>(
     new_root: SourceRoot,
+    source_id: Option<uuid::Uuid>,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     armed_gen: &AtomicU64,
@@ -1000,6 +1029,7 @@ fn watch_and_commit_bound<F: DebounceEventHandler>(
         workspace,
         watcher,
         new_root,
+        source_id,
         debouncer,
         armed_gen,
         before_epoch_publication,
@@ -1021,6 +1051,7 @@ fn commit_workspace(
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     new_root: SourceRoot,
+    source_id: Option<uuid::Uuid>,
     debouncer: Debouncer<RecommendedWatcher>,
     armed_gen: &AtomicU64,
     after_final_verification: impl FnOnce(),
@@ -1041,7 +1072,11 @@ fn commit_workspace(
     // its events are tagged with the era they belong to.
     let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
     armed_gen.store(generation, Ordering::Release);
-    *epoch_slot = Some(crate::engine::Epoch::new(new_root.clone(), generation));
+    *epoch_slot = Some(crate::engine::Epoch::new_with_source(
+        new_root.clone(),
+        generation,
+        source_id,
+    ));
     *watcher_slot = Some(ActiveWatcher {
         _debouncer: debouncer,
         _root: new_root,
@@ -1053,11 +1088,11 @@ fn commit_workspace(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_dir, commit_rename, grant_workspace_path_exact, read_doc_guarded,
-        read_doc_guarded_with_hooks, resolve_dir, resolve_doc, resolve_within, save_doc_guarded,
-        save_doc_guarded_with_hooks, switch_bound_with_hook, watch_and_commit,
-        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks, DebounceEventResult,
-        WatcherState, WorkspaceState,
+        canonical_dir, commit_rename, grant_workspace_path_exact,
+        grant_workspace_path_exact_with_source, read_doc_guarded, read_doc_guarded_with_hooks,
+        resolve_dir, resolve_doc, resolve_within, save_doc_guarded, save_doc_guarded_with_hooks,
+        switch_bound_with_hook, watch_and_commit, watch_and_commit_path_exact,
+        watch_and_commit_path_exact_with_hooks, DebounceEventResult, WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1363,7 +1398,7 @@ mod tests {
         let workspace = WorkspaceState::granted(prior.clone());
         let before = workspace.current().expect("prior epoch");
 
-        let error = switch_bound_with_hook(&workspace, expected, || {
+        let error = switch_bound_with_hook(&workspace, expected, None, || {
             fs::rename(&admitted, &moved).expect("move admitted object after verification");
             fs::create_dir(&admitted).expect("create same-path replacement");
         })
@@ -1444,6 +1479,25 @@ mod tests {
         assert_eq!(after.root, prior);
         assert_eq!(after.generation, before.generation);
         assert_eq!(after.root_identity, before.root_identity);
+    }
+
+    #[test]
+    fn exact_library_grant_publishes_the_backend_owned_catdb_source_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let admitted = temp.path().join("admitted");
+        fs::create_dir_all(&admitted).expect("admitted root");
+        let admitted = fs::canonicalize(admitted).expect("canonical admitted root");
+        let expected = SourceRoot::capture(admitted).expect("capture admitted identity");
+        let workspace = WorkspaceState::default();
+        let source_id = uuid::Uuid::new_v4();
+
+        grant_workspace_path_exact_with_source(&expected, source_id, &workspace)
+            .expect("grant exact library source");
+
+        assert_eq!(
+            workspace.current().expect("published epoch").source_id(),
+            Some(source_id)
+        );
     }
 
     #[cfg(unix)]

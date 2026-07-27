@@ -708,13 +708,13 @@ export type InspectedFact = {
 	source_changed_since_review: boolean,
 };
 
-export type LibraryAvailability = { kind: "available" } | { kind: "missing"; reason: string } | { kind: "unreadable"; reason: string } | { kind: "not-directory"; reason: string };
+export type LibraryAvailability = { kind: "available" } | { kind: "missing" } | { kind: "unreadable" } | { kind: "not-directory" };
 
 export type LibraryCleanupReason = "managed-state-unavailable" | "rollback-failed";
 
 export type LibraryCleanupStatus = { kind: "complete" } | { kind: "pending"; source_count: number };
 
-export type LibraryError = { kind: "invalid-root"; message: string } | { kind: "duplicate-root"; source_id: string } | { kind: "source-not-found"; source_id: string } | { kind: "source-unavailable"; source_id: string; reason: string } | { kind: "active-source"; source_id: string } | { kind: "grant-mismatch"; source_id: string } | { kind: "open-failed"; source_id: string; message: string } | { kind: "corrupt-registry"; message: string } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed"; message: string } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
 
 export type LibraryIndexState = "present" | "not-created" | "unknown";
 

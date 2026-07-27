@@ -274,6 +274,10 @@ fn model_info_for(hash_embed: bool) -> ModelInfo {
 pub struct Epoch {
     /// Retained filesystem authority for every effect in this epoch.
     root_authority: SourceRoot,
+    /// Optional application-owned CatDB source identity. Library epochs carry
+    /// the opaque membership's UUID so a folder rename changes its address,
+    /// not its semantic source identity.
+    source_id: Option<uuid::Uuid>,
     /// Canonical granted root (the workspace the engine keys and imports on).
     pub(crate) root: PathBuf,
     /// Stable filesystem-object identity captured from the admitted root.
@@ -306,12 +310,24 @@ pub struct Epoch {
 impl Epoch {
     /// A fresh epoch for `root` at `generation`, with no engine yet and an idle
     /// status.
+    #[cfg(test)]
     pub(crate) fn new(root: SourceRoot, generation: u64) -> Arc<Self> {
+        Self::new_with_source(root, generation, None)
+    }
+
+    /// A fresh epoch pinned to an optional application-owned CatDB source
+    /// identity.
+    pub(crate) fn new_with_source(
+        root: SourceRoot,
+        generation: u64,
+        source_id: Option<uuid::Uuid>,
+    ) -> Arc<Self> {
         let path = root.path.clone();
         #[cfg(test)]
         let identity = root.identity.clone();
         Arc::new(Self {
             root_authority: root,
+            source_id,
             root: path,
             #[cfg(test)]
             root_identity: identity,
@@ -335,6 +351,11 @@ impl Epoch {
     /// Clone the path/identity pair as one authority value.
     pub(crate) fn source_root(&self) -> SourceRoot {
         self.root_authority.clone()
+    }
+
+    /// Stable CatDB source identity selected by the owning admission path.
+    pub(crate) fn source_id(&self) -> Option<uuid::Uuid> {
+        self.source_id
     }
 
     /// This epoch's current import status.
@@ -827,6 +848,7 @@ fn open_engine(
     db_path: &Path,
     embedder: Arc<dyn Embedder>,
     source_root: SourceRoot,
+    source_id: Option<uuid::Uuid>,
 ) -> Result<(Arc<EmbeddedCatDb>, Arc<ProposalStore>), String> {
     let proposals = Arc::new(
         ProposalStore::open(proposals_path_beside(db_path))
@@ -837,9 +859,12 @@ fn open_engine(
         Arc::clone(&proposals),
         source_root,
     )];
-    let db = EmbeddedCatDb::open(config)
-        .map(Arc::new)
-        .map_err(|err| format!("open index: {err}"))?;
+    let db = match source_id {
+        Some(source_id) => EmbeddedCatDb::open_with_source_id(config, source_id),
+        None => EmbeddedCatDb::open(config),
+    }
+    .map(Arc::new)
+    .map_err(|err| format!("open index: {err}"))?;
     Ok((db, proposals))
 }
 
@@ -912,6 +937,7 @@ fn open_index_at(
         db_path,
         Arc::clone(&embedder) as Arc<dyn Embedder>,
         epoch.source_root(),
+        epoch.source_id(),
     )?;
     epoch.validate_root()?;
 
@@ -1792,7 +1818,8 @@ mod tests {
             .unwrap();
         let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
         let source_root = SourceRoot::capture(root.clone()).expect("capture source root");
-        let (db, _proposals) = open_engine(&db_path, embedder, source_root).expect("open engine");
+        let (db, _proposals) =
+            open_engine(&db_path, embedder, source_root, None).expect("open engine");
         rt.block_on(db.import(&root, ImportOptions::default()))
             .expect("import corpus");
 
@@ -2548,7 +2575,10 @@ mod tests {
         assert_eq!(second_sources.len(), 1);
         assert_eq!(second_sources[0].source_id, first_sources[0].source_id);
         assert_eq!(second_sources[0].source_id, source_id);
-        assert_eq!(second_sources[0].root_path, second_root.path.display().to_string());
+        assert_eq!(
+            second_sources[0].root_path,
+            second_root.path.display().to_string()
+        );
         assert_eq!(second_documents.len(), 1);
         assert_eq!(second_documents[0].id, first_documents[0].id);
         assert_eq!(second_documents[0].source_id, Some(source_id));

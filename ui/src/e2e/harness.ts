@@ -657,23 +657,23 @@ export function installTauriMocks(): void {
       }
       case 'watch_library_source':
         if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
-          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+          throw { kind: 'source-not-found' };
         }
         return { root: '/mock/ws', generation: 1 };
       case 'grant_library_source':
         if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
-          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+          throw { kind: 'source-not-found' };
         }
         return '/mock/ws';
       case 'mark_library_source_active': {
         if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
-          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+          throw { kind: 'source-not-found' };
         }
         mockLibraryActive = true;
         return mockLibrarySnapshot();
       }
       case 'forget_library_source':
-        if (mockLibraryActive) throw { kind: 'active-source', source_id: MOCK_LIBRARY_ID };
+        if (mockLibraryActive) throw { kind: 'active-source' };
         mockLibraryAdded = false;
         return mockLibrarySnapshot();
       case 'diagnostics_info':

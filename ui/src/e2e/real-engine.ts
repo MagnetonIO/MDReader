@@ -479,7 +479,7 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
 
     case 'forget_library_source':
       if (realLibraryActive) {
-        throw { kind: 'active-source', source_id: (await realLibrarySource()).id };
+        throw { kind: 'active-source' };
       }
       realLibraryAdded = false;
       return realLibrarySnapshot();

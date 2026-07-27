@@ -176,7 +176,7 @@ describe('Settings sheet', () => {
       id: 'b'.repeat(64),
       name: 'Archive',
       path: '/Volumes/Archive',
-      state: { kind: 'missing', reason: 'Folder not found' },
+      state: { kind: 'missing' },
       index_state: 'not-created',
     };
     const api = backend({
@@ -253,14 +253,11 @@ describe('Settings sheet', () => {
     expect(screen.getByRole('button', { name: 'Reveal' })).toBeTruthy();
   });
 
-  it('uses local copy instead of echoing a path-bearing backend failure', async () => {
-    const sentinel = '/Users/alex/private/token-document-dsn-bound-value';
+  it('uses local copy for the closed backend failure code', async () => {
     const api = backend({
       forgetSource: vi.fn(async () => {
         throw new SettingsCommandError('library', {
           kind: 'open-failed',
-          source_id: SOURCE.id,
-          message: sentinel,
         });
       }),
     });
@@ -277,7 +274,6 @@ describe('Settings sheet', () => {
     await screen.findByText('Research notes');
     fireEvent.click(screen.getByRole('button', { name: 'Forget Research notes' }));
     await screen.findByText('MDReader could not open that source.');
-    expect(document.body.textContent).not.toContain(sentinel);
   });
 
   it('keeps a failed managed-state deletion visible as pending local cleanup', async () => {
