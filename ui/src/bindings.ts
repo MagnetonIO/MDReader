@@ -420,6 +420,7 @@ export type CloudConsideredProvider = {
 export type CloudDocumentQueryResponse = {
 	query_id: string,
 	provider: CloudProvider,
+	workspace_id: string,
 	schema_version: string,
 	version_pins: CloudVersionPins,
 	completeness: CloudCompleteness,
@@ -464,7 +465,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-not-found"; source_id: string; record_key: string } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
 
 export type CloudSourceOutcome = { kind: "ran"; mode: CloudExecutionMode; scanned: number; returned: number; pushed: string[]; residual: string[] };
 
@@ -810,7 +811,7 @@ export type FactProvenanceDto = {
 export type FederatedDocumentDto = {
 	/**  Workspace-relative natural key. */
 	path: string,
-	/**  All six schema fields in stable name order. */
+	/**  Every canonical Document schema field in stable name order. */
 	fields: FederatedFieldDto[],
 };
 
@@ -863,7 +864,7 @@ export type FederatedSchemaDto = {
 	/**  Stable schema name. */
 	name: string,
 	/**  Persisted catalog version. */
-	version: number,
+	version: string,
 	/**  Persisted content checksum for that exact version. */
 	checksum: string,
 	/**  Entity names in the persisted schema. */
@@ -1985,7 +1986,9 @@ export type WikiResolution = {
 	candidates: WikiCandidate[],
 };
 
-export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "record_unseen" } | { state: "not_asked"; value: {
+export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "unobservable"; value: {
+	reason: string,
+} } | { state: "record_unseen" } | { state: "not_asked"; value: {
 	reason: string,
 } };
 

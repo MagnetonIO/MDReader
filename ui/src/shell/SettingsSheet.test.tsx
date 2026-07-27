@@ -79,6 +79,7 @@ function cloudResponse(
   return {
     query_id: `query-${recordKey}`,
     provider,
+    workspace_id: 'workspace-v1',
     schema_version: 'mdreader.Document/v1',
     version_pins: {
       catalog_version: 'catalog-v5',

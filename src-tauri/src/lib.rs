@@ -172,6 +172,8 @@ pub fn run() {
         .manage(cloud_accounts::CloudAccountsState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            app.state::<cloud_accounts::CloudAccountsState>()
+                .configure_catalog(app.handle())?;
             let diagnostics =
                 DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
             app.manage(diagnostics);

@@ -21,6 +21,7 @@ const source: CloudSourceDto = {
 const response: CloudDocumentQueryResponse = {
   query_id: 'query-1',
   provider: 'google-drive',
+  workspace_id: '00000000-0000-4000-8000-000000000010',
   schema_version: 'schema-v7',
   version_pins: {
     catalog_version: '00000000-0000-4000-8000-000000000003',
@@ -136,21 +137,12 @@ function entityResponse(
 afterEach(cleanup);
 
 it('reads a provider-owned document in the main Library with semantic evidence', async () => {
-  const query = vi.fn(async () => response);
   const sharedQuery = vi.fn(async () => entityResponse());
-  const listingRow = {
-    ...response.rows[0]!,
-    fields: {
-      path: 'drive-file-1',
-      title: 'Cloud note.md',
-    },
-    provenance: response.rows[0]!.provenance.filter((field) => field.field !== 'body'),
-  };
   render(
     <CloudLibraryPane
       source={source}
-      row={listingRow}
-      query={query}
+      row={response.rows[0]!}
+      evidence={response}
       entityQuery={sharedQuery}
       cancel={vi.fn(async () => false)}
     />,
@@ -197,80 +189,32 @@ it('reads a provider-owned document in the main Library with semantic evidence',
     [{ field: 'path', operator: 'eq', value: 'drive-file-1' }],
     expect.arrayContaining(['path', 'title', 'body']),
     expect.stringContaining('document-inspector-'),
-  );
-  expect(query).toHaveBeenCalledWith(
-    'google-drive',
-    [{ field: 'path', operator: 'eq', value: 'drive-file-1' }],
-    expect.arrayContaining(['path', 'title', 'body']),
-    expect.stringContaining('cloud-reader:google-drive:'),
+    response,
   );
 });
 
-it('retires a delayed body read when another cloud document replaces it', async () => {
-  let releaseFirst!: (answer: CloudDocumentQueryResponse) => void;
-  const first = new Promise<CloudDocumentQueryResponse>((resolve) => {
-    releaseFirst = resolve;
-  });
-  const current = {
-    ...response,
-    query_id: 'query-current',
-    rows: [
-      {
-        ...response.rows[0]!,
-        record_key: 'drive-file-2',
-        fields: {
-          path: 'drive-file-2',
-          title: 'Current.md',
-          body: '# Current\n\nCurrent provider body.',
-        },
-      },
-    ],
+it('never mounts Semantic Inspector for a row that was not body-hydrated', () => {
+  const unhydrated = {
+    ...response.rows[0]!,
+    fields: { path: 'drive-file-1', title: 'Unavailable.md' },
   };
-  const query = vi
-    .fn<
-      (
-        provider: CloudProvider,
-        filters: CloudFilterInput[],
-        fields: string[],
-        requestId: string,
-      ) => Promise<CloudDocumentQueryResponse>
-    >()
-    .mockImplementation((_provider, filters) =>
-      filters[0]?.value === 'drive-file-1' ? first : Promise.resolve(current),
-    );
-  const cancel = vi.fn(async () => true);
-  const rendered = render(
+  render(
     <CloudLibraryPane
       source={source}
-      row={{ ...response.rows[0]!, fields: { title: 'Retired.md', path: 'drive-file-1' } }}
-      query={query}
+      row={unhydrated}
+      evidence={{ ...response, rows: [unhydrated] }}
       entityQuery={vi.fn(async () => entityResponse())}
-      cancel={cancel}
-    />,
-  );
-  const retiredBodyRequestId = query.mock.calls.find((call) =>
-    call[3].startsWith('cloud-reader:'),
-  )?.[3];
-  expect(retiredBodyRequestId).toBeTruthy();
-  rendered.rerender(
-    <CloudLibraryPane
-      source={source}
-      row={{ ...current.rows[0]!, fields: { title: 'Current.md', path: 'drive-file-2' } }}
-      query={query}
-      entityQuery={vi.fn(async () => entityResponse(current))}
-      cancel={cancel}
+      cancel={vi.fn(async () => false)}
     />,
   );
 
-  expect(await screen.findByText('Current provider body.')).toBeTruthy();
-  releaseFirst(response);
-  await Promise.resolve();
-  expect(screen.queryByText('Provider-owned body.')).toBeNull();
-  expect(cancel).toHaveBeenCalledWith(retiredBodyRequestId);
-  expect(retiredBodyRequestId).not.toContain('drive-file-1');
+  expect(screen.getByText(/provider body is unavailable/i)).toBeTruthy();
+  expect(
+    screen.queryByRole('complementary', { name: 'Cloud Semantic Inspector' }),
+  ).toBeNull();
 });
 
-it('keeps request IDs bounded when a valid Dropbox record key is 4 KiB', async () => {
+it('keeps Inspector request IDs bounded when a valid Dropbox record key is 4 KiB', async () => {
   const recordKey = `/${'a'.repeat(4092)}.md`;
   expect(new TextEncoder().encode(recordKey)).toHaveLength(4_096);
   const dropboxSource: CloudSourceDto = {
@@ -297,27 +241,28 @@ it('keeps request IDs bounded when a valid Dropbox record key is 4 KiB', async (
       },
     ],
   };
-  const query = vi.fn<
+  const sharedQuery = vi.fn<
     (
       provider: CloudProvider,
       filters: CloudFilterInput[],
       fields: string[],
       requestId: string,
-    ) => Promise<CloudDocumentQueryResponse>
-  >(async () => answer);
+      evidence: CloudDocumentQueryResponse,
+    ) => Promise<EntityQueryResponse>
+  >(async () => entityResponse(answer));
   render(
     <CloudLibraryPane
       source={dropboxSource}
-      row={{ ...answer.rows[0]!, fields: { path: recordKey, title: 'Long path.md' } }}
-      query={query}
-      entityQuery={vi.fn(async () => entityResponse(answer))}
+      row={answer.rows[0]!}
+      evidence={answer}
+      entityQuery={sharedQuery}
       cancel={vi.fn(async () => false)}
     />,
   );
 
   expect(await screen.findByText('Long path')).toBeTruthy();
-  expect(query.mock.calls.length).toBeGreaterThan(0);
-  for (const [provider, filters, , requestId] of query.mock.calls) {
+  expect(sharedQuery.mock.calls.length).toBeGreaterThan(0);
+  for (const [provider, filters, , requestId] of sharedQuery.mock.calls) {
     expect(provider).toBe('dropbox');
     expect(filters[0]?.value).toBe(recordKey);
     expect(requestId.length).toBeLessThanOrEqual(128);

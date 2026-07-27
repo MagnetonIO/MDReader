@@ -109,6 +109,7 @@ export interface SettingsBackend {
     filters: CloudFilterInput[],
     fields: string[],
     requestId: string,
+    evidence: CloudDocumentQueryResponse,
   ) => Promise<EntityQueryResponse>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
 }
@@ -246,12 +247,12 @@ export async function queryCloudEntity(
   filters: CloudFilterInput[],
   fields: string[],
   requestId: string,
+  evidence: CloudDocumentQueryResponse,
 ): Promise<EntityQueryResponse> {
-  const catalog = await prepareCloudCatalog();
   const request: EntityQueryRequest_Deserialize = {
-    workspace_id: catalog.workspace_id,
-    catalog_revision_id: catalog.catalog_revision_id,
-    schema_version_id: catalog.schema_version_id,
+    workspace_id: evidence.workspace_id,
+    catalog_revision_id: evidence.version_pins.catalog_version,
+    schema_version_id: evidence.version_pins.schema_version,
     entity: 'document.Document',
     select: fields,
     filters: filters.map((filter) => ({

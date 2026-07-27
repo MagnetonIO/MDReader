@@ -15,34 +15,18 @@ import type {
 import type { FederatedDocument } from '../platform/semantics.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { DocumentInspector } from './lens/DocumentInspector.js';
-
-const DOCUMENT_FIELDS = [
-  'providerId',
-  'title',
-  'author',
-  'path',
-  'mediaType',
-  'modifiedAt',
-  'size',
-  'revision',
-  'checksum',
-  'body',
-];
+import { CLOUD_DOCUMENT_FIELDS } from './cloud-selection.js';
 
 export interface CloudLibraryPaneProps {
   source: CloudSourceDto;
   row: CloudDocumentRow;
-  query: (
-    provider: CloudProvider,
-    filters: CloudFilterInput[],
-    fields: string[],
-    requestId: string,
-  ) => Promise<CloudDocumentQueryResponse>;
+  evidence: CloudDocumentQueryResponse;
   entityQuery: (
     provider: CloudProvider,
     filters: CloudFilterInput[],
     fields: string[],
     requestId: string,
+    evidence: CloudDocumentQueryResponse,
   ) => Promise<EntityQueryResponse>;
   cancel: (requestId: string) => Promise<boolean>;
 }
@@ -138,7 +122,7 @@ function normalizeCloudDocument(
       checksum: cloudEvidence.version_pins.schema_checksum,
       entities: ['Document'],
       arrowCount: 0,
-      attributeCount: DOCUMENT_FIELDS.length,
+      attributeCount: CLOUD_DOCUMENT_FIELDS.length,
       equationCount: 0,
       approvalRequired: false,
       objectCount: response.rows.length,
@@ -176,65 +160,21 @@ function normalizeCloudDocument(
 export function CloudLibraryPane({
   source,
   row,
-  query,
+  evidence,
   entityQuery,
   cancel,
 }: CloudLibraryPaneProps) {
-  const queryRef = useRef(query);
-  queryRef.current = query;
   const entityQueryRef = useRef(entityQuery);
   entityQueryRef.current = entityQuery;
   const cancelRef = useRef(cancel);
   cancelRef.current = cancel;
-  const [resolvedRow, setResolvedRow] = useState<CloudDocumentRow | null>(null);
-  const [resolvedEvidence, setResolvedEvidence] =
-    useState<CloudDocumentQueryResponse | null>(null);
-  const [readError, setReadError] = useState<string | null>(null);
-  const values = fieldsOf(resolvedRow ?? row);
+  const values = fieldsOf(row);
   const title =
     typeof values.title === 'string' && values.title.length > 0 ? values.title : row.record_key;
   const body =
-    resolvedRow && typeof fieldsOf(resolvedRow).body === 'string'
-      ? (fieldsOf(resolvedRow).body as string)
-      : null;
+    typeof values.body === 'string' ? values.body : null;
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const platform = useMemo(() => createReaderPlatform(null), []);
-
-  useEffect(() => {
-    let retired = false;
-    const bodyRequestId =
-      `cloud-reader:${source.provider}:` + globalThis.crypto.randomUUID();
-    setResolvedRow(null);
-    setResolvedEvidence(null);
-    setReadError(null);
-    void queryRef
-      .current(
-        source.provider,
-        [{ field: 'path', operator: 'eq', value: row.record_key }],
-        DOCUMENT_FIELDS,
-        bodyRequestId,
-      )
-      .then((answer) => {
-        if (retired) return;
-        const selected = answer.rows.find(
-          (candidate) =>
-            candidate.source_id === source.id && candidate.record_key === row.record_key,
-        );
-        if (!selected || typeof fieldsOf(selected).body !== 'string') {
-          throw new Error('The provider did not return the selected document body.');
-        }
-        setResolvedRow(selected);
-        setResolvedEvidence(answer);
-      })
-      .catch((cause: unknown) => {
-        if (retired) return;
-        setReadError(cause instanceof Error ? cause.message : String(cause));
-      });
-    return () => {
-      retired = true;
-      void cancelRef.current(bodyRequestId);
-    };
-  }, [row.record_key, source.id, source.provider]);
 
   useEffect(() => {
     let current = true;
@@ -262,15 +202,15 @@ export function CloudLibraryPane({
       const answer = await entityQueryRef.current(
         source.provider,
         [{ field: 'path', operator: 'eq', value: row.record_key }],
-        DOCUMENT_FIELDS,
+        [...CLOUD_DOCUMENT_FIELDS],
         requestId(invocation, request),
+        evidence,
       );
       const selected = answer.rows.find((candidate) => candidate.record_key === row.record_key);
       if (!selected) throw new Error('The provider did not return the selected document.');
-      if (!resolvedEvidence) throw new Error('Cloud query evidence is not ready.');
-      return normalizeCloudDocument(answer, selected, source, resolvedEvidence);
+      return normalizeCloudDocument(answer, selected, source, evidence);
     },
-    [requestId, resolvedEvidence, row.record_key, source],
+    [evidence, requestId, row.record_key, source],
   );
   const cancelInspector = useCallback(
     async (invocation: string, request: string) => {
@@ -305,9 +245,11 @@ export function CloudLibraryPane({
         </p>
         <div className="reader-body">
           <div className="reader-host">
-            {readError ? (
+            {body === null ? (
               <div className="reader-empty">
-                <p className="reader-empty__hint">Could not read this document: {readError}</p>
+                <p className="reader-empty__hint">
+                  Could not read this document: the provider body is unavailable.
+                </p>
               </div>
             ) : doc ? (
               <PlatformProvider platform={platform}>
@@ -319,15 +261,17 @@ export function CloudLibraryPane({
           </div>
         </div>
       </div>
-      <aside className="cloud-reader__inspector" aria-label="Cloud Semantic Inspector">
-        <DocumentInspector
-          path={row.record_key}
-          workspaceKey={source.id}
-          workspaceGeneration={0}
-          query={queryInspector}
-          cancel={cancelInspector}
-        />
-      </aside>
+      {body !== null ? (
+        <aside className="cloud-reader__inspector" aria-label="Cloud Semantic Inspector">
+          <DocumentInspector
+            path={row.record_key}
+            workspaceKey={source.id}
+            workspaceGeneration={0}
+            query={queryInspector}
+            cancel={cancelInspector}
+          />
+        </aside>
+      ) : null}
     </>
   );
 }

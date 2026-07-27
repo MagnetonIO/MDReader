@@ -17,6 +17,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
   const response: CloudDocumentQueryResponse = {
     query_id: 'sidebar-query',
     provider: 'dropbox',
+    workspace_id: 'workspace-v1',
     schema_version: 'schema-v1',
     version_pins: {
       catalog_version: 'catalog-v1',

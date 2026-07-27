@@ -48,7 +48,6 @@ import {
   settingsBackend,
   watchLibrarySource,
   type CloudDocumentQueryResponse,
-  type CloudDocumentRow,
   type CloudSourceDto,
   type LibrarySourceDto,
 } from '../platform/settings.js';
@@ -66,6 +65,10 @@ import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
 import { CloudLibraryPane } from './CloudLibraryPane.js';
+import {
+  createCloudSelectionController,
+  type HydratedCloudSelection,
+} from './cloud-selection.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
@@ -127,10 +130,8 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [cloudDocument, setCloudDocument] = useState<{
-    source: CloudSourceDto;
-    row: CloudDocumentRow;
-  } | null>(null);
+  const [cloudDocument, setCloudDocument] =
+    useState<HydratedCloudSelection | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourceDto[]>([]);
   const [cloudDocuments, setCloudDocuments] = useState<
     Partial<Record<CloudSourceDto['provider'], CloudDocumentQueryResponse>>
@@ -140,10 +141,31 @@ export function AppShell() {
   const [cloudError, setCloudError] = useState<string | null>(null);
   const cloudRefreshGeneration = useRef(0);
   const cloudRefreshRequests = useRef<string[]>([]);
+  const cloudSelection = useMemo(
+    () =>
+      createCloudSelectionController({
+        query: async (provider, filters, fields, requestId) => {
+          if (!settingsBackend.queryCloudDocuments) {
+            throw new Error('Cloud document queries are unavailable.');
+          }
+          return settingsBackend.queryCloudDocuments(provider, filters, fields, requestId);
+        },
+        cancel: async (requestId) =>
+          settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false,
+        publish: setCloudDocument,
+        fail: setCloudError,
+      }),
+    [],
+  );
+  const clearCloudDocument = useCallback(() => {
+    cloudSelection.cancel();
+    setCloudDocument(null);
+  }, [cloudSelection]);
 
   useEffect(() => {
-    setCloudDocument(null);
-  }, [activeTabId]);
+    clearCloudDocument();
+  }, [activeTabId, clearCloudDocument]);
+  useEffect(() => () => cloudSelection.cancel(), [cloudSelection]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -698,11 +720,11 @@ export function AppShell() {
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
-    setCloudDocument(null);
+    clearCloudDocument();
     const root = useSourcesStore.getState().root;
     useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearCloudDocument]);
 
   const openFile = useCallback(
     (file: WorkspaceFile) => {
@@ -715,19 +737,19 @@ export function AppShell() {
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
   const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
-    if (!opts.background) setCloudDocument(null);
+    if (!opts.background) clearCloudDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: file.path, name: file.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearCloudDocument]);
 
   // The palette's search-hit open: land at the hit's provenance line and mark the
   // chunk that matched. Enter focuses the tab and schedules the jump (consumed
   // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
   // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
-    if (!opts.background) setCloudDocument(null);
+    if (!opts.background) clearCloudDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
@@ -743,10 +765,10 @@ export function AppShell() {
         nonce: (jumpSeq.current += 1),
       });
     }
-  }, []);
+  }, [clearCloudDocument]);
 
   const onNavigate = useCallback((ref: DocRef) => {
-    setCloudDocument(null);
+    clearCloudDocument();
     const root = useSourcesStore.getState().root;
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
@@ -755,7 +777,7 @@ export function AppShell() {
       useTabsStore.getState().navigateInTab(active, ref);
     }
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearCloudDocument]);
 
   const onPersistScroll = useCallback((scroll: ScrollPos) => {
     const active = useTabsStore.getState().activeTabId;
@@ -802,14 +824,14 @@ export function AppShell() {
   // range or reports that it could not, and never approximates.
   const jumpToSpan = useCallback(
     (absPath: string, name: string, startLine: number, endLine: number) => {
-      setCloudDocument(null);
+      clearCloudDocument();
       const workspaceRoot = useSourcesStore.getState().root;
       const ref = { path: absPath, name };
       useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
       useSourcesStore.getState().addRecent(ref, workspaceRoot);
       setJump({ path: absPath, startLine, endLine, nonce: (jumpSeq.current += 1) });
     },
-    [],
+    [clearCloudDocument],
   );
 
   // Resolve a repo-relative file (how the engine cites provenance) to a path the
@@ -1015,21 +1037,21 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
-    setCloudDocument(null);
+    clearCloudDocument();
     useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
-  }, []);
+  }, [clearCloudDocument]);
 
   // Request a tab close: a tab with ANY unsaved document prompts the guard first;
   // a clean one closes immediately. Every close path (⌘W, the tab's ×, middle
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
-      setCloudDocument(null);
+      clearCloudDocument();
       if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
-    [closeTabAndBuffer],
+    [clearCloudDocument, closeTabAndBuffer],
   );
 
   // Save every dirty document of a tab (Save on the tab-close guard).
@@ -1798,15 +1820,16 @@ export function AppShell() {
           cloudLoading={cloudLoading}
           cloudError={cloudError}
           onCloudSearch={setCloudSearch}
-          onOpenCloud={(source, response, row) =>
-            setCloudDocument({ source, row })
-          }
+          onOpenCloud={(source, _response, row) => {
+            setCloudError(null);
+            void cloudSelection.select(source, row);
+          }}
           onRefreshCloud={() => void refreshCloudLibrary()}
         />
 
         <main className="shell__main">
           <TabStrip
-            onLocalIntent={() => setCloudDocument(null)}
+            onLocalIntent={clearCloudDocument}
             onRequestClose={requestCloseTab}
           />
           <div
@@ -1819,17 +1842,18 @@ export function AppShell() {
               <CloudLibraryPane
                 source={cloudDocument.source}
                 row={cloudDocument.row}
-                query={async (provider, filters, fields, requestId) => {
-                  if (!settingsBackend.queryCloudDocuments) {
-                    throw new Error('Cloud document queries are unavailable.');
-                  }
-                  return settingsBackend.queryCloudDocuments(provider, filters, fields, requestId);
-                }}
-                entityQuery={async (provider, filters, fields, requestId) => {
+                evidence={cloudDocument.evidence}
+                entityQuery={async (provider, filters, fields, requestId, evidence) => {
                   if (!settingsBackend.queryCloudEntity) {
                     throw new Error('Shared cloud entity queries are unavailable.');
                   }
-                  return settingsBackend.queryCloudEntity(provider, filters, fields, requestId);
+                  return settingsBackend.queryCloudEntity(
+                    provider,
+                    filters,
+                    fields,
+                    requestId,
+                    evidence,
+                  );
                 }}
                 cancel={async (requestId) =>
                   settingsBackend.cancelCloudDocumentQuery?.(requestId) ?? false
@@ -1943,7 +1967,8 @@ export function AppShell() {
               ...current,
               [source.provider]: response,
             }));
-            setCloudDocument({ source, row });
+            setCloudError(null);
+            void cloudSelection.select(source, row);
             setSettingsOpen(false);
           }}
           onSourceIntent={beginSourceIntent}

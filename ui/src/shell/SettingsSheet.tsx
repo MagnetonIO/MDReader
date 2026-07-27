@@ -119,6 +119,8 @@ function errorMessage(cause: unknown): string {
       return detail.detail;
     case 'query-failed':
       return `MDReader could not read that source. ${detail.detail}`;
+    case 'query-not-found':
+      return 'That provider document was not found. Refresh the source and try again.';
     case 'invalid-configuration':
     case 'rollback-failed':
       return 'MDReader could not safely update the cloud source. Nothing was connected.';
