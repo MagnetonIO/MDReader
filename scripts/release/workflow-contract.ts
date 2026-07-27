@@ -13,7 +13,7 @@ const SYFT =
 const WINDOWS_SIGNER_SHA256 =
   'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30';
 const WINDOWS_NSIS_HOOK_SHA256 =
-  '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64';
+  'd47e8e70f688281a29eb8d23b18e245b59fec995ff3f196307e3fa5b17b475a3';
 const SAFE_PACKAGE_EXTRACTOR_SHA256 =
   'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8';
 
@@ -80,8 +80,8 @@ const STEP_IDS: Record<string, string[]> = {
     'macos-verify-signature',
     'macos-verify-notarization',
     'windows-verify-signature',
-    'linux-verify-packages',
     'verify-final-package-binaries',
+    'linux-verify-packages',
     'install-syft',
     'stage-release',
     'generate-sbom',
@@ -1080,7 +1080,9 @@ function validateVerify(
       'verify-windows-signature.ps1',
       'mdreader-credentialed-output/bundle',
       'ExpectedThumbprint',
+      'ExpectedVersion',
       'EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT',
+      'needs.prepare.outputs.version',
     ],
     'Windows signing verification is incomplete',
   );
@@ -1094,21 +1096,27 @@ function validateVerify(
   );
   requireRun(
     steps,
-    'linux-verify-packages',
-    ['verify-linux-packages.sh', 'mdreader-credentialed-output/bundle'],
-    'Linux package verification is incomplete',
-  );
-  requireRun(
-    steps,
     'verify-final-package-binaries',
     [
       'verify-final-packages.sh',
       'mdreader-credentialed-output/bundle',
       'needs.prepare.outputs.source_commit',
+      'needs.prepare.outputs.version',
       'matrix.target',
       'mdreader-final-package-binaries.json',
     ],
     'final packages are not bound to the reviewed MDReader executable identity',
+  );
+  requireRun(
+    steps,
+    'linux-verify-packages',
+    [
+      'verify-linux-packages.sh',
+      'mdreader-credentialed-output/bundle',
+      'mdreader-final-package-binaries.json',
+      'needs.prepare.outputs.version',
+    ],
+    'Linux package verification is incomplete or runs before package identity',
   );
   requireRun(
     steps,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import {
   basename,
@@ -18,6 +19,14 @@ import {
   type PackageBinary,
 } from './binary-identity';
 import type { ReleasePlatform } from '../../apps/web/lib/release-manifest';
+
+const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
+const APPIMAGE_LAUNCHER =
+  '#!/bin/sh\nexec "$APPDIR/usr/bin/mdreader-app" "$@"\n';
+// Tauri CLI 2.11.4 installs this reviewed x86_64 AppRun implementation.
+// It resolves the sole desktop entry's Exec command through AppDir/usr/bin.
+const REVIEWED_APPRUN_SHA256 =
+  'f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f';
 
 function option(args: string[], name: string): string {
   const index = args.indexOf(name);
@@ -57,6 +66,7 @@ export async function resolveReviewedPackageBinary(
   root: string,
   platform: ReleasePlatform,
   kind: string,
+  expectedVersion: string,
 ): Promise<{
   body: Uint8Array;
   path: string;
@@ -87,6 +97,14 @@ export async function resolveReviewedPackageBinary(
     ) {
       throw new Error('macOS bundle metadata does not name the reviewed MDReader entrypoint');
     }
+    if (
+      plistValue('CFBundleShortVersionString') !== expectedVersion ||
+      plistValue('CFBundleVersion') !== expectedVersion
+    ) {
+      throw new Error(
+        `macOS bundle version does not match release ${expectedVersion}`,
+      );
+    }
     return {
       body: await readFile(binaryPath),
       path: binaryPath,
@@ -107,6 +125,35 @@ export async function resolveReviewedPackageBinary(
     if (matches.length !== 1 || !allowed.has(matches[0]!)) {
       throw new Error(
         `package contains ${matches.length} reviewed executables but does not bind one exact NSIS install payload to ${expectedName}`,
+      );
+    }
+    const launchCandidates = inventory.filter(
+      (path) =>
+        path.toLowerCase().endsWith('.exe') &&
+        (basename(path).toLowerCase().startsWith('mdreader') ||
+          path.includes(`${sep}app-64bit${sep}`)),
+    );
+    if (launchCandidates.length !== 1 || launchCandidates[0] !== matches[0]) {
+      throw new Error('NSIS package contains an extra unreviewed application launch target');
+    }
+    const contracts = inventory.filter(
+      (path) => basename(path) === 'mdreader-package-contract',
+    );
+    if (contracts.length !== 1) {
+      throw new Error(
+        'NSIS package does not contain one compiled install and launch contract',
+      );
+    }
+    const contract = (await readFile(contracts[0]!, 'utf8'))
+      .replaceAll('\r\n', '\n')
+      .trimEnd();
+    const expectedContract =
+      `schemaVersion=1;product=MDReader;identifier=dev.mdreader.app;` +
+      `version=${expectedVersion};installTarget=mdreader-app.exe;` +
+      'launchTarget=mdreader-app.exe';
+    if (contract !== expectedContract) {
+      throw new Error(
+        'NSIS compiled install and launch contract does not match the reviewed release',
       );
     }
     return {
@@ -135,16 +182,21 @@ export async function resolveReviewedPackageBinary(
     if (desktop.length !== 1) {
       throw new Error('AppImage must carry one desktop entry bound to AppRun');
     }
-    const desktopBody = await readFile(desktop[0]!, 'utf8');
-    const desktopCommand = /^Exec=([^\r\n]+)$/m
-      .exec(desktopBody)?.[1]
-      ?.trim()
-      .split(/\s+/, 1)[0]
-      ?.replace(/^"(.*)"$/, '$1');
+    const appRunBody = await readFile(appRun);
+    const appRunSha256 = createHash('sha256').update(appRunBody).digest('hex');
     if (
-      desktopCommand !== 'mdreader-app' &&
-      desktopCommand !== 'usr/bin/mdreader-app' &&
-      desktopCommand !== '/usr/bin/mdreader-app'
+      appRunBody.toString('utf8') !== APPIMAGE_LAUNCHER &&
+      appRunSha256 !== REVIEWED_APPRUN_SHA256
+    ) {
+      throw new Error(
+        'AppRun launcher does not dispatch exactly to usr/bin/mdreader-app',
+      );
+    }
+    const desktopBody = await readFile(desktop[0]!, 'utf8');
+    const desktopCommands = [...desktopBody.matchAll(/^Exec=([^\r\n]+)$/gm)];
+    if (
+      desktopCommands.length !== 1 ||
+      !/^mdreader-app(?: +%[fFuU])?$/.test(desktopCommands[0]![1]!)
     ) {
       throw new Error('AppImage desktop entry does not dispatch to usr/bin/mdreader-app');
     }
@@ -256,6 +308,10 @@ async function main(): Promise<void> {
     throw new Error('unsupported package verification platform');
   }
   const target = option(args, '--target');
+  const expectedVersion = option(args, '--version');
+  if (!STABLE_VERSION.test(expectedVersion)) {
+    throw new Error('expected package version must be an exact stable semantic version');
+  }
   const sourceCommit = option(args, '--source-commit');
   const credentialedManifestPath = resolve(
     option(args, '--credentialed-manifest'),
@@ -307,7 +363,12 @@ async function main(): Promise<void> {
   }
   const packages: PackageBinary[] = [];
   for (const [kind, root] of packageRoots) {
-    const binary = await resolveReviewedPackageBinary(root, platform, kind);
+    const binary = await resolveReviewedPackageBinary(
+      root,
+      platform,
+      kind,
+      expectedVersion,
+    );
     const signature = authenticatePlatformSignature(platform, binary.path);
     packages.push({
       kind,
@@ -325,6 +386,7 @@ async function main(): Promise<void> {
     reviewedBinarySha256,
     reviewedBinary: reviewedBinaryBytes,
     expectedPublisherIdentity,
+    expectedVersion,
   });
   await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`, {
     mode: 0o600,

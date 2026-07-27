@@ -82,7 +82,7 @@ jobs:
         env:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
-          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
+          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: 'd47e8e70f688281a29eb8d23b18e245b59fec995ff3f196307e3fa5b17b475a3'
           EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8'
         run: |
           node <<'NODE'
@@ -736,7 +736,7 @@ jobs:
           BUNDLE_WORKSPACE_ROOT: ${{ runner.temp }}/mdreader-bundle-workspace
           EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
           EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
-          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
+          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: 'd47e8e70f688281a29eb8d23b18e245b59fec995ff3f196307e3fa5b17b475a3'
           EXPECTED_SAFE_PACKAGE_EXTRACTOR_SHA256: 'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8'
           EXPECTED_RUNTIME_MANIFEST_SHA256: ${{ steps.establish-tauri-runtime.outputs.runtime_manifest_sha256 }}
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
@@ -2023,17 +2023,17 @@ jobs:
         shell: pwsh
         env:
           EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
-        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "$env:RUNNER_TEMP/mdreader-credentialed-output/bundle" -ExpectedThumbprint "$env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT"
-      - name: Verify Linux package matrix
-        id: linux-verify-packages
-        if: matrix.platform == 'linux'
-        run: scripts/release/verify-linux-packages.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
+        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "$env:RUNNER_TEMP/mdreader-credentialed-output/bundle" -ExpectedThumbprint "$env:EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT" -ExpectedVersion "${{ needs.prepare.outputs.version }}"
       - name: Verify every final package contains the reviewed MDReader executable
         id: verify-final-package-binaries
         env:
           EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
           EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
-        run: scripts/release/verify-final-packages.sh "${{ matrix.platform }}" "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "$RUNNER_TEMP/mdreader-final-package-binaries.json"
+        run: scripts/release/verify-final-packages.sh "${{ matrix.platform }}" "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "$RUNNER_TEMP/mdreader-final-package-binaries.json" "${{ needs.prepare.outputs.version }}"
+      - name: Verify Linux package matrix without executing the AppImage runtime
+        id: linux-verify-packages
+        if: matrix.platform == 'linux'
+        run: scripts/release/verify-linux-packages.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$RUNNER_TEMP/mdreader-readelf.txt" "$RUNNER_TEMP/mdreader-final-package-binaries.json" "${{ needs.prepare.outputs.version }}"
       - name: Install pinned Syft SBOM scanner
         id: install-syft
         uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b

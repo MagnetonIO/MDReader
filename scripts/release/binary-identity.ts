@@ -47,6 +47,7 @@ export interface PackageBinaryEvidence {
   schemaVersion: 2;
   platform: ReleasePlatform;
   target: string;
+  version: string;
   sourceCommit: string;
   unsignedHandoffSha256: string;
   reviewedBinarySha256: string;
@@ -75,6 +76,7 @@ export interface PackageBinarySetExpectation
   reviewedBinarySha256: string;
   reviewedBinary: Uint8Array;
   expectedPublisherIdentity: string | null;
+  expectedVersion: string;
 }
 
 export interface FinalPackageArtifact {
@@ -618,6 +620,9 @@ export function verifyPackageBinarySet(
   if (!SHA256.test(expected.unsignedHandoffSha256)) {
     throw new Error('unsigned handoff digest must be an exact SHA-256');
   }
+  if (!/^\d+\.\d+\.\d+$/.test(expected.expectedVersion)) {
+    throw new Error('expected final package version must be an exact stable semantic version');
+  }
   const reviewed = inspectReviewedBinary(expected.reviewedBinary, {
     platform,
     target: expected.target,
@@ -716,6 +721,7 @@ export function verifyPackageBinarySet(
     schemaVersion: 2,
     platform,
     target: expected.target,
+    version: expected.expectedVersion,
     sourceCommit: expected.sourceCommit,
     unsignedHandoffSha256: expected.unsignedHandoffSha256,
     reviewedBinarySha256: reviewed.sha256,
@@ -763,6 +769,9 @@ export function verifyFinalPackageEvidence(
   );
   if (evidence.sourceCommit !== expected.sourceCommit) {
     throw new Error('final package evidence has the wrong source commit');
+  }
+  if (evidence.version !== expected.expectedVersion) {
+    throw new Error('final package evidence has the wrong release version');
   }
   if (evidence.unsignedHandoffSha256 !== expected.unsignedHandoffSha256) {
     throw new Error('final package evidence has the wrong unsigned handoff digest');

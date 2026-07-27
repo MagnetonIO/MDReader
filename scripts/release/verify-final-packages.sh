@@ -6,6 +6,7 @@ BUNDLE_ROOT="${2:?bundle root is required}"
 SOURCE_COMMIT="${3:?source commit is required}"
 TARGET="${4:?target is required}"
 EVIDENCE_PATH="${5:?evidence output is required}"
+EXPECTED_VERSION="${6:?expected version is required}"
 CREDENTIALED_MANIFEST="$(dirname "$BUNDLE_ROOT")/credentialed-output.json"
 TRUSTED_RUNNER_TEMP="${RUNNER_TEMP:?runner temp is required}"
 EXTRACT_ROOT="$(mktemp -d "$TRUSTED_RUNNER_TEMP/mdreader-final-packages.XXXXXX")"
@@ -51,6 +52,7 @@ verify_extractions() {
   local args=(
     --platform "$PLATFORM"
     --target "$TARGET"
+    --version "$EXPECTED_VERSION"
     --source-commit "$SOURCE_COMMIT"
     --credentialed-manifest "$CREDENTIALED_MANIFEST"
     --output "$EVIDENCE_PATH"
@@ -139,14 +141,17 @@ elif [[ "$PLATFORM" == 'linux' ]]; then
   UPDATER="$(snapshot_file "$UPDATER_SOURCE" 'updater.AppImage.tar.gz')"
   DEB_PACKAGE="$(timeout --signal=KILL 15s dpkg-deb --field "$DEB" Package)"
   DEB_ARCH="$(timeout --signal=KILL 15s dpkg-deb --field "$DEB" Architecture)"
+  DEB_VERSION="$(timeout --signal=KILL 15s dpkg-deb --field "$DEB" Version)"
   RPM_PACKAGE="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{NAME}' "$RPM")"
   RPM_ARCH="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{ARCH}' "$RPM")"
-  [[ "$DEB_PACKAGE" == 'mdreader' && "$DEB_ARCH" == 'amd64' ]] || {
-    echo "DEB metadata does not identify the reviewed mdreader/amd64 install target" >&2
+  RPM_VERSION="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{VERSION}' "$RPM")"
+  RPM_RELEASE="$(timeout --signal=KILL 15s rpm -qp --queryformat '%{RELEASE}' "$RPM")"
+  [[ "$DEB_PACKAGE" == 'mdreader' && "$DEB_ARCH" == 'amd64' && "$DEB_VERSION" == "$EXPECTED_VERSION" ]] || {
+    echo "DEB metadata does not identify the reviewed mdreader/amd64 release version" >&2
     exit 1
   }
-  [[ "$RPM_PACKAGE" == 'mdreader' && "$RPM_ARCH" == 'x86_64' ]] || {
-    echo "RPM metadata does not identify the reviewed mdreader/x86_64 install target" >&2
+  [[ "$RPM_PACKAGE" == 'mdreader' && "$RPM_ARCH" == 'x86_64' && "$RPM_VERSION" == "$EXPECTED_VERSION" && "$RPM_RELEASE" == '1' ]] || {
+    echo "RPM metadata does not identify the reviewed mdreader/x86_64 release version" >&2
     exit 1
   }
   mkdir -p \

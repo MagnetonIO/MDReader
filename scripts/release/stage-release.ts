@@ -366,6 +366,7 @@ export async function stagePlatformArtifacts(
         unsignedHandoffSha256: build.unsignedHandoffSha256,
         reviewedBinarySha256: build.reviewedBinarySha256,
         reviewedBinary,
+        expectedVersion: input.version,
       },
     );
   }
