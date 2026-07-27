@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertMdreaderCloudflareAssets } from './mdreader-cloudflare-assets.mjs';
+
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP = resolve(ROOT, process.argv[2] ?? 'apps/web');
 const WORKER = join(APP, '.open-next', 'worker.js');
@@ -32,6 +34,7 @@ function requireAsset(relativePath) {
 
 const directory = mkdtempSync(join(tmpdir(), 'mdreader-worker-bundle-'));
 try {
+  const assetSet = assertMdreaderCloudflareAssets(ASSETS);
   const outdir = join(directory, 'bundle');
   const metafile = join(directory, 'bundle-meta.json');
   const output = execFileSync(
@@ -94,7 +97,7 @@ try {
   requireAsset('sitemap.xml');
 
   console.log(
-    `MDReader Cloudflare Worker: ${size[1]} KiB upload / ${gzipKiB.toFixed(2)} KiB gzip; static reader and viewer assets verified`,
+    `MDReader Cloudflare Worker: ${size[1]} KiB upload / ${gzipKiB.toFixed(2)} KiB gzip; ${assetSet.fileCount} assets / ${assetSet.totalBytes} bytes verified`,
   );
 } finally {
   rmSync(directory, { recursive: true, force: true });
