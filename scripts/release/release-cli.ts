@@ -19,6 +19,7 @@ import {
 import {
   attestReleaseBuildConfig,
   sealReleaseBundle,
+  verifyCredentialedOutput,
   verifyReleaseBuildAttestation,
 } from './release-build-attestation';
 import { assertGlibcCompatibility } from './platform-compat';
@@ -85,6 +86,18 @@ async function stage(args: string[]): Promise<void> {
   if (version !== workspaceVersion) {
     throw new Error(`release version ${version} does not match workspace version ${workspaceVersion}`);
   }
+  const credentialedOutputRoot = option(
+    args,
+    '--credentialed-output-root',
+    false,
+  );
+  const credentialedOutputManifest = option(
+    args,
+    '--credentialed-output-manifest',
+    false,
+  );
+  const buildAttestation = option(args, '--build-attestation', false);
+  const bundleSeal = option(args, '--bundle-seal', false);
   const fragment = await stagePlatformArtifacts({
     platform: platform as 'macos' | 'windows' | 'linux',
     version,
@@ -93,14 +106,54 @@ async function stage(args: string[]): Promise<void> {
     bundleRoot: resolve(option(args, '--bundle-root')!),
     outputRoot: resolve(option(args, '--output-root')!),
     releaseConfigPath: resolve(option(args, '--release-config')!),
-    buildAttestationPath: resolve(option(args, '--build-attestation')!),
-    bundleSealPath: resolve(option(args, '--bundle-seal')!),
+    ...(credentialedOutputRoot && credentialedOutputManifest
+      ? {
+          credentialedOutputRoot: resolve(credentialedOutputRoot),
+          credentialedOutputManifestPath: resolve(
+            credentialedOutputManifest,
+          ),
+        }
+      : {}),
+    ...(buildAttestation && bundleSeal
+      ? {
+          buildAttestationPath: resolve(buildAttestation),
+          bundleSealPath: resolve(bundleSeal),
+        }
+      : {}),
     buildTarget: option(args, '--build-target')!,
     buildBundles: option(args, '--build-bundles')!,
   });
   process.stdout.write(
     `staged ${platform}: ${fragment.artifacts.length} verified artifact records\n`,
   );
+}
+
+async function verifyCredentialed(args: string[]): Promise<void> {
+  const platform = option(args, '--platform')!;
+  if (!['macos', 'windows', 'linux'].includes(platform)) {
+    throw new Error(`unsupported release platform ${platform}`);
+  }
+  const root = resolve(option(args, '--root')!);
+  const verified = await verifyCredentialedOutput(
+    root,
+    resolve(option(args, '--manifest')!),
+    {
+      version: option(args, '--version')!,
+      sourceCommit: option(args, '--source-commit')!,
+      platform: platform as 'macos' | 'windows' | 'linux',
+      target: option(args, '--target')!,
+      bundles: option(args, '--bundles')!,
+    },
+  );
+  if (
+    verified.updaterPublicKeySha256 !==
+    option(args, '--updater-public-key-sha256')!
+  ) {
+    throw new Error(
+      'credentialed release output updater identity differs from the pre-build authority',
+    );
+  }
+  process.stdout.write('credentialed release output verified\n');
 }
 
 async function sealBuild(args: string[]): Promise<void> {
@@ -296,6 +349,9 @@ async function main(): Promise<void> {
   if (command === 'attest-build') return attestBuild(args);
   if (command === 'seal-build') return sealBuild(args);
   if (command === 'verify-build-attestation') return verifyBuild(args);
+  if (command === 'verify-credentialed-output') {
+    return verifyCredentialed(args);
+  }
   if (command === 'stage') return stage(args);
   if (command === 'assemble') return assemble(args);
   if (command === 'verify-linux-abi') return verifyLinuxAbi(args);
@@ -306,7 +362,7 @@ async function main(): Promise<void> {
   }
   if (command === 'seal-publication') return sealPublication(args);
   if (command === 'publish') return publish(args);
-  throw new Error('usage: release-cli.ts <config|stage|assemble|verify-linux-abi|validate|seal-publication|publish> [options]');
+  throw new Error('usage: release-cli.ts <config|stage|assemble|verify-credentialed-output|verify-linux-abi|validate|seal-publication|publish> [options]');
 }
 
 main().catch((error: unknown) => {

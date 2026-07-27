@@ -1,5 +1,13 @@
 name: mdreader-direct-release
 
+# Trust roots: this workflow, the full-SHA actions and GitHub artifact service,
+# and the exact SRI-pinned Tauri npm tarballs. The protected bundle job
+# inventories the downloaded Node/Tauri runtime and both handoffs.
+# OS/tool trust boundary: GitHub runner-image native packaging
+# tools (security, codesign, PowerShell, signtool, NSIS, dpkg/rpm/AppImage
+# tooling, tar, and the platform linker) remain outside the byte inventory and
+# are trusted as root-owned components of the pinned runner image.
+
 on:
   push:
     tags:
@@ -31,6 +39,8 @@ jobs:
       published_at: ${{ steps.metadata.outputs.published_at }}
       publish_requested: ${{ steps.metadata.outputs.publish_requested }}
       publisher_sha256: ${{ steps.authorize-publisher-bundle.outputs.publisher_sha256 }}
+      support_sha256: ${{ steps.seal-release-support.outputs.support_sha256 }}
+      updater_public_key_sha256: ${{ steps.seal-release-support.outputs.updater_public_key_sha256 }}
     steps:
       - name: Checkout the exact release source and main history
         id: checkout-release-source
@@ -60,6 +70,77 @@ jobs:
             echo "unsupported release event $GITHUB_EVENT_NAME" >&2
             exit 1
           fi
+      - name: Seal reviewed packaging support before package code runs
+        id: seal-release-support
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const {
+            chmodSync,
+            copyFileSync,
+            lstatSync,
+            mkdirSync,
+            readFileSync,
+            rmSync,
+            writeFileSync,
+          } = require('node:fs');
+          const { basename, join } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const key = process.env.MDREADER_UPDATER_PUBLIC_KEY;
+          if (
+            typeof key !== 'string' ||
+            key.length < 64 ||
+            key.length % 4 !== 0 ||
+            !/^[A-Za-z0-9+/]+={0,2}$/.test(key)
+          ) {
+            throw new Error('public updater key variable is missing or invalid');
+          }
+          const root = join(process.env.RUNNER_TEMP, 'mdreader-release-support');
+          const payload = join(root, 'payload');
+          rmSync(root, { recursive: true, force: true });
+          mkdirSync(payload, { recursive: true, mode: 0o700 });
+          const files = [];
+          for (const source of [
+            'scripts/release/sign-windows-from-store.ps1',
+            'scripts/release/windows-minimum.nsh',
+          ]) {
+            const metadata = lstatSync(source);
+            if (!metadata.isFile() || metadata.isSymbolicLink()) {
+              throw new Error(`reviewed release support is not a regular file: ${source}`);
+            }
+            const destination = join(payload, basename(source));
+            copyFileSync(source, destination);
+            chmodSync(destination, metadata.mode & 0o777);
+            const body = readFileSync(destination);
+            files.push({
+              path: basename(source),
+              bytes: body.byteLength,
+              sha256: hash(body),
+            });
+          }
+          files.sort((left, right) => left.path.localeCompare(right.path));
+          const encoded = `${JSON.stringify({
+            schemaVersion: 1,
+            sourceCommit: process.env.GITHUB_SHA,
+            files,
+          }, null, 2)}\n`;
+          writeFileSync(join(root, 'support.json'), encoded, { mode: 0o600 });
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `support_sha256=${hash(encoded)}\nupdater_public_key_sha256=${hash(Buffer.from(key, 'utf8'))}\n`,
+            { flag: 'a' },
+          );
+          NODE
+      - name: Hand off hash-addressed reviewed packaging support
+        id: upload-release-support
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-release-support-${{ steps.seal-release-support.outputs.support_sha256 }}
+          path: ${{ runner.temp }}/mdreader-release-support
+          if-no-files-found: error
+          retention-days: 1
       - name: Install Node 22
         id: setup-node-prepare
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -102,28 +183,27 @@ jobs:
         id: validate-workflow-contract
         run: pnpm exec tsx scripts/release/check-workflow.ts .github/workflows/release.yml
 
-  build:
+  build-unsigned:
     needs: prepare
-    environment: ${{ matrix.environment }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos
             os: macos-14
-            environment: mdreader-production-macos
             target: universal-apple-darwin
             bundles: dmg
+            binary: mdreader-app
           - platform: windows
             os: windows-2025
-            environment: mdreader-production-windows
             target: x86_64-pc-windows-msvc
             bundles: nsis
+            binary: mdreader-app.exe
           - platform: linux
             os: ubuntu-24.04
-            environment: mdreader-production-linux
             target: x86_64-unknown-linux-gnu
             bundles: appimage,deb,rpm
+            binary: mdreader-app
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout the exact release source
@@ -140,8 +220,8 @@ jobs:
       - name: Enable pinned package manager
         id: enable-corepack-build
         run: corepack enable
-      - name: Install Linux packaging dependencies
-        id: install-linux-packaging
+      - name: Install Linux compilation dependencies
+        id: install-linux-compilation
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
@@ -154,9 +234,7 @@ jobs:
             libayatana-appindicator3-dev \
             libxdo-dev \
             libssl-dev \
-            build-essential \
-            rpm \
-            libfuse2
+            build-essential
       - name: Install locked workspace dependencies
         id: install-dependencies-build
         run: pnpm install --frozen-lockfile
@@ -168,38 +246,805 @@ jobs:
           else
             rustup target add "${{ matrix.target }}"
           fi
+      - name: Generate unsigned direct-updater build configuration
+        id: generate-unsigned-release-config
+        env:
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+          EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+        run: |
+          ACTUAL_KEY_SHA256="$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write(createHash("sha256").update(process.env.MDREADER_UPDATER_PUBLIC_KEY || "", "utf8").digest("hex"))')"
+          [[ "$ACTUAL_KEY_SHA256" == "$EXPECTED_UPDATER_PUBLIC_KEY_SHA256" ]] || {
+            echo "public updater key differs from the pre-build authority" >&2
+            exit 1
+          }
+          scripts/release/generate-direct-release-config.sh linux "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Attest immutable compile inputs before application build
+        id: attest-unsigned-build
+        env:
+          EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_RELEASE_TARGET: ${{ matrix.target }}
+          EXPECTED_RELEASE_BUNDLES: ${{ matrix.bundles }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync, writeFileSync } = require('node:fs');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const configPath = `${process.env.RUNNER_TEMP}/mdreader-release-config.json`;
+          const configBytes = readFileSync(configPath);
+          const config = JSON.parse(configBytes.toString('utf8'));
+          const encoded = `${JSON.stringify({
+            schemaVersion: 2,
+            version: process.env.EXPECTED_RELEASE_VERSION,
+            target: process.env.EXPECTED_RELEASE_TARGET,
+            bundles: process.env.EXPECTED_RELEASE_BUNDLES,
+            releaseConfigSha256: hash(configBytes),
+            updaterPublicKeySha256: hash(
+              Buffer.from(config.plugins.updater.pubkey, 'utf8'),
+            ),
+          }, null, 2)}\n`;
+          writeFileSync(
+            `${process.env.RUNNER_TEMP}/mdreader-release-attestation.json`,
+            encoded,
+            { mode: 0o600 },
+          );
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `attestation_sha256=${hash(encoded)}\n`,
+            { flag: 'a' },
+          );
+          NODE
+      - name: Build frontend and Rust binary without private credentials
+        id: prepare-direct-release
+        run: scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Verify immutable compile inputs after application build
+        id: verify-unsigned-build
+        shell: bash
+        env:
+          EXPECTED_BUILD_ATTESTATION_SHA256: ${{ steps.attest-unsigned-build.outputs.attestation_sha256 }}
+          RELEASE_CONFIG_PATH: ${{ runner.temp }}/mdreader-release-config.json
+          BUILD_ATTESTATION_PATH: ${{ runner.temp }}/mdreader-release-attestation.json
+          EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_RELEASE_TARGET: ${{ matrix.target }}
+          EXPECTED_RELEASE_BUNDLES: ${{ matrix.bundles }}
+          EXPECTED_RELEASE_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`unsigned build verifier is missing ${name}`);
+            return value;
+          };
+          const tuples = {
+            macos: ['universal-apple-darwin', 'dmg'],
+            windows: ['x86_64-pc-windows-msvc', 'nsis'],
+            linux: ['x86_64-unknown-linux-gnu', 'appimage,deb,rpm'],
+          };
+          const platform = required('EXPECTED_RELEASE_PLATFORM');
+          const target = required('EXPECTED_RELEASE_TARGET');
+          const bundles = required('EXPECTED_RELEASE_BUNDLES');
+          const tuple = tuples[platform];
+          if (!tuple || tuple[0] !== target || tuple[1] !== bundles) {
+            throw new Error('unsigned build platform, target, and bundle tuple is invalid');
+          }
+          const attestationBytes = readFileSync(required('BUILD_ATTESTATION_PATH'));
+          if (hash(attestationBytes) !== required('EXPECTED_BUILD_ATTESTATION_SHA256')) {
+            throw new Error('unsigned build attestation changed after its pre-build boundary');
+          }
+          const attestation = JSON.parse(attestationBytes.toString('utf8'));
+          const configBytes = readFileSync(required('RELEASE_CONFIG_PATH'));
+          const config = JSON.parse(configBytes.toString('utf8'));
+          if (
+            attestation.schemaVersion !== 2 ||
+            attestation.version !== required('EXPECTED_RELEASE_VERSION') ||
+            attestation.target !== target ||
+            attestation.bundles !== bundles ||
+            attestation.releaseConfigSha256 !== hash(configBytes) ||
+            attestation.updaterPublicKeySha256 !==
+              required('EXPECTED_UPDATER_PUBLIC_KEY_SHA256') ||
+            config.identifier !== 'dev.mdreader.app' ||
+            config.version !== attestation.version ||
+            config.build?.beforeBuildCommand !== '' ||
+            config.bundle?.createUpdaterArtifacts !== true ||
+            config.bundle?.windows !== undefined ||
+            config.bundle?.macOS !== undefined ||
+            config.plugins?.updater?.endpoints?.length !== 1 ||
+            config.plugins.updater.endpoints[0] !==
+              'https://downloads.mdreader.dev/channels/stable/updater.json' ||
+            hash(Buffer.from(config.plugins.updater.pubkey, 'utf8')) !==
+              attestation.updaterPublicKeySha256
+          ) {
+            throw new Error('unsigned build inputs do not match the immutable compile attestation');
+          }
+          NODE
+      - name: Seal the closed unsigned binary and resource handoff
+        id: seal-unsigned-handoff
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_BUNDLES: ${{ matrix.bundles }}
+          RELEASE_BINARY: ${{ matrix.binary }}
+          UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const {
+            chmodSync,
+            copyFileSync,
+            lstatSync,
+            mkdirSync,
+            readFileSync,
+            rmSync,
+            writeFileSync,
+          } = require('node:fs');
+          const { dirname, join, relative, sep } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const root = join(process.cwd(), 'target', 'release-unsigned');
+          const payload = join(root, 'payload');
+          rmSync(root, { recursive: true, force: true });
+          mkdirSync(payload, { recursive: true, mode: 0o700 });
+          const sources = [
+            [
+              join('target', process.env.RELEASE_TARGET, 'release', process.env.RELEASE_BINARY),
+              join('target', process.env.RELEASE_TARGET, 'release', process.env.RELEASE_BINARY),
+            ],
+            ...[
+              '32x32.png',
+              '128x128.png',
+              '128x128@2x.png',
+              'icon.icns',
+              'icon.ico',
+            ].map((icon) => [
+              join('apps', 'mdreader', 'src-tauri', 'icons', icon),
+              join('icons', icon),
+            ]),
+          ];
+          const files = [];
+          for (const [source, relativePath] of sources) {
+            const metadata = lstatSync(source);
+            if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size === 0) {
+              throw new Error(`unsigned handoff source is not a non-empty regular file: ${source}`);
+            }
+            const destination = join(payload, relativePath);
+            mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+            copyFileSync(source, destination);
+            chmodSync(destination, metadata.mode & 0o777);
+            const body = readFileSync(destination);
+            files.push({
+              path: relative(payload, destination).split(sep).join('/'),
+              bytes: body.byteLength,
+              sha256: hash(body),
+            });
+          }
+          files.sort((left, right) => left.path.localeCompare(right.path));
+          const encoded = `${JSON.stringify({
+            schemaVersion: 1,
+            version: process.env.RELEASE_VERSION,
+            sourceCommit: process.env.SOURCE_COMMIT,
+            platform: process.env.RELEASE_PLATFORM,
+            target: process.env.RELEASE_TARGET,
+            bundles: process.env.RELEASE_BUNDLES,
+            updaterPublicKeySha256: process.env.UPDATER_PUBLIC_KEY_SHA256,
+            files,
+          }, null, 2)}\n`;
+          writeFileSync(join(root, 'handoff.json'), encoded, { mode: 0o600 });
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `handoff_sha256=${hash(encoded)}\n`,
+            { flag: 'a' },
+          );
+          NODE
+      - name: Hand off only the hash-addressed unsigned binary and resources
+        id: upload-unsigned-handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-unsigned-${{ matrix.platform }}-${{ steps.seal-unsigned-handoff.outputs.handoff_sha256 }}
+          path: target/release-unsigned
+          if-no-files-found: error
+          retention-days: 1
+
+  bundle-sign:
+    needs: [prepare, build-unsigned]
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-14
+            environment: mdreader-production-macos
+            target: universal-apple-darwin
+            bundles: dmg
+            binary: mdreader-app
+            native_package: '@tauri-apps/cli-darwin-x64'
+            native_integrity: 'sha512-uFsGQAAfuyz1k/yGLmkWfkBlgKAqZfxqlHmLWx81QU27RJWfmbNHCIq8T8w1e+VClleIuZUjpHWfoE4E3DLo3A=='
+          - platform: windows
+            os: windows-2025
+            environment: mdreader-production-windows
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            binary: mdreader-app.exe
+            native_package: '@tauri-apps/cli-win32-x64-msvc'
+            native_integrity: 'sha512-+vDiqBIU5dMISg/wNvX3sF+ZHfgJGJ5T0AcO+EHNXV9GGAG+P5fzodlDXD3QdKCRgZxMoCm5PPvj3BqLNjBthw=='
+          - platform: linux
+            os: ubuntu-24.04
+            environment: mdreader-production-linux
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+            binary: mdreader-app
+            native_package: '@tauri-apps/cli-linux-x64-gnu'
+            native_integrity: 'sha512-2VRNWl84FOH0m2giiDkO2h0QXlcMJeX+zJDpI5kDIQAx6s+geF3v48F4DXfJez4GS/FdoDGnPnw1C2iYGbQ7bQ=='
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install pinned Node runtime
+        id: setup-node-bundle
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.13.1'
+      - name: Download the one hash-addressed unsigned handoff
+        id: download-unsigned-handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: mdreader-unsigned-${{ matrix.platform }}-*
+          path: ${{ runner.temp }}/mdreader-unsigned-download
+          merge-multiple: false
+      - name: Download independently sealed packaging support
+        id: download-release-support
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-release-support-${{ needs.prepare.outputs.support_sha256 }}
+          path: ${{ runner.temp }}/mdreader-support-download/mdreader-release-support-${{ needs.prepare.outputs.support_sha256 }}
+      - name: Establish isolated SRI-pinned Tauri CLI and native runtime
+        id: establish-tauri-runtime
+        run: |
+          PACKAGE_ROOT="$RUNNER_TEMP/mdreader-tauri-packages"
+          RUNTIME_ROOT="$RUNNER_TEMP/mdreader-tauri-runtime"
+          rm -rf "$PACKAGE_ROOT" "$RUNTIME_ROOT"
+          mkdir -p "$PACKAGE_ROOT/cli" "$PACKAGE_ROOT/native" "$RUNTIME_ROOT/node_modules/@tauri-apps"
+          (
+            cd "$PACKAGE_ROOT/cli"
+            npm pack --ignore-scripts --json '@tauri-apps/cli@2.11.4' > pack.json
+          )
+          (
+            cd "$PACKAGE_ROOT/native"
+            npm pack --ignore-scripts --json "$TAURI_NATIVE_PACKAGE@2.11.4" > pack.json
+          )
+          node <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const { join } = require('node:path');
+          for (const [directory, expected] of [
+            ['cli', process.env.TAURI_CLI_INTEGRITY],
+            ['native', process.env.TAURI_NATIVE_INTEGRITY],
+          ]) {
+            const rows = JSON.parse(
+              readFileSync(
+                join(process.env.RUNNER_TEMP, 'mdreader-tauri-packages', directory, 'pack.json'),
+                'utf8',
+              ),
+            );
+            if (
+              !Array.isArray(rows) ||
+              rows.length !== 1 ||
+              rows[0].integrity !== expected ||
+              typeof rows[0].filename !== 'string'
+            ) {
+              throw new Error(`Tauri ${directory} tarball does not match its pinned SRI`);
+            }
+          }
+          NODE
+          CLI_TARBALL="$(node -e 'const { readFileSync } = require("node:fs"); process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$PACKAGE_ROOT/cli/pack.json")"
+          NATIVE_TARBALL="$(node -e 'const { readFileSync } = require("node:fs"); process.stdout.write(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$PACKAGE_ROOT/native/pack.json")"
+          mkdir -p "$PACKAGE_ROOT/cli-extract" "$PACKAGE_ROOT/native-extract"
+          tar -xzf "$PACKAGE_ROOT/cli/$CLI_TARBALL" -C "$PACKAGE_ROOT/cli-extract"
+          tar -xzf "$PACKAGE_ROOT/native/$NATIVE_TARBALL" -C "$PACKAGE_ROOT/native-extract"
+          mv "$PACKAGE_ROOT/cli-extract/package" "$RUNTIME_ROOT/node_modules/@tauri-apps/cli"
+          NATIVE_DIRECTORY="${TAURI_NATIVE_PACKAGE#@tauri-apps/}"
+          mv "$PACKAGE_ROOT/native-extract/package" "$RUNTIME_ROOT/node_modules/@tauri-apps/$NATIVE_DIRECTORY"
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const {
+            lstatSync,
+            readFileSync,
+            readdirSync,
+            writeFileSync,
+          } = require('node:fs');
+          const { join, relative, sep } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const root = join(process.env.RUNNER_TEMP, 'mdreader-tauri-runtime');
+          const files = [];
+          const walk = (directory) => {
+            for (const name of readdirSync(directory).sort()) {
+              const path = join(directory, name);
+              const metadata = lstatSync(path);
+              if (metadata.isSymbolicLink()) {
+                throw new Error(`isolated Tauri runtime contains a symbolic link: ${path}`);
+              }
+              if (metadata.isDirectory()) {
+                walk(path);
+              } else if (metadata.isFile()) {
+                const body = readFileSync(path);
+                files.push({
+                  path: relative(root, path).split(sep).join('/'),
+                  mode: metadata.mode & 0o777,
+                  bytes: body.byteLength,
+                  sha256: hash(body),
+                });
+              } else {
+                throw new Error(`isolated Tauri runtime contains a non-regular entry: ${path}`);
+              }
+            }
+          };
+          walk(root);
+          const nativeDirectory = process.env.TAURI_NATIVE_PACKAGE.slice('@tauri-apps/'.length);
+          const cli = JSON.parse(
+            readFileSync(join(root, 'node_modules', '@tauri-apps', 'cli', 'package.json'), 'utf8'),
+          );
+          const native = JSON.parse(
+            readFileSync(join(root, 'node_modules', '@tauri-apps', nativeDirectory, 'package.json'), 'utf8'),
+          );
+          const nativeFiles = files.filter(
+            (entry) =>
+              entry.path.startsWith(`node_modules/@tauri-apps/${nativeDirectory}/`) &&
+              entry.path.endsWith('.node'),
+          );
+          if (
+            cli.name !== '@tauri-apps/cli' ||
+            cli.version !== '2.11.4' ||
+            native.name !== process.env.TAURI_NATIVE_PACKAGE ||
+            native.version !== '2.11.4' ||
+            nativeFiles.length !== 1 ||
+            !files.some((entry) => entry.path === 'node_modules/@tauri-apps/cli/tauri.js') ||
+            !files.some((entry) => entry.path === 'node_modules/@tauri-apps/cli/main.js') ||
+            !files.some((entry) => entry.path === 'node_modules/@tauri-apps/cli/index.js')
+          ) {
+            throw new Error('isolated Tauri runtime package shape is invalid');
+          }
+          const nodePath = process.execPath;
+          const nodeMetadata = lstatSync(nodePath);
+          if (!nodeMetadata.isFile() || nodeMetadata.isSymbolicLink()) {
+            throw new Error('Node runtime is not an exact regular executable');
+          }
+          const nodeBody = readFileSync(nodePath);
+          const encoded = `${JSON.stringify({
+            schemaVersion: 1,
+            platform: process.env.RELEASE_PLATFORM,
+            cliVersion: '2.11.4',
+            cliPackage: '@tauri-apps/cli',
+            cliIntegrity: process.env.TAURI_CLI_INTEGRITY,
+            nativePackage: process.env.TAURI_NATIVE_PACKAGE,
+            nativeIntegrity: process.env.TAURI_NATIVE_INTEGRITY,
+            node: {
+              path: nodePath,
+              mode: nodeMetadata.mode & 0o777,
+              bytes: nodeBody.byteLength,
+              sha256: hash(nodeBody),
+            },
+            files,
+          }, null, 2)}\n`;
+          writeFileSync(join(root, 'runtime.json'), encoded, { mode: 0o600 });
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `runtime_manifest_sha256=${hash(encoded)}\n`,
+            { flag: 'a' },
+          );
+          NODE
+        env:
+          TAURI_CLI_INTEGRITY: 'sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ=='
+          TAURI_NATIVE_PACKAGE: ${{ matrix.native_package }}
+          TAURI_NATIVE_INTEGRITY: ${{ matrix.native_integrity }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+      - name: Verify Windows Administrator authority before resolving its PFX
+        id: windows-admin-preflight
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          try {
+            $isAdministrator = [Security.Principal.WindowsPrincipal]::new(
+              $identity
+            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          } finally {
+            $identity.Dispose()
+          }
+          if (-not $isAdministrator) {
+            throw "Windows LocalMachine certificate store requires an Administrator runner"
+          }
+      - name: Verify closed handoff, reviewed support, and isolated runtime before any secret
+        id: verify-credential-boundaries
+        shell: bash
+        env:
+          UNSIGNED_DOWNLOAD_ROOT: ${{ runner.temp }}/mdreader-unsigned-download
+          SUPPORT_DOWNLOAD_ROOT: ${{ runner.temp }}/mdreader-support-download
+          TAURI_RUNTIME_ROOT: ${{ runner.temp }}/mdreader-tauri-runtime
+          BUNDLE_WORKSPACE_ROOT: ${{ runner.temp }}/mdreader-bundle-workspace
+          EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
+          EXPECTED_RUNTIME_MANIFEST_SHA256: ${{ steps.establish-tauri-runtime.outputs.runtime_manifest_sha256 }}
+          EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          EXPECTED_RELEASE_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_RELEASE_TARGET: ${{ matrix.target }}
+          EXPECTED_RELEASE_BUNDLES: ${{ matrix.bundles }}
+          EXPECTED_RELEASE_BINARY: ${{ matrix.binary }}
+          EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+          EXPECTED_TAURI_CLI_INTEGRITY: 'sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ=='
+          EXPECTED_TAURI_NATIVE_PACKAGE: ${{ matrix.native_package }}
+          EXPECTED_TAURI_NATIVE_INTEGRITY: ${{ matrix.native_integrity }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const {
+            chmodSync,
+            copyFileSync,
+            lstatSync,
+            mkdirSync,
+            readFileSync,
+            readdirSync,
+            rmSync,
+            writeFileSync,
+          } = require('node:fs');
+          const { basename, dirname, join, relative, resolve, sep } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`credential boundary is missing ${name}`);
+            return value;
+          };
+          const parse = (path, label) => {
+            try {
+              return JSON.parse(readFileSync(path, 'utf8'));
+            } catch {
+              throw new Error(`${label} is not valid JSON`);
+            }
+          };
+          const inventory = (root, excluded = new Set()) => {
+            const files = [];
+            const walk = (directory) => {
+              for (const name of readdirSync(directory).sort()) {
+                const path = join(directory, name);
+                const relativePath = relative(root, path).split(sep).join('/');
+                if (excluded.has(relativePath)) continue;
+                const metadata = lstatSync(path);
+                if (metadata.isSymbolicLink()) {
+                  throw new Error(`symbolic link is forbidden at ${relativePath}`);
+                }
+                if (metadata.isDirectory()) {
+                  walk(path);
+                } else if (metadata.isFile()) {
+                  const body = readFileSync(path);
+                  files.push({
+                    path: relativePath,
+                    mode: metadata.mode & 0o777,
+                    bytes: body.byteLength,
+                    sha256: hash(body),
+                  });
+                } else {
+                  throw new Error(`unsupported non-regular entry at ${relativePath}`);
+                }
+              }
+            };
+            walk(root);
+            return files.sort((left, right) => left.path.localeCompare(right.path));
+          };
+          const sameFiles = (actual, expected, label) => {
+            if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+              throw new Error(`${label} inventory mismatch`);
+            }
+          };
+          const platform = required('EXPECTED_RELEASE_PLATFORM');
+          const target = required('EXPECTED_RELEASE_TARGET');
+          const bundles = required('EXPECTED_RELEASE_BUNDLES');
+          const tuples = {
+            macos: ['universal-apple-darwin', 'dmg', 'mdreader-app'],
+            windows: ['x86_64-pc-windows-msvc', 'nsis', 'mdreader-app.exe'],
+            linux: ['x86_64-unknown-linux-gnu', 'appimage,deb,rpm', 'mdreader-app'],
+          };
+          const tuple = tuples[platform];
+          if (
+            !tuple ||
+            tuple[0] !== target ||
+            tuple[1] !== bundles ||
+            tuple[2] !== required('EXPECTED_RELEASE_BINARY')
+          ) {
+            throw new Error('credentialed platform, target, bundle, and binary tuple is invalid');
+          }
+
+          const unsignedDownload = required('UNSIGNED_DOWNLOAD_ROOT');
+          const unsignedNames = readdirSync(unsignedDownload);
+          if (unsignedNames.length !== 1) {
+            throw new Error('exactly one hash-addressed unsigned handoff is required');
+          }
+          const unsignedRoot = join(unsignedDownload, unsignedNames[0]);
+          const unsignedPrefix = `mdreader-unsigned-${platform}-`;
+          if (!basename(unsignedRoot).startsWith(unsignedPrefix)) {
+            throw new Error('unsigned handoff artifact name is not platform scoped');
+          }
+          const handoffPath = join(unsignedRoot, 'handoff.json');
+          const handoffBytes = readFileSync(handoffPath);
+          if (
+            basename(unsignedRoot).slice(unsignedPrefix.length) !==
+            hash(handoffBytes)
+          ) {
+            throw new Error('unsigned handoff manifest does not match its hash address');
+          }
+          const handoff = parse(handoffPath, 'unsigned handoff manifest');
+          const iconPaths = [
+            'icons/32x32.png',
+            'icons/128x128.png',
+            'icons/128x128@2x.png',
+            'icons/icon.icns',
+            'icons/icon.ico',
+          ];
+          const expectedHandoffPaths = [
+            ...iconPaths,
+            `target/${target}/release/${tuple[2]}`,
+          ].sort();
+          if (
+            handoff.schemaVersion !== 1 ||
+            handoff.version !== required('EXPECTED_RELEASE_VERSION') ||
+            handoff.sourceCommit !== required('EXPECTED_SOURCE_COMMIT') ||
+            handoff.platform !== platform ||
+            handoff.target !== target ||
+            handoff.bundles !== bundles ||
+            handoff.updaterPublicKeySha256 !==
+              required('EXPECTED_UPDATER_PUBLIC_KEY_SHA256') ||
+            !Array.isArray(handoff.files) ||
+            JSON.stringify(handoff.files.map((entry) => entry.path).sort()) !==
+              JSON.stringify(expectedHandoffPaths)
+          ) {
+            throw new Error('closed unsigned handoff contains an unexpected handoff path or identity');
+          }
+          const unsignedPayload = join(unsignedRoot, 'payload');
+          sameFiles(
+            inventory(unsignedPayload).map(({ mode: _mode, ...entry }) => entry),
+            [...handoff.files].sort((left, right) => left.path.localeCompare(right.path)),
+            'unsigned handoff',
+          );
+
+          const supportSha = required('EXPECTED_SUPPORT_SHA256');
+          const supportRoot = join(
+            required('SUPPORT_DOWNLOAD_ROOT'),
+            `mdreader-release-support-${supportSha}`,
+          );
+          const supportPath = join(supportRoot, 'support.json');
+          const supportBytes = readFileSync(supportPath);
+          if (hash(supportBytes) !== supportSha) {
+            throw new Error('reviewed support does not match its hash address');
+          }
+          const support = parse(supportPath, 'reviewed support manifest');
+          if (
+            support.schemaVersion !== 1 ||
+            support.sourceCommit !== required('EXPECTED_SOURCE_COMMIT') ||
+            !Array.isArray(support.files) ||
+            JSON.stringify(support.files.map((entry) => entry.path).sort()) !==
+              JSON.stringify([
+                'sign-windows-from-store.ps1',
+                'windows-minimum.nsh',
+              ])
+          ) {
+            throw new Error('reviewed support manifest is not exact');
+          }
+          const supportPayload = join(supportRoot, 'payload');
+          sameFiles(
+            inventory(supportPayload).map(({ mode: _mode, ...entry }) => entry),
+            [...support.files].sort((left, right) => left.path.localeCompare(right.path)),
+            'reviewed support',
+          );
+
+          const runtimeRoot = required('TAURI_RUNTIME_ROOT');
+          const runtimePath = join(runtimeRoot, 'runtime.json');
+          const runtimeBytes = readFileSync(runtimePath);
+          if (
+            hash(runtimeBytes) !== required('EXPECTED_RUNTIME_MANIFEST_SHA256')
+          ) {
+            throw new Error('Tauri runtime manifest changed after inventory');
+          }
+          const runtime = parse(runtimePath, 'Tauri runtime manifest');
+          if (
+            runtime.schemaVersion !== 1 ||
+            runtime.platform !== platform ||
+            runtime.cliVersion !== '2.11.4' ||
+            runtime.cliPackage !== '@tauri-apps/cli' ||
+            runtime.cliIntegrity !== required('EXPECTED_TAURI_CLI_INTEGRITY') ||
+            runtime.nativePackage !== required('EXPECTED_TAURI_NATIVE_PACKAGE') ||
+            runtime.nativeIntegrity !== required('EXPECTED_TAURI_NATIVE_INTEGRITY') ||
+            !Array.isArray(runtime.files)
+          ) {
+            throw new Error('Tauri runtime identity is invalid');
+          }
+          sameFiles(
+            inventory(runtimeRoot, new Set(['runtime.json'])),
+            [...runtime.files].sort((left, right) => left.path.localeCompare(right.path)),
+            'Tauri runtime',
+          );
+          const nodePath = resolve(runtime.node?.path ?? '');
+          const nodeMetadata = lstatSync(nodePath);
+          const nodeBody = readFileSync(nodePath);
+          if (
+            !nodeMetadata.isFile() ||
+            nodeMetadata.isSymbolicLink() ||
+            runtime.node.mode !== (nodeMetadata.mode & 0o777) ||
+            runtime.node.bytes !== nodeBody.byteLength ||
+            runtime.node.sha256 !== hash(nodeBody)
+          ) {
+            throw new Error('Node runtime inventory mismatch');
+          }
+          const cliPath = join(
+            runtimeRoot,
+            'node_modules',
+            '@tauri-apps',
+            'cli',
+            'tauri.js',
+          );
+          const nativeDirectory =
+            runtime.nativePackage.slice('@tauri-apps/'.length);
+          const cliPackage = parse(
+            join(runtimeRoot, 'node_modules', '@tauri-apps', 'cli', 'package.json'),
+            'Tauri CLI package',
+          );
+          const nativePackage = parse(
+            join(runtimeRoot, 'node_modules', '@tauri-apps', nativeDirectory, 'package.json'),
+            'Tauri native package',
+          );
+          if (
+            cliPackage.name !== '@tauri-apps/cli' ||
+            cliPackage.version !== '2.11.4' ||
+            nativePackage.name !== runtime.nativePackage ||
+            nativePackage.version !== '2.11.4'
+          ) {
+            throw new Error('Tauri runtime package metadata is invalid');
+          }
+
+          const workspace = required('BUNDLE_WORKSPACE_ROOT');
+          rmSync(workspace, { recursive: true, force: true });
+          const tauriRoot = join(workspace, 'apps', 'mdreader', 'src-tauri');
+          const uiDist = join(workspace, 'apps', 'mdreader', 'ui', 'dist');
+          mkdirSync(join(tauriRoot, 'src'), { recursive: true, mode: 0o700 });
+          mkdirSync(join(tauriRoot, 'icons'), { recursive: true, mode: 0o700 });
+          mkdirSync(uiDist, { recursive: true, mode: 0o700 });
+          for (const icon of iconPaths.map((path) => path.slice('icons/'.length))) {
+            copyFileSync(
+              join(unsignedPayload, 'icons', icon),
+              join(tauriRoot, 'icons', icon),
+            );
+          }
+          const binaryDestination = join(
+            workspace,
+            'target',
+            target,
+            'release',
+            tuple[2],
+          );
+          mkdirSync(dirname(binaryDestination), { recursive: true, mode: 0o700 });
+          copyFileSync(
+            join(unsignedPayload, 'target', target, 'release', tuple[2]),
+            binaryDestination,
+          );
+          chmodSync(binaryDestination, 0o755);
+          const supportDestination = join(workspace, 'scripts', 'release');
+          mkdirSync(supportDestination, { recursive: true, mode: 0o700 });
+          for (const name of [
+            'sign-windows-from-store.ps1',
+            'windows-minimum.nsh',
+          ]) {
+            copyFileSync(join(supportPayload, name), join(supportDestination, name));
+          }
+          writeFileSync(
+            join(tauriRoot, 'Cargo.toml'),
+            `[package]\nname = "mdreader-app"\nversion = "${handoff.version}"\nedition = "2021"\ndescription = "MDReader desktop shell"\nlicense = "Apache-2.0 OR MIT"\n\n[features]\ndirect-updater = []\n\n[[bin]]\nname = "mdreader-app"\npath = "src/main.rs"\n`,
+            { mode: 0o600 },
+          );
+          writeFileSync(join(tauriRoot, 'src', 'main.rs'), 'fn main() {}\n', {
+            mode: 0o600,
+          });
+          writeFileSync(join(uiDist, 'index.html'), '<!doctype html><title>MDReader</title>\n', {
+            mode: 0o600,
+          });
+          writeFileSync(
+            join(tauriRoot, 'tauri.conf.json'),
+            `${JSON.stringify({
+              productName: 'MDReader',
+              identifier: 'dev.mdreader.app',
+              version: handoff.version,
+              build: {
+                beforeBuildCommand: '',
+                frontendDist: '../ui/dist',
+              },
+              app: {
+                windows: [{
+                  title: 'MDReader',
+                  width: 1120,
+                  height: 760,
+                  minWidth: 720,
+                  minHeight: 480,
+                }],
+                security: { csp: null },
+              },
+              bundle: {
+                active: true,
+                createUpdaterArtifacts: true,
+                icon: iconPaths,
+              },
+            }, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            [
+              `node_path=${nodePath}`,
+              `tauri_entrypoint=${cliPath}`,
+              `bundle_workspace=${workspace}`,
+              `windows_signer_path=${join(supportDestination, 'sign-windows-from-store.ps1')}`,
+              `windows_hook_path=${join(supportDestination, 'windows-minimum.nsh')}`,
+            ].join('\n') + '\n',
+            { flag: 'a' },
+          );
+          NODE
       - name: Require macOS release credentials with shell builtins
         id: require-release-secrets-macos
         if: matrix.platform == 'macos'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           APPLE_CERTIFICATE: ${{ secrets.MDREADER_APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
-        run: scripts/release/require-release-secrets.sh macos
+        run: |
+          for name in \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID; do
+            [[ -n "${!name:-}" ]] || {
+              echo "missing required macOS release credential: $name" >&2
+              exit 1
+            }
+          done
       - name: Require Windows release credentials with shell builtins
         id: require-release-secrets-windows
         if: matrix.platform == 'windows'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           WINDOWS_CERTIFICATE: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
-        run: scripts/release/require-release-secrets.sh windows
-      - name: Require Linux release credentials with shell builtins
+        run: |
+          for name in \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+            WINDOWS_CERTIFICATE \
+            WINDOWS_CERTIFICATE_PASSWORD; do
+            [[ -n "${!name:-}" ]] || {
+              echo "missing required Windows release credential: $name" >&2
+              exit 1
+            }
+          done
+      - name: Require Linux updater credential with shell builtins
         id: require-release-secrets-linux
         if: matrix.platform == 'linux'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
-        run: scripts/release/require-release-secrets.sh linux
+        run: |
+          for name in \
+            TAURI_SIGNING_PRIVATE_KEY \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || {
+              echo "missing required Linux release credential: $name" >&2
+              exit 1
+            }
+          done
       - name: Inspect Windows certificate thumbprint without persistence
         id: inspect-windows-cert
         if: matrix.platform == 'windows'
@@ -221,148 +1066,168 @@ jobs:
           } finally {
             $certificate.Dispose()
           }
-      - name: Generate validated macOS direct-release configuration
-        id: generate-release-config-macos
+      - name: Generate credentialed macOS bundle configuration inline
+        id: generate-bundle-config-macos
         if: matrix.platform == 'macos'
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
-        run: scripts/release/generate-direct-release-config.sh macos "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Generate validated Windows direct-release configuration
-        id: generate-release-config-windows
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          const config = {
+            identifier: 'dev.mdreader.app',
+            version: process.env.RELEASE_VERSION,
+            build: { beforeBuildCommand: '' },
+            bundle: {
+              createUpdaterArtifacts: true,
+              macOS: {
+                minimumSystemVersion: '12.0',
+                signingIdentity: process.env.APPLE_SIGNING_IDENTITY,
+              },
+            },
+            plugins: {
+              updater: {
+                endpoints: ['https://downloads.mdreader.dev/channels/stable/updater.json'],
+                pubkey: process.env.MDREADER_UPDATER_PUBLIC_KEY,
+              },
+            },
+          };
+          writeFileSync(
+            `${process.env.RUNNER_TEMP}/mdreader-release-config.json`,
+            `${JSON.stringify(config, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+      - name: Generate credentialed Windows bundle configuration inline
+        id: generate-bundle-config-windows
         if: matrix.platform == 'windows'
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           WINDOWS_CERT_THUMBPRINT: ${{ steps.inspect-windows-cert.outputs.thumbprint }}
-        run: scripts/release/generate-direct-release-config.sh windows "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Generate validated Linux direct-release configuration
-        id: generate-release-config-linux
+          WINDOWS_SIGNER_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_signer_path }}
+          WINDOWS_HOOK_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_hook_path }}
+        run: |
+          node <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          const config = {
+            identifier: 'dev.mdreader.app',
+            version: process.env.RELEASE_VERSION,
+            build: { beforeBuildCommand: '' },
+            bundle: {
+              createUpdaterArtifacts: true,
+              windows: {
+                digestAlgorithm: 'sha256',
+                timestampUrl: 'http://timestamp.digicert.com',
+                signCommand: {
+                  cmd: 'pwsh',
+                  args: [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-File',
+                    process.env.WINDOWS_SIGNER_PATH,
+                    '%1',
+                  ],
+                },
+                nsis: { installerHooks: process.env.WINDOWS_HOOK_PATH },
+              },
+            },
+            plugins: {
+              updater: {
+                endpoints: ['https://downloads.mdreader.dev/channels/stable/updater.json'],
+                pubkey: process.env.MDREADER_UPDATER_PUBLIC_KEY,
+              },
+            },
+          };
+          writeFileSync(
+            `${process.env.RUNNER_TEMP}/mdreader-release-config.json`,
+            `${JSON.stringify(config, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+      - name: Generate credentialed Linux bundle configuration inline
+        id: generate-bundle-config-linux
         if: matrix.platform == 'linux'
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
-        run: scripts/release/generate-direct-release-config.sh linux "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Attest immutable release inputs before application build
-        id: attest-direct-release
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          pnpm exec tsx scripts/release/release-cli.ts attest-build \
-            --config "$RUNNER_TEMP/mdreader-release-config.json" \
-            --attestation "$RUNNER_TEMP/mdreader-release-attestation.json" \
-            --target "${{ matrix.target }}" \
-            --bundles "${{ matrix.bundles }}"
-          ATTESTATION_SHA256="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$RUNNER_TEMP/mdreader-release-attestation.json")"
-          [[ "$ATTESTATION_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
-            echo "release build attestation digest is invalid" >&2
-            exit 1
-          }
-          echo "attestation_sha256=$ATTESTATION_SHA256" >> "$GITHUB_OUTPUT"
-      - name: Build frontend and Rust binary without private credentials
-        id: prepare-direct-release
-        run: scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Verify immutable release inputs after application build
-        id: verify-release-input-attestation
-        shell: bash
+          node <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          const config = {
+            identifier: 'dev.mdreader.app',
+            version: process.env.RELEASE_VERSION,
+            build: { beforeBuildCommand: '' },
+            bundle: { createUpdaterArtifacts: true },
+            plugins: {
+              updater: {
+                endpoints: ['https://downloads.mdreader.dev/channels/stable/updater.json'],
+                pubkey: process.env.MDREADER_UPDATER_PUBLIC_KEY,
+              },
+            },
+          };
+          writeFileSync(
+            `${process.env.RUNNER_TEMP}/mdreader-release-config.json`,
+            `${JSON.stringify(config, null, 2)}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+      - name: Verify exact platform bundle configuration
+        id: verify-credentialed-release-config
         env:
-          EXPECTED_BUILD_ATTESTATION_SHA256: ${{ steps.attest-direct-release.outputs.attestation_sha256 }}
           RELEASE_CONFIG_PATH: ${{ runner.temp }}/mdreader-release-config.json
-          BUILD_ATTESTATION_PATH: ${{ runner.temp }}/mdreader-release-attestation.json
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_RELEASE_PLATFORM: ${{ matrix.platform }}
           EXPECTED_RELEASE_TARGET: ${{ matrix.target }}
           EXPECTED_RELEASE_BUNDLES: ${{ matrix.bundles }}
-          EXPECTED_RELEASE_PLATFORM: ${{ matrix.platform }}
-          WINDOWS_SIGNER_PATH: ${{ github.workspace }}/scripts/release/sign-windows-from-store.ps1
+          EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+          WINDOWS_SIGNER_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_signer_path }}
+          WINDOWS_HOOK_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_hook_path }}
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
-          const { readFileSync } = require('node:fs');
+          const { appendFileSync, readFileSync } = require('node:fs');
           const { resolve } = require('node:path');
-
-          const SHA256 = /^[0-9a-f]{64}$/;
           const hash = (body) => createHash('sha256').update(body).digest('hex');
-          const fail = (message) => {
-            throw new Error(message);
-          };
           const required = (name) => {
             const value = process.env[name];
-            if (typeof value !== 'string' || value.length === 0) {
-              fail(`release input verifier is missing ${name}`);
-            }
+            if (!value) throw new Error(`bundle config verifier is missing ${name}`);
             return value;
           };
-          const parseJson = (body, description) => {
-            try {
-              return JSON.parse(body.toString('utf8'));
-            } catch {
-              fail(`${description} is not valid JSON`);
-            }
+          const platform = required('EXPECTED_RELEASE_PLATFORM');
+          const target = required('EXPECTED_RELEASE_TARGET');
+          const bundles = required('EXPECTED_RELEASE_BUNDLES');
+          const tuples = {
+            macos: ['universal-apple-darwin', 'dmg'],
+            windows: ['x86_64-pc-windows-msvc', 'nsis'],
+            linux: ['x86_64-unknown-linux-gnu', 'appimage,deb,rpm'],
           };
-
-          const expectedAttestationSha256 = required(
-            'EXPECTED_BUILD_ATTESTATION_SHA256',
-          );
-          if (!SHA256.test(expectedAttestationSha256)) {
-            fail('immutable release build attestation digest is invalid');
+          const tuple = tuples[platform];
+          if (!tuple || tuple[0] !== target || tuple[1] !== bundles) {
+            throw new Error(`${platform} release target and bundle tuple is invalid`);
           }
-          const attestationBytes = readFileSync(
-            required('BUILD_ATTESTATION_PATH'),
-          );
-          if (hash(attestationBytes) !== expectedAttestationSha256) {
-            fail(
-              'release build attestation changed after the immutable pre-build boundary',
-            );
-          }
-          const attestation = parseJson(
-            attestationBytes,
-            'release build attestation',
-          );
-          const expectedVersion = required('EXPECTED_RELEASE_VERSION');
-          const expectedTarget = required('EXPECTED_RELEASE_TARGET');
-          const expectedBundles = required('EXPECTED_RELEASE_BUNDLES');
-          const expectedPlatform = required('EXPECTED_RELEASE_PLATFORM');
+          const config = JSON.parse(readFileSync(required('RELEASE_CONFIG_PATH'), 'utf8'));
+          const updater = config.plugins?.updater;
           if (
-            attestation.schemaVersion !== 1 ||
-            attestation.version !== expectedVersion ||
-            attestation.target !== expectedTarget ||
-            attestation.bundles !== expectedBundles ||
-            !SHA256.test(attestation.releaseConfigSha256) ||
-            !SHA256.test(attestation.updaterPublicKeySha256) ||
-            !['macos', 'windows', 'linux'].includes(expectedPlatform)
-          ) {
-            fail(
-              'release build attestation does not match the expected version, target, bundles, or digests',
-            );
-          }
-          const configBytes = readFileSync(required('RELEASE_CONFIG_PATH'));
-          if (hash(configBytes) !== attestation.releaseConfigSha256) {
-            fail(
-              'release config bytes do not match the immutable build attestation',
-            );
-          }
-          const config = parseJson(configBytes, 'release config');
-          const updater = config?.plugins?.updater;
-          if (
-            config?.identifier !== 'dev.mdreader.app' ||
-            config?.version !== expectedVersion ||
-            config?.build?.beforeBuildCommand !== '' ||
-            config?.bundle?.createUpdaterArtifacts !== true ||
-            !Array.isArray(updater?.endpoints) ||
-            updater.endpoints.length !== 1 ||
+            config.identifier !== 'dev.mdreader.app' ||
+            config.version !== required('EXPECTED_RELEASE_VERSION') ||
+            config.build?.beforeBuildCommand !== '' ||
+            config.bundle?.createUpdaterArtifacts !== true ||
+            updater?.endpoints?.length !== 1 ||
             updater.endpoints[0] !==
               'https://downloads.mdreader.dev/channels/stable/updater.json' ||
-            typeof updater.pubkey !== 'string' ||
-            hash(Buffer.from(updater.pubkey, 'utf8')) !==
-              attestation.updaterPublicKeySha256
+            hash(Buffer.from(updater.pubkey ?? '', 'utf8')) !==
+              required('EXPECTED_UPDATER_PUBLIC_KEY_SHA256')
           ) {
-            fail(
-              'release config does not match the attested version and updater identity',
-            );
+            throw new Error('credentialed release config has the wrong product or updater identity');
           }
           const windows = config.bundle.windows;
           const macos = config.bundle.macOS;
-          if (expectedPlatform === 'windows') {
+          if (platform === 'windows') {
             const args = windows?.signCommand?.args;
-            const expectedSignerPath = resolve(required('WINDOWS_SIGNER_PATH'));
             if (
-              !SHA256.test(attestation.windowsSignerSha256) ||
               macos !== undefined ||
               windows?.digestAlgorithm !== 'sha256' ||
               windows?.timestampUrl !== 'http://timestamp.digicert.com' ||
@@ -374,41 +1239,30 @@ jobs:
               args[2] !== '-File' ||
               args[4] !== '%1' ||
               resolve(String(args[3])).toLowerCase() !==
-                expectedSignerPath.toLowerCase()
+                resolve(required('WINDOWS_SIGNER_PATH')).toLowerCase() ||
+              resolve(String(windows?.nsis?.installerHooks)).toLowerCase() !==
+                resolve(required('WINDOWS_HOOK_PATH')).toLowerCase()
             ) {
-              fail(
-                'Windows release config does not name the exact reviewed signer',
-              );
+              throw new Error('Windows release config is missing the exact reviewed NSIS installer hook or signer');
             }
-            if (
-              hash(readFileSync(expectedSignerPath)) !==
-              attestation.windowsSignerSha256
-            ) {
-              fail(
-                'Windows signer bytes do not match the immutable build attestation',
-              );
-            }
-          } else {
-            if (
-              windows !== undefined ||
-              attestation.windowsSignerSha256 !== null
-            ) {
-              fail(
-                'non-Windows release inputs contain an unexpected Windows signer',
-              );
-            }
-            if (
-              expectedPlatform === 'macos' &&
-              (macos?.minimumSystemVersion !== '12.0' ||
-                typeof macos.signingIdentity !== 'string' ||
-                macos.signingIdentity.length === 0)
-            ) {
-              fail('macOS release config is missing its reviewed bundle identity');
-            }
-            if (expectedPlatform === 'linux' && macos !== undefined) {
-              fail('Linux release config contains an unexpected macOS identity');
-            }
+          } else if (windows !== undefined) {
+            throw new Error('non-Windows release config contains Windows signing state');
           }
+          if (
+            platform === 'macos' &&
+            (macos?.minimumSystemVersion !== '12.0' ||
+              typeof macos.signingIdentity !== 'string' ||
+              macos.signingIdentity.length === 0)
+          ) {
+            throw new Error('macOS release config is missing its exact identity and minimum OS');
+          }
+          if (platform === 'linux' && macos !== undefined) {
+            throw new Error('Linux release config contains macOS signing state');
+          }
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `release_config_sha256=${hash(readFileSync(required('RELEASE_CONFIG_PATH')))}\n`,
+          );
           NODE
       - name: Import macOS Developer ID certificate for bundling
         id: import-macos-cert
@@ -442,17 +1296,6 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MDREADER_WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_CERT_THUMBPRINT: ${{ steps.inspect-windows-cert.outputs.thumbprint }}
         run: |
-          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          try {
-            $isAdministrator = [Security.Principal.WindowsPrincipal]::new(
-              $identity
-            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-          } finally {
-            $identity.Dispose()
-          }
-          if (-not $isAdministrator) {
-            throw "Windows LocalMachine certificate store requires an Administrator runner"
-          }
           $path = Join-Path $env:RUNNER_TEMP 'mdreader-release.pfx'
           $storeNonce = [byte[]]::new(16)
           [Security.Cryptography.RandomNumberGenerator]::Fill($storeNonce)
@@ -485,7 +1328,7 @@ jobs:
           } finally {
             $collection | ForEach-Object Dispose
           }
-      - name: Bundle, sign, and notarize macOS release
+      - name: Bundle, sign, and notarize macOS release with isolated runtime
         id: bundle-direct-release-macos
         if: matrix.platform == 'macos'
         env:
@@ -494,24 +1337,58 @@ jobs:
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
-        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Bundle and sign Windows release
+          NODE_EXECUTABLE: ${{ steps.verify-credential-boundaries.outputs.node_path }}
+          TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
+          BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
+        run: |
+          cd "$BUNDLE_WORKSPACE/apps/mdreader/src-tauri"
+          export CARGO_TARGET_DIR="$BUNDLE_WORKSPACE/target"
+          exec "$NODE_EXECUTABLE" "$TAURI_ENTRYPOINT" bundle \
+            --target "${{ matrix.target }}" \
+            --bundles "${{ matrix.bundles }}" \
+            --features direct-updater \
+            --config "$RUNNER_TEMP/mdreader-release-config.json"
+      - name: Bundle and sign Windows release with isolated runtime
         id: bundle-direct-release-windows
         if: matrix.platform == 'windows'
+        shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERT_STORE: ${{ steps.import-windows-cert.outputs.store_name }}
           WINDOWS_CERT_STORE_OWNED: ${{ steps.import-windows-cert.outputs.store_owned }}
           WINDOWS_CERT_THUMBPRINT: ${{ steps.inspect-windows-cert.outputs.thumbprint }}
-        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
-      - name: Bundle and sign Linux updater
+          NODE_EXECUTABLE: ${{ steps.verify-credential-boundaries.outputs.node_path }}
+          TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
+          BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
+        run: |
+          Set-Location -LiteralPath (Join-Path $env:BUNDLE_WORKSPACE 'apps\mdreader\src-tauri')
+          $env:CARGO_TARGET_DIR = Join-Path $env:BUNDLE_WORKSPACE 'target'
+          & $env:NODE_EXECUTABLE $env:TAURI_ENTRYPOINT bundle `
+            --target '${{ matrix.target }}' `
+            --bundles '${{ matrix.bundles }}' `
+            --features direct-updater `
+            --config (Join-Path $env:RUNNER_TEMP 'mdreader-release-config.json')
+          if ($LASTEXITCODE -ne 0) {
+            throw "isolated Windows Tauri bundler failed with exit code $LASTEXITCODE"
+          }
+      - name: Bundle and sign Linux updater with isolated runtime
         id: bundle-direct-release-linux
         if: matrix.platform == 'linux'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MDREADER_UPDATER_PRIVATE_KEY_PASSWORD }}
-        run: scripts/release/bundle-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
+          NODE_EXECUTABLE: ${{ steps.verify-credential-boundaries.outputs.node_path }}
+          TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
+          BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
+        run: |
+          cd "$BUNDLE_WORKSPACE/apps/mdreader/src-tauri"
+          export CARGO_TARGET_DIR="$BUNDLE_WORKSPACE/target"
+          exec "$NODE_EXECUTABLE" "$TAURI_ENTRYPOINT" bundle \
+            --target "${{ matrix.target }}" \
+            --bundles "${{ matrix.bundles }}" \
+            --features direct-updater \
+            --config "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Remove macOS signing material
         id: cleanup-macos-cert
         if: always() && matrix.platform == 'macos'
@@ -560,11 +1437,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
-
           $storeName = $env:WINDOWS_CERT_STORE
           $storeOwned = $env:WINDOWS_CERT_STORE_OWNED
           $certificatePath = $env:WINDOWS_CERTIFICATE_PATH
-
           if ([string]::IsNullOrWhiteSpace($certificatePath)) {
             throw 'Windows signing certificate path is missing'
           }
@@ -574,10 +1449,8 @@ jobs:
           ) {
             throw 'Windows release run identity is invalid'
           }
-
           $expectedStorePattern =
             "^MDReaderRelease-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-[0-9A-F]{32}$"
-
           try {
             if ([string]::IsNullOrWhiteSpace($storeName)) {
               if (-not [string]::IsNullOrWhiteSpace($storeOwned)) {
@@ -631,26 +1504,189 @@ jobs:
               throw 'Windows signing file residue remains after cleanup'
             }
           }
-      - name: Verify attestation and seal bundle without credentials
-        id: verify-direct-release
-        run: scripts/release/verify-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
+      - name: Seal only the credentialed bundle output and metadata
+        id: seal-credentialed-output
+        env:
+          BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_BUNDLES: ${{ matrix.bundles }}
+          UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+          RELEASE_CONFIG_SHA256: ${{ steps.verify-credentialed-release-config.outputs.release_config_sha256 }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { execFileSync } = require('node:child_process');
+          const {
+            cpSync,
+            lstatSync,
+            mkdirSync,
+            readFileSync,
+            readdirSync,
+            rmSync,
+            writeFileSync,
+          } = require('node:fs');
+          const { join, relative, sep } = require('node:path');
+          const hash = (body) => createHash('sha256').update(body).digest('hex');
+          const sourceBundle = join(
+            process.env.BUNDLE_WORKSPACE,
+            'target',
+            process.env.RELEASE_TARGET,
+            'release',
+            'bundle',
+          );
+          const output = join(process.env.RUNNER_TEMP, 'mdreader-credentialed-output');
+          rmSync(output, { recursive: true, force: true });
+          mkdirSync(output, { recursive: true, mode: 0o700 });
+          cpSync(sourceBundle, join(output, 'bundle'), {
+            recursive: true,
+            dereference: false,
+          });
+          cpSync(
+            join(process.env.RUNNER_TEMP, 'mdreader-release-config.json'),
+            join(output, 'release-config.json'),
+          );
+          const files = [];
+          const walk = (directory) => {
+            for (const name of readdirSync(directory).sort()) {
+              const path = join(directory, name);
+              const relativePath = relative(output, path).split(sep).join('/');
+              if (relativePath === 'credentialed-output.json') continue;
+              const metadata = lstatSync(path);
+              if (metadata.isDirectory()) {
+                walk(path);
+              } else if (metadata.isFile()) {
+                const body = readFileSync(path);
+                files.push({
+                  path: relativePath,
+                  kind: 'file',
+                  mode: metadata.mode & 0o777,
+                  bytes: body.byteLength,
+                  sha256: hash(body),
+                });
+              } else if (metadata.isSymbolicLink()) {
+                const target = Buffer.from(require('node:fs').readlinkSync(path), 'utf8');
+                files.push({
+                  path: relativePath,
+                  kind: 'symlink',
+                  mode: metadata.mode & 0o777,
+                  bytes: target.byteLength,
+                  sha256: hash(target),
+                });
+              } else {
+                throw new Error(`credentialed output contains unsupported entry ${relativePath}`);
+              }
+            }
+          };
+          walk(output);
+          if (!files.some((entry) => entry.path.startsWith('bundle/'))) {
+            throw new Error('credentialed bundle output is empty');
+          }
+          const encoded = `${JSON.stringify({
+            schemaVersion: 1,
+            version: process.env.RELEASE_VERSION,
+            sourceCommit: process.env.SOURCE_COMMIT,
+            platform: process.env.RELEASE_PLATFORM,
+            target: process.env.RELEASE_TARGET,
+            bundles: process.env.RELEASE_BUNDLES,
+            updaterPublicKeySha256: process.env.UPDATER_PUBLIC_KEY_SHA256,
+            releaseConfigSha256: process.env.RELEASE_CONFIG_SHA256,
+            files,
+          }, null, 2)}\n`;
+          writeFileSync(join(output, 'credentialed-output.json'), encoded, {
+            mode: 0o600,
+          });
+          const archiveRoot = join(
+            process.env.RUNNER_TEMP,
+            'mdreader-credentialed-archive',
+          );
+          rmSync(archiveRoot, { recursive: true, force: true });
+          mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
+          const archivePath = join(archiveRoot, 'credentialed-output.tar');
+          execFileSync('tar', ['-cf', archivePath, '-C', output, '.'], {
+            stdio: 'pipe',
+          });
+          writeFileSync(
+            process.env.GITHUB_OUTPUT,
+            `archive_sha256=${hash(readFileSync(archivePath))}\n`,
+            { flag: 'a' },
+          );
+          NODE
+      - name: Hand off only the credentialed bundle output
+        id: upload-credentialed-output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-bundled-${{ matrix.platform }}-${{ steps.seal-credentialed-output.outputs.archive_sha256 }}
+          path: ${{ runner.temp }}/mdreader-credentialed-archive
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    needs: [prepare, bundle-sign]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-14
+            target: universal-apple-darwin
+            bundles: dmg
+          - platform: windows
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout the exact release verification source
+        id: checkout-verify-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Node 22
+        id: setup-node-verify
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.13.1'
+          cache: pnpm
+      - name: Enable pinned package manager
+        id: enable-corepack-verify
+        run: corepack enable
+      - name: Install locked verification dependencies
+        id: install-dependencies-verify
+        run: pnpm install --frozen-lockfile
+      - name: Download the credentialed platform output
+        id: download-credentialed-output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: mdreader-bundled-${{ matrix.platform }}-*
+          path: ${{ runner.temp }}/mdreader-credentialed-download
+          merge-multiple: false
+      - name: Verify the closed credentialed output
+        id: verify-credentialed-output
+        run: scripts/release/verify-credentialed-output.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-credentialed-download" "$RUNNER_TEMP/mdreader-credentialed-output" "${{ needs.prepare.outputs.updater_public_key_sha256 }}"
       - name: Verify macOS Developer ID signature
         id: macos-verify-signature
         if: matrix.platform == 'macos'
-        run: scripts/release/verify-macos-signature.sh "target/${{ matrix.target }}/release/bundle"
+        run: scripts/release/verify-macos-signature.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle"
       - name: Verify notarization and stapling
         id: macos-verify-notarization
         if: matrix.platform == 'macos'
-        run: scripts/release/verify-macos-notarization.sh "target/${{ matrix.target }}/release/bundle"
+        run: scripts/release/verify-macos-notarization.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle"
       - name: Verify Windows Authenticode signature
         id: windows-verify-signature
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "target/${{ matrix.target }}/release/bundle"
+        run: scripts/release/verify-windows-signature.ps1 -BundleRoot "$env:RUNNER_TEMP/mdreader-credentialed-output/bundle"
       - name: Verify Linux package matrix
         id: linux-verify-packages
         if: matrix.platform == 'linux'
-        run: scripts/release/verify-linux-packages.sh "target/${{ matrix.target }}/release/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
+        run: scripts/release/verify-linux-packages.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$RUNNER_TEMP/mdreader-readelf.txt"
       - name: Install pinned Syft SBOM scanner
         id: install-syft
         uses: anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
@@ -660,8 +1696,8 @@ jobs:
         id: stage-release
         env:
           SYFT_BIN: ${{ steps.install-syft.outputs.cmd }}
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
-        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json" "$RUNNER_TEMP/mdreader-release-attestation.json" "$RUNNER_TEMP/mdreader-release-bundle-seal.json"
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+        run: scripts/release/stage-platform.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.source_commit }}" "${{ needs.prepare.outputs.published_at }}" "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-credentialed-output/release-config.json" "$RUNNER_TEMP/mdreader-credentialed-output/credentialed-output.json"
       - name: Inspect artifact-specific SPDX 2.3 SBOMs
         id: generate-sbom
         run: scripts/release/inspect-sboms.sh target/release-stage
@@ -678,7 +1714,7 @@ jobs:
           retention-days: 7
 
   aggregate:
-    needs: [prepare, build]
+    needs: [prepare, verify]
     runs-on: ubuntu-24.04
     outputs:
       publish_plan_sha256: ${{ steps.seal-publication.outputs.publish_plan_sha256 }}
@@ -721,7 +1757,7 @@ jobs:
       - name: Assemble the one immutable release manifest
         id: assemble-manifest
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
         run: |
           pnpm exec tsx scripts/release/release-cli.ts assemble \
             --root target/release-aggregate \
@@ -731,7 +1767,7 @@ jobs:
       - name: Reverify the aggregate before sealing publication
         id: validate-release
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
         run: |
           pnpm exec tsx scripts/release/release-cli.ts validate \
             --root target/release-aggregate \
@@ -740,7 +1776,7 @@ jobs:
       - name: Seal the body-complete verified publication plan
         id: seal-publication
         env:
-          MDREADER_UPDATER_PUBLIC_KEY: ${{ secrets.MDREADER_UPDATER_PUBLIC_KEY }}
+          MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
         run: |
           PLAN_SHA256="$(pnpm exec tsx scripts/release/release-cli.ts seal-publication \
             --root target/release-aggregate \

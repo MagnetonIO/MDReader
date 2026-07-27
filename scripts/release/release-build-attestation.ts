@@ -3,10 +3,11 @@ import {
   readFile,
   readlink,
   readdir,
+  lstat,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { updaterPublicKeyFingerprint } from './release-config';
 
@@ -43,11 +44,27 @@ interface ReleaseBundleSeal {
   files: ReleaseBundleEntry[];
 }
 
+interface CredentialedOutputEntry {
+  path: string;
+  kind: 'file' | 'symlink';
+  mode: number;
+  bytes: number;
+  sha256: string;
+}
+
+export interface VerifiedCredentialedOutput {
+  releaseConfigSha256: string;
+  updaterPublicKeySha256: string;
+}
+
 function sha256(body: Uint8Array): string {
   return createHash('sha256').update(body).digest('hex');
 }
 
-function releaseConfigKey(input: unknown): {
+function releaseConfigKey(
+  input: unknown,
+  expected: { target: string; bundles: string },
+): {
   version: string;
   updaterPublicKey: string;
   windowsSignerPath?: string;
@@ -61,10 +78,19 @@ function releaseConfigKey(input: unknown): {
     bundle?: {
       createUpdaterArtifacts?: unknown;
       windows?: {
+        digestAlgorithm?: unknown;
         signCommand?: {
           cmd?: unknown;
           args?: unknown;
         };
+        nsis?: {
+          installerHooks?: unknown;
+        };
+        timestampUrl?: unknown;
+      };
+      macOS?: {
+        minimumSystemVersion?: unknown;
+        signingIdentity?: unknown;
       };
     };
     plugins?: { updater?: { endpoints?: unknown; pubkey?: unknown } };
@@ -87,10 +113,49 @@ function releaseConfigKey(input: unknown): {
       'release build config does not contain the reviewed direct updater identity',
     );
   }
+  const expectedPlatform =
+    expected.target === 'universal-apple-darwin' && expected.bundles === 'dmg'
+      ? 'macos'
+      : expected.target === 'x86_64-pc-windows-msvc' &&
+          expected.bundles === 'nsis'
+        ? 'windows'
+        : expected.target === 'x86_64-unknown-linux-gnu' &&
+            expected.bundles === 'appimage,deb,rpm'
+          ? 'linux'
+          : undefined;
+  if (!expectedPlatform) {
+    throw new Error(
+      'release build target and bundles do not form an exact reviewed platform tuple',
+    );
+  }
+  const windows = config.bundle?.windows;
+  const macos = config.bundle?.macOS;
+  if (
+    (expectedPlatform === 'macos' &&
+      (windows !== undefined ||
+        macos?.minimumSystemVersion !== '12.0' ||
+        typeof macos.signingIdentity !== 'string' ||
+        macos.signingIdentity.trim().length === 0)) ||
+    (expectedPlatform === 'linux' &&
+      (windows !== undefined || macos !== undefined))
+  ) {
+    throw new Error(
+      `${expectedPlatform} release config does not match the exact reviewed platform shape`,
+    );
+  }
   const signCommand = config.bundle?.windows?.signCommand;
   let windowsSignerPath: string | undefined;
-  if (signCommand !== undefined) {
+  if (expectedPlatform === 'windows') {
     if (
+      macos !== undefined ||
+      windows?.digestAlgorithm !== 'sha256' ||
+      windows?.timestampUrl !== 'http://timestamp.digicert.com' ||
+      typeof windows?.nsis?.installerHooks !== 'string' ||
+      !isAbsolute(windows.nsis.installerHooks) ||
+      !/[\\/]scripts[\\/]release[\\/]windows-minimum\.nsh$/.test(
+        windows.nsis.installerHooks,
+      ) ||
+      signCommand === undefined ||
       signCommand.cmd !== 'pwsh' ||
       !Array.isArray(signCommand.args) ||
       signCommand.args.length !== 5 ||
@@ -105,10 +170,14 @@ function releaseConfigKey(input: unknown): {
       signCommand.args[4] !== '%1'
     ) {
       throw new Error(
-        'release build config does not contain the reviewed Windows signer path',
+        'Windows release config does not contain the reviewed NSIS installer hook and signer path',
       );
     }
     windowsSignerPath = signCommand.args[3];
+  } else if (signCommand !== undefined || windows !== undefined) {
+    throw new Error(
+      'non-Windows release config contains an unexpected Windows signer',
+    );
   }
   return {
     version: config.version,
@@ -124,7 +193,10 @@ export async function attestReleaseBuildConfig(
   bundles: string,
 ): Promise<ReleaseBuildAttestation> {
   const body = await readFile(configPath);
-  const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')));
+  const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')), {
+    target,
+    bundles,
+  });
   const windowsSignerSha256 = parsed.windowsSignerPath
     ? sha256(await readFile(parsed.windowsSignerPath))
     : null;
@@ -160,7 +232,10 @@ export async function verifyReleaseBuildAttestation(
   } catch {
     throw new Error('release build attestation is not valid JSON');
   }
-  const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')));
+  const parsed = releaseConfigKey(JSON.parse(body.toString('utf8')), {
+    target: expected.target,
+    bundles: expected.bundles,
+  });
   const windowsSignerSha256 = parsed.windowsSignerPath
     ? sha256(await readFile(parsed.windowsSignerPath))
     : null;
@@ -217,6 +292,180 @@ async function bundleInventory(
     }
   }
   return output.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function credentialedOutputInventory(
+  root: string,
+  directory = root,
+): Promise<CredentialedOutputEntry[]> {
+  const output: CredentialedOutputEntry[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    const relativePath = relative(root, path).split(sep).join('/');
+    if (relativePath === 'credentialed-output.json') continue;
+    if (entry.isDirectory()) {
+      output.push(...(await credentialedOutputInventory(root, path)));
+      continue;
+    }
+    const metadata = await lstat(path);
+    if (entry.isFile()) {
+      const body = await readFile(path);
+      output.push({
+        path: relativePath,
+        kind: 'file',
+        mode: metadata.mode & 0o777,
+        bytes: body.byteLength,
+        sha256: sha256(body),
+      });
+    } else if (entry.isSymbolicLink()) {
+      const target = Buffer.from(await readlink(path), 'utf8');
+      output.push({
+        path: relativePath,
+        kind: 'symlink',
+        mode: metadata.mode & 0o777,
+        bytes: target.byteLength,
+        sha256: sha256(target),
+      });
+    } else {
+      throw new Error(
+        `credentialed output contains unsupported entry ${relativePath}`,
+      );
+    }
+  }
+  return output.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function credentialedEntry(value: unknown): value is CredentialedOutputEntry {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const entry = value as Partial<CredentialedOutputEntry>;
+  return (
+    typeof entry.path === 'string' &&
+    entry.path.length > 0 &&
+    (entry.kind === 'file' || entry.kind === 'symlink') &&
+    Number.isInteger(entry.mode) &&
+    typeof entry.mode === 'number' &&
+    entry.mode >= 0 &&
+    Number.isInteger(entry.bytes) &&
+    typeof entry.bytes === 'number' &&
+    entry.bytes >= 0 &&
+    typeof entry.sha256 === 'string' &&
+    SHA256.test(entry.sha256)
+  );
+}
+
+export async function verifyCredentialedOutput(
+  outputRoot: string,
+  manifestPath: string,
+  expected: {
+    version: string;
+    sourceCommit: string;
+    platform: 'macos' | 'windows' | 'linux';
+    target: string;
+    bundles: string;
+  },
+): Promise<VerifiedCredentialedOutput> {
+  if (
+    resolve(manifestPath) !== resolve(join(outputRoot, 'credentialed-output.json'))
+  ) {
+    throw new Error(
+      'credentialed output manifest must be the sealed root manifest',
+    );
+  }
+  let manifest: {
+    schemaVersion?: unknown;
+    version?: unknown;
+    sourceCommit?: unknown;
+    platform?: unknown;
+    target?: unknown;
+    bundles?: unknown;
+    updaterPublicKeySha256?: unknown;
+    releaseConfigSha256?: unknown;
+    files?: unknown;
+  };
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest;
+  } catch {
+    throw new Error('credentialed output manifest is not valid JSON');
+  }
+  const exactTuple =
+    (expected.platform === 'macos' &&
+      expected.target === 'universal-apple-darwin' &&
+      expected.bundles === 'dmg') ||
+    (expected.platform === 'windows' &&
+      expected.target === 'x86_64-pc-windows-msvc' &&
+      expected.bundles === 'nsis') ||
+    (expected.platform === 'linux' &&
+      expected.target === 'x86_64-unknown-linux-gnu' &&
+      expected.bundles === 'appimage,deb,rpm');
+  if (
+    !exactTuple ||
+    manifest.schemaVersion !== 1 ||
+    manifest.version !== expected.version ||
+    manifest.sourceCommit !== expected.sourceCommit ||
+    manifest.platform !== expected.platform ||
+    manifest.target !== expected.target ||
+    manifest.bundles !== expected.bundles
+  ) {
+    throw new Error(
+      'credentialed output does not match the exact release platform tuple',
+    );
+  }
+  if (
+    typeof manifest.updaterPublicKeySha256 !== 'string' ||
+    !SHA256.test(manifest.updaterPublicKeySha256) ||
+    typeof manifest.releaseConfigSha256 !== 'string' ||
+    !SHA256.test(manifest.releaseConfigSha256) ||
+    !Array.isArray(manifest.files) ||
+    !manifest.files.every(credentialedEntry)
+  ) {
+    throw new Error('credentialed output manifest has an invalid closed inventory');
+  }
+  const declared = manifest.files as CredentialedOutputEntry[];
+  if (
+    declared.length === 0 ||
+    declared.some(
+      (entry) =>
+        entry.path !== 'release-config.json' &&
+        !entry.path.startsWith('bundle/'),
+    ) ||
+    declared.filter((entry) => entry.path === 'release-config.json').length !==
+      1 ||
+    !declared.some(
+      (entry) => entry.kind === 'file' && entry.path.startsWith('bundle/'),
+    )
+  ) {
+    throw new Error(
+      'credentialed output manifest escapes the closed config and bundle handoff',
+    );
+  }
+  const actual = await credentialedOutputInventory(outputRoot);
+  if (JSON.stringify(declared) !== JSON.stringify(actual)) {
+    throw new Error(
+      'credentialed output inventory does not match the sealed files',
+    );
+  }
+  const configPath = join(outputRoot, 'release-config.json');
+  const configBody = await readFile(configPath);
+  const parsed = releaseConfigKey(JSON.parse(configBody.toString('utf8')), {
+    target: expected.target,
+    bundles: expected.bundles,
+  });
+  const releaseConfigSha256 = sha256(configBody);
+  const updaterPublicKeySha256 = updaterPublicKeyFingerprint(
+    parsed.updaterPublicKey,
+  );
+  if (
+    parsed.version !== expected.version ||
+    manifest.releaseConfigSha256 !== releaseConfigSha256 ||
+    manifest.updaterPublicKeySha256 !== updaterPublicKeySha256
+  ) {
+    throw new Error(
+      'credentialed output config or updater identity does not match the sealed inventory',
+    );
+  }
+  return { releaseConfigSha256, updaterPublicKeySha256 };
 }
 
 export async function sealReleaseBundle(

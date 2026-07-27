@@ -17,6 +17,7 @@ import type {
   ReleasePlatform,
 } from '../../apps/web/lib/release-manifest';
 import {
+  verifyCredentialedOutput,
   verifyReleaseBuildAttestation,
   verifyReleaseBundleSeal,
 } from './release-build-attestation';
@@ -32,8 +33,10 @@ export interface StagePlatformInput {
   bundleRoot: string;
   outputRoot: string;
   releaseConfigPath: string;
-  buildAttestationPath: string;
-  bundleSealPath: string;
+  buildAttestationPath?: string;
+  bundleSealPath?: string;
+  credentialedOutputRoot?: string;
+  credentialedOutputManifestPath?: string;
   buildTarget: string;
   buildBundles: string;
   generateSbom?: (artifactPath: string) => Promise<string>;
@@ -259,26 +262,46 @@ async function updaterSignature(sourcePath: string): Promise<string> {
 export async function stagePlatformArtifacts(
   input: StagePlatformInput,
 ): Promise<ReleaseFragment> {
-  const build = await verifyReleaseBuildAttestation(
-    input.releaseConfigPath,
-    input.buildAttestationPath,
-    {
-      version: input.version,
-      target: input.buildTarget,
-      bundles: input.buildBundles,
-    },
-  );
-  await verifyReleaseBundleSeal(
-    input.bundleRoot,
-    input.releaseConfigPath,
-    input.buildAttestationPath,
-    input.bundleSealPath,
-    {
-      version: input.version,
-      target: input.buildTarget,
-      bundles: input.buildBundles,
-    },
-  );
+  const expectedBuild = {
+    version: input.version,
+    target: input.buildTarget,
+    bundles: input.buildBundles,
+  };
+  const usesCredentialedOutput =
+    input.credentialedOutputRoot !== undefined &&
+    input.credentialedOutputManifestPath !== undefined;
+  const usesLegacyAttestation =
+    input.buildAttestationPath !== undefined &&
+    input.bundleSealPath !== undefined;
+  if (usesCredentialedOutput === usesLegacyAttestation) {
+    throw new Error(
+      'staging requires exactly one closed credentialed output or legacy build attestation input',
+    );
+  }
+  const build = usesCredentialedOutput
+    ? await verifyCredentialedOutput(
+        input.credentialedOutputRoot!,
+        input.credentialedOutputManifestPath!,
+        {
+          ...expectedBuild,
+          sourceCommit: input.sourceCommit,
+          platform: input.platform,
+        },
+      )
+    : await verifyReleaseBuildAttestation(
+        input.releaseConfigPath,
+        input.buildAttestationPath!,
+        expectedBuild,
+      );
+  if (usesLegacyAttestation) {
+    await verifyReleaseBundleSeal(
+      input.bundleRoot,
+      input.releaseConfigPath,
+      input.buildAttestationPath!,
+      input.bundleSealPath!,
+      expectedBuild,
+    );
+  }
   const files = await walk(input.bundleRoot);
   await requireEmptyStageRoot(input.outputRoot);
   const destination = join(input.outputRoot, 'releases', `v${input.version}`);
@@ -328,17 +351,25 @@ export async function stagePlatformArtifacts(
     });
   }
 
-  await verifyReleaseBundleSeal(
-    input.bundleRoot,
-    input.releaseConfigPath,
-    input.buildAttestationPath,
-    input.bundleSealPath,
-    {
-      version: input.version,
-      target: input.buildTarget,
-      bundles: input.buildBundles,
-    },
-  );
+  if (usesCredentialedOutput) {
+    await verifyCredentialedOutput(
+      input.credentialedOutputRoot!,
+      input.credentialedOutputManifestPath!,
+      {
+        ...expectedBuild,
+        sourceCommit: input.sourceCommit,
+        platform: input.platform,
+      },
+    );
+  } else {
+    await verifyReleaseBundleSeal(
+      input.bundleRoot,
+      input.releaseConfigPath,
+      input.buildAttestationPath!,
+      input.bundleSealPath!,
+      expectedBuild,
+    );
+  }
 
   const fragment: ReleaseFragment = {
     channel: 'stable',
