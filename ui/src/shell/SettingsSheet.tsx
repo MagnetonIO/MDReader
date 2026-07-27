@@ -191,6 +191,7 @@ export function SettingsSheet({
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmWasOpenRef = useRef(false);
   const cloudRequestIds = useRef<Partial<Record<CloudProvider, string>>>({});
+  const operationSerials = useRef(new Map<string, number>());
   const invokingFocusRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
@@ -216,6 +217,9 @@ export function SettingsSheet({
     closeRef.current?.focus();
     return () => {
       invokingFocusRef.current?.focus();
+      for (const [key, serial] of operationSerials.current) {
+        operationSerials.current.set(key, serial + 1);
+      }
       if (backend.cancelCloudDocumentQuery) {
         for (const requestId of Object.values(cloudRequestIds.current)) {
           void backend.cancelCloudDocumentQuery(requestId);
@@ -284,15 +288,19 @@ export function SettingsSheet({
     task: () => Promise<T>,
     apply: (value: T) => void,
   ) => {
+    const serial = (operationSerials.current.get(key) ?? 0) + 1;
+    operationSerials.current.set(key, serial);
+    const current = () => operationSerials.current.get(key) === serial;
     setBusy(key);
     setFailure(null);
     setNotice(null);
     try {
-      apply(await task());
+      const value = await task();
+      if (current()) apply(value);
     } catch (cause) {
-      setFailure(errorMessage(cause));
+      if (current()) setFailure(errorMessage(cause));
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   }, []);
 
@@ -722,7 +730,9 @@ export function SettingsSheet({
                               {!reconnect && source.enabled && backend.queryCloudDocuments ? (
                                 <button
                                   type="button"
-                                  disabled={busy !== null}
+                                  disabled={
+                                    busy !== null && busy !== `browse:${source.provider}`
+                                  }
                                   aria-label={`Browse ${source.label}`}
                                   onClick={() => browseCloud(source.provider)}
                                 >

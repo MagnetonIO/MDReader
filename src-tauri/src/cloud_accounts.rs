@@ -235,6 +235,7 @@ pub(crate) enum CloudSourceError {
         detail: String,
     },
     QueryCancelled,
+    QueryRetired,
     QueryDeadlineExceeded,
     QueryTimeout {
         source_id: String,
@@ -315,6 +316,7 @@ impl fmt::Display for CloudSourceError {
             Self::SourcePaused => "cloud-source-paused",
             Self::QueryInvalid { .. } => "cloud-query-invalid",
             Self::QueryCancelled => "cloud-query-cancelled",
+            Self::QueryRetired => "cloud-query-retired",
             Self::QueryDeadlineExceeded => "cloud-query-deadline-exceeded",
             Self::QueryTimeout { .. } => "cloud-query-source-timeout",
             Self::QueryAuthentication { .. } => "cloud-query-authentication-failed",
@@ -1026,14 +1028,23 @@ impl CloudAccountsState {
         })
     }
 
-    fn finish_query(&self, query: &CloudQueryHandle) {
-        if let Ok(mut active) = self.active_queries.lock() {
-            if active
-                .get(&query.request_id)
-                .is_some_and(|entry| entry.serial == query.serial)
-            {
+    fn finish_query(&self, query: &CloudQueryHandle) -> Result<(), CloudSourceError> {
+        let mut active = self
+            .active_queries
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+        match active.get(&query.request_id) {
+            Some(entry) if entry.serial == query.serial => {
                 active.remove(&query.request_id);
+                if query.cancellation.is_cancelled() {
+                    Err(CloudSourceError::QueryCancelled)
+                } else {
+                    Ok(())
+                }
             }
+            Some(_) => Err(CloudSourceError::QueryRetired),
+            None if query.cancellation.is_cancelled() => Err(CloudSourceError::QueryCancelled),
+            None => Err(CloudSourceError::QueryRetired),
         }
     }
 
@@ -1489,7 +1500,7 @@ pub(crate) async fn query_cloud_documents(
             }
         }
         .await;
-        state.finish_query(&query);
+        state.finish_query(&query)?;
         result
     }
 }
@@ -2713,6 +2724,28 @@ mod tests {
         assert!(state.cancel_query("browse:google-drive"));
         assert!(second.cancellation.is_cancelled());
         assert!(!state.cancel_query("browse:google-drive"));
+    }
+
+    #[test]
+    fn a_completed_cloud_query_replaced_before_publication_is_retired() {
+        let state = CloudAccountsState::default();
+        let completed = state
+            .begin_query("library:google-drive")
+            .expect("completed query");
+        let replacement = state
+            .begin_query("library:google-drive")
+            .expect("replacement query");
+
+        assert_eq!(
+            state.finish_query(&completed),
+            Err(CloudSourceError::QueryRetired),
+            "an old success delayed at the IPC boundary must fail closed"
+        );
+        assert_eq!(
+            state.finish_query(&replacement),
+            Ok(()),
+            "the current serial remains publishable"
+        );
     }
 
     #[test]

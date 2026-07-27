@@ -68,6 +68,69 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
   };
 }
 
+function cloudResponse(
+  provider: CloudProvider,
+  fields: string[],
+  name = 'Research note.md',
+  recordKey = 'provider-record-1',
+): CloudDocumentQueryResponse {
+  return {
+    query_id: `query-${recordKey}`,
+    provider,
+    schema_version: 'mdreader.Document/v1',
+    version_pins: {
+      catalog_version: 5,
+      schema_version: 'mdreader.Document/v1',
+      schema_checksum: 'a'.repeat(64),
+      mapping_version: 'mdreader.Document.cloud-mapping/v1',
+      connector_version: `${provider}/v1`,
+      source_version: 'b'.repeat(64),
+      policy_version: 'mdreader.read-only/v1',
+    },
+    completeness: 'complete',
+    sources: [
+      {
+        source_id: 'b'.repeat(64),
+        outcome: {
+          kind: 'ran',
+          mode: 'virtual',
+          scanned: 1,
+          returned: 1,
+          pushed: [],
+          residual: [],
+        },
+      },
+    ],
+    scanned: 1,
+    rows: [
+      {
+        source_id: 'b'.repeat(64),
+        record_key: recordKey,
+        fields: {
+          id: recordKey,
+          name,
+          modifiedAt: 1_800_000_000_000,
+          size: 2048,
+          ...(fields.includes('body')
+            ? {
+                body: `# ${name}\n\nConnected source content.`,
+                path: `/${name}`,
+                mimeType: 'text/markdown',
+              }
+            : {}),
+        },
+        provenance: fields.map((field) => ({
+          field,
+          source_id: 'b'.repeat(64),
+          record_key: recordKey,
+          mapping_version: 'mdreader.Document.cloud-mapping/v1',
+          observation: 'observed' as const,
+        })),
+      },
+    ],
+  };
+}
+
 function cloudBackend(
   initial: CloudSourcesSnapshot,
 ): SettingsBackend & {
@@ -121,61 +184,8 @@ function cloudBackend(
       return snapshot;
     },
     queryCloudDocuments: vi.fn(
-      async (provider: CloudProvider, _filters: CloudFilterInput[], fields: string[]) => ({
-      query_id: 'query-1',
-      provider,
-      schema_version: 'mdreader.Document/v1',
-      version_pins: {
-        catalog_version: 5,
-        schema_version: 'mdreader.Document/v1',
-        schema_checksum: 'a'.repeat(64),
-        mapping_version: 'mdreader.Document.cloud-mapping/v1',
-        connector_version: `${provider}/v1`,
-        source_version: 'b'.repeat(64),
-        policy_version: 'mdreader.read-only/v1',
-      },
-      completeness: 'complete' as const,
-      sources: [
-        {
-          source_id: 'b'.repeat(64),
-          outcome: {
-            kind: 'ran' as const,
-            mode: 'virtual' as const,
-            scanned: 1,
-            returned: 1,
-            pushed: [],
-            residual: [],
-          },
-        },
-      ],
-      scanned: 1,
-      rows: [
-        {
-          source_id: 'b'.repeat(64),
-          record_key: 'provider-record-1',
-          fields: {
-            id: 'provider-record-1',
-            name: 'Research note.md',
-            modifiedAt: 1_800_000_000_000,
-            size: 2048,
-            ...(fields.includes('body')
-              ? {
-                  body: '# Research note\n\nConnected source content.',
-                  path: '/Research note.md',
-                  mimeType: 'text/markdown',
-                }
-              : {}),
-          },
-          provenance: fields.map((field) => ({
-            field,
-            source_id: 'b'.repeat(64),
-            record_key: 'provider-record-1',
-            mapping_version: 'mdreader.Document.cloud-mapping/v1',
-            observation: 'observed' as const,
-          })),
-        },
-        ],
-      }),
+      async (provider: CloudProvider, _filters: CloudFilterInput[], fields: string[]) =>
+        cloudResponse(provider, fields),
     ),
     cancelCloudDocumentQuery: vi.fn(async () => true),
   };
@@ -356,6 +366,73 @@ describe('Settings sheet', () => {
       'https://drive.google.com/open?id=provider-record-1',
     );
     expect(screen.getByText('mdreader.Document.cloud-mapping/v1')).toBeTruthy();
+  });
+
+  it('does not publish a stale cloud browse completion after its replacement', async () => {
+    let releaseFirst!: (response: CloudDocumentQueryResponse) => void;
+    const first = new Promise<CloudDocumentQueryResponse>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const api = cloudBackend({
+      version: 1,
+      sources: [
+        {
+          id: 'b'.repeat(64),
+          provider: 'google-drive',
+          label: 'Google Drive',
+          connection: 'connected',
+          enabled: true,
+        },
+        {
+          id: '',
+          provider: 'dropbox',
+          label: 'Dropbox',
+          connection: 'disconnected',
+          enabled: false,
+        },
+      ],
+    });
+    api.queryCloudDocuments = vi
+      .fn<typeof api.queryCloudDocuments>()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce(
+        cloudResponse(
+          'google-drive',
+          ['id', 'name', 'modifiedAt', 'size'],
+          'Current.md',
+          'current',
+        ),
+      );
+
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const browse = await screen.findByRole('button', { name: 'Browse Google Drive' });
+    fireEvent.click(browse);
+    fireEvent.click(browse);
+    expect(await screen.findByText('Current.md')).toBeTruthy();
+
+    await act(async () => {
+      releaseFirst(
+        cloudResponse(
+          'google-drive',
+          ['id', 'name', 'modifiedAt', 'size'],
+          'Retired.md',
+          'retired',
+        ),
+      );
+      await first;
+    });
+
+    expect(screen.getByText('Current.md')).toBeTruthy();
+    expect(screen.queryByText('Retired.md')).toBeNull();
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {
