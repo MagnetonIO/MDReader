@@ -157,7 +157,17 @@ export function AppShell() {
   const [closeGuard, setCloseGuard] = useState<
     | { kind: 'tab'; tabId: string }
     | { kind: 'quit' }
-    | { kind: 'switch'; folder: string; sourceId?: string }
+    | {
+        kind: 'switch';
+        folder: string;
+        sourceId?: string;
+        expectedSourceIntent: number;
+        resume?: {
+          kind: 'library-edit';
+          member: LibrarySourceExecution;
+          row: EntityRow;
+        };
+      }
     | null
   >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
@@ -238,6 +248,13 @@ export function AppShell() {
   const commitSwitchRef = useRef<
     (folder: string, sourceId?: string, expectedSourceIntent?: number) => Promise<boolean>
   >(() => Promise.resolve(false));
+  const editLibraryDocumentRef = useRef<
+    (
+      member: LibrarySourceExecution,
+      row: EntityRow,
+      expectedSourceIntent?: number,
+    ) => Promise<void>
+  >(() => Promise.resolve());
   // Native watch/grant commands commit the backend epoch before their IPC
   // promise resolves. Serialize the complete frontend transaction so a newer
   // request cannot supersede an already-committed response and then fail while
@@ -250,6 +267,7 @@ export function AppShell() {
   const sourceIntentRef = useRef(0);
   const beginSourceIntent = useCallback(() => {
     sourceIntentRef.current += 1;
+    return sourceIntentRef.current;
   }, []);
   // Latched once the window is committing to close, so the force-close runs at
   // most once. We force-close with destroy(), which tears the window down WITHOUT
@@ -626,15 +644,23 @@ export function AppShell() {
   // (Save-all / Discard / Cancel) and let it commit the switch. A clean workspace
   // (or a same-root supersede) switches immediately.
   const switchWorkspace = useCallback(
-    (folder: string, sourceId?: string): Promise<boolean> => {
-      beginSourceIntent();
+    (
+      folder: string,
+      sourceId?: string,
+      resume?: {
+        kind: 'library-edit';
+        member: LibrarySourceExecution;
+        row: EntityRow;
+      },
+    ): Promise<boolean> => {
+      const expectedSourceIntent = beginSourceIntent();
       const currentRoot = useSourcesStore.getState().root;
       const isRealSwitch = currentRoot !== null && currentRoot !== folder;
       if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
-        setCloseGuard({ kind: 'switch', folder, sourceId });
+        setCloseGuard({ kind: 'switch', folder, sourceId, expectedSourceIntent, resume });
         return Promise.resolve(false);
       }
-      return commitSwitch(folder, sourceId);
+      return commitSwitch(folder, sourceId, expectedSourceIntent);
     },
     [beginSourceIntent, commitSwitch],
   );
@@ -709,7 +735,17 @@ export function AppShell() {
   }, []);
 
   const editLibraryDocument = useCallback(
-    async (member: LibrarySourceExecution, row: EntityRow): Promise<void> => {
+    async (
+      member: LibrarySourceExecution,
+      row: EntityRow,
+      expectedSourceIntent?: number,
+    ): Promise<void> => {
+      if (
+        expectedSourceIntent !== undefined &&
+        sourceIntentRef.current !== expectedSourceIntent
+      ) {
+        return;
+      }
       if (!member.editable) return;
       const path = typeof row.fields.path === 'string' ? row.fields.path : null;
       if (!path) {
@@ -723,13 +759,23 @@ export function AppShell() {
         toast('Could not resolve this Library source');
         return;
       }
+      if (
+        expectedSourceIntent !== undefined &&
+        sourceIntentRef.current !== expectedSourceIntent
+      ) {
+        return;
+      }
       const source = snapshot.sources.find((candidate) => candidate.id === member.registry_id);
       if (!source) {
         toast('This Library source is no longer registered');
         return;
       }
       if (useSourcesStore.getState().root !== source.path) {
-        const switched = await switchWorkspace(source.path, source.id);
+        const switched = await switchWorkspace(source.path, source.id, {
+          kind: 'library-edit',
+          member,
+          row,
+        });
         if (!switched) return;
       }
       if (!settingsBackend.resolveLibraryDocumentEdit) {
@@ -743,6 +789,12 @@ export function AppShell() {
         toast('This Library document is no longer available for editing');
         return;
       }
+      if (
+        expectedSourceIntent !== undefined &&
+        sourceIntentRef.current !== expectedSourceIntent
+      ) {
+        return;
+      }
       const title =
         typeof row.fields.title === 'string' && row.fields.title.length > 0
           ? row.fields.title
@@ -752,6 +804,7 @@ export function AppShell() {
     },
     [openRef, setEditorMode, switchWorkspace],
   );
+  editLibraryDocumentRef.current = editLibraryDocument;
 
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
@@ -1089,11 +1142,40 @@ export function AppShell() {
       guard:
         | { kind: 'tab'; tabId: string }
         | { kind: 'quit' }
-        | { kind: 'switch'; folder: string; sourceId?: string },
+        | {
+            kind: 'switch';
+            folder: string;
+            sourceId?: string;
+            expectedSourceIntent: number;
+            resume?: {
+              kind: 'library-edit';
+              member: LibrarySourceExecution;
+              row: EntityRow;
+            };
+          },
     ) => {
       if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
       else if (guard.kind === 'quit') void performQuit();
-      else void commitSwitchRef.current(guard.folder, guard.sourceId);
+      else {
+        void (async () => {
+          const committed = await commitSwitchRef.current(
+            guard.folder,
+            guard.sourceId,
+            guard.expectedSourceIntent,
+          );
+          if (
+            committed &&
+            guard.resume?.kind === 'library-edit' &&
+            sourceIntentRef.current === guard.expectedSourceIntent
+          ) {
+            await editLibraryDocumentRef.current(
+              guard.resume.member,
+              guard.resume.row,
+              guard.expectedSourceIntent,
+            );
+          }
+        })();
+      }
     },
     [closeTabAndBuffer, performQuit],
   );

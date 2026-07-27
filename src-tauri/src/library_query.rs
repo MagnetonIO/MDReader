@@ -593,13 +593,6 @@ pub(crate) async fn execute_registered_library_query(
     {
         return Err(LibraryQueryError::InvalidRequest);
     }
-    let identity_was_selected = request
-        .select
-        .iter()
-        .any(|field| field == LIBRARY_IDENTITY_FIELD);
-    if !identity_was_selected {
-        request.select.push(LIBRARY_IDENTITY_FIELD.to_string());
-    }
     let runtime = build_runtime(request.workspace_id, members)?;
     let by_membership = runtime
         .memberships
@@ -667,16 +660,15 @@ pub(crate) async fn execute_registered_library_query(
         [request.workspace_id],
     );
     let mut answer = service
-        .query(&principal, request, &context)
+        .query_with_correlation_fields(
+            &principal,
+            request,
+            &context,
+            &[LIBRARY_IDENTITY_FIELD.to_string()],
+        )
         .await
         .map_err(map_entity_query_error)?;
     restore_membership_provenance(&mut answer, &runtime.memberships)?;
-    if !identity_was_selected {
-        for row in &mut answer.rows {
-            row.fields.remove(LIBRARY_IDENTITY_FIELD);
-            row.provenance.remove(LIBRARY_IDENTITY_FIELD);
-        }
-    }
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
     Ok(LibraryEntityQueryResponse {
         answer,
@@ -1079,6 +1071,54 @@ mod tests {
                 })
                 .count(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn hidden_provider_correlation_does_not_add_path_only_rows_before_a_tight_limit() {
+        let tree = tempfile::tempdir().expect("temp tree");
+        std::fs::write(tree.path().join("00-path-only.txt"), "not a document")
+            .expect("path-only fixture");
+        std::fs::write(tree.path().join("10-document.md"), "# Selected document\n")
+            .expect("document fixture");
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tree.path())
+            .output()
+            .expect("git");
+        assert!(output.status.success());
+
+        let workspace = Uuid::new_v4();
+        let local = Uuid::new_v4();
+        let mut query = request(workspace, vec![local]);
+        query.select = vec!["body".to_string()];
+        query.page_size = 1;
+        query.limit = 1;
+        let answer = execute_registered_library_query(
+            query,
+            vec![local_member(tree.path(), local)],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("body-only Library query");
+
+        assert_eq!(answer.answer.completeness, Completeness::Complete);
+        assert_eq!(answer.answer.sources.len(), 3);
+        assert_eq!(answer.answer.rows.len(), 1);
+        assert_eq!(
+            answer.answer.rows[0].record_key,
+            scope_record_key(local, "10-document.md")
+        );
+        assert_eq!(
+            answer.answer.rows[0].fields,
+            BTreeMap::from([(
+                "body".to_string(),
+                serde_json::json!("# Selected document\n")
+            )])
+        );
+        assert_eq!(
+            answer.answer.rows[0].provenance["body"].considered().len(),
+            3
         );
     }
 

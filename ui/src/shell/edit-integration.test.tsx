@@ -331,6 +331,76 @@ async function openDirtyDoc() {
   return tabId;
 }
 
+function installSecondWorkspaceLibraryDocument() {
+  const sourceId = '00000000-0000-4000-8000-000000000011';
+  const sourceVersionId = '00000000-0000-4000-8000-000000000012';
+  const mappingVersionId = '00000000-0000-4000-8000-000000000013';
+  h.libraryEvidence = {
+    memberships: [
+      {
+        membership_id: '00000000-0000-4000-8000-000000000010',
+        registry_id: 'b'.repeat(64),
+        name: 'Second workspace',
+        kind: 'local-folder',
+        source_ids: [sourceId],
+        editable: true,
+        active: false,
+      },
+    ],
+    answer: {
+      query_id: '00000000-0000-4000-8000-000000000014',
+      pins: {
+        catalog_resolver_id: '00000000-0000-4000-8000-000000000015',
+        catalog_revision_id: '00000000-0000-4000-8000-000000000016',
+        schema_version_id: '00000000-0000-4000-8000-000000000017',
+        physical_schema_version_ids: ['00000000-0000-4000-8000-000000000018'],
+        mapping_version_ids: [mappingVersionId],
+        source_version_ids: [sourceVersionId],
+        policy_version_ids: ['00000000-0000-4000-8000-000000000019'],
+      },
+      rows: [
+        {
+          record_key: 'notes/local.md',
+          fields: {
+            path: 'notes/local.md',
+            title: 'Local note',
+            body: '# Local note',
+          },
+          provenance: {
+            path: {
+              field: 'path',
+              selected: 0,
+              considered: [
+                {
+                  source_version_id: sourceVersionId,
+                  record_key: 'notes/local.md',
+                  mapping_version_id: mappingVersionId,
+                  physical_attribute: 'path',
+                  observed_at_ms: 1,
+                  state: { state: 'observed_value', value: 'notes/local.md' },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      sources: [
+        {
+          source_id: sourceId,
+          source_version_id: sourceVersionId,
+          outcome: 'ran',
+          freshness_ms: 0,
+          scanned: 1,
+          returned: 1,
+        },
+      ],
+      completeness: { state: 'complete' },
+      next_cursor: null,
+    },
+  };
+  h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'local-hash' });
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -402,73 +472,7 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 
 describe('library source identity follows the committed backend epoch', () => {
   it('resolves a Library-relative path through its activated membership before reading for edit', async () => {
-    const sourceId = '00000000-0000-4000-8000-000000000011';
-    const sourceVersionId = '00000000-0000-4000-8000-000000000012';
-    const mappingVersionId = '00000000-0000-4000-8000-000000000013';
-    h.libraryEvidence = {
-      memberships: [
-        {
-          membership_id: '00000000-0000-4000-8000-000000000010',
-          registry_id: 'b'.repeat(64),
-          name: 'Second workspace',
-          kind: 'local-folder',
-          source_ids: [sourceId],
-          editable: true,
-          active: false,
-        },
-      ],
-      answer: {
-        query_id: '00000000-0000-4000-8000-000000000014',
-        pins: {
-          catalog_resolver_id: '00000000-0000-4000-8000-000000000015',
-          catalog_revision_id: '00000000-0000-4000-8000-000000000016',
-          schema_version_id: '00000000-0000-4000-8000-000000000017',
-          physical_schema_version_ids: ['00000000-0000-4000-8000-000000000018'],
-          mapping_version_ids: [mappingVersionId],
-          source_version_ids: [sourceVersionId],
-          policy_version_ids: ['00000000-0000-4000-8000-000000000019'],
-        },
-        rows: [
-          {
-            record_key: 'notes/local.md',
-            fields: {
-              path: 'notes/local.md',
-              title: 'Local note',
-              body: '# Local note',
-            },
-            provenance: {
-              path: {
-                field: 'path',
-                selected: 0,
-                considered: [
-                  {
-                    source_version_id: sourceVersionId,
-                    record_key: 'notes/local.md',
-                    mapping_version_id: mappingVersionId,
-                    physical_attribute: 'path',
-                    observed_at_ms: 1,
-                    state: { state: 'observed_value', value: 'notes/local.md' },
-                  },
-                ],
-              },
-            },
-          },
-        ],
-        sources: [
-          {
-            source_id: sourceId,
-            source_version_id: sourceVersionId,
-            outcome: 'ran',
-            freshness_ms: 0,
-            scanned: 1,
-            returned: 1,
-          },
-        ],
-        completeness: { state: 'complete' },
-        next_cursor: null,
-      },
-    };
-    h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'local-hash' });
+    installSecondWorkspaceLibraryDocument();
 
     render(<App />);
     fireEvent.click(
@@ -494,6 +498,59 @@ describe('library source identity follows the committed backend epoch', () => {
     expect(
       useEditorStore.getState().entry(activeTabId!, '/ws-b/notes/local.md')?.mode,
     ).toBe('source');
+  });
+
+  it.each(['Save', 'Discard'] as const)(
+    'dirty cross-workspace Edit resumes after %s without a second click',
+    async (decision) => {
+      installSecondWorkspaceLibraryDocument();
+      await openDirtyDoc();
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Open Local note from Second workspace',
+        }),
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+
+      await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: decision }));
+      });
+
+      await waitFor(() =>
+        expect(h.editResolutions).toEqual([
+          { sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' },
+        ]),
+      );
+      expect(useSourcesStore.getState().root).toBe('/ws-b');
+      const activeTabId = useTabsStore.getState().activeTabId;
+      expect(activeTabId).not.toBeNull();
+      await waitFor(() =>
+        expect(
+          useEditorStore.getState().entry(activeTabId!, '/ws-b/notes/local.md')?.mode,
+        ).toBe('source'),
+      );
+    },
+  );
+
+  it('dirty cross-workspace Edit Cancel leaves the original edit untouched and opens nothing', async () => {
+    installSecondWorkspaceLibraryDocument();
+    const dirtyTabId = await openDirtyDoc();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+    expect(h.editResolutions).toEqual([]);
+    expect(useSourcesStore.getState().root).toBe('/ws');
+    expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
+    expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
   });
 
   it('attributes a new watcher failure to the new source while its listing is still pending', async () => {

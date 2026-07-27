@@ -1884,13 +1884,56 @@ impl catdb_connectors::DataSource for IdentityBoundLocalSource {
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn bind_identity_bound_local_sources(
+    membership_id: uuid::Uuid,
+    root: &mdreader_ingest::SourceRoot,
+) -> Result<Vec<crate::library_query::LibraryPhysicalSource>, CloudSourceError> {
+    use catdb_connectors::{
+        DataSource, DirectoryAuthority, FilesystemSource, FrontmatterSource, GitSource,
+    };
+
+    let directory =
+        root.try_clone_directory_handle()
+            .map_err(|_| CloudSourceError::QueryRefused {
+                source_id: membership_id.to_string(),
+                reason: CloudQueryRefusal::Unavailable,
+            })?;
+    let authority =
+        DirectoryAuthority::from_open_directory(&root.path, directory).map_err(|_| {
+            CloudSourceError::QueryRefused {
+                source_id: membership_id.to_string(),
+                reason: CloudQueryRefusal::Unavailable,
+            }
+        })?;
+    let sources: [Arc<dyn DataSource>; 3] = [
+        Arc::new(FilesystemSource::from_directory_authority(&authority)),
+        Arc::new(GitSource::open_directory_authority(&authority)),
+        Arc::new(FrontmatterSource::from_directory_authority(&authority)),
+    ];
+    sources
+        .into_iter()
+        .map(|source| {
+            let source: Arc<dyn DataSource> = Arc::new(IdentityBoundLocalSource {
+                root: root.clone(),
+                source,
+            });
+            let mapping = mdreader_domain::federated::source_mapping(source.as_ref())
+                .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+            Ok(crate::library_query::LibraryPhysicalSource::new(
+                membership_id,
+                source,
+                mapping,
+            ))
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn admit_library_query(
     registry: LibraryStore,
     vault: KeyringCredentialVault,
     requested_source_ids: Option<&[uuid::Uuid]>,
 ) -> Result<AdmittedLibraryQuery, CloudSourceError> {
-    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
-
     let snapshot = registry
         .read_query_snapshot()
         .map_err(crate::library::map_library_cloud_error)?;
@@ -1937,27 +1980,7 @@ fn admit_library_query(
             },
             error => crate::library::map_library_cloud_error(error),
         })?;
-        let sources: [Arc<dyn DataSource>; 3] = [
-            Arc::new(FilesystemSource::new(&root.path)),
-            Arc::new(GitSource::open(&root.path)),
-            Arc::new(FrontmatterSource::new(&root.path)),
-        ];
-        let physical = sources
-            .into_iter()
-            .map(|source| {
-                let source: Arc<dyn DataSource> = Arc::new(IdentityBoundLocalSource {
-                    root: root.clone(),
-                    source,
-                });
-                let mapping = mdreader_domain::federated::source_mapping(source.as_ref())
-                    .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
-                Ok(crate::library_query::LibraryPhysicalSource::new(
-                    membership_id,
-                    source,
-                    mapping,
-                ))
-            })
-            .collect::<Result<Vec<_>, CloudSourceError>>()?;
+        let physical = bind_identity_bound_local_sources(membership_id, &root)?;
         members.push(crate::library_query::LibraryQueryMember {
             membership_id,
             registry_id,
@@ -4041,12 +4064,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        admit_library_query, bind_oauth_callback_listener, execute_cloud_query,
-        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectionState,
-        CloudCredentialResolver, CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider,
-        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
-        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
-        OAuthAttempt, SecretBundle,
+        admit_library_query, bind_identity_bound_local_sources, bind_oauth_callback_listener,
+        execute_cloud_query, CloudAccountService, CloudAccountsState, CloudCompleteness,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
+        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
+        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        MemoryCredentialVault, OAuthAttempt, SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -5355,6 +5378,85 @@ mod tests {
         assert!(sources
             .iter()
             .all(|source| source.outcome == catdb_api_types::SourceOutcome::RuntimeRefused));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_connector_handoff_retains_a_across_an_exact_a_b_a_path_swap() {
+        fn initialize(root: &Path, filename: &str, body: &str) {
+            fs::create_dir(root).expect("source directory");
+            fs::write(root.join(filename), body).expect("source document");
+            let output = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(root)
+                .output()
+                .expect("initialize git source");
+            assert!(output.status.success());
+        }
+
+        let temp = tempdir().expect("temporary directory");
+        let root = temp.path().join("notes");
+        let replacement = temp.path().join("replacement");
+        let retired = temp.path().join("retired");
+        initialize(&root, "original.md", "# Original\n");
+        initialize(&replacement, "replacement.md", "# Replacement\n");
+        let bound_root = mdreader_ingest::SourceRoot::capture(
+            fs::canonicalize(&root).expect("canonical original root"),
+        )
+        .expect("bind authority A");
+        let membership_id = uuid::Uuid::new_v4();
+
+        fs::rename(&root, &retired).expect("retire A");
+        fs::rename(&replacement, &root).expect("publish B at the admitted path");
+        let physical = bind_identity_bound_local_sources(membership_id, &bound_root)
+            .expect("handoff the already-admitted authority");
+        fs::rename(&root, &replacement).expect("retire B");
+        fs::rename(&retired, &root).expect("restore A before outer verification");
+
+        let result = crate::library_query::execute_registered_library_query(
+            catdb_api_types::EntityQueryRequest {
+                workspace_id: uuid::Uuid::new_v4(),
+                catalog_revision_id: None,
+                schema_version_id: None,
+                entity: "document.Document".to_string(),
+                select: vec!["path".to_string(), "body".to_string()],
+                filters: Vec::new(),
+                order_by: Vec::new(),
+                source_ids: Some(vec![membership_id]),
+                max_staleness_ms: None,
+                require_complete: Some(true),
+                page_size: 100,
+                limit: 100,
+                query_id: None,
+                cursor: None,
+            },
+            vec![crate::library_query::LibraryQueryMember {
+                membership_id,
+                registry_id: "local-a".to_string(),
+                name: "Authority A".to_string(),
+                kind: crate::library_query::LibraryQueryMemberKind::LocalFolder,
+                editable: true,
+                active: true,
+                sources: physical,
+            }],
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("identity-bound A query");
+        let keys = result
+            .answer
+            .rows
+            .iter()
+            .map(|row| row.record_key.as_str())
+            .collect::<Vec<_>>();
+        let expected_key = format!("library:{membership_id}:original.md");
+
+        assert_eq!(keys, [expected_key.as_str()]);
+        assert!(result
+            .answer
+            .rows
+            .iter()
+            .all(|row| row.fields.get("body") != Some(&serde_json::json!("# Replacement\n"))));
     }
 
     #[cfg(unix)]
