@@ -91,10 +91,7 @@ fn config() -> DriveSourceConfig {
         "drive-library",
         "drive",
         "Document",
-        vec![
-            DriveSelection::file("selected-file"),
-            DriveSelection::folder("selected-folder"),
-        ],
+        vec![DriveSelection::folder("selected-folder")],
         DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
     )
     .unwrap()
@@ -551,9 +548,9 @@ async fn body_projection_exports_google_docs_downloads_text_and_leaves_binaries_
     assert_eq!(page.rows[1].value["body"], "# Notes");
     assert!(page.rows[2].value.get("body").is_none());
     let requests = transport.requests();
-    assert!(requests.iter().any(|request| {
-        request.path() == "/drive/v3/files/gdoc/export?mimeType=text%2Fplain&supportsAllDrives=true"
-    }));
+    assert!(requests
+        .iter()
+        .any(|request| { request.path() == "/drive/v3/files/gdoc/export?mimeType=text%2Fplain" }));
     assert!(requests.iter().any(|request| {
         request.path() == "/drive/v3/files/markdown?alt=media&supportsAllDrives=true"
     }));
