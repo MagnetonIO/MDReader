@@ -217,7 +217,9 @@ fn pkce_uses_s256_state_and_the_exact_selected_file_scope_without_a_client_secre
 #[test]
 fn source_specs_and_debug_output_never_contain_runtime_credentials() {
     let transport = ScriptedTransport::new([]);
-    let (source, _) = source(transport, config());
+    let source_config = config();
+    assert!(!format!("{source_config:?}").contains("selected-folder"));
+    let (source, _) = source(transport, source_config);
     let spec = serde_json::to_string(&source.source_spec()).unwrap();
     assert!(spec.contains("keychain/mdreader/drive"));
     assert!(!spec.contains("fixture-access-token"));
@@ -368,6 +370,7 @@ async fn selected_file_ids_use_files_get_instead_of_an_unsupported_list_query_te
         "/drive/v3/files/selected-file?fields=id%2Cname%2CmimeType%2CmodifiedTime%2Csize%2Cmd5Checksum%2Cparents%2Ctrashed&supportsAllDrives=true"
     );
     assert!(!transport.requests()[0].path().contains("q=id"));
+    assert!(!format!("{:?}", transport.requests()[0]).contains("selected-file"));
 }
 
 #[tokio::test]
