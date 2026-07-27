@@ -1,12 +1,11 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { setTestPlatform } from '@tauri-apps/plugin-os';
-
 import App from './App';
 import { useSettingsStore } from './stores/settings';
 import { useSourcesStore } from './stores/sources';
 import { useTabsStore } from './stores/tabs';
+import { setTestPlatform } from './test/tauri-os';
 
 function installTauriRuntime(): void {
   Object.defineProperty(window, '__TAURI_INTERNALS__', {

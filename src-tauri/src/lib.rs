@@ -162,6 +162,7 @@ pub fn run() {
     let mut tauri_builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_os::init())
         .manage(WorkspaceState::default())
         .manage(federation::FederationRuntime::default())
         .manage(WatcherState::default())
