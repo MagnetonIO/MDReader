@@ -120,7 +120,8 @@ function cloudBackend(
       };
       return snapshot;
     },
-    queryCloudDocuments: vi.fn(async (provider) => ({
+    queryCloudDocuments: vi.fn(
+      async (provider: CloudProvider, _filters: CloudFilterInput[], fields: string[]) => ({
       query_id: 'query-1',
       provider,
       schema_version: 'mdreader.Document/v1',
@@ -157,8 +158,15 @@ function cloudBackend(
             name: 'Research note.md',
             modifiedAt: 1_800_000_000_000,
             size: 2048,
+            ...(fields.includes('body')
+              ? {
+                  body: '# Research note\n\nConnected source content.',
+                  path: '/Research note.md',
+                  mimeType: 'text/markdown',
+                }
+              : {}),
           },
-          provenance: ['id', 'name', 'modifiedAt', 'size'].map((field) => ({
+          provenance: fields.map((field) => ({
             field,
             source_id: 'b'.repeat(64),
             record_key: 'provider-record-1',
@@ -166,8 +174,9 @@ function cloudBackend(
             observation: 'observed' as const,
           })),
         },
-      ],
-    })),
+        ],
+      }),
+    ),
     cancelCloudDocumentQuery: vi.fn(async () => true),
   };
 }
@@ -338,6 +347,15 @@ describe('Settings sheet', () => {
       ['id', 'name', 'modifiedAt', 'size'],
       expect.stringMatching(/^browse:google-drive:/),
     );
+
+    fireEvent.click(screen.getByRole('button', { name: /Research note\.md/ }));
+    expect(
+      (await screen.findByRole('region', { name: 'Research note.md preview' })).textContent,
+    ).toContain('Connected source content.');
+    expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toBe(
+      'https://drive.google.com/open?id=provider-record-1',
+    );
+    expect(screen.getByText('mdreader.Document.cloud-mapping/v1')).toBeTruthy();
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {

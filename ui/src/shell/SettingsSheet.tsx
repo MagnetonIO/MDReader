@@ -156,6 +156,26 @@ function cloudField(
   return (fields as Record<string, unknown>)[field];
 }
 
+function cloudOriginalUrl(provider: CloudProvider, recordKey: string): string {
+  if (provider === 'google-drive') {
+    return `https://drive.google.com/open?id=${encodeURIComponent(recordKey)}`;
+  }
+  return `https://www.dropbox.com/home${recordKey
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/')}`;
+}
+
+function saveCloudCopy(name: string, body: string): void {
+  const safeName = name.replaceAll(/[/\\:\0]/g, '-').slice(0, 240) || 'document.md';
+  const url = URL.createObjectURL(new Blob([body], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = safeName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function SettingsSheet({
   backend = settingsBackend,
   watcher,
@@ -177,6 +197,9 @@ export function SettingsSheet({
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
   const [cloudDocuments, setCloudDocuments] = useState<
+    Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
+  >({});
+  const [openCloudDocuments, setOpenCloudDocuments] = useState<
     Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
   >({});
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
@@ -368,6 +391,46 @@ export function SettingsSheet({
         },
         (response) =>
           setCloudDocuments((current) => ({
+            ...current,
+            [provider]: response,
+          })),
+      );
+    },
+    [backend, run],
+  );
+
+  const openCloudDocument = useCallback(
+    (provider: CloudProvider, recordKey: string) => {
+      if (!backend.queryCloudDocuments) return;
+      const requestId = `read:${provider}:${globalThis.crypto.randomUUID()}`;
+      const previous = cloudRequestIds.current[provider];
+      cloudRequestIds.current[provider] = requestId;
+      const fields =
+        provider === 'google-drive'
+          ? ['id', 'name', 'mimeType', 'modifiedAt', 'size', 'body']
+          : ['id', 'name', 'path', 'modifiedAt', 'size', 'body'];
+      const filterField = provider === 'google-drive' ? 'id' : 'path';
+      void run(
+        `read:${provider}`,
+        async () => {
+          if (previous && backend.cancelCloudDocumentQuery) {
+            await backend.cancelCloudDocumentQuery(previous);
+          }
+          try {
+            return await backend.queryCloudDocuments!(
+              provider,
+              [{ field: filterField, operator: 'eq', value: recordKey }],
+              fields,
+              requestId,
+            );
+          } finally {
+            if (cloudRequestIds.current[provider] === requestId) {
+              delete cloudRequestIds.current[provider];
+            }
+          }
+        },
+        (response) =>
+          setOpenCloudDocuments((current) => ({
             ...current,
             [provider]: response,
           })),
@@ -632,6 +695,10 @@ export function SettingsSheet({
                     const connected = source.connection !== 'disconnected';
                     const reconnect = source.connection === 'reauthorize';
                     const documents = cloudDocuments[source.provider];
+                    const openDocument = openCloudDocuments[source.provider];
+                    const openRow = openDocument?.rows[0];
+                    const openName = openDocument ? cloudField(openDocument, 0, 'name') : undefined;
+                    const openBody = openDocument ? cloudField(openDocument, 0, 'body') : undefined;
                     return (
                       <article className="cloud-source" key={source.provider}>
                         <div className="cloud-source__copy">
@@ -731,7 +798,17 @@ export function SettingsSheet({
                                   const size = cloudField(documents, index, 'size');
                                   return (
                                     <li key={`${row.source_id}:${row.record_key}`}>
-                                      <span>{typeof name === 'string' ? name : row.record_key}</span>
+                                      <button
+                                        type="button"
+                                        className="cloud-source__document"
+                                        disabled={busy !== null}
+                                        onClick={() =>
+                                          openCloudDocument(source.provider, row.record_key)
+                                        }
+                                      >
+                                        <span>
+                                          {typeof name === 'string' ? name : row.record_key}
+                                        </span>
                                       <small>
                                         {typeof size === 'number'
                                           ? readableBytes(size)
@@ -740,6 +817,7 @@ export function SettingsSheet({
                                           ? ` · ${new Date(modifiedAt).toLocaleDateString()}`
                                           : ''}
                                       </small>
+                                      </button>
                                     </li>
                                   );
                                 })}
@@ -747,6 +825,64 @@ export function SettingsSheet({
                             )}
                             {documents.rows.length > 8 ? (
                               <p>Showing the first 8 documents.</p>
+                            ) : null}
+                            {openRow && typeof openBody === 'string' ? (
+                              <section
+                                className="cloud-source__reader"
+                                aria-label={`${typeof openName === 'string' ? openName : openRow.record_key} preview`}
+                              >
+                                <header>
+                                  <div>
+                                    <strong>
+                                      {typeof openName === 'string'
+                                        ? openName
+                                        : openRow.record_key}
+                                    </strong>
+                                    <span>Read-only · {source.label}</span>
+                                  </div>
+                                  <div>
+                                    <a
+                                      href={cloudOriginalUrl(source.provider, openRow.record_key)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      Open original
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        saveCloudCopy(
+                                          typeof openName === 'string'
+                                            ? openName
+                                            : 'document.md',
+                                          openBody,
+                                        )
+                                      }
+                                    >
+                                      Download
+                                    </button>
+                                  </div>
+                                </header>
+                                <pre>{openBody}</pre>
+                                <dl>
+                                  <div>
+                                    <dt>Schema</dt>
+                                    <dd>{openDocument.version_pins.schema_version}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Mapping</dt>
+                                    <dd>{openDocument.version_pins.mapping_version}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Connector</dt>
+                                    <dd>{openDocument.version_pins.connector_version}</dd>
+                                  </div>
+                                  <div>
+                                    <dt>Source</dt>
+                                    <dd>{openRow.source_id.slice(0, 12)}</dd>
+                                  </div>
+                                </dl>
+                              </section>
                             ) : null}
                           </div>
                         ) : null}
