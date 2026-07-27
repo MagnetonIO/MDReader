@@ -6,7 +6,7 @@ const GOOGLE_CLIENT_ID =
   /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
 const DROPBOX_CLIENT_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const DROPBOX_REDIRECT =
-  /^http:\/\/(127(?:\.(?:0|[1-9][0-9]{0,2})){3}|\[::1\]):([1-9][0-9]{0,4})\/oauth\/dropbox$/;
+  /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/oauth\/dropbox$/;
 
 const inputs = [
   {
@@ -56,20 +56,7 @@ function validateDropboxClientId(value) {
 
 function validateDropboxRedirect(value) {
   const match = DROPBOX_REDIRECT.exec(value);
-  if (!match) {
-    throw new Error(
-      'public OAuth configuration has an invalid MDREADER_DROPBOX_REDIRECT_URI',
-    );
-  }
-  const host = match[1];
-  const octets = host === '[::1]' ? [] : host.split('.').map(Number);
-  if (
-    (host !== '[::1]' &&
-      (octets.length !== 4 ||
-        octets[0] !== 127 ||
-        octets.some((octet) => octet < 0 || octet > 255))) ||
-    Number(match[2]) > 65_535
-  ) {
+  if (!match || Number(match[1]) > 65_535) {
     throw new Error(
       'public OAuth configuration has an invalid MDREADER_DROPBOX_REDIRECT_URI',
     );
