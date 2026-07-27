@@ -65,6 +65,49 @@ impl DriveTransport for ScriptedTransport {
     }
 }
 
+#[derive(Clone)]
+struct ConcurrentUnauthorizedTransport {
+    barrier: Arc<tokio::sync::Barrier>,
+    requests: Arc<Mutex<Vec<DriveHttpRequest>>>,
+}
+
+impl ConcurrentUnauthorizedTransport {
+    fn new() -> Self {
+        Self {
+            barrier: Arc::new(tokio::sync::Barrier::new(2)),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn requests(&self) -> Vec<DriveHttpRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl DriveTransport for ConcurrentUnauthorizedTransport {
+    async fn send(
+        &self,
+        request: DriveHttpRequest,
+    ) -> Result<DriveHttpResponse, DriveTransportError> {
+        let generation = request.credential_generation();
+        self.requests.lock().unwrap().push(request);
+        if generation == 0 {
+            self.barrier.wait().await;
+            return DriveHttpResponse::new(
+                401,
+                BTreeMap::new(),
+                br#"{"error":{"code":401}}"#.to_vec(),
+            );
+        }
+        DriveHttpResponse::new(
+            200,
+            BTreeMap::new(),
+            listing(serde_json::json!([]), None, false),
+        )
+    }
+}
+
 fn response(status: u16, body: impl Into<Vec<u8>>) -> ScriptStep {
     ScriptStep::Response(
         DriveHttpResponse::new(status, BTreeMap::new(), body.into()).expect("bounded fixture"),
@@ -331,6 +374,47 @@ async fn concurrent_expired_access_uses_one_bounded_refresh_exchange() {
             .map(DriveHttpRequest::credential_generation)
             .collect::<Vec<_>>(),
         vec![1, 1]
+    );
+}
+
+#[tokio::test]
+async fn concurrent_unauthorized_responses_share_one_forced_refresh() {
+    let transport = ConcurrentUnauthorizedTransport::new();
+    let resolver = RefreshingResolver::new(RefreshMode::Succeeds);
+    let source = DriveSource::open_with_resolver_and_transport(
+        PinnedDriveSourceSpec::new(config(), "drive-schema-v1").unwrap(),
+        Arc::new(resolver.clone()),
+        Arc::new(transport.clone()),
+    )
+    .await
+    .unwrap();
+    let first = context(2, 2, 4_096);
+    let second = context(2, 2, 4_096);
+    let first_plan = plan(&source, &["id"]);
+    let second_plan = plan(&source, &["id"]);
+
+    let (left, right) = tokio::join!(
+        source.execute_page(&first_plan, None, &first),
+        source.execute_page(&second_plan, None, &second),
+    );
+
+    left.unwrap();
+    right.unwrap();
+    assert_eq!(resolver.refresh_count.load(Ordering::SeqCst), 1);
+    let requests = transport.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.credential_generation() == 0)
+            .count(),
+        2
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.credential_generation() == 1)
+            .count(),
+        2
     );
 }
 
