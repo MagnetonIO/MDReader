@@ -25,6 +25,16 @@ const MAX_TOTAL_DEX_BYTES = 512 * 1024 * 1024;
 const MAX_DEX_FILES = 64;
 const MAX_DEX_MAP_ITEMS = 256;
 const MAX_DEX_VARIABLE_SECTION_BYTES = 32 * 1024 * 1024;
+const DEX_FIXED_ITEM_WIDTHS = new Map([
+  [0x0001, 4],
+  [0x0002, 4],
+  [0x0003, 12],
+  [0x0004, 8],
+  [0x0005, 8],
+  [0x0006, 32],
+  [0x0007, 4],
+  [0x0008, 8],
+]);
 const DEX_MAP_TYPES = new Set([
   0x0000,
   0x0001,
@@ -760,7 +770,7 @@ async function scanMember(apkPath, descriptor, kind, totals, limits) {
   }
   const dexLayout = dex?.finish(memberBytes);
   if (dexLayout !== undefined) {
-    await validateDexVariableSections(
+    await validateDexSections(
       apkPath,
       descriptor,
       dexLayout,
@@ -1015,6 +1025,7 @@ class DexStreamValidator {
     if (!['035', '037', '038', '039', '040'].includes(version)) {
       fail(`APK member ${this.name} has unsupported DEX version ${version}`);
     }
+    this.version = Number(version);
     if (
       this.header.readUInt32LE(36) !== this.header.byteLength ||
       this.header.readUInt32LE(40) !== 0x12345678
@@ -1173,23 +1184,55 @@ class DexStreamValidator {
         fail(`APK member ${this.name} has a DEX map that disagrees with its header`);
       }
     }
-    for (const [type, width] of [
-      [0x0007, 4],
-      [0x0008, 8],
-    ]) {
-      const item = items.get(type);
+    const orderedItems = [...items.entries()];
+    const mapIndex = orderedItems.findIndex(([type]) => type === 0x1000);
+    const mapEnd = checkedAdd(
+      this.mapOffset,
+      mapBytes,
+      `APK member ${this.name} has an invalid DEX map`,
+    );
+    const mapBoundary =
+      orderedItems[mapIndex + 1]?.[1].offset ?? streamedBytes;
+    if (mapEnd > mapBoundary) {
+      fail(`APK member ${this.name} has a DEX map outside its section bound`);
+    }
+    const fixedSections = [];
+    let fixedCaptureBytes = 0;
+    for (let index = 0; index < orderedItems.length; index += 1) {
+      const [type, item] = orderedItems[index];
+      const width = DEX_FIXED_ITEM_WIDTHS.get(type);
+      if (width === undefined) continue;
+      const byteLength = item.size * width;
+      const end = checkedAdd(
+        item.offset,
+        byteLength,
+        `APK member ${this.name} has an invalid DEX identifier section`,
+      );
+      const nextOffset =
+        orderedItems[index + 1]?.[1].offset ?? streamedBytes;
+      fixedCaptureBytes = checkedAdd(
+        fixedCaptureBytes,
+        byteLength,
+        `APK member ${this.name} has an invalid DEX identifier section`,
+      );
       if (
-        item !== undefined &&
-        checkedAdd(
-          item.offset,
-          item.size * width,
-          `APK member ${this.name} has an invalid DEX identifier section`,
-        ) > this.header.readUInt32LE(108)
+        !Number.isSafeInteger(byteLength) ||
+        item.offset % 4 !== 0 ||
+        end > nextOffset ||
+        fixedCaptureBytes > MAX_DEX_BYTES ||
+        ((type === 0x0007 || type === 0x0008) && this.version < 38)
       ) {
         fail(`APK member ${this.name} has an invalid DEX identifier section`);
       }
+      fixedSections.push({
+        fixed: true,
+        type,
+        size: item.size,
+        offset: item.offset,
+        end,
+        alignment: 4,
+      });
     }
-    const orderedItems = [...items.entries()];
     const variableSections = [];
     for (let index = 0; index < orderedItems.length; index += 1) {
       const [type, item] = orderedItems[index];
@@ -1229,6 +1272,7 @@ class DexStreamValidator {
         );
       }
       variableSections.push({
+        fixed: false,
         type,
         size: item.size,
         offset: item.offset,
@@ -1237,6 +1281,7 @@ class DexStreamValidator {
       });
     }
     return {
+      fixedSections,
       variableSections,
       stringIds: this.header.readUInt32LE(56),
       typeIds: this.header.readUInt32LE(64),
@@ -1339,6 +1384,10 @@ class DexCursor {
 
   reference(type, offset, label) {
     if (offset !== 0) this.context.references.push({ type, offset, label });
+  }
+
+  requiredReference(type, offset, label) {
+    this.context.references.push({ type, offset, label });
   }
 
   trailingZeros() {
@@ -1481,6 +1530,130 @@ function parseDexEncodedValue(cursor, depth) {
     return;
   }
   fail(`APK member ${cursor.name} has an unsupported DEX encoded value`);
+}
+
+function parseDexFixedSection(name, section, bytes, context) {
+  const cursor = new DexCursor(name, section, bytes, context);
+  for (let itemIndex = 0; itemIndex < section.size; itemIndex += 1) {
+    if (section.type === 0x0001) {
+      cursor.requiredReference(
+        0x2002,
+        cursor.u32('string data offset'),
+        'string data offset',
+      );
+    } else if (section.type === 0x0002) {
+      cursor.index(
+        cursor.u32('type descriptor'),
+        context.stringIds,
+        'type descriptor',
+      );
+    } else if (section.type === 0x0003) {
+      cursor.index(
+        cursor.u32('prototype shorty'),
+        context.stringIds,
+        'prototype shorty',
+      );
+      cursor.index(
+        cursor.u32('prototype return type'),
+        context.typeIds,
+        'prototype return type',
+      );
+      cursor.reference(
+        0x1001,
+        cursor.u32('prototype parameters'),
+        'prototype parameters',
+      );
+    } else if (section.type === 0x0004) {
+      cursor.index(
+        cursor.u16('field declaring class'),
+        context.typeIds,
+        'field declaring class',
+      );
+      cursor.index(
+        cursor.u16('field type'),
+        context.typeIds,
+        'field type',
+      );
+      cursor.index(
+        cursor.u32('field name'),
+        context.stringIds,
+        'field name',
+      );
+    } else if (section.type === 0x0005) {
+      cursor.index(
+        cursor.u16('method declaring class'),
+        context.typeIds,
+        'method declaring class',
+      );
+      cursor.index(
+        cursor.u16('method prototype'),
+        context.protoIds,
+        'method prototype',
+      );
+      cursor.index(
+        cursor.u32('method name'),
+        context.stringIds,
+        'method name',
+      );
+    } else if (section.type === 0x0006) {
+      cursor.index(
+        cursor.u32('class type'),
+        context.typeIds,
+        'class type',
+      );
+      cursor.u32('class access flags');
+      const superclass = cursor.u32('superclass type');
+      if (superclass !== 0xffffffff) {
+        cursor.index(superclass, context.typeIds, 'superclass type');
+      }
+      cursor.reference(
+        0x1001,
+        cursor.u32('class interfaces'),
+        'class interfaces',
+      );
+      const sourceFile = cursor.u32('class source file');
+      if (sourceFile !== 0xffffffff) {
+        cursor.index(sourceFile, context.stringIds, 'class source file');
+      }
+      cursor.reference(
+        0x2006,
+        cursor.u32('class annotations offset'),
+        'class annotations offset',
+      );
+      cursor.reference(
+        0x2000,
+        cursor.u32('class data offset'),
+        'class data offset',
+      );
+      cursor.reference(
+        0x2005,
+        cursor.u32('class static values offset'),
+        'class static values offset',
+      );
+    } else if (section.type === 0x0007) {
+      cursor.requiredReference(
+        0x2005,
+        cursor.u32('call-site offset'),
+        'call-site offset',
+      );
+    } else if (section.type === 0x0008) {
+      const handleType = cursor.u16('method-handle type');
+      const unused = cursor.u16('method-handle unused field');
+      const target = cursor.u16('method-handle target');
+      const trailingUnused = cursor.u16('method-handle unused field');
+      if (handleType > 8 || unused !== 0 || trailingUnused !== 0) {
+        fail(`APK member ${name} has an invalid DEX method handle`);
+      }
+      cursor.index(
+        target,
+        handleType <= 3 ? context.fieldIds : context.methodIds,
+        'method-handle target',
+      );
+    }
+  }
+  if (cursor.position !== bytes.byteLength) {
+    fail(`APK member ${name} has an invalid DEX identifier section`);
+  }
 }
 
 function parseDexVariableSection(name, section, bytes, context) {
@@ -1657,28 +1830,33 @@ function parseDexVariableSection(name, section, bytes, context) {
   return starts;
 }
 
-class DexVariableSectionsValidator {
+class DexSectionsValidator {
   constructor(name, layout) {
     this.name = name;
     this.layout = layout;
+    this.captureSections = [
+      ...layout.fixedSections,
+      ...layout.variableSections,
+    ].sort((left, right) => left.offset - right.offset);
     this.index = 0;
     this.buffers = new Map();
     this.starts = new Map();
+    this.completed = new Set();
     this.context = { ...layout, references: [] };
   }
 
   push(chunk, chunkOffset) {
     const chunkEnd = chunkOffset + chunk.byteLength;
     while (
-      this.index < this.layout.variableSections.length &&
-      this.layout.variableSections[this.index].end <= chunkOffset
+      this.index < this.captureSections.length &&
+      this.captureSections[this.index].end <= chunkOffset
     ) {
-      this.finishSection(this.layout.variableSections[this.index]);
+      this.finishSection(this.captureSections[this.index]);
       this.index += 1;
     }
     let candidate = this.index;
-    while (candidate < this.layout.variableSections.length) {
-      const section = this.layout.variableSections[candidate];
+    while (candidate < this.captureSections.length) {
+      const section = this.captureSections[candidate];
       if (section.offset >= chunkEnd) break;
       const start = Math.max(section.offset, chunkOffset);
       const end = Math.min(section.end, chunkEnd);
@@ -1704,20 +1882,25 @@ class DexVariableSectionsValidator {
   }
 
   finishSection(section) {
-    if (this.starts.has(section.type)) return;
+    if (this.completed.has(section.type)) return;
     const buffer = this.buffers.get(section.type);
     if (buffer === undefined) {
-      fail(`APK member ${this.name} has a truncated DEX variable section`);
+      fail(`APK member ${this.name} has a truncated DEX section`);
     }
-    this.starts.set(
-      section.type,
-      parseDexVariableSection(this.name, section, buffer, this.context),
-    );
+    if (section.fixed) {
+      parseDexFixedSection(this.name, section, buffer, this.context);
+    } else {
+      this.starts.set(
+        section.type,
+        parseDexVariableSection(this.name, section, buffer, this.context),
+      );
+    }
+    this.completed.add(section.type);
     this.buffers.delete(section.type);
   }
 
   finish() {
-    for (const section of this.layout.variableSections) {
+    for (const section of this.captureSections) {
       this.finishSection(section);
     }
     for (const reference of this.context.references) {
@@ -1728,14 +1911,19 @@ class DexVariableSectionsValidator {
   }
 }
 
-async function validateDexVariableSections(
+async function validateDexSections(
   apkPath,
   descriptor,
   layout,
   expectedStreamedBytes,
 ) {
-  if (layout.variableSections.length === 0) return;
-  const validator = new DexVariableSectionsValidator(descriptor.name, layout);
+  if (
+    layout.fixedSections.length === 0 &&
+    layout.variableSections.length === 0
+  ) {
+    return;
+  }
+  const validator = new DexSectionsValidator(descriptor.name, layout);
   let streamedBytes = 0;
   let compressedBytesConsumed =
     descriptor.method === 0 ? descriptor.compressedSize : null;

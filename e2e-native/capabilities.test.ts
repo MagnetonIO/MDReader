@@ -144,6 +144,128 @@ function dexFile(version = '035'): Buffer {
   return sealDex(dex);
 }
 
+function writeDexHeader(
+  dex: Buffer,
+  dataOffset: number,
+  mapOffset: number,
+  version = '035',
+): void {
+  dex.write(`dex\n${version}\0`, 0, 'ascii');
+  dex.writeUInt32LE(dex.byteLength, 32);
+  dex.writeUInt32LE(112, 36);
+  dex.writeUInt32LE(0x12345678, 40);
+  dex.writeUInt32LE(mapOffset, 52);
+  dex.writeUInt32LE(dex.byteLength - dataOffset, 104);
+  dex.writeUInt32LE(dataOffset, 108);
+}
+
+function writeDexMap(
+  dex: Buffer,
+  mapOffset: number,
+  items: ReadonlyArray<readonly [number, number, number]>,
+): void {
+  dex.writeUInt32LE(items.length, mapOffset);
+  for (const [index, [type, size, offset]] of items.entries()) {
+    const itemOffset = mapOffset + 4 + index * 12;
+    dex.writeUInt16LE(type, itemOffset);
+    dex.writeUInt16LE(0, itemOffset + 2);
+    dex.writeUInt32LE(size, itemOffset + 4);
+    dex.writeUInt32LE(offset, itemOffset + 8);
+  }
+}
+
+function referentialDexFile(): Buffer {
+  const dex = Buffer.alloc(316);
+  writeDexHeader(dex, 168, 192);
+  dex.writeUInt32LE(2, 56);
+  dex.writeUInt32LE(112, 60);
+  dex.writeUInt32LE(1, 64);
+  dex.writeUInt32LE(120, 68);
+  dex.writeUInt32LE(1, 72);
+  dex.writeUInt32LE(124, 76);
+  dex.writeUInt32LE(1, 96);
+  dex.writeUInt32LE(136, 100);
+
+  dex.writeUInt32LE(176, 112);
+  dex.writeUInt32LE(181, 116);
+  dex.writeUInt32LE(0, 120);
+  dex.writeUInt32LE(1, 124);
+  dex.writeUInt32LE(0, 128);
+  dex.writeUInt32LE(168, 132);
+
+  dex.writeUInt32LE(0, 136);
+  dex.writeUInt32LE(1, 140);
+  dex.writeUInt32LE(0xffffffff, 144);
+  dex.writeUInt32LE(168, 148);
+  dex.writeUInt32LE(0xffffffff, 152);
+  dex.writeUInt32LE(0, 156);
+  dex.writeUInt32LE(184, 160);
+  dex.writeUInt32LE(188, 164);
+
+  dex.writeUInt32LE(1, 168);
+  dex.writeUInt16LE(0, 172);
+  dex.set([3, 0x4c, 0x78, 0x3b, 0, 1, 0x56, 0], 176);
+  dex.set([0, 0, 0, 0], 184);
+  dex[188] = 0;
+
+  writeDexMap(dex, 192, [
+    [0x0000, 1, 0],
+    [0x0001, 2, 112],
+    [0x0002, 1, 120],
+    [0x0003, 1, 124],
+    [0x0006, 1, 136],
+    [0x1001, 1, 168],
+    [0x2002, 2, 176],
+    [0x2000, 1, 184],
+    [0x2005, 1, 188],
+    [0x1000, 1, 192],
+  ]);
+  return sealDex(dex);
+}
+
+function mapOverlapDexFile(): Buffer {
+  const dex = Buffer.alloc(152);
+  writeDexHeader(dex, 112, 112);
+  writeDexMap(dex, 112, [
+    [0x0000, 1, 0],
+    [0x1000, 1, 112],
+    [0x2005, 1, 151],
+  ]);
+  return sealDex(dex);
+}
+
+function extendedIdentifierDexFile(
+  callSiteOffset: number,
+  callSiteSize: number,
+  methodHandleOffset: number | null,
+): Buffer {
+  if (methodHandleOffset === null) {
+    const dex = Buffer.alloc(176);
+    writeDexHeader(dex, 120, 124, '038');
+    dex.writeUInt32LE(120, callSiteOffset);
+    dex[120] = 0;
+    writeDexMap(dex, 124, [
+      [0x0000, 1, 0],
+      [0x0007, callSiteSize, callSiteOffset],
+      [0x2005, 1, 120],
+      [0x1000, 1, 124],
+    ]);
+    return sealDex(dex);
+  }
+  const mapOffset = 124;
+  const itemCount = 4;
+  const dex = Buffer.alloc(mapOffset + 4 + itemCount * 12);
+  writeDexHeader(dex, mapOffset, mapOffset, '038');
+  const items: Array<readonly [number, number, number]> = [
+    [0x0000, 1, 0],
+    [0x0007, callSiteSize, callSiteOffset],
+    [0x0008, 1, methodHandleOffset],
+  ];
+  items.push([0x1000, 1, mapOffset]);
+  writeDexMap(dex, mapOffset, items);
+  return sealDex(dex);
+}
+
 function elfLibrary(
   payload: Buffer,
   machine = 0x3e,
@@ -981,6 +1103,129 @@ test('Android validation fails closed on an unsupported DEX variable section', a
     await assert.rejects(
       async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       /unsupported DEX variable section/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX string identifier that misses an item boundary', async () => {
+  const dex = dexFile();
+  dex.writeUInt32LE(117, 112);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX string data offset/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX prototype parameter offset between type-list items', async () => {
+  const dex = referentialDexFile();
+  dex.writeUInt32LE(170, 132);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX prototype parameters/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a DEX class-data offset between class-data items', async () => {
+  const dex = referentialDexFile();
+  dex.writeUInt32LE(185, 160);
+  sealDex(dex);
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    dex,
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX class data offset/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation bounds the DEX map list by the following section', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    mapOverlapDexFile(),
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX map.*overlap|DEX map.*bound/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a misaligned DEX call-site identifier section', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    extendedIdentifierDexFile(113, 1, null),
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX identifier section/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects overlapping DEX call-site and method-handle sections', async () => {
+  const artifact = await fakeAndroidArtifact(
+    Buffer.from(buildManifest()),
+    [],
+    [],
+    E2E_BUNDLE_IDENTIFIER,
+    0x3e,
+    extendedIdentifierDexFile(112, 2, 116),
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /DEX identifier section/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });
