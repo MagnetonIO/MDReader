@@ -1809,6 +1809,81 @@ struct AdmittedLibraryQuery {
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct IdentityBoundLocalSource {
+    root: mdreader_ingest::SourceRoot,
+    source: Arc<dyn catdb_connectors::DataSource>,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+impl IdentityBoundLocalSource {
+    fn verify_identity(&self) -> Result<(), catdb_connectors::SourceError> {
+        self.root
+            .verify()
+            .map_err(|error| catdb_connectors::SourceError::Unavailable {
+                source_id: self.source.id().clone(),
+                reason: error.to_string(),
+            })
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+#[async_trait::async_trait]
+impl catdb_connectors::DataSource for IdentityBoundLocalSource {
+    fn id(&self) -> &catdb_connectors::SourceId {
+        self.source.id()
+    }
+
+    fn schema(&self) -> &catdb_core::Schema {
+        self.source.schema()
+    }
+
+    fn capabilities(&self) -> &catdb_connectors::SourceCapabilities {
+        self.source.capabilities()
+    }
+
+    fn source_spec(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "mdreader-identity-bound-local",
+            "root_identity": &self.root.identity,
+            "source": self.source.source_spec(),
+        })
+    }
+
+    async fn freshness(
+        &self,
+        context: &catdb_connectors::ReadContext,
+    ) -> Result<catdb_connectors::SourceFreshness, catdb_connectors::SourceError> {
+        self.verify_identity()?;
+        let freshness = self.source.freshness(context).await;
+        self.verify_identity()?;
+        freshness
+    }
+
+    fn compile(
+        &self,
+        query: &catdb_query::EntityQuery,
+        authorized_fields: &[String],
+    ) -> Result<catdb_connectors::SourcePlan, catdb_connectors::SourceError> {
+        self.verify_identity()?;
+        let plan = self.source.compile(query, authorized_fields);
+        self.verify_identity()?;
+        plan
+    }
+
+    async fn execute_page(
+        &self,
+        plan: &catdb_connectors::SourcePlan,
+        cursor: Option<&catdb_connectors::SourceCursor>,
+        context: &catdb_connectors::ReadContext,
+    ) -> Result<catdb_connectors::SourcePage, catdb_connectors::SourceError> {
+        self.verify_identity()?;
+        let page = self.source.execute_page(plan, cursor, context).await;
+        self.verify_identity()?;
+        page
+    }
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn admit_library_query(
     registry: LibraryStore,
     vault: KeyringCredentialVault,
@@ -1855,17 +1930,25 @@ fn admit_library_query(
         let membership_id = local.engine_source_id();
         let registry_id = local.id.clone();
         let active = active_source_id.as_deref() == Some(registry_id.as_str());
-        let root = local
-            .path()
-            .map_err(crate::library::map_library_cloud_error)?;
+        let root = local.root().map_err(|error| match error {
+            crate::library::LibraryError::SourceUnavailable => CloudSourceError::QueryRefused {
+                source_id: membership_id.to_string(),
+                reason: CloudQueryRefusal::Unavailable,
+            },
+            error => crate::library::map_library_cloud_error(error),
+        })?;
         let sources: [Arc<dyn DataSource>; 3] = [
-            Arc::new(FilesystemSource::new(&root)),
-            Arc::new(GitSource::open(&root)),
-            Arc::new(FrontmatterSource::new(&root)),
+            Arc::new(FilesystemSource::new(&root.path)),
+            Arc::new(GitSource::open(&root.path)),
+            Arc::new(FrontmatterSource::new(&root.path)),
         ];
         let physical = sources
             .into_iter()
             .map(|source| {
+                let source: Arc<dyn DataSource> = Arc::new(IdentityBoundLocalSource {
+                    root: root.clone(),
+                    source,
+                });
                 let mapping = mdreader_domain::federated::source_mapping(source.as_ref())
                     .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
                 Ok(crate::library_query::LibraryPhysicalSource::new(
@@ -1879,6 +1962,7 @@ fn admit_library_query(
             membership_id,
             registry_id,
             name: root
+                .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Local folder")
@@ -3956,11 +4040,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        bind_oauth_callback_listener, execute_cloud_query, CloudAccountService, CloudAccountsState,
-        CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudSourceConfig,
-        CloudSourceError, CloudSourceOutcome, CredentialVault, MemoryCredentialVault, OAuthAttempt,
-        SecretBundle,
+        admit_library_query, bind_oauth_callback_listener, execute_cloud_query,
+        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectionState,
+        CloudCredentialResolver, CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider,
+        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
+        CredentialVault, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt, SecretBundle,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -5168,6 +5252,107 @@ mod tests {
         );
         assert_eq!(sources[1]["contract"]["index_policy"], "read-through");
         assert_eq!(sources[1]["contract"]["capabilities"]["write"], false);
+    }
+
+    #[test]
+    fn local_query_admission_refuses_a_replacement_at_the_persisted_path() {
+        let temp = tempdir().expect("temporary directory");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("local source");
+        fs::write(root.join("original.md"), "# original").expect("original document");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("admit original object");
+        let membership_id = source.engine_source_id();
+        registry
+            .save_to(&registry_path)
+            .expect("persist original identity");
+
+        fs::rename(&root, temp.path().join("retired")).expect("retire original object");
+        fs::create_dir(&root).expect("same-path replacement");
+        fs::write(root.join("replacement.md"), "# replacement").expect("replacement document");
+
+        let result = admit_library_query(
+            LibraryStore::new(registry_path),
+            KeyringCredentialVault::new("dev.mdreader.identity-test").expect("test vault"),
+            Some(&[membership_id]),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CloudSourceError::QueryRefused {
+                source_id,
+                reason: CloudQueryRefusal::Unavailable,
+            }) if source_id == membership_id.to_string()
+        ));
+    }
+
+    #[tokio::test]
+    async fn admitted_local_query_revalidates_identity_before_connector_io() {
+        let temp = tempdir().expect("temporary directory");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("local source");
+        fs::write(root.join("original.md"), "# original").expect("original document");
+        let original_git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .output()
+            .expect("initialize original git source");
+        assert!(original_git.status.success());
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("admit original object");
+        let membership_id = source.engine_source_id();
+        registry
+            .save_to(&registry_path)
+            .expect("persist original identity");
+        let admitted = admit_library_query(
+            LibraryStore::new(registry_path),
+            KeyringCredentialVault::new("dev.mdreader.identity-effect-test").expect("test vault"),
+            Some(&[membership_id]),
+        )
+        .expect("admit exact original object");
+
+        fs::rename(&root, temp.path().join("retired")).expect("retire original object");
+        fs::create_dir(&root).expect("same-path replacement");
+        fs::write(root.join("replacement.md"), "# replacement").expect("replacement document");
+        let replacement_git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .output()
+            .expect("initialize replacement git source");
+        assert!(replacement_git.status.success());
+
+        let result = crate::library_query::execute_registered_library_query(
+            catdb_api_types::EntityQueryRequest {
+                workspace_id: uuid::Uuid::new_v4(),
+                catalog_revision_id: None,
+                schema_version_id: None,
+                entity: "document.Document".to_string(),
+                select: vec!["path".to_string(), "body".to_string()],
+                filters: Vec::new(),
+                order_by: Vec::new(),
+                source_ids: Some(vec![membership_id]),
+                max_staleness_ms: None,
+                require_complete: Some(true),
+                page_size: 100,
+                limit: 100,
+                query_id: None,
+                cursor: None,
+            },
+            admitted.members,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await;
+
+        let Err(crate::library_query::LibraryQueryError::ExecutionFailed { sources }) = result
+        else {
+            panic!("identity replacement must fail before connector I/O");
+        };
+        assert_eq!(sources.len(), 3);
+        assert!(sources
+            .iter()
+            .all(|source| source.outcome == catdb_api_types::SourceOutcome::RuntimeRefused));
     }
 
     #[test]

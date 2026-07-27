@@ -340,12 +340,26 @@ fn build_runtime(
     let mut schema_versions = vec![semantic_version];
     let mut mapping_versions = Vec::new();
     let mut source_versions = Vec::new();
+    let mut source_policy_fields = Vec::new();
     let mut bindings = Vec::new();
     let mut reports = Vec::new();
 
     for member in members {
         let mut member_sources = Vec::new();
         for physical in member.sources {
+            let mapped_fields = physical
+                .mapping
+                .attr_map
+                .values()
+                .filter(|target| {
+                    target.path.arrows.is_empty()
+                        && target.path.start.as_str() == mdreader_domain::federated::ENTITY
+                })
+                .map(|target| target.attr.as_str().to_string())
+                .collect::<BTreeSet<_>>();
+            if mapped_fields.is_empty() {
+                return Err(LibraryQueryError::InvalidCatalog);
+            }
             let schema_content = SchemaContent::new(
                 serde_json::to_value(physical.source.schema())
                     .map_err(|_| LibraryQueryError::InvalidCatalog)?,
@@ -394,6 +408,7 @@ fn build_runtime(
             }
             mapping_versions.push(mapping_version);
             source_versions.push(source_version);
+            source_policy_fields.push((source_version_id, mapped_fields));
             bindings.push(SourceBinding {
                 source_id: physical.source_id,
                 source_version_id,
@@ -415,18 +430,18 @@ fn build_runtime(
     }
 
     let policy_document = PolicyDocument {
-        rules: source_versions
-            .iter()
-            .map(|source| PolicyRule {
+        rules: source_policy_fields
+            .into_iter()
+            .map(|(source_version_id, fields)| PolicyRule {
                 effect: Effect::Allow,
                 subjects: vec![SubjectSelector::Service {
                     service_id: LIBRARY_SERVICE_ID,
                 }],
                 action: Action::Query,
                 workspaces: ResourceScope::Only(BTreeSet::from([workspace_id])),
-                sources: ResourceScope::Only(BTreeSet::from([source.source_version_id])),
+                sources: ResourceScope::Only(BTreeSet::from([source_version_id])),
                 entities: ResourceScope::Only(BTreeSet::from(["document.Document".to_string()])),
-                fields: ResourceScope::All,
+                fields: ResourceScope::Only(fields),
             })
             .collect(),
     };
@@ -939,6 +954,72 @@ mod tests {
             .rows
             .iter()
             .any(|row| row.record_key == scope_record_key(dropbox, "/dropbox-note.md")));
+    }
+
+    #[tokio::test]
+    async fn partial_providers_union_over_the_shipping_document_projection() {
+        let tree = tempfile::tempdir().expect("temp tree");
+        std::fs::write(tree.path().join("note.md"), "# Local\n").expect("fixture");
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tree.path())
+            .output()
+            .expect("git");
+        assert!(output.status.success());
+
+        let workspace = Uuid::new_v4();
+        let local = Uuid::new_v4();
+        let drive = Uuid::new_v4();
+        let dropbox = Uuid::new_v4();
+        let mut query = request(workspace, vec![local, drive, dropbox]);
+        query.select = [
+            "providerId",
+            "title",
+            "author",
+            "path",
+            "mediaType",
+            "modifiedAt",
+            "size",
+            "revision",
+            "checksum",
+            "body",
+        ]
+        .map(str::to_string)
+        .to_vec();
+
+        let answer = execute_registered_library_query(
+            query,
+            vec![
+                local_member(tree.path(), local),
+                cloud_member(
+                    drive,
+                    Arc::new(CloudFixture::drive()),
+                    mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+                ),
+                cloud_member(
+                    dropbox,
+                    Arc::new(CloudFixture::dropbox()),
+                    mdreader_domain::library::CloudDocumentSource::Dropbox,
+                ),
+            ],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("partial providers jointly cover the shipping projection");
+
+        assert_eq!(answer.answer.completeness, Completeness::Complete);
+        assert_eq!(answer.answer.sources.len(), 5);
+        assert_eq!(answer.answer.rows.len(), 3);
+        for row in &answer.answer.rows {
+            let (membership, _) =
+                split_scoped_record_key(&row.record_key).expect("membership-scoped row");
+            let expected_providers = if membership == local { 3 } else { 1 };
+            assert_eq!(row.provenance.len(), 10);
+            assert!(row
+                .provenance
+                .values()
+                .all(|field| field.considered().len() == expected_providers));
+        }
     }
 
     #[tokio::test]

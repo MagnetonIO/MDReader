@@ -93,6 +93,7 @@ export interface SettingsBackend {
   reconcileRestore: (sessionRoot: string | null) => Promise<LibrarySourceDto | null>;
   markActive: (sourceId: string) => Promise<LibrarySnapshot>;
   forgetSource: (sourceId: string) => Promise<LibrarySnapshot>;
+  resolveLibraryDocumentEdit?: (sourceId: string, relativePath: string) => Promise<string>;
   diagnosticsInfo: () => Promise<DiagnosticInfo>;
   setDiagnosticLevel: (level: DiagnosticLevel) => Promise<DiagnosticInfo>;
   recordDiagnosticEvent: (event: DiagnosticEvent) => Promise<void>;
@@ -165,6 +166,16 @@ export async function markLibrarySourceActive(sourceId: string): Promise<Library
 
 export async function forgetLibrarySource(sourceId: string): Promise<LibrarySnapshot> {
   const result = await commands.forgetLibrarySource(sourceId);
+  if (result.status === 'error') return libraryFailure(result.error);
+  return result.data;
+}
+
+/** Resolve one semantic local path through the active identity-bound membership. */
+export async function resolveLibraryDocumentEdit(
+  sourceId: string,
+  relativePath: string,
+): Promise<string> {
+  const result = await commands.resolveLibraryDocumentEdit(sourceId, relativePath);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
@@ -284,6 +295,7 @@ export const settingsBackend: SettingsBackend = {
   reconcileRestore: reconcileLibraryRestore,
   markActive: markLibrarySourceActive,
   forgetSource: forgetLibrarySource,
+  resolveLibraryDocumentEdit,
   diagnosticsInfo: getDiagnosticsInfo,
   setDiagnosticLevel: setDiagnosticsLevel,
   recordDiagnosticEvent,

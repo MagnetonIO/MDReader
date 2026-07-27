@@ -27,6 +27,7 @@ function deferred<T = void>() {
 
 const h = vi.hoisted(() => ({
   disk: new Map<string, { content: string; hash: string }>(),
+  readCalls: [] as string[],
   saveCalls: [] as { path: string; content: string; expectedHash: string; force: boolean }[],
   fsChanged: null as null | ((change: { path: string; kind: string; generation: number }) => void),
   watchError: null as null | ((error: { message: string; generation: number }) => void),
@@ -66,6 +67,8 @@ const h = vi.hoisted(() => ({
   backendRoot: null as string | null,
   backendGeneration: 0,
   searchRoots: [] as (string | null)[],
+  libraryEvidence: null as null | Record<string, unknown>,
+  editResolutions: [] as { sourceId: string; relativePath: string }[],
   seq: 0,
   pickedPath: '/ws',
   watch: vi.fn(async (root: string) => ({ root, generation: 1 })),
@@ -95,6 +98,7 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
   return {
     ...actual,
     readDoc: vi.fn(async (path: string) => {
+      h.readCalls.push(path);
       const entry = h.disk.get(path) ?? { content: '# missing\n', hash: 'h-missing' };
       return { content: entry.content, mtime: 0, hash: entry.hash };
     }),
@@ -171,6 +175,25 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     ],
     cleanup: { kind: 'complete' as const },
   }));
+  const emptyLibraryEvidence = {
+    answer: {
+      query_id: '00000000-0000-4000-8000-000000000001',
+      pins: {
+        catalog_resolver_id: '00000000-0000-4000-8000-000000000002',
+        catalog_revision_id: '00000000-0000-4000-8000-000000000003',
+        schema_version_id: '00000000-0000-4000-8000-000000000004',
+        physical_schema_version_ids: [],
+        mapping_version_ids: [],
+        source_version_ids: [],
+        policy_version_ids: ['00000000-0000-4000-8000-000000000005'],
+      },
+      rows: [],
+      sources: [],
+      completeness: { state: 'complete' as const },
+      next_cursor: null,
+    },
+    memberships: [],
+  };
   const settingsBackend = {
     listSources,
     pickAndAddSource,
@@ -205,6 +228,17 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       max_retained_files: 3,
       max_export_bytes: 512 * 1024,
     })),
+    prepareCloudCatalog: vi.fn(async () => ({
+      workspace_id: '00000000-0000-4000-8000-000000000006',
+      catalog_revision_id: '00000000-0000-4000-8000-000000000007',
+      schema_version_id: '00000000-0000-4000-8000-000000000008',
+    })),
+    queryLibraryDocuments: vi.fn(async () => h.libraryEvidence ?? emptyLibraryEvidence),
+    resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
+      h.editResolutions.push({ sourceId, relativePath });
+      const root = sourceId === 'b'.repeat(64) ? '/ws-b' : '/ws';
+      return `${root}/${relativePath}`;
+    }),
   };
   return {
     ...actual,
@@ -308,6 +342,7 @@ beforeEach(() => {
   );
   Element.prototype.scrollIntoView = vi.fn();
   h.disk.clear();
+  h.readCalls.length = 0;
   h.saveCalls.length = 0;
   h.fsChanged = null;
   h.watchError = null;
@@ -321,6 +356,8 @@ beforeEach(() => {
   h.backendRoot = null;
   h.backendGeneration = 0;
   h.searchRoots.length = 0;
+  h.libraryEvidence = null;
+  h.editResolutions.length = 0;
   h.closed = false;
   h.drainGate = null;
   h.seq = 0;
@@ -364,6 +401,90 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('resolves a Library-relative path through its activated membership before reading for edit', async () => {
+    const sourceId = '00000000-0000-4000-8000-000000000011';
+    const sourceVersionId = '00000000-0000-4000-8000-000000000012';
+    const mappingVersionId = '00000000-0000-4000-8000-000000000013';
+    h.libraryEvidence = {
+      memberships: [
+        {
+          membership_id: '00000000-0000-4000-8000-000000000010',
+          registry_id: 'b'.repeat(64),
+          name: 'Second workspace',
+          kind: 'local-folder',
+          source_ids: [sourceId],
+          editable: true,
+          active: false,
+        },
+      ],
+      answer: {
+        query_id: '00000000-0000-4000-8000-000000000014',
+        pins: {
+          catalog_resolver_id: '00000000-0000-4000-8000-000000000015',
+          catalog_revision_id: '00000000-0000-4000-8000-000000000016',
+          schema_version_id: '00000000-0000-4000-8000-000000000017',
+          physical_schema_version_ids: ['00000000-0000-4000-8000-000000000018'],
+          mapping_version_ids: [mappingVersionId],
+          source_version_ids: [sourceVersionId],
+          policy_version_ids: ['00000000-0000-4000-8000-000000000019'],
+        },
+        rows: [
+          {
+            record_key: 'notes/local.md',
+            fields: {
+              path: 'notes/local.md',
+              title: 'Local note',
+              body: '# Local note',
+            },
+            provenance: {
+              path: {
+                field: 'path',
+                selected: 0,
+                considered: [
+                  {
+                    source_version_id: sourceVersionId,
+                    record_key: 'notes/local.md',
+                    mapping_version_id: mappingVersionId,
+                    physical_attribute: 'path',
+                    observed_at_ms: 1,
+                    state: { state: 'observed_value', value: 'notes/local.md' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        sources: [
+          {
+            source_id: sourceId,
+            source_version_id: sourceVersionId,
+            outcome: 'ran',
+            freshness_ms: 0,
+            scanned: 1,
+            returned: 1,
+          },
+        ],
+        completeness: { state: 'complete' },
+        next_cursor: null,
+      },
+    };
+    h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'local-hash' });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+
+    await waitFor(() => expect(h.readCalls).toContain('/ws-b/notes/local.md'));
+    expect(h.editResolutions).toEqual([
+      { sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' },
+    ]);
+    expect(h.readCalls).not.toContain('notes/local.md');
+  });
+
   it('attributes a new watcher failure to the new source while its listing is still pending', async () => {
     render(<App />);
     await act(async () => {});

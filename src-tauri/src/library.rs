@@ -32,6 +32,7 @@ pub(crate) enum LibraryError {
     DuplicateRoot,
     SourceNotFound,
     SourceUnavailable,
+    InvalidDocumentPath,
     ActiveSource,
     GrantMismatch,
     OpenFailed,
@@ -63,6 +64,7 @@ impl std::fmt::Display for LibraryError {
             Self::DuplicateRoot => formatter.write_str("duplicate-library-root"),
             Self::SourceNotFound => formatter.write_str("library-source-not-found"),
             Self::SourceUnavailable => formatter.write_str("library-source-unavailable"),
+            Self::InvalidDocumentPath => formatter.write_str("invalid-library-document-path"),
             Self::ActiveSource => formatter.write_str("active-library-source"),
             Self::GrantMismatch => formatter.write_str("library-grant-mismatch"),
             Self::OpenFailed => formatter.write_str("library-open-failed"),
@@ -410,7 +412,7 @@ impl LocalFolderSource {
         self.path.restore()
     }
 
-    fn root(&self) -> Result<SourceRoot, LibraryError> {
+    pub(crate) fn root(&self) -> Result<SourceRoot, LibraryError> {
         let identity = self
             .identity
             .clone()
@@ -699,6 +701,29 @@ impl LibraryRegistry {
             | LibrarySourceState::Unreadable
             | LibrarySourceState::NotDirectory => Err(LibraryError::SourceUnavailable),
         }
+    }
+
+    fn resolve_document_edit_path(
+        &self,
+        source_id: &str,
+        relative_path: &Path,
+        active_root: Option<&SourceRoot>,
+    ) -> Result<PathBuf, LibraryError> {
+        let source_root = self.activation_root(source_id)?;
+        if active_root != Some(&source_root) {
+            return Err(LibraryError::GrantMismatch);
+        }
+        let candidate = source_root.path.join(relative_path);
+        let relative = source_root
+            .relative_path(&candidate)
+            .map_err(|_| LibraryError::InvalidDocumentPath)?;
+        if relative.as_os_str().is_empty() {
+            return Err(LibraryError::InvalidDocumentPath);
+        }
+        source_root
+            .verify()
+            .map_err(|_| LibraryError::SourceUnavailable)?;
+        Ok(source_root.path.join(relative))
     }
 
     #[cfg(test)]
@@ -2165,6 +2190,29 @@ pub(crate) fn grant_library_source(
     })
 }
 
+/// Resolve a semantic source-relative document path only after the exact
+/// persisted membership has become the active, identity-validated workspace.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn resolve_library_document_edit(
+    app: AppHandle,
+    source_id: String,
+    relative_path: String,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<String, LibraryError> {
+    let _guard = lock_library(&state)?;
+    let (path, _) = registry_path(&app)?;
+    let active = active_root(&workspace);
+    LibraryStore::new(path).read(|registry| {
+        registry
+            .resolve_document_edit_path(&source_id, Path::new(&relative_path), active.as_ref())?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| LibraryError::InvalidDocumentPath)
+    })
+}
+
 /// Persist the restore candidate only after the existing watch/grant path has
 /// committed it as the current epoch. A caller cannot mint authority by setting
 /// an arbitrary source ID.
@@ -2617,6 +2665,59 @@ mod tests {
         assert_eq!(
             fs::read_to_string(moved.join("original.md")).expect("original object remains"),
             "# original"
+        );
+    }
+
+    #[test]
+    fn edit_path_resolution_uses_the_active_identity_bound_membership_root() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        fs::create_dir(root.join("nested")).expect("nested directory");
+        let document = root.join("nested").join("document.md");
+        fs::write(&document, "# document").expect("document");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let active = bound_root(&fs::canonicalize(&root).expect("canonical root"));
+        let expected = active.path.join("nested/document.md");
+
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("nested/document.md"),
+                Some(&active),
+            ),
+            Ok(expected)
+        );
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("../outside.md"),
+                Some(&active),
+            ),
+            Err(LibraryError::InvalidDocumentPath)
+        );
+    }
+
+    #[test]
+    fn edit_path_resolution_refuses_same_path_source_replacement() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        fs::write(root.join("original.md"), "# original").expect("original");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let active = bound_root(&fs::canonicalize(&root).expect("canonical root"));
+
+        fs::rename(&root, temp.path().join("retired")).expect("retire original");
+        fs::create_dir(&root).expect("replacement root");
+        fs::write(root.join("replacement.md"), "# replacement").expect("replacement");
+
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("replacement.md"),
+                Some(&active),
+            ),
+            Err(LibraryError::SourceUnavailable)
         );
     }
 

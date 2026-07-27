@@ -701,11 +701,22 @@ export function AppShell() {
         const switched = await switchWorkspace(source.path, source.id);
         if (!switched) return;
       }
+      if (!settingsBackend.resolveLibraryDocumentEdit) {
+        toast('Local Library editing is unavailable');
+        return;
+      }
+      let documentPath;
+      try {
+        documentPath = await settingsBackend.resolveLibraryDocumentEdit(source.id, path);
+      } catch {
+        toast('This Library document is no longer available for editing');
+        return;
+      }
       const title =
         typeof row.fields.title === 'string' && row.fields.title.length > 0
           ? row.fields.title
           : path.split(/[\\/]+/).pop() ?? path;
-      openRef({ path, name: title });
+      openRef({ path: documentPath, name: title });
     },
     [openRef, switchWorkspace],
   );

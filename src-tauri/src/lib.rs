@@ -68,6 +68,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             library::reconcile_library_restore,
             library::watch_library_source,
             library::grant_library_source,
+            library::resolve_library_document_edit,
             library::mark_library_source_active,
             library::forget_library_source,
             diagnostics::diagnostics_info,

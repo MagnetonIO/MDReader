@@ -89,6 +89,11 @@ export const commands = {
 	 */
 	grantLibrarySource: (sourceId: string) => typedError<string, LibraryError>(__TAURI_INVOKE("grant_library_source", { sourceId })),
 	/**
+	 *  Resolve a semantic source-relative document path only after the exact
+	 *  persisted membership has become the active, identity-validated workspace.
+	 */
+	resolveLibraryDocumentEdit: (sourceId: string, relativePath: string) => typedError<string, LibraryError>(__TAURI_INVOKE("resolve_library_document_edit", { sourceId, relativePath })),
+	/**
 	 *  Persist the restore candidate only after the existing watch/grant path has
 	 *  committed it as the current epoch. A caller cannot mint authority by setting
 	 *  an arbitrary source ID.
@@ -1162,7 +1167,7 @@ export type LibraryEntityQueryResponse_Serialize = {
 	memberships: LibrarySourceExecution[],
 };
 
-export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
 
 export type LibraryIndexPolicy = "managed" | "read-through";
 
