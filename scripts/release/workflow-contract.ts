@@ -10,6 +10,10 @@ const SETUP_NODE =
   'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020';
 const SYFT =
   'anchore/sbom-action/download-syft@f8bdd1d8ac5e901a77a92f111440fdb1b593736b';
+const WINDOWS_SIGNER_SHA256 =
+  'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30';
+const WINDOWS_NSIS_HOOK_SHA256 =
+  '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64';
 
 const STEP_IDS: Record<string, string[]> = {
   prepare: [
@@ -294,21 +298,21 @@ const BUILD_MATRIX = [
 const BUNDLE_MATRIX = [
   {
     ...BUILD_MATRIX[0],
-    environment: 'mdreader-production-macos',
+    environment: 'mdreader-v1-release-20260726-macos',
     native_package: '@tauri-apps/cli-darwin-x64',
     native_integrity:
       'sha512-uFsGQAAfuyz1k/yGLmkWfkBlgKAqZfxqlHmLWx81QU27RJWfmbNHCIq8T8w1e+VClleIuZUjpHWfoE4E3DLo3A==',
   },
   {
     ...BUILD_MATRIX[1],
-    environment: 'mdreader-production-windows',
+    environment: 'mdreader-v1-release-20260726-windows',
     native_package: '@tauri-apps/cli-win32-x64-msvc',
     native_integrity:
       'sha512-+vDiqBIU5dMISg/wNvX3sF+ZHfgJGJ5T0AcO+EHNXV9GGAG+P5fzodlDXD3QdKCRgZxMoCm5PPvj3BqLNjBthw==',
   },
   {
     ...BUILD_MATRIX[2],
-    environment: 'mdreader-production-linux',
+    environment: 'mdreader-v1-release-20260726-linux',
     native_package: '@tauri-apps/cli-linux-x64-gnu',
     native_integrity:
       'sha512-2VRNWl84FOH0m2giiDkO2h0QXlcMJeX+zJDpI5kDIQAx6s+geF3v48F4DXfJez4GS/FdoDGnPnw1C2iYGbQ7bQ==',
@@ -551,7 +555,7 @@ function validateJobMetadata(jobs: Mapping): void {
       keys: ['needs', 'if', 'environment', 'runs-on', 'steps'],
       runs: 'ubuntu-24.04',
       needs: ['prepare', 'aggregate'],
-      environment: 'mdreader-production-publication',
+      environment: 'mdreader-v1-release-20260726-publication',
     },
   };
   for (const [name, spec] of Object.entries(expected)) {
@@ -638,22 +642,56 @@ function validatePrepare(
     updater_public_key_sha256:
       '${{ steps.seal-release-support.outputs.updater_public_key_sha256 }}',
   }, 'prepare outputs are not bound to the reviewed authorizers');
-  requireRun(
+  const sourceAuthorization = requireRun(
     steps,
     'authorize-release-source',
-    ['refs/remotes/origin/main', 'workflow_dispatch', 'refs/heads/main'],
+    [
+      'refs/remotes/origin/main',
+      'workflow_dispatch',
+      'refs/heads/main',
+      'SOURCE_COMMIT="$(git rev-parse "$GITHUB_SHA^{commit}")"',
+      'MAIN_TIP="$(git rev-parse refs/remotes/origin/main^{commit})"',
+      'release source must equal the current origin/main tip',
+    ],
     'release source authorization is incomplete',
   );
+  if (
+    !sourceAuthorization.includes(
+      '[[ "$SOURCE_COMMIT" == "$MAIN_TIP" ]]',
+    ) ||
+    sourceAuthorization.includes('merge-base --is-ancestor')
+  ) {
+    throw new Error(
+      'release source authorization does not require the exact current main tip',
+    );
+  }
   requireRun(
     steps,
     'seal-release-support',
     [
       'sign-windows-from-store.ps1',
       'windows-minimum.nsh',
+      'EXPECTED_WINDOWS_SIGNER_SHA256',
+      'EXPECTED_WINDOWS_NSIS_HOOK_SHA256',
+      'reviewed release support is not approved by the workflow',
       'updater_public_key_sha256',
       'sourceCommit: process.env.GITHUB_SHA',
     ],
     'reviewed support and updater identity are not sealed before package code',
+  );
+  const supportEnv = mapping(
+    steps.get('seal-release-support')!.env,
+    'seal-release-support.env',
+  );
+  same(
+    supportEnv.EXPECTED_WINDOWS_SIGNER_SHA256,
+    WINDOWS_SIGNER_SHA256,
+    'Windows signer is not bound to workflow-approved bytes',
+  );
+  same(
+    supportEnv.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
+    WINDOWS_NSIS_HOOK_SHA256,
+    'Windows NSIS hook is not bound to workflow-approved bytes',
   );
   requireRun(
     steps,
@@ -767,10 +805,14 @@ function validateBundle(
     ],
     'isolated Tauri and Node runtime is not fully inventoried before credentials',
   );
+  const boundaryStep = steps.get('verify-credential-boundaries')!;
   const boundary = requireRun(
     steps,
     'verify-credential-boundaries',
     [
+      'EXPECTED_WINDOWS_SIGNER_SHA256',
+      'EXPECTED_WINDOWS_NSIS_HOOK_SHA256',
+      'approved Windows ${label} SHA-256 does not match',
       'EXPECTED_RUNTIME_MANIFEST_SHA256',
       'unexpected handoff path',
       'Node runtime inventory mismatch',
@@ -781,6 +823,20 @@ function validateBundle(
       'bundle_workspace=',
     ],
     'credential boundary does not verify the closed handoff, runtime, and minimal scaffold',
+  );
+  const boundaryEnv = mapping(
+    boundaryStep.env,
+    'verify-credential-boundaries.env',
+  );
+  same(
+    boundaryEnv.EXPECTED_WINDOWS_SIGNER_SHA256,
+    WINDOWS_SIGNER_SHA256,
+    'credential boundary does not require the workflow-approved Windows signer',
+  );
+  same(
+    boundaryEnv.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
+    WINDOWS_NSIS_HOOK_SHA256,
+    'credential boundary does not require the workflow-approved Windows NSIS hook',
   );
   if (
     boundary.includes('github.workspace') ||

@@ -69,9 +69,14 @@ const archiveEntries = execFileSync('tar', ['-tf', archivePath], {
 if (archiveEntries.length === 0) {
   throw new Error('credentialed archive is empty');
 }
+const seenArchiveEntries = new Set();
 for (const encoded of archiveEntries) {
   const path = encoded.replace(/^(?:\.\/)+/, '').replace(/\/$/, '');
   if (path === '') continue;
+  if (seenArchiveEntries.has(path)) {
+    throw new Error(`credentialed archive contains a duplicate archive entry: ${encoded}`);
+  }
+  seenArchiveEntries.add(path);
   const segments = path.split('/');
   if (
     encoded.startsWith('/') ||

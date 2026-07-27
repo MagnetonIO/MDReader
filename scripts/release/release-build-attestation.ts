@@ -7,7 +7,15 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+  win32,
+} from 'node:path';
 
 import { updaterPublicKeyFingerprint } from './release-config';
 
@@ -318,7 +326,30 @@ async function credentialedOutputInventory(
         sha256: sha256(body),
       });
     } else if (entry.isSymbolicLink()) {
-      const target = Buffer.from(await readlink(path), 'utf8');
+      if (!relativePath.startsWith('bundle/')) {
+        throw new Error(
+          `credentialed output symbolic links are permitted only inside the bundle: ${relativePath}`,
+        );
+      }
+      const rawTarget = await readlink(path);
+      if (isAbsolute(rawTarget) || win32.isAbsolute(rawTarget)) {
+        throw new Error(
+          `credentialed output contains an absolute symbolic-link target: ${relativePath}`,
+        );
+      }
+      const bundleRoot = resolve(root, 'bundle');
+      const resolvedTarget = resolve(dirname(path), rawTarget);
+      const targetWithinBundle = relative(bundleRoot, resolvedTarget);
+      if (
+        targetWithinBundle === '..' ||
+        targetWithinBundle.startsWith(`..${sep}`) ||
+        isAbsolute(targetWithinBundle)
+      ) {
+        throw new Error(
+          `credentialed output symbolic link escapes the closed bundle root: ${relativePath}`,
+        );
+      }
+      const target = Buffer.from(rawTarget, 'utf8');
       output.push({
         path: relativePath,
         kind: 'symlink',

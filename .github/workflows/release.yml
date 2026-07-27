@@ -56,11 +56,6 @@ jobs:
               echo "release tag is not an exact stable semantic version" >&2
               exit 1
             }
-            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-            git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
-              echo "release tag source is not contained in origin/main" >&2
-              exit 1
-            }
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
               echo "manual release verification must run from main" >&2
@@ -70,10 +65,19 @@ jobs:
             echo "unsupported release event $GITHUB_EVENT_NAME" >&2
             exit 1
           fi
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          SOURCE_COMMIT="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          MAIN_TIP="$(git rev-parse refs/remotes/origin/main^{commit})"
+          [[ "$SOURCE_COMMIT" == "$MAIN_TIP" ]] || {
+            echo "release source must equal the current origin/main tip" >&2
+            exit 1
+          }
       - name: Seal reviewed packaging support before package code runs
         id: seal-release-support
         env:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
+          EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
+          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -102,9 +106,15 @@ jobs:
           rmSync(root, { recursive: true, force: true });
           mkdirSync(payload, { recursive: true, mode: 0o700 });
           const files = [];
-          for (const source of [
-            'scripts/release/sign-windows-from-store.ps1',
-            'scripts/release/windows-minimum.nsh',
+          for (const [source, expectedSha256] of [
+            [
+              'scripts/release/sign-windows-from-store.ps1',
+              process.env.EXPECTED_WINDOWS_SIGNER_SHA256,
+            ],
+            [
+              'scripts/release/windows-minimum.nsh',
+              process.env.EXPECTED_WINDOWS_NSIS_HOOK_SHA256,
+            ],
           ]) {
             const metadata = lstatSync(source);
             if (!metadata.isFile() || metadata.isSymbolicLink()) {
@@ -114,6 +124,9 @@ jobs:
             copyFileSync(source, destination);
             chmodSync(destination, metadata.mode & 0o777);
             const body = readFileSync(destination);
+            if (!/^[0-9a-f]{64}$/.test(expectedSha256 ?? '') || hash(body) !== expectedSha256) {
+              throw new Error(`reviewed release support is not approved by the workflow: ${source}`);
+            }
             files.push({
               path: basename(source),
               bytes: body.byteLength,
@@ -457,7 +470,7 @@ jobs:
         include:
           - platform: macos
             os: macos-14
-            environment: mdreader-production-macos
+            environment: mdreader-v1-release-20260726-macos
             target: universal-apple-darwin
             bundles: dmg
             binary: mdreader-app
@@ -465,7 +478,7 @@ jobs:
             native_integrity: 'sha512-uFsGQAAfuyz1k/yGLmkWfkBlgKAqZfxqlHmLWx81QU27RJWfmbNHCIq8T8w1e+VClleIuZUjpHWfoE4E3DLo3A=='
           - platform: windows
             os: windows-2025
-            environment: mdreader-production-windows
+            environment: mdreader-v1-release-20260726-windows
             target: x86_64-pc-windows-msvc
             bundles: nsis
             binary: mdreader-app.exe
@@ -473,7 +486,7 @@ jobs:
             native_integrity: 'sha512-+vDiqBIU5dMISg/wNvX3sF+ZHfgJGJ5T0AcO+EHNXV9GGAG+P5fzodlDXD3QdKCRgZxMoCm5PPvj3BqLNjBthw=='
           - platform: linux
             os: ubuntu-24.04
-            environment: mdreader-production-linux
+            environment: mdreader-v1-release-20260726-linux
             target: x86_64-unknown-linux-gnu
             bundles: appimage,deb,rpm
             binary: mdreader-app
@@ -663,6 +676,8 @@ jobs:
           TAURI_RUNTIME_ROOT: ${{ runner.temp }}/mdreader-tauri-runtime
           BUNDLE_WORKSPACE_ROOT: ${{ runner.temp }}/mdreader-bundle-workspace
           EXPECTED_SUPPORT_SHA256: ${{ needs.prepare.outputs.support_sha256 }}
+          EXPECTED_WINDOWS_SIGNER_SHA256: 'b0615fb72dfa2b22c0ce42733836297c012b93504c17a6f01f2ba874d4179e30'
+          EXPECTED_WINDOWS_NSIS_HOOK_SHA256: '62a61ab3f36621664403a26542e5c89a7fc14d3f712eb1540a6b32f19be5dc64'
           EXPECTED_RUNTIME_MANIFEST_SHA256: ${{ steps.establish-tauri-runtime.outputs.runtime_manifest_sha256 }}
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           EXPECTED_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
@@ -834,6 +849,25 @@ jobs:
             [...support.files].sort((left, right) => left.path.localeCompare(right.path)),
             'reviewed support',
           );
+          for (const [name, expectedSha256, label] of [
+            [
+              'sign-windows-from-store.ps1',
+              required('EXPECTED_WINDOWS_SIGNER_SHA256'),
+              'signer',
+            ],
+            [
+              'windows-minimum.nsh',
+              required('EXPECTED_WINDOWS_NSIS_HOOK_SHA256'),
+              'NSIS hook',
+            ],
+          ]) {
+            if (
+              !/^[0-9a-f]{64}$/.test(expectedSha256) ||
+              hash(readFileSync(join(supportPayload, name))) !== expectedSha256
+            ) {
+              throw new Error(`approved Windows ${label} SHA-256 does not match`);
+            }
+          }
 
           const runtimeRoot = required('TAURI_RUNTIME_ROOT');
           const runtimePath = join(runtimeRoot, 'runtime.json');
@@ -1807,7 +1841,7 @@ jobs:
   publish:
     needs: [prepare, aggregate]
     if: needs.prepare.outputs.publish_requested == 'true'
-    environment: mdreader-production-publication
+    environment: mdreader-v1-release-20260726-publication
     runs-on: ubuntu-24.04
     steps:
       - name: Download the sealed verified publication capability
