@@ -388,7 +388,7 @@ export function SettingsSheet({
             return await backend.queryCloudDocuments!(
             provider,
             [],
-            ['id', 'name', 'modifiedAt', 'size'],
+            ['path', 'title', 'modifiedAt', 'size'],
               requestId,
             );
           } finally {
@@ -413,11 +413,7 @@ export function SettingsSheet({
       const requestId = `read:${provider}:${globalThis.crypto.randomUUID()}`;
       const previous = cloudRequestIds.current[provider];
       cloudRequestIds.current[provider] = requestId;
-      const fields =
-        provider === 'google-drive'
-          ? ['id', 'name', 'mimeType', 'modifiedAt', 'size', 'body']
-          : ['id', 'name', 'path', 'modifiedAt', 'size', 'body'];
-      const filterField = provider === 'google-drive' ? 'id' : 'path';
+      const fields = ['path', 'title', 'modifiedAt', 'size', 'body'];
       void run(
         `read:${provider}`,
         async () => {
@@ -427,7 +423,7 @@ export function SettingsSheet({
           try {
             return await backend.queryCloudDocuments!(
               provider,
-              [{ field: filterField, operator: 'eq', value: recordKey }],
+              [{ field: 'path', operator: 'eq', value: recordKey }],
               fields,
               requestId,
             );
@@ -705,7 +701,7 @@ export function SettingsSheet({
                     const documents = cloudDocuments[source.provider];
                     const openDocument = openCloudDocuments[source.provider];
                     const openRow = openDocument?.rows[0];
-                    const openName = openDocument ? cloudField(openDocument, 0, 'name') : undefined;
+                    const openName = openDocument ? cloudField(openDocument, 0, 'title') : undefined;
                     const openBody = openDocument ? cloudField(openDocument, 0, 'body') : undefined;
                     return (
                       <article className="cloud-source" key={source.provider}>
@@ -803,7 +799,7 @@ export function SettingsSheet({
                             ) : (
                               <ul>
                                 {documents.rows.slice(0, 8).map((row, index) => {
-                                  const name = cloudField(documents, index, 'name');
+                                  const name = cloudField(documents, index, 'title');
                                   const modifiedAt = cloudField(documents, index, 'modifiedAt');
                                   const size = cloudField(documents, index, 'size');
                                   return (

@@ -342,6 +342,16 @@ impl LibrarySourceContract {
             index_policy: LibraryIndexPolicy::ReadThrough,
         }
     }
+
+    pub(crate) fn connector_version(&self) -> &str {
+        &self.connector_version
+    }
+
+    pub(crate) fn permits_read_only(&self) -> bool {
+        self.capabilities.read
+            && !self.capabilities.write
+            && self.index_policy == LibraryIndexPolicy::ReadThrough
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

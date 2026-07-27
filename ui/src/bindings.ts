@@ -395,6 +395,15 @@ export type CloudCompleteness = "complete";
 
 export type CloudConnectionState = "disconnected" | "connected" | "reauthorize";
 
+export type CloudConsideredProvider = {
+	provider: CloudProvider,
+	source_id: string,
+	record_key: string,
+	mapping_version: string,
+	observation: CloudObservation,
+	observed_at_ms: number | null,
+};
+
 export type CloudDocumentQueryResponse = {
 	query_id: string,
 	provider: CloudProvider,
@@ -417,10 +426,7 @@ export type CloudExecutionMode = "virtual";
 
 export type CloudFieldProvenance = {
 	field: string,
-	source_id: string,
-	record_key: string,
-	mapping_version: string,
-	observation: CloudObservation,
+	providers: CloudConsideredProvider[],
 };
 
 export type CloudFilterInput = {
@@ -445,7 +451,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
 
 export type CloudSourceOutcome = { kind: "ran"; mode: CloudExecutionMode; scanned: number; returned: number; pushed: string[]; residual: string[] };
 
@@ -460,13 +466,16 @@ export type CloudSourcesSnapshot = {
 };
 
 export type CloudVersionPins = {
-	catalog_version: number,
+	catalog_version: string,
 	schema_version: string,
 	schema_checksum: string,
 	mapping_version: string,
+	mapping_checksum: string,
 	connector_version: string,
 	source_version: string,
+	source_checksum: string,
 	policy_version: string,
+	policy_checksum: string,
 };
 
 /**  Why a chain did not produce a validated composite. */

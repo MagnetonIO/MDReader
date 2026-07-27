@@ -79,13 +79,16 @@ function cloudResponse(
     provider,
     schema_version: 'mdreader.Document/v1',
     version_pins: {
-      catalog_version: 5,
+      catalog_version: 'catalog-v5',
       schema_version: 'mdreader.Document/v1',
       schema_checksum: 'a'.repeat(64),
       mapping_version: 'mdreader.Document.cloud-mapping/v1',
+      mapping_checksum: 'b'.repeat(64),
       connector_version: `${provider}/v1`,
-      source_version: 'b'.repeat(64),
+      source_version: 'source-v1',
+      source_checksum: 'c'.repeat(64),
       policy_version: 'mdreader.read-only/v1',
+      policy_checksum: 'd'.repeat(64),
     },
     completeness: 'complete',
     sources: [
@@ -107,24 +110,28 @@ function cloudResponse(
         source_id: 'b'.repeat(64),
         record_key: recordKey,
         fields: {
-          id: recordKey,
-          name,
+          path: recordKey,
+          title: name,
           modifiedAt: 1_800_000_000_000,
           size: 2048,
           ...(fields.includes('body')
             ? {
                 body: `# ${name}\n\nConnected source content.`,
-                path: `/${name}`,
-                mimeType: 'text/markdown',
               }
             : {}),
         },
         provenance: fields.map((field) => ({
           field,
-          source_id: 'b'.repeat(64),
-          record_key: recordKey,
-          mapping_version: 'mdreader.Document.cloud-mapping/v1',
-          observation: 'observed' as const,
+          providers: [
+            {
+              provider,
+              source_id: 'b'.repeat(64),
+              record_key: recordKey,
+              mapping_version: 'mdreader.Document.cloud-mapping/v1',
+              observation: 'observed' as const,
+              observed_at_ms: 1_800_000_000_000,
+            },
+          ],
         })),
       },
     ],
@@ -354,7 +361,7 @@ describe('Settings sheet', () => {
     expect(api.queryCloudDocuments).toHaveBeenCalledWith(
       'google-drive',
       [],
-      ['id', 'name', 'modifiedAt', 'size'],
+      ['path', 'title', 'modifiedAt', 'size'],
       expect.stringMatching(/^browse:google-drive:/),
     );
 
@@ -398,7 +405,7 @@ describe('Settings sheet', () => {
       .mockResolvedValueOnce(
         cloudResponse(
           'google-drive',
-          ['id', 'name', 'modifiedAt', 'size'],
+          ['path', 'title', 'modifiedAt', 'size'],
           'Current.md',
           'current',
         ),
@@ -423,7 +430,7 @@ describe('Settings sheet', () => {
       releaseFirst(
         cloudResponse(
           'google-drive',
-          ['id', 'name', 'modifiedAt', 'size'],
+          ['path', 'title', 'modifiedAt', 'size'],
           'Retired.md',
           'retired',
         ),
