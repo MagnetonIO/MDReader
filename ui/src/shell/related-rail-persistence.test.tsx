@@ -134,4 +134,24 @@ describe('Related rail persistence: real save → fresh mount → real load', ()
     expect(document.querySelector('.related-rail')!.parentElement).toBe(row);
     expect(screen.queryByTitle('Show related notes')).toBeNull();
   });
+
+  it('restores a dark theme chosen through the authoritative appearance store', async () => {
+    render(<App />);
+    await act(async () => {});
+
+    act(() => useSettingsStore.getState().setTheme('dark'));
+    act(() => window.dispatchEvent(new Event('beforeunload')));
+    await waitFor(() => {
+      const persisted = h.store.get('settings.json::settings') as { theme?: string } | undefined;
+      expect(persisted?.theme).toBe('dark');
+    });
+
+    cleanup();
+    useSettingsStore.getState().reset();
+    expect(useSettingsStore.getState().theme).toBe('system');
+
+    render(<App />);
+    await waitFor(() => expect(useSettingsStore.getState().theme).toBe('dark'));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+  });
 });

@@ -10,13 +10,17 @@
 compile_error!("the direct updater cannot be compiled into the isolated E2E application");
 
 mod commands;
+mod diagnostics;
 mod engine;
+mod library;
 mod mapping;
 mod overlay;
 mod search;
 mod updater;
 
 use commands::{WatcherState, WorkspaceState};
+use diagnostics::DiagnosticsState;
+use library::LibraryState;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// TypeScript bindings destination, relative to this crate's manifest dir
@@ -47,6 +51,19 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::save_doc,
             commands::pick_workspace_folder,
             commands::watch_workspace,
+            library::list_library_sources,
+            library::pick_and_add_library_source,
+            library::reconcile_library_restore,
+            library::watch_library_source,
+            library::grant_library_source,
+            library::mark_library_source_active,
+            library::forget_library_source,
+            diagnostics::diagnostics_info,
+            diagnostics::set_diagnostics_level,
+            diagnostics::record_diagnostic_event,
+            diagnostics::reveal_diagnostics,
+            diagnostics::export_diagnostics,
+            diagnostics::clear_diagnostics,
             engine::list_workspace_files,
             engine::start_import,
             engine::import_status,
@@ -138,6 +155,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
+        .manage(LibraryState::default())
+        .manage(DiagnosticsState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -228,7 +247,9 @@ mod tests {
         let mut checked = 0;
         for (module, source) in [
             ("commands.rs", include_str!("commands.rs")),
+            ("diagnostics.rs", include_str!("diagnostics.rs")),
             ("engine.rs", include_str!("engine.rs")),
+            ("library.rs", include_str!("library.rs")),
             ("search.rs", include_str!("search.rs")),
             ("overlay.rs", include_str!("overlay.rs")),
             ("mapping.rs", include_str!("mapping.rs")),

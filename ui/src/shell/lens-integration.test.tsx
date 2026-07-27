@@ -82,6 +82,30 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../platform/settings.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform/settings.js')>();
+  const source = {
+    id: 'f'.repeat(64),
+    name: 'Workspace',
+    path: '/ws',
+    state: { kind: 'available' as const },
+    index_state: 'present' as const,
+    active: false,
+    restore_candidate: false,
+  };
+  return {
+    ...actual,
+    pickAndAddLibrarySource: vi.fn(async () => ({ source, added: true })),
+    watchLibrarySource: vi.fn(async () => ({ root: source.path, generation: 1 })),
+    grantLibrarySource: vi.fn(async () => source.path),
+    markLibrarySourceActive: vi.fn(async () => ({
+      version: 1,
+      sources: [{ ...source, active: true }],
+    })),
+    recordDiagnosticEventNonBlocking: vi.fn(),
+  };
+});
+
 vi.mock('./persistence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./persistence.js')>();
   return {

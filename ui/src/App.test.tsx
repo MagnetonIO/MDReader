@@ -52,6 +52,19 @@ test('Mod+/ opens the shortcut sheet and Escape closes it', async () => {
   );
 });
 
+test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
+  render(<App />);
+  expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+
+  act(() => modKeyDown(','));
+  await waitFor(() => expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy());
+  expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
+
+  act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull());
+});
+
 test('Mod+\\ toggles the sidebar collapsed state', async () => {
   render(<App />);
   expect(useSettingsStore.getState().sidebarCollapsed).toBe(false);

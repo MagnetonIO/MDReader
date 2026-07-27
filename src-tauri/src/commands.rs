@@ -182,13 +182,20 @@ pub(crate) fn resolve_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Canonicalize `root` and confirm it is an existing directory — the check
-/// [`set_workspace`] and [`watch_workspace`] share to *establish* a workspace
-/// grant (as opposed to validating a candidate against an existing grant).
+/// [`set_workspace`] uses to establish a workspace grant from webview text (as
+/// opposed to validating a candidate against an existing grant).
 pub(crate) fn canonical_dir(root: &str) -> Result<PathBuf, String> {
-    let real =
-        std::fs::canonicalize(root).map_err(|err| format!("cannot resolve {root}: {err}"))?;
+    canonical_dir_path(Path::new(root))
+}
+
+/// Native-path counterpart to [`canonical_dir`]. Backend-owned library roots
+/// call this directly so their lossless OS representation is never converted to
+/// a webview string and parsed back before authority is established.
+pub(crate) fn canonical_dir_path(root: &Path) -> Result<PathBuf, String> {
+    let real = std::fs::canonicalize(root)
+        .map_err(|err| format!("cannot resolve {}: {err}", root.display()))?;
     if !real.is_dir() {
-        return Err(format!("not a directory: {root}"));
+        return Err(format!("not a directory: {}", root.display()));
     }
     Ok(real)
 }
@@ -232,11 +239,20 @@ pub fn set_workspace(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<String, String> {
     let real = canonical_dir(&root)?;
-    let granted = real.to_string_lossy().into_owned();
     // A grant change is a new epoch (the revocation barrier), even on the
     // degraded/no-watcher path.
-    state.switch(real)?;
-    Ok(granted)
+    state.switch(real.clone())?;
+    Ok(real.to_string_lossy().into_owned())
+}
+
+/// Establish a workspace grant from a native path. Library commands use this
+/// rather than reconstructing a path from the DTO's lossy display string.
+pub(crate) fn grant_workspace_path(root: &Path, state: &WorkspaceState) -> Result<PathBuf, String> {
+    let real = canonical_dir_path(root)?;
+    // A grant change is a new epoch (the revocation barrier), even on the
+    // degraded/no-watcher path.
+    state.switch(real.clone())?;
+    Ok(real)
 }
 
 // --------------------------------------------------------------------------
@@ -711,16 +727,28 @@ pub fn watch_workspace(
     workspace: tauri::State<'_, WorkspaceState>,
     state: tauri::State<'_, WatcherState>,
 ) -> Result<WorkspaceGrant, String> {
+    watch_workspace_path(&app, Path::new(&root), &workspace, &state)
+}
+
+/// Native-path counterpart to [`watch_workspace`]. It preserves the exact same
+/// arm-then-commit transaction and event tagging while keeping a library root in
+/// backend-native form from registry lookup through epoch adoption.
+pub(crate) fn watch_workspace_path(
+    app: &AppHandle,
+    root: &Path,
+    workspace: &WorkspaceState,
+    state: &WatcherState,
+) -> Result<WorkspaceGrant, String> {
     let emit_app = app.clone();
     // The generation the watcher is armed under — filled by `commit_workspace`
     // (under the lock, matching the new epoch exactly) and read by the emit
     // closure so every event is tagged with the era it belongs to.
     let armed_gen = Arc::new(AtomicU64::new(0));
     let gen_for_closure = Arc::clone(&armed_gen);
-    let (granted, generation) = watch_and_commit(
-        &root,
-        &workspace,
-        &state,
+    let (granted, generation) = watch_and_commit_path(
+        root,
+        workspace,
+        state,
         &armed_gen,
         move |result: DebounceEventResult| {
             let generation = gen_for_closure.load(Ordering::Acquire) as u32;
@@ -765,8 +793,19 @@ pub fn watch_workspace(
 /// watcher together, filling `armed_gen` with the new epoch's generation. Any
 /// earlier failure returns with nothing mutated. Returns the canonical root and
 /// its generation.
+#[cfg(test)]
 fn watch_and_commit<F: DebounceEventHandler>(
     root: &str,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+    armed_gen: &AtomicU64,
+    on_event: F,
+) -> Result<(PathBuf, u32), String> {
+    watch_and_commit_path(Path::new(root), workspace, watcher, armed_gen, on_event)
+}
+
+fn watch_and_commit_path<F: DebounceEventHandler>(
+    root: &Path,
     workspace: &WorkspaceState,
     watcher: &WatcherState,
     armed_gen: &AtomicU64,
@@ -776,7 +815,7 @@ fn watch_and_commit<F: DebounceEventHandler>(
     // resolve it independently: this command is the one that ESTABLISHES the grant.
     // TOCTOU: the watch below arms after this check (accepted — see the
     // module-level "TOCTOU" note; local single-user reader).
-    let new_root = canonical_dir(root)?;
+    let new_root = canonical_dir_path(root)?;
 
     // Build + arm the new watcher into a LOCAL, holding NO state lock across
     // construction. A failure here changes nothing — the previous grant + watcher
@@ -786,7 +825,7 @@ fn watch_and_commit<F: DebounceEventHandler>(
     debouncer
         .watcher()
         .watch(&new_root, RecursiveMode::Recursive)
-        .map_err(|err| format!("watch {root} failed: {err}"))?;
+        .map_err(|err| format!("watch {} failed: {err}", root.display()))?;
 
     let generation = commit_workspace(workspace, watcher, new_root.clone(), debouncer, armed_gen)?;
     Ok((new_root, generation))

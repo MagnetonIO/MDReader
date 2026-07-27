@@ -1,0 +1,228 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type {
+  DiagnosticInfo,
+  DiagnosticLevel,
+  LibrarySnapshot,
+  LibrarySourceDto,
+  PickedLibrarySource,
+} from '../bindings';
+import type { SettingsBackend } from '../platform/settings.js';
+import { useSettingsStore } from '../stores/settings.js';
+import { SettingsSheet } from './SettingsSheet.js';
+
+const SOURCE_ID = 'a'.repeat(64);
+const SOURCE: LibrarySourceDto = {
+  id: SOURCE_ID,
+  name: 'Research notes',
+  path: '/Users/alex/Notes',
+  state: { kind: 'available' },
+  index_state: 'present',
+  active: false,
+  restore_candidate: false,
+};
+
+const SNAPSHOT: LibrarySnapshot = { version: 1, sources: [SOURCE] };
+const DIAGNOSTICS: DiagnosticInfo = {
+  level: 'standard',
+  directory: '/Users/alex/Library/Logs/MDReader',
+  max_file_bytes: 256 * 1024,
+  retained_files: 3,
+  max_export_bytes: 512 * 1024,
+};
+
+function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
+  return {
+    listSources: vi.fn(async () => SNAPSHOT),
+    pickAndAddSource: vi.fn(
+      async (): Promise<PickedLibrarySource> => ({ source: SOURCE, added: true }),
+    ),
+    reconcileRestore: vi.fn(async () => null),
+    markActive: vi.fn(async () => SNAPSHOT),
+    forgetSource: vi.fn(async () => ({ version: 1, sources: [] })),
+    diagnosticsInfo: vi.fn(async () => DIAGNOSTICS),
+    setDiagnosticLevel: vi.fn(async (level: DiagnosticLevel) => ({
+      ...DIAGNOSTICS,
+      level,
+    })),
+    recordDiagnosticEvent: vi.fn(async () => {}),
+    revealDiagnostics: vi.fn(async () => {}),
+    exportDiagnostics: vi.fn(async () => ({
+      status: 'exported' as const,
+      path: '/tmp/mdreader-diagnostics.txt',
+      bytes_written: 128,
+    })),
+    clearDiagnostics: vi.fn(async () => DIAGNOSTICS),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  useSettingsStore.getState().reset();
+});
+
+afterEach(() => {
+  cleanup();
+  useSettingsStore.getState().reset();
+});
+
+describe('Settings sheet', () => {
+  it('uses the existing appearance store and presents the local-only product boundary', async () => {
+    const api = backend();
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="watching"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
+    expect(screen.getByText('Local Markdown folders', { selector: 'strong' })).toBeTruthy();
+    expect(screen.getByText(/stay on this device/i)).toBeTruthy();
+    expect(screen.queryByText(/Google Drive|Dropbox|Notion|connector/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dark' }));
+    expect(useSettingsStore.getState().theme).toBe('dark');
+    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sans' }));
+    expect(useSettingsStore.getState().readingFont).toBe('sans');
+    fireEvent.click(screen.getByRole('button', { name: 'Increase text size' }));
+    expect(useSettingsStore.getState().textScaleIndex).toBe(4);
+
+    await screen.findByText('Research notes');
+    expect(api.listSources).toHaveBeenCalledOnce();
+    expect(api.diagnosticsInfo).toHaveBeenCalledOnce();
+  });
+
+  it('activates a persisted member through the shell-owned switch callback', async () => {
+    const api = backend();
+    const activate = vi.fn(async () => false);
+    const close = vi.fn();
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={activate}
+        onClose={close}
+      />,
+    );
+
+    await screen.findByText('Research notes');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Activate Research notes' }));
+    });
+
+    expect(close).toHaveBeenCalledOnce();
+    expect(activate).toHaveBeenCalledWith(SOURCE);
+  });
+
+  it('keeps unavailable membership visible and protects the active source from forgetting', async () => {
+    const active: LibrarySourceDto = {
+      ...SOURCE,
+      active: true,
+      restore_candidate: true,
+    };
+    const missing: LibrarySourceDto = {
+      ...SOURCE,
+      id: 'b'.repeat(64),
+      name: 'Archive',
+      path: '/Volumes/Archive',
+      state: { kind: 'missing', reason: 'Folder not found' },
+      index_state: 'not-created',
+    };
+    const api = backend({
+      listSources: vi.fn(async () => ({ version: 1, sources: [active, missing] })),
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="watching"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText('Archive');
+    expect(screen.getByText('Folder not found')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Forget Research notes' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Activate Archive' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText(/Index on disk/i)).toBeTruthy();
+  });
+
+  it('requires a second explicit confirmation before clearing the bounded local logs', async () => {
+    const api = backend();
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(/256 KiB per file/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear logs' }));
+    expect(api.clearDiagnostics).not.toHaveBeenCalled();
+
+    const confirmation = screen.getByRole('alertdialog', { name: 'Clear diagnostic logs' });
+    expect(confirmation.textContent).toMatch(/cannot be undone/i);
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const clearNow = screen.getByRole('button', { name: 'Clear diagnostic logs now' });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    fireEvent.keyDown(confirmation, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(clearNow);
+    await act(async () => {
+      fireEvent.click(clearNow);
+    });
+    expect(api.clearDiagnostics).toHaveBeenCalledWith(true);
+  });
+
+  it('traps keyboard focus, closes on Escape, and restores the invoking focus', async () => {
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Open settings';
+    document.body.append(trigger);
+    trigger.focus();
+    const close = vi.fn();
+
+    const { unmount } = render(
+      <SettingsSheet
+        backend={backend()}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={close}
+      />,
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
+    );
+    focusable.at(-1)!.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(focusable[0]);
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(close).toHaveBeenCalledOnce();
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+});

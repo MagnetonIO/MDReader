@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
   disk: new Map<string, { content: string; hash: string }>(),
   saveCalls: [] as { path: string; content: string; expectedHash: string; force: boolean }[],
   fsChanged: null as null | ((change: { path: string; kind: string; generation: number }) => void),
+  watchError: null as null | ((error: { message: string; generation: number }) => void),
+  diagnosticEvents: [] as unknown[],
   onClose: null as null | ((event: { preventDefault: () => void }) => void | Promise<void>),
   // --- FORCE-CLOSE PRIMITIVE -------------------------------------------------
   // The guard force-closes with destroy() (NOT close()), so destroy() is what
@@ -57,7 +59,14 @@ const h = vi.hoisted(() => ({
   drain: vi.fn((): Promise<void> => (h.drainGate ? h.drainGate.promise : Promise.resolve())),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
+  listGate: null as null | { promise: Promise<void>; resolve: () => void },
   seq: 0,
+  pickedPath: '/ws',
+  watch: vi.fn(async (root: string) => ({ root, generation: 1 })),
+  libraryWatch: vi.fn(async (sourceId: string) => ({
+    root: sourceId === 'a'.repeat(64) ? '/ws' : '/ws-b',
+    generation: sourceId === 'a'.repeat(64) ? 1 : 2,
+  })),
 }));
 
 vi.mock('../platform/fs.js', async (importOriginal) => {
@@ -86,14 +95,96 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
       h.fsChanged = handler;
       return () => {};
     }),
-    onWatchError: vi.fn(async () => () => {}),
-    watchWorkspace: vi.fn(async (root: string) => ({ root, generation: 1 })),
+    onWatchError: vi.fn(
+      async (handler: (error: { message: string; generation: number }) => void) => {
+        h.watchError = handler;
+        return () => {};
+      },
+    ),
+    watchWorkspace: h.watch,
     setWorkspace: vi.fn(async (root: string) => root),
-    listWorkspaceFiles: vi.fn(async () => ({ files: [], fromIndex: true })),
+    listWorkspaceFiles: vi.fn(async () => {
+      if (h.listGate) await h.listGate.promise;
+      return { files: [], fromIndex: true };
+    }),
     startImport: vi.fn(async () => ({ phase: 'done', filesDone: 0, filesTotal: 0, chunks: 0, error: null })),
     pickWorkspaceFolder: vi.fn(async () => '/ws'),
     resolveWikilink: vi.fn(async () => ({ status: 'unresolved' as const })),
     makeSearchAdapter: vi.fn(() => ({ search: vi.fn(async () => []), related: vi.fn(async () => []) })),
+  };
+});
+
+vi.mock('../platform/settings.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform/settings.js')>();
+  const source = (path: string, active: boolean) => ({
+    id: (path === '/ws' ? 'a' : 'b').repeat(64),
+    name: path === '/ws' ? 'Workspace' : 'Second workspace',
+    path,
+    state: { kind: 'available' as const },
+    index_state: 'present' as const,
+    active,
+    restore_candidate: active,
+  });
+  const listSources = vi.fn(async () => ({
+    version: 1,
+    sources: [source('/ws', true), source('/ws-b', false)],
+  }));
+  const pickAndAddSource = vi.fn(async () => ({
+    source: source(h.pickedPath, h.pickedPath === '/ws'),
+    added: true,
+  }));
+  const markActive = vi.fn(async () => ({
+    version: 1,
+    sources: [source('/ws', h.pickedPath === '/ws'), source('/ws-b', h.pickedPath === '/ws-b')],
+  }));
+  const settingsBackend = {
+    listSources,
+    pickAndAddSource,
+    reconcileRestore: vi.fn(async () => null),
+    markActive,
+    forgetSource: vi.fn(async () => ({ version: 1, sources: [] })),
+    diagnosticsInfo: vi.fn(async () => ({
+      level: 'standard' as const,
+      directory: '/local/logs',
+      max_file_bytes: 256 * 1024,
+      retained_files: 3,
+      max_export_bytes: 512 * 1024,
+    })),
+    setDiagnosticLevel: vi.fn(async (level: 'errors' | 'standard' | 'verbose') => ({
+      level,
+      directory: '/local/logs',
+      max_file_bytes: 256 * 1024,
+      retained_files: 3,
+      max_export_bytes: 512 * 1024,
+    })),
+    recordDiagnosticEvent: vi.fn(async () => {}),
+    revealDiagnostics: vi.fn(async () => {}),
+    exportDiagnostics: vi.fn(async () => ({
+      status: 'cancelled' as const,
+      path: null,
+      bytes_written: 0,
+    })),
+    clearDiagnostics: vi.fn(async () => ({
+      level: 'standard' as const,
+      directory: '/local/logs',
+      max_file_bytes: 256 * 1024,
+      retained_files: 3,
+      max_export_bytes: 512 * 1024,
+    })),
+  };
+  return {
+    ...actual,
+    settingsBackend,
+    pickAndAddLibrarySource: pickAndAddSource,
+    watchLibrarySource: h.libraryWatch,
+    grantLibrarySource: vi.fn(async (sourceId: string) =>
+      sourceId === 'a'.repeat(64) ? '/ws' : '/ws-b',
+    ),
+    markLibrarySourceActive: markActive,
+    reconcileLibraryRestore: settingsBackend.reconcileRestore,
+    recordDiagnosticEventNonBlocking: vi.fn((event: unknown) => {
+      h.diagnosticEvents.push(event);
+    }),
   };
 });
 
@@ -172,11 +263,15 @@ beforeEach(() => {
   h.disk.clear();
   h.saveCalls.length = 0;
   h.fsChanged = null;
+  h.watchError = null;
+  h.diagnosticEvents.length = 0;
   h.onClose = null;
   h.gate = null;
+  h.listGate = null;
   h.closed = false;
   h.drainGate = null;
   h.seq = 0;
+  h.pickedPath = '/ws';
   vi.clearAllMocks();
 });
 
@@ -211,6 +306,46 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
     await act(async () => {});
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('Updated')).toBeNull();
+  });
+});
+
+describe('library source identity follows the committed backend epoch', () => {
+  it('attributes a new watcher failure to the new source while its listing is still pending', async () => {
+    render(<App />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    });
+    await waitFor(() =>
+      expect(h.diagnosticEvents).toContainEqual({
+        kind: 'workspace',
+        source_id: 'a'.repeat(64),
+        active: true,
+      }),
+    );
+
+    h.diagnosticEvents.length = 0;
+    h.pickedPath = '/ws-b';
+    h.listGate = deferred();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await screen.findByText('Second workspace');
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-b'));
+
+    act(() => {
+      h.watchError?.({ message: 'watch failed', generation: 2 });
+    });
+    expect(h.diagnosticEvents.at(-1)).toEqual({
+      kind: 'watcher',
+      source_id: 'b'.repeat(64),
+      state: 'error',
+      error: 'watcher-unavailable',
+    });
+
+    await act(async () => {
+      h.listGate!.resolve();
+      await Promise.resolve();
+    });
   });
 });
 
@@ -273,6 +408,23 @@ describe('memory: navigating away from a clean doc evicts its buffer (real wirin
 });
 
 describe('unsaved-changes guard is transactional (close / quit)', () => {
+  it('routes a Settings library activation through the same unsaved-switch guard', async () => {
+    await openDirtyDoc();
+    h.watch.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await screen.findByText('Second workspace');
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
+
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    expect(h.watch).not.toHaveBeenCalledWith('/ws-b');
+    expect(useSourcesStore.getState().root).toBe('/ws');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await waitFor(() => expect(h.libraryWatch).toHaveBeenCalledWith('b'.repeat(64)));
+    expect(useSourcesStore.getState().root).toBe('/ws-b');
+  });
+
   it('closing a dirty tab prompts; Discard drops the buffer and closes', async () => {
     const tabId = await openDirtyDoc();
     modKeyDown('w');

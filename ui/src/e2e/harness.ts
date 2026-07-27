@@ -63,6 +63,40 @@ const DISK_VERSION: Record<string, number> = {};
  */
 const SENT: { cmd: string; args: unknown }[] = [];
 
+const MOCK_LIBRARY_ID = '7'.repeat(64);
+let mockLibraryAdded = false;
+let mockLibraryActive = false;
+let mockDiagnosticLevel: 'errors' | 'standard' | 'verbose' = 'standard';
+
+function mockLibrarySource() {
+  return {
+    id: MOCK_LIBRARY_ID,
+    name: 'ws',
+    path: '/mock/ws',
+    state: { kind: 'available' },
+    index_state: mockLibraryActive && !MODEL_UNAVAILABLE ? 'present' : 'not-created',
+    active: mockLibraryActive,
+    restore_candidate: mockLibraryActive,
+  };
+}
+
+function mockLibrarySnapshot() {
+  return {
+    version: 1,
+    sources: mockLibraryAdded ? [mockLibrarySource()] : [],
+  };
+}
+
+function mockDiagnosticInfo() {
+  return {
+    level: mockDiagnosticLevel,
+    directory: '/Users/reader/Library/Logs/MDReader',
+    max_file_bytes: 256 * 1024,
+    retained_files: 3,
+    max_export_bytes: 512 * 1024,
+  };
+}
+
 /**
  * Whether this run stands in for a shipping app whose embedding model cannot be
  * loaded (no cached weights, no network). Armed from the page URL *before* the
@@ -610,6 +644,59 @@ export function installTauriMocks(): void {
   mockIPC((cmd, args) => {
     SENT.push({ cmd, args });
     switch (cmd) {
+      case 'list_library_sources':
+        return mockLibrarySnapshot();
+      case 'pick_and_add_library_source': {
+        const added = !mockLibraryAdded;
+        mockLibraryAdded = true;
+        return { source: mockLibrarySource(), added };
+      }
+      case 'reconcile_library_restore': {
+        const sessionRoot = (args as { sessionRoot: string | null }).sessionRoot;
+        return mockLibraryAdded && sessionRoot === '/mock/ws' ? mockLibrarySource() : null;
+      }
+      case 'watch_library_source':
+        if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
+          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+        }
+        return { root: '/mock/ws', generation: 1 };
+      case 'grant_library_source':
+        if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
+          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+        }
+        return '/mock/ws';
+      case 'mark_library_source_active': {
+        if ((args as { sourceId: string }).sourceId !== MOCK_LIBRARY_ID) {
+          throw { kind: 'source-not-found', source_id: (args as { sourceId: string }).sourceId };
+        }
+        mockLibraryActive = true;
+        return mockLibrarySnapshot();
+      }
+      case 'forget_library_source':
+        if (mockLibraryActive) throw { kind: 'active-source', source_id: MOCK_LIBRARY_ID };
+        mockLibraryAdded = false;
+        return mockLibrarySnapshot();
+      case 'diagnostics_info':
+        return mockDiagnosticInfo();
+      case 'set_diagnostics_level':
+        mockDiagnosticLevel = (args as {
+          level: 'errors' | 'standard' | 'verbose';
+        }).level;
+        return mockDiagnosticInfo();
+      case 'record_diagnostic_event':
+      case 'reveal_diagnostics':
+        return null;
+      case 'export_diagnostics':
+        return {
+          status: 'exported',
+          path: '/Users/reader/Desktop/mdreader-diagnostics.txt',
+          bytes_written: 2048,
+        };
+      case 'clear_diagnostics':
+        if (!(args as { confirmed: boolean }).confirmed) {
+          throw { kind: 'confirmation-required' };
+        }
+        return mockDiagnosticInfo();
       case 'pick_workspace_folder':
         return '/mock/ws';
       case 'set_workspace':

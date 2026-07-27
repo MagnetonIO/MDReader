@@ -33,6 +33,10 @@
  *  3. `/v1` has no counterpart at all for the P7 overlay commands, for wikilink
  *     resolution, or for writing a file. Those FAIL, loudly (see
  *     {@link unsupported}) — they are never quietly answered from a fixture.
+ *     Shell-only library admission below is a narrow transport scaffold: its
+ *     root and rows are still learned from the real engine, and no engine answer
+ *     is fabricated. Native persistence/grant serialization remains the native
+ *     harness's acceptance bar.
  *
  * So: this proves the UI renders REAL engine answers. It does not prove the
  * Rust Tauri command layer's own serialization — that is the native leg's job
@@ -244,6 +248,9 @@ interface Workspace {
 }
 
 let workspacePromise: Promise<Workspace> | null = null;
+let realLibraryAdded = false;
+let realLibraryActive = false;
+let realDiagnosticLevel: 'errors' | 'standard' | 'verbose' = 'standard';
 
 async function workspace(): Promise<Workspace> {
   workspacePromise ??= (async () => {
@@ -291,6 +298,30 @@ function basename(path: string): string {
 function dirname(path: string): string {
   const cut = path.lastIndexOf('/');
   return cut <= 0 ? path : path.slice(0, cut);
+}
+
+async function realLibrarySource() {
+  const { root } = await workspace();
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(root));
+  const id = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(
+    '',
+  );
+  return {
+    id,
+    name: basename(root),
+    path: root,
+    state: { kind: 'available' },
+    index_state: 'present',
+    active: realLibraryActive,
+    restore_candidate: realLibraryActive,
+  };
+}
+
+async function realLibrarySnapshot() {
+  return {
+    version: 1,
+    sources: realLibraryAdded ? [await realLibrarySource()] : [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +435,94 @@ function unsupported(cmd: string): never {
  */
 export async function answerFromRealEngine(cmd: string, args: unknown): Promise<unknown> {
   switch (cmd) {
+    case 'list_library_sources':
+      return realLibrarySnapshot();
+
+    case 'pick_and_add_library_source': {
+      const added = !realLibraryAdded;
+      realLibraryAdded = true;
+      return { source: await realLibrarySource(), added };
+    }
+
+    case 'reconcile_library_restore': {
+      const source = await realLibrarySource();
+      return realLibraryAdded && (args as { sessionRoot: string | null }).sessionRoot === source.path
+        ? source
+        : null;
+    }
+
+    case 'watch_library_source': {
+      const source = await realLibrarySource();
+      if ((args as { sourceId: string }).sourceId !== source.id) {
+        return fail('the shell attempted to watch a library ID that was not derived from the real root');
+      }
+      return { root: source.path, generation: 1 };
+    }
+
+    case 'grant_library_source': {
+      const source = await realLibrarySource();
+      if ((args as { sourceId: string }).sourceId !== source.id) {
+        return fail('the shell attempted to grant a library ID that was not derived from the real root');
+      }
+      return source.path;
+    }
+
+    case 'mark_library_source_active': {
+      const source = await realLibrarySource();
+      if ((args as { sourceId: string }).sourceId !== source.id) {
+        return fail('the shell attempted to activate a library ID that was not derived from the real root');
+      }
+      realLibraryActive = true;
+      return realLibrarySnapshot();
+    }
+
+    case 'forget_library_source':
+      if (realLibraryActive) {
+        throw { kind: 'active-source', source_id: (await realLibrarySource()).id };
+      }
+      realLibraryAdded = false;
+      return realLibrarySnapshot();
+
+    case 'record_diagnostic_event':
+    case 'reveal_diagnostics':
+      return null;
+
+    case 'diagnostics_info':
+      return {
+        level: realDiagnosticLevel,
+        directory: 'browser-harness://local-diagnostics',
+        max_file_bytes: 256 * 1024,
+        retained_files: 3,
+        max_export_bytes: 512 * 1024,
+      };
+
+    case 'set_diagnostics_level':
+      realDiagnosticLevel = (args as {
+        level: 'errors' | 'standard' | 'verbose';
+      }).level;
+      return {
+        level: realDiagnosticLevel,
+        directory: 'browser-harness://local-diagnostics',
+        max_file_bytes: 256 * 1024,
+        retained_files: 3,
+        max_export_bytes: 512 * 1024,
+      };
+
+    case 'export_diagnostics':
+      return { status: 'cancelled', path: null, bytes_written: 0 };
+
+    case 'clear_diagnostics':
+      if (!(args as { confirmed: boolean }).confirmed) {
+        throw { kind: 'confirmation-required' };
+      }
+      return {
+        level: realDiagnosticLevel,
+        directory: 'browser-harness://local-diagnostics',
+        max_file_bytes: 256 * 1024,
+        retained_files: 3,
+        max_export_bytes: 512 * 1024,
+      };
+
     case 'pick_workspace_folder':
       return (await workspace()).root;
 

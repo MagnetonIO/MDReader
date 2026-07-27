@@ -15,7 +15,6 @@ import {
   onFsChanged,
   onWatchError,
   makeSearchAdapter,
-  pickWorkspaceFolder,
   readDoc,
   saveDoc,
   setWorkspace,
@@ -42,6 +41,15 @@ import type { DocRef, ScrollPos } from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
+import {
+  grantLibrarySource,
+  markLibrarySourceActive,
+  pickAndAddLibrarySource,
+  reconcileLibraryRestore,
+  recordDiagnosticEventNonBlocking,
+  watchLibrarySource,
+  type LibrarySourceDto,
+} from '../platform/settings.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
@@ -54,6 +62,7 @@ import type { JumpTarget } from './ReaderPane.js';
 import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
+import { SettingsSheet } from './SettingsSheet.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
@@ -114,6 +123,7 @@ export function AppShell() {
   // component, two modes — the P4 unification).
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -122,7 +132,7 @@ export function AppShell() {
   const [closeGuard, setCloseGuard] = useState<
     | { kind: 'tab'; tabId: string }
     | { kind: 'quit' }
-    | { kind: 'switch'; folder: string }
+    | { kind: 'switch'; folder: string; sourceId?: string }
     | null
   >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
@@ -150,7 +160,7 @@ export function AppShell() {
   // can reach the latest flusher without a declaration-order dependency.
   const flushSessionRef = useRef<() => void>(() => {});
   // Late-bound so `proceedAfterGuard` (declared before `commitSwitch`) can reach it.
-  const commitSwitchRef = useRef<(folder: string) => Promise<boolean>>(() =>
+  const commitSwitchRef = useRef<(folder: string, sourceId?: string) => Promise<boolean>>(() =>
     Promise.resolve(false),
   );
   // Latched once the window is committing to close, so the force-close runs at
@@ -171,6 +181,10 @@ export function AppShell() {
   // under; we discard mismatches so a previous watcher's still-draining events
   // can't drive — or fail — the new workspace. `-1` = no watcher yet.
   const watcherGenRef = useRef(-1);
+  // Backend library identity for the CURRENT committed root. It is assigned only
+  // after the existing watch/grant transaction succeeds; diagnostics never mint
+  // or substitute filesystem authority.
+  const activeSourceIdRef = useRef<string | null>(null);
   // Generation-aware guard for the `loading` flag: a stale listing can't clear a
   // newer open's loading, and the newest open's failure always clears it.
   const loadingGateRef = useRef(new LoadingGate());
@@ -245,21 +259,54 @@ export function AppShell() {
     if (!isTauri() || openEpochRef.current !== epoch) return;
     const sources = useSourcesStore.getState();
     sources.setImport({ phase: 'importing', filesDone: 0, filesTotal: 0, chunks: 0, error: null });
+    const recordIndex = (state: {
+      phase: 'idle' | 'loading' | 'importing' | 'reembedding' | 'done' | 'model-unavailable' | 'error';
+      filesDone: number;
+      filesTotal: number;
+      chunks: number;
+    }) => {
+      const sourceId = activeSourceIdRef.current;
+      if (!sourceId) return;
+      recordDiagnosticEventNonBlocking({
+        kind: 'index',
+        source_id: sourceId,
+        phase: state.phase === 'idle' ? 'importing' : state.phase,
+        files_done: state.filesDone,
+        files_total: state.filesTotal,
+        chunks: state.chunks,
+        error:
+          state.phase === 'error' || state.phase === 'model-unavailable'
+            ? 'index-unavailable'
+            : null,
+      });
+    };
+    recordIndex({
+      phase: 'importing',
+      filesDone: 0,
+      filesTotal: 0,
+      chunks: 0,
+    });
     try {
       const final = await startImport(folder, (progress) => {
-        if (openEpochRef.current === epoch) sources.setImport(progress);
+        if (openEpochRef.current === epoch) {
+          sources.setImport(progress);
+          recordIndex(progress);
+        }
       });
       if (openEpochRef.current !== epoch) return;
       sources.setImport(final);
+      recordIndex(final);
     } catch (cause) {
       if (openEpochRef.current !== epoch) return;
-      sources.setImport({
+      const failed = {
         phase: 'error',
         filesDone: 0,
         filesTotal: 0,
         chunks: 0,
         error: cause instanceof Error ? cause.message : String(cause),
-      });
+      } as const;
+      sources.setImport(failed);
+      recordIndex(failed);
     }
   }, []);
 
@@ -299,7 +346,7 @@ export function AppShell() {
   // workspace *switch* is the caller's concern (see `switchWorkspace`), so
   // session restore reuses this without disturbing the session it just hydrated.
   const openRoot = useCallback(
-    async (folder: string): Promise<boolean> => {
+    async (folder: string, sourceId?: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
       // This open supersedes any prior in-flight open — INCLUDING a re-open of the
       // SAME root (e.g. a session-restore open racing a user pick): bump the
@@ -321,7 +368,9 @@ export function AppShell() {
         await listInto(folder, epoch);
         // A newer open superseded this one during listInto → report NOT-current so
         // its (stale) success can't authorize retiring the newer workspace's tabs.
-        return openEpochRef.current === epoch;
+        if (openEpochRef.current !== epoch) return false;
+        activeSourceIdRef.current = sourceId ?? null;
+        return true;
       }
 
       let grant: { root: string; generation: number };
@@ -329,7 +378,12 @@ export function AppShell() {
         // The ONE atomic switch: arms the watcher, adopts `folder` as the grant
         // (advancing the epoch), and returns the canonical root + the generation
         // the watcher was armed under — no separate set_workspace to sequence.
-        grant = await watchWorkspace(folder);
+        // A registry member is activated by opaque source ID, letting the
+        // backend carry its native PathBuf straight into the watcher/epoch
+        // transaction. `folder` remains display text only.
+        grant = sourceId
+          ? await watchLibrarySource(sourceId)
+          : await watchWorkspace(folder);
       } catch {
         if (isSwitch) {
           // A real switch that could not arm: stay entirely on the old workspace.
@@ -349,15 +403,32 @@ export function AppShell() {
           return false;
         }
         // First open / same-root reopen: grant independently, read degraded.
-        let g = folder;
+        let g: string;
         try {
-          g = await setWorkspace(folder);
+          g = sourceId
+            ? await grantLibrarySource(sourceId)
+            : await setWorkspace(folder);
         } catch {
-          /* non-Tauri edge — keep the raw path */
+          // A registry member that can no longer be resolved must remain closed;
+          // never turn its lossy DTO path into an independent grant.
+          if (sourceId) {
+            loadingGateRef.current.fail(epoch, loadingSink);
+            if (openEpochRef.current === epoch) {
+              toast('Could not open this library source');
+            }
+            return false;
+          }
+          // Legacy/raw first-open edge: retain the historical best-effort display
+          // path in non-library callers.
+          g = folder;
         }
         // A newer open superseded this one during the await → abandon its store
         // mutations (the newer open owns the workspace now).
         if (openEpochRef.current !== epoch) return false;
+        // The backend grant is committed now. Publish its identity before any
+        // awaited listing so a runtime error from this source cannot be
+        // attributed to the previous source while the new listing is pending.
+        activeSourceIdRef.current = sourceId ?? null;
         sources.setRoot(g);
         sources.setWatcher('error');
         sources.setImport(null); // fresh workspace: no import belongs to it yet
@@ -374,6 +445,10 @@ export function AppShell() {
       // Watch armed + grant committed atomically; adopt the generation as the
       // reference for filtering this watcher's events.
       watcherGenRef.current = grant.generation;
+      // The new backend epoch is authoritative now. Publish its source identity
+      // before any awaited listing so this watcher's errors and reindex progress
+      // can never inherit the previous source ID.
+      activeSourceIdRef.current = sourceId ?? null;
       sources.setRoot(grant.root);
       sources.setWatcher('watching');
       sources.setImport(null); // fresh workspace: no import belongs to it yet
@@ -392,17 +467,52 @@ export function AppShell() {
   // tab tears it down, so this must run only after any unsaved edits have been
   // resolved — the guard in `switchWorkspace` guarantees that.
   const commitSwitch = useCallback(
-    (folder: string): Promise<boolean> => {
+    async (folder: string, sourceId?: string): Promise<boolean> => {
       const sources = useSourcesStore.getState();
       // `performSwitch` owns the two guarantees (same-root supersede; per-origin
       // retirement against the post-commit root) — see switch-workspace.ts.
-      return performSwitch(folder, {
-        openRoot,
+      const committed = await performSwitch(folder, {
+        openRoot: (target) => openRoot(target, sourceId),
         previousRoot: sources.root,
         currentRoot: () => useSourcesStore.getState().root,
         retireForeign: (root) => useTabsStore.getState().retireForeign(root),
         addRecent: (ref, root) => sources.addRecent(ref, root),
       });
+      if (!committed) return false;
+
+      // Membership never grants access. The source-ID watch/grant transaction
+      // above committed the real backend epoch first; only now may the registry
+      // remember which already-admitted source should restore next launch.
+      if (sourceId) {
+        try {
+          await markLibrarySourceActive(sourceId);
+        } catch {
+          if (useSourcesStore.getState().root === folder) {
+            toast('Workspace opened, but its library restore preference could not be saved');
+          }
+          return useSourcesStore.getState().root === folder;
+        }
+        // A newer switch may have committed while the registry write was in
+        // flight. Do not attribute diagnostics or the active source identity to
+        // this stale continuation.
+        if (useSourcesStore.getState().root !== folder) return false;
+        activeSourceIdRef.current = sourceId;
+        recordDiagnosticEventNonBlocking({
+          kind: 'workspace',
+          source_id: sourceId,
+          active: true,
+        });
+        recordDiagnosticEventNonBlocking({
+          kind: 'watcher',
+          source_id: sourceId,
+          state: useSourcesStore.getState().watcher === 'watching' ? 'watching' : 'error',
+          error:
+            useSourcesStore.getState().watcher === 'watching' ? null : 'watcher-unavailable',
+        });
+      } else {
+        activeSourceIdRef.current = null;
+      }
+      return true;
     },
     [openRoot],
   );
@@ -414,28 +524,28 @@ export function AppShell() {
   // (Save-all / Discard / Cancel) and let it commit the switch. A clean workspace
   // (or a same-root supersede) switches immediately.
   const switchWorkspace = useCallback(
-    (folder: string): Promise<boolean> => {
+    (folder: string, sourceId?: string): Promise<boolean> => {
       const currentRoot = useSourcesStore.getState().root;
       const isRealSwitch = currentRoot !== null && currentRoot !== folder;
       if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
-        setCloseGuard({ kind: 'switch', folder });
+        setCloseGuard({ kind: 'switch', folder, sourceId });
         return Promise.resolve(false);
       }
-      return commitSwitch(folder);
+      return commitSwitch(folder, sourceId);
     },
     [commitSwitch],
   );
 
   const onPickFolder = useCallback(async () => {
-    let picked: string | null;
+    let picked: { source: LibrarySourceDto | null };
     try {
-      picked = await pickWorkspaceFolder();
+      picked = await pickAndAddLibrarySource();
     } catch {
-      toast('Could not open the folder picker');
+      toast('Could not add this folder to the library');
       return;
     }
-    if (!picked) return;
-    await switchWorkspace(picked);
+    if (!picked.source) return;
+    await switchWorkspace(picked.source.path, picked.source.id);
   }, [switchWorkspace]);
 
   // Re-run the import for the current workspace. When the failure was the model
@@ -819,10 +929,15 @@ export function AppShell() {
   // chose to proceed (Discard, or Save that landed genuinely clean without a
   // cancel racing in).
   const proceedAfterGuard = useCallback(
-    (guard: { kind: 'tab'; tabId: string } | { kind: 'quit' } | { kind: 'switch'; folder: string }) => {
+    (
+      guard:
+        | { kind: 'tab'; tabId: string }
+        | { kind: 'quit' }
+        | { kind: 'switch'; folder: string; sourceId?: string },
+    ) => {
       if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
       else if (guard.kind === 'quit') void performQuit();
-      else void commitSwitchRef.current(guard.folder);
+      else void commitSwitchRef.current(guard.folder, guard.sourceId);
     },
     [closeTabAndBuffer, performQuit],
   );
@@ -1027,6 +1142,14 @@ export function AppShell() {
         run: () => useSettingsStore.getState().toggleFocusMode(),
       },
       {
+        id: 'settings',
+        keys: 'Mod+,',
+        description: 'Settings',
+        group: 'View',
+        allowInInput: true,
+        run: () => setSettingsOpen(true),
+      },
+      {
         id: 'shortcuts',
         keys: 'Mod+/',
         description: 'Keyboard shortcuts',
@@ -1065,6 +1188,11 @@ export function AppShell() {
           event.preventDefault();
           return;
         }
+        if (settingsOpen) {
+          setSettingsOpen(false);
+          event.preventDefault();
+          return;
+        }
         // The semantic sheets dismiss in the same one-at-a-time order as the
         // rest of the overlay stack, ahead of leaving focus mode.
         if (lensSheetOpen || constraintsOpen || explainOpen) {
@@ -1084,6 +1212,7 @@ export function AppShell() {
         isEditable(document.activeElement) ||
         paletteOpen ||
         sheetOpen ||
+        settingsOpen ||
         lensSheetOpen ||
         constraintsOpen ||
         explainOpen;
@@ -1098,7 +1227,15 @@ export function AppShell() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [registry, paletteOpen, sheetOpen, lensSheetOpen, constraintsOpen, explainOpen]);
+  }, [
+    registry,
+    paletteOpen,
+    sheetOpen,
+    settingsOpen,
+    lensSheetOpen,
+    constraintsOpen,
+    explainOpen,
+  ]);
 
   // --- startup: restore session + settings ------------------------------
   useEffect(() => {
@@ -1109,15 +1246,31 @@ export function AppShell() {
       if (Object.keys(settings).length > 0) useSettingsStore.getState().hydrate(settings);
       if (session) {
         useTabsStore.getState().hydrate(session.tabs, session.activeTabId);
-        useSourcesStore.getState().hydrate({ root: session.root, recent: session.recent });
-        if (session.root) await openRoot(session.root);
+        // A serialized path is history, not a filesystem grant. Keep its Recent
+        // metadata, but leave the live root empty until backend-owned membership
+        // confirms this exact source still exists and is available.
+        useSourcesStore.getState().hydrate({ root: null, recent: session.recent });
+        if (session.root && isTauri()) {
+          try {
+            const member = await reconcileLibraryRestore(session.root);
+            if (active && member) {
+              // The registry returns its current canonical path. Route that member
+              // through the SAME watch/epoch transaction as an interactive switch,
+              // then mark it active only after the grant commits.
+              await commitSwitch(member.path, member.id);
+            }
+          } catch {
+            if (active) toast('The saved library could not be reconciled; no folder was opened');
+          }
+        }
       }
+      if (isTauri()) recordDiagnosticEventNonBlocking({ kind: 'application-started' });
       setHydrated(true);
     })();
     return () => {
       active = false;
     };
-  }, [openRoot]);
+  }, [commitSwitch]);
 
   // --- theme application ------------------------------------------------
   useEffect(() => {
@@ -1383,6 +1536,15 @@ export function AppShell() {
       // An OLD watcher's error must not mark the CURRENT watcher failed.
       if (error.generation !== watcherGenRef.current) return;
       useSourcesStore.getState().setWatcher('error');
+      const sourceId = activeSourceIdRef.current;
+      if (sourceId) {
+        recordDiagnosticEventNonBlocking({
+          kind: 'watcher',
+          source_id: sourceId,
+          state: 'error',
+          error: 'watcher-unavailable',
+        });
+      }
     })
       .then((fn) => {
         unlisten = fn;
@@ -1449,6 +1611,7 @@ export function AppShell() {
         onDecreaseText={() => useSettingsStore.getState().decreaseTextSize()}
         onIncreaseText={() => useSettingsStore.getState().increaseTextSize()}
         onToggleFocus={() => useSettingsStore.getState().toggleFocusMode()}
+        onShowSettings={() => setSettingsOpen(true)}
         onShowShortcuts={() => setSheetOpen(true)}
       />
 
@@ -1559,6 +1722,14 @@ export function AppShell() {
       ) : null}
       {sheetOpen ? (
         <ShortcutSheet groups={shortcutGroups} onClose={() => setSheetOpen(false)} />
+      ) : null}
+      {settingsOpen ? (
+        <SettingsSheet
+          watcher={watcher}
+          importState={importState}
+          onActivateSource={(source) => switchWorkspace(source.path, source.id)}
+          onClose={() => setSettingsOpen(false)}
+        />
       ) : null}
       {lensSheetOpen ? (
         <LensSheet

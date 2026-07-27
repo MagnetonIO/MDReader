@@ -1,0 +1,580 @@
+/**
+ * Product Settings: the existing appearance preferences, backend-owned local
+ * library membership, and bounded local diagnostics. The sheet owns presentation
+ * only; switching still travels through AppShell's epoch/unsaved-edit machinery.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import type { ImportState } from '../platform/fs.js';
+import {
+  SettingsCommandError,
+  settingsBackend,
+  type DiagnosticInfo,
+  type DiagnosticLevel,
+  type LibrarySnapshot,
+  type LibrarySourceDto,
+  type SettingsBackend,
+} from '../platform/settings.js';
+import {
+  TEXT_SCALE_STEPS,
+  textScaleFactor,
+  useSettingsStore,
+} from '../stores/settings.js';
+import type { WatcherStatus } from '../stores/sources.js';
+import { CloseIcon, FolderIcon } from './icons.js';
+
+export interface SettingsSheetProps {
+  backend?: SettingsBackend;
+  watcher: WatcherStatus;
+  importState: ImportState | null;
+  onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
+  onClose: () => void;
+}
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function readableBytes(bytes: number): string {
+  if (bytes % 1024 === 0) return `${bytes / 1024} KiB`;
+  return `${bytes.toLocaleString()} bytes`;
+}
+
+function errorMessage(cause: unknown): string {
+  if (!(cause instanceof SettingsCommandError)) {
+    return cause instanceof Error ? cause.message : 'The request could not be completed.';
+  }
+  const detail = cause.detail;
+  if (!detail || typeof detail !== 'object' || !('kind' in detail)) {
+    return 'The request could not be completed.';
+  }
+  switch (detail.kind) {
+    case 'active-source':
+      return 'The active source cannot be forgotten. Activate another source first.';
+    case 'duplicate-root':
+      return 'That folder is already in the library.';
+    case 'corrupt-registry':
+      return 'The saved library could not be read. Nothing was changed.';
+    case 'unsupported-version':
+      return 'This library was written by an unsupported MDReader version.';
+    case 'invalid-root':
+    case 'persist-failed':
+    case 'corrupt-settings':
+    case 'invalid-event':
+    case 'write-failed':
+    case 'export-failed':
+    case 'clear-failed':
+    case 'reveal-failed':
+      return 'message' in detail ? detail.message : 'The request could not be completed.';
+    case 'confirmation-required':
+      return 'Confirm before clearing diagnostic logs.';
+    case 'source-not-found':
+      return 'That source is no longer part of the library.';
+    case 'source-unavailable':
+      return detail.reason;
+    case 'grant-mismatch':
+      return 'The source did not become active, so its restore preference was not changed.';
+    case 'open-failed':
+      return detail.message;
+    default:
+      return 'The request could not be completed.';
+  }
+}
+
+function sourceState(source: LibrarySourceDto): { label: string; unavailable: boolean } {
+  switch (source.state.kind) {
+    case 'available':
+      return { label: 'Available', unavailable: false };
+    case 'missing':
+      return { label: source.state.reason || 'Folder not found', unavailable: true };
+    case 'unreadable':
+      return { label: source.state.reason || 'Folder cannot be read', unavailable: true };
+    case 'not-directory':
+      return { label: source.state.reason || 'No longer a folder', unavailable: true };
+  }
+}
+
+function activityLabel(watcher: WatcherStatus, importState: ImportState | null): string {
+  if (importState?.phase === 'loading') return 'Loading local index model';
+  if (importState?.phase === 'importing') {
+    return `Indexing ${importState.filesDone} of ${importState.filesTotal} files`;
+  }
+  if (importState?.phase === 'reembedding') return 'Refreshing the local semantic index';
+  if (importState?.phase === 'model-unavailable') return 'Readable; semantic index unavailable';
+  if (importState?.phase === 'error') return 'Index needs attention';
+  if (watcher === 'watching') return 'Watching for local changes';
+  if (watcher === 'error') return 'Folder open; live updates unavailable';
+  return 'Idle';
+}
+
+export function SettingsSheet({
+  backend = settingsBackend,
+  watcher,
+  importState,
+  onActivateSource,
+  onClose,
+}: SettingsSheetProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const clearTriggerRef = useRef<HTMLButtonElement>(null);
+  const confirmDialogRef = useRef<HTMLDivElement>(null);
+  const confirmCancelRef = useRef<HTMLButtonElement>(null);
+  const confirmWasOpenRef = useRef(false);
+  const invokingFocusRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const theme = useSettingsStore((state) => state.theme);
+  const readingFont = useSettingsStore((state) => state.readingFont);
+  const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+    return () => invokingFocusRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (confirmClear) {
+      confirmWasOpenRef.current = true;
+      confirmCancelRef.current?.focus();
+    } else if (confirmWasOpenRef.current) {
+      confirmWasOpenRef.current = false;
+      clearTriggerRef.current?.focus();
+    }
+  }, [confirmClear]);
+
+  useEffect(() => {
+    let live = true;
+    void Promise.allSettled([backend.listSources(), backend.diagnosticsInfo()]).then(
+      ([libraryResult, diagnosticsResult]) => {
+        if (!live) return;
+        if (libraryResult.status === 'fulfilled') setLibrary(libraryResult.value);
+        else setFailure(errorMessage(libraryResult.reason));
+        if (diagnosticsResult.status === 'fulfilled') setDiagnostics(diagnosticsResult.value);
+        else setFailure((current) => current ?? errorMessage(diagnosticsResult.reason));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [backend]);
+
+  const run = useCallback(async <T,>(
+    key: string,
+    task: () => Promise<T>,
+    apply: (value: T) => void,
+  ) => {
+    setBusy(key);
+    setFailure(null);
+    setNotice(null);
+    try {
+      apply(await task());
+    } catch (cause) {
+      setFailure(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const activate = useCallback(
+    (source: LibrarySourceDto) => {
+      onClose();
+      void onActivateSource(source);
+    },
+    [onActivateSource, onClose],
+  );
+
+  const addSource = useCallback(() => {
+    void run('add', () => backend.pickAndAddSource(), (picked) => {
+      if (!picked.source) return;
+      activate(picked.source);
+    });
+  }, [activate, backend, run]);
+
+  const forget = useCallback(
+    (source: LibrarySourceDto) => {
+      void run(`forget:${source.id}`, () => backend.forgetSource(source.id), setLibrary);
+    },
+    [backend, run],
+  );
+
+  const setLevel = useCallback(
+    (level: DiagnosticLevel) => {
+      void run(`level:${level}`, () => backend.setDiagnosticLevel(level), setDiagnostics);
+    },
+    [backend, run],
+  );
+
+  const onKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (confirmClear) setConfirmClear(false);
+        else onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusScope = confirmClear ? confirmDialogRef.current : dialogRef.current;
+      const focusable = Array.from(
+        focusScope?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      }
+    },
+    [confirmClear, onClose],
+  );
+
+  return (
+    <div className="settings-backdrop" role="presentation" onMouseDown={onClose}>
+      <div
+        ref={dialogRef}
+        className="settings-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        onKeyDown={onKeyDown}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="settings-sheet__header">
+          <div>
+            <div className="settings-sheet__eyebrow">MDReader</div>
+            <h1 className="settings-sheet__title">Settings</h1>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            className="settings-sheet__close"
+            aria-label="Close Settings"
+            onClick={onClose}
+          >
+            <CloseIcon />
+          </button>
+        </header>
+
+        <div className="settings-sheet__scroll">
+          <section className="settings-section" aria-labelledby="settings-appearance">
+            <div className="settings-section__intro">
+              <div>
+                <div className="settings-section__number">01</div>
+                <h2 id="settings-appearance">Appearance</h2>
+              </div>
+              <p>Shape the reading room. These preferences use the same store as the titlebar.</p>
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field__label">Theme</div>
+              <div className="settings-segment" aria-label="Theme">
+                {(['system', 'light', 'dark'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={theme === value}
+                    onClick={() => useSettingsStore.getState().setTheme(value)}
+                  >
+                    {value[0]!.toUpperCase() + value.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-field">
+              <div>
+                <div className="settings-field__label">Reading face</div>
+                <div className="settings-field__hint">Only document typography changes.</div>
+              </div>
+              <div className="settings-segment" aria-label="Reading font">
+                {(['serif', 'sans'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={readingFont === value}
+                    onClick={() => useSettingsStore.getState().setReadingFont(value)}
+                  >
+                    {value[0]!.toUpperCase() + value.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-field">
+              <div>
+                <div className="settings-field__label">Text scale</div>
+                <div className="settings-field__hint">
+                  {Math.round(textScaleFactor({ textScaleIndex }) * 100)}%
+                </div>
+              </div>
+              <div className="settings-stepper">
+                <button
+                  type="button"
+                  aria-label="Decrease text size"
+                  disabled={textScaleIndex === 0}
+                  onClick={() => useSettingsStore.getState().decreaseTextSize()}
+                >
+                  −
+                </button>
+                <span aria-hidden="true">{TEXT_SCALE_STEPS[textScaleIndex] ?? 1}</span>
+                <button
+                  type="button"
+                  aria-label="Increase text size"
+                  disabled={textScaleIndex === TEXT_SCALE_STEPS.length - 1}
+                  onClick={() => useSettingsStore.getState().increaseTextSize()}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section" aria-labelledby="settings-library">
+            <div className="settings-section__intro">
+              <div>
+                <div className="settings-section__number">02</div>
+                <h2 id="settings-library">Library</h2>
+              </div>
+              <p>
+                Local Markdown folders form one library. The current engine opens one source at a
+                time.
+              </p>
+            </div>
+
+            <div className="settings-callout">
+              <FolderIcon />
+              <div>
+                <strong>Local Markdown folders</strong>
+                <span>Membership is remembered; your files stay where you put them.</span>
+              </div>
+              <button type="button" disabled={busy !== null} onClick={addSource}>
+                {busy === 'add' ? 'Choosing…' : 'Add folder'}
+              </button>
+            </div>
+
+            <div className="library-list" aria-live="polite">
+              {!library && !failure ? <div className="settings-empty">Reading local library…</div> : null}
+              {library?.sources.length === 0 ? (
+                <div className="settings-empty">No folders yet. Add one to begin.</div>
+              ) : null}
+              {library?.sources.map((source) => {
+                const state = sourceState(source);
+                return (
+                  <article
+                    key={source.id}
+                    className={`library-source${source.active ? ' library-source--active' : ''}`}
+                  >
+                    <div className="library-source__rail" aria-hidden="true" />
+                    <div className="library-source__body">
+                      <div className="library-source__heading">
+                        <div>
+                          <h3>{source.name}</h3>
+                          <div className="library-source__path" title={source.path}>
+                            {source.path}
+                          </div>
+                        </div>
+                        {source.active ? <span className="settings-badge">Active</span> : null}
+                      </div>
+                      <div className="library-source__meta">
+                        <span className={state.unavailable ? 'settings-state--warning' : ''}>
+                          {state.label}
+                        </span>
+                        <span>
+                          {source.index_state === 'present' ? 'Index on disk' : 'Index not created'}
+                        </span>
+                        {source.active ? <span>{activityLabel(watcher, importState)}</span> : null}
+                      </div>
+                      <div className="library-source__actions">
+                        {!source.active ? (
+                          <button
+                            type="button"
+                            aria-label={`Activate ${source.name}`}
+                            disabled={state.unavailable || busy !== null}
+                            onClick={() => activate(source)}
+                          >
+                            Activate
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="settings-button--quiet"
+                          aria-label={`Forget ${source.name}`}
+                          disabled={source.active || busy !== null}
+                          title={
+                            source.active
+                              ? 'Activate another source before forgetting this one'
+                              : 'Forgets membership only; files and index remain'
+                          }
+                          onClick={() => forget(source)}
+                        >
+                          {busy === `forget:${source.id}` ? 'Forgetting…' : 'Forget'}
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <p className="settings-footnote">
+              Forget removes this library entry only. It never deletes the folder or its files.
+            </p>
+          </section>
+
+          <section className="settings-section" aria-labelledby="settings-diagnostics">
+            <div className="settings-section__intro">
+              <div>
+                <div className="settings-section__number">03</div>
+                <h2 id="settings-diagnostics">Diagnostics</h2>
+              </div>
+              <p>
+                Coarse lifecycle logs stay on this device. There is no upload or telemetry path.
+              </p>
+            </div>
+
+            <div className="settings-field settings-field--stack">
+              <div>
+                <div className="settings-field__label">Detail</div>
+                <div className="settings-field__hint">Changing detail affects future events.</div>
+              </div>
+              <div className="settings-segment settings-segment--wide" aria-label="Diagnostic detail">
+                {(
+                  [
+                    ['errors', 'Errors only'],
+                    ['standard', 'Standard'],
+                    ['verbose', 'Verbose'],
+                  ] as const
+                ).map(([level, label]) => (
+                  <button
+                    key={level}
+                    type="button"
+                    aria-pressed={diagnostics?.level === level}
+                    disabled={!diagnostics || busy !== null}
+                    onClick={() => setLevel(level)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {diagnostics ? (
+              <div className="diagnostic-card">
+                <div className="diagnostic-card__location">
+                  <span>Stored locally in</span>
+                  <code title={diagnostics.directory}>{diagnostics.directory}</code>
+                </div>
+                <div className="diagnostic-card__bounds">
+                  {readableBytes(diagnostics.max_file_bytes)} per file ·{' '}
+                  {diagnostics.retained_files} files · {readableBytes(diagnostics.max_export_bytes)}{' '}
+                  export
+                </div>
+                <div className="diagnostic-card__actions">
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run('reveal', () => backend.revealDiagnostics(), () =>
+                        setNotice('Opened the local diagnostics folder.'),
+                      )
+                    }
+                  >
+                    Reveal
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      void run('export', () => backend.exportDiagnostics(), (result) => {
+                        setNotice(
+                          result.status === 'exported'
+                            ? `Exported ${readableBytes(result.bytes_written)}.`
+                            : 'Export cancelled.',
+                        );
+                      })
+                    }
+                  >
+                    Export…
+                  </button>
+                  <button
+                    ref={clearTriggerRef}
+                    type="button"
+                    className="settings-button--danger"
+                    disabled={busy !== null}
+                    onClick={() => setConfirmClear(true)}
+                  >
+                    Clear logs
+                  </button>
+                </div>
+              </div>
+            ) : !failure ? (
+              <div className="settings-empty">Reading diagnostics settings…</div>
+            ) : null}
+          </section>
+        </div>
+
+        {failure ? (
+          <div className="settings-sheet__message settings-sheet__message--error" role="alert">
+            {failure}
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="settings-sheet__message" role="status">
+            {notice}
+          </div>
+        ) : null}
+
+        {confirmClear ? (
+          <div className="settings-confirm-scrim" onMouseDown={() => setConfirmClear(false)}>
+            <div
+              ref={confirmDialogRef}
+              className="settings-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="Clear diagnostic logs"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="settings-section__number">Local action</div>
+              <h2>Clear diagnostic logs?</h2>
+              <p>
+                This removes MDReader’s retained log files from this device. It cannot be undone.
+              </p>
+              <div className="settings-confirm__actions">
+                <button
+                  ref={confirmCancelRef}
+                  type="button"
+                  onClick={() => setConfirmClear(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="settings-button--danger"
+                  onClick={() => {
+                    setConfirmClear(false);
+                    void run('clear', () => backend.clearDiagnostics(true), (info) => {
+                      setDiagnostics(info);
+                      setNotice('Diagnostic logs cleared.');
+                    });
+                  }}
+                >
+                  Clear diagnostic logs now
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

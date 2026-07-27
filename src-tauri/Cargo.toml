@@ -35,8 +35,11 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tauri-plugin-store = "2.4.4"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-updater = { version = "2.10.1", optional = true }
+tauri-plugin-opener = "2.5.4"
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
+regex = "1"
+tempfile = "3"
 # Advisory `flock` on the save target so the hash-check → temp-write → rename
 # window is atomic against other cooperating writers (same `fs2` mechanism as the
 # engine's import lease); the compare-then-rename TOCTOU is closed by re-verifying
@@ -71,7 +74,6 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tempfile = "3"
 tauri = { version = "2", features = ["test"] }
 # Index-version rows, so a test can manufacture the reported situation — a
 # workspace whose ACTIVE index was embedded by a different model — through the

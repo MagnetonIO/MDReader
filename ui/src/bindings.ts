@@ -64,6 +64,73 @@ export const commands = {
 	 */
 	watchWorkspace: (root: string) => typedError<WorkspaceGrant, string>(__TAURI_INVOKE("watch_workspace", { root })),
 	/**
+	 *  Return every persisted local Markdown root and its live filesystem/index
+	 *  state. A corrupt registry is a typed error, never an empty library.
+	 */
+	listLibrarySources: () => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("list_library_sources")),
+	/**
+	 *  Open the real native folder picker and persist its canonical native path.
+	 *  Re-selecting an existing member returns that member with `added = false`;
+	 *  core admission still rejects duplicates, while the product can simply
+	 *  activate the already-known source after a repeat pick.
+	 */
+	pickAndAddLibrarySource: () => typedError<PickedLibrarySource, LibraryError>(__TAURI_INVOKE("pick_and_add_library_source")),
+	/**
+	 *  Reconcile a persisted session root against available membership. Returning
+	 *  `None` means the caller must not call `set_workspace`/`watch_workspace`.
+	 */
+	reconcileLibraryRestore: (sessionRoot: string | null) => typedError<{
+	id: string,
+	name: string,
+	path: string,
+	state: LibraryAvailability,
+	index_state: LibraryIndexState,
+	active: boolean,
+	restore_candidate: boolean,
+} | null, LibraryError>(__TAURI_INVOKE("reconcile_library_restore", { sessionRoot })),
+	/**
+	 *  Arm and commit a persisted member by source ID. The registry supplies the
+	 *  native `PathBuf`; the webview's display string never participates in the
+	 *  grant transaction.
+	 */
+	watchLibrarySource: (sourceId: string) => typedError<WorkspaceGrant, LibraryError>(__TAURI_INVOKE("watch_library_source", { sourceId })),
+	/**
+	 *  Degraded first-open path for a known member when its filesystem watcher
+	 *  cannot be armed. It establishes only the epoch grant, still from the same
+	 *  lossless registry path and never from UI text.
+	 */
+	grantLibrarySource: (sourceId: string) => typedError<string, LibraryError>(__TAURI_INVOKE("grant_library_source", { sourceId })),
+	/**
+	 *  Persist the restore candidate only after the existing watch/grant path has
+	 *  committed it as the current epoch. A caller cannot mint authority by setting
+	 *  an arbitrary source ID.
+	 */
+	markLibrarySourceActive: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("mark_library_source_active", { sourceId })),
+	/**
+	 *  Forget membership only. The active epoch is protected, and this command
+	 *  never addresses either the user's source directory or the per-root index.
+	 */
+	forgetLibrarySource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("forget_library_source", { sourceId })),
+	/**  Return the exact local log location and documented bounds. */
+	diagnosticsInfo: () => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("diagnostics_info")),
+	/**  Persist the local verbosity level; no telemetry or upload side effect exists. */
+	setDiagnosticsLevel: (level: DiagnosticLevel) => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("set_diagnostics_level", { level })),
+	/**
+	 *  Append one closed-vocabulary lifecycle event. Product call sites issue this
+	 *  fire-and-forget and deliberately ignore a failure, so logging cannot gate a
+	 *  workspace switch, read, import, save, or close.
+	 */
+	recordDiagnosticEvent: (event: DiagnosticEvent) => typedError<null, DiagnosticError>(__TAURI_INVOKE("record_diagnostic_event", { event })),
+	/**  Open the diagnostics directory using the platform's supported opener API. */
+	revealDiagnostics: () => typedError<null, DiagnosticError>(__TAURI_INVOKE("reveal_diagnostics")),
+	/**  Ask for a local destination and write a redacted, hard-bounded text bundle. */
+	exportDiagnostics: () => typedError<DiagnosticExport, DiagnosticError>(__TAURI_INVOKE("export_diagnostics")),
+	/**
+	 *  Remove only the three named diagnostic log files. The backend repeats the
+	 *  confirmation check so a UI regression cannot clear them silently.
+	 */
+	clearDiagnostics: (confirmed: boolean) => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("clear_diagnostics", { confirmed })),
+	/**
 	 *  List the workspace's markdown files. Once an import has finished the rows come
 	 *  from the engine's index (gitignored files already dropped, so none are dimmed);
 	 *  before then — or if the index is somehow empty — a live filesystem scan fills
@@ -387,6 +454,34 @@ export type ConstraintReport = {
 	violations: ViolationDto[],
 };
 
+export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; message: string } | { kind: "invalid-event"; message: string } | { kind: "write-failed"; message: string } | { kind: "export-failed"; message: string } | { kind: "clear-failed"; message: string } | { kind: "reveal-failed"; message: string };
+
+export type DiagnosticErrorCode = "invalid-source" | "source-missing" | "source-unreadable" | "watcher-unavailable" | "index-unavailable" | "persistence-unavailable";
+
+export type DiagnosticEvent = { kind: "application-started" } | { kind: "workspace"; source_id: string; active: boolean } | { kind: "watcher"; source_id: string; state: DiagnosticWatcherState; error: DiagnosticErrorCode | null } | { kind: "index"; source_id: string; phase: DiagnosticIndexPhase; files_done: number; files_total: number; chunks: number; error: DiagnosticErrorCode | null } | { kind: "error"; code: DiagnosticErrorCode };
+
+export type DiagnosticExport = {
+	status: DiagnosticExportStatus,
+	path: string | null,
+	bytes_written: number,
+};
+
+export type DiagnosticExportStatus = "cancelled" | "exported";
+
+export type DiagnosticIndexPhase = "loading" | "importing" | "reembedding" | "done" | "model-unavailable" | "error";
+
+export type DiagnosticInfo = {
+	level: DiagnosticLevel,
+	directory: string,
+	max_file_bytes: number,
+	retained_files: number,
+	max_export_bytes: number,
+};
+
+export type DiagnosticLevel = "errors" | "standard" | "verbose";
+
+export type DiagnosticWatcherState = "idle" | "watching" | "error";
+
 /**  The bytes of a document plus the provenance a conflict guard needs. */
 export type DocPayload = {
 	/**  UTF-8 file contents (lossily decoded; invalid bytes become U+FFFD). */
@@ -634,6 +729,27 @@ export type InspectedFact = {
 	source_changed_since_review: boolean,
 };
 
+export type LibraryAvailability = { kind: "available" } | { kind: "missing"; reason: string } | { kind: "unreadable"; reason: string } | { kind: "not-directory"; reason: string };
+
+export type LibraryError = { kind: "invalid-root"; message: string } | { kind: "duplicate-root"; source_id: string } | { kind: "source-not-found"; source_id: string } | { kind: "source-unavailable"; source_id: string; reason: string } | { kind: "active-source"; source_id: string } | { kind: "grant-mismatch"; source_id: string } | { kind: "open-failed"; source_id: string; message: string } | { kind: "corrupt-registry"; message: string } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed"; message: string };
+
+export type LibraryIndexState = "present" | "not-created";
+
+export type LibrarySnapshot = {
+	version: number,
+	sources: LibrarySourceDto[],
+};
+
+export type LibrarySourceDto = {
+	id: string,
+	name: string,
+	path: string,
+	state: LibraryAvailability,
+	index_state: LibraryIndexState,
+	active: boolean,
+	restore_candidate: boolean,
+};
+
 /**
  *  Why a workspace listing could not be produced.
  *
@@ -809,6 +925,11 @@ export type MigrationPlanDto = {
 	sigma: SigmaOutcomeDto,
 	/**  Everything the plan is NOT claiming. Render these verbatim. */
 	notes: string[],
+};
+
+export type PickedLibrarySource = {
+	source: LibrarySourceDto | null,
+	added: boolean,
 };
 
 /**  Reply returned by [`ping`]. */

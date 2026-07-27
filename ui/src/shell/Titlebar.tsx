@@ -2,7 +2,7 @@
  * leading edge (inset past the macOS traffic lights) and the reading controls at
  * the trailing edge. Kept airy — this is chrome, not a cockpit. */
 
-import { FocusIcon, PanelLeft, ThemeIcon, TypeIcon } from './icons.js';
+import { FocusIcon, PanelLeft, SettingsIcon, ThemeIcon, TypeIcon } from './icons.js';
 import type { ReadingFont, Theme } from '../stores/settings.js';
 import { UpdateControl } from './UpdateControl.js';
 
@@ -17,6 +17,7 @@ export interface TitlebarProps {
   onDecreaseText: () => void;
   onIncreaseText: () => void;
   onToggleFocus: () => void;
+  onShowSettings: () => void;
   onShowShortcuts: () => void;
 }
 
@@ -32,6 +33,7 @@ export function Titlebar({
   onDecreaseText,
   onIncreaseText,
   onToggleFocus,
+  onShowSettings,
   onShowShortcuts,
 }: TitlebarProps) {
   return (
@@ -82,6 +84,15 @@ export function Titlebar({
         aria-label="Focus mode"
       >
         <FocusIcon width="15" height="15" />
+      </button>
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={onShowSettings}
+        title="Settings (Cmd+,)"
+        aria-label="Settings"
+      >
+        <SettingsIcon width="15" height="15" />
       </button>
       <button
         type="button"

@@ -102,9 +102,7 @@ use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
 use catdb_storage::DocumentRow;
 use mdreader_ingest::{registration_with_proposals, scan_root, ProposalStore, ScanOptions};
 
-use crate::commands::{
-    canonical_dir, mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState,
-};
+use crate::commands::{mtime_millis, resolve_dir, resolve_within, FileEntry, WorkspaceState};
 
 /// Default per-file size ceiling the ingest scan honors (mirrors the engine's
 /// `ImportOptions` default of 2 MiB); the fs-fallback listing uses the same
@@ -712,9 +710,37 @@ impl WikiResolution {
 /// `base/workspaces/<blake3(root)>/catdb.db`. Pure so it is unit-testable and so
 /// the same root always maps to the same file.
 pub(crate) fn db_path_under(base: &Path, canonical_root: &Path) -> PathBuf {
-    let hash = blake3::hash(canonical_root.to_string_lossy().as_bytes())
-        .to_hex()
-        .to_string();
+    // Preserve the historical digest (and therefore every existing index
+    // location) for ordinary UTF-8 roots. Only roots that cannot be represented
+    // losslessly as UTF-8 take the native-unit branch; a domain separator keeps
+    // those identities distinct from every historical text digest.
+    let hash = if let Some(root) = canonical_root.to_str() {
+        blake3::hash(root.as_bytes())
+    } else {
+        let mut hasher = blake3::Hasher::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            hasher.update(b"mdreader-unix-native-root-v1\0");
+            hasher.update(canonical_root.as_os_str().as_bytes());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            hasher.update(b"mdreader-windows-native-root-v1\0");
+            for unit in canonical_root.as_os_str().encode_wide() {
+                hasher.update(&unit.to_le_bytes());
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            hasher.update(b"mdreader-platform-native-root-v1\0");
+            hasher.update(canonical_root.to_string_lossy().as_bytes());
+        }
+        hasher.finalize()
+    }
+    .to_hex()
+    .to_string();
     base.join("workspaces").join(hash).join("catdb.db")
 }
 
@@ -935,11 +961,23 @@ fn publish(
 /// path is a hard error; the engine always imports the epoch's own grant, never
 /// an arbitrary caller-supplied path, so one workspace maps to exactly one index.
 fn validate_import_root(epoch: &Epoch, root: &str) -> Result<(), String> {
-    let candidate = canonical_dir(root)?;
+    let candidate = resolve_request_root(epoch, root)?;
     if !candidate.starts_with(&epoch.root) {
         return Err(format!("path escapes the workspace: {root}"));
     }
     Ok(())
+}
+
+/// Resolve a webview-provided directory under a captured epoch. The exact lossy
+/// display of the already-granted root is an identifier only: map it back to the
+/// epoch's native `PathBuf` rather than treating that display text as fresh
+/// filesystem authority. Subdirectory requests retain the ordinary
+/// canonicalize-and-contain check.
+fn resolve_request_root(epoch: &Epoch, requested: &str) -> Result<PathBuf, String> {
+    if epoch.root.to_string_lossy() == requested {
+        return Ok(epoch.root.clone());
+    }
+    resolve_dir(&epoch.root, Path::new(requested))
 }
 
 /// Best-effort pre-scan for the file total shown while importing. A scan failure
@@ -1114,7 +1152,7 @@ fn list_workspace_files_guarded(
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     // TOCTOU: the reads below run after this containment check (accepted — see
     // the commands module's "TOCTOU" note; local single-user reader).
-    let root_path = resolve_dir(&epoch.root, Path::new(root))?;
+    let root_path = resolve_request_root(&epoch, root)?;
 
     // Serve from the index once THIS epoch's import has finished and its engine is
     // installed (both from the captured epoch, so no stale-engine window). Once
@@ -1480,6 +1518,19 @@ mod tests {
         assert!(!a.starts_with(root));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn distinct_native_roots_that_share_a_lossy_display_keep_distinct_indexes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let base = Path::new("/data");
+        let first = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xff]));
+        let second = PathBuf::from("/").join(OsString::from_vec(vec![b'n', 0xfe]));
+        assert_eq!(first.to_string_lossy(), second.to_string_lossy());
+        assert_ne!(db_path_under(base, &first), db_path_under(base, &second));
+    }
+
     #[test]
     fn normalize_strips_heading_query_and_decodes_spaces() {
         assert_eq!(normalize_wiki_target("Node Storage"), "Node Storage");
@@ -1671,6 +1722,27 @@ mod tests {
 
         // A foreign root is a hard error.
         assert!(validate_import_root(&epoch, foreign.to_str().unwrap()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lossy_display_of_a_native_epoch_root_resolves_back_to_the_epoch_root() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let native = OsString::from_vec(vec![b'n', b'o', b't', b'e', b's', b'-', 0xff]);
+        // Some macOS filesystems reject creating this byte sequence, but an
+        // epoch may originate on any Unix filesystem. This helper performs no
+        // I/O for the exact-root case, so exercise the native identity directly.
+        let native_root = PathBuf::from("/").join(native);
+        let epoch = Epoch::new(native_root.clone(), 1);
+        let display = native_root.to_string_lossy();
+
+        assert_eq!(
+            resolve_request_root(&epoch, &display).unwrap(),
+            native_root,
+            "the display string identifies the already-granted native root; it is never re-canonicalized as authority"
+        );
     }
 
     /// The twelfth-instance guard: a folder the OS refuses to read reports
