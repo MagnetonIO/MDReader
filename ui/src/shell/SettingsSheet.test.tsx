@@ -64,6 +64,63 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
   };
 }
 
+type CloudProvider = 'google-drive' | 'dropbox';
+type CloudConnectionState = 'disconnected' | 'connected' | 'reauthorize';
+
+interface CloudSource {
+  provider: CloudProvider;
+  label: string;
+  connection: CloudConnectionState;
+  enabled: boolean;
+}
+
+interface CloudSnapshot {
+  sources: CloudSource[];
+}
+
+function cloudBackend(
+  initial: CloudSnapshot,
+): SettingsBackend & {
+  listCloudSources: () => Promise<CloudSnapshot>;
+  connectCloudSource: (provider: CloudProvider) => Promise<CloudSnapshot>;
+  setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => Promise<CloudSnapshot>;
+  disconnectCloudSource: (provider: CloudProvider) => Promise<CloudSnapshot>;
+} {
+  let snapshot = initial;
+  return {
+    ...backend(),
+    listCloudSources: async () => snapshot,
+    connectCloudSource: async (provider) => {
+      snapshot = {
+        sources: snapshot.sources.map((source) =>
+          source.provider === provider
+            ? { ...source, connection: 'connected', enabled: true }
+            : source,
+        ),
+      };
+      return snapshot;
+    },
+    setCloudSourceEnabled: async (provider, enabled) => {
+      snapshot = {
+        sources: snapshot.sources.map((source) =>
+          source.provider === provider ? { ...source, enabled } : source,
+        ),
+      };
+      return snapshot;
+    },
+    disconnectCloudSource: async (provider) => {
+      snapshot = {
+        sources: snapshot.sources.map((source) =>
+          source.provider === provider
+            ? { ...source, connection: 'disconnected', enabled: false }
+            : source,
+        ),
+      };
+      return snapshot;
+    },
+  };
+}
+
 beforeEach(() => {
   useSettingsStore.getState().reset();
 });
@@ -106,6 +163,83 @@ describe('Settings sheet', () => {
     await screen.findByText('Research notes');
     expect(api.listSources).toHaveBeenCalledOnce();
     expect(api.diagnosticsInfo).toHaveBeenCalledOnce();
+  });
+
+  it('pauses a connected cloud source without disconnecting its account', async () => {
+    const api = cloudBackend({
+      sources: [
+        {
+          provider: 'google-drive',
+          label: 'Google Drive',
+          connection: 'connected',
+          enabled: true,
+        },
+        {
+          provider: 'dropbox',
+          label: 'Dropbox',
+          connection: 'disconnected',
+          enabled: false,
+        },
+      ],
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const includeDrive = await screen.findByRole('switch', {
+      name: 'Include Google Drive in Library',
+    });
+    expect(includeDrive.getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.click(includeDrive);
+    await screen.findByText('Paused');
+    expect(screen.getByRole('button', { name: 'Disconnect Google Drive' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Google Drive' }));
+    await screen.findByRole('button', { name: 'Connect Google Drive' });
+    expect(
+      screen.queryByRole('switch', { name: 'Include Google Drive in Library' }),
+    ).toBeNull();
+  });
+
+  it('connects Dropbox through the app account flow and includes it in the Library', async () => {
+    const api = cloudBackend({
+      sources: [
+        {
+          provider: 'google-drive',
+          label: 'Google Drive',
+          connection: 'disconnected',
+          enabled: false,
+        },
+        {
+          provider: 'dropbox',
+          label: 'Dropbox',
+          connection: 'disconnected',
+          enabled: false,
+        },
+      ],
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Dropbox' }));
+    const includeDropbox = await screen.findByRole('switch', {
+      name: 'Include Dropbox in Library',
+    });
+    expect(includeDropbox.getAttribute('aria-checked')).toBe('true');
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {

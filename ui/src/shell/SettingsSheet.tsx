@@ -10,6 +10,8 @@ import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
   settingsBackend,
+  type CloudProvider,
+  type CloudSourcesView,
   type DiagnosticInfo,
   type DiagnosticLevel,
   type LibrarySnapshot,
@@ -134,6 +136,7 @@ export function SettingsSheet({
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
+  const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -170,6 +173,35 @@ export function SettingsSheet({
         else setFailure((current) => current ?? errorMessage(diagnosticsResult.reason));
       },
     );
+    return () => {
+      live = false;
+    };
+  }, [backend]);
+
+  const cloudControls =
+    backend.listCloudSources &&
+    backend.connectCloudSource &&
+    backend.setCloudSourceEnabled &&
+    backend.disconnectCloudSource
+      ? {
+          list: backend.listCloudSources,
+          connect: backend.connectCloudSource,
+          setEnabled: backend.setCloudSourceEnabled,
+          disconnect: backend.disconnectCloudSource,
+        }
+      : null;
+
+  useEffect(() => {
+    if (!cloudControls) return;
+    let live = true;
+    void cloudControls
+      .list()
+      .then((snapshot) => {
+        if (live) setCloudSources(snapshot);
+      })
+      .catch((cause: unknown) => {
+        if (live) setFailure(errorMessage(cause));
+      });
     return () => {
       live = false;
     };
@@ -215,6 +247,42 @@ export function SettingsSheet({
       void run(`forget:${source.id}`, () => backend.forgetSource(source.id), setLibrary);
     },
     [backend, onSourceIntent, run],
+  );
+
+  const connectCloud = useCallback(
+    (provider: CloudProvider) => {
+      if (!cloudControls) return;
+      void run(
+        `connect:${provider}`,
+        () => cloudControls.connect(provider),
+        setCloudSources,
+      );
+    },
+    [cloudControls, run],
+  );
+
+  const setCloudEnabled = useCallback(
+    (provider: CloudProvider, enabled: boolean) => {
+      if (!cloudControls) return;
+      void run(
+        `toggle:${provider}`,
+        () => cloudControls.setEnabled(provider, enabled),
+        setCloudSources,
+      );
+    },
+    [cloudControls, run],
+  );
+
+  const disconnectCloud = useCallback(
+    (provider: CloudProvider) => {
+      if (!cloudControls) return;
+      void run(
+        `disconnect:${provider}`,
+        () => cloudControls.disconnect(provider),
+        setCloudSources,
+      );
+    },
+    [cloudControls, run],
   );
 
   const setLevel = useCallback(
@@ -454,6 +522,102 @@ export function SettingsSheet({
               Forget removes the library entry and MDReader’s private index. It never deletes the
               folder or its files.
             </p>
+
+            {cloudControls ? (
+              <div className="cloud-sources">
+                <div className="cloud-sources__heading">
+                  <div>
+                    <h3>Connected accounts</h3>
+                    <p>
+                      Sign in through MDReader’s registered apps. Credentials stay in the
+                      operating system’s secure storage.
+                    </p>
+                  </div>
+                </div>
+                <div className="cloud-sources__list" aria-live="polite">
+                  {!cloudSources && !failure ? (
+                    <div className="settings-empty">Reading connected accounts…</div>
+                  ) : null}
+                  {cloudSources?.sources.map((source) => {
+                    const connected = source.connection !== 'disconnected';
+                    const reconnect = source.connection === 'reauthorize';
+                    return (
+                      <article className="cloud-source" key={source.provider}>
+                        <div className="cloud-source__copy">
+                          <div className="cloud-source__title">
+                            <h4>{source.label}</h4>
+                            {connected ? (
+                              <span className={reconnect ? 'settings-state--warning' : ''}>
+                                {reconnect ? 'Sign in again' : source.enabled ? 'Included' : 'Paused'}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p>
+                            {source.provider === 'google-drive'
+                              ? 'Choose the Drive files or folders that belong in this Library.'
+                              : 'Read Markdown and text files from your Dropbox account.'}
+                          </p>
+                        </div>
+                        <div className="cloud-source__actions">
+                          {connected ? (
+                            <>
+                              {!reconnect ? (
+                                <button
+                                  type="button"
+                                  className="source-switch"
+                                  role="switch"
+                                  aria-label={`Include ${source.label} in Library`}
+                                  aria-checked={source.enabled}
+                                  disabled={busy !== null}
+                                  onClick={() =>
+                                    setCloudEnabled(source.provider, !source.enabled)
+                                  }
+                                >
+                                  <span aria-hidden="true" />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={busy !== null}
+                                  aria-label={`Reconnect ${source.label}`}
+                                  onClick={() => connectCloud(source.provider)}
+                                >
+                                  Reconnect
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="settings-button--quiet"
+                                disabled={busy !== null}
+                                aria-label={`Disconnect ${source.label}`}
+                                onClick={() => disconnectCloud(source.provider)}
+                              >
+                                {busy === `disconnect:${source.provider}`
+                                  ? 'Disconnecting…'
+                                  : 'Disconnect'}
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy !== null}
+                              aria-label={`Connect ${source.label}`}
+                              onClick={() => connectCloud(source.provider)}
+                            >
+                              {busy === `connect:${source.provider}` ? 'Connecting…' : 'Connect'}
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                <p className="settings-footnote">
+                  Pausing keeps the account connected. Disconnecting removes its saved credentials.
+                  Neither action changes files in Drive or Dropbox.
+                </p>
+              </div>
+            ) : null}
           </section>
 
           <section className="settings-section" aria-labelledby="settings-diagnostics">

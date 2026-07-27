@@ -30,6 +30,28 @@ export type {
   PickedLibrarySource,
 };
 
+/** Cloud account families exposed as MDReader Library sources. */
+export type CloudProvider = 'google-drive' | 'dropbox';
+
+/** Renderer-facing connection state; provider credentials never cross IPC. */
+export type CloudConnectionState = 'disconnected' | 'connected' | 'reauthorize';
+
+/**
+ * Settings view of a cloud source. This intentionally omits secret references,
+ * access tokens, refresh tokens, and provider record identifiers.
+ */
+export interface CloudSourceView {
+  provider: CloudProvider;
+  label: string;
+  connection: CloudConnectionState;
+  enabled: boolean;
+}
+
+/** Complete cloud-source state returned after every account operation. */
+export interface CloudSourcesView {
+  sources: CloudSourceView[];
+}
+
 /** Preserve a backend's typed error for UI copy and tests without stringifying it. */
 export class SettingsCommandError<T> extends Error {
   readonly detail: T;
@@ -61,6 +83,18 @@ export interface SettingsBackend {
   revealDiagnostics: () => Promise<void>;
   exportDiagnostics: () => Promise<DiagnosticExport>;
   clearDiagnostics: (confirmed: boolean) => Promise<DiagnosticInfo>;
+  /**
+   * Present only when the native application supplies its registered OAuth
+   * apps and credential-vault commands. Browser/test shells omit the entire
+   * cloud-account surface instead of displaying controls that cannot work.
+   */
+  listCloudSources?: () => Promise<CloudSourcesView>;
+  connectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
+  setCloudSourceEnabled?: (
+    provider: CloudProvider,
+    enabled: boolean,
+  ) => Promise<CloudSourcesView>;
+  disconnectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
