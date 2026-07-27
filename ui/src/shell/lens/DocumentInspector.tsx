@@ -133,27 +133,35 @@ export function DocumentInspector({
         ))}
       </div>
 
-      {loading ? <p className="lens-rail__empty">Reading the document across sources…</p> : null}
-      {error ? <p className="lens-rail__empty">Could not assemble this document — {error}</p> : null}
-      {answer && !loading
-        ? TABS.map((item) => (
-            <div
-              key={item.id}
-              role="tabpanel"
-              id={`${tabsetId}-${item.id}-panel`}
-              aria-labelledby={`${tabsetId}-${item.id}-tab`}
-              className="document-inspector__panel"
-              hidden={tab !== item.id}
-            >
-              {tab === item.id && item.id === 'result' ? <ResultTab answer={answer} /> : null}
-              {tab === item.id && item.id === 'sources' ? <SourcesTab answer={answer} /> : null}
-              {tab === item.id && item.id === 'provenance' ? (
-                <ProvenanceTab answer={answer} />
-              ) : null}
-              {tab === item.id && item.id === 'schema' ? <SchemaTab answer={answer} /> : null}
-            </div>
-          ))
-        : null}
+      {TABS.map((item) => (
+        <div
+          key={item.id}
+          role="tabpanel"
+          id={`${tabsetId}-${item.id}-panel`}
+          aria-labelledby={`${tabsetId}-${item.id}-tab`}
+          className="document-inspector__panel"
+          hidden={tab !== item.id}
+        >
+          {tab === item.id && loading ? (
+            <p className="lens-rail__empty">Reading the document across sources…</p>
+          ) : null}
+          {tab === item.id && error ? (
+            <p className="lens-rail__empty">Could not assemble this document — {error}</p>
+          ) : null}
+          {tab === item.id && answer && !loading && item.id === 'result' ? (
+            <ResultTab answer={answer} />
+          ) : null}
+          {tab === item.id && answer && !loading && item.id === 'sources' ? (
+            <SourcesTab answer={answer} />
+          ) : null}
+          {tab === item.id && answer && !loading && item.id === 'provenance' ? (
+            <ProvenanceTab answer={answer} />
+          ) : null}
+          {tab === item.id && answer && !loading && item.id === 'schema' ? (
+            <SchemaTab answer={answer} />
+          ) : null}
+        </div>
+      ))}
     </section>
   );
 }

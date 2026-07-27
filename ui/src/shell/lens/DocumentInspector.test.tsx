@@ -107,6 +107,17 @@ const answer: FederatedDocument = {
 
 afterEach(cleanup);
 
+function expectEveryTabControlsItsPanel(): void {
+  for (const tab of screen.getAllByRole('tab')) {
+    const panelId = tab.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    const panel = document.getElementById(panelId!);
+    expect(panel, `${tab.textContent} must control a panel in the current DOM`).toBeTruthy();
+    expect(panel!.getAttribute('role')).toBe('tabpanel');
+    expect(panel!.getAttribute('aria-labelledby')).toBe(tab.id);
+  }
+}
+
 it('presents Result, Sources, Provenance, and Schema as one document answer', async () => {
   const query = vi.fn().mockResolvedValue(answer);
   render(
@@ -251,4 +262,34 @@ it('implements the tab and tabpanel relationships plus arrow-key navigation', as
   expect(document.activeElement).toBe(sources);
   expect(sources.getAttribute('aria-selected')).toBe('true');
   expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(sources.id);
+});
+
+it('keeps every tab relationship valid while the document query is loading', () => {
+  render(
+    <DocumentInspector
+      path="/library/notes/a.md"
+      query={vi.fn(() => new Promise<FederatedDocument>(() => {}))}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/library"
+      workspaceGeneration={1}
+    />,
+  );
+
+  expect(screen.getByText('Reading the document across sources…')).toBeTruthy();
+  expectEveryTabControlsItsPanel();
+});
+
+it('keeps every tab relationship valid when the document query fails', async () => {
+  render(
+    <DocumentInspector
+      path="/library/notes/a.md"
+      query={vi.fn().mockRejectedValue(new Error('source unavailable'))}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/library"
+      workspaceGeneration={1}
+    />,
+  );
+
+  expect(await screen.findByText(/source unavailable/)).toBeTruthy();
+  expectEveryTabControlsItsPanel();
 });

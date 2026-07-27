@@ -10,7 +10,9 @@ use catdb_connectors::{
     CancellationToken, DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext,
 };
 use catdb_federation::{Completeness, ExecutionPolicy, Executor, Freshness, Outcome};
-use mdreader_domain::federated::{Federation, ProviderVerdict, SCHEMA as FEDERATED_SCHEMA};
+use mdreader_domain::federated::{
+    document_schema, Federation, ProviderVerdict, SCHEMA as FEDERATED_SCHEMA,
+};
 use serde::Serialize;
 use specta::Type;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -45,6 +47,25 @@ struct ActiveEntry {
     serial: u64,
     request: String,
     cancellation: CancellationToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QueryPublicationError {
+    Cancelled,
+    Retired,
+    Execution(String),
+}
+
+impl std::fmt::Display for QueryPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("federated document query was cancelled"),
+            Self::Retired => {
+                formatter.write_str("federated document query was retired by a newer request")
+            }
+            Self::Execution(error) => formatter.write_str(error),
+        }
+    }
 }
 
 /// Process-wide lifecycle for Semantic Inspector federation work.
@@ -107,17 +128,22 @@ impl FederationRuntime {
         }
     }
 
-    async fn acquire(&self, query: &ActiveQuery) -> Result<OwnedSemaphorePermit, String> {
+    async fn acquire(
+        &self,
+        query: &ActiveQuery,
+    ) -> Result<OwnedSemaphorePermit, QueryPublicationError> {
         let permit = tokio::select! {
             _ = query.cancellation.cancelled() => {
-                return Err("federated document query was cancelled".to_string());
+                return Err(QueryPublicationError::Cancelled);
             }
             permit = Arc::clone(&self.gate).acquire_owned() => {
-                permit.map_err(|_| "federated document query executor is unavailable".to_string())?
+                permit.map_err(|_| QueryPublicationError::Execution(
+                    "federated document query executor is unavailable".to_string()
+                ))?
             }
         };
         if query.cancellation.is_cancelled() {
-            return Err("federated document query was cancelled".to_string());
+            return Err(QueryPublicationError::Cancelled);
         }
         Ok(permit)
     }
@@ -137,16 +163,23 @@ impl FederationRuntime {
         }
     }
 
-    fn finish(&self, query: &ActiveQuery) {
+    fn finish(&self, query: &ActiveQuery) -> Result<(), QueryPublicationError> {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .get(&query.invocation)
-            .is_some_and(|entry| entry.serial == query.serial)
-        {
-            active.remove(&query.invocation);
+        match active.get(&query.invocation) {
+            Some(entry) if entry.serial == query.serial => {
+                active.remove(&query.invocation);
+                if query.cancellation.is_cancelled() {
+                    Err(QueryPublicationError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+            Some(_) => Err(QueryPublicationError::Retired),
+            None if query.cancellation.is_cancelled() => Err(QueryPublicationError::Cancelled),
+            None => Err(QueryPublicationError::Retired),
         }
     }
 
@@ -282,22 +315,45 @@ pub async fn query_federated_document(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
-    let active = runtime.begin(epoch.generation, &invocation, &request);
+    query_federated_document_registered(
+        &state,
+        &runtime,
+        epoch,
+        &path,
+        &invocation,
+        &request,
+        || {},
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn query_federated_document_registered(
+    state: &WorkspaceState,
+    runtime: &FederationRuntime,
+    epoch: Arc<crate::engine::Epoch>,
+    path: &str,
+    invocation: &str,
+    request: &str,
+    before_publication: impl FnOnce(),
+) -> Result<FederatedDocumentResponse, QueryPublicationError> {
+    let active = runtime.begin(epoch.generation, invocation, request);
     let permit = runtime.acquire(&active).await;
     let result = match permit {
-        Ok(_permit) => {
-            query_federated_document_for_epoch(
-                &state,
-                epoch,
-                &path,
-                active.cancellation().clone(),
-                || {},
-            )
-            .await
-        }
+        Ok(_permit) => query_federated_document_for_epoch(
+            state,
+            epoch,
+            path,
+            active.cancellation().clone(),
+            || {},
+            || {},
+        )
+        .await
+        .map_err(QueryPublicationError::Execution),
         Err(error) => Err(error),
     };
-    runtime.finish(&active);
+    before_publication();
+    runtime.finish(&active)?;
     result
 }
 
@@ -333,8 +389,59 @@ async fn query_federated_document_guarded(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
-    query_federated_document_for_epoch(state, epoch, path, CancellationToken::new(), after_query)
-        .await
+    query_federated_document_for_epoch(
+        state,
+        epoch,
+        path,
+        CancellationToken::new(),
+        after_query,
+        || {},
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn query_federated_document_guarded_with_source_observer(
+    state: &WorkspaceState,
+    path: &str,
+    before_sources: impl FnOnce() + Send + 'static,
+) -> Result<FederatedDocumentResponse, String> {
+    let epoch = state
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    query_federated_document_for_epoch(
+        state,
+        epoch,
+        path,
+        CancellationToken::new(),
+        || {},
+        before_sources,
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn query_federated_document_runtime_guarded(
+    state: &WorkspaceState,
+    runtime: &FederationRuntime,
+    path: &str,
+    invocation: &str,
+    request: &str,
+    before_publication: impl FnOnce(),
+) -> Result<FederatedDocumentResponse, QueryPublicationError> {
+    let epoch = state.current().ok_or_else(|| {
+        QueryPublicationError::Execution("no workspace has been opened".to_string())
+    })?;
+    query_federated_document_registered(
+        state,
+        runtime,
+        epoch,
+        path,
+        invocation,
+        request,
+        before_publication,
+    )
+    .await
 }
 
 async fn query_federated_document_for_epoch(
@@ -343,6 +450,7 @@ async fn query_federated_document_for_epoch(
     path: &str,
     cancellation: CancellationToken,
     after_query: impl FnOnce(),
+    before_sources: impl FnOnce() + Send + 'static,
 ) -> Result<FederatedDocumentResponse, String> {
     let worker_epoch = Arc::clone(&epoch);
     let worker_path = path.to_string();
@@ -355,6 +463,7 @@ async fn query_federated_document_for_epoch(
             &worker_epoch,
             &worker_path,
             cancellation,
+            before_sources,
         ))
     })
     .await
@@ -370,8 +479,10 @@ async fn query_federated_document_unpublished(
     epoch: &Arc<crate::engine::Epoch>,
     path: &str,
     cancellation: CancellationToken,
+    before_sources: impl FnOnce(),
 ) -> Result<FederatedDocumentResponse, String> {
     epoch.validate_root()?;
+    let schema = persisted_document_schema(epoch)?;
     let source_root = epoch.source_root();
     let exact = resolve_within(&source_root.path, std::path::Path::new(path))?;
     if !exact.is_file() {
@@ -392,6 +503,7 @@ async fn query_federated_document_unpublished(
         .to_string_lossy()
         .replace('\\', "/");
 
+    before_sources();
     let filesystem = FilesystemSource::new(&source_root.path);
     let git = GitSource::open(&source_root.path);
     let frontmatter = FrontmatterSource::new(&source_root.path);
@@ -433,10 +545,6 @@ async fn query_federated_document_unpublished(
         .iter()
         .map(source_dto)
         .collect::<Result<Vec<_>, _>>()?;
-    let schema = persisted_schema(
-        crate::overlay::schema_summary_for(epoch, FEDERATED_SCHEMA)
-            .ok_or_else(|| "the federated Document schema is not registered".to_string())?,
-    )?;
     let response = FederatedDocumentResponse {
         query_id: context.query_id().to_string(),
         schema,
@@ -487,6 +595,57 @@ fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDoc
         path: document.path().to_string(),
         fields,
     }
+}
+
+fn persisted_document_schema(
+    epoch: &Arc<crate::engine::Epoch>,
+) -> Result<FederatedSchemaDto, String> {
+    let engine = epoch.db().ok_or_else(|| {
+        "the federated Document schema has no persisted catalog version/checksum yet".to_string()
+    })?;
+    let stored = engine
+        .latest_schema_version(FEDERATED_SCHEMA)
+        .map_err(|error| format!("could not resolve the persisted Document schema: {error}"))?
+        .ok_or_else(|| {
+            "the federated Document schema has no persisted catalog version/checksum yet"
+                .to_string()
+        })?;
+    if stored.version == 0 {
+        return Err(
+            "the federated Document schema has no persisted catalog version/checksum yet"
+                .to_string(),
+        );
+    }
+    let persisted = stored
+        .schema()
+        .map_err(|error| format!("could not reconstruct the persisted Document schema: {error}"))?;
+    let actual_checksum = catdb_engine::schema_checksum(&persisted);
+    if actual_checksum != stored.checksum {
+        return Err(format!(
+            "the persisted Document schema v{} records checksum {}, but its stored body hashes to \
+             {}; source execution is refused",
+            stored.version, stored.checksum, actual_checksum
+        ));
+    }
+    let active_checksum = catdb_engine::schema_checksum(&document_schema());
+    if actual_checksum != active_checksum {
+        return Err(format!(
+            "the persisted Document schema v{} ({}) does not match the active domain schema ({}); \
+             source execution is refused",
+            stored.version, actual_checksum, active_checksum
+        ));
+    }
+
+    let summary = crate::overlay::schema_summary_for(epoch, FEDERATED_SCHEMA)
+        .ok_or_else(|| "the federated Document schema is not registered".to_string())?;
+    let response = persisted_schema(summary)?;
+    if response.version != stored.version || response.checksum != stored.checksum {
+        return Err(
+            "the persisted Document schema identity changed while the query was being resolved"
+                .to_string(),
+        );
+    }
+    Ok(response)
 }
 
 fn persisted_schema(summary: SchemaSummary) -> Result<FederatedSchemaDto, String> {
@@ -597,13 +756,18 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
     use catdb_embed::{Embedder, HashEmbedder};
     use catdb_engine::EngineConfig;
 
-    use super::{query_federated_document, query_federated_document_guarded};
+    use super::{
+        query_federated_document, query_federated_document_guarded,
+        query_federated_document_guarded_with_source_observer,
+        query_federated_document_runtime_guarded, QueryPublicationError,
+    };
     use crate::commands::WorkspaceState;
 
     fn git(root: &Path, args: &[&str]) {
@@ -667,9 +831,16 @@ mod tests {
     }
 
     fn catalogued_state(root: &Path) -> WorkspaceState {
+        catalogued_state_with_registration(root, mdreader_ingest::registration())
+    }
+
+    fn catalogued_state_with_registration(
+        root: &Path,
+        registration: catdb_engine::DomainRegistration,
+    ) -> WorkspaceState {
         let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
         let mut config = EngineConfig::in_memory(embedder).with_actor("federation-product-test");
-        config.domains = vec![mdreader_ingest::registration()];
+        config.domains = vec![registration];
         let db = Arc::new(catdb_engine::EmbeddedCatDb::open(config).expect("open engine"));
         let state = WorkspaceState::granted(root.to_path_buf());
         state
@@ -738,9 +909,8 @@ mod tests {
         let outsider = tempfile::tempdir().expect("outside directory");
         let outside_path = outsider.path().join("outside.md");
         std::fs::write(&outside_path, "# Outside").expect("write outsider");
-        let state = WorkspaceState::granted(
-            std::fs::canonicalize(directory.path()).expect("canonical test workspace"),
-        );
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
 
         let error = query_federated_document_guarded(
             &state,
@@ -837,11 +1007,15 @@ mod tests {
         let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
         let state = WorkspaceState::granted(root.clone());
         let document = root.join("a file.md");
+        let source_boundaries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&source_boundaries);
 
-        let error = query_federated_document_guarded(
+        let error = query_federated_document_guarded_with_source_observer(
             &state,
             document.to_str().expect("utf-8 test path"),
-            || {},
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            },
         )
         .await
         .expect_err("an unversioned registration is not native schema acceptance");
@@ -849,6 +1023,49 @@ mod tests {
         assert!(
             error.contains("persisted") && error.contains("checksum"),
             "{error}"
+        );
+        assert_eq!(
+            source_boundaries.load(Ordering::SeqCst),
+            0,
+            "an unversioned schema must not reach filesystem, Git, or frontmatter"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_persisted_schema_is_refused_before_any_source_boundary() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let mut registration = mdreader_ingest::registration();
+        let document_schema = registration
+            .schemas
+            .iter_mut()
+            .find(|schema| schema.name.as_str() == mdreader_domain::federated::SCHEMA)
+            .expect("document schema registration");
+        document_schema.add_entity("UnregisteredMeaning");
+        let state = catalogued_state_with_registration(&root, registration);
+        let document = root.join("a file.md");
+        let source_boundaries = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&source_boundaries);
+
+        let error = query_federated_document_guarded_with_source_observer(
+            &state,
+            document.to_str().expect("utf-8 test path"),
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .expect_err("a persisted schema outside the active domain meaning must be refused");
+
+        assert!(
+            error.contains("persisted") && error.contains("active"),
+            "{error}"
+        );
+        assert_eq!(
+            source_boundaries.load(Ordering::SeqCst),
+            0,
+            "schema identity must resolve before filesystem, Git, or frontmatter is constructed, \
+             planned, or read"
         );
     }
 
@@ -1025,7 +1242,36 @@ mod tests {
             .acquire(&other)
             .await
             .expect("permit becomes available");
-        runtime.finish(&replacement);
-        runtime.finish(&other);
+        runtime
+            .finish(&replacement)
+            .expect("replacement is still current");
+        runtime
+            .finish(&other)
+            .expect("other request is still current");
+    }
+
+    #[tokio::test]
+    async fn a_real_completed_query_replaced_before_ipc_publication_is_retired() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let runtime = super::FederationRuntime::with_limit(1);
+        let document = root.join("a file.md");
+
+        let error = query_federated_document_runtime_guarded(
+            &state,
+            &runtime,
+            document.to_str().expect("utf-8 test path"),
+            "inspector",
+            "request-1",
+            || {
+                runtime.begin(state.generation(), "inspector", "request-2");
+            },
+        )
+        .await
+        .expect_err("a superseded serial cannot return a successful IPC response");
+
+        assert_eq!(error, QueryPublicationError::Retired);
+        runtime.cancel("inspector", "request-2");
     }
 }
