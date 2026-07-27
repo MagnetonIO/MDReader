@@ -1394,8 +1394,12 @@ async fn completed_rebuild_replaces_recursive_membership_after_drive_churn() {
     );
 
     for _ in 0..2 {
-        source
-            .execute_page(&plan(&source, &["id"]), None, &context(10, 10, 64 * 1024))
+        read(
+            &source,
+            &query(),
+            &["id".to_string()],
+            &context(10, 10, 64 * 1024),
+        )
             .await
             .unwrap();
     }
