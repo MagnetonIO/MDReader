@@ -1742,6 +1742,62 @@ mod tests {
             .expect("create exact legacy evidence tables");
     }
 
+    fn v2_managed_paths(app_data: &Path, root: &SourceRoot) -> (PathBuf, PathBuf) {
+        let old = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+            app_data,
+            &root.path,
+            &root.identity,
+        );
+        let new =
+            mdreader_ingest::workspace_index_path_for_stable_identity(app_data, &root.identity);
+        (old, new)
+    }
+
+    fn create_authentic_v2_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
+        let engine = catdb_engine::EmbeddedCatDb::open(
+            catdb_engine::EngineConfig::new(
+                path,
+                std::sync::Arc::new(catdb_embed::HashEmbedder::new()),
+            )
+            .with_domain(mdreader_ingest::registration()),
+        )
+        .expect("open authentic V2 managed index");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime
+            .block_on(engine.import(&root.path, catdb_engine::ImportOptions::default()))
+            .expect("import authentic V2 managed index");
+        let sources = runtime
+            .block_on(engine.store().list_sources())
+            .expect("list authentic V2 source");
+        assert_eq!(sources.len(), 1);
+        sources[0].source_id
+    }
+
+    fn assert_v2_refusal_preserves_managed_state(
+        registry_path: &Path,
+        registry_before: &[u8],
+        old_db: &Path,
+        new_db: &Path,
+    ) {
+        assert!(matches!(
+            LibraryRegistry::load_from(registry_path),
+            Err(LibraryError::CorruptRegistry { .. })
+                | Err(LibraryError::CleanupFailed { .. })
+        ));
+        assert_eq!(
+            fs::read(registry_path).expect("read unchanged V2 registry"),
+            registry_before
+        );
+        assert!(old_db.exists(), "refusal preserves the old managed state");
+        assert!(
+            !new_db.exists(),
+            "refusal never publishes partially adopted managed state"
+        );
+    }
+
     #[test]
     fn duplicate_and_non_directory_roots_are_rejected_without_mutating_membership() {
         let temp = tempdir().expect("tempdir");
@@ -1818,7 +1874,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // APFS rejects arbitrary non-UTF-8 directory names at creation time, so
+    // this authentic filesystem/engine migration runs on Unix platforms that
+    // can actually manufacture the historical path.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn symlink_alias_of_a_member_never_creates_duplicate_membership() {
         use std::os::unix::fs::symlink;
@@ -2297,6 +2356,100 @@ mod tests {
 
         let second = LibraryRegistry::load_from(&registry_path).expect("idempotent reload");
         assert_eq!(second.sources()[0].id, opaque_id);
+    }
+
+    #[test]
+    fn version_two_present_workspace_without_catdb_db_refuses_fresh_identity() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let before = fs::read(&registry_path).expect("read V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        fs::create_dir_all(old_db.parent().expect("old workspace"))
+            .expect("create present managed workspace");
+        fs::write(
+            old_db.with_file_name("proposals.db"),
+            b"managed-but-no-index",
+        )
+        .expect("write managed sibling");
+
+        assert_v2_refusal_preserves_managed_state(
+            &registry_path,
+            &before,
+            &old_db.with_file_name("proposals.db"),
+            &new_db,
+        );
+    }
+
+    #[test]
+    fn version_two_source_shaped_non_catdb_index_is_never_adopted() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = bound_root(&mkdir(temp.path(), "notes"));
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let before = fs::read(&registry_path).expect("read V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        fs::create_dir_all(old_db.parent().expect("old workspace"))
+            .expect("create old workspace");
+        let impostor = rusqlite::Connection::open(&old_db).expect("open SQLite impostor");
+        impostor
+            .execute_batch(
+                "CREATE TABLE sources (
+                   source_id TEXT PRIMARY KEY,
+                   root_path TEXT NOT NULL,
+                   enabled INTEGER NOT NULL,
+                   watch INTEGER NOT NULL,
+                   include_globs TEXT NOT NULL,
+                   exclude_globs TEXT NOT NULL,
+                   max_file_size INTEGER NOT NULL,
+                   respect_gitignore INTEGER NOT NULL,
+                   embed_policy TEXT NOT NULL
+                 );
+                 PRAGMA user_version = 7;",
+            )
+            .expect("create source-shaped impostor");
+        impostor
+            .execute(
+                "INSERT INTO sources VALUES (?1, ?2, 1, 0, '[]', '[]', 1, 1, 'auto')",
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    root.path.display().to_string(),
+                ),
+            )
+            .expect("insert plausible source");
+        drop(impostor);
+
+        assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_two_non_utf8_root_recovers_the_engine_persisted_path_representation() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root_path = temp
+            .path()
+            .join(OsString::from_vec(b"notes-\xff".to_vec()));
+        fs::create_dir(&root_path).expect("create non-UTF-8 root");
+        fs::write(root_path.join("note.md"), b"# alpha\n").expect("write Markdown");
+        let root = bound_root(&root_path);
+        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
+        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
+        let source_id = create_authentic_v2_index(&old_db, &root);
+
+        let migrated = LibraryRegistry::load_from(&registry_path)
+            .expect("the exact engine-persisted display representation is comparable");
+
+        assert_eq!(migrated.sources().len(), 1);
+        assert_eq!(migrated.sources()[0].engine_source_id(), source_id);
+        assert!(!old_db.exists());
+        assert!(new_db.is_file());
     }
 
     #[test]
