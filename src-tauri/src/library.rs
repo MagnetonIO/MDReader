@@ -27,16 +27,16 @@ const MAX_LIBRARY_SOURCES: usize = 128;
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum LibraryError {
-    InvalidRoot { message: String },
-    DuplicateRoot { source_id: String },
-    SourceNotFound { source_id: String },
-    SourceUnavailable { source_id: String, reason: String },
-    ActiveSource { source_id: String },
-    GrantMismatch { source_id: String },
-    OpenFailed { source_id: String, message: String },
-    CorruptRegistry { message: String },
+    InvalidRoot,
+    DuplicateRoot,
+    SourceNotFound,
+    SourceUnavailable,
+    ActiveSource,
+    GrantMismatch,
+    OpenFailed,
+    CorruptRegistry,
     UnsupportedVersion { found: u32, expected: u32 },
-    PersistFailed { message: String },
+    PersistFailed,
     CleanupFailed { reason: LibraryCleanupReason },
     NeedsNativeRepick,
 }
@@ -58,41 +58,19 @@ pub(crate) enum LibraryCleanupStatus {
 impl std::fmt::Display for LibraryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidRoot { message }
-            | Self::CorruptRegistry { message }
-            | Self::PersistFailed { message } => formatter.write_str(message),
-            Self::DuplicateRoot { source_id } => {
-                write!(formatter, "source is already in the library: {source_id}")
-            }
-            Self::SourceNotFound { source_id } => {
-                write!(formatter, "library source was not found: {source_id}")
-            }
-            Self::SourceUnavailable { source_id, reason } => {
-                write!(
-                    formatter,
-                    "library source {source_id} is unavailable: {reason}"
-                )
-            }
-            Self::ActiveSource { source_id } => {
-                write!(
-                    formatter,
-                    "the active source cannot be forgotten: {source_id}"
-                )
-            }
-            Self::GrantMismatch { source_id } => write!(
-                formatter,
-                "source {source_id} is not the current granted workspace"
-            ),
-            Self::OpenFailed { source_id, message } => {
-                write!(
-                    formatter,
-                    "library source {source_id} could not be opened: {message}"
-                )
-            }
+            Self::InvalidRoot => formatter.write_str("invalid-library-root"),
+            Self::DuplicateRoot => formatter.write_str("duplicate-library-root"),
+            Self::SourceNotFound => formatter.write_str("library-source-not-found"),
+            Self::SourceUnavailable => formatter.write_str("library-source-unavailable"),
+            Self::ActiveSource => formatter.write_str("active-library-source"),
+            Self::GrantMismatch => formatter.write_str("library-grant-mismatch"),
+            Self::OpenFailed => formatter.write_str("library-open-failed"),
+            Self::CorruptRegistry => formatter.write_str("library-registry-corrupt"),
             Self::UnsupportedVersion { found, expected } => write!(
                 formatter,
                 "unsupported library registry version {found}; expected {expected}"
             ),
+            Self::PersistFailed => formatter.write_str("library-persist-failed"),
             Self::CleanupFailed { reason } => write!(
                 formatter,
                 "library source cleanup failed: {}",
@@ -122,18 +100,18 @@ pub(crate) enum LibraryIndexState {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum LibraryAvailability {
     Available,
-    Missing { reason: String },
-    Unreadable { reason: String },
-    NotDirectory { reason: String },
+    Missing,
+    Unreadable,
+    NotDirectory,
 }
 
 impl From<LibrarySourceState> for LibraryAvailability {
     fn from(state: LibrarySourceState) -> Self {
         match state {
             LibrarySourceState::Available => Self::Available,
-            LibrarySourceState::Missing { reason } => Self::Missing { reason },
-            LibrarySourceState::Unreadable { reason } => Self::Unreadable { reason },
-            LibrarySourceState::NotDirectory { reason } => Self::NotDirectory { reason },
+            LibrarySourceState::Missing => Self::Missing,
+            LibrarySourceState::Unreadable => Self::Unreadable,
+            LibrarySourceState::NotDirectory => Self::NotDirectory,
         }
     }
 }
@@ -165,12 +143,12 @@ pub(crate) struct PickedLibrarySource {
 #[derive(Default)]
 pub(crate) struct LibraryState(Mutex<()>);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LibrarySourceState {
     Available,
-    Missing { reason: String },
-    Unreadable { reason: String },
-    NotDirectory { reason: String },
+    Missing,
+    Unreadable,
+    NotDirectory,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,19 +205,14 @@ impl NativePath {
 
     fn restore(&self) -> Result<PathBuf, LibraryError> {
         if self.units.is_empty() || self.units.contains(&0) {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library registry contains an empty or NUL path".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
 
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
             if self.encoding != NativeEncoding::UnixBytes {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry path encoding does not match this platform"
-                        .to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
             let bytes = self
                 .units
@@ -247,9 +220,7 @@ impl NativePath {
                 .copied()
                 .map(u8::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| LibraryError::CorruptRegistry {
-                    message: "library registry contains an invalid native path unit".to_string(),
-                })?;
+                .map_err(|_| LibraryError::CorruptRegistry)?;
             Ok(PathBuf::from(OsString::from_vec(bytes)))
         }
 
@@ -257,10 +228,7 @@ impl NativePath {
         {
             use std::os::windows::ffi::OsStringExt;
             if self.encoding != NativeEncoding::WindowsWide {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry path encoding does not match this platform"
-                        .to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
             let wide = self
                 .units
@@ -268,19 +236,14 @@ impl NativePath {
                 .copied()
                 .map(u16::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| LibraryError::CorruptRegistry {
-                    message: "library registry contains an invalid native path unit".to_string(),
-                })?;
+                .map_err(|_| LibraryError::CorruptRegistry)?;
             Ok(PathBuf::from(OsString::from_wide(&wide)))
         }
 
         #[cfg(not(any(unix, windows)))]
         {
             if self.encoding != NativeEncoding::Utf8 {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry path encoding does not match this platform"
-                        .to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
             let bytes = self
                 .units
@@ -288,12 +251,8 @@ impl NativePath {
                 .copied()
                 .map(u8::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| LibraryError::CorruptRegistry {
-                    message: "library registry contains an invalid UTF-8 path unit".to_string(),
-                })?;
-            let path = String::from_utf8(bytes).map_err(|_| LibraryError::CorruptRegistry {
-                message: "library registry contains invalid UTF-8".to_string(),
-            })?;
+                .map_err(|_| LibraryError::CorruptRegistry)?;
+            let path = String::from_utf8(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
             Ok(PathBuf::from(path))
         }
     }
@@ -346,17 +305,8 @@ impl LibrarySource {
         let identity = self
             .identity
             .clone()
-            .ok_or_else(|| LibraryError::SourceUnavailable {
-                source_id: self.id.clone(),
-                reason: "source identity requires re-admission after registry migration"
-                    .to_string(),
-            })?;
-        SourceRoot::restore(self.path()?, identity).map_err(|error| {
-            LibraryError::SourceUnavailable {
-                source_id: self.id.clone(),
-                reason: error.to_string(),
-            }
-        })
+            .ok_or(LibraryError::SourceUnavailable)?;
+        SourceRoot::restore(self.path()?, identity).map_err(|_| LibraryError::SourceUnavailable)
     }
 }
 
@@ -436,18 +386,12 @@ impl LibraryRegistry {
     }
 
     pub(crate) fn add_root(&mut self, requested: &Path) -> Result<LibrarySource, LibraryError> {
-        let canonical = fs::canonicalize(requested).map_err(|error| LibraryError::InvalidRoot {
-            message: format!("cannot resolve library root: {error}"),
-        })?;
+        let canonical = fs::canonicalize(requested).map_err(|_| LibraryError::InvalidRoot)?;
         if !canonical.is_dir() {
-            return Err(LibraryError::InvalidRoot {
-                message: "library root is not a directory".to_string(),
-            });
+            return Err(LibraryError::InvalidRoot);
         }
         let admitted =
-            SourceRoot::capture(canonical.clone()).map_err(|error| LibraryError::InvalidRoot {
-                message: error.to_string(),
-            })?;
+            SourceRoot::capture(canonical.clone()).map_err(|_| LibraryError::InvalidRoot)?;
         let native = NativePath::capture(&canonical);
         if let Some(source) = self
             .sources
@@ -458,14 +402,10 @@ impl LibraryRegistry {
                 source.path = native;
                 return Ok(source.clone());
             }
-            return Err(LibraryError::DuplicateRoot {
-                source_id: source.id.clone(),
-            });
+            return Err(LibraryError::DuplicateRoot);
         }
         if self.sources.len() >= MAX_LIBRARY_SOURCES {
-            return Err(LibraryError::InvalidRoot {
-                message: format!("library is limited to {MAX_LIBRARY_SOURCES} local roots"),
-            });
+            return Err(LibraryError::InvalidRoot);
         }
         let mut source_id = new_source_id();
         while self.sources.iter().any(|source| source.id == source_id) {
@@ -483,35 +423,25 @@ impl LibraryRegistry {
     pub(crate) fn source_state(&self, source_id: &str) -> Result<LibrarySourceState, LibraryError> {
         let source = self
             .source_for(source_id)
-            .ok_or_else(|| LibraryError::SourceNotFound {
-                source_id: source_id.to_string(),
-            })?;
+            .ok_or(LibraryError::SourceNotFound)?;
         let path = source.path()?;
         let canonical = match fs::canonicalize(&path) {
             Ok(canonical) => canonical,
             Err(error) => return Ok(classify_probe_error(error)),
         };
         if canonical != path {
-            return Ok(LibrarySourceState::Unreadable {
-                reason: "the folder identity changed since it was added".to_string(),
-            });
+            return Ok(LibrarySourceState::Unreadable);
         }
         let root = match source.root() {
             Ok(root) => root,
-            Err(LibraryError::SourceUnavailable { reason, .. }) => {
-                return Ok(LibrarySourceState::Unreadable { reason })
-            }
+            Err(LibraryError::SourceUnavailable) => return Ok(LibrarySourceState::Unreadable),
             Err(error) => return Err(error),
         };
-        if let Err(error) = root.verify() {
-            return Ok(LibrarySourceState::Unreadable {
-                reason: error.to_string(),
-            });
+        if root.verify().is_err() {
+            return Ok(LibrarySourceState::Unreadable);
         }
         match fs::metadata(&canonical) {
-            Ok(metadata) if !metadata.is_dir() => Ok(LibrarySourceState::NotDirectory {
-                reason: "the stored root is no longer a directory".to_string(),
-            }),
+            Ok(metadata) if !metadata.is_dir() => Ok(LibrarySourceState::NotDirectory),
             Ok(_) => match fs::read_dir(&canonical) {
                 Ok(_) => Ok(LibrarySourceState::Available),
                 Err(error) => Ok(classify_probe_error(error)),
@@ -526,23 +456,12 @@ impl LibraryRegistry {
     pub(crate) fn activation_root(&self, source_id: &str) -> Result<SourceRoot, LibraryError> {
         let source = self
             .source_for(source_id)
-            .ok_or_else(|| LibraryError::SourceNotFound {
-                source_id: source_id.to_string(),
-            })?;
+            .ok_or(LibraryError::SourceNotFound)?;
         match self.source_state(source_id)? {
             LibrarySourceState::Available => source.root(),
-            LibrarySourceState::Missing { reason } => Err(LibraryError::SourceUnavailable {
-                source_id: source_id.to_string(),
-                reason: format!("missing: {reason}"),
-            }),
-            LibrarySourceState::Unreadable { reason } => Err(LibraryError::SourceUnavailable {
-                source_id: source_id.to_string(),
-                reason: format!("unreadable: {reason}"),
-            }),
-            LibrarySourceState::NotDirectory { reason } => Err(LibraryError::SourceUnavailable {
-                source_id: source_id.to_string(),
-                reason: format!("not a directory: {reason}"),
-            }),
+            LibrarySourceState::Missing
+            | LibrarySourceState::Unreadable
+            | LibrarySourceState::NotDirectory => Err(LibraryError::SourceUnavailable),
         }
     }
 
@@ -560,17 +479,13 @@ impl LibraryRegistry {
             .sources
             .iter()
             .position(|source| source.id == source_id)
-            .ok_or_else(|| LibraryError::SourceNotFound {
-                source_id: source_id.to_string(),
-            })?;
+            .ok_or(LibraryError::SourceNotFound)?;
         let source = &self.sources[index];
         let source_path = source.path()?;
         if active_root.is_some_and(|root| {
             source.identity.as_ref() == Some(&root.identity) && source_path == root.path
         }) {
-            return Err(LibraryError::ActiveSource {
-                source_id: source_id.to_string(),
-            });
+            return Err(LibraryError::ActiveSource);
         }
         self.sources.remove(index);
         if self.active_source_id.as_deref() == Some(source_id) {
@@ -586,16 +501,11 @@ impl LibraryRegistry {
     ) -> Result<(), LibraryError> {
         let source_root = self.activation_root(source_id)?;
         if active_root != Some(&source_root) {
-            return Err(LibraryError::GrantMismatch {
-                source_id: source_id.to_string(),
-            });
+            return Err(LibraryError::GrantMismatch);
         }
         source_root
             .verify()
-            .map_err(|error| LibraryError::SourceUnavailable {
-                source_id: source_id.to_string(),
-                reason: error.to_string(),
-            })?;
+            .map_err(|_| LibraryError::SourceUnavailable)?;
         self.active_source_id = Some(source_id.to_string());
         Ok(())
     }
@@ -670,11 +580,9 @@ impl LibraryRegistry {
         // path authority: activation below still resolves the source ID to the
         // registry's lossless native units.
         if let Some(active_id) = self.active_source_id.as_deref() {
-            let active_path =
-                self.path_for(active_id)
-                    .ok_or_else(|| LibraryError::CorruptRegistry {
-                        message: "library registry active source is not a member".to_string(),
-                    })?;
+            let active_path = self
+                .path_for(active_id)
+                .ok_or(LibraryError::CorruptRegistry)?;
             if active_path.to_string_lossy() == requested_root.to_string_lossy()
                 && matches!(self.source_state(active_id)?, LibrarySourceState::Available)
             {
@@ -702,20 +610,14 @@ impl LibraryRegistry {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::empty()),
-            Err(error) => {
-                return Err(LibraryError::CorruptRegistry {
-                    message: format!("cannot read library registry: {error}"),
-                })
-            }
+            Err(_) => return Err(LibraryError::CorruptRegistry),
         };
         #[derive(Deserialize)]
         struct VersionProbe {
             version: u32,
         }
         let version: VersionProbe =
-            serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
-                message: format!("cannot parse library registry: {error}"),
-            })?;
+            serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         if version.version == 1 {
             return Self::migrate_v1(path, &bytes);
         }
@@ -729,9 +631,7 @@ impl LibraryRegistry {
             });
         }
         let stored: StoredLibrary =
-            serde_json::from_slice(&bytes).map_err(|error| LibraryError::CorruptRegistry {
-                message: format!("cannot parse library registry: {error}"),
-            })?;
+            serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
         Ok(Self {
@@ -743,9 +643,7 @@ impl LibraryRegistry {
 
     fn migrate_v1(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
         let stored: StoredLibraryV1 =
-            serde_json::from_slice(bytes).map_err(|error| LibraryError::CorruptRegistry {
-                message: format!("cannot parse V1 library registry: {error}"),
-            })?;
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_legacy_membership(
             stored.active_source_id.as_deref(),
             stored
@@ -755,36 +653,14 @@ impl LibraryRegistry {
             stored.sources.len(),
         )?;
 
-        let rebound = stored
-            .sources
-            .iter()
-            .map(|source| {
-                let native_path = source.path.restore()?;
-                let root = SourceRoot::capture(native_path).map_err(|_| {
-                    LibraryError::CorruptRegistry {
-                        message: "legacy library source requires a native re-pick".to_string(),
-                    }
-                })?;
-                Ok((source, root.identity))
-            })
-            .collect::<Result<Vec<_>, LibraryError>>()?;
         quarantine_v1_workspaces(path, &stored.sources)?;
-        let sources = rebound
-            .into_iter()
-            .map(|(source, identity)| {
-                Ok(LibrarySource {
-                    id: new_source_id(),
-                    path: source.path.clone(),
-                    identity: Some(identity),
-                })
-            })
-            .collect::<Result<Vec<_>, LibraryError>>()?;
         let migrated = Self {
-            // V1's marker authenticated only a path. Requiring a successful
-            // V2 grant before recording it again prevents automatic restore
-            // from inheriting that weaker authorization.
             active_source_id: None,
-            sources,
+            // V1 stores only historical paths. They are recovery hints, not
+            // live membership; the native picker must explicitly re-admit the
+            // filesystem object. Legacy managed bytes were quarantined above
+            // and are never inherited by the object currently at that path.
+            sources: Vec::new(),
             cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
@@ -793,9 +669,7 @@ impl LibraryRegistry {
 
     fn migrate_v2(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
         let stored: StoredLibraryV2 =
-            serde_json::from_slice(bytes).map_err(|error| LibraryError::CorruptRegistry {
-                message: format!("cannot parse V2 library registry: {error}"),
-            })?;
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_legacy_membership(
             stored.active_source_id.as_deref(),
             stored
@@ -809,9 +683,7 @@ impl LibraryRegistry {
             .iter()
             .any(|source| source.identity.is_none())
         {
-            return Err(LibraryError::CorruptRegistry {
-                message: "legacy library source requires a native re-pick".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
 
         let mut id_map = HashMap::with_capacity(stored.sources.len());
@@ -838,9 +710,7 @@ impl LibraryRegistry {
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
 
-        let app_data = path.parent().ok_or_else(|| LibraryError::PersistFailed {
-            message: "library registry has no parent directory".to_string(),
-        })?;
+        let app_data = path.parent().ok_or(LibraryError::PersistFailed)?;
         let moves = migrate_v2_managed_workspaces(app_data, &stored.sources)?;
         if let Err(error) = migrated.save_to(path) {
             if rollback_managed_moves(&moves).is_err() {
@@ -859,9 +729,7 @@ impl LibraryRegistry {
         source_count: usize,
     ) -> Result<(), LibraryError> {
         if source_count > MAX_LIBRARY_SOURCES {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library registry exceeds its source bound".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
         let mut ids = HashSet::new();
         for (source_id, native_path) in sources {
@@ -870,16 +738,11 @@ impl LibraryRegistry {
                 || native_path.source_id() != *source_id
                 || !ids.insert(source_id.as_str())
             {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry contains a malformed or duplicate source"
-                        .to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
         }
         if active_source_id.is_some_and(|active| !ids.contains(active)) {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library registry active source is not a member".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
         Ok(())
     }
@@ -889,9 +752,7 @@ impl LibraryRegistry {
         sources: &[LibrarySource],
     ) -> Result<(), LibraryError> {
         if sources.len() > MAX_LIBRARY_SOURCES {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library registry exceeds its source bound".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
         let mut ids = HashSet::new();
         for (index, source) in sources.iter().enumerate() {
@@ -902,13 +763,10 @@ impl LibraryRegistry {
                     .as_bytes()
                     .iter()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
-            let identity =
-                source
-                    .identity
-                    .as_ref()
-                    .ok_or_else(|| LibraryError::CorruptRegistry {
-                        message: "library registry source identity is missing".to_string(),
-                    })?;
+            let identity = source
+                .identity
+                .as_ref()
+                .ok_or(LibraryError::CorruptRegistry)?;
             if !path.is_absolute()
                 || !valid_id
                 || !ids.insert(source.id.as_str())
@@ -916,16 +774,11 @@ impl LibraryRegistry {
                     .iter()
                     .any(|prior| prior.identity.as_ref() == Some(identity))
             {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry contains a malformed or duplicate source"
-                        .to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
         }
         if active_source_id.is_some_and(|active| !ids.contains(active)) {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library registry active source is not a member".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
         Ok(())
     }
@@ -935,9 +788,7 @@ impl LibraryRegistry {
         sources: &[LibrarySource],
     ) -> Result<(), LibraryError> {
         if pending.len() > MAX_LIBRARY_SOURCES {
-            return Err(LibraryError::CorruptRegistry {
-                message: "library cleanup ledger exceeds its source bound".to_string(),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
         let mut source_ids = HashSet::new();
         let mut tombstones = HashSet::new();
@@ -960,9 +811,7 @@ impl LibraryRegistry {
                 || !tombstones.insert(entry.tombstone.as_str())
                 || sources.iter().any(|source| source.id == entry.source_id)
             {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library cleanup ledger is malformed".to_string(),
-                });
+                return Err(LibraryError::CorruptRegistry);
             }
         }
         Ok(())
@@ -971,38 +820,25 @@ impl LibraryRegistry {
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
         Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
         Self::validate_pending_cleanup(&self.cleanup_pending, &self.sources)?;
-        let parent = path.parent().ok_or_else(|| LibraryError::PersistFailed {
-            message: "library registry has no parent directory".to_string(),
-        })?;
-        fs::create_dir_all(parent).map_err(|error| LibraryError::PersistFailed {
-            message: format!("cannot create library registry directory: {error}"),
-        })?;
+        let parent = path.parent().ok_or(LibraryError::PersistFailed)?;
+        fs::create_dir_all(parent).map_err(|_| LibraryError::PersistFailed)?;
         let body = serde_json::to_vec_pretty(&StoredLibrary {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
             sources: self.sources.clone(),
             cleanup_pending: self.cleanup_pending.clone(),
         })
-        .map_err(|error| LibraryError::PersistFailed {
-            message: format!("cannot encode library registry: {error}"),
-        })?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
-            LibraryError::PersistFailed {
-                message: format!("cannot create library registry staging file: {error}"),
-            }
-        })?;
+        .map_err(|_| LibraryError::PersistFailed)?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).map_err(|_| LibraryError::PersistFailed)?;
         temporary
             .write_all(&body)
             .and_then(|()| temporary.as_file().sync_all())
-            .map_err(|error| LibraryError::PersistFailed {
-                message: format!("cannot stage library registry: {error}"),
-            })?;
+            .map_err(|_| LibraryError::PersistFailed)?;
         temporary
             .persist(path)
             .map(|_| ())
-            .map_err(|error| LibraryError::PersistFailed {
-                message: format!("cannot publish library registry: {}", error.error),
-            })
+            .map_err(|_| LibraryError::PersistFailed)
     }
 }
 
@@ -1049,11 +885,7 @@ fn quarantine_v1_workspaces(
     registry_path: &Path,
     sources: &[LibrarySourceV1],
 ) -> Result<(), LibraryError> {
-    let app_data = registry_path
-        .parent()
-        .ok_or_else(|| LibraryError::PersistFailed {
-            message: "library registry has no parent directory".to_string(),
-        })?;
+    let app_data = registry_path.parent().ok_or(LibraryError::PersistFailed)?;
     let quarantine_root = app_data.join("legacy-v1-path-workspaces");
 
     for source in sources {
@@ -1062,66 +894,27 @@ fn quarantine_v1_workspaces(
         let metadata = match fs::symlink_metadata(&legacy) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(LibraryError::PersistFailed {
-                    message: format!(
-                        "cannot inspect legacy workspace {}: {error}",
-                        legacy.display()
-                    ),
-                })
-            }
+            Err(_) => return Err(LibraryError::PersistFailed),
         };
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(LibraryError::CorruptRegistry {
-                message: format!(
-                    "legacy workspace is not a real directory: {}",
-                    legacy.display()
-                ),
-            });
+            return Err(LibraryError::CorruptRegistry);
         }
 
-        fs::create_dir_all(&quarantine_root).map_err(|error| LibraryError::PersistFailed {
-            message: format!("cannot create legacy workspace quarantine: {error}"),
-        })?;
-        let quarantine_metadata = fs::symlink_metadata(&quarantine_root).map_err(|error| {
-            LibraryError::PersistFailed {
-                message: format!("cannot inspect legacy workspace quarantine: {error}"),
-            }
-        })?;
+        fs::create_dir_all(&quarantine_root).map_err(|_| LibraryError::PersistFailed)?;
+        let quarantine_metadata =
+            fs::symlink_metadata(&quarantine_root).map_err(|_| LibraryError::PersistFailed)?;
         if quarantine_metadata.file_type().is_symlink() || !quarantine_metadata.is_dir() {
-            return Err(LibraryError::PersistFailed {
-                message: "legacy workspace quarantine is not a real directory".to_string(),
-            });
+            return Err(LibraryError::PersistFailed);
         }
 
-        let key = legacy
-            .file_name()
-            .ok_or_else(|| LibraryError::CorruptRegistry {
-                message: "legacy workspace path has no identity key".to_string(),
-            })?;
+        let key = legacy.file_name().ok_or(LibraryError::CorruptRegistry)?;
         let destination = quarantine_root.join(key);
         match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                return Err(LibraryError::PersistFailed {
-                    message: format!(
-                        "legacy workspace and quarantine both exist: {}",
-                        destination.display()
-                    ),
-                })
-            }
+            Ok(_) => return Err(LibraryError::PersistFailed),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(LibraryError::PersistFailed {
-                    message: format!("cannot inspect legacy workspace quarantine target: {error}"),
-                })
-            }
+            Err(_) => return Err(LibraryError::PersistFailed),
         }
-        fs::rename(&legacy, &destination).map_err(|error| LibraryError::PersistFailed {
-            message: format!(
-                "cannot quarantine legacy workspace {}: {error}",
-                legacy.display()
-            ),
-        })?;
+        fs::rename(&legacy, &destination).map_err(|_| LibraryError::PersistFailed)?;
     }
     Ok(())
 }
@@ -1135,23 +928,17 @@ fn migrate_v2_managed_workspaces(
         let identity = source
             .identity
             .as_ref()
-            .ok_or_else(|| LibraryError::CorruptRegistry {
-                message: "legacy library source requires a native re-pick".to_string(),
-            })?;
+            .ok_or(LibraryError::CorruptRegistry)?;
         let path = source.path.restore()?;
         let old = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
             app_data, &path, identity,
         )
         .parent()
-        .ok_or_else(|| LibraryError::PersistFailed {
-            message: "legacy managed workspace has no parent".to_string(),
-        })?
+        .ok_or(LibraryError::PersistFailed)?
         .to_path_buf();
         let new = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
             .parent()
-            .ok_or_else(|| LibraryError::PersistFailed {
-                message: "managed workspace has no parent".to_string(),
-            })?
+            .ok_or(LibraryError::PersistFailed)?
             .to_path_buf();
         if old == new {
             continue;
@@ -1204,15 +991,11 @@ impl LibraryStore {
         self.registry_path
             .parent()
             .map(|parent| parent.join("library.lock"))
-            .ok_or_else(|| LibraryError::PersistFailed {
-                message: "library registry has no parent directory".to_string(),
-            })
+            .ok_or(LibraryError::PersistFailed)
     }
 
     fn acquire(&self) -> Result<AdvisoryFileLock, LibraryError> {
-        AdvisoryFileLock::acquire(&self.lock_path()?).map_err(|error| LibraryError::PersistFailed {
-            message: format!("cannot acquire library registry lock: {error}"),
-        })
+        AdvisoryFileLock::acquire(&self.lock_path()?).map_err(|_| LibraryError::PersistFailed)
     }
 
     fn read<T>(
@@ -1245,9 +1028,7 @@ impl LibraryStore {
         self.registry_path
             .parent()
             .map(Path::to_path_buf)
-            .ok_or_else(|| LibraryError::PersistFailed {
-                message: "library registry has no parent directory".to_string(),
-            })
+            .ok_or(LibraryError::PersistFailed)
     }
 
     fn forget_source(
@@ -1281,12 +1062,9 @@ impl LibraryStore {
         }
         let mut registry = LibraryRegistry::load_from(&self.registry_path)?;
         self.retry_pending_cleanup_locked(&mut registry, app_data, &mut cleanup)?;
-        let source =
-            registry
-                .source_for(source_id)
-                .ok_or_else(|| LibraryError::SourceNotFound {
-                    source_id: source_id.to_string(),
-                })?;
+        let source = registry
+            .source_for(source_id)
+            .ok_or(LibraryError::SourceNotFound)?;
         let identity = source
             .identity
             .as_ref()
@@ -1493,17 +1271,11 @@ impl LibraryStore {
         let _lease = self.acquire()?;
         let registry_exists = match fs::symlink_metadata(&self.registry_path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(LibraryError::CorruptRegistry {
-                    message: "library registry is not a regular file".to_string(),
-                })
+                return Err(LibraryError::CorruptRegistry);
             }
             Ok(_) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(LibraryError::CorruptRegistry {
-                    message: format!("cannot inspect library registry: {error}"),
-                })
-            }
+            Err(_) => return Err(LibraryError::CorruptRegistry),
         };
 
         if registry_exists {
@@ -1518,82 +1290,24 @@ impl LibraryStore {
                         .sources
                         .into_iter()
                         .find(|source| source.id == source_id)
-                        .ok_or_else(|| LibraryError::CorruptRegistry {
-                            message: "restored library source is not a member".to_string(),
-                        })
+                        .ok_or(LibraryError::CorruptRegistry)
                 })
                 .transpose();
         }
 
-        let Some(requested_root) = requested_root else {
-            return Err(LibraryError::NeedsNativeRepick);
-        };
-        let canonical =
-            fs::canonicalize(requested_root).map_err(|_| LibraryError::NeedsNativeRepick)?;
-        if canonical != requested_root || !validated_legacy_index_evidence(app_data, requested_root)
-        {
-            return Err(LibraryError::NeedsNativeRepick);
-        }
-        let mut registry = LibraryRegistry::empty();
-        let source = match registry.add_root(&canonical) {
-            Ok(source) => source,
-            Err(LibraryError::InvalidRoot { .. }) => return Err(LibraryError::NeedsNativeRepick),
-            Err(error) => return Err(error),
-        };
-        registry.activation_root(&source.id)?;
-        registry.save_to(&self.registry_path)?;
-        Ok(registry
-            .snapshot(app_data, None)?
-            .sources
-            .into_iter()
-            .find(|candidate| candidate.id == source.id))
+        // A renderer session string is never filesystem authority. With no
+        // backend-owned registry there is nothing to reconcile, regardless of
+        // what SQLite-shaped files happen to exist in app data. Only the native
+        // picker may create the first membership.
+        Err(LibraryError::NeedsNativeRepick)
     }
-}
-
-fn validated_legacy_index_evidence(app_data: &Path, requested_root: &Path) -> bool {
-    let database = v1_workspace_dir(app_data, requested_root).join("catdb.db");
-    let Ok(metadata) = fs::symlink_metadata(&database) else {
-        return false;
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return false;
-    }
-    let Ok(canonical_app_data) = fs::canonicalize(app_data) else {
-        return false;
-    };
-    let Ok(canonical_database) = fs::canonicalize(&database) else {
-        return false;
-    };
-    if !canonical_database.starts_with(&canonical_app_data) {
-        return false;
-    }
-
-    let flags =
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let Ok(connection) = rusqlite::Connection::open_with_flags(&canonical_database, flags) else {
-        return false;
-    };
-    let mut statement = match connection.prepare(
-        "SELECT name FROM sqlite_master \
-         WHERE type='table' AND name IN ('objects','documents','operation_log')",
-    ) {
-        Ok(statement) => statement,
-        Err(_) => return false,
-    };
-    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) else {
-        return false;
-    };
-    let names = rows.filter_map(Result::ok).collect::<HashSet<_>>();
-    names.len() == 3
 }
 
 fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
     let app_data = app
         .path()
         .app_data_dir()
-        .map_err(|error| LibraryError::PersistFailed {
-            message: format!("cannot resolve application data directory: {error}"),
-        })?;
+        .map_err(|_| LibraryError::PersistFailed)?;
     Ok((app_data.join("library.json"), app_data))
 }
 
@@ -1602,9 +1316,7 @@ fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot
 }
 
 fn lock_library(state: &LibraryState) -> Result<std::sync::MutexGuard<'_, ()>, LibraryError> {
-    state.0.lock().map_err(|_| LibraryError::PersistFailed {
-        message: "library registry lock is poisoned".to_string(),
-    })
+    state.0.lock().map_err(|_| LibraryError::PersistFailed)
 }
 
 /// Return every persisted local Markdown root and its live filesystem/index
@@ -1649,9 +1361,20 @@ pub(crate) async fn pick_and_add_library_source(
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
     LibraryStore::new(path).update(|registry| {
+        let canonical = fs::canonicalize(&selected).map_err(|_| LibraryError::InvalidRoot)?;
+        let picked_identity =
+            SourceRoot::capture(canonical).map_err(|_| LibraryError::InvalidRoot)?;
         let (source_id, added) = match registry.add_root(&selected) {
             Ok(source) => (source.id, true),
-            Err(LibraryError::DuplicateRoot { source_id }) => (source_id, false),
+            Err(LibraryError::DuplicateRoot) => {
+                let source_id = registry
+                    .sources
+                    .iter()
+                    .find(|source| source.identity.as_ref() == Some(&picked_identity.identity))
+                    .map(|source| source.id.clone())
+                    .ok_or(LibraryError::CorruptRegistry)?;
+                (source_id, false)
+            }
             Err(error) => return Err(error),
         };
         let snapshot = registry.snapshot(&app_data, active.as_ref())?;
@@ -1705,7 +1428,7 @@ pub(crate) fn watch_library_source(
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
         crate::commands::watch_workspace_path_exact(&app, &native_root, &workspace, &watcher)
-            .map_err(|message| LibraryError::OpenFailed { source_id, message })
+            .map_err(|_| LibraryError::OpenFailed)
     })
 }
 
@@ -1726,7 +1449,7 @@ pub(crate) fn grant_library_source(
         let native_root = registry.activation_root(&source_id)?;
         crate::commands::grant_workspace_path_exact(&native_root, &workspace)
             .map(|root| root.to_string_lossy().into_owned())
-            .map_err(|message| LibraryError::OpenFailed { source_id, message })
+            .map_err(|_| LibraryError::OpenFailed)
     })
 }
 
@@ -1770,15 +1493,9 @@ pub(crate) fn forget_library_source(
 
 pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
     match error.kind() {
-        io::ErrorKind::NotFound => LibrarySourceState::Missing {
-            reason: error.to_string(),
-        },
-        io::ErrorKind::PermissionDenied => LibrarySourceState::Unreadable {
-            reason: error.to_string(),
-        },
-        _ => LibrarySourceState::Unreadable {
-            reason: error.to_string(),
-        },
+        io::ErrorKind::NotFound => LibrarySourceState::Missing,
+        io::ErrorKind::PermissionDenied => LibrarySourceState::Unreadable,
+        _ => LibrarySourceState::Unreadable,
     }
 }
 
@@ -1865,12 +1582,7 @@ mod tests {
 
         let first = registry.add_root(&root).expect("add root");
         let duplicate = registry.add_root(&root).expect_err("duplicate must fail");
-        assert_eq!(
-            duplicate,
-            LibraryError::DuplicateRoot {
-                source_id: first.id.clone()
-            }
-        );
+        assert_eq!(duplicate, LibraryError::DuplicateRoot);
         assert!(matches!(
             registry.add_root(&file),
             Err(LibraryError::InvalidRoot { .. })
@@ -1946,14 +1658,9 @@ mod tests {
         let alias = temp.path().join("alias");
         symlink(&root, &alias).expect("create source alias");
         let mut registry = LibraryRegistry::empty();
-        let source = registry.add_root(&root).expect("add real path");
+        registry.add_root(&root).expect("add real path");
 
-        assert_eq!(
-            registry.add_root(&alias),
-            Err(LibraryError::DuplicateRoot {
-                source_id: source.id.clone()
-            })
-        );
+        assert_eq!(registry.add_root(&alias), Err(LibraryError::DuplicateRoot));
         assert_eq!(registry.sources().len(), 1);
     }
 
@@ -2016,15 +1723,10 @@ mod tests {
         let state = registry
             .source_state(&source.id)
             .expect("identity mismatch is a source state");
-        assert!(
-            matches!(state, LibrarySourceState::Unreadable { ref reason }
-                if !reason.is_empty() && reason.contains("identity")),
-            "the replacement must be a typed, non-empty refusal: {state:?}"
-        );
+        assert_eq!(state, LibrarySourceState::Unreadable);
         assert!(matches!(
             registry.activation_path(&source.id),
-            Err(LibraryError::SourceUnavailable { ref reason, .. })
-                if !reason.is_empty() && reason.contains("identity")
+            Err(LibraryError::SourceUnavailable)
         ));
         assert_eq!(
             fs::read_to_string(moved.join("original.md")).expect("original object remains"),
@@ -2049,9 +1751,7 @@ mod tests {
             registry
                 .forget(&source.id, Some(&active))
                 .expect_err("active forget must fail"),
-            LibraryError::ActiveSource {
-                source_id: source.id.clone()
-            }
+            LibraryError::ActiveSource
         );
         assert_eq!(registry.sources().len(), 1);
 
@@ -2138,13 +1838,12 @@ mod tests {
             .expect("write identity-less registry");
         assert!(matches!(
             LibraryRegistry::load_from(&file),
-            Err(LibraryError::CorruptRegistry { ref message })
-                if message.contains("identity")
+            Err(LibraryError::CorruptRegistry)
         ));
     }
 
     #[test]
-    fn version_one_registry_migrates_membership_and_quarantines_old_index_and_proposals() {
+    fn version_one_registry_quarantines_managed_bytes_without_creating_membership() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
         fs::create_dir(&app_data).expect("create app data");
@@ -2178,15 +1877,9 @@ mod tests {
         let registry =
             LibraryRegistry::load_from(&registry_path).expect("migrate supported v1 registry");
 
-        assert_eq!(registry.sources().len(), 1, "membership is preserved");
-        let migrated_source_id = registry.sources()[0].id.clone();
-        assert_ne!(
-            migrated_source_id, source_id,
-            "path-derived V1 identity is replaced by an opaque membership ID"
-        );
         assert!(
-            registry.activation_root(&migrated_source_id).is_ok(),
-            "an available source is rebound to its current filesystem identity"
+            registry.sources().is_empty(),
+            "path-only V1 rows are never live membership"
         );
         assert_eq!(
             registry.restore_source_id(),
@@ -2206,14 +1899,7 @@ mod tests {
             serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
                 .expect("parse migrated registry");
         assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
-        assert!(
-            !crate::engine::db_path_under(
-                &app_data,
-                &registry.activation_root(&migrated_source_id).unwrap()
-            )
-            .exists(),
-            "identity-keyed V2 starts from a clean index instead of adopting path-keyed rows"
-        );
+        assert_eq!(persisted["sources"], serde_json::json!([]));
     }
 
     #[test]
@@ -2336,25 +2022,31 @@ mod tests {
         .expect("write v1 registry");
         fs::remove_dir(&root).expect("take source offline before migration");
 
-        assert!(matches!(
-            LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CorruptRegistry { ref message })
-                if message == "legacy library source requires a native re-pick"
-        ));
+        let registry = LibraryRegistry::load_from(&registry_path)
+            .expect("missing V1 source remains a non-authoritative recovery candidate");
+        assert!(registry.sources().is_empty());
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(
-                &fs::read(&registry_path).expect("legacy registry remains")
+                &fs::read(&registry_path).expect("candidate registry persists")
             )
-            .expect("parse unchanged legacy registry")["version"],
-            serde_json::json!(1)
+            .expect("parse candidate registry")["version"],
+            serde_json::json!(LIBRARY_VERSION)
         );
 
+        let first_bytes = fs::read(&registry_path).expect("read candidate registry");
         fs::create_dir(&root).expect("source returns");
-        let registry =
-            LibraryRegistry::load_from(&registry_path).expect("migration succeeds when locatable");
-        assert_eq!(registry.sources().len(), 1);
-        assert_ne!(registry.sources()[0].id, source_id);
-        assert!(registry.activation_root(&registry.sources()[0].id).is_ok());
+        let mut registry =
+            LibraryRegistry::load_from(&registry_path).expect("migration remains idempotent");
+        assert!(registry.sources().is_empty());
+        assert_eq!(
+            fs::read(&registry_path).expect("read candidate registry again"),
+            first_bytes,
+            "restart does not re-run or mutate migration"
+        );
+        let admitted = registry
+            .add_root(&root)
+            .expect("native re-pick explicitly creates membership");
+        assert_ne!(admitted.id, source_id);
     }
 
     #[test]
@@ -2435,8 +2127,7 @@ mod tests {
 
         assert!(matches!(
             LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CorruptRegistry { ref message })
-                if message == "legacy library source requires a native re-pick"
+            Err(LibraryError::CorruptRegistry)
         ));
         assert_eq!(fs::read(&registry_path).expect("read unchanged V2"), before);
     }
@@ -2949,7 +2640,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_registry_migrates_one_available_legacy_session_root_once() {
+    fn absent_registry_always_requires_native_repick_even_with_legacy_index_shape() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
         let registry_path = app_data.join("library.json");
@@ -2959,31 +2650,15 @@ mod tests {
         let legacy_workspace = legacy_v1_workspace_path(&app_data, &canonical);
         create_legacy_catdb_index(&legacy_workspace.join("catdb.db"));
 
-        let first = store
-            .reconcile_restore_or_migrate(Some(&canonical), &app_data)
-            .expect("available legacy root migrates")
-            .expect("migration returns the admitted member");
-        assert_eq!(first.path, canonical.to_string_lossy());
-        assert!(registry_path.is_file(), "migration is persisted atomically");
-
-        let first_bytes = fs::read(&registry_path).expect("read first registry");
-        let second = store
-            .reconcile_restore_or_migrate(Some(&canonical), &app_data)
-            .expect("second startup reconciles")
-            .expect("the same member restores");
-        assert_eq!(second.id, first.id, "filesystem identity is stable");
         assert_eq!(
-            fs::read(&registry_path).expect("read second registry"),
-            first_bytes,
-            "restart is idempotent"
+            store.reconcile_restore_or_migrate(Some(&canonical), &app_data),
+            Err(LibraryError::NeedsNativeRepick)
         );
-        assert_eq!(
-            LibraryRegistry::load_from(&registry_path)
-                .expect("load migrated registry")
-                .sources()
-                .len(),
-            1
+        assert!(
+            !registry_path.exists(),
+            "session text and a lookalike index create no registry"
         );
+        assert!(legacy_workspace.join("catdb.db").is_file());
     }
 
     #[test]
@@ -3077,9 +2752,7 @@ mod tests {
         let registry_path = app_data.join("library.json");
         let outsider = mkdir(temp.path(), "existing-outsider");
         let canonical = fs::canonicalize(&outsider).expect("canonical outsider");
-        create_legacy_catdb_index(
-            &super::v1_workspace_dir(&app_data, &canonical).join("catdb.db"),
-        );
+        create_legacy_catdb_index(&super::v1_workspace_dir(&app_data, &canonical).join("catdb.db"));
 
         assert_eq!(
             super::reconcile_library_restore_at(
