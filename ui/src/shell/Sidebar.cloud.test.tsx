@@ -83,7 +83,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
       onPickFolder={vi.fn()}
       onOpenFile={vi.fn()}
       onOpenRecent={vi.fn()}
-      libraryEvidence={response}
+      libraryEvidence={[response]}
       librarySearch=""
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
@@ -176,7 +176,7 @@ it('lists a local membership from the same immutable Library answer', () => {
       onPickFolder={vi.fn()}
       onOpenFile={vi.fn()}
       onOpenRecent={vi.fn()}
-      libraryEvidence={response}
+      libraryEvidence={[response]}
       librarySearch=""
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}

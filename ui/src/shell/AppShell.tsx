@@ -136,7 +136,7 @@ export function AppShell() {
     evidence: LibraryEntityQueryResponse_Serialize;
   } | null>(null);
   const [libraryEvidence, setLibraryEvidence] =
-    useState<LibraryEntityQueryResponse_Serialize | null>(null);
+    useState<LibraryEntityQueryResponse_Serialize[]>([]);
   const [librarySearch, setLibrarySearch] = useState('');
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
@@ -189,9 +189,6 @@ export function AppShell() {
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
   const refreshLibrary = useCallback(async () => {
-    if (!settingsBackend.prepareCloudCatalog || !settingsBackend.queryLibraryDocuments) {
-      return;
-    }
     const generation = libraryRefreshGeneration.current + 1;
     libraryRefreshGeneration.current = generation;
     if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
@@ -202,17 +199,39 @@ export function AppShell() {
     try {
       const requestId = `library:${globalThis.crypto.randomUUID()}`;
       libraryRefreshRequest.current = requestId;
-      const { evidence: answer } = await hydrateLibrary(
+      const { evidence: answers, failures } = await hydrateLibrary(
         settingsBackend,
         requestId,
       );
       if (libraryRefreshGeneration.current !== generation) return;
-      setLibraryEvidence(answer);
-      if (answer?.answer.completeness.state === 'partial') {
-        setLibraryError('Some Library sources could not answer this query.');
+      setLibraryEvidence(answers);
+      setLibraryDocument((current) => {
+        if (!current) return null;
+        for (const evidence of answers) {
+          const member = evidence.memberships.find(
+            (candidate) => candidate.membership_id === current.member.membership_id,
+          );
+          const row = evidence.answer.rows.find(
+            (candidate) => candidate.record_key === current.row.record_key,
+          );
+          if (member && row) return { member, row, evidence };
+        }
+        return null;
+      });
+      if (
+        failures.length > 0 ||
+        answers.some((answer) => answer.answer.completeness.state === 'partial')
+      ) {
+        setLibraryError(
+          answers.length === 0
+            ? 'Library sources could not be read.'
+            : 'Some Library sources could not answer this query.',
+        );
       }
     } catch {
       if (libraryRefreshGeneration.current === generation) {
+        setLibraryEvidence([]);
+        setLibraryDocument(null);
         setLibraryError('Library sources could not be read.');
       }
     } finally {
@@ -1893,8 +1912,13 @@ export function AppShell() {
           onLibrarySearch={setLibrarySearch}
           onOpenLibrary={(member, row) => {
             setLibraryError(null);
-            if (libraryEvidence) {
-              setLibraryDocument({ member, row, evidence: libraryEvidence });
+            const evidence = libraryEvidence.find((answer) =>
+              answer.memberships.some(
+                (candidate) => candidate.membership_id === member.membership_id,
+              ),
+            );
+            if (evidence) {
+              setLibraryDocument({ member, row, evidence });
             }
           }}
           onRefreshLibrary={() => void refreshLibrary()}

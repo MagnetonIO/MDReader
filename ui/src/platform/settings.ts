@@ -146,6 +146,12 @@ export interface SettingsBackend {
     requestId: string,
     sourceIds?: string[],
   ) => Promise<LibraryEntityQueryResponse_Serialize>;
+  queryConnectedCatdbDocuments?: (
+    connectionId: string,
+    filters: CloudFilterInput[],
+    fields: string[],
+    requestId: string,
+  ) => Promise<LibraryEntityQueryResponse_Serialize>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
   connectedCatdbState?: () => Promise<ConnectedCatdbState>;
   enrollConnectedCatdb?: (
@@ -313,7 +319,7 @@ export async function queryLibraryDocuments(
     max_staleness_ms: null,
     require_complete: false,
     page_size: 1_000,
-    limit: 1_000,
+    limit: 100_000,
     cursor: null,
   };
   const result = await commands.queryLibraryDocuments(requestId, request);
@@ -321,10 +327,49 @@ export async function queryLibraryDocuments(
   return result.data;
 }
 
-export async function cancelCloudDocumentQuery(requestId: string): Promise<boolean> {
-  const result = await commands.cancelCloudDocumentQuery(requestId);
-  if (result.status === 'error') return cloudFailure(result.error);
+/** Query the native-authorized Connected CatDB membership without exposing its bearer token. */
+export async function queryConnectedCatdbDocuments(
+  connectionId: string,
+  filters: CloudFilterInput[],
+  fields: string[],
+  requestId: string,
+): Promise<LibraryEntityQueryResponse_Serialize> {
+  const request: EntityQueryRequest_Deserialize = {
+    workspace_id: '00000000-0000-0000-0000-000000000000',
+    catalog_revision_id: null,
+    schema_version_id: null,
+    entity: 'document.Document',
+    select: fields,
+    filters: filters.map((filter) => ({
+      field: filter.field,
+      operator: filter.operator,
+      value: filter.value,
+    })),
+    order_by: [],
+    source_ids: null,
+    max_staleness_ms: null,
+    require_complete: false,
+    page_size: 1_000,
+    limit: 100_000,
+    cursor: null,
+  };
+  const result = await commands.queryConnectedLibraryDocuments(
+    connectionId,
+    requestId,
+    request,
+  );
+  if (result.status === 'error') return connectedCatdbFailure(result.error);
   return result.data;
+}
+
+export async function cancelCloudDocumentQuery(requestId: string): Promise<boolean> {
+  const [embedded, connected] = await Promise.all([
+    commands.cancelCloudDocumentQuery(requestId),
+    commands.cancelConnectedCatdbQuery(`${requestId}:connected-catdb`),
+  ]);
+  if (embedded.status === 'error') return cloudFailure(embedded.error);
+  if (connected.status === 'error') return connectedCatdbFailure(connected.error);
+  return embedded.data || connected.data;
 }
 
 export const settingsBackend: SettingsBackend = {
@@ -346,6 +391,7 @@ export const settingsBackend: SettingsBackend = {
   setCloudSourceEnabled,
   disconnectCloudSource,
   queryLibraryDocuments,
+  queryConnectedCatdbDocuments,
   cancelCloudDocumentQuery,
   connectedCatdbState,
   enrollConnectedCatdb,

@@ -10,15 +10,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use catdb_api_types::{EntityQueryRequest, EntityQueryResponse, SourceExecution};
+use catdb_api_types::{EntityQueryRequest, EntityQueryResponse, SourceExecution, MAX_LIMIT};
 use catdb_connectors::{
     CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError,
     SourceFreshness, SourceModel, SourcePage, SourcePlan,
 };
 use catdb_core::Mapping;
 use catdb_federation::{
-    CatalogResolveError, CatalogResolver, EntityQueryError, EntityQueryService, ResolvedCatalog,
-    RuntimeCatalog, SourceBinding,
+    CatalogResolveError, CatalogResolver, ContinuationLimits, EntityQueryError, EntityQueryService,
+    ResolvedCatalog, RuntimeCatalog, SourceBinding,
 };
 use catdb_policy::{
     Action, Effect, PolicyDocument, PolicyRule, Principal, ResourceScope, SubjectSelector,
@@ -204,6 +204,7 @@ pub(crate) enum LibraryQueryMemberKind {
     LocalFolder,
     GoogleDrive,
     Dropbox,
+    ConnectedCatdb,
 }
 
 /// One read-only physical source beneath a Library membership.
@@ -756,7 +757,6 @@ pub(crate) async fn execute_registered_library_query(
     if request.entity != "document.Document"
         || request.cursor.is_some()
         || request.query_id.is_some()
-        || request.page_size < request.limit
     {
         return Err(LibraryQueryError::InvalidRequest);
     }
@@ -792,10 +792,11 @@ pub(crate) async fn execute_registered_library_query(
     request.source_ids = Some(selected_physical);
     request.catalog_revision_id = Some(runtime.catalog.revision.revision_id);
     request.schema_version_id = Some(runtime.catalog.default_schema_version_id);
+    let pinned_request = request.clone();
 
-    // This operation returns one bounded, fully hydrated page and deliberately
-    // rejects continuation. Use a per-execution secret so a public catalog
-    // revision can never double as cursor authentication material.
+    // Continuations are consumed inside this command while the immutable
+    // runtime and per-execution secret remain alive. No opaque cursor crosses
+    // into renderer authority or outlives its exact catalog snapshot.
     let mut cursor_seed = Uuid::new_v4().as_bytes().to_vec();
     cursor_seed.extend_from_slice(Uuid::new_v4().as_bytes());
     let cursor_key = *blake3::hash(&cursor_seed).as_bytes();
@@ -808,6 +809,14 @@ pub(crate) async fn execute_registered_library_query(
         cursor_key,
         QUERY_CONCURRENCY,
     )
+    .map_err(|_| LibraryQueryError::InvalidCatalog)?
+    .with_continuation_limits(ContinuationLimits {
+        max_entries: 1,
+        max_rows_per_entry: usize::try_from(MAX_LIMIT)
+            .map_err(|_| LibraryQueryError::LimitExceeded)?,
+        max_bytes_per_entry: QUERY_BYTE_BUDGET,
+        ttl: QUERY_DEADLINE,
+    })
     .map_err(|_| LibraryQueryError::InvalidCatalog)?;
     let query_id = Uuid::new_v4();
     let context = ReadContext::new(
@@ -836,6 +845,30 @@ pub(crate) async fn execute_registered_library_query(
         .await
         .map_err(map_entity_query_error)?;
     restore_membership_provenance(&mut answer, &runtime.memberships)?;
+    while let Some(cursor) = answer.next_cursor.take() {
+        let mut continuation = pinned_request.clone();
+        continuation.query_id = Some(answer.query_id);
+        continuation.cursor = Some(cursor);
+        let mut page = service
+            .query_with_correlation_fields(
+                &principal,
+                continuation,
+                &context,
+                &[LIBRARY_IDENTITY_FIELD.to_string()],
+            )
+            .await
+            .map_err(map_entity_query_error)?;
+        restore_membership_provenance(&mut page, &runtime.memberships)?;
+        if page.query_id != answer.query_id
+            || page.pins != answer.pins
+            || page.sources != answer.sources
+            || page.completeness != answer.completeness
+        {
+            return Err(LibraryQueryError::InvalidResponse);
+        }
+        answer.rows.extend(page.rows);
+        answer.next_cursor = page.next_cursor;
+    }
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
     Ok(LibraryEntityQueryResponse {
         answer,
@@ -908,6 +941,22 @@ mod tests {
             )
         }
 
+        fn drive_documents(count: usize) -> Self {
+            let fixture = Self::drive();
+            *fixture.rows.lock().expect("fixture rows") = (0..count)
+                .map(|index| {
+                    let key = format!("drive-note-{index:04}");
+                    SourceRow {
+                        source: SourceId::new("drive-account"),
+                        entity: "document.Document".to_string(),
+                        key: key.clone(),
+                        value: json!({"id":key,"name":format!("Drive note {index:04}")}),
+                    }
+                })
+                .collect();
+            fixture
+        }
+
         fn new(id: &str, attrs: Vec<SourceAttr>, key: &str, value: serde_json::Value) -> Self {
             let model = SourceModel::new(SourceId::new(id), "document", "Document", attrs);
             Self {
@@ -965,10 +1014,21 @@ mod tests {
         ) -> Result<SourcePage, SourceError> {
             context.check()?;
             self.model.admit(plan)?;
-            if cursor.is_some() {
+            let offset = cursor.map_or(Ok(0_usize), |cursor| {
+                let bytes: [u8; 8] = cursor
+                    .as_bytes()
+                    .try_into()
+                    .map_err(|_| SourceError::InvalidCursor)?;
+                usize::try_from(u64::from_be_bytes(bytes)).map_err(|_| SourceError::InvalidCursor)
+            })?;
+            let all_rows = self.rows.lock().expect("fixture rows").clone();
+            if offset > all_rows.len() {
                 return Err(SourceError::InvalidCursor);
             }
-            let mut rows = self.rows.lock().expect("fixture rows").clone();
+            let end = offset
+                .saturating_add(context.page_size())
+                .min(all_rows.len());
+            let mut rows = all_rows[offset..end].to_vec();
             for row in &mut rows {
                 row.value
                     .as_object_mut()
@@ -979,7 +1039,13 @@ mod tests {
                 source: self.model.id().clone(),
                 scanned: rows.len(),
                 rows,
-                next_cursor: None,
+                next_cursor: (end < all_rows.len())
+                    .then(|| {
+                        u64::try_from(end)
+                            .map_err(|_| SourceError::InvalidCursor)
+                            .and_then(|offset| SourceCursor::new(offset.to_be_bytes().to_vec()))
+                    })
+                    .transpose()?,
                 observed_at_ms: 1,
                 freshness_ms: 0,
             })
@@ -1152,6 +1218,30 @@ mod tests {
             .rows
             .iter()
             .any(|row| row.record_key == scope_record_key(dropbox, "/dropbox-note.md")));
+    }
+
+    #[tokio::test]
+    async fn library_query_hydrates_every_continuation_page_beyond_one_thousand_rows() {
+        let workspace = Uuid::new_v4();
+        let drive = Uuid::new_v4();
+        let mut query = request(workspace, vec![drive]);
+        query.page_size = 1_000;
+        query.limit = 1_001;
+        let answer = execute_registered_library_query(
+            query,
+            vec![cloud_member(
+                drive,
+                Arc::new(CloudFixture::drive_documents(1_001)),
+                mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+            )],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("complete paged Library query");
+
+        assert_eq!(answer.answer.rows.len(), 1_001);
+        assert_eq!(answer.answer.next_cursor, None);
+        assert_eq!(answer.answer.completeness, Completeness::Complete);
     }
 
     #[tokio::test]

@@ -29,6 +29,7 @@ const SNAPSHOT: LibrarySnapshot = {
   version: 4,
   sources: [SOURCE],
   cloud_sources: [],
+  connected_catdb: null,
   cleanup: { kind: 'complete' },
 };
 const DIAGNOSTICS: DiagnosticInfo = {
@@ -50,6 +51,7 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
       version: 4,
       sources: [],
       cloud_sources: [],
+      connected_catdb: null,
       cleanup: { kind: 'complete' as const },
     })),
     diagnosticsInfo: vi.fn(async () => DIAGNOSTICS),
@@ -476,7 +478,13 @@ describe('Settings sheet', () => {
     );
 
     await act(async () => {
-      release({ version: 4, sources: [], cloud_sources: [], cleanup: { kind: 'complete' } });
+      release({
+        version: 4,
+        sources: [],
+        cloud_sources: [],
+        connected_catdb: null,
+        cleanup: { kind: 'complete' },
+      });
       await pending;
     });
   });
@@ -500,6 +508,7 @@ describe('Settings sheet', () => {
         version: 4,
         sources: [active, missing],
         cloud_sources: [],
+        connected_catdb: null,
         cleanup: { kind: 'complete' as const },
       })),
     });
@@ -599,6 +608,7 @@ describe('Settings sheet', () => {
         version: 4,
         sources: [],
         cloud_sources: [],
+        connected_catdb: null,
         cleanup: { kind: 'pending' as const, source_count: 2 },
       })),
     });

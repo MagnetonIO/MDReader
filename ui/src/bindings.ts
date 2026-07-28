@@ -56,6 +56,10 @@ export const commands = {
 	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),
 	disconnectConnectedCatdb: (connectionId: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("disconnect_connected_catdb", { connectionId })),
 	connectedCatdbEntityQuery: (connectionId: string, request: EntityQueryRequest_Deserialize) => typedError<MobileEnterpriseResponse, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_entity_query", { connectionId, request })),
+	/**  Query one authenticated Connected CatDB membership as an exact Library evidence group. */
+	queryConnectedLibraryDocuments: (connectionId: string, requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, MobileEnterpriseError>(__TAURI_INVOKE("query_connected_library_documents", { connectionId, requestId, request })),
+	/**  Cancel one renderer-owned Connected CatDB Library query before it publishes evidence. */
+	cancelConnectedCatdbQuery: (requestId: string) => typedError<boolean, MobileEnterpriseError>(__TAURI_INVOKE("cancel_connected_catdb_query", { requestId })),
 	mobileEnterpriseConnection: () => typedError<{
 	connection_id: string,
 	label: string,
@@ -483,7 +487,7 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-authorization-denied" } | { kind: "query-all-sources-refused" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-incomplete-sources"; source_ids: string[] } | { kind: "query-stale-sources"; source_ids: string[] } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-not-found"; source_id: string; record_key: string } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-source-protocol"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-execution-failed"; sources: SourceExecution[] } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-cancelled" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-authorization-denied" } | { kind: "query-all-sources-refused" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-incomplete-sources"; source_ids: string[] } | { kind: "query-stale-sources"; source_ids: string[] } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-not-found"; source_id: string; record_key: string } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-source-protocol"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-execution-failed"; sources: SourceExecution[] } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
 
 export type CloudSourceOutcome = { kind: "ran"; mode: CloudExecutionMode; scanned: number; returned: number; pushed: string[]; residual: string[] };
 
@@ -1178,6 +1182,16 @@ export type LibraryCloudSourceDto = {
 	contract: LibrarySourceContract,
 };
 
+/**  Non-secret Connected CatDB membership exposed through the unified Library snapshot. */
+export type LibraryConnectedCatdbDto = {
+	connection_id: string,
+	label: string,
+	workspace_id: string,
+	catalog_revision_id: string,
+	selected_source_ids: string[],
+	contract: LibrarySourceContract,
+};
+
 /**  One exact CatDB answer plus the membership boundary used to produce it. */
 export type LibraryEntityQueryResponse = LibraryEntityQueryResponse_Serialize | LibraryEntityQueryResponse_Deserialize;
 
@@ -1200,12 +1214,13 @@ export type LibraryIndexPolicy = "managed" | "read-through";
 export type LibraryIndexState = "present" | "not-created" | "unknown";
 
 /**  Source family for one Library membership. */
-export type LibraryQueryMemberKind = "local-folder" | "google-drive" | "dropbox";
+export type LibraryQueryMemberKind = "local-folder" | "google-drive" | "dropbox" | "connected-catdb";
 
 export type LibrarySnapshot = {
 	version: number,
 	sources: LibrarySourceDto[],
 	cloud_sources: LibraryCloudSourceDto[],
+	connected_catdb: LibraryConnectedCatdbDto | null,
 	cleanup: LibraryCleanupStatus,
 };
 
@@ -1428,7 +1443,7 @@ export type MobileEnterpriseConnection = {
 	label: string,
 };
 
-export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "connection-identity-changed" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" };
+export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "connection-identity-changed" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "cancelled" };
 
 export type MobileEnterpriseOperation = "session" | "entity-query";
 

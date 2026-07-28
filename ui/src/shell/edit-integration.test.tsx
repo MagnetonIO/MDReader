@@ -73,6 +73,7 @@ const h = vi.hoisted(() => ({
   backendGeneration: 0,
   searchRoots: [] as (string | null)[],
   libraryEvidence: null as null | Record<string, unknown>,
+  libraryQueryFails: false,
   editResolutions: [] as { sourceId: string; relativePath: string }[],
   seq: 0,
   pickedPath: '/ws',
@@ -171,6 +172,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       version: 4,
       sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
       cloud_sources: [],
+      connected_catdb: null,
       cleanup: { kind: 'complete' as const },
     };
   });
@@ -246,7 +248,10 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       catalog_revision_id: '00000000-0000-4000-8000-000000000007',
       schema_version_id: '00000000-0000-4000-8000-000000000008',
     })),
-    queryLibraryDocuments: vi.fn(async () => h.libraryEvidence ?? emptyLibraryEvidence),
+    queryLibraryDocuments: vi.fn(async () => {
+      if (h.libraryQueryFails) throw new Error('injected Library refresh failure');
+      return h.libraryEvidence ?? emptyLibraryEvidence;
+    }),
     resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
       h.editResolutions.push({ sourceId, relativePath });
       const root = sourceId === 'b'.repeat(64) ? '/ws-b' : '/ws';
@@ -447,6 +452,7 @@ beforeEach(() => {
   h.backendGeneration = 0;
   h.searchRoots.length = 0;
   h.libraryEvidence = null;
+  h.libraryQueryFails = false;
   h.editResolutions.length = 0;
   h.closed = false;
   h.drainGate = null;
@@ -491,6 +497,25 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('invalidates listed and open evidence when a refresh can no longer verify it', async () => {
+    installSecondWorkspaceLibraryDocument();
+    render(<App />);
+    const open = await screen.findByRole('button', {
+      name: 'Open Local note from Second workspace',
+    });
+    fireEvent.click(open);
+    await screen.findByRole('button', { name: 'Edit local file' });
+
+    h.libraryQueryFails = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await screen.findByText('Library sources could not be read.');
+    expect(
+      screen.queryByRole('button', { name: 'Open Local note from Second workspace' }),
+    ).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit local file' })).toBeNull();
+  });
+
   it('does not resume an older Edit after a newer source switch starts', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);

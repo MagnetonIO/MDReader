@@ -287,6 +287,58 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
   expect(inspector.getByText(SOURCE_VERSION)).toBeTruthy();
 });
 
+it('renders partial exclusions, retry guidance, and the provenance-rule pin', () => {
+  const excludedSource = '00000000-0000-4000-8000-000000000099';
+  const partial: LibraryEntityQueryResponse_Serialize = {
+    ...response,
+    answer: {
+      ...response.answer,
+      completeness: {
+        state: 'partial',
+        excluded_source_ids: [excludedSource],
+      },
+      sources: [
+        ...response.answer.sources,
+        {
+          source_id: excludedSource,
+          source_version_id: '00000000-0000-4000-8000-000000000098',
+          outcome: 'rate_limited',
+          retry_after_ms: 5_000,
+          freshness_ms: null,
+          scanned: 0,
+          returned: 0,
+        },
+      ],
+    },
+    memberships: [
+      {
+        ...member,
+        source_ids: [...member.source_ids, excludedSource],
+      },
+    ],
+  };
+  render(<LibraryDocumentPane member={partial.memberships[0]!} row={row} evidence={partial} />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
+  const inspector = within(
+    screen.getByRole('complementary', { name: 'Semantic Inspector' }),
+  );
+  expect(inspector.getByText('Partial')).toBeTruthy();
+  expect(inspector.getByText(`Excluded source ${excludedSource}`)).toBeTruthy();
+
+  fireEvent.click(inspector.getByRole('tab', { name: 'Sources' }));
+  expect(inspector.getByText('Retry after 5000 ms')).toBeTruthy();
+
+  fireEvent.click(inspector.getByRole('tab', { name: 'Provenance' }));
+  expect(
+    inspector.getAllByText(`provenance rule ${PROVENANCE_RULE_VERSION}`).length,
+  ).toBeGreaterThan(0);
+
+  fireEvent.click(inspector.getByRole('tab', { name: 'Schema' }));
+  expect(inspector.getByText('Provenance rule pin')).toBeTruthy();
+  expect(inspector.getByText(PROVENANCE_RULE_VERSION)).toBeTruthy();
+});
+
 it('never mounts Semantic Inspector for a row that was not body-hydrated', () => {
   const unhydrated = {
     ...row,

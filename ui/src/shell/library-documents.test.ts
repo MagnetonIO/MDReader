@@ -8,6 +8,7 @@ import type {
 } from '../bindings.js';
 import {
   hydrateLibrary,
+  LIBRARY_DOCUMENT_FIELDS,
   memberForRow,
   physicalRecordKey,
   rowsForMember,
@@ -120,6 +121,7 @@ const driveLibrary: LibrarySnapshot = {
       },
     },
   ],
+  connected_catdb: null,
   cleanup: { kind: 'complete' },
 };
 
@@ -137,6 +139,7 @@ const localLibrary: LibrarySnapshot = {
     },
   ],
   cloud_sources: [],
+  connected_catdb: null,
   cleanup: { kind: 'complete' },
 };
 
@@ -154,7 +157,7 @@ describe('one hydrated Library answer', () => {
     };
     const result = await hydrateLibrary(backend, 'request-1');
 
-    expect(result).toEqual({ evidence });
+    expect(result).toEqual({ evidence: [evidence], failures: [] });
     expect(queryLibraryDocuments).toHaveBeenCalledOnce();
     expect(queryLibraryDocuments).toHaveBeenCalledWith(
       '00000000-0000-4000-8000-000000000020',
@@ -203,6 +206,7 @@ describe('one hydrated Library answer', () => {
           version: 7,
           sources: [],
           cloud_sources: [],
+          connected_catdb: null,
           cleanup: { kind: 'complete' },
         })),
         prepareCloudCatalog,
@@ -211,7 +215,7 @@ describe('one hydrated Library answer', () => {
       'request-empty',
     );
 
-    expect(result).toEqual({ evidence: null });
+    expect(result).toEqual({ evidence: [], failures: [] });
     expect(prepareCloudCatalog).not.toHaveBeenCalled();
     expect(queryLibraryDocuments).not.toHaveBeenCalled();
   });
@@ -221,5 +225,115 @@ describe('one hydrated Library answer', () => {
     expect(rowsForMember(evidence, member)).toEqual([row]);
     expect(physicalRecordKey(row)).toBe('drive-file');
     expect(member.editable).toBe(false);
+  });
+
+  it('hydrates an authenticated Connected CatDB membership into the same Library result', async () => {
+    const connectedEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      memberships: [
+        {
+          ...member,
+          registry_id: 'connected-catdb',
+          name: 'Research CatDB',
+          kind: 'connected-catdb',
+        },
+      ],
+    };
+    const queryConnectedCatdbDocuments = vi.fn(async () => connectedEvidence);
+    const result = await hydrateLibrary(
+      {
+        listSources: vi.fn(async (): Promise<LibrarySnapshot> => ({
+          ...driveLibrary,
+          connected_catdb: {
+            connection_id: 'connected-catdb',
+            label: 'Research CatDB',
+            workspace_id: '00000000-0000-4000-8000-000000000030',
+            catalog_revision_id: '00000000-0000-4000-8000-000000000031',
+            selected_source_ids: [PHYSICAL_SOURCE_ID],
+            contract: {
+              connector_version: 'connected-catdb/v1',
+              capabilities: {
+                read: true,
+                write: false,
+                search: true,
+                watch: false,
+                open_original: false,
+                download: false,
+              },
+              mapping_version: '00000000-0000-4000-8000-000000000031',
+              index_policy: 'read-through',
+            },
+          },
+        })),
+        prepareCloudCatalog: vi.fn(async () => ({
+          workspace_id: '00000000-0000-4000-8000-000000000020',
+          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
+          schema_version_id: '00000000-0000-4000-8000-000000000022',
+        })),
+        queryLibraryDocuments: vi.fn(async () => evidence),
+        queryConnectedCatdbDocuments,
+      },
+      'request-connected',
+    );
+
+    expect(result.evidence).toEqual([evidence, connectedEvidence]);
+    expect(result.failures).toEqual([]);
+    expect(queryConnectedCatdbDocuments).toHaveBeenCalledWith(
+      'connected-catdb',
+      [],
+      [...LIBRARY_DOCUMENT_FIELDS],
+      'request-connected:connected-catdb',
+    );
+    expect(connectedEvidence.memberships[0]?.editable).toBe(false);
+  });
+
+  it('keeps a healthy Connected CatDB answer when the embedded authority fails', async () => {
+    const connectedEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      memberships: [
+        {
+          ...member,
+          registry_id: 'connected-catdb',
+          name: 'Research CatDB',
+          kind: 'connected-catdb',
+        },
+      ],
+    };
+    const result = await hydrateLibrary(
+      {
+        listSources: vi.fn(async (): Promise<LibrarySnapshot> => ({
+          ...driveLibrary,
+          connected_catdb: {
+            connection_id: 'connected-catdb',
+            label: 'Research CatDB',
+            workspace_id: '00000000-0000-4000-8000-000000000030',
+            catalog_revision_id: '00000000-0000-4000-8000-000000000031',
+            selected_source_ids: [PHYSICAL_SOURCE_ID],
+            contract: {
+              connector_version: 'connected-catdb/v1',
+              capabilities: {
+                read: true,
+                write: false,
+                search: true,
+                watch: false,
+                open_original: false,
+                download: false,
+              },
+              mapping_version: '00000000-0000-4000-8000-000000000031',
+              index_policy: 'read-through',
+            },
+          },
+        })),
+        prepareCloudCatalog: vi.fn(async () => {
+          throw new Error('embedded catalog unavailable');
+        }),
+        queryLibraryDocuments: vi.fn(async () => evidence),
+        queryConnectedCatdbDocuments: vi.fn(async () => connectedEvidence),
+      },
+      'request-partial',
+    );
+
+    expect(result.evidence).toEqual([connectedEvidence]);
+    expect(result.failures).toEqual([{ authority: 'embedded' }]);
   });
 });

@@ -50,11 +50,17 @@ const DROPBOX_DOCUMENT_FIELDS = [
 ] as const;
 
 export interface HydratedLibrary {
-  evidence: LibraryEntityQueryResponse_Serialize | null;
+  /** Independent immutable catalog answers presented as one Library surface. */
+  evidence: LibraryEntityQueryResponse_Serialize[];
+  /** Catalog authorities that failed without suppressing healthy answers. */
+  failures: LibraryHydrationFailure[];
 }
 
-/** Canonical fields that at least one enabled Library membership can answer. */
-export function queryableLibraryFields(snapshot: LibrarySnapshot): string[] {
+export interface LibraryHydrationFailure {
+  authority: 'embedded' | 'connected-catdb';
+}
+
+function localQueryableLibraryFields(snapshot: LibrarySnapshot): string[] {
   const queryable = new Set<string>();
   if (snapshot.sources.length > 0) {
     LOCAL_DOCUMENT_FIELDS.forEach((field) => queryable.add(field));
@@ -70,34 +76,77 @@ export function queryableLibraryFields(snapshot: LibrarySnapshot): string[] {
   return LIBRARY_DOCUMENT_FIELDS.filter((field) => queryable.has(field));
 }
 
+/** Canonical fields that at least one enabled Library membership can answer. */
+export function queryableLibraryFields(snapshot: LibrarySnapshot): string[] {
+  if (snapshot.connected_catdb && snapshot.connected_catdb.selected_source_ids.length > 0) {
+    return [...LIBRARY_DOCUMENT_FIELDS];
+  }
+  return localQueryableLibraryFields(snapshot);
+}
+
 /**
- * Resolve one Library snapshot and hydrate it through exactly one CatDB
- * entity-query call. Provider-specific query methods are intentionally absent
- * from this contract, so callers cannot concatenate independent answers.
+ * Resolve one Library snapshot and hydrate each catalog authority. Local and
+ * cloud memberships share one embedded answer. A Connected CatDB stays a
+ * separate evidence group because its remote catalog pins cannot be merged
+ * honestly with the embedded catalog's pins.
  */
 export async function hydrateLibrary(
   backend: Pick<
     SettingsBackend,
-    'listSources' | 'prepareCloudCatalog' | 'queryLibraryDocuments'
+    | 'listSources'
+    | 'prepareCloudCatalog'
+    | 'queryLibraryDocuments'
+    | 'queryConnectedCatdbDocuments'
   >,
   requestId: string,
 ): Promise<HydratedLibrary> {
-  if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
-    throw new Error('Library queries are unavailable.');
-  }
   const snapshot = await backend.listSources();
-  const fields = queryableLibraryFields(snapshot);
-  if (fields.length === 0) {
-    return { evidence: null };
+  const reads: Array<{
+    authority: LibraryHydrationFailure['authority'];
+    execute: () => Promise<LibraryEntityQueryResponse_Serialize>;
+  }> = [];
+  const embeddedFields = localQueryableLibraryFields(snapshot);
+  if (embeddedFields.length > 0) {
+    reads.push({
+      authority: 'embedded',
+      execute: async () => {
+        if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
+          throw new Error('Embedded Library queries are unavailable.');
+        }
+        const catalog = await backend.prepareCloudCatalog();
+        return backend.queryLibraryDocuments(
+          catalog.workspace_id,
+          [],
+          embeddedFields,
+          requestId,
+        );
+      },
+    });
   }
-  const catalog = await backend.prepareCloudCatalog();
-  const evidence = await backend.queryLibraryDocuments(
-    catalog.workspace_id,
-    [],
-    fields,
-    requestId,
-  );
-  return { evidence };
+  if (snapshot.connected_catdb && snapshot.connected_catdb.selected_source_ids.length > 0) {
+    const connectionId = snapshot.connected_catdb.connection_id;
+    reads.push({
+      authority: 'connected-catdb',
+      execute: async () => {
+        if (!backend.queryConnectedCatdbDocuments) {
+          throw new Error('Connected CatDB Library queries are unavailable.');
+        }
+        return backend.queryConnectedCatdbDocuments(
+          connectionId,
+          [],
+          [...LIBRARY_DOCUMENT_FIELDS],
+          `${requestId}:connected-catdb`,
+        );
+      },
+    });
+  }
+  const settled = await Promise.allSettled(reads.map(({ execute }) => execute()));
+  return {
+    evidence: settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
+    failures: settled.flatMap((result, index) =>
+      result.status === 'rejected' ? [{ authority: reads[index]!.authority }] : [],
+    ),
+  };
 }
 
 export interface HydratedLibrarySelection {

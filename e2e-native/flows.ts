@@ -347,6 +347,10 @@ export type Step =
       readonly document: string;
       /** Regex source matched against the reader and local edit affordance. */
       readonly readerPattern: string;
+      /** Regex source proving the exact Library answer reports its completeness. */
+      readonly resultPattern: string;
+      /** Regex source proving every source execution remains inspectable. */
+      readonly sourcesPattern: string;
       /** Regex source matched against the exact answer's provenance tab. */
       readonly provenancePattern: string;
       /** Regex source matched against the pinned schema tab. */
@@ -609,10 +613,12 @@ export const FLOW: readonly Step[] = [
     channel: 'dom',
     document: 'catdb-core',
     readerPattern: 'Edit local file[\\s\\S]*catdb-core',
+    resultPattern: 'Complete[\\s\\S]*catdb-core\\.md',
+    sourcesPattern: 'ran[\\s\\S]*ran[\\s\\S]*ran',
     provenancePattern:
-      'title[\\s\\S]*\\.title[\\s\\S]*record[^\\n]*catdb-core\\.md',
+      'title[\\s\\S]*provenance rule[\\s\\S]*\\.title[\\s\\S]*record[^\\n]*catdb-core\\.md',
     schemaPattern:
-      'Catalog authority[\\s\\S]*Schema[\\s\\S]*Mappings[\\s\\S]*Sources[\\s\\S]*Policies',
+      'Catalog authority[\\s\\S]*Schema[\\s\\S]*Mappings[\\s\\S]*Sources[\\s\\S]*Policies[\\s\\S]*Provenance rule pin',
   },
   {
     kind: 'dragWindow',
