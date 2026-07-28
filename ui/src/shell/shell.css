@@ -474,16 +474,27 @@ body {
   list-style: none;
 }
 
-.cloud-source__documents li {
+.cloud-source__document {
   display: flex;
+  width: 100%;
   gap: 12px;
   justify-content: space-between;
   min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--color-fg);
   font-size: 11px;
+  text-align: left;
 }
 
-.cloud-source__documents li > span {
+.cloud-source__document:hover,
+.cloud-source__document:focus-visible {
+  background: var(--color-surface-raised);
+}
+
+.cloud-source__document > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -493,6 +504,73 @@ body {
   flex: none;
   color: var(--color-faint);
   font: 500 9px/1.4 var(--font-ui);
+}
+
+.cloud-source__reader {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-bg);
+}
+
+.cloud-source__reader header,
+.cloud-source__reader header > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cloud-source__reader header > div:first-child {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.cloud-source__reader header span,
+.cloud-source__reader dt {
+  color: var(--color-faint);
+  font: 600 9px/1.3 var(--font-ui);
+}
+
+.cloud-source__reader header a,
+.cloud-source__reader header button {
+  color: var(--color-accent);
+  font: 600 10px/1 var(--font-ui);
+}
+
+.cloud-source__reader pre {
+  overflow: auto;
+  max-height: 280px;
+  margin: 0;
+  padding: 14px;
+  border-radius: 7px;
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  font: 12px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.cloud-source__reader dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.cloud-source__reader dl > div {
+  min-width: 0;
+}
+
+.cloud-source__reader dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--color-muted);
+  font: 500 9px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-switch {
@@ -972,6 +1050,93 @@ body {
   color: var(--color-text);
 }
 
+.library-sources {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 44%;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.library-sources__heading,
+.library-sources__source > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.library-sources__heading > span {
+  color: var(--color-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.library-sources__heading button,
+.library-sources__source button {
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+}
+
+.library-sources input {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--text--1);
+}
+
+.library-sources__source {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+}
+
+.library-sources__source strong {
+  color: var(--color-fg);
+  font-size: var(--text--1);
+}
+
+.library-sources__source small,
+.library-sources__source p,
+.library-sources__error {
+  margin: 0;
+  color: var(--color-faint);
+  font-size: 0.68rem;
+}
+
+.library-sources__error {
+  color: var(--color-danger);
+}
+
+.library-sources__source ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-sources__source li button {
+  width: 100%;
+  overflow: hidden;
+  padding: 4px 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-sources__source li button:hover {
+  color: var(--color-accent);
+}
+
 /* The status bar's file-count slot when the listing failed. */
 .statusbar__alert {
   color: var(--color-danger);
@@ -1191,6 +1356,40 @@ body {
   flex: 1;
 }
 
+.library-reader__toolbar {
+  gap: var(--space-3);
+  font-size: var(--text--1);
+}
+
+.library-reader__toolbar a,
+.library-reader__toolbar button {
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  text-decoration: none;
+}
+
+.library-reader__state {
+  color: var(--color-faint);
+}
+
+.library-reader__policy {
+  margin: 0;
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-faint);
+  font-size: var(--text--1);
+}
+
+.library-reader__inspector {
+  width: min(330px, 34vw);
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
 .reader-host {
   flex: 1;
   min-width: 0;
@@ -1221,6 +1420,10 @@ body {
 
 .shell__reader-row--related-open {
   grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.shell__reader-row--library-open {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 /* --- related rail ----------------------------------------------------- */
@@ -1574,6 +1777,7 @@ body {
 .shell--focus .reader-toolbar,
 .shell--focus .outline-rail,
 .shell--focus .related-rail,
+.shell--focus .library-reader__inspector,
 .shell--focus .related-rail__toggle--collapsed,
 .shell--focus .lens-rail,
 .shell--focus .lens-strip,
@@ -1585,7 +1789,8 @@ body {
 /* With the rails hidden, drop their columns entirely so the reader reclaims the
  * full width and centers — even when a rail was left open before entering focus. */
 .shell--focus .shell__reader-row,
-.shell--focus .shell__reader-row--related-open {
+.shell--focus .shell__reader-row--related-open,
+.shell--focus .shell__reader-row--library-open {
   grid-template-columns: minmax(0, 1fr);
 }
 

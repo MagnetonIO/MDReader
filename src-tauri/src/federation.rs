@@ -18,6 +18,7 @@ use specta::Type;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
+use crate::cloud_accounts::{CloudAccountsState, CloudCatalogAuthority};
 use crate::commands::{resolve_within, WorkspaceState};
 use crate::overlay::SchemaSummary;
 
@@ -28,6 +29,11 @@ const RESPONSE_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const QUERY_PAGE_SIZE: usize = 1_000;
 const MAX_CONCURRENT_QUERIES: usize = 4;
 const MAX_INVOCATION_BYTES: usize = 128;
+
+struct LocalDocumentAuthority {
+    epoch: Arc<crate::engine::Epoch>,
+    catalog: CloudCatalogAuthority,
+}
 
 #[derive(Debug, Clone)]
 struct ActiveQuery {
@@ -231,7 +237,7 @@ pub struct FederatedFieldDto {
 pub struct FederatedDocumentDto {
     /// Workspace-relative natural key.
     pub path: String,
-    /// All six schema fields in stable name order.
+    /// Every canonical Document schema field in stable name order.
     pub fields: Vec<FederatedFieldDto>,
 }
 
@@ -266,7 +272,7 @@ pub struct FederatedSchemaDto {
     /// Stable schema name.
     pub name: String,
     /// Persisted catalog version.
-    pub version: u32,
+    pub version: String,
     /// Persisted content checksum for that exact version.
     pub checksum: String,
     /// Entity names in the persisted schema.
@@ -309,16 +315,20 @@ pub async fn query_federated_document(
     request: String,
     state: tauri::State<'_, WorkspaceState>,
     runtime: tauri::State<'_, FederationRuntime>,
+    catalog_state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<FederatedDocumentResponse, String> {
     validate_request_key("invocation", &invocation)?;
     validate_request_key("request", &request)?;
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    let catalog = crate::cloud_accounts::ensure_configured_cloud_catalog(&catalog_state)
+        .await
+        .map_err(|error| error.to_string())?;
     query_federated_document_registered(
         &state,
         &runtime,
-        epoch,
+        LocalDocumentAuthority { epoch, catalog },
         &path,
         &invocation,
         &request,
@@ -331,18 +341,18 @@ pub async fn query_federated_document(
 async fn query_federated_document_registered(
     state: &WorkspaceState,
     runtime: &FederationRuntime,
-    epoch: Arc<crate::engine::Epoch>,
+    authority: LocalDocumentAuthority,
     path: &str,
     invocation: &str,
     request: &str,
     before_publication: impl FnOnce(),
 ) -> Result<FederatedDocumentResponse, QueryPublicationError> {
-    let active = runtime.begin(epoch.generation, invocation, request);
+    let active = runtime.begin(authority.epoch.generation, invocation, request);
     let permit = runtime.acquire(&active).await;
     let result = match permit {
         Ok(_permit) => query_federated_document_for_epoch(
             state,
-            epoch,
+            authority,
             path,
             active.cancellation().clone(),
             || {},
@@ -381,6 +391,16 @@ fn validate_request_key(label: &str, value: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+fn test_catalog_authority() -> Result<CloudCatalogAuthority, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    crate::cloud_accounts::open_cloud_catalog(
+        &directory.path().join("library.catdb"),
+        Uuid::from_u128(1),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
 async fn query_federated_document_guarded(
     state: &WorkspaceState,
     path: &str,
@@ -389,9 +409,10 @@ async fn query_federated_document_guarded(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    let catalog = test_catalog_authority()?;
     query_federated_document_for_epoch(
         state,
-        epoch,
+        LocalDocumentAuthority { epoch, catalog },
         path,
         CancellationToken::new(),
         after_query,
@@ -409,9 +430,10 @@ async fn query_federated_document_guarded_with_source_observer(
     let epoch = state
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
+    let catalog = test_catalog_authority()?;
     query_federated_document_for_epoch(
         state,
-        epoch,
+        LocalDocumentAuthority { epoch, catalog },
         path,
         CancellationToken::new(),
         || {},
@@ -432,10 +454,11 @@ async fn query_federated_document_runtime_guarded(
     let epoch = state.current().ok_or_else(|| {
         QueryPublicationError::Execution("no workspace has been opened".to_string())
     })?;
+    let catalog = test_catalog_authority().map_err(QueryPublicationError::Execution)?;
     query_federated_document_registered(
         state,
         runtime,
-        epoch,
+        LocalDocumentAuthority { epoch, catalog },
         path,
         invocation,
         request,
@@ -446,12 +469,14 @@ async fn query_federated_document_runtime_guarded(
 
 async fn query_federated_document_for_epoch(
     state: &WorkspaceState,
-    epoch: Arc<crate::engine::Epoch>,
+    authority: LocalDocumentAuthority,
     path: &str,
     cancellation: CancellationToken,
     after_query: impl FnOnce(),
     before_sources: impl FnOnce() + Send + 'static,
 ) -> Result<FederatedDocumentResponse, String> {
+    let epoch = authority.epoch;
+    let catalog = authority.catalog;
     let worker_epoch = Arc::clone(&epoch);
     let worker_path = path.to_string();
     let response = tokio::task::spawn_blocking(move || {
@@ -461,6 +486,7 @@ async fn query_federated_document_for_epoch(
             .map_err(|error| format!("could not start the federation worker runtime: {error}"))?;
         runtime.block_on(query_federated_document_unpublished(
             &worker_epoch,
+            &catalog,
             &worker_path,
             cancellation,
             before_sources,
@@ -477,12 +503,13 @@ async fn query_federated_document_for_epoch(
 
 async fn query_federated_document_unpublished(
     epoch: &Arc<crate::engine::Epoch>,
+    catalog: &CloudCatalogAuthority,
     path: &str,
     cancellation: CancellationToken,
     before_sources: impl FnOnce(),
 ) -> Result<FederatedDocumentResponse, String> {
     epoch.validate_root()?;
-    let schema = persisted_document_schema(epoch)?;
+    let schema = persisted_document_schema(epoch, catalog)?;
     let source_root = epoch.source_root();
     let exact = resolve_within(&source_root.path, std::path::Path::new(path))?;
     if !exact.is_file() {
@@ -599,78 +626,106 @@ fn document_dto(document: &mdreader_domain::federated::Document) -> FederatedDoc
 
 fn persisted_document_schema(
     epoch: &Arc<crate::engine::Epoch>,
+    catalog: &CloudCatalogAuthority,
 ) -> Result<FederatedSchemaDto, String> {
     let engine = epoch.db().ok_or_else(|| {
         "the federated Document schema has no persisted catalog version/checksum yet".to_string()
     })?;
-    let stored = engine
-        .latest_schema_version(FEDERATED_SCHEMA)
-        .map_err(|error| format!("could not resolve the persisted Document schema: {error}"))?
+    let revision = engine
+        .catalog_revision()
+        .map_err(|error| format!("could not resolve the persisted Document catalog: {error}"))?
         .ok_or_else(|| {
             "the federated Document schema has no persisted catalog version/checksum yet"
                 .to_string()
         })?;
-    if stored.version == 0 {
+    let mut selected = None;
+    for version_id in revision.schema_version_ids {
+        let version = engine
+            .catalog_schema_version(version_id)
+            .map_err(|error| format!("could not resolve the persisted Document schema: {error}"))?
+            .ok_or_else(|| {
+                "the federated Document catalog references a missing schema version".to_string()
+            })?;
+        if version.name != FEDERATED_SCHEMA {
+            continue;
+        }
+        if selected.replace(version).is_some() {
+            return Err(
+                "the persisted catalog selects more than one Document schema version".to_string(),
+            );
+        }
+    }
+    let stored = selected.ok_or_else(|| {
+        "the federated Document schema has no persisted catalog version/checksum yet".to_string()
+    })?;
+    let content = engine
+        .catalog_schema_content(stored.content_id)
+        .map_err(|error| format!("could not resolve the persisted Document schema body: {error}"))?
+        .ok_or_else(|| "the persisted Document schema body is missing".to_string())?;
+    content
+        .verify()
+        .map_err(|error| format!("could not verify the persisted Document schema body: {error}"))?;
+    let persisted: catdb_core::Schema =
+        serde_json::from_value(content.spec.clone()).map_err(|error| {
+            format!("could not reconstruct the persisted Document schema body: {error}")
+        })?;
+    let active = catdb_storage::SchemaContent::new(
+        serde_json::to_value(document_schema())
+            .map_err(|error| format!("could not serialize the active Document schema: {error}"))?,
+    );
+    if content.content_id != active.content_id || content.checksum != active.checksum {
+        return Err(format!(
+            "the local engine's persisted Document schema {} ({}) does not match the active \
+             domain schema ({}); source execution is refused",
+            stored.schema_version_id, content.checksum, active.checksum
+        ));
+    }
+    if content.checksum != catalog.schema_checksum {
         return Err(
-            "the federated Document schema has no persisted catalog version/checksum yet"
+            "the local engine and Library catalog do not select the same Document schema body; \
+             source execution is refused"
                 .to_string(),
         );
     }
-    let persisted = stored
-        .schema()
-        .map_err(|error| format!("could not reconstruct the persisted Document schema: {error}"))?;
-    let actual_checksum = catdb_engine::schema_checksum(&persisted);
-    if actual_checksum != stored.checksum {
+    let catalog_schema_version = Uuid::parse_str(&catalog.schema_version).map_err(|_| {
+        "the Library catalog selected an invalid Document schema version".to_string()
+    })?;
+    if stored.schema_version_id != catalog_schema_version {
         return Err(format!(
-            "the persisted Document schema v{} records checksum {}, but its stored body hashes to \
-             {}; source execution is refused",
-            stored.version, stored.checksum, actual_checksum
-        ));
-    }
-    let active_checksum = catdb_engine::schema_checksum(&document_schema());
-    if actual_checksum != active_checksum {
-        return Err(format!(
-            "the persisted Document schema v{} ({}) does not match the active domain schema ({}); \
-             source execution is refused",
-            stored.version, actual_checksum, active_checksum
+            "the local engine and Library catalog do not select the same Document schema version \
+             UUID (local {}, Library {}); migrate the older catalog before source execution",
+            stored.schema_version_id, catalog_schema_version
         ));
     }
 
     let summary = crate::overlay::schema_summary_for(epoch, FEDERATED_SCHEMA)
         .ok_or_else(|| "the federated Document schema is not registered".to_string())?;
-    let response = persisted_schema(summary)?;
-    if response.version != stored.version || response.checksum != stored.checksum {
-        return Err(
-            "the persisted Document schema identity changed while the query was being resolved"
-                .to_string(),
-        );
-    }
-    Ok(response)
+    Ok(persisted_schema(
+        summary,
+        stored.schema_version_id,
+        content.checksum,
+        &persisted,
+    ))
 }
 
-fn persisted_schema(summary: SchemaSummary) -> Result<FederatedSchemaDto, String> {
-    let version = summary.version.ok_or_else(|| {
-        "the federated Document schema has no persisted catalog version/checksum yet".to_string()
-    })?;
-    let checksum = summary
-        .checksum
-        .filter(|checksum| !checksum.is_empty())
-        .ok_or_else(|| {
-            "the federated Document schema has no persisted catalog version/checksum yet"
-                .to_string()
-        })?;
-    Ok(FederatedSchemaDto {
-        name: summary.name,
-        version,
-        checksum,
-        entities: summary.entities,
-        arrow_count: summary.arrow_count,
-        attribute_count: summary.attribute_count,
-        equation_count: summary.equation_count,
+fn persisted_schema(
+    summary: SchemaSummary,
+    schema_version_id: Uuid,
+    schema_checksum: String,
+    schema: &catdb_core::Schema,
+) -> FederatedSchemaDto {
+    FederatedSchemaDto {
+        name: schema.name.to_string(),
+        version: schema_version_id.to_string(),
+        checksum: schema_checksum,
+        entities: schema.entities.iter().map(ToString::to_string).collect(),
+        arrow_count: schema.arrows.len() as u32,
+        attribute_count: schema.attributes.len() as u32,
+        equation_count: schema.equations.len() as u32,
         approval_required: summary.approval_required,
         object_count: summary.object_count,
         proposal_count: summary.proposal_count,
-    })
+    }
 }
 
 fn enforce_response_budget(response: &FederatedDocumentResponse) -> Result<(), String> {
@@ -870,7 +925,10 @@ mod tests {
         assert_eq!(answer.sources.len(), 3);
         assert!(answer.sources.iter().all(|source| source.outcome == "ran"));
         assert_eq!(answer.document.path, "a file.md");
-        assert_eq!(answer.document.fields.len(), 6);
+        assert_eq!(
+            answer.document.fields.len(),
+            mdreader_domain::federated::ATTRIBUTES.len()
+        );
         let title = answer
             .document
             .fields
@@ -1031,6 +1089,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn local_sources_use_the_same_persisted_document_schema_identity_as_cloud() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let catalog = super::test_catalog_authority().expect("persisted Library catalog");
+        let epoch = state.current().expect("workspace epoch");
+        let engine = epoch.db().expect("local CatDB");
+        let revision = engine
+            .catalog_revision()
+            .expect("local catalog")
+            .expect("local operational revision");
+        let local_version = revision
+            .schema_version_ids
+            .into_iter()
+            .map(|version_id| {
+                engine
+                    .catalog_schema_version(version_id)
+                    .expect("schema lookup")
+                    .expect("persisted schema")
+            })
+            .find(|version| version.name == mdreader_domain::federated::SCHEMA)
+            .expect("local Document schema");
+        let schema = super::persisted_document_schema(&epoch, &catalog)
+            .expect("canonical local Document schema");
+
+        assert_eq!(
+            local_version.schema_version_id.to_string(),
+            catalog.schema_version,
+            "the two persisted catalogs must select one real immutable UUID"
+        );
+        assert_eq!(schema.version, catalog.schema_version);
+        assert_eq!(schema.version, local_version.schema_version_id.to_string());
+        assert_eq!(schema.checksum, catalog.schema_checksum);
+        uuid::Uuid::parse_str(&schema.version).expect("one immutable schema-version identity");
+    }
+
+    #[test]
+    fn a_mismatched_library_schema_uuid_is_refused_instead_of_relabeling_local_authority() {
+        let directory = committed_workspace();
+        let root = std::fs::canonicalize(directory.path()).expect("canonical test workspace");
+        let state = catalogued_state(&root);
+        let mut catalog = super::test_catalog_authority().expect("persisted Library catalog");
+        catalog.schema_version = uuid::Uuid::new_v4().to_string();
+
+        let error =
+            super::persisted_document_schema(&state.current().expect("workspace epoch"), &catalog)
+                .expect_err("a foreign UUID cannot relabel the local persisted schema");
+
+        assert!(
+            error.contains("same Document schema version UUID"),
+            "the mismatch must fail explicitly: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn invalid_persisted_schema_is_refused_before_any_source_boundary() {
         let directory = committed_workspace();
@@ -1171,6 +1284,7 @@ mod tests {
         let app = tauri::test::mock_builder()
             .manage(WorkspaceState::default())
             .manage(super::FederationRuntime::default())
+            .manage(crate::cloud_accounts::CloudAccountsState::default())
             .invoke_handler(tauri::generate_handler![query_federated_document])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock application");

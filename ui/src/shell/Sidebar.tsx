@@ -3,9 +3,15 @@
  * reading column. */
 
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
+import type {
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
+} from '../bindings.js';
 import { FolderIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
+import { rowsForMember } from './library-documents.js';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -21,6 +27,13 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocRef) => void;
   isIgnored?: (path: string) => boolean;
+  libraryEvidence?: LibraryEntityQueryResponse_Serialize | null;
+  librarySearch?: string;
+  libraryLoading?: boolean;
+  libraryError?: string | null;
+  onLibrarySearch?: (value: string) => void;
+  onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
+  onRefreshLibrary?: () => void;
 }
 
 function basename(path: string): string {
@@ -66,7 +79,15 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
+  libraryEvidence = null,
+  librarySearch = '',
+  libraryLoading = false,
+  libraryError = null,
+  onLibrarySearch,
+  onOpenLibrary,
+  onRefreshLibrary,
 }: SidebarProps) {
+  const search = librarySearch.trim().toLocaleLowerCase();
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -83,7 +104,7 @@ export function Sidebar({
         </button>
       </div>
 
-      {root && listingError ? (
+      {libraryEvidence ? null : root && listingError ? (
         <ListingErrorPanel failure={listingError} />
       ) : root && loading && files.length === 0 ? (
         // The listing has not answered YET. Saying "no markdown files" here is a
@@ -108,6 +129,76 @@ export function Sidebar({
           </p>
         </div>
       )}
+
+      {libraryEvidence || libraryLoading || libraryError ? (
+        <nav className="library-sources" aria-label="Library sources">
+          <div className="library-sources__heading">
+            <span>Library</span>
+            {onRefreshLibrary ? (
+              <button type="button" onClick={onRefreshLibrary} disabled={libraryLoading}>
+                {libraryLoading ? 'Reading…' : 'Refresh'}
+              </button>
+            ) : null}
+          </div>
+          {onLibrarySearch ? (
+            <input
+              type="search"
+              value={librarySearch}
+              onChange={(event) => onLibrarySearch(event.currentTarget.value)}
+              placeholder="Filter Library documents"
+              aria-label="Filter Library documents"
+            />
+          ) : null}
+          {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
+          {libraryEvidence?.memberships.map((member) => {
+            const rows =
+              rowsForMember(libraryEvidence, member).filter((row) => {
+                if (!search) return true;
+                const fields = row.fields;
+                const title = typeof fields.title === 'string' ? fields.title : row.record_key;
+                return title.toLocaleLowerCase().includes(search);
+              });
+            return (
+              <section className="library-sources__source" key={member.membership_id}>
+                <div>
+                  <strong>{member.name}</strong>
+                  <small>
+                    {member.editable
+                      ? member.active
+                        ? 'Local · editable'
+                        : 'Local · open to edit'
+                      : 'Read-only'}
+                  </small>
+                </div>
+                {rows.length > 0 ? (
+                  <ul>
+                    {rows.map((row) => {
+                      const fields = row.fields;
+                      const title =
+                        typeof fields.title === 'string' ? fields.title : row.record_key;
+                      return (
+                        <li key={row.record_key}>
+                          <button
+                            type="button"
+                            className="library-sources__document"
+                            aria-label={`Open ${title} from ${member.name}`}
+                            onClick={() => onOpenLibrary?.(member, row)}
+                          >
+                            {title}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
+                )}
+              </section>
+            );
+          })}
+          {!libraryEvidence && libraryLoading ? <p>Reading Library…</p> : null}
+        </nav>
+      ) : null}
 
       {recent.length > 0 ? (
         <nav className="recent" aria-label="Recent documents">

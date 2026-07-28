@@ -1,10 +1,10 @@
-//! Backend-owned local-library membership.
+//! Backend-owned Library membership.
 //!
-//! The active CatDB engine remains deliberately single-root. This registry says
-//! which local Markdown roots MDReader knows about and which successfully
-//! granted root is the restore candidate; it does not claim that their indexes
-//! are queried together. Paths are canonicalized before admission and persisted
-//! as native OS units so a lossy webview display string is never the authority.
+//! The active editing engine remains deliberately single-root. Query execution
+//! takes one immutable snapshot of this registry and may read every enabled
+//! local or cloud member together. Paths are canonicalized before admission and
+//! persisted as native OS units so a lossy webview display string is never the
+//! authority.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -23,7 +23,7 @@ use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, Clo
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 4;
+pub(crate) const LIBRARY_VERSION: u32 = 6;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -33,6 +33,7 @@ pub(crate) enum LibraryError {
     DuplicateRoot,
     SourceNotFound,
     SourceUnavailable,
+    InvalidDocumentPath,
     ActiveSource,
     GrantMismatch,
     OpenFailed,
@@ -64,6 +65,7 @@ impl std::fmt::Display for LibraryError {
             Self::DuplicateRoot => formatter.write_str("duplicate-library-root"),
             Self::SourceNotFound => formatter.write_str("library-source-not-found"),
             Self::SourceUnavailable => formatter.write_str("library-source-unavailable"),
+            Self::InvalidDocumentPath => formatter.write_str("invalid-library-document-path"),
             Self::ActiveSource => formatter.write_str("active-library-source"),
             Self::GrantMismatch => formatter.write_str("library-grant-mismatch"),
             Self::OpenFailed => formatter.write_str("library-open-failed"),
@@ -130,10 +132,28 @@ pub(crate) struct LibrarySourceDto {
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct LibraryCloudSourceDto {
+    pub id: String,
+    pub provider: crate::cloud_accounts::CloudProvider,
+    pub name: String,
+    pub enabled: bool,
+    pub contract: LibrarySourceContract,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct LibrarySnapshot {
     pub version: u32,
     pub sources: Vec<LibrarySourceDto>,
+    pub cloud_sources: Vec<LibraryCloudSourceDto>,
     pub cleanup: LibraryCleanupStatus,
+}
+
+/// Immutable source membership captured under the Library registry lease.
+#[derive(Debug, Clone)]
+pub(crate) struct LibraryQuerySnapshot {
+    pub local_sources: Vec<LocalFolderSource>,
+    pub cloud_sources: Vec<CloudSourceRecord>,
+    pub active_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -280,14 +300,97 @@ fn new_source_id() -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum LibraryIndexPolicy {
+    Managed,
+    ReadThrough,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LibrarySourceCapabilities {
+    pub read: bool,
+    pub write: bool,
+    pub search: bool,
+    pub watch: bool,
+    pub open_original: bool,
+    pub download: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LibrarySourceContract {
+    pub connector_version: String,
+    pub capabilities: LibrarySourceCapabilities,
+    pub mapping_version: String,
+    pub index_policy: LibraryIndexPolicy,
+}
+
+impl LibrarySourceContract {
+    fn local_folder() -> Self {
+        Self {
+            connector_version: "local-folder/v1".to_string(),
+            capabilities: LibrarySourceCapabilities {
+                read: true,
+                write: true,
+                search: true,
+                watch: true,
+                open_original: true,
+                download: false,
+            },
+            mapping_version: "mdreader.Document.local-folder/v2".to_string(),
+            index_policy: LibraryIndexPolicy::Managed,
+        }
+    }
+
+    pub(crate) fn cloud(provider: crate::cloud_accounts::CloudProvider) -> Self {
+        let connector_version = match provider {
+            crate::cloud_accounts::CloudProvider::GoogleDrive => "google-drive/v1",
+            crate::cloud_accounts::CloudProvider::Dropbox => "dropbox/v1",
+        };
+        Self {
+            connector_version: connector_version.to_string(),
+            capabilities: LibrarySourceCapabilities {
+                read: true,
+                write: false,
+                search: true,
+                watch: false,
+                open_original: true,
+                download: true,
+            },
+            mapping_version: crate::cloud_accounts::CLOUD_DOCUMENT_MAPPING_VERSION.to_string(),
+            index_policy: LibraryIndexPolicy::ReadThrough,
+        }
+    }
+
+    pub(crate) fn connector_version(&self) -> &str {
+        &self.connector_version
+    }
+
+    pub(crate) fn permits_read_only(&self) -> bool {
+        self.capabilities.read
+            && !self.capabilities.write
+            && self.index_policy == LibraryIndexPolicy::ReadThrough
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LibrarySource {
+pub(crate) struct LocalFolderSource {
     pub(crate) id: String,
     path: NativePath,
     #[serde(deserialize_with = "deserialize_identity_binding")]
     identity: Option<SourceRootIdentity>,
     engine_source_id: uuid::Uuid,
+    #[serde(default)]
+    contract: Option<LibrarySourceContract>,
+}
+
+impl LocalFolderSource {
+    fn refresh_contract(&mut self) {
+        self.contract = Some(LibrarySourceContract::local_folder());
+    }
 }
 
 fn deserialize_identity_binding<'de, D>(
@@ -299,7 +402,7 @@ where
     Option::<SourceRootIdentity>::deserialize(deserializer)
 }
 
-impl LibrarySource {
+impl LocalFolderSource {
     /// Stable CatDB source identity owned and persisted by this Library
     /// membership, never derived from its current filesystem address.
     pub(crate) fn engine_source_id(&self) -> uuid::Uuid {
@@ -310,7 +413,7 @@ impl LibrarySource {
         self.path.restore()
     }
 
-    fn root(&self) -> Result<SourceRoot, LibraryError> {
+    pub(crate) fn root(&self) -> Result<SourceRoot, LibraryError> {
         let identity = self
             .identity
             .clone()
@@ -320,11 +423,73 @@ impl LibrarySource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum LibrarySource {
+    LocalFolder(LocalFolderSource),
+    GoogleDrive(CloudSourceRecord),
+    Dropbox(CloudSourceRecord),
+}
+
+impl LibrarySource {
+    fn id(&self) -> &str {
+        match self {
+            Self::LocalFolder(source) => &source.id,
+            Self::GoogleDrive(source) | Self::Dropbox(source) => source.id(),
+        }
+    }
+
+    fn local(&self) -> Option<&LocalFolderSource> {
+        match self {
+            Self::LocalFolder(source) => Some(source),
+            Self::GoogleDrive(_) | Self::Dropbox(_) => None,
+        }
+    }
+
+    fn local_mut(&mut self) -> Option<&mut LocalFolderSource> {
+        match self {
+            Self::LocalFolder(source) => Some(source),
+            Self::GoogleDrive(_) | Self::Dropbox(_) => None,
+        }
+    }
+
+    fn cloud(&self) -> Option<&CloudSourceRecord> {
+        match self {
+            Self::GoogleDrive(source) | Self::Dropbox(source) => Some(source),
+            Self::LocalFolder(_) => None,
+        }
+    }
+
+    fn from_cloud(source: CloudSourceRecord) -> Self {
+        match source.provider() {
+            crate::cloud_accounts::CloudProvider::GoogleDrive => Self::GoogleDrive(source),
+            crate::cloud_accounts::CloudProvider::Dropbox => Self::Dropbox(source),
+        }
+    }
+
+    fn refresh_contract(&mut self) {
+        match self {
+            Self::LocalFolder(source) => source.refresh_contract(),
+            Self::GoogleDrive(source) | Self::Dropbox(source) => source.refresh_contract(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredLibrary {
     version: u32,
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    #[serde(default)]
+    cleanup_pending: Vec<PendingCleanup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV4 {
+    version: u32,
+    active_source_id: Option<String>,
+    sources: Vec<LocalFolderSource>,
     cloud_sources: Vec<CloudSourceRecord>,
     #[serde(default)]
     cleanup_pending: Vec<PendingCleanup>,
@@ -335,7 +500,7 @@ struct StoredLibrary {
 struct StoredLibraryV3 {
     version: u32,
     active_source_id: Option<String>,
-    sources: Vec<LibrarySource>,
+    sources: Vec<LocalFolderSource>,
     #[serde(default)]
     cleanup_pending: Vec<PendingCleanup>,
 }
@@ -405,7 +570,6 @@ struct PendingCleanup {
 pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
-    pub(crate) cloud_sources: Vec<CloudSourceRecord>,
     cleanup_pending: Vec<PendingCleanup>,
 }
 
@@ -414,14 +578,21 @@ impl LibraryRegistry {
         Self {
             active_source_id: None,
             sources: Vec::new(),
-            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn sources(&self) -> &[LibrarySource] {
-        &self.sources
+    pub(crate) fn sources(&self) -> Vec<&LocalFolderSource> {
+        self.sources
+            .iter()
+            .filter_map(LibrarySource::local)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cloud_source_count(&self) -> usize {
+        self.sources.iter().filter_map(LibrarySource::cloud).count()
     }
 
     pub(crate) fn path_for(&self, source_id: &str) -> Option<PathBuf> {
@@ -429,8 +600,19 @@ impl LibraryRegistry {
             .and_then(|source| source.path().ok())
     }
 
-    fn source_for(&self, source_id: &str) -> Option<&LibrarySource> {
-        self.sources.iter().find(|source| source.id == source_id)
+    fn source_for(&self, source_id: &str) -> Option<&LocalFolderSource> {
+        self.sources
+            .iter()
+            .filter_map(LibrarySource::local)
+            .find(|source| source.id == source_id)
+    }
+
+    fn local_sources(&self) -> impl Iterator<Item = &LocalFolderSource> {
+        self.sources.iter().filter_map(LibrarySource::local)
+    }
+
+    fn local_sources_mut(&mut self) -> impl Iterator<Item = &mut LocalFolderSource> {
+        self.sources.iter_mut().filter_map(LibrarySource::local_mut)
     }
 
     #[cfg(test)]
@@ -438,7 +620,7 @@ impl LibraryRegistry {
         self.active_source_id.as_deref()
     }
 
-    pub(crate) fn add_root(&mut self, requested: &Path) -> Result<LibrarySource, LibraryError> {
+    pub(crate) fn add_root(&mut self, requested: &Path) -> Result<LocalFolderSource, LibraryError> {
         let canonical = fs::canonicalize(requested).map_err(|_| LibraryError::InvalidRoot)?;
         if !canonical.is_dir() {
             return Err(LibraryError::InvalidRoot);
@@ -447,8 +629,7 @@ impl LibraryRegistry {
             SourceRoot::capture(canonical.clone()).map_err(|_| LibraryError::InvalidRoot)?;
         let native = NativePath::capture(&canonical);
         if let Some(source) = self
-            .sources
-            .iter_mut()
+            .local_sources_mut()
             .find(|source| source.identity.as_ref() == Some(&admitted.identity))
         {
             if source.path != native {
@@ -461,16 +642,20 @@ impl LibraryRegistry {
             return Err(LibraryError::InvalidRoot);
         }
         let mut source_id = new_source_id();
-        while self.sources.iter().any(|source| source.id == source_id) {
+        while self.sources.iter().any(|source| source.id() == source_id) {
             source_id = new_source_id();
         }
-        let source = LibrarySource {
+        let source = LocalFolderSource {
             id: source_id,
             path: native,
             identity: Some(admitted.identity),
-            engine_source_id: new_engine_source_id(&self.sources),
+            engine_source_id: new_engine_source_id(
+                &self.local_sources().cloned().collect::<Vec<_>>(),
+            ),
+            contract: Some(LibrarySourceContract::local_folder()),
         };
-        self.sources.push(source.clone());
+        self.sources
+            .push(LibrarySource::LocalFolder(source.clone()));
         Ok(source)
     }
 
@@ -519,6 +704,32 @@ impl LibraryRegistry {
         }
     }
 
+    fn resolve_document_edit_path(
+        &self,
+        source_id: &str,
+        relative_path: &Path,
+        active_root: Option<&SourceRoot>,
+    ) -> Result<PathBuf, LibraryError> {
+        if relative_path.is_absolute() {
+            return Err(LibraryError::InvalidDocumentPath);
+        }
+        let source_root = self.activation_root(source_id)?;
+        if active_root != Some(&source_root) {
+            return Err(LibraryError::GrantMismatch);
+        }
+        let candidate = source_root.path.join(relative_path);
+        let relative = source_root
+            .relative_path(&candidate)
+            .map_err(|_| LibraryError::InvalidDocumentPath)?;
+        if relative.as_os_str().is_empty() {
+            return Err(LibraryError::InvalidDocumentPath);
+        }
+        source_root
+            .verify()
+            .map_err(|_| LibraryError::SourceUnavailable)?;
+        Ok(source_root.path.join(relative))
+    }
+
     #[cfg(test)]
     pub(crate) fn activation_path(&self, source_id: &str) -> Result<PathBuf, LibraryError> {
         self.activation_root(source_id).map(|root| root.path)
@@ -532,9 +743,11 @@ impl LibraryRegistry {
         let index = self
             .sources
             .iter()
-            .position(|source| source.id == source_id)
+            .position(|source| source.local().is_some_and(|source| source.id == source_id))
             .ok_or(LibraryError::SourceNotFound)?;
-        let source = &self.sources[index];
+        let source = self.sources[index]
+            .local()
+            .ok_or(LibraryError::SourceNotFound)?;
         let source_path = source.path()?;
         if active_root.is_some_and(|root| {
             source.identity.as_ref() == Some(&root.identity) && source_path == root.path
@@ -570,7 +783,7 @@ impl LibraryRegistry {
         active_root: Option<&SourceRoot>,
     ) -> Result<LibrarySnapshot, LibraryError> {
         let mut sources = Vec::with_capacity(self.sources.len());
-        for source in &self.sources {
+        for source in self.local_sources() {
             let path = source.path()?;
             let bound_root = source.root().ok();
             let name = path
@@ -602,9 +815,27 @@ impl LibraryRegistry {
                 restore_candidate: self.active_source_id.as_deref() == Some(source.id.as_str()),
             });
         }
+        let cloud_sources = self
+            .sources
+            .iter()
+            .filter_map(LibrarySource::cloud)
+            .map(|source| {
+                Ok(LibraryCloudSourceDto {
+                    id: source.id().to_string(),
+                    provider: source.provider(),
+                    name: source.label().to_string(),
+                    enabled: source.enabled(),
+                    contract: source
+                        .contract()
+                        .cloned()
+                        .ok_or(LibraryError::CorruptRegistry)?,
+                })
+            })
+            .collect::<Result<Vec<_>, LibraryError>>()?;
         Ok(LibrarySnapshot {
             version: LIBRARY_VERSION,
             sources,
+            cloud_sources,
             cleanup: self.cleanup_status(),
         })
     }
@@ -647,7 +878,7 @@ impl LibraryRegistry {
         let Ok(canonical) = fs::canonicalize(requested_root) else {
             return Ok(None);
         };
-        for source in &self.sources {
+        for source in self.local_sources() {
             if source.path()? != canonical {
                 continue;
             }
@@ -681,6 +912,12 @@ impl LibraryRegistry {
         if version.version == 3 {
             return Self::migrate_v3(path, &bytes);
         }
+        if version.version == 4 {
+            return Self::migrate_v4(path, &bytes);
+        }
+        if version.version == 5 {
+            return Self::migrate_v5(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -690,15 +927,29 @@ impl LibraryRegistry {
         let stored: StoredLibrary =
             serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
-        validate_cloud_source_records(&stored.cloud_sources)
-            .map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
         Ok(Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
-            cloud_sources: stored.cloud_sources,
             cleanup_pending: stored.cleanup_pending,
         })
+    }
+
+    fn migrate_v5(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibrary =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        let mut migrated = Self {
+            active_source_id: stored.active_source_id,
+            sources: stored.sources,
+            cleanup_pending: stored.cleanup_pending,
+        };
+        for source in &mut migrated.sources {
+            source.refresh_contract();
+        }
+        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
+        Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
+        migrated.save_to(path)?;
+        Ok(migrated)
     }
 
     fn migrate_v1(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
@@ -721,7 +972,6 @@ impl LibraryRegistry {
             // filesystem object. Legacy managed bytes were quarantined above
             // and are never inherited by the object currently at that path.
             sources: Vec::new(),
-            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
@@ -769,12 +1019,13 @@ impl LibraryRegistry {
                 if engine_source_id.is_nil() || !engine_source_ids.insert(engine_source_id) {
                     return Err(LibraryError::CorruptRegistry);
                 }
-                Ok(LibrarySource {
+                Ok(LibrarySource::LocalFolder(LocalFolderSource {
                     id,
                     path: source.path.clone(),
                     identity: source.identity.clone(),
                     engine_source_id,
-                })
+                    contract: Some(LibrarySourceContract::local_folder()),
+                }))
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
         let migrated = Self {
@@ -783,7 +1034,6 @@ impl LibraryRegistry {
                 .as_ref()
                 .and_then(|old| id_map.get(old).cloned()),
             sources,
-            cloud_sources: Vec::new(),
             cleanup_pending: Vec::new(),
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
@@ -801,14 +1051,53 @@ impl LibraryRegistry {
     }
 
     fn migrate_v3(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibraryV3 =
+        let mut stored: StoredLibraryV3 =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
-        Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
-        Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
+        for source in &mut stored.sources {
+            source.refresh_contract();
+        }
+        Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        Self::validate_pending_local_cleanup(&stored.cleanup_pending, &stored.sources)?;
         let migrated = Self {
             active_source_id: stored.active_source_id,
-            sources: stored.sources,
-            cloud_sources: Vec::new(),
+            sources: stored
+                .sources
+                .into_iter()
+                .map(LibrarySource::LocalFolder)
+                .collect(),
+            cleanup_pending: stored.cleanup_pending,
+        };
+        migrated.save_to(path)?;
+        Ok(migrated)
+    }
+
+    fn migrate_v4(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let mut stored: StoredLibraryV4 =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        for source in &mut stored.sources {
+            source.refresh_contract();
+        }
+        for source in &mut stored.cloud_sources {
+            source.refresh_contract();
+        }
+        Self::validate_local_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        validate_cloud_source_records(&stored.cloud_sources)
+            .map_err(|_| LibraryError::CorruptRegistry)?;
+        Self::validate_pending_local_cleanup(&stored.cleanup_pending, &stored.sources)?;
+        let mut sources = stored
+            .sources
+            .into_iter()
+            .map(LibrarySource::LocalFolder)
+            .collect::<Vec<_>>();
+        sources.extend(
+            stored
+                .cloud_sources
+                .into_iter()
+                .map(LibrarySource::from_cloud),
+        );
+        let migrated = Self {
+            active_source_id: stored.active_source_id,
+            sources,
             cleanup_pending: stored.cleanup_pending,
         };
         migrated.save_to(path)?;
@@ -839,9 +1128,9 @@ impl LibraryRegistry {
         Ok(())
     }
 
-    fn validate_membership(
+    fn validate_local_membership(
         active_source_id: Option<&str>,
-        sources: &[LibrarySource],
+        sources: &[LocalFolderSource],
     ) -> Result<(), LibraryError> {
         if sources.len() > MAX_LIBRARY_SOURCES {
             return Err(LibraryError::CorruptRegistry);
@@ -864,6 +1153,7 @@ impl LibraryRegistry {
                 || !valid_id
                 || !ids.insert(source.id.as_str())
                 || source.engine_source_id.is_nil()
+                || source.contract.as_ref() != Some(&LibrarySourceContract::local_folder())
                 || !engine_source_ids.insert(source.engine_source_id)
                 || sources[..index]
                     .iter()
@@ -873,6 +1163,32 @@ impl LibraryRegistry {
             }
         }
         if active_source_id.is_some_and(|active| !ids.contains(active)) {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        Ok(())
+    }
+
+    fn validate_membership(
+        active_source_id: Option<&str>,
+        sources: &[LibrarySource],
+    ) -> Result<(), LibraryError> {
+        if sources.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        let local_sources = sources
+            .iter()
+            .filter_map(LibrarySource::local)
+            .cloned()
+            .collect::<Vec<_>>();
+        Self::validate_local_membership(active_source_id, &local_sources)?;
+        let cloud_sources = sources
+            .iter()
+            .filter_map(LibrarySource::cloud)
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_cloud_source_records(&cloud_sources).map_err(|_| LibraryError::CorruptRegistry)?;
+        let mut ids = HashSet::new();
+        if sources.iter().any(|source| !ids.insert(source.id())) {
             return Err(LibraryError::CorruptRegistry);
         }
         Ok(())
@@ -904,7 +1220,7 @@ impl LibraryRegistry {
                 || !valid_tombstone
                 || !source_ids.insert(entry.source_id.as_str())
                 || !tombstones.insert(entry.tombstone.as_str())
-                || sources.iter().any(|source| source.id == entry.source_id)
+                || sources.iter().any(|source| source.id() == entry.source_id)
             {
                 return Err(LibraryError::CorruptRegistry);
             }
@@ -912,10 +1228,20 @@ impl LibraryRegistry {
         Ok(())
     }
 
+    fn validate_pending_local_cleanup(
+        pending: &[PendingCleanup],
+        sources: &[LocalFolderSource],
+    ) -> Result<(), LibraryError> {
+        let sources = sources
+            .iter()
+            .cloned()
+            .map(LibrarySource::LocalFolder)
+            .collect::<Vec<_>>();
+        Self::validate_pending_cleanup(pending, &sources)
+    }
+
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
         Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
-        validate_cloud_source_records(&self.cloud_sources)
-            .map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_pending_cleanup(&self.cleanup_pending, &self.sources)?;
         let parent = path.parent().ok_or(LibraryError::PersistFailed)?;
         fs::create_dir_all(parent).map_err(|_| LibraryError::PersistFailed)?;
@@ -923,7 +1249,6 @@ impl LibraryRegistry {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
             sources: self.sources.clone(),
-            cloud_sources: self.cloud_sources.clone(),
             cleanup_pending: self.cleanup_pending.clone(),
         })
         .map_err(|_| LibraryError::PersistFailed)?;
@@ -940,7 +1265,7 @@ impl LibraryRegistry {
     }
 }
 
-fn new_engine_source_id(sources: &[LibrarySource]) -> uuid::Uuid {
+fn new_engine_source_id(sources: &[LocalFolderSource]) -> uuid::Uuid {
     loop {
         let candidate = uuid::Uuid::new_v4();
         if sources
@@ -1308,6 +1633,27 @@ impl LibraryStore {
         operation(&registry)
     }
 
+    /// Capture local and enabled cloud membership under one registry lease.
+    ///
+    /// Credential material is deliberately absent. The caller first validates
+    /// `EntityQueryRequest.source_ids` against this snapshot and only then
+    /// resolves credentials for the selected cloud members.
+    pub(crate) fn read_query_snapshot(&self) -> Result<LibraryQuerySnapshot, LibraryError> {
+        self.read(|registry| {
+            Ok(LibraryQuerySnapshot {
+                local_sources: registry.local_sources().cloned().collect(),
+                cloud_sources: registry
+                    .sources
+                    .iter()
+                    .filter_map(LibrarySource::cloud)
+                    .filter(|source| source.enabled())
+                    .cloned()
+                    .collect(),
+                active_source_id: registry.active_source_id.clone(),
+            })
+        })
+    }
+
     fn update<T>(
         &self,
         operation: impl FnOnce(&mut LibraryRegistry) -> Result<T, LibraryError>,
@@ -1335,7 +1681,13 @@ impl LibraryStore {
         let mut cleanup = |path: &Path| fs::remove_dir_all(path);
         self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)
             .map_err(map_library_cloud_error)?;
-        operation(&registry.cloud_sources)
+        let sources = registry
+            .sources
+            .iter()
+            .filter_map(LibrarySource::cloud)
+            .cloned()
+            .collect::<Vec<_>>();
+        operation(&sources)
     }
 
     pub(crate) fn update_cloud<T>(
@@ -1351,7 +1703,20 @@ impl LibraryStore {
         let mut cleanup = |path: &Path| fs::remove_dir_all(path);
         self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)
             .map_err(map_library_cloud_error)?;
-        let result = operation(&mut registry.cloud_sources)?;
+        let mut cloud_sources = registry
+            .sources
+            .iter()
+            .filter_map(LibrarySource::cloud)
+            .cloned()
+            .collect::<Vec<_>>();
+        let result = operation(&mut cloud_sources)?;
+        validate_cloud_source_records(&cloud_sources)?;
+        registry
+            .sources
+            .retain(|source| matches!(source, LibrarySource::LocalFolder(_)));
+        registry
+            .sources
+            .extend(cloud_sources.into_iter().map(LibrarySource::from_cloud));
         #[cfg(test)]
         if self
             .fail_next_cloud_persist
@@ -1558,7 +1923,7 @@ impl LibraryStore {
         app_data: &Path,
     ) -> Result<(), LibraryError> {
         let mut recovered = Vec::new();
-        for source in &registry.sources {
+        for source in registry.local_sources() {
             let staged = app_data.join("managed-delete-staging").join(&source.id);
             let staged_metadata = match fs::symlink_metadata(&staged) {
                 Ok(metadata) => metadata,
@@ -1650,7 +2015,7 @@ impl LibraryStore {
     }
 }
 
-fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
+pub(crate) fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
     match error {
         LibraryError::CorruptRegistry => CloudSourceError::CorruptRegistry,
         LibraryError::UnsupportedVersion { found, expected } => {
@@ -1739,6 +2104,7 @@ pub(crate) async fn pick_and_add_library_source(
                     let source_id = registry
                         .sources
                         .iter()
+                        .filter_map(LibrarySource::local)
                         .find(|source| source.identity.as_ref() == Some(&picked_identity.identity))
                         .map(|source| source.id.clone())
                         .ok_or(LibraryError::CorruptRegistry)?;
@@ -1838,6 +2204,29 @@ pub(crate) fn grant_library_source(
         )
         .map(|root| root.to_string_lossy().into_owned())
         .map_err(|_| LibraryError::OpenFailed)
+    })
+}
+
+/// Resolve a semantic source-relative document path only after the exact
+/// persisted membership has become the active, identity-validated workspace.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn resolve_library_document_edit(
+    app: AppHandle,
+    source_id: String,
+    relative_path: String,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<String, LibraryError> {
+    let _guard = lock_library(&state)?;
+    let (path, _) = registry_path(&app)?;
+    let active = active_root(&workspace);
+    LibraryStore::new(path).read(|registry| {
+        registry
+            .resolve_document_edit_path(&source_id, Path::new(&relative_path), active.as_ref())?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| LibraryError::InvalidDocumentPath)
     })
 }
 
@@ -2293,6 +2682,63 @@ mod tests {
         assert_eq!(
             fs::read_to_string(moved.join("original.md")).expect("original object remains"),
             "# original"
+        );
+    }
+
+    #[test]
+    fn edit_path_resolution_uses_the_active_identity_bound_membership_root() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        fs::create_dir(root.join("nested")).expect("nested directory");
+        let document = root.join("nested").join("document.md");
+        fs::write(&document, "# document").expect("document");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let active = bound_root(&fs::canonicalize(&root).expect("canonical root"));
+        let expected = active.path.join("nested/document.md");
+
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("nested/document.md"),
+                Some(&active),
+            ),
+            Ok(expected.clone())
+        );
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("../outside.md"),
+                Some(&active),
+            ),
+            Err(LibraryError::InvalidDocumentPath)
+        );
+        assert_eq!(
+            registry.resolve_document_edit_path(&source.id, &expected, Some(&active)),
+            Err(LibraryError::InvalidDocumentPath)
+        );
+    }
+
+    #[test]
+    fn edit_path_resolution_refuses_same_path_source_replacement() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        fs::write(root.join("original.md"), "# original").expect("original");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let active = bound_root(&fs::canonicalize(&root).expect("canonical root"));
+
+        fs::rename(&root, temp.path().join("retired")).expect("retire original");
+        fs::create_dir(&root).expect("replacement root");
+        fs::write(root.join("replacement.md"), "# replacement").expect("replacement");
+
+        assert_eq!(
+            registry.resolve_document_edit_path(
+                &source.id,
+                Path::new("replacement.md"),
+                Some(&active),
+            ),
+            Err(LibraryError::SourceUnavailable)
         );
     }
 
@@ -3014,6 +3460,9 @@ mod tests {
             serde_json::from_slice(&fs::read(&registry_path).expect("read registry"))
                 .expect("parse registry");
         legacy["version"] = serde_json::json!(3);
+        let local = legacy["sources"][0].as_object_mut().expect("local source");
+        local.remove("kind");
+        local.remove("contract");
         legacy
             .as_object_mut()
             .expect("registry object")
@@ -3026,12 +3475,13 @@ mod tests {
 
         let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate V3");
         assert_eq!(migrated.sources().len(), 1);
-        assert!(migrated.cloud_sources.is_empty());
+        assert_eq!(migrated.cloud_source_count(), 0);
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
                 .expect("parse migrated registry");
         assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
-        assert_eq!(persisted["cloud_sources"], serde_json::json!([]));
+        assert!(persisted.get("cloud_sources").is_none());
+        assert_eq!(persisted["sources"][0]["kind"], "local-folder");
         assert_eq!(
             LibraryRegistry::load_from(&registry_path)
                 .expect("migration is idempotent")

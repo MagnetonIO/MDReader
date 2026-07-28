@@ -45,9 +45,15 @@ import {
   pickAndAddLibrarySource,
   reconcileLibraryRestore,
   recordDiagnosticEventNonBlocking,
+  settingsBackend,
   watchLibrarySource,
   type LibrarySourceDto,
 } from '../platform/settings.js';
+import type {
+  EntityRow,
+  LibraryEntityQueryResponse_Serialize,
+  LibrarySourceExecution,
+} from '../bindings.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
@@ -61,9 +67,11 @@ import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
+import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
+import { hydrateLibrary } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -122,6 +130,25 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [libraryDocument, setLibraryDocument] = useState<{
+    member: LibrarySourceExecution;
+    row: EntityRow;
+    evidence: LibraryEntityQueryResponse_Serialize;
+  } | null>(null);
+  const [libraryEvidence, setLibraryEvidence] =
+    useState<LibraryEntityQueryResponse_Serialize | null>(null);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const libraryRefreshGeneration = useRef(0);
+  const libraryRefreshRequest = useRef<string | null>(null);
+  const clearLibraryDocument = useCallback(() => {
+    setLibraryDocument(null);
+  }, []);
+
+  useEffect(() => {
+    clearLibraryDocument();
+  }, [activeTabId, clearLibraryDocument]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -130,7 +157,17 @@ export function AppShell() {
   const [closeGuard, setCloseGuard] = useState<
     | { kind: 'tab'; tabId: string }
     | { kind: 'quit' }
-    | { kind: 'switch'; folder: string; sourceId?: string }
+    | {
+        kind: 'switch';
+        folder: string;
+        sourceId?: string;
+        expectedSourceIntent: number;
+        resume?: {
+          kind: 'library-edit';
+          member: LibrarySourceExecution;
+          row: EntityRow;
+        };
+      }
     | null
   >(null);
   // A pending provenance jump handed to the ReaderPane once the target renders.
@@ -151,6 +188,55 @@ export function AppShell() {
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
+  const refreshLibrary = useCallback(async () => {
+    if (!settingsBackend.prepareCloudCatalog || !settingsBackend.queryLibraryDocuments) {
+      return;
+    }
+    const generation = libraryRefreshGeneration.current + 1;
+    libraryRefreshGeneration.current = generation;
+    if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
+      await settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
+    }
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      const requestId = `library:${globalThis.crypto.randomUUID()}`;
+      libraryRefreshRequest.current = requestId;
+      const { evidence: answer } = await hydrateLibrary(
+        settingsBackend,
+        requestId,
+      );
+      if (libraryRefreshGeneration.current !== generation) return;
+      setLibraryEvidence(answer);
+      if (answer.answer.completeness.state === 'partial') {
+        setLibraryError('Some Library sources could not answer this query.');
+      }
+    } catch {
+      if (libraryRefreshGeneration.current === generation) {
+        setLibraryError('Library sources could not be read.');
+      }
+    } finally {
+      if (libraryRefreshGeneration.current === generation) {
+        libraryRefreshRequest.current = null;
+        setLibraryLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !isTauri()) return;
+    void refreshLibrary();
+    return () => {
+      libraryRefreshGeneration.current += 1;
+      if (settingsBackend.cancelCloudDocumentQuery) {
+        if (libraryRefreshRequest.current) {
+          void settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
+        }
+      }
+      libraryRefreshRequest.current = null;
+    };
+  }, [hydrated, refreshLibrary]);
+
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
   const activeTabIdRef = useRef<string | null>(null);
@@ -162,6 +248,13 @@ export function AppShell() {
   const commitSwitchRef = useRef<
     (folder: string, sourceId?: string, expectedSourceIntent?: number) => Promise<boolean>
   >(() => Promise.resolve(false));
+  const editLibraryDocumentRef = useRef<
+    (
+      member: LibrarySourceExecution,
+      row: EntityRow,
+      expectedSourceIntent?: number,
+    ) => Promise<void>
+  >(() => Promise.resolve());
   // Native watch/grant commands commit the backend epoch before their IPC
   // promise resolves. Serialize the complete frontend transaction so a newer
   // request cannot supersede an already-committed response and then fail while
@@ -174,6 +267,7 @@ export function AppShell() {
   const sourceIntentRef = useRef(0);
   const beginSourceIntent = useCallback(() => {
     sourceIntentRef.current += 1;
+    return sourceIntentRef.current;
   }, []);
   // Latched once the window is committing to close, so the force-close runs at
   // most once. We force-close with destroy(), which tears the window down WITHOUT
@@ -550,21 +644,33 @@ export function AppShell() {
   // (Save-all / Discard / Cancel) and let it commit the switch. A clean workspace
   // (or a same-root supersede) switches immediately.
   const switchWorkspace = useCallback(
-    (folder: string, sourceId?: string): Promise<boolean> => {
-      beginSourceIntent();
+    (
+      folder: string,
+      sourceId?: string,
+      resume?: {
+        kind: 'library-edit';
+        member: LibrarySourceExecution;
+        row: EntityRow;
+      },
+      existingSourceIntent?: number,
+    ): Promise<boolean> => {
+      const expectedSourceIntent = existingSourceIntent ?? beginSourceIntent();
+      if (sourceIntentRef.current !== expectedSourceIntent) {
+        return Promise.resolve(false);
+      }
       const currentRoot = useSourcesStore.getState().root;
       const isRealSwitch = currentRoot !== null && currentRoot !== folder;
       if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
-        setCloseGuard({ kind: 'switch', folder, sourceId });
+        setCloseGuard({ kind: 'switch', folder, sourceId, expectedSourceIntent, resume });
         return Promise.resolve(false);
       }
-      return commitSwitch(folder, sourceId);
+      return commitSwitch(folder, sourceId, expectedSourceIntent);
     },
     [beginSourceIntent, commitSwitch],
   );
 
   const onPickFolder = useCallback(async () => {
-    beginSourceIntent();
+    const expectedSourceIntent = beginSourceIntent();
     let picked: { source: LibrarySourceDto | null };
     try {
       picked = await pickAndAddLibrarySource();
@@ -572,8 +678,9 @@ export function AppShell() {
       toast('Could not add this folder to the library');
       return;
     }
+    if (sourceIntentRef.current !== expectedSourceIntent) return;
     if (!picked.source) return;
-    await switchWorkspace(picked.source.path, picked.source.id);
+    await switchWorkspace(picked.source.path, picked.source.id, undefined, expectedSourceIntent);
   }, [beginSourceIntent, switchWorkspace]);
 
   // Re-run the import for the current workspace. When the failure was the model
@@ -587,10 +694,11 @@ export function AppShell() {
 
   // --- open / navigate helpers -----------------------------------------
   const openRef = useCallback((ref: DocRef) => {
+    clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearLibraryDocument]);
 
   const openFile = useCallback(
     (file: WorkspaceFile) => {
@@ -600,20 +708,122 @@ export function AppShell() {
     [openRef],
   );
 
+  // Switch the active tab's view mode for its CURRENT document. Entering
+  // source/split for the first time seeds the editor buffer from a fresh disk read
+  // (content + hash) so the save guard is anchored to exactly what was on disk
+  // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
+  // keeps its own entry untouched.
+  const setEditorMode = useCallback(async (mode: EditorMode, expectedSourceIntent?: number) => {
+    const sourceIntentIsCurrent = () =>
+      expectedSourceIntent === undefined || sourceIntentRef.current === expectedSourceIntent;
+    if (!sourceIntentIsCurrent()) return;
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab) return;
+    const tabId = tab.id;
+    const docPath = tab.docRef.path;
+    const editor = useEditorStore.getState();
+    if (mode === 'read') {
+      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
+      return;
+    }
+    if (editor.entry(tabId, docPath)) {
+      editor.setMode(tabId, docPath, mode);
+      return;
+    }
+    try {
+      const doc = await readDoc(docPath);
+      if (!sourceIntentIsCurrent()) return;
+      // The active tab may have changed (or navigated) during the read — seed only
+      // if it still stands on the same document.
+      const landed = selectActiveTab(useTabsStore.getState());
+      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
+      useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
+    } catch (cause) {
+      if (sourceIntentIsCurrent()) {
+        toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    }
+  }, []);
+
+  const editLibraryDocument = useCallback(
+    async (
+      member: LibrarySourceExecution,
+      row: EntityRow,
+      expectedSourceIntent?: number,
+    ): Promise<void> => {
+      const editSourceIntent = expectedSourceIntent ?? beginSourceIntent();
+      const sourceIntentIsCurrent = () => sourceIntentRef.current === editSourceIntent;
+      if (!sourceIntentIsCurrent()) return;
+      if (!member.editable) return;
+      const path = typeof row.fields.path === 'string' ? row.fields.path : null;
+      if (!path) {
+        toast('This Library result has no editable local path');
+        return;
+      }
+      let snapshot;
+      try {
+        snapshot = await settingsBackend.listSources();
+      } catch {
+        if (sourceIntentIsCurrent()) toast('Could not resolve this Library source');
+        return;
+      }
+      if (!sourceIntentIsCurrent()) return;
+      const source = snapshot.sources.find((candidate) => candidate.id === member.registry_id);
+      if (!source) {
+        toast('This Library source is no longer registered');
+        return;
+      }
+      if (useSourcesStore.getState().root !== source.path) {
+        const switched = await switchWorkspace(source.path, source.id, {
+          kind: 'library-edit',
+          member,
+          row,
+        }, editSourceIntent);
+        if (!switched) return;
+      }
+      if (!sourceIntentIsCurrent()) return;
+      if (!settingsBackend.resolveLibraryDocumentEdit) {
+        toast('Local Library editing is unavailable');
+        return;
+      }
+      let documentPath;
+      try {
+        documentPath = await settingsBackend.resolveLibraryDocumentEdit(source.id, path);
+      } catch {
+        if (sourceIntentIsCurrent()) {
+          toast('This Library document is no longer available for editing');
+        }
+        return;
+      }
+      if (!sourceIntentIsCurrent()) return;
+      const title =
+        typeof row.fields.title === 'string' && row.fields.title.length > 0
+          ? row.fields.title
+          : path.split(/[\\/]+/).pop() ?? path;
+      openRef({ path: documentPath, name: title });
+      if (!sourceIntentIsCurrent()) return;
+      await setEditorMode('source', editSourceIntent);
+    },
+    [beginSourceIntent, openRef, setEditorMode, switchWorkspace],
+  );
+  editLibraryDocumentRef.current = editLibraryDocument;
+
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
   const onOpenPaletteFile = useCallback((file: PaletteFile, opts: { background: boolean }) => {
+    if (!opts.background) clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: file.path, name: file.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearLibraryDocument]);
 
   // The palette's search-hit open: land at the hit's provenance line and mark the
   // chunk that matched. Enter focuses the tab and schedules the jump (consumed
   // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
   // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
+    if (!opts.background) clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
     useTabsStore.getState().openTab(ref, { activate: !opts.background, originRoot: root });
@@ -629,9 +839,10 @@ export function AppShell() {
         nonce: (jumpSeq.current += 1),
       });
     }
-  }, []);
+  }, [clearLibraryDocument]);
 
   const onNavigate = useCallback((ref: DocRef) => {
+    clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const active = useTabsStore.getState().activeTabId;
     if (!active) {
@@ -640,7 +851,7 @@ export function AppShell() {
       useTabsStore.getState().navigateInTab(active, ref);
     }
     useSourcesStore.getState().addRecent(ref, root);
-  }, []);
+  }, [clearLibraryDocument]);
 
   const onPersistScroll = useCallback((scroll: ScrollPos) => {
     const active = useTabsStore.getState().activeTabId;
@@ -687,13 +898,14 @@ export function AppShell() {
   // range or reports that it could not, and never approximates.
   const jumpToSpan = useCallback(
     (absPath: string, name: string, startLine: number, endLine: number) => {
+      clearLibraryDocument();
       const workspaceRoot = useSourcesStore.getState().root;
       const ref = { path: absPath, name };
       useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
       useSourcesStore.getState().addRecent(ref, workspaceRoot);
       setJump({ path: absPath, startLine, endLine, nonce: (jumpSeq.current += 1) });
     },
-    [],
+    [clearLibraryDocument],
   );
 
   // Resolve a repo-relative file (how the engine cites provenance) to a path the
@@ -790,37 +1002,6 @@ export function AppShell() {
   }, []);
 
   // --- light editing (source/split, hash-guarded save, conflicts) --------
-  // Switch the active tab's view mode for its CURRENT document. Entering
-  // source/split for the first time seeds the editor buffer from a fresh disk read
-  // (content + hash) so the save guard is anchored to exactly what was on disk
-  // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
-  // keeps its own entry untouched.
-  const setEditorMode = useCallback(async (mode: EditorMode) => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab) return;
-    const tabId = tab.id;
-    const docPath = tab.docRef.path;
-    const editor = useEditorStore.getState();
-    if (mode === 'read') {
-      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
-      return;
-    }
-    if (editor.entry(tabId, docPath)) {
-      editor.setMode(tabId, docPath, mode);
-      return;
-    }
-    try {
-      const doc = await readDoc(docPath);
-      // The active tab may have changed (or navigated) during the read — seed only
-      // if it still stands on the same document.
-      const landed = selectActiveTab(useTabsStore.getState());
-      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
-      useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
-    } catch (cause) {
-      toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
-    }
-  }, []);
-
   // Cmd+E: toggle read ↔ source for the active tab's current doc.
   const toggleSourceMode = useCallback(() => {
     const tab = selectActiveTab(useTabsStore.getState());
@@ -899,19 +1080,21 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
+    clearLibraryDocument();
     useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
-  }, []);
+  }, [clearLibraryDocument]);
 
   // Request a tab close: a tab with ANY unsaved document prompts the guard first;
   // a clean one closes immediately. Every close path (⌘W, the tab's ×, middle
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
+      clearLibraryDocument();
       if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
-    [closeTabAndBuffer],
+    [clearLibraryDocument, closeTabAndBuffer],
   );
 
   // Save every dirty document of a tab (Save on the tab-close guard).
@@ -961,11 +1144,40 @@ export function AppShell() {
       guard:
         | { kind: 'tab'; tabId: string }
         | { kind: 'quit' }
-        | { kind: 'switch'; folder: string; sourceId?: string },
+        | {
+            kind: 'switch';
+            folder: string;
+            sourceId?: string;
+            expectedSourceIntent: number;
+            resume?: {
+              kind: 'library-edit';
+              member: LibrarySourceExecution;
+              row: EntityRow;
+            };
+          },
     ) => {
       if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
       else if (guard.kind === 'quit') void performQuit();
-      else void commitSwitchRef.current(guard.folder, guard.sourceId);
+      else {
+        void (async () => {
+          const committed = await commitSwitchRef.current(
+            guard.folder,
+            guard.sourceId,
+            guard.expectedSourceIntent,
+          );
+          if (
+            committed &&
+            guard.resume?.kind === 'library-edit' &&
+            sourceIntentRef.current === guard.expectedSourceIntent
+          ) {
+            await editLibraryDocumentRef.current(
+              guard.resume.member,
+              guard.resume.row,
+              guard.expectedSourceIntent,
+            );
+          }
+        })();
+      }
     },
     [closeTabAndBuffer, performQuit],
   );
@@ -1674,16 +1886,49 @@ export function AppShell() {
           onOpenFile={openFile}
           onOpenRecent={openRef}
           isIgnored={isIgnored}
+          libraryEvidence={libraryEvidence}
+          librarySearch={librarySearch}
+          libraryLoading={libraryLoading}
+          libraryError={libraryError}
+          onLibrarySearch={setLibrarySearch}
+          onOpenLibrary={(member, row) => {
+            setLibraryError(null);
+            if (libraryEvidence) {
+              setLibraryDocument({ member, row, evidence: libraryEvidence });
+            }
+          }}
+          onRefreshLibrary={() => void refreshLibrary()}
         />
 
         <main className="shell__main">
-          <TabStrip onRequestClose={requestCloseTab} />
+          <TabStrip
+            onLocalIntent={clearLibraryDocument}
+            onRequestClose={requestCloseTab}
+          />
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
+            }${libraryDocument ? ' shell__reader-row--library-open' : ''
             }`}
           >
-            <ReaderPane
+            {libraryDocument ? (
+              <LibraryDocumentPane
+                member={libraryDocument.member}
+                row={libraryDocument.row}
+                evidence={libraryDocument.evidence}
+                onEdit={
+                  libraryDocument.member.editable
+                    ? () =>
+                        void editLibraryDocument(
+                          libraryDocument.member,
+                          libraryDocument.row,
+                        )
+                    : undefined
+                }
+              />
+            ) : (
+            <>
+              <ReaderPane
               tab={activeTab ?? null}
               root={root}
               files={files}
@@ -1714,7 +1959,7 @@ export function AppShell() {
                   />
                 ) : null
               }
-            />
+              />
             {/* The apparatus sits nearest the text, navigation outside it. */}
             {activeTab ? (
               <InspectorRail
@@ -1742,6 +1987,8 @@ export function AppShell() {
                 workspaceKey={root}
               />
             ) : null}
+            </>
+            )}
           </div>
         </main>
       </div>
@@ -1779,7 +2026,10 @@ export function AppShell() {
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onSourceIntent={beginSourceIntent}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            void refreshLibrary();
+          }}
         />
       ) : null}
       {lensSheetOpen ? (

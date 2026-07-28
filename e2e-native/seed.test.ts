@@ -127,6 +127,9 @@ test('the shared native flow makes the P8 federated Document surface load-bearin
   const step = FLOW.find((candidate) => candidate.id === 'federated-document');
   assert.equal(step?.kind, 'inspectFederation');
   assert.equal(SEMANTIC_KINDS.includes('inspectFederation'), true);
+  const libraryStep = FLOW.find((candidate) => candidate.id === 'unified-library-document');
+  assert.equal(libraryStep?.kind, 'inspectLibraryDocument');
+  assert.equal(SEMANTIC_KINDS.includes('inspectLibraryDocument'), true);
 });
 
 test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {

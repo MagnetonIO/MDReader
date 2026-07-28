@@ -8,9 +8,9 @@
 
 import {
   commands,
-  type CloudDocumentQueryResponse,
   type CloudFilterInput,
   type CloudProvider,
+  type CloudCatalogReady,
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
@@ -19,6 +19,8 @@ import {
   type DiagnosticExport,
   type DiagnosticInfo,
   type DiagnosticLevel,
+  type EntityQueryRequest_Deserialize,
+  type LibraryEntityQueryResponse_Serialize,
   type LibraryError,
   type LibrarySnapshot,
   type LibrarySourceDto,
@@ -28,7 +30,6 @@ import {
 
 export type {
   CloudProvider,
-  CloudDocumentQueryResponse,
   CloudFilterInput,
   CloudSourceDto,
   CloudSourcesSnapshot,
@@ -68,12 +69,31 @@ function cloudFailure(error: CloudSourceError): never {
   throw new SettingsCommandError('cloud', error);
 }
 
+/**
+ * Connected CatDB is admitted only through an authenticated server session
+ * that can return the source descriptors permitted to that principal.
+ */
+export type ConnectedCatdbState = {
+  kind: 'connected-catdb';
+  state: 'unavailable';
+  reason: 'authenticated-descriptor-endpoint-required';
+};
+
+export async function connectedCatdbState(): Promise<ConnectedCatdbState> {
+  return {
+    kind: 'connected-catdb',
+    state: 'unavailable',
+    reason: 'authenticated-descriptor-endpoint-required',
+  };
+}
+
 export interface SettingsBackend {
   listSources: () => Promise<LibrarySnapshot>;
   pickAndAddSource: () => Promise<PickedLibrarySource>;
   reconcileRestore: (sessionRoot: string | null) => Promise<LibrarySourceDto | null>;
   markActive: (sourceId: string) => Promise<LibrarySnapshot>;
   forgetSource: (sourceId: string) => Promise<LibrarySnapshot>;
+  resolveLibraryDocumentEdit?: (sourceId: string, relativePath: string) => Promise<string>;
   diagnosticsInfo: () => Promise<DiagnosticInfo>;
   setDiagnosticLevel: (level: DiagnosticLevel) => Promise<DiagnosticInfo>;
   recordDiagnosticEvent: (event: DiagnosticEvent) => Promise<void>;
@@ -86,17 +106,22 @@ export interface SettingsBackend {
    * cloud-account surface instead of displaying controls that cannot work.
    */
   listCloudSources?: () => Promise<CloudSourcesView>;
+  prepareCloudCatalog?: () => Promise<CloudCatalogReady>;
   connectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
   setCloudSourceEnabled?: (
     provider: CloudProvider,
     enabled: boolean,
   ) => Promise<CloudSourcesView>;
   disconnectCloudSource?: (provider: CloudProvider) => Promise<CloudSourcesView>;
-  queryCloudDocuments?: (
-    provider: CloudProvider,
+  queryLibraryDocuments?: (
+    workspaceId: string,
     filters: CloudFilterInput[],
     fields: string[],
-  ) => Promise<CloudDocumentQueryResponse>;
+    requestId: string,
+    sourceIds?: string[],
+  ) => Promise<LibraryEntityQueryResponse_Serialize>;
+  cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
+  connectedCatdbState?: () => Promise<ConnectedCatdbState>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
@@ -145,6 +170,16 @@ export async function forgetLibrarySource(sourceId: string): Promise<LibrarySnap
   return result.data;
 }
 
+/** Resolve one semantic local path through the active identity-bound membership. */
+export async function resolveLibraryDocumentEdit(
+  sourceId: string,
+  relativePath: string,
+): Promise<string> {
+  const result = await commands.resolveLibraryDocumentEdit(sourceId, relativePath);
+  if (result.status === 'error') return libraryFailure(result.error);
+  return result.data;
+}
+
 export async function getDiagnosticsInfo(): Promise<DiagnosticInfo> {
   const result = await commands.diagnosticsInfo();
   if (result.status === 'error') return diagnosticFailure(result.error);
@@ -185,6 +220,12 @@ export async function listCloudSources(): Promise<CloudSourcesSnapshot> {
   return result.data;
 }
 
+export async function prepareCloudCatalog(): Promise<CloudCatalogReady> {
+  const result = await commands.prepareCloudCatalog();
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
 export async function connectCloudSource(
   provider: CloudProvider,
 ): Promise<CloudSourcesSnapshot> {
@@ -210,12 +251,40 @@ export async function disconnectCloudSource(
   return result.data;
 }
 
-export async function queryCloudDocuments(
-  provider: CloudProvider,
+/** Execute one immutable CatDB query over the selected Library memberships. */
+export async function queryLibraryDocuments(
+  workspaceId: string,
   filters: CloudFilterInput[],
   fields: string[],
-): Promise<CloudDocumentQueryResponse> {
-  const result = await commands.queryCloudDocuments(provider, filters, fields);
+  requestId: string,
+  sourceIds?: string[],
+): Promise<LibraryEntityQueryResponse_Serialize> {
+  const request: EntityQueryRequest_Deserialize = {
+    workspace_id: workspaceId,
+    catalog_revision_id: null,
+    schema_version_id: null,
+    entity: 'document.Document',
+    select: fields,
+    filters: filters.map((filter) => ({
+      field: filter.field,
+      operator: filter.operator,
+      value: filter.value,
+    })),
+    order_by: [],
+    source_ids: sourceIds ?? null,
+    max_staleness_ms: null,
+    require_complete: false,
+    page_size: 1_000,
+    limit: 1_000,
+    cursor: null,
+  };
+  const result = await commands.queryLibraryDocuments(requestId, request);
+  if (result.status === 'error') return cloudFailure(result.error);
+  return result.data;
+}
+
+export async function cancelCloudDocumentQuery(requestId: string): Promise<boolean> {
+  const result = await commands.cancelCloudDocumentQuery(requestId);
   if (result.status === 'error') return cloudFailure(result.error);
   return result.data;
 }
@@ -226,6 +295,7 @@ export const settingsBackend: SettingsBackend = {
   reconcileRestore: reconcileLibraryRestore,
   markActive: markLibrarySourceActive,
   forgetSource: forgetLibrarySource,
+  resolveLibraryDocumentEdit,
   diagnosticsInfo: getDiagnosticsInfo,
   setDiagnosticLevel: setDiagnosticsLevel,
   recordDiagnosticEvent,
@@ -233,10 +303,13 @@ export const settingsBackend: SettingsBackend = {
   exportDiagnostics,
   clearDiagnostics,
   listCloudSources,
+  prepareCloudCatalog,
   connectCloudSource,
   setCloudSourceEnabled,
   disconnectCloudSource,
-  queryCloudDocuments,
+  queryLibraryDocuments,
+  cancelCloudDocumentQuery,
+  connectedCatdbState,
 };
 
 /**

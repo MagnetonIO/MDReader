@@ -336,6 +336,23 @@ export type Step =
       readonly schemaPattern: string;
     }
   | {
+      /** **Task 10.** Open a local document from the unified Library answer,
+       * then inspect that exact answer and prove the local edit capability is
+       * exposed without a second document read. */
+      readonly kind: 'inspectLibraryDocument';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      /** Visible semantic title used to select the Library result. */
+      readonly document: string;
+      /** Regex source matched against the reader and local edit affordance. */
+      readonly readerPattern: string;
+      /** Regex source matched against the exact answer's provenance tab. */
+      readonly provenancePattern: string;
+      /** Regex source matched against the pinned schema tab. */
+      readonly schemaPattern: string;
+    }
+  | {
       /** **P7 W5.** Open the Constraint Explorer, click a violation's
        *  click-to-source button, and assert the reader landed on the WHOLE
        *  cited range.
@@ -586,6 +603,18 @@ export const FLOW: readonly Step[] = [
     chainPattern: 'chunk[\\s\\S]*section[\\s\\S]*document',
   },
   {
+    kind: 'inspectLibraryDocument',
+    id: 'unified-library-document',
+    title: 'The unified Library opens and inspects the same local Document answer',
+    channel: 'dom',
+    document: 'catdb-core',
+    readerPattern: 'Edit local file[\\s\\S]*catdb-core',
+    provenancePattern:
+      'title[\\s\\S]*\\.title[\\s\\S]*record[^\\n]*catdb-core\\.md',
+    schemaPattern:
+      'Catalog authority[\\s\\S]*Schema[\\s\\S]*Mappings[\\s\\S]*Sources[\\s\\S]*Policies',
+  },
+  {
     kind: 'dragWindow',
     id: 'drag-window',
     title: 'Drag the window — its position changes',
@@ -616,6 +645,7 @@ export const FLOW: readonly Step[] = [
 export const SEMANTIC_KINDS: readonly Step['kind'][] = [
   'viewAs',
   'inspectFederation',
+  'inspectLibraryDocument',
   'inspectPassage',
   'constraintJump',
   'queryExplanation',

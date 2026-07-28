@@ -30,6 +30,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 blake3 = "1"
 tempfile = { workspace = true }

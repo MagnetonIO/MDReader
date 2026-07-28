@@ -26,6 +26,7 @@ mod engine;
 mod federation;
 mod file_lock;
 mod library;
+mod library_query;
 mod mapping;
 mod mobile_enterprise;
 mod overlay;
@@ -68,7 +69,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::connect_cloud_source,
             cloud_accounts::set_cloud_source_enabled,
             cloud_accounts::disconnect_cloud_source,
+            cloud_accounts::prepare_cloud_catalog,
+            cloud_accounts::entity_query,
+            cloud_accounts::query_library_documents,
             cloud_accounts::query_cloud_documents,
+            cloud_accounts::cancel_cloud_document_query,
             mobile_enterprise::mobile_enterprise_connection,
             mobile_enterprise::mobile_enterprise_request,
             library::list_library_sources,
@@ -76,6 +81,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             library::reconcile_library_restore,
             library::watch_library_source,
             library::grant_library_source,
+            library::resolve_library_document_edit,
             library::mark_library_source_active,
             library::forget_library_source,
             diagnostics::diagnostics_info,
@@ -184,6 +190,8 @@ pub fn run() {
         .manage(mobile_enterprise::MobileEnterpriseState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            app.state::<cloud_accounts::CloudAccountsState>()
+                .configure_catalog(app.handle())?;
             let diagnostics =
                 DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
             app.manage(diagnostics);
@@ -297,8 +305,16 @@ mod tests {
                 "\"disconnect_cloud_source\"",
             ),
             (
+                "cloud_accounts::prepare_cloud_catalog,",
+                "\"prepare_cloud_catalog\"",
+            ),
+            (
                 "cloud_accounts::query_cloud_documents,",
                 "\"query_cloud_documents\"",
+            ),
+            (
+                "cloud_accounts::cancel_cloud_document_query,",
+                "\"cancel_cloud_document_query\"",
             ),
         ] {
             assert!(registry.contains(rust_command), "missing {rust_command}");
@@ -327,6 +343,22 @@ mod tests {
         assert!(!adapter.contains("X-MDReader-Session-Reference"));
         assert!(!adapter.contains("Authorization"));
         assert!(!adapter.contains("fetch.bind(globalThis)"));
+    }
+
+    #[test]
+    fn shared_entity_query_is_registered_and_generated_for_the_renderer() {
+        let registry = include_str!("lib.rs");
+        let bindings = include_str!("../../ui/src/bindings.ts");
+        assert!(
+            registry.contains("cloud_accounts::entity_query,"),
+            "cloud P8 must cross the shared entity-query command boundary"
+        );
+        assert!(
+            bindings.contains("\"entity_query\""),
+            "the shared entity-query command must be generated for the renderer"
+        );
+        assert!(bindings.contains("EntityQueryRequest"));
+        assert!(bindings.contains("EntityQueryResponse"));
     }
 
     /// THE first-paint guarantee, enforced by construction.

@@ -458,12 +458,32 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
                 "author".to_string(),
                 vec!["frontmatter.author".to_string(), "git.author".to_string()]
             ),
-            ("body".to_string(), vec!["frontmatter.body".to_string()]),
+            (
+                "body".to_string(),
+                vec![
+                    "frontmatter.body".to_string(),
+                    "google-drive.body".to_string(),
+                    "dropbox.body".to_string()
+                ]
+            ),
+            (
+                "checksum".to_string(),
+                vec![
+                    "google-drive.checksum".to_string(),
+                    "dropbox.contentHash".to_string()
+                ]
+            ),
+            (
+                "mediaType".to_string(),
+                vec!["google-drive.mimeType".to_string()]
+            ),
             (
                 "modifiedAt".to_string(),
                 vec![
                     "filesystem.modifiedAt".to_string(),
-                    "git.modifiedAt".to_string()
+                    "git.modifiedAt".to_string(),
+                    "google-drive.modifiedAt".to_string(),
+                    "dropbox.modifiedAt".to_string()
                 ]
             ),
             (
@@ -471,11 +491,29 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
                 vec![
                     "filesystem.path".to_string(),
                     "git.path".to_string(),
-                    "frontmatter.path".to_string()
+                    "frontmatter.path".to_string(),
+                    "google-drive.id".to_string(),
+                    "dropbox.path".to_string()
                 ]
             ),
-            ("size".to_string(), vec!["filesystem.size".to_string()]),
-            ("title".to_string(), vec!["frontmatter.title".to_string()]),
+            ("providerId".to_string(), vec!["dropbox.id".to_string()]),
+            ("revision".to_string(), vec!["dropbox.rev".to_string()]),
+            (
+                "size".to_string(),
+                vec![
+                    "filesystem.size".to_string(),
+                    "google-drive.size".to_string(),
+                    "dropbox.size".to_string()
+                ]
+            ),
+            (
+                "title".to_string(),
+                vec![
+                    "frontmatter.title".to_string(),
+                    "google-drive.name".to_string(),
+                    "dropbox.name".to_string()
+                ]
+            ),
         ],
         "the precedence DECLARATION has changed; the by-name assertions below are about it"
     );
@@ -563,6 +601,11 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
         [
             ("filesystem.modifiedAt".to_string(), "observed".to_string()),
             ("git.modifiedAt".to_string(), "observed".to_string()),
+            (
+                "google-drive.modifiedAt".to_string(),
+                "not-asked".to_string()
+            ),
+            ("dropbox.modifiedAt".to_string(), "not-asked".to_string()),
         ]
     );
     assert_eq!(
@@ -583,15 +626,19 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
             ("filesystem.path".to_string(), "observed".to_string()),
             ("git.path".to_string(), "observed".to_string()),
             ("frontmatter.path".to_string(), "observed".to_string()),
+            ("google-drive.id".to_string(), "not-asked".to_string()),
+            ("dropbox.path".to_string(), "not-asked".to_string()),
         ]
     );
     let path_field = target.field("path").expect("`path` is declared");
     for (provider, verdict) in &path_field.verdicts {
-        assert_eq!(
-            verdict.observed().and_then(serde_json::Value::as_str),
-            Some(TARGET),
-            "`{provider}` disagrees about the natural key"
-        );
+        if let Some(observed) = verdict.observed() {
+            assert_eq!(
+                observed.as_str(),
+                Some(TARGET),
+                "`{provider}` disagrees about the natural key"
+            );
+        }
     }
     assert_eq!(
         target.claims().len(),
@@ -664,7 +711,8 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
     assert_eq!(titleless.text("title"), None);
     assert_eq!(titleless.source_of("title"), None);
     // Every declared provider is on the record, saying why. The declaration
-    // says there is exactly one, and that is asserted rather than assumed.
+    // includes the two cloud providers, which were not asked during this
+    // local-only execution.
     assert_eq!(
         federation
             .precedence()
@@ -672,14 +720,18 @@ fn one_query_answered_by_three_physical_sources_names_the_source_of_every_field_
             .expect("`title` is declared")
             .order
             .len(),
-        1
+        3
     );
     assert_eq!(
         record(titleless, "title"),
-        [(
-            "frontmatter.title".to_string(),
-            "observed-nothing".to_string()
-        )]
+        [
+            (
+                "frontmatter.title".to_string(),
+                "observed-nothing".to_string()
+            ),
+            ("google-drive.name".to_string(), "not-asked".to_string()),
+            ("dropbox.name".to_string(), "not-asked".to_string()),
+        ]
     );
     assert_ne!(
         title.verdicts[0].1,

@@ -10,9 +10,9 @@ import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
   settingsBackend,
-  type CloudDocumentQueryResponse,
   type CloudProvider,
   type CloudSourcesView,
+  type ConnectedCatdbState,
   type DiagnosticInfo,
   type DiagnosticLevel,
   type LibrarySnapshot,
@@ -112,6 +112,8 @@ function errorMessage(cause: unknown): string {
       return detail.detail;
     case 'query-failed':
       return `MDReader could not read that source. ${detail.detail}`;
+    case 'query-not-found':
+      return 'That provider document was not found. Refresh the source and try again.';
     case 'invalid-configuration':
     case 'rollback-failed':
       return 'MDReader could not safely update the cloud source. Nothing was connected.';
@@ -146,16 +148,6 @@ function activityLabel(watcher: WatcherStatus, importState: ImportState | null):
   return 'Idle';
 }
 
-function cloudField(
-  response: CloudDocumentQueryResponse,
-  rowIndex: number,
-  field: string,
-): unknown {
-  const fields = response.rows[rowIndex]?.fields;
-  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return undefined;
-  return (fields as Record<string, unknown>)[field];
-}
-
 export function SettingsSheet({
   backend = settingsBackend,
   watcher,
@@ -170,14 +162,13 @@ export function SettingsSheet({
   const confirmDialogRef = useRef<HTMLDivElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmWasOpenRef = useRef(false);
+  const operationSerials = useRef(new Map<string, number>());
   const invokingFocusRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
-  const [cloudDocuments, setCloudDocuments] = useState<
-    Partial<Record<CloudProvider, CloudDocumentQueryResponse>>
-  >({});
+  const [connectedCatdb, setConnectedCatdb] = useState<ConnectedCatdbState | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -190,8 +181,24 @@ export function SettingsSheet({
 
   useEffect(() => {
     closeRef.current?.focus();
-    return () => invokingFocusRef.current?.focus();
-  }, []);
+    return () => {
+      invokingFocusRef.current?.focus();
+      for (const [key, serial] of operationSerials.current) {
+        operationSerials.current.set(key, serial + 1);
+      }
+    };
+  }, [backend]);
+
+  useEffect(() => {
+    if (!backend.connectedCatdbState) return;
+    let live = true;
+    void backend.connectedCatdbState().then((state) => {
+      if (live) setConnectedCatdb(state);
+    });
+    return () => {
+      live = false;
+    };
+  }, [backend]);
 
   useEffect(() => {
     if (confirmClear) {
@@ -253,15 +260,19 @@ export function SettingsSheet({
     task: () => Promise<T>,
     apply: (value: T) => void,
   ) => {
+    const serial = (operationSerials.current.get(key) ?? 0) + 1;
+    operationSerials.current.set(key, serial);
+    const current = () => operationSerials.current.get(key) === serial;
     setBusy(key);
     setFailure(null);
     setNotice(null);
     try {
-      apply(await task());
+      const value = await task();
+      if (current()) apply(value);
     } catch (cause) {
-      setFailure(errorMessage(cause));
+      if (current()) setFailure(errorMessage(cause));
     } finally {
-      setBusy(null);
+      if (current()) setBusy(null);
     }
   }, []);
 
@@ -322,36 +333,10 @@ export function SettingsSheet({
         () => cloudControls.disconnect(provider),
         (snapshot) => {
           setCloudSources(snapshot);
-          setCloudDocuments((current) => {
-            const next = { ...current };
-            delete next[provider];
-            return next;
-          });
         },
       );
     },
     [cloudControls, run],
-  );
-
-  const browseCloud = useCallback(
-    (provider: CloudProvider) => {
-      if (!backend.queryCloudDocuments) return;
-      void run(
-        `browse:${provider}`,
-        () =>
-          backend.queryCloudDocuments!(
-            provider,
-            [],
-            ['id', 'name', 'modifiedAt', 'size'],
-          ),
-        (response) =>
-          setCloudDocuments((current) => ({
-            ...current,
-            [provider]: response,
-          })),
-      );
-    },
-    [backend, run],
   );
 
   const setLevel = useCallback(
@@ -609,7 +594,6 @@ export function SettingsSheet({
                   {cloudSources?.sources.map((source) => {
                     const connected = source.connection !== 'disconnected';
                     const reconnect = source.connection === 'reauthorize';
-                    const documents = cloudDocuments[source.provider];
                     return (
                       <article className="cloud-source" key={source.provider}>
                         <div className="cloud-source__copy">
@@ -630,16 +614,6 @@ export function SettingsSheet({
                         <div className="cloud-source__actions">
                           {connected ? (
                             <>
-                              {!reconnect && source.enabled && backend.queryCloudDocuments ? (
-                                <button
-                                  type="button"
-                                  disabled={busy !== null}
-                                  aria-label={`Browse ${source.label}`}
-                                  onClick={() => browseCloud(source.provider)}
-                                >
-                                  {busy === `browse:${source.provider}` ? 'Loading…' : 'Browse'}
-                                </button>
-                              ) : null}
                               {!reconnect ? (
                                 <button
                                   type="button"
@@ -687,47 +661,6 @@ export function SettingsSheet({
                             </button>
                           )}
                         </div>
-                        {documents && source.enabled ? (
-                          <div
-                            className="cloud-source__documents"
-                            aria-label={`${source.label} documents`}
-                          >
-                            <div className="cloud-source__documents-heading">
-                              <strong>
-                                {documents.rows.length}{' '}
-                                {documents.rows.length === 1 ? 'document' : 'documents'}
-                              </strong>
-                              <span>from {source.label}</span>
-                            </div>
-                            {documents.rows.length === 0 ? (
-                              <p>No Markdown or text documents were found.</p>
-                            ) : (
-                              <ul>
-                                {documents.rows.slice(0, 8).map((row, index) => {
-                                  const name = cloudField(documents, index, 'name');
-                                  const modifiedAt = cloudField(documents, index, 'modifiedAt');
-                                  const size = cloudField(documents, index, 'size');
-                                  return (
-                                    <li key={`${row.source_id}:${row.record_key}`}>
-                                      <span>{typeof name === 'string' ? name : row.record_key}</span>
-                                      <small>
-                                        {typeof size === 'number'
-                                          ? readableBytes(size)
-                                          : 'Size unavailable'}
-                                        {typeof modifiedAt === 'number'
-                                          ? ` · ${new Date(modifiedAt).toLocaleDateString()}`
-                                          : ''}
-                                      </small>
-                                    </li>
-                                  );
-                                })}
-                              </ul>
-                            )}
-                            {documents.rows.length > 8 ? (
-                              <p>Showing the first 8 documents.</p>
-                            ) : null}
-                          </div>
-                        ) : null}
                       </article>
                     );
                   })}
@@ -736,6 +669,40 @@ export function SettingsSheet({
                   Pausing keeps the account connected. Disconnecting removes its saved credentials.
                   Neither action changes files in Drive or Dropbox.
                 </p>
+              </div>
+            ) : null}
+            {connectedCatdb ? (
+              <div className="cloud-sources">
+                <div className="cloud-sources__heading">
+                  <div>
+                    <h3>Connected CatDB</h3>
+                    <p>
+                      Sign in to a CatDB workspace to choose the database and warehouse sources
+                      your account can read.
+                    </p>
+                  </div>
+                </div>
+                <article className="cloud-source">
+                  <div className="cloud-source__copy">
+                    <div className="cloud-source__title">
+                      <h4>CatDB workspace</h4>
+                    </div>
+                    <p>
+                      This app has no authenticated source-descriptor endpoint. Direct database
+                      credentials are never stored in MDReader.
+                    </p>
+                  </div>
+                  <div className="cloud-source__actions">
+                    <button
+                      type="button"
+                      disabled
+                      aria-label="Connect CatDB workspace"
+                      data-unavailable-reason={connectedCatdb.reason}
+                    >
+                      Connect
+                    </button>
+                  </div>
+                </article>
               </div>
             ) : null}
           </section>

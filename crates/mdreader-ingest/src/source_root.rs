@@ -116,6 +116,19 @@ impl SourceRoot {
         self.identity.verify(&self.path)
     }
 
+    /// Duplicate the retained directory handle without resolving `path`.
+    ///
+    /// The duplicate names the same admitted filesystem object and can be
+    /// handed to another component without creating a pathname race.
+    pub fn try_clone_directory_handle(&self) -> Result<fs::File, SourceRootError> {
+        self.handle
+            .try_clone()
+            .map_err(|error| SourceRootError::IdentityUnavailable {
+                path: self.path.clone(),
+                reason: error.to_string(),
+            })
+    }
+
     /// Convert an exact native path below this root into a traversal-free
     /// source-relative path without re-resolving filesystem names.
     pub fn relative_path(&self, candidate: &Path) -> Result<PathBuf, SourceRootError> {
@@ -1043,7 +1056,7 @@ fn capture_unix(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRoo
 fn capture_windows(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRootError> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, SYNCHRONIZE,
     };
 
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -1067,6 +1080,7 @@ fn capture_windows(path: &Path) -> Result<(SourceRootIdentity, fs::File), Source
 
     let opened = fs::OpenOptions::new()
         .access_mode(ROOT_ACCESS)
+        .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|error| SourceRootError::CannotInspect {
@@ -1103,6 +1117,7 @@ fn capture_windows(path: &Path) -> Result<(SourceRootIdentity, fs::File), Source
     }
     let reopened = fs::OpenOptions::new()
         .access_mode(ROOT_ACCESS)
+        .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
         .map_err(|error| SourceRootError::CannotInspect {
@@ -1878,6 +1893,32 @@ mod tests {
             fs::read_to_string(canonical.join("note.md")).expect("replacement remains readable"),
             "# replacement",
             "the replacement object was never used"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_root_blocks_path_replacement_without_blocking_child_edits() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("create root");
+        fs::write(root.join("note.md"), "# admitted").expect("write admitted document");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let admitted = SourceRoot::capture(canonical.clone()).expect("capture admitted root");
+
+        let rename = fs::rename(&canonical, temp.path().join("replacement-window"));
+        assert!(
+            rename.is_err(),
+            "the retained Windows root must deny delete sharing during connector handoff"
+        );
+        fs::write(canonical.join("note.md"), "# edited")
+            .expect("retaining the directory does not block child edits");
+        assert_eq!(
+            admitted
+                .read_relative(Path::new("note.md"))
+                .expect("read edited child")
+                .bytes,
+            b"# edited"
         );
     }
 

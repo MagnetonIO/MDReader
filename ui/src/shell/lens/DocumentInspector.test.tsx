@@ -9,7 +9,7 @@ const answer: FederatedDocument = {
   completeness: 'complete',
   schema: {
     name: 'doc',
-    version: 3,
+    version: '00000000-0000-4000-8000-000000000003',
     checksum: 'blake3:abc',
     entities: ['Document'],
     arrowCount: 0,
@@ -151,7 +151,9 @@ it('presents Result, Sources, Provenance, and Schema as one document answer', as
   expect(screen.getByText('also observed')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('tab', { name: 'Schema' }));
-  expect(screen.getByText('doc · v3')).toBeTruthy();
+  expect(
+    screen.getByText('doc · v00000000-0000-4000-8000-000000000003'),
+  ).toBeTruthy();
   expect(screen.getByText('blake3:abc')).toBeTruthy();
   expect(
     screen.getByText(/changes the semantic interpretation, not the Markdown file/i),

@@ -43,7 +43,14 @@ export const commands = {
 	connectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("connect_cloud_source", { provider })),
 	setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("set_cloud_source_enabled", { provider, enabled })),
 	disconnectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("disconnect_cloud_source", { provider })),
-	queryCloudDocuments: (provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { provider, filters, fields })),
+	/**  Establish and verify the cloud Library catalog before renderer reads begin. */
+	prepareCloudCatalog: () => typedError<CloudCatalogReady, CloudSourceError>(__TAURI_INVOKE("prepare_cloud_catalog")),
+	/**  Run a cloud Library read through CatDB's shared typed entity-query contract. */
+	entityQuery: (requestId: string, provider: CloudProvider, request: EntityQueryRequest_Deserialize) => typedError<EntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("entity_query", { requestId, provider, request })),
+	/**  Query all caller-selected Library memberships through one CatDB execution. */
+	queryLibraryDocuments: (requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("query_library_documents", { requestId, request })),
+	queryCloudDocuments: (requestId: string, provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { requestId, provider, filters, fields })),
+	cancelCloudDocumentQuery: (requestId: string) => typedError<boolean, CloudSourceError>(__TAURI_INVOKE("cancel_cloud_document_query", { requestId })),
 	mobileEnterpriseConnection: () => typedError<{
 	connection_id: string,
 	label: string,
@@ -86,6 +93,11 @@ export const commands = {
 	 *  lossless registry path and never from UI text.
 	 */
 	grantLibrarySource: (sourceId: string) => typedError<string, LibraryError>(__TAURI_INVOKE("grant_library_source", { sourceId })),
+	/**
+	 *  Resolve a semantic source-relative document path only after the exact
+	 *  persisted membership has become the active, identity-validated workspace.
+	 */
+	resolveLibraryDocumentEdit: (sourceId: string, relativePath: string) => typedError<string, LibraryError>(__TAURI_INVOKE("resolve_library_document_edit", { sourceId, relativePath })),
 	/**
 	 *  Persist the restore candidate only after the existing watch/grant path has
 	 *  committed it as the current epoch. A caller cannot mint authority by setting
@@ -395,12 +407,36 @@ export type BoostsDto = {
 	graph: number | null,
 };
 
+/**  Explicit readiness proof for the Library-owned cloud CatDB catalog. */
+export type CloudCatalogReady = {
+	workspace_id: string,
+	catalog_revision_id: string,
+	schema_version_id: string,
+};
+
+export type CloudCompleteness = "complete";
+
 export type CloudConnectionState = "disconnected" | "connected" | "reauthorize";
+
+export type CloudConsideredProvider = {
+	provider: CloudProvider,
+	source_id: string,
+	record_key: string,
+	mapping_version: string,
+	/**  Exact physical provider attribute selected by the validated mapping. */
+	physical_attribute: string | null,
+	observation: CloudObservation,
+	observed_at_ms: number | null,
+};
 
 export type CloudDocumentQueryResponse = {
 	query_id: string,
 	provider: CloudProvider,
+	workspace_id: string,
 	schema_version: string,
+	version_pins: CloudVersionPins,
+	completeness: CloudCompleteness,
+	sources: CloudSourceReport[],
 	scanned: number,
 	rows: CloudDocumentRow[],
 };
@@ -409,6 +445,15 @@ export type CloudDocumentRow = {
 	source_id: string,
 	record_key: string,
 	fields: unknown,
+	provenance: CloudFieldProvenance[],
+};
+
+export type CloudExecutionMode = "virtual";
+
+export type CloudFieldProvenance = {
+	field: string,
+	selected: number | null,
+	providers: CloudConsideredProvider[],
 };
 
 export type CloudFilterInput = {
@@ -419,7 +464,11 @@ export type CloudFilterInput = {
 
 export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
 
+export type CloudObservation = { kind: "observed-value"; value: unknown } | { kind: "observed-null" } | { kind: "observed-nothing"; reason: string } | { kind: "unobservable"; reason: string };
+
 export type CloudProvider = "google-drive" | "dropbox";
+
+export type CloudQueryRefusal = "unavailable" | "unknown-entity" | "unobservable-attribute" | "unsupported-filter" | "unsupported-ordering" | "unsupported-limit" | "unsupported-policy";
 
 export type CloudSourceDto = {
 	id: string,
@@ -429,12 +478,44 @@ export type CloudSourceDto = {
 	enabled: boolean,
 };
 
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-failed"; detail: string };
+export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-transport" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-authorization-denied" } | { kind: "query-all-sources-refused" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-incomplete-sources"; source_ids: string[] } | { kind: "query-stale-sources"; source_ids: string[] } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-not-found"; source_id: string; record_key: string } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-source-protocol"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-execution-failed"; sources: SourceExecution[] } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
+
+export type CloudSourceOutcome = { kind: "ran"; mode: CloudExecutionMode; scanned: number; returned: number; pushed: string[]; residual: string[] };
+
+export type CloudSourceReport = {
+	source_id: string,
+	freshness_ms: number | null,
+	outcome: CloudSourceOutcome,
+};
 
 export type CloudSourcesSnapshot = {
 	version: number,
 	sources: CloudSourceDto[],
 };
+
+export type CloudVersionPins = {
+	catalog_version: string,
+	schema_version: string,
+	schema_checksum: string,
+	source_schema_version: string,
+	source_schema_checksum: string,
+	mapping_version: string,
+	mapping_checksum: string,
+	connector_version: string,
+	source_version: string,
+	source_checksum: string,
+	policy_version: string,
+	policy_checksum: string,
+};
+
+/**  Derived answer completeness. */
+export type Completeness =
+/**  Every authorized source answered. */
+{ state: "complete" } |
+/**  Explicitly opted-in answer with visible authorized exclusions. */
+{ state: "partial";
+/**  Authorized sources that refused. */
+excluded_source_ids: string[] };
 
 /**  Why a chain did not produce a validated composite. */
 export type CompositionFailureDto = {
@@ -529,6 +610,19 @@ export type DocPayload = {
 	hash: string,
 };
 
+/**  An opaque, versioned entity-query continuation cursor. */
+export type EntityCursor = string;
+
+/**  One explicitly ANDed entity filter. */
+export type EntityFilter = {
+	/**  Field name. */
+	field: string,
+	/**  Comparison operator. */
+	operator: FilterOperator,
+	/**  Lexical value parsed against the pinned semantic schema. */
+	value: string,
+};
+
 /**  Where one source entity's rows go. */
 export type EntityMoveDto = {
 	/**  The source entity. */
@@ -553,6 +647,137 @@ export type EntityObjectCountDto = {
 	needs_decision: number,
 	/**  Why, when they do. */
 	reason: string | null,
+};
+
+/**  Transport-neutral entity query. */
+export type EntityQueryRequest = EntityQueryRequest_Serialize | EntityQueryRequest_Deserialize;
+
+/**  Transport-neutral entity query. */
+export type EntityQueryRequest_Deserialize = {
+	/**  Workspace being queried. */
+	workspace_id: string,
+	/**  Exact catalog revision, or `None` to resolve the authoritative head once. */
+	catalog_revision_id: string | null,
+	/**  Exact semantic schema version, or `None` to use the revision's default. */
+	schema_version_id: string | null,
+	/**  Qualified semantic entity name. */
+	entity: string,
+	/**  Explicit response fields. */
+	select: string[],
+	/**  Filters combined with logical AND. */
+	filters: EntityFilter[],
+	/**
+	 *  Explicit ordering. Record key and source identity are implicit stable
+	 *  tie-breakers.
+	 */
+	order_by: OrderBy[],
+	/**  Optional source selection. */
+	source_ids: string[] | null,
+	/**  Maximum acceptable source age in milliseconds. */
+	max_staleness_ms: number | null,
+	/**  Whether every authorized source must answer. `None` means `true`. */
+	require_complete: boolean | null,
+	/**  Number of reconciled rows returned in this page. */
+	page_size: number,
+	/**  Maximum reconciled rows in the whole logical query. */
+	limit: number,
+	/**  Server-issued logical query identity required only with a continuation. */
+	query_id?: string | null,
+	/**  Opaque continuation from an earlier page. */
+	cursor: EntityCursor | null,
+};
+
+/**  Transport-neutral entity query. */
+export type EntityQueryRequest_Serialize = {
+	/**  Workspace being queried. */
+	workspace_id: string,
+	/**  Exact catalog revision, or `None` to resolve the authoritative head once. */
+	catalog_revision_id: string | null,
+	/**  Exact semantic schema version, or `None` to use the revision's default. */
+	schema_version_id: string | null,
+	/**  Qualified semantic entity name. */
+	entity: string,
+	/**  Explicit response fields. */
+	select: string[],
+	/**  Filters combined with logical AND. */
+	filters: EntityFilter[],
+	/**
+	 *  Explicit ordering. Record key and source identity are implicit stable
+	 *  tie-breakers.
+	 */
+	order_by: OrderBy[],
+	/**  Optional source selection. */
+	source_ids: string[] | null,
+	/**  Maximum acceptable source age in milliseconds. */
+	max_staleness_ms: number | null,
+	/**  Whether every authorized source must answer. `None` means `true`. */
+	require_complete: boolean | null,
+	/**  Number of reconciled rows returned in this page. */
+	page_size: number,
+	/**  Maximum reconciled rows in the whole logical query. */
+	limit: number,
+	/**  Server-issued logical query identity required only with a continuation. */
+	query_id?: string | null,
+	/**  Opaque continuation from an earlier page. */
+	cursor: EntityCursor | null,
+};
+
+/**  Transport-neutral entity-query answer. */
+export type EntityQueryResponse = EntityQueryResponse_Serialize | EntityQueryResponse_Deserialize;
+
+/**  Transport-neutral entity-query answer. */
+export type EntityQueryResponse_Deserialize = {
+	/**  Query execution identity. */
+	query_id: string,
+	/**  Exact immutable versions used. */
+	pins: PinnedVersions,
+	/**  One deterministic page of reconciled rows. */
+	rows: EntityRow_Deserialize[],
+	/**  Visible authorized source reports in deterministic order. */
+	sources: SourceExecution[],
+	/**  Completeness derived from [`Self::sources`]. */
+	completeness: Completeness,
+	/**  Continuation bound to this request, authorization, and pin set. */
+	next_cursor: EntityCursor | null,
+};
+
+/**  Transport-neutral entity-query answer. */
+export type EntityQueryResponse_Serialize = {
+	/**  Query execution identity. */
+	query_id: string,
+	/**  Exact immutable versions used. */
+	pins: PinnedVersions,
+	/**  One deterministic page of reconciled rows. */
+	rows: EntityRow_Serialize[],
+	/**  Visible authorized source reports in deterministic order. */
+	sources: SourceExecution[],
+	/**  Completeness derived from [`Self::sources`]. */
+	completeness: Completeness,
+	/**  Continuation bound to this request, authorization, and pin set. */
+	next_cursor: EntityCursor | null,
+};
+
+/**  One typed, reconciled semantic row. */
+export type EntityRow = EntityRow_Serialize | EntityRow_Deserialize;
+
+/**  One typed, reconciled semantic row. */
+export type EntityRow_Deserialize = {
+	/**  Stable source record key. */
+	record_key: string,
+	/**  Explicitly selected fields; absent remains different from JSON null. */
+	fields: { [key in string]: unknown },
+	/**  Provenance for every selected field. */
+	provenance: { [key in string]: FieldProvenance_Deserialize },
+};
+
+/**  One typed, reconciled semantic row. */
+export type EntityRow_Serialize = {
+	/**  Stable source record key. */
+	record_key: string,
+	/**  Explicitly selected fields; absent remains different from JSON null. */
+	fields: { [key in string]: unknown },
+	/**  Provenance for every selected field. */
+	provenance: { [key in string]: FieldProvenance_Serialize },
 };
 
 /**  The full per-hit score breakdown (see [`SearchQuery::explain`]). */
@@ -599,7 +824,7 @@ export type FactProvenanceDto = {
 export type FederatedDocumentDto = {
 	/**  Workspace-relative natural key. */
 	path: string,
-	/**  All six schema fields in stable name order. */
+	/**  Every canonical Document schema field in stable name order. */
 	fields: FederatedFieldDto[],
 };
 
@@ -652,7 +877,7 @@ export type FederatedSchemaDto = {
 	/**  Stable schema name. */
 	name: string,
 	/**  Persisted catalog version. */
-	version: number,
+	version: string,
 	/**  Persisted content checksum for that exact version. */
 	checksum: string,
 	/**  Entity names in the persisted schema. */
@@ -713,6 +938,46 @@ export type FieldMoveDto = {
 	rendered: string,
 };
 
+/**  One source's evidence for one field on one source record. */
+export type FieldObservation = FieldObservation_Serialize | FieldObservation_Deserialize;
+
+/**  One source's evidence for one field on one source record. */
+export type FieldObservation_Deserialize = {
+	source_version_id: string,
+	record_key: string,
+	mapping_version_id: string,
+	physical_attribute?: string | null,
+	observed_at_ms: number | null,
+	state: WireObservationState,
+};
+
+/**  One source's evidence for one field on one source record. */
+export type FieldObservation_Serialize = {
+	source_version_id: string,
+	record_key: string,
+	mapping_version_id: string,
+	physical_attribute?: string | null,
+	observed_at_ms: number | null,
+	state: WireObservationState,
+};
+
+/**  Provenance for one resolved field. */
+export type FieldProvenance = FieldProvenance_Serialize | FieldProvenance_Deserialize;
+
+/**  Provenance for one resolved field. */
+export type FieldProvenance_Deserialize = {
+	field: string,
+	selected: number | null,
+	considered: FieldObservation_Deserialize[],
+};
+
+/**  Provenance for one resolved field. */
+export type FieldProvenance_Serialize = {
+	field: string,
+	selected: number | null,
+	considered: FieldObservation_Serialize[],
+};
+
 /**
  *  One markdown file surfaced to the sidebar tree. Produced either from the
  *  engine's index (after an import) or, before the first import finishes, from a
@@ -739,6 +1004,21 @@ export type FileEntry = {
 	 */
 	ignored: boolean,
 };
+
+/**  One V1 comparison operator. */
+export type FilterOperator =
+/**  Equality. */
+"eq" |
+/**  Strictly less than. */
+"lt" |
+/**  Less than or equal. */
+"le" |
+/**  Strictly greater than. */
+"gt" |
+/**  Greater than or equal. */
+"ge" |
+/**  Glob matching over a text field. */
+"glob";
 
 /**
  *  Payload for the `mdreader://fs-changed` event. tauri-specta emits a typed
@@ -869,14 +1149,59 @@ export type LibraryCleanupReason = "managed-state-unavailable" | "rollback-faile
 
 export type LibraryCleanupStatus = { kind: "complete" } | { kind: "pending"; source_count: number };
 
-export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+export type LibraryCloudSourceDto = {
+	id: string,
+	provider: CloudProvider,
+	name: string,
+	enabled: boolean,
+	contract: LibrarySourceContract,
+};
+
+/**  One exact CatDB answer plus the membership boundary used to produce it. */
+export type LibraryEntityQueryResponse = LibraryEntityQueryResponse_Serialize | LibraryEntityQueryResponse_Deserialize;
+
+/**  One exact CatDB answer plus the membership boundary used to produce it. */
+export type LibraryEntityQueryResponse_Deserialize = {
+	answer: EntityQueryResponse_Deserialize,
+	memberships: LibrarySourceExecution[],
+};
+
+/**  One exact CatDB answer plus the membership boundary used to produce it. */
+export type LibraryEntityQueryResponse_Serialize = {
+	answer: EntityQueryResponse_Serialize,
+	memberships: LibrarySourceExecution[],
+};
+
+export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+
+export type LibraryIndexPolicy = "managed" | "read-through";
 
 export type LibraryIndexState = "present" | "not-created" | "unknown";
+
+/**  Source family for one Library membership. */
+export type LibraryQueryMemberKind = "local-folder" | "google-drive" | "dropbox";
 
 export type LibrarySnapshot = {
 	version: number,
 	sources: LibrarySourceDto[],
+	cloud_sources: LibraryCloudSourceDto[],
 	cleanup: LibraryCleanupStatus,
+};
+
+export type LibrarySourceCapabilities = {
+	read: boolean,
+	write: boolean,
+	search: boolean,
+	watch: boolean,
+	open_original: boolean,
+	download: boolean,
+};
+
+export type LibrarySourceContract = {
+	connector_version: string,
+	capabilities: LibrarySourceCapabilities,
+	mapping_version: string,
+	index_policy: LibraryIndexPolicy,
 };
 
 export type LibrarySourceDto = {
@@ -887,6 +1212,17 @@ export type LibrarySourceDto = {
 	index_state: LibraryIndexState,
 	active: boolean,
 	restore_candidate: boolean,
+};
+
+/**  How a returned physical source relates to the user-selected Library member. */
+export type LibrarySourceExecution = {
+	membership_id: string,
+	registry_id: string,
+	name: string,
+	kind: LibraryQueryMemberKind,
+	source_ids: string[],
+	editable: boolean,
+	active: boolean,
 };
 
 /**
@@ -1080,6 +1416,21 @@ export type MobileEnterpriseResponse = {
 	body_json: string,
 };
 
+/**  One explicit ordering key. */
+export type OrderBy = {
+	/**  Field name. */
+	field: string,
+	/**  Sort direction. */
+	direction: OrderDirection,
+};
+
+/**  Sort direction for one ordering field. */
+export type OrderDirection =
+/**  Lowest value first. */
+"ascending" |
+/**  Highest value first. */
+"descending";
+
 export type PickedLibrarySource = {
 	source: LibrarySourceDto | null,
 	added: boolean,
@@ -1091,6 +1442,24 @@ export type PingResponse = {
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
+};
+
+/**  Exact immutable versions used by one answer. */
+export type PinnedVersions = {
+	/**  Stable identity of the catalog authority that resolved the revision. */
+	catalog_resolver_id: string,
+	/**  Catalog revision resolved once at query start. */
+	catalog_revision_id: string,
+	/**  Semantic schema version. */
+	schema_version_id: string,
+	/**  Physical schema versions used, in source-report order. */
+	physical_schema_version_ids: string[],
+	/**  Mapping versions used, in source-report order. */
+	mapping_version_ids: string[],
+	/**  Source versions used, in source-report order. */
+	source_version_ids: string[],
+	/**  Policy versions in authoritative revision order. */
+	policy_version_ids: string[],
 };
 
 /**
@@ -1515,6 +1884,56 @@ export type SigmaOutcomeDto = {
 	rounds: number | null,
 };
 
+/**  One visible source execution and freshness report. */
+export type SourceExecution = {
+	/**  Stable source identity. */
+	source_id: string,
+	/**  Exact immutable source version. */
+	source_version_id: string,
+	/**  Typed execution outcome. */
+	outcome: SourceOutcome,
+	/**  Age at execution time, or `None` when the source did not run. */
+	freshness_ms: number | null,
+	/**  Candidates examined across all source pages. */
+	scanned: number | null,
+	/**  Rows surviving this source's pushed and residual predicates. */
+	returned: number | null,
+};
+
+/**  Outcome of one authorized source execution. */
+export type SourceOutcome =
+/**  Source ran successfully, including a successful empty result. */
+"ran" |
+/**  Source refused at compilation. */
+"refused" |
+/**
+ *  Source executed, but its measured readable view exceeded the caller's
+ *  maximum staleness.
+ */
+"stale" |
+/**  Source refused after compilation, while entering or performing a read. */
+"runtime_refused" |
+/**  Source exhausted its bounded work or serialized-byte allocation. */
+"budget_exceeded" |
+/**  The source rejected or could not refresh its runtime credential. */
+"authentication_failed" |
+/**  Communication with the physical source failed. */
+"transport_failed" |
+/**  The physical source cancelled its own work independently of CatDB. */
+"source_cancelled" |
+/**  The physical source no longer matched its pinned schema identity. */
+"schema_drift" |
+/**  Source failed while performing an authorized read. */
+"source_failed" |
+/**  Source violated the connector protocol. */
+"protocol_failed" |
+/**  Source did not finish before the absolute query deadline. */
+"timed_out" |
+/**  A source-local statement timeout fired before the CatDB deadline. */
+"source_timed_out" |
+/**  Source did not finish because cooperative cancellation fired. */
+"cancelled";
+
 /**  A source span, exactly as the engine located it. */
 export type SourceSpanDto = {
 	/**  Repo-relative file. */
@@ -1622,6 +2041,10 @@ export type WikiResolution = {
 	/**  The matches when `status == "ambiguous"`. */
 	candidates: WikiCandidate[],
 };
+
+export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "record_unseen" } | { state: "not_asked"; value: {
+	reason: string,
+} };
 
 /**
  *  The canonical grant plus the generation the watcher was armed under, returned
