@@ -1900,6 +1900,10 @@ impl LibraryStore {
         }
     }
 
+    pub(crate) fn registry_path(&self) -> &Path {
+        &self.registry_path
+    }
+
     fn lock_path(&self) -> Result<PathBuf, LibraryError> {
         self.registry_path
             .parent()

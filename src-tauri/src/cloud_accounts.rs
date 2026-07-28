@@ -29,11 +29,13 @@ use tokio::net::TcpListener;
 use url::{Position, Url};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::library::LibraryStore;
+use crate::{file_lock::AdvisoryFileLock, library::LibraryStore};
 use catdb_api_types::SourceExecution;
 
 const CLOUD_REGISTRY_VERSION: u32 = 1;
+const CLOUD_LIFECYCLE_LOCK_FILE: &str = "cloud-accounts.lock";
 const MAX_CLOUD_SOURCES: usize = 2;
+const MAX_PENDING_CREDENTIAL_CLEANUPS: usize = 16;
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 const MAX_CLOUD_REQUEST_ID_BYTES: usize = 128;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -105,6 +107,13 @@ impl CloudProvider {
         match self {
             Self::GoogleDrive => "Google Drive",
             Self::Dropbox => "Dropbox",
+        }
+    }
+
+    fn credential_cleanup_reference(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "cloud-cleanup-google-drive",
+            Self::Dropbox => "cloud-cleanup-dropbox",
         }
     }
 
@@ -588,9 +597,38 @@ pub(crate) trait CredentialVault: Send + Sync {
     fn get(&self, reference: &str) -> Result<Option<SecretBundle>, CloudSourceError>;
     fn set(&self, reference: &str, secret: &SecretBundle) -> Result<(), CloudSourceError>;
     fn delete(&self, reference: &str) -> Result<(), CloudSourceError>;
+    fn cleanup_references(&self, provider: CloudProvider) -> Result<Vec<String>, CloudSourceError>;
+    fn set_cleanup_references(
+        &self,
+        provider: CloudProvider,
+        references: &[String],
+    ) -> Result<(), CloudSourceError>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn valid_credential_reference(reference: &str) -> bool {
+    !reference.is_empty()
+        && reference.len() <= 256
+        && !reference.chars().any(char::is_control)
+        && !CloudProvider::all()
+            .iter()
+            .any(|provider| reference == provider.credential_cleanup_reference())
+}
+
+fn validate_cleanup_references(references: &[String]) -> Result<(), CloudSourceError> {
+    if references.len() > MAX_PENDING_CREDENTIAL_CLEANUPS {
+        return Err(CloudSourceError::CredentialUnavailable);
+    }
+    let mut unique = HashSet::new();
+    if references
+        .iter()
+        .any(|reference| !valid_credential_reference(reference) || !unique.insert(reference))
+    {
+        return Err(CloudSourceError::CredentialUnavailable);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CloudSourceRecord {
     id: String,
@@ -644,9 +682,7 @@ pub(crate) fn validate_cloud_source_records(
                 .id
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
-        let valid_reference = !source.credential_reference.is_empty()
-            && source.credential_reference.len() <= 256
-            && !source.credential_reference.chars().any(char::is_control);
+        let valid_reference = valid_credential_reference(&source.credential_reference);
         if !valid_id
             || !valid_reference
             || source.label != source.provider.label()
@@ -677,8 +713,16 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     }
 
     pub(crate) fn snapshot(&self) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        self.registry
-            .read_cloud(|sources| self.snapshot_records(sources))
+        let _lease = self.acquire_lifecycle_lease()?;
+        self.snapshot_under_lease()
+    }
+
+    fn snapshot_under_lease(&self) -> Result<CloudSourcesSnapshot, CloudSourceError> {
+        for provider in CloudProvider::all() {
+            self.recover_credential_cleanup(provider)?;
+        }
+        let records = self.registry.read_cloud(|sources| Ok(sources.to_vec()))?;
+        self.snapshot_records(&records)
     }
 
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -745,48 +789,70 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         if config.provider() != provider {
             return Err(CloudSourceError::InvalidConfiguration);
         }
-        let mut rollback = None;
-        let update = self.registry.update_cloud(|sources| {
-            let existing_index = sources
+        let _lease = self.acquire_lifecycle_lease()?;
+        self.recover_credential_cleanup(provider)?;
+        let expected = self.registry.read_cloud(|sources| {
+            Ok(sources
                 .iter()
-                .position(|source| source.provider == provider);
-            let (id, credential_reference) = existing_index.map_or_else(
-                || {
-                    let id = new_source_id();
-                    let reference = format!("cloud-credential-{id}");
-                    (id, reference)
-                },
-                |index| {
-                    let source = &sources[index];
-                    (source.id.clone(), source.credential_reference.clone())
-                },
-            );
-            let previous = self.vault.get(&credential_reference)?;
-            self.vault.set(&credential_reference, &secret)?;
-            rollback = Some((credential_reference.clone(), previous));
-            let record = CloudSourceRecord {
-                id,
-                provider,
-                label: provider.label().to_string(),
-                enabled: true,
-                credential_reference,
-                config,
-                contract: Some(crate::library::LibrarySourceContract::cloud(provider)),
+                .find(|source| source.provider == provider)
+                .cloned())
+        })?;
+        let id = new_source_id();
+        let credential_reference = format!("cloud-credential-{id}");
+        if self.vault.get(&credential_reference)?.is_some() {
+            return Err(CloudSourceError::CredentialUnavailable);
+        }
+        let record = CloudSourceRecord {
+            id,
+            provider,
+            label: provider.label().to_string(),
+            enabled: true,
+            credential_reference: credential_reference.clone(),
+            config,
+            contract: Some(crate::library::LibrarySourceContract::cloud(provider)),
+        };
+        let mut cleanup_references = vec![credential_reference.clone()];
+        if let Some(reference) = expected
+            .as_ref()
+            .map(|source| source.credential_reference.clone())
+        {
+            cleanup_references.push(reference);
+        }
+        self.journal_credential_cleanup(provider, cleanup_references)?;
+        if let Err(error) = self.vault.set(&credential_reference, &secret) {
+            return match self.recover_credential_cleanup(provider) {
+                Ok(()) => Err(error),
+                Err(_) => Err(CloudSourceError::RollbackFailed),
             };
-            if let Some(index) = existing_index {
-                sources[index] = record;
+        }
+        let expected_for_commit = expected.clone();
+        let record_for_commit = record.clone();
+        let update = self.registry.update_cloud(|sources| {
+            let current = sources
+                .iter()
+                .find(|source| source.provider == provider)
+                .cloned();
+            if current != expected_for_commit {
+                return Err(CloudSourceError::PersistFailed);
+            }
+            if let Some(index) = sources
+                .iter()
+                .position(|source| source.provider == provider)
+            {
+                sources[index] = record_for_commit;
             } else {
-                sources.push(record);
+                sources.push(record_for_commit);
             }
             Ok(())
         });
         if let Err(error) = update {
-            if let Some((reference, previous)) = rollback.as_ref() {
-                self.restore_secret(reference, previous.as_ref())?;
-            }
-            return Err(error);
+            return match self.recover_credential_cleanup(provider) {
+                Ok(()) => Err(error),
+                Err(_) => Err(CloudSourceError::RollbackFailed),
+            };
         }
-        self.snapshot()
+        self.recover_credential_cleanup(provider)?;
+        self.snapshot_under_lease()
     }
 
     pub(crate) fn set_enabled(
@@ -794,6 +860,8 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         provider: CloudProvider,
         enabled: bool,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
+        let _lease = self.acquire_lifecycle_lease()?;
+        self.recover_credential_cleanup(provider)?;
         self.registry.update_cloud(|sources| {
             let record = sources
                 .iter_mut()
@@ -805,47 +873,91 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             record.enabled = enabled;
             Ok(())
         })?;
-        self.snapshot()
+        self.snapshot_under_lease()
     }
 
     pub(crate) fn disconnect(
         &self,
         provider: CloudProvider,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        let mut rollback = None;
+        let _lease = self.acquire_lifecycle_lease()?;
+        self.recover_credential_cleanup(provider)?;
+        let expected = self.registry.read_cloud(|sources| {
+            Ok(sources
+                .iter()
+                .find(|source| source.provider == provider)
+                .cloned())
+        })?;
+        let Some(expected) = expected else {
+            return self.snapshot_under_lease();
+        };
+        self.journal_credential_cleanup(provider, vec![expected.credential_reference.clone()])?;
+        let expected_for_commit = expected.clone();
         let update = self.registry.update_cloud(|sources| {
             let Some(index) = sources
                 .iter()
                 .position(|source| source.provider == provider)
             else {
-                return Ok(());
+                return Err(CloudSourceError::PersistFailed);
             };
-            let reference = sources[index].credential_reference.clone();
-            let previous = self.vault.get(&reference)?;
-            self.vault.delete(&reference)?;
-            rollback = Some((reference, previous));
+            if sources[index] != expected_for_commit {
+                return Err(CloudSourceError::PersistFailed);
+            }
             sources.remove(index);
             Ok(())
         });
         if let Err(error) = update {
-            if let Some((reference, previous)) = rollback.as_ref() {
-                self.restore_secret(reference, previous.as_ref())?;
-            }
-            return Err(error);
+            return match self.recover_credential_cleanup(provider) {
+                Ok(()) => Err(error),
+                Err(_) => Err(CloudSourceError::RollbackFailed),
+            };
         }
-        self.snapshot()
+        self.recover_credential_cleanup(provider)?;
+        self.snapshot_under_lease()
     }
 
-    fn restore_secret(
+    fn acquire_lifecycle_lease(&self) -> Result<AdvisoryFileLock, CloudSourceError> {
+        let lock_path = self
+            .registry
+            .registry_path()
+            .parent()
+            .map(|parent| parent.join(CLOUD_LIFECYCLE_LOCK_FILE))
+            .ok_or(CloudSourceError::PersistFailed)?;
+        AdvisoryFileLock::acquire(&lock_path).map_err(|_| CloudSourceError::PersistFailed)
+    }
+
+    fn journal_credential_cleanup(
         &self,
-        reference: &str,
-        previous: Option<&SecretBundle>,
+        provider: CloudProvider,
+        references: Vec<String>,
     ) -> Result<(), CloudSourceError> {
-        let result = match previous {
-            Some(secret) => self.vault.set(reference, secret),
-            None => self.vault.delete(reference),
-        };
-        result.map_err(|_| CloudSourceError::RollbackFailed)
+        let mut pending = self.vault.cleanup_references(provider)?;
+        for reference in references {
+            if !pending.contains(&reference) {
+                pending.push(reference);
+            }
+        }
+        validate_cleanup_references(&pending)?;
+        self.vault.set_cleanup_references(provider, &pending)
+    }
+
+    fn recover_credential_cleanup(&self, provider: CloudProvider) -> Result<(), CloudSourceError> {
+        let mut pending = self.vault.cleanup_references(provider)?;
+        validate_cleanup_references(&pending)?;
+        for reference in pending.clone() {
+            let active_reference = self.registry.read_cloud(|sources| {
+                Ok(sources
+                    .iter()
+                    .find(|source| source.provider == provider)
+                    .map(|source| source.credential_reference.clone()))
+            })?;
+            if active_reference.as_deref() != Some(reference.as_str()) {
+                self.vault.delete(&reference)?;
+                pending.retain(|candidate| candidate != &reference);
+                self.vault.set_cleanup_references(provider, &pending)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1094,6 +1206,43 @@ struct CloudQueryHandle {
     cancellation: catdb_connectors::CancellationToken,
 }
 
+struct CloudQueryOwner<'a> {
+    state: &'a CloudAccountsState,
+    handle: CloudQueryHandle,
+    settled: bool,
+}
+
+impl<'a> CloudQueryOwner<'a> {
+    fn begin(state: &'a CloudAccountsState, request_id: &str) -> Result<Self, CloudSourceError> {
+        Ok(Self {
+            state,
+            handle: state.begin_query(request_id)?,
+            settled: false,
+        })
+    }
+
+    fn cancellation(&self) -> catdb_connectors::CancellationToken {
+        self.handle.cancellation.clone()
+    }
+
+    fn finish(mut self) -> Result<(), CloudSourceError> {
+        let result = self.state.finish_query(&self.handle);
+        self.settled = true;
+        result
+    }
+}
+
+impl Drop for CloudQueryOwner<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.handle.cancellation.cancel();
+        let _ = self.state.finish_query(&self.handle);
+        self.settled = true;
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RequestedCatalogPins {
     workspace_id: uuid::Uuid,
@@ -1305,6 +1454,59 @@ impl CredentialVault for KeyringCredentialVault {
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             let _ = reference;
+            Err(CloudSourceError::CredentialUnavailable)
+        }
+    }
+
+    fn cleanup_references(&self, provider: CloudProvider) -> Result<Vec<String>, CloudSourceError> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let encoded = match self
+                .entry(provider.credential_cleanup_reference())?
+                .get_password()
+            {
+                Ok(encoded) => Zeroizing::new(encoded),
+                Err(keyring::Error::NoEntry) => return Ok(Vec::new()),
+                Err(_) => return Err(CloudSourceError::CredentialUnavailable),
+            };
+            let references: Vec<String> = serde_json::from_str(encoded.as_str())
+                .map_err(|_| CloudSourceError::CredentialUnavailable)?;
+            validate_cleanup_references(&references)?;
+            Ok(references)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = provider;
+            Err(CloudSourceError::CredentialUnavailable)
+        }
+    }
+
+    fn set_cleanup_references(
+        &self,
+        provider: CloudProvider,
+        references: &[String],
+    ) -> Result<(), CloudSourceError> {
+        validate_cleanup_references(references)?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let entry = self.entry(provider.credential_cleanup_reference())?;
+            if references.is_empty() {
+                return match entry.delete_credential() {
+                    Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                    Err(_) => Err(CloudSourceError::CredentialUnavailable),
+                };
+            }
+            let encoded = Zeroizing::new(
+                serde_json::to_string(references)
+                    .map_err(|_| CloudSourceError::CredentialUnavailable)?,
+            );
+            entry
+                .set_password(encoded.as_str())
+                .map_err(|_| CloudSourceError::CredentialUnavailable)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = (provider, references);
             Err(CloudSourceError::CredentialUnavailable)
         }
     }
@@ -1680,10 +1882,11 @@ async fn query_cloud_documents_inner(
     }
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     {
-        let query = state.begin_query(&request_id)?;
+        let query = CloudQueryOwner::begin(state, &request_id)?;
+        let cancellation = query.cancellation();
         let result = async {
             let _operation = tokio::select! {
-                _ = query.cancellation.cancelled() => {
+                _ = cancellation.cancelled() => {
                     return Err(CloudSourceError::QueryCancelled);
                 }
                 operation = state.operations.lock() => operation,
@@ -1742,7 +1945,7 @@ async fn query_cloud_documents_inner(
                         &authority,
                         filters,
                         fields,
-                        query.cancellation.clone(),
+                        cancellation.clone(),
                     )
                     .await
                 }
@@ -1794,7 +1997,7 @@ async fn query_cloud_documents_inner(
                         &authority,
                         filters,
                         fields,
-                        query.cancellation.clone(),
+                        cancellation.clone(),
                     )
                     .await
                 }
@@ -1804,7 +2007,7 @@ async fn query_cloud_documents_inner(
             Ok(response)
         }
         .await;
-        state.finish_query(&query)?;
+        query.finish()?;
         result
     }
 }
@@ -2208,10 +2411,11 @@ pub(crate) async fn query_library_documents(
         request
             .validate()
             .map_err(|error| query_invalid(error.to_string()))?;
-        let handle = state.begin_query(&request_id)?;
+        let owner = CloudQueryOwner::begin(&state, &request_id)?;
+        let cancellation = owner.cancellation();
         let result = async {
             let _operation = tokio::select! {
-                _ = handle.cancellation.cancelled() => {
+                _ = cancellation.cancelled() => {
                     return Err(CloudSourceError::QueryCancelled);
                 }
                 operation = state.operations.lock() => operation,
@@ -2237,7 +2441,7 @@ pub(crate) async fn query_library_documents(
             crate::library_query::execute_registered_library_query(
                 request,
                 members,
-                handle.cancellation.clone(),
+                cancellation.clone(),
             )
             .await
             .map_err(|error| match error {
@@ -2302,7 +2506,7 @@ pub(crate) async fn query_library_documents(
             })
         }
         .await;
-        state.finish_query(&handle)?;
+        owner.finish()?;
         result
     }
 }
@@ -4308,6 +4512,7 @@ fn validate_dropbox_config() -> Result<(), CloudSourceError> {
 #[derive(Default)]
 struct MemoryCredentialVault {
     entries: Mutex<HashMap<String, SecretBundle>>,
+    cleanup_references: Mutex<HashMap<CloudProvider, Vec<String>>>,
 }
 
 #[cfg(test)]
@@ -4347,6 +4552,34 @@ impl CredentialVault for MemoryCredentialVault {
             .remove(reference);
         Ok(())
     }
+
+    fn cleanup_references(&self, provider: CloudProvider) -> Result<Vec<String>, CloudSourceError> {
+        Ok(self
+            .cleanup_references
+            .lock()
+            .map_err(|_| CloudSourceError::CredentialUnavailable)?
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn set_cleanup_references(
+        &self,
+        provider: CloudProvider,
+        references: &[String],
+    ) -> Result<(), CloudSourceError> {
+        validate_cleanup_references(references)?;
+        let mut cleanup = self
+            .cleanup_references
+            .lock()
+            .map_err(|_| CloudSourceError::CredentialUnavailable)?;
+        if references.is_empty() {
+            cleanup.remove(&provider);
+        } else {
+            cleanup.insert(provider, references.to_vec());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -4356,8 +4589,8 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc, Barrier,
         },
         time::{Duration, Instant},
     };
@@ -4384,7 +4617,89 @@ mod tests {
         IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
         SecretBundle, MAX_CALLBACK_BYTES,
     };
-    use crate::library::{LibraryRegistry, LibraryStore};
+    use crate::{
+        file_lock::AdvisoryFileLock,
+        library::{LibraryRegistry, LibraryStore},
+    };
+
+    #[derive(Default)]
+    struct SharedCredentialBackend {
+        inner: MemoryCredentialVault,
+        fail_next_delete: AtomicBool,
+        fail_next_journal_write: AtomicBool,
+        panic_after_next_set: AtomicBool,
+        block_after_next_set: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, Arc<Barrier>)>>,
+    }
+
+    #[derive(Clone)]
+    struct SharedCredentialVault {
+        backend: Arc<SharedCredentialBackend>,
+    }
+
+    impl SharedCredentialVault {
+        fn new(backend: Arc<SharedCredentialBackend>) -> Self {
+            Self { backend }
+        }
+    }
+
+    impl CredentialVault for SharedCredentialVault {
+        fn get(&self, reference: &str) -> Result<Option<SecretBundle>, CloudSourceError> {
+            self.backend.inner.get(reference)
+        }
+
+        fn set(&self, reference: &str, secret: &SecretBundle) -> Result<(), CloudSourceError> {
+            self.backend.inner.set(reference, secret)?;
+            if self
+                .backend
+                .panic_after_next_set
+                .swap(false, Ordering::SeqCst)
+            {
+                panic!("simulated process termination after credential staging");
+            }
+            let blocked = self
+                .backend
+                .block_after_next_set
+                .lock()
+                .map_err(|_| CloudSourceError::CredentialUnavailable)?
+                .take();
+            if let Some((staged, release)) = blocked {
+                let _ = staged.send(());
+                release.wait();
+            }
+            Ok(())
+        }
+
+        fn delete(&self, reference: &str) -> Result<(), CloudSourceError> {
+            if self.backend.fail_next_delete.swap(false, Ordering::SeqCst) {
+                return Err(CloudSourceError::CredentialUnavailable);
+            }
+            self.backend.inner.delete(reference)
+        }
+
+        fn cleanup_references(
+            &self,
+            provider: CloudProvider,
+        ) -> Result<Vec<String>, CloudSourceError> {
+            self.backend.inner.cleanup_references(provider)
+        }
+
+        fn set_cleanup_references(
+            &self,
+            provider: CloudProvider,
+            references: &[String],
+        ) -> Result<(), CloudSourceError> {
+            if self
+                .backend
+                .fail_next_journal_write
+                .swap(false, Ordering::SeqCst)
+            {
+                return Err(CloudSourceError::CredentialUnavailable);
+            }
+            self.backend
+                .inner
+                .set_cleanup_references(provider, references)
+        }
+    }
 
     struct FakeCloudSource {
         model: SourceModel,
@@ -5485,6 +5800,421 @@ mod tests {
             Ok(()),
             "the current serial remains publishable"
         );
+    }
+
+    #[test]
+    fn dropping_a_cloud_query_owner_cancels_and_settles_only_its_exact_serial() {
+        let state = CloudAccountsState::default();
+        let abandoned =
+            super::CloudQueryOwner::begin(&state, "library:abandoned-owner").expect("query owner");
+        let abandoned_cancellation = abandoned.cancellation();
+        drop(abandoned);
+        assert!(
+            abandoned_cancellation.is_cancelled(),
+            "dropping an unfinished owner must cancel its connector work"
+        );
+        assert!(
+            !state.cancel_query("library:abandoned-owner"),
+            "dropping an unfinished owner must settle its active registration"
+        );
+
+        let retired =
+            super::CloudQueryOwner::begin(&state, "library:drop-owner").expect("query owner");
+        let replacement = state
+            .begin_query("library:drop-owner")
+            .expect("replacement query");
+
+        drop(retired);
+
+        assert!(
+            !replacement.cancellation.is_cancelled(),
+            "an old owner must never cancel a replacement with the same request ID"
+        );
+        assert_eq!(
+            state.finish_query(&replacement),
+            Ok(()),
+            "the replacement must remain the exact active owner"
+        );
+    }
+
+    #[test]
+    fn panicking_cloud_query_owner_cancels_and_settles_its_exact_serial() {
+        let state = CloudAccountsState::default();
+        let owner =
+            super::CloudQueryOwner::begin(&state, "library:panic-owner").expect("query owner");
+        let cancellation = owner.cancellation();
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owner = owner;
+            panic!("simulated task panic");
+        }));
+
+        assert!(panic.is_err());
+        assert!(cancellation.is_cancelled());
+        assert!(
+            !state.cancel_query("library:panic-owner"),
+            "panic cleanup must remove the exact active owner"
+        );
+    }
+
+    #[test]
+    fn snapshot_waits_for_the_sibling_cloud_lifecycle_lease() {
+        let temp = tempdir().expect("temporary directory");
+        let registry_path = temp.path().join("library.json");
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let lifecycle_lease = AdvisoryFileLock::acquire(&temp.path().join("cloud-accounts.lock"))
+            .expect("hold lifecycle lease");
+        let worker_vault = Arc::clone(&vault);
+        let (completed, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let snapshot =
+                CloudAccountService::new(LibraryStore::new(registry_path), worker_vault.as_ref())
+                    .snapshot();
+            let _ = completed.send(snapshot);
+        });
+
+        assert!(
+            matches!(
+                result.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "snapshot and recovery must serialize behind the cross-process lifecycle lease"
+        );
+        drop(lifecycle_lease);
+        result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("snapshot resumes after lease release")
+            .expect("snapshot result");
+        worker.join().expect("snapshot worker");
+    }
+
+    #[test]
+    fn reconnect_publishes_a_new_credential_before_retiring_the_old_one() {
+        let temp = tempdir().expect("temporary directory");
+        let registry_path = temp.path().join("library.json");
+        let vault = MemoryCredentialVault::default();
+        let service = CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault);
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("initial connection");
+        let old_record = LibraryStore::new(registry_path.clone())
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("old source");
+
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "replacement-access-token",
+                    "replacement-refresh-token",
+                    4_000_000_100,
+                    [41; 32],
+                )
+                .expect("replacement credential"),
+            )
+            .expect("reconnect");
+        let new_record = LibraryStore::new(registry_path)
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("new source");
+
+        assert_ne!(new_record.id, old_record.id);
+        assert_ne!(
+            new_record.credential_reference,
+            old_record.credential_reference
+        );
+        assert!(vault
+            .get(&new_record.credential_reference)
+            .expect("new credential")
+            .is_some());
+        assert!(vault
+            .get(&old_record.credential_reference)
+            .expect("old credential")
+            .is_none());
+        assert_eq!(vault.entry_count(), 1);
+    }
+
+    #[test]
+    fn reconnect_holds_the_lifecycle_lease_while_its_credential_is_staged() {
+        let temp = tempdir().expect("temporary directory");
+        let registry_path = temp.path().join("library.json");
+        let backend = Arc::new(SharedCredentialBackend::default());
+        let vault = SharedCredentialVault::new(Arc::clone(&backend));
+        CloudAccountService::new(LibraryStore::new(registry_path.clone()), &vault)
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("initial connection");
+        let (staged, staged_signal) = std::sync::mpsc::channel();
+        let release = Arc::new(Barrier::new(2));
+        *backend.block_after_next_set.lock().expect("stage barrier") =
+            Some((staged, Arc::clone(&release)));
+
+        let reconnect_path = registry_path.clone();
+        let reconnect_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let reconnect = std::thread::spawn(move || {
+            CloudAccountService::new(LibraryStore::new(reconnect_path), &reconnect_vault).install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "staged-access-token",
+                    "staged-refresh-token",
+                    4_000_000_101,
+                    [42; 32],
+                )
+                .expect("staged credential"),
+            )
+        });
+        staged_signal
+            .recv_timeout(Duration::from_secs(1))
+            .expect("credential staged before publication");
+
+        let snapshot_path = registry_path.clone();
+        let snapshot_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let (snapshot_done, snapshot_result) = std::sync::mpsc::channel();
+        let snapshot = std::thread::spawn(move || {
+            let result =
+                CloudAccountService::new(LibraryStore::new(snapshot_path), &snapshot_vault)
+                    .snapshot();
+            let _ = snapshot_done.send(result);
+        });
+        assert!(
+            matches!(
+                snapshot_result.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "another process must not recover a staged credential before publication"
+        );
+
+        release.wait();
+        let reconnected = reconnect
+            .join()
+            .expect("reconnect worker")
+            .expect("reconnect result");
+        let listed = snapshot_result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("snapshot resumes after publication")
+            .expect("snapshot result");
+        snapshot.join().expect("snapshot worker");
+        let reconnect_id = reconnected
+            .sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::Dropbox)
+            .expect("reconnected Dropbox")
+            .id
+            .clone();
+        assert_eq!(
+            listed
+                .sources
+                .iter()
+                .find(|source| source.provider == CloudProvider::Dropbox)
+                .expect("listed Dropbox")
+                .id,
+            reconnect_id
+        );
+        assert_eq!(backend.inner.entry_count(), 1);
+    }
+
+    #[test]
+    fn cleanup_journal_write_failure_prevents_credential_staging() {
+        let temp = tempdir().expect("temporary directory");
+        let backend = Arc::new(SharedCredentialBackend::default());
+        backend
+            .fail_next_journal_write
+            .store(true, Ordering::SeqCst);
+        let vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let registry = LibraryStore::new(temp.path().join("library.json"));
+        let service = CloudAccountService::new(registry.clone(), &vault);
+
+        assert_eq!(
+            service.install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            ),
+            Err(CloudSourceError::CredentialUnavailable)
+        );
+        assert_eq!(backend.inner.entry_count(), 0);
+        assert!(registry
+            .read_cloud(|sources| Ok(sources.is_empty()))
+            .expect("unchanged registry"));
+    }
+
+    #[test]
+    fn failed_registry_publication_recovers_the_staged_credential_and_keeps_the_active_one() {
+        let temp = tempdir().expect("temporary directory");
+        let registry = LibraryStore::new(temp.path().join("library.json"));
+        let backend = Arc::new(SharedCredentialBackend::default());
+        let vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let service = CloudAccountService::new(registry.clone(), &vault);
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("initial connection");
+        let active = registry
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("active source");
+        registry.fail_next_cloud_persist();
+
+        assert_eq!(
+            service.install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "failed-access-token",
+                    "failed-refresh-token",
+                    4_000_000_102,
+                    [43; 32],
+                )
+                .expect("replacement credential"),
+            ),
+            Err(CloudSourceError::PersistFailed)
+        );
+        assert_eq!(backend.inner.entry_count(), 1);
+        assert!(vault
+            .get(&active.credential_reference)
+            .expect("active credential")
+            .is_some());
+        assert_eq!(
+            vault
+                .cleanup_references(CloudProvider::Dropbox)
+                .expect("cleanup journal"),
+            vec![active.credential_reference]
+        );
+    }
+
+    #[test]
+    fn fresh_vault_instance_recovers_persisted_cleanup_after_restart() {
+        let temp = tempdir().expect("temporary directory");
+        let registry_path = temp.path().join("library.json");
+        let backend = Arc::new(SharedCredentialBackend::default());
+        let first_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let first =
+            CloudAccountService::new(LibraryStore::new(registry_path.clone()), &first_vault);
+        first
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("initial connection");
+        backend.fail_next_delete.store(true, Ordering::SeqCst);
+        assert_eq!(
+            first.install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "restart-access-token",
+                    "restart-refresh-token",
+                    4_000_000_103,
+                    [44; 32],
+                )
+                .expect("replacement credential"),
+            ),
+            Err(CloudSourceError::CredentialUnavailable)
+        );
+        assert_eq!(backend.inner.entry_count(), 2);
+
+        let restarted_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let snapshot =
+            CloudAccountService::new(LibraryStore::new(registry_path.clone()), &restarted_vault)
+                .snapshot()
+                .expect("restart recovery");
+        let active = LibraryStore::new(registry_path)
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("active source");
+
+        assert_eq!(backend.inner.entry_count(), 1);
+        assert!(restarted_vault
+            .get(&active.credential_reference)
+            .expect("active credential")
+            .is_some());
+        assert_eq!(
+            restarted_vault
+                .cleanup_references(CloudProvider::Dropbox)
+                .expect("durable journal"),
+            vec![active.credential_reference]
+        );
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|source| source.provider == CloudProvider::Dropbox)
+                .expect("Dropbox snapshot")
+                .connection,
+            CloudConnectionState::Connected
+        );
+    }
+
+    #[test]
+    fn panic_after_credential_staging_is_recovered_from_the_durable_journal() {
+        let temp = tempdir().expect("temporary directory");
+        let registry_path = temp.path().join("library.json");
+        let backend = Arc::new(SharedCredentialBackend::default());
+        backend.panic_after_next_set.store(true, Ordering::SeqCst);
+        let faulting_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        let service =
+            CloudAccountService::new(LibraryStore::new(registry_path.clone()), &faulting_vault);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = service.install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            );
+        }));
+        assert!(panic.is_err());
+        assert_eq!(backend.inner.entry_count(), 1);
+        assert_eq!(
+            faulting_vault
+                .cleanup_references(CloudProvider::Dropbox)
+                .expect("persisted cleanup journal")
+                .len(),
+            1
+        );
+
+        let restarted_vault = SharedCredentialVault::new(Arc::clone(&backend));
+        CloudAccountService::new(LibraryStore::new(registry_path), &restarted_vault)
+            .snapshot()
+            .expect("restart cleanup");
+        assert_eq!(backend.inner.entry_count(), 0);
+        assert!(restarted_vault
+            .cleanup_references(CloudProvider::Dropbox)
+            .expect("cleared cleanup journal")
+            .is_empty());
     }
 
     #[test]
