@@ -99,6 +99,9 @@ if [[ "$PLATFORM" == 'macos' ]]; then
   node scripts/release/safe-package-extract.mjs \
     tar "$UPDATER" "$EXTRACT_ROOT/updater"
   ARTIFACT_ARGS=("dmg=$DMG" "updater=$UPDATER")
+  scripts/release/verify-macos-packaged-runtime.sh \
+    dmg "$MOUNT_POINT" \
+    updater "$EXTRACT_ROOT/updater"
   verify_extractions \
     "dmg=$MOUNT_POINT" \
     "updater=$EXTRACT_ROOT/updater"

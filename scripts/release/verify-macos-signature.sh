@@ -10,7 +10,7 @@ EXPECTED_TEAM_ID="${2:?expected Apple team identifier is required}"
 APP_PATH="$(find "$BUNDLE_ROOT" -type d -name 'MDReader.app' -print -quit)"
 [[ -n "$APP_PATH" ]] || { echo 'MDReader.app missing' >&2; exit 1; }
 APP_BINARY="$APP_PATH/Contents/MacOS/mdreader-app"
-RUNTIME_PATH="$APP_PATH/Contents/Frameworks/libonnxruntime.1.23.2.dylib"
+RUNTIME_PATH="$APP_PATH/Contents/Frameworks/libonnxruntime.1.24.2.dylib"
 [[ -f "$APP_BINARY" && ! -L "$APP_BINARY" ]] || {
   echo 'MDReader executable missing from signed application' >&2
   exit 1
@@ -47,13 +47,13 @@ INSTALL_NAME_COUNT="$(printf '%s\n' "$INSTALL_NAMES" | awk 'NF { count += 1 } EN
   exit 1
 }
 while IFS= read -r install_name; do
-  [[ -z "$install_name" || "$install_name" == '@rpath/libonnxruntime.1.23.2.dylib' ]] || {
+  [[ -z "$install_name" || "$install_name" == '@rpath/libonnxruntime.1.24.2.dylib' ]] || {
     echo 'signed ONNX Runtime install name is not the reviewed @rpath identity' >&2
     exit 1
   }
 done <<< "$INSTALL_NAMES"
 
-LINK_COUNT="$(otool -L "$APP_BINARY" | awk '$1 == "@rpath/libonnxruntime.1.23.2.dylib" { count += 1 } END { print count + 0 }')"
+LINK_COUNT="$(otool -L "$APP_BINARY" | awk '$1 == "@rpath/libonnxruntime.1.24.2.dylib" { count += 1 } END { print count + 0 }')"
 [[ "$LINK_COUNT" -eq 1 ]] || {
   echo 'MDReader executable is not linked to the packaged ONNX Runtime exactly once' >&2
   exit 1

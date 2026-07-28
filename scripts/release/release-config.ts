@@ -144,10 +144,10 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
   if (
     input.macosFramework !== undefined &&
     (!isAbsolute(input.macosFramework) ||
-      !input.macosFramework.endsWith('/libonnxruntime.1.23.2.dylib'))
+      !input.macosFramework.endsWith('/libonnxruntime.1.24.2.dylib'))
   ) {
     throw new Error(
-      'macOS release framework must be the absolute reviewed ONNX Runtime 1.23.2 dylib path',
+      'macOS release framework must be the absolute reviewed ONNX Runtime 1.24.2 dylib path',
     );
   }
   if (

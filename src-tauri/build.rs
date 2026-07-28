@@ -3,7 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
 
     // The macOS release links the reviewed ONNX Runtime, whose install name is
-    // `@rpath/libonnxruntime.1.23.2.dylib`, and Tauri packages it under
+    // `@rpath/libonnxruntime.1.24.2.dylib`, and Tauri packages it under
     // `MDReader.app/Contents/Frameworks`. Neither the linker nor the bundler
     // records the LC_RPATH that lets dyld follow `@rpath` there, so the
     // executable would fail to launch without this load command. Target-scoped:

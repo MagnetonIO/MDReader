@@ -16,17 +16,11 @@ case "$PLATFORM" in
       exit 1
     }
     COMMAND+=(--macos-framework "$MDREADER_MACOS_ORT_DYLIB")
-    if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-      COMMAND+=(--macos-signing-identity "$APPLE_SIGNING_IDENTITY")
-    fi
     ;;
   windows)
-    # The uncredentialed build matrix generates this configuration before any
-    # certificate is inspected, so the thumbprint is legitimately absent there;
-    # only the credentialed run supplies it. Signing inputs stay one exact set.
-    if [[ -n "${WINDOWS_CERT_THUMBPRINT:-}" ]]; then
-      COMMAND+=(--windows-thumbprint "$WINDOWS_CERT_THUMBPRINT")
-    fi
+    # This script is the unsigned boundary. Ambient signing variables are
+    # deliberately ignored; credentialed jobs pass signing values as explicit
+    # release-cli arguments when they generate their separate bundle overlay.
     ;;
   linux) ;;
   *)
