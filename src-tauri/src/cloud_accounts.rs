@@ -1151,20 +1151,24 @@ impl OAuthAttempt {
                 })
                 .ok_or(CloudSourceError::OauthInvalidCallback)?;
             let picked_file_ids = if self.provider == CloudProvider::GoogleDrive {
-                parameters
-                    .get("picked_file_ids")
-                    .map_or_else(Vec::new, |value| {
-                        value
-                            .split(',')
-                            .map(str::to_string)
-                            .collect::<Vec<String>>()
-                    })
+                let picked_file_ids =
+                    parameters
+                        .get("picked_file_ids")
+                        .map_or_else(Vec::new, |value| {
+                            value
+                                .split(',')
+                                .map(str::to_string)
+                                .collect::<Vec<String>>()
+                        });
+                if picked_file_ids.is_empty() {
+                    vec!["root".to_string()]
+                } else {
+                    picked_file_ids
+                }
             } else {
                 Vec::new()
             };
-            if self.provider == CloudProvider::GoogleDrive
-                && (picked_file_ids.is_empty() || picked_file_ids.len() > MAX_DRIVE_SELECTIONS)
-            {
+            if picked_file_ids.len() > MAX_DRIVE_SELECTIONS {
                 return Err(CloudSourceError::OauthInvalidCallback);
             }
             Ok(VerifiedAuthorization {
@@ -4381,7 +4385,7 @@ fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bo
         CloudProvider::GoogleDrive => {
             #[cfg(feature = "google-drive-connector")]
             {
-                scopes.contains(catdb_connector_google_drive::GOOGLE_DRIVE_FILE_SCOPE)
+                scopes.contains(catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE)
             }
             #[cfg(not(feature = "google-drive-connector"))]
             {
@@ -4504,16 +4508,24 @@ async fn fetch_drive_selections(
         let bytes = bounded_provider_response(response, MAX_DRIVE_METADATA_BYTES).await?;
         let metadata: DriveFileMetadata =
             serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
-        if metadata.id != *picked_id {
-            return Err(CloudSourceError::ProviderRejected);
-        }
-        selections.push(DriveItemSelection {
-            id: metadata.id,
-            resource_key: metadata.resource_key,
-            folder: metadata.mime_type == GOOGLE_DRIVE_FOLDER_MIME,
-        });
+        selections.push(drive_selection_from_metadata(picked_id, metadata)?);
     }
     Ok(selections)
+}
+
+fn drive_selection_from_metadata(
+    requested_id: &str,
+    metadata: DriveFileMetadata,
+) -> Result<DriveItemSelection, CloudSourceError> {
+    let folder = metadata.mime_type == GOOGLE_DRIVE_FOLDER_MIME;
+    if metadata.id != requested_id && !(requested_id == "root" && folder) {
+        return Err(CloudSourceError::ProviderRejected);
+    }
+    Ok(DriveItemSelection {
+        id: metadata.id,
+        resource_key: metadata.resource_key,
+        folder,
+    })
 }
 
 fn validate_drive_config(selections: &[DriveItemSelection]) -> Result<(), CloudSourceError> {
@@ -7228,13 +7240,70 @@ mod tests {
         for callback in [
             "http://127.0.0.1:53681/oauth/other?code=provider-code&state=expected-state&picked_file_ids=file_1",
             "http://127.0.0.1:53681/oauth/google-drive?code=one&code=two&state=expected-state&picked_file_ids=file_1",
-            "http://127.0.0.1:53681/oauth/google-drive?code=provider-code&state=expected-state",
         ] {
             assert!(matches!(
                 attempt.verify_callback(callback),
                 Err(CloudSourceError::OauthInvalidCallback)
             ));
         }
+    }
+
+    #[test]
+    fn readonly_drive_callback_defaults_to_the_drive_root_without_picker_parameters() {
+        let attempt = OAuthAttempt::new(
+            CloudProvider::GoogleDrive,
+            "a".repeat(64),
+            "expected-state",
+            "http://127.0.0.1:53681/oauth/google-drive",
+        )
+        .expect("valid attempt");
+
+        let authorization = attempt
+            .verify_callback(
+                "http://127.0.0.1:53681/oauth/google-drive?code=provider-code&state=expected-state",
+            )
+            .expect("standard OAuth callback");
+
+        assert_eq!(authorization.picked_file_ids(), ["root"]);
+    }
+
+    #[test]
+    fn drive_root_alias_accepts_the_provider_root_identity_only_for_root() {
+        let root = super::drive_selection_from_metadata(
+            "root",
+            super::DriveFileMetadata {
+                id: "provider-root-id".to_string(),
+                mime_type: super::GOOGLE_DRIVE_FOLDER_MIME.to_string(),
+                resource_key: None,
+            },
+        )
+        .expect("Drive root alias");
+        assert_eq!(root.id, "provider-root-id");
+        assert!(root.folder);
+
+        assert!(matches!(
+            super::drive_selection_from_metadata(
+                "root",
+                super::DriveFileMetadata {
+                    id: "provider-root-id".to_string(),
+                    mime_type: "text/markdown".to_string(),
+                    resource_key: None,
+                },
+            ),
+            Err(CloudSourceError::ProviderRejected)
+        ));
+
+        assert!(matches!(
+            super::drive_selection_from_metadata(
+                "different-requested-id",
+                super::DriveFileMetadata {
+                    id: "provider-root-id".to_string(),
+                    mime_type: super::GOOGLE_DRIVE_FOLDER_MIME.to_string(),
+                    resource_key: None,
+                },
+            ),
+            Err(CloudSourceError::ProviderRejected)
+        ));
     }
 
     #[test]
@@ -7446,13 +7515,7 @@ mod tests {
             assert!(!parameters.iter().any(|(key, _)| key == "client_secret"));
             match provider {
                 CloudProvider::GoogleDrive => {
-                    for (key, value) in [
-                        ("access_type", "offline"),
-                        ("prompt", "consent"),
-                        ("trigger_onepick", "true"),
-                        ("allow_multiple", "true"),
-                        ("allow_folder_selection", "true"),
-                    ] {
+                    for (key, value) in [("access_type", "offline"), ("prompt", "consent")] {
                         assert_eq!(
                             parameters
                                 .iter()
@@ -7462,6 +7525,20 @@ mod tests {
                                 .count(),
                             1,
                             "Google authorization URL field {key}"
+                        );
+                    }
+                    assert!(parameters.iter().any(|(key, value)| {
+                        key == "scope"
+                            && value == catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE
+                    }));
+                    for unsupported in [
+                        "trigger_onepick",
+                        "allow_multiple",
+                        "allow_folder_selection",
+                    ] {
+                        assert!(
+                            !parameters.iter().any(|(key, _)| key == unsupported),
+                            "Google OAuth must not invent the Picker parameter {unsupported}"
                         );
                     }
                 }

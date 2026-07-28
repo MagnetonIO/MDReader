@@ -1,9 +1,8 @@
 //! Read-only Google Drive API v3 source for an MDReader Library.
 //!
-//! The connector uses Google's per-file `drive.file` OAuth scope and exposes
-//! no write request at all. The scope is deliberately named exactly rather
-//! than called a read-only permission: CatDB's connector contract, not an
-//! overclaim about Google's scope, is what makes this source read-only.
+//! The connector uses Google's read-only Drive scope and exposes no write
+//! request at all. The provider permission and the CatDB connector surface are
+//! therefore independently read-only.
 //! Interactive OAuth credentials and cursor-authentication keys are resolved
 //! at runtime and never enter the immutable source specification.
 
@@ -31,11 +30,8 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-/// Google's least-privilege per-file scope used for Picker-selected content.
-///
-/// Google does not describe this scope as read-only. Read-only behavior is
-/// enforced by this connector exposing only GET/list/export/download calls.
-pub const GOOGLE_DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+/// Google's read-only scope for browsing and downloading user-readable files.
+pub const GOOGLE_DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 
 const API_BASE: &str = "https://www.googleapis.com";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -246,7 +242,7 @@ impl DriveSourceConfig {
 
     /// Exact OAuth scope required by the connector.
     pub fn oauth_scope(&self) -> &'static str {
-        GOOGLE_DRIVE_FILE_SCOPE
+        GOOGLE_DRIVE_READONLY_SCOPE
     }
 
     fn validate(&self) -> Result<(), DriveConnectorError> {
@@ -588,15 +584,12 @@ impl DriveOAuthPkce {
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &self.redirect_uri)
             .append_pair("response_type", "code")
-            .append_pair("scope", GOOGLE_DRIVE_FILE_SCOPE)
+            .append_pair("scope", GOOGLE_DRIVE_READONLY_SCOPE)
             .append_pair("code_challenge", &self.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &self.state)
             .append_pair("access_type", "offline")
-            .append_pair("prompt", "consent")
-            .append_pair("trigger_onepick", "true")
-            .append_pair("allow_multiple", "true")
-            .append_pair("allow_folder_selection", "true");
+            .append_pair("prompt", "consent");
         Ok(url.into())
     }
 

@@ -10,7 +10,7 @@ use catdb_connector_google_drive::{
     DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce, DriveRefreshCredential,
     DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource,
     DriveSourceConfig, DriveTransport, DriveTransportError, PinnedDriveSourceSpec,
-    GOOGLE_DRIVE_FILE_SCOPE,
+    GOOGLE_DRIVE_READONLY_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -304,7 +304,7 @@ fn listing(
 }
 
 #[test]
-fn picker_pkce_requests_multiple_file_or_folder_consent_without_a_client_secret() {
+fn native_pkce_requests_the_exact_read_only_scope_without_a_client_secret() {
     let pkce = DriveOAuthPkce::new(
         "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
         "state-123",
@@ -320,16 +320,16 @@ fn picker_pkce_requests_multiple_file_or_folder_consent_without_a_client_secret(
         .unwrap();
     assert!(authorization.contains("code_challenge_method=S256"));
     assert!(authorization.contains("state=state-123"));
-    assert!(authorization.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file"));
+    assert!(
+        authorization.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly")
+    );
+    assert!(!authorization.contains("drive.file"));
     assert!(authorization.contains("prompt=consent"));
-    assert!(authorization.contains("trigger_onepick=true"));
-    assert!(authorization.contains("allow_multiple=true"));
-    assert!(authorization.contains("allow_folder_selection=true"));
     assert!(!authorization.contains("client_secret"));
-    assert_eq!(config().oauth_scope(), GOOGLE_DRIVE_FILE_SCOPE);
+    assert_eq!(config().oauth_scope(), GOOGLE_DRIVE_READONLY_SCOPE);
     assert_eq!(
-        GOOGLE_DRIVE_FILE_SCOPE,
-        "https://www.googleapis.com/auth/drive.file"
+        GOOGLE_DRIVE_READONLY_SCOPE,
+        "https://www.googleapis.com/auth/drive.readonly"
     );
 }
 
