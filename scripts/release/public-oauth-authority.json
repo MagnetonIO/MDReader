@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "googleDriveClientIdSha256": null,
-  "dropboxClientIdSha256": null,
-  "dropboxRedirectUriSha256": null
+  "googleDriveClientIdSha256": "22d468458392cf455bc129dd46bd1a5c04c80df0d9588167831921eec5975582",
+  "dropboxClientIdSha256": "a48e4a8362734a6e5eeaff111f07d99288b2aedb5cf7071b76834d49d561ca39",
+  "dropboxRedirectUriSha256": "7e308471fcdf95ea864cc46e847631b8b6a004bda142348524432de3c87a23da"
 }
