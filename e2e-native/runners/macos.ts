@@ -25,14 +25,17 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
 
 import { E2E_PROCESS_NAME, E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
-import { validateDesktopAppBinary } from '../capabilities.ts';
+import {
+  macosCapabilitiesFor,
+  validateDesktopAppBinary,
+} from '../capabilities.ts';
 import {
   appConfigDir,
   clearSeed,
@@ -43,9 +46,10 @@ import {
   type E2EProfile,
 } from '../seed.ts';
 import {
+  terminateExclusiveExecutableOwner,
   terminateOwnedProcess,
-  waitForExclusiveProcessOwner,
-  withOwnedProcesses,
+  waitForExclusiveExecutableOwner,
+  type ExecutableProcessOwner,
 } from '../lifecycle.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
@@ -106,14 +110,6 @@ function parseArgs(argv: string[]): Options {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function quietExec(cmd: string, args: string[]): void {
-  try {
-    execFileSync(cmd, args, { stdio: 'ignore' });
-  } catch {
-    /* best-effort */
-  }
-}
-
 function bundleIdentifier(app: string): string {
   return execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', join(app, 'Contents', 'Info.plist')], {
     encoding: 'utf8',
@@ -141,6 +137,30 @@ function runningE2EProcessIds(): number[] {
     if ((error as { status?: number }).status === 1) return [];
     throw error;
   }
+}
+
+function runningE2EProcessOwners(): ExecutableProcessOwner[] {
+  return runningE2EProcessIds().flatMap((pid) => {
+    let output: string;
+    try {
+      output = execFileSync(
+        '/usr/sbin/lsof',
+        ['-a', '-p', String(pid), '-d', 'txt', '-Fn'],
+        { encoding: 'utf8' },
+      );
+    } catch (error) {
+      if ((error as { status?: number }).status === 1) return [];
+      throw error;
+    }
+    const executable = output
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('n'))
+      ?.slice(1);
+    if (!executable) {
+      throw new Error(`could not resolve the loaded executable for E2E pid ${pid}`);
+    }
+    return [{ pid, executable: realpathSync(executable) }];
+  });
 }
 
 async function appiumReachable(): Promise<boolean> {
@@ -204,15 +224,10 @@ async function main(): Promise<number> {
     return 1;
   }
   const corpusRoot = await realpath(opts.corpus);
+  const expectedExecutable = realpathSync(opts.binary);
 
   const summary = await withNativeRunArtifacts(opts.artifacts, corpusRoot, async (artifacts) => {
     console.log(`run:       ${artifacts}`);
-
-    // Register the bundle so the mac2 session can attach to it by bundle id.
-    quietExec(
-      '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister',
-      ['-f', opts.app],
-    );
 
     // Fresh state: wipe only the isolated profile's UI and CatDB-managed state,
     // then request restore of the same canonical corpus the backend captures.
@@ -255,117 +270,135 @@ async function main(): Promise<number> {
 
     const fixture = await startMobileFixtureServer();
     let appium: ChildProcess | undefined;
-    let appiumOwnedByProcessWrapper = false;
+    let adapter: Mac2Adapter | undefined;
+    let browser: Awaited<ReturnType<typeof remote>> | undefined;
+    let sessionBoundToExactApp = false;
+    let outcome: Awaited<ReturnType<typeof runFlow>> | undefined;
+    let primaryError: unknown;
+    let cleanupError: unknown;
     try {
       appium = await ensureAppium();
 
-      // Launch the real binary (offline instant index), then attach the session to it.
-      const child = spawn(opts.binary, [], {
-        env: {
-          ...process.env,
+      // mac2 must launch the exact reviewed bundle path. Launching the binary
+      // separately and attaching only by bundle identifier is ambiguous when
+      // LaunchServices knows another worktree build with the same E2E identity;
+      // XCTest may replace that process while creating its application session.
+      const capabilities = macosCapabilitiesFor(
+        opts.app,
+        opts.binary,
+        {
           MDREADER_DEV_HASH_EMBED: '1',
           MDREADER_E2E_CORPUS_ROOT: corpusRoot,
           MDREADER_E2E_CONNECTED_ORIGIN: fixture.origin,
         },
-        stdio: 'ignore',
-        detached: false,
+      );
+      browser = await remote({
+        hostname: '127.0.0.1',
+        port: APPIUM_PORT,
+        path: '/',
+        logLevel: 'error',
+        // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+        // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+        // not seconds, and WebdriverIO's default session timeout aborts the POST
+        // while the build is still going — which surfaces as an opaque
+        // "operation was aborted due to timeout" and no run at all. Warm runs are
+        // still ~3s; this only has to be longer than a cold build.
+        connectionRetryTimeout: 600_000,
+        capabilities: {
+          ...capabilities,
+          // Same reasoning on the server side of the handshake.
+          'appium:newCommandTimeout': 600,
+          'appium:showServerLogs': true,
+        } as WebdriverIO.Capabilities,
       });
-      if (child.pid === undefined) {
-        await terminateOwnedProcess(appium);
-        throw new Error('could not spawn the app');
+
+      const pid = await waitForExclusiveExecutableOwner(
+        expectedExecutable,
+        runningE2EProcessOwners,
+        () => sleep(100),
+      );
+      adapter = new Mac2Adapter({
+        browser,
+        bundleId: opts.profile.identifier,
+        pid,
+        axBin,
+        keyBin,
+        artifacts,
+      });
+      const windowDeadline = Date.now() + 20_000;
+      let exactWindow = false;
+      while (!exactWindow && Date.now() < windowDeadline) {
+        exactWindow = await adapter.isWindowPresent();
+        if (!exactWindow) await sleep(250);
       }
-      // The exact process we spawned is the only process this runner may terminate.
-      const pid = child.pid;
-      let adapter: Mac2Adapter | undefined;
-      let browser: Awaited<ReturnType<typeof remote>> | undefined;
-      let sessionBoundToSpawnedPid = false;
-      appiumOwnedByProcessWrapper = true;
-      const result = await withOwnedProcesses(
-        child,
-        appium,
-        () => opts.keep && sessionBoundToSpawnedPid,
-        async () => {
-          await waitForExclusiveProcessOwner(
-            pid,
-            runningE2EProcessIds,
+      if (!exactWindow) {
+        throw new Error(
+          `WebDriver window did not match the AX window owned by mac2 pid ${pid}`,
+        );
+      }
+      sessionBoundToExactApp = true;
+      outcome = await runFlow(adapter, consoleLog);
+      const authenticatedPosts = fixture
+        .requests()
+        .filter(
+          (request) =>
+            request.method === 'POST' &&
+            request.path === '/v1/entity/query',
+        );
+      if (
+        authenticatedPosts.length < 2 ||
+        authenticatedPosts.some((request) => !request.authenticated)
+      ) {
+        throw new Error(
+          'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
+        );
+      }
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      const keepExactApp = opts.keep && sessionBoundToExactApp;
+      if (browser && !keepExactApp) {
+        try {
+          await browser.execute('macos: terminateApp', { path: opts.app });
+        } catch (error) {
+          cleanupError ??= error;
+        }
+      }
+      try {
+        if (adapter) await adapter.dispose();
+        else await browser?.deleteSession();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+      if (!keepExactApp) {
+        try {
+          await terminateExclusiveExecutableOwner(
+            expectedExecutable,
+            runningE2EProcessOwners,
+            (pid, signal) => process.kill(pid, signal),
             () => sleep(100),
           );
-          browser = await remote({
-            hostname: '127.0.0.1',
-            port: APPIUM_PORT,
-            path: '/',
-            logLevel: 'error',
-            // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
-            // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
-            // not seconds, and WebdriverIO's default session timeout aborts the POST
-            // while the build is still going — which surfaces as an opaque
-            // "operation was aborted due to timeout" and no run at all. Warm runs are
-            // still ~3s; this only has to be longer than a cold build.
-            connectionRetryTimeout: 600_000,
-            capabilities: {
-              platformName: 'mac',
-              'appium:automationName': 'mac2',
-              'appium:bundleId': opts.profile.identifier,
-              'appium:noReset': true,
-              // Same reasoning on the server side of the handshake.
-              'appium:newCommandTimeout': 600,
-              'appium:showServerLogs': true,
-            } as WebdriverIO.Capabilities,
-          });
-
-          adapter = new Mac2Adapter({
-            browser,
-            bundleId: opts.profile.identifier,
-            pid,
-            axBin,
-            keyBin,
-            artifacts,
-          });
-          const windowDeadline = Date.now() + 20_000;
-          let exactWindow = false;
-          while (!exactWindow && Date.now() < windowDeadline) {
-            exactWindow = await adapter.isWindowPresent();
-            if (!exactWindow) await sleep(250);
-          }
-          if (!exactWindow) {
-            throw new Error(
-              `WebDriver window did not match the AX window owned by spawned pid ${pid}`,
-            );
-          }
-          sessionBoundToSpawnedPid = true;
-          const outcome = await runFlow(adapter, consoleLog);
-          const authenticatedPosts = fixture
-            .requests()
-            .filter(
-              (request) =>
-                request.method === 'POST' &&
-                request.path === '/v1/entity/query',
-            );
-          if (
-            authenticatedPosts.length < 2 ||
-            authenticatedPosts.some((request) => !request.authenticated)
-          ) {
-            throw new Error(
-              'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
-            );
-          }
-          return outcome;
-        },
-        async () => {
-          if (adapter) await adapter.dispose();
-          else await browser?.deleteSession();
-        },
-      );
-      return result;
-    } finally {
-      try {
-        if (!appiumOwnedByProcessWrapper) {
-          await terminateOwnedProcess(appium);
+        } catch (error) {
+          cleanupError ??= error;
         }
-      } finally {
+      }
+      try {
+        await terminateOwnedProcess(appium);
+      } catch (error) {
+        cleanupError ??= error;
+      }
+      try {
         await fixture.close();
+      } catch (error) {
+        cleanupError ??= error;
       }
     }
+    if (primaryError) throw primaryError;
+    if (cleanupError) throw cleanupError;
+    if (!outcome) {
+      throw new Error('mac2 flow completed without an outcome');
+    }
+    return outcome;
   });
 
   console.log('───────────────────────────────────────────────────────────');

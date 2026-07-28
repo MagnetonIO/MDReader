@@ -19,6 +19,7 @@ import {
   androidCapabilitiesFor,
   desktopCapabilitiesFor,
   iosCapabilitiesFor,
+  macosCapabilitiesFor,
   validateAndroidApk,
   validateDesktopAppBinary,
 } from './capabilities.ts';
@@ -61,6 +62,35 @@ test('desktop artifact validation binds the launched binary to the reviewed comm
   }
 });
 
+test('mac2 binds its session to the exact reviewed application path', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mdreader-mac2-artifact-'));
+  const app = join(root, 'MDReader E2E.app');
+  const binary = join(app, 'Contents', 'MacOS', 'mdreader-e2e');
+  const environment = {
+    MDREADER_DEV_HASH_EMBED: '1',
+    MDREADER_E2E_CORPUS_ROOT: '/reviewed/corpus',
+  };
+  try {
+    await mkdir(dirname(binary), { recursive: true });
+    await writeFile(binary, Buffer.from(`binary:${buildManifest()}`));
+    await chmod(binary, 0o755);
+
+    assert.deepEqual(
+      macosCapabilitiesFor(app, binary, environment, SOURCE_COMMIT),
+      {
+        platformName: 'mac',
+        'appium:automationName': 'mac2',
+        'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
+        'appium:appPath': app,
+        'appium:environment': environment,
+        'appium:noReset': true,
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('every desktop runner validates the reviewed binary before launch or seed', async () => {
   const [desktopConfig, macosRunner] = await Promise.all([
     readFile(join(import.meta.dirname, 'config', 'wdio.desktop.conf.ts'), 'utf8'),
@@ -68,8 +98,27 @@ test('every desktop runner validates the reviewed binary before launch or seed',
   ]);
   assert.match(desktopConfig, /capabilities:\s*\[desktopCapabilitiesFor\(\)\]/);
   const validation = macosRunner.indexOf('validateDesktopAppBinary(opts.binary)');
+  const exactSession = macosRunner.indexOf('const capabilities = macosCapabilitiesFor(');
   const seed = macosRunner.indexOf('withNativeRunArtifacts(');
-  assert.ok(validation >= 0, 'macOS runner does not validate its binary');
+  const session = macosRunner.indexOf('browser = await remote(');
+  assert.ok(
+    validation >= 0,
+    'macOS runner does not validate its reviewed binary before state setup',
+  );
+  assert.ok(
+    exactSession > seed && session > exactSession,
+    'macOS runner does not bind mac2 to its exact reviewed app before session creation',
+  );
+  assert.doesNotMatch(
+    macosRunner,
+    /spawn\(opts\.binary/,
+    'macOS runner launches outside the exact mac2 application session',
+  );
+  assert.match(
+    macosRunner,
+    /waitForExclusiveExecutableOwner\(/,
+    'macOS runner does not bind AX reads to the executable mac2 launched',
+  );
   assert.ok(seed > validation, 'macOS runner validates only after it can seed state');
 });
 

@@ -169,16 +169,42 @@ export function validateDesktopAppBinary(
 }
 
 /**
- * macOS — appium-mac2-driver (XCUITest). Attaches to the running app by bundle id
- * (the harness pre-launches it with the hash-embed env + seeded workspace). Used
- * by `runners/macos.ts`, which drives this leg directly via `webdriverio.remote`.
+ * macOS — appium-mac2-driver (XCUITest). The runner asks mac2 to launch the
+ * reviewed app bundle path with the seeded E2E environment. Bundle-id-only
+ * launch is insufficient on a development Mac: LaunchServices may know several
+ * worktree builds with the same E2E identifier and select a different one.
  */
-export const macosCapabilities: WebdriverIO.Capabilities = {
-  platformName: 'mac',
-  'appium:automationName': 'mac2',
-  'appium:bundleId': FLOW_CONFIG.bundleIdentifier,
-  'appium:noReset': true,
-};
+export function macosCapabilitiesFor(
+  app: string,
+  artifact: string,
+  environment: Readonly<Record<string, string>>,
+  sourceCommit = expectedSourceCommit(),
+): WebdriverIO.Capabilities {
+  if (!isAbsolute(app)) {
+    throw new Error(`macOS E2E application must be an absolute path: ${app}`);
+  }
+  const exactApp = resolve(app);
+  const expectedBinary = join(
+    exactApp,
+    'Contents',
+    'MacOS',
+    E2E_PROCESS_NAME,
+  );
+  if (resolve(artifact) !== expectedBinary) {
+    throw new Error(
+      `macOS E2E binary must belong to the exact app bundle: ${artifact}`,
+    );
+  }
+  validateDesktopAppBinary(artifact, sourceCommit);
+  return {
+    platformName: 'mac',
+    'appium:automationName': 'mac2',
+    'appium:bundleId': FLOW_CONFIG.bundleIdentifier,
+    'appium:appPath': exactApp,
+    'appium:environment': environment,
+    'appium:noReset': true,
+  } as WebdriverIO.Capabilities;
+}
 
 /**
  * Linux/Windows desktop WEBVIEW — driven through `tauri-driver`, which bridges W3C

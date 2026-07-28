@@ -3,7 +3,12 @@ import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import test from 'node:test';
 
-import { waitForExclusiveProcessOwner, withOwnedProcesses } from './lifecycle.ts';
+import {
+  terminateExclusiveExecutableOwner,
+  waitForExclusiveExecutableOwner,
+  waitForExclusiveProcessOwner,
+  withOwnedProcesses,
+} from './lifecycle.ts';
 
 class ExitingProcess extends EventEmitter {
   exitCode: number | null = null;
@@ -86,6 +91,71 @@ test('a failed ownership check cannot leak the exact spawned child even with kee
     /observed 99/,
   );
   assert.deepEqual(signals, ['app:SIGTERM']);
+});
+
+test('mac2 ownership waits for and returns the one exact executable', async () => {
+  const observations = [
+    [],
+    [{ pid: 41, executable: '/reviewed/MDReader E2E.app/mdreader-e2e' }],
+  ];
+  const pid = await waitForExclusiveExecutableOwner(
+    '/reviewed/MDReader E2E.app/mdreader-e2e',
+    () => observations.shift() ?? [],
+    async () => undefined,
+  );
+  assert.equal(pid, 41);
+});
+
+test('mac2 ownership rejects another worktree build with the same process name', async () => {
+  await assert.rejects(
+    () =>
+      waitForExclusiveExecutableOwner(
+        '/reviewed/MDReader E2E.app/mdreader-e2e',
+        () => [
+          {
+            pid: 99,
+            executable: '/other-worktree/MDReader E2E.app/mdreader-e2e',
+          },
+        ],
+        async () => undefined,
+      ),
+    /other-worktree/,
+  );
+});
+
+test('mac2 cleanup signals only the exact executable it observed', async () => {
+  const observations = [
+    [{ pid: 41, executable: '/reviewed/MDReader E2E.app/mdreader-e2e' }],
+    [],
+  ];
+  const signals: string[] = [];
+  await terminateExclusiveExecutableOwner(
+    '/reviewed/MDReader E2E.app/mdreader-e2e',
+    () => observations.shift() ?? [],
+    (pid, signal) => signals.push(`${pid}:${signal}`),
+    async () => undefined,
+  );
+  assert.deepEqual(signals, ['41:SIGTERM']);
+});
+
+test('mac2 cleanup refuses to signal a foreign same-name executable', async () => {
+  const signals: string[] = [];
+  await assert.rejects(
+    () =>
+      terminateExclusiveExecutableOwner(
+        '/reviewed/MDReader E2E.app/mdreader-e2e',
+        () => [
+          {
+            pid: 99,
+            executable: '/other-worktree/MDReader E2E.app/mdreader-e2e',
+          },
+        ],
+        (pid, signal) => signals.push(`${pid}:${signal}`),
+        async () => undefined,
+      ),
+    /other-worktree/,
+  );
+  assert.deepEqual(signals, []);
 });
 
 test('teardown escalates only its owned child when SIGTERM is ignored', async () => {

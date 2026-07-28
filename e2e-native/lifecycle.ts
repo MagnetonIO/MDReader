@@ -128,3 +128,89 @@ export async function waitForExclusiveProcessOwner(
       (owners.join(', ') || 'none'),
   );
 }
+
+export interface ExecutableProcessOwner {
+  readonly pid: number;
+  readonly executable: string;
+}
+
+type ObserveExecutableOwners = () => ExecutableProcessOwner[];
+type SignalExecutableOwner = (pid: number, signal: NodeJS.Signals) => void;
+
+function requireExactExecutableOwner(
+  expectedExecutable: string,
+  owners: ExecutableProcessOwner[],
+): ExecutableProcessOwner | undefined {
+  if (owners.length === 0) return undefined;
+  if (
+    owners.length === 1 &&
+    owners[0]!.executable === expectedExecutable
+  ) {
+    return owners[0];
+  }
+  throw new Error(
+    `expected one E2E process at ${expectedExecutable}; observed ` +
+      owners
+        .map((owner) => `${owner.pid}:${owner.executable}`)
+        .join(', '),
+  );
+}
+
+/**
+ * Wait for mac2 to launch exactly the reviewed executable. mac2 owns the
+ * application launch, so the PID is discovered only after the WebDriver
+ * session exists; the executable path is the authority, not the shared process
+ * name or bundle identifier.
+ */
+export async function waitForExclusiveExecutableOwner(
+  expectedExecutable: string,
+  observe: ObserveExecutableOwners,
+  pause: () => Promise<void>,
+  tries = 200,
+): Promise<number> {
+  let owners: ExecutableProcessOwner[] = [];
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    owners = observe();
+    const owner = requireExactExecutableOwner(expectedExecutable, owners);
+    if (owner) return owner.pid;
+    await pause();
+  }
+  throw new Error(
+    `mac2 did not launch the reviewed E2E executable ${expectedExecutable}`,
+  );
+}
+
+/**
+ * Terminate only the one process whose loaded executable is the reviewed E2E
+ * binary. This is the fallback when the WebDriver session cannot terminate its
+ * own exact app path; a same-name process from another worktree is never
+ * signalled.
+ */
+export async function terminateExclusiveExecutableOwner(
+  expectedExecutable: string,
+  observe: ObserveExecutableOwners,
+  signal: SignalExecutableOwner,
+  pause: () => Promise<void>,
+  termTries = 20,
+  killTries = 20,
+): Promise<void> {
+  let owner = requireExactExecutableOwner(expectedExecutable, observe());
+  if (!owner) return;
+
+  signal(owner.pid, 'SIGTERM');
+  for (let attempt = 1; attempt <= termTries; attempt++) {
+    await pause();
+    owner = requireExactExecutableOwner(expectedExecutable, observe());
+    if (!owner) return;
+  }
+
+  signal(owner.pid, 'SIGKILL');
+  for (let attempt = 1; attempt <= killTries; attempt++) {
+    await pause();
+    owner = requireExactExecutableOwner(expectedExecutable, observe());
+    if (!owner) return;
+  }
+  throw new Error(
+    `reviewed E2E process ${owner.pid} did not exit after SIGKILL`,
+  );
+}

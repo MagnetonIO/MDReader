@@ -1785,6 +1785,27 @@ fn cloud_operation<T>(
 }
 
 #[cfg(feature = "e2e-build")]
+fn e2e_drive_record() -> CloudSourceRecord {
+    CloudSourceRecord {
+        id: E2E_DRIVE_RECORD_ID.to_string(),
+        provider: CloudProvider::GoogleDrive,
+        label: CloudProvider::GoogleDrive.label().to_string(),
+        enabled: true,
+        credential_reference: E2E_DRIVE_CREDENTIAL_REFERENCE.to_string(),
+        config: CloudSourceConfig::GoogleDrive {
+            selections: vec![DriveItemSelection {
+                id: E2E_DRIVE_FILE_ID.to_string(),
+                resource_key: None,
+                folder: false,
+            }],
+        },
+        contract: Some(crate::library::LibrarySourceContract::cloud(
+            CloudProvider::GoogleDrive,
+        )),
+    }
+}
+
+#[cfg(feature = "e2e-build")]
 pub(crate) fn seed_e2e_cloud_membership(app: &AppHandle) -> Result<(), CloudSourceError> {
     let app_data = app
         .path()
@@ -1799,23 +1820,7 @@ pub(crate) fn seed_e2e_cloud_membership(app: &AppHandle) -> Result<(), CloudSour
         [7; 32],
     )?;
     vault.set(E2E_DRIVE_CREDENTIAL_REFERENCE, &credential)?;
-    let record = CloudSourceRecord {
-        id: E2E_DRIVE_RECORD_ID.to_string(),
-        provider: CloudProvider::GoogleDrive,
-        label: "Google Drive fixture".to_string(),
-        enabled: true,
-        credential_reference: E2E_DRIVE_CREDENTIAL_REFERENCE.to_string(),
-        config: CloudSourceConfig::GoogleDrive {
-            selections: vec![DriveItemSelection {
-                id: E2E_DRIVE_FILE_ID.to_string(),
-                resource_key: None,
-                folder: false,
-            }],
-        },
-        contract: Some(crate::library::LibrarySourceContract::cloud(
-            CloudProvider::GoogleDrive,
-        )),
-    };
+    let record = e2e_drive_record();
     registry.update_cloud(|sources| {
         sources.retain(|source| source.provider != CloudProvider::GoogleDrive);
         sources.push(record);
@@ -5102,6 +5107,13 @@ mod tests {
     // test can win that port in the gap and make the exact-bind assertion fail
     // nondeterministically even though the production listener is correct.
     static OAUTH_CALLBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[cfg(feature = "e2e-build")]
+    #[test]
+    fn e2e_cloud_membership_record_satisfies_the_registry_contract() {
+        super::validate_cloud_source_records(&[super::e2e_drive_record()])
+            .expect("the exact E2E Drive seed must be admissible by the production Library");
+    }
 
     fn park_lifecycle_commit(
         commit: Arc<std::sync::Mutex<()>>,
