@@ -197,6 +197,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
         mapping_version_ids: [],
         source_version_ids: [],
         policy_version_ids: ['00000000-0000-4000-8000-000000000005'],
+        provenance_rule_version_id: '00000000-0000-4000-8000-000000000006',
       },
       rows: [],
       sources: [],
@@ -368,6 +369,7 @@ function installSecondWorkspaceLibraryDocument() {
         mapping_version_ids: [mappingVersionId],
         source_version_ids: [sourceVersionId],
         policy_version_ids: ['00000000-0000-4000-8000-000000000019'],
+        provenance_rule_version_id: '00000000-0000-4000-8000-000000000020',
       },
       rows: [
         {
@@ -380,6 +382,7 @@ function installSecondWorkspaceLibraryDocument() {
           provenance: {
             path: {
               field: 'path',
+              provenance_rule_version_id: '00000000-0000-4000-8000-000000000020',
               selected: 0,
               considered: [
                 {

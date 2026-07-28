@@ -30,6 +30,7 @@ const IDS = {
   mapping2: '00000000-0000-0000-0000-000000000013',
   physical: '00000000-0000-0000-0000-000000000014',
   physical2: '00000000-0000-0000-0000-000000000015',
+  provenanceRule: '00000000-0000-0000-0000-000000000016',
 } as const;
 
 const session = {
@@ -66,6 +67,7 @@ function queryResponse(
       mapping_version_ids: [IDS.mapping],
       source_version_ids: [IDS.sourceVersion],
       policy_version_ids: [IDS.policy],
+      provenance_rule_version_id: IDS.provenanceRule,
     },
     rows: [
       {
@@ -76,6 +78,7 @@ function queryResponse(
             field,
             {
               field,
+              provenance_rule_version_id: IDS.provenanceRule,
               selected: 0,
               considered: [observation(value)],
             },

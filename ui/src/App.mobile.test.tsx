@@ -167,6 +167,7 @@ function installEnterpriseLibrary(): void {
             field,
             {
               field,
+              provenance_rule_version_id: 'provenance-rule-1',
               selected: 0,
               considered: [
                 {
@@ -191,6 +192,7 @@ function installEnterpriseLibrary(): void {
               mapping_version_ids: ['mapping-4'],
               source_version_ids: ['enterprise-source-version-1'],
               policy_version_ids: ['policy-2'],
+              provenance_rule_version_id: 'provenance-rule-1',
             },
             rows: [{ record_key: 'architecture-doc', fields, provenance }],
             sources: [

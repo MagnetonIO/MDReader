@@ -31,6 +31,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
         mapping_version_ids: ['00000000-0000-4000-8000-000000000018'],
         source_version_ids: ['00000000-0000-4000-8000-000000000019'],
         policy_version_ids: ['00000000-0000-4000-8000-000000000020'],
+        provenance_rule_version_id: '00000000-0000-4000-8000-000000000031',
       },
       completeness: { state: 'complete' },
       sources: [
@@ -50,6 +51,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
           provenance: {
             path: {
               field: 'path',
+              provenance_rule_version_id: '00000000-0000-4000-8000-000000000031',
               selected: 0,
               considered: [
                 {
@@ -116,6 +118,7 @@ it('lists a local membership from the same immutable Library answer', () => {
         mapping_version_ids: ['00000000-0000-4000-8000-000000000028'],
         source_version_ids: ['00000000-0000-4000-8000-000000000029'],
         policy_version_ids: ['00000000-0000-4000-8000-000000000030'],
+        provenance_rule_version_id: '00000000-0000-4000-8000-000000000032',
       },
       completeness: { state: 'complete' },
       sources: [
@@ -140,6 +143,7 @@ it('lists a local membership from the same immutable Library answer', () => {
           provenance: {
             path: {
               field: 'path',
+              provenance_rule_version_id: '00000000-0000-4000-8000-000000000032',
               selected: 0,
               considered: [
                 {

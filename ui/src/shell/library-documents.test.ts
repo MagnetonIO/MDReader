@@ -15,6 +15,7 @@ import {
 const PHYSICAL_SOURCE_ID = '00000000-0000-4000-8000-000000000011';
 const SOURCE_VERSION_ID = '00000000-0000-4000-8000-000000000012';
 const MEMBERSHIP_ID = '00000000-0000-4000-8000-000000000013';
+const PROVENANCE_RULE_ID = '00000000-0000-4000-8000-000000000015';
 
 const row: EntityRow = {
   record_key: 'drive-file',
@@ -22,6 +23,7 @@ const row: EntityRow = {
   provenance: {
     path: {
       field: 'path',
+      provenance_rule_version_id: PROVENANCE_RULE_ID,
       selected: 0,
       considered: [
         {
@@ -36,6 +38,7 @@ const row: EntityRow = {
     },
     title: {
       field: 'title',
+      provenance_rule_version_id: PROVENANCE_RULE_ID,
       selected: 0,
       considered: [
         {
@@ -72,6 +75,7 @@ const evidence: LibraryEntityQueryResponse_Serialize = {
       mapping_version_ids: ['00000000-0000-4000-8000-000000000014'],
       source_version_ids: [SOURCE_VERSION_ID],
       policy_version_ids: ['00000000-0000-4000-8000-000000000006'],
+      provenance_rule_version_id: PROVENANCE_RULE_ID,
     },
     rows: [row],
     sources: [

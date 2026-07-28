@@ -20,6 +20,7 @@ const member: LibrarySourceExecution = {
 
 const SOURCE_VERSION = '00000000-0000-4000-8000-000000000007';
 const MAPPING_VERSION = '00000000-0000-4000-8000-000000000006';
+const PROVENANCE_RULE_VERSION = '00000000-0000-4000-8000-000000000009';
 
 const row: EntityRow = {
   record_key: 'drive-file-1',
@@ -37,6 +38,7 @@ const row: EntityRow = {
       field,
       {
         field,
+        provenance_rule_version_id: PROVENANCE_RULE_VERSION,
         selected: 0,
         considered: [
           {
@@ -64,6 +66,7 @@ const response: LibraryEntityQueryResponse_Serialize = {
       mapping_version_ids: [MAPPING_VERSION],
       source_version_ids: [SOURCE_VERSION],
       policy_version_ids: ['00000000-0000-4000-8000-000000000008'],
+      provenance_rule_version_id: PROVENANCE_RULE_VERSION,
     },
     rows: [row],
     sources: [
@@ -194,6 +197,7 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
     provenance: {
       title: {
         field: 'title',
+        provenance_rule_version_id: PROVENANCE_RULE_VERSION,
         selected: 0,
         considered: [
           {
@@ -205,6 +209,7 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
       },
       revision: {
         field: 'revision',
+        provenance_rule_version_id: PROVENANCE_RULE_VERSION,
         selected: null,
         considered: [
           {
@@ -216,6 +221,7 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
       },
       author: {
         field: 'author',
+        provenance_rule_version_id: PROVENANCE_RULE_VERSION,
         selected: null,
         considered: [
           {

@@ -36,10 +36,12 @@ const provenance = {
     source_version_ids: ['source-version-1', 'source-version-2'],
     mapping_version_ids: ['mapping-1', 'mapping-2'],
     policy_version_ids: ['policy-1'],
+    provenance_rule_version_id: 'provenance-rule-1',
   },
   fields: {
     body: {
       field: 'body',
+      provenance_rule_version_id: 'provenance-rule-1',
       selected: 0,
       considered: [
         {
