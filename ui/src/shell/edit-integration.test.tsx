@@ -60,6 +60,9 @@ const h = vi.hoisted(() => ({
   drain: vi.fn((): Promise<void> => (h.drainGate ? h.drainGate.promise : Promise.resolve())),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
+  readGate: null as null | { promise: Promise<void>; resolve: () => void },
+  gatedReadPath: null as string | null,
+  failedReadPath: null as string | null,
   listGate: null as null | { promise: Promise<void>; resolve: () => void },
   sourceListGate: null as null | { promise: Promise<void>; resolve: () => void },
   sourceListCalls: 0,
@@ -101,6 +104,8 @@ vi.mock('../platform/fs.js', async (importOriginal) => {
     ...actual,
     readDoc: vi.fn(async (path: string) => {
       h.readCalls.push(path);
+      if (h.gatedReadPath === path && h.readGate) await h.readGate.promise;
+      if (h.failedReadPath === path) throw new Error('injected stale read failure');
       const entry = h.disk.get(path) ?? { content: '# missing\n', hash: 'h-missing' };
       return { content: entry.content, mtime: 0, hash: entry.hash };
     }),
@@ -425,6 +430,9 @@ beforeEach(() => {
   h.diagnosticEvents.length = 0;
   h.onClose = null;
   h.gate = null;
+  h.readGate = null;
+  h.gatedReadPath = null;
+  h.failedReadPath = null;
   h.listGate = null;
   h.sourceListGate = null;
   h.sourceListCalls = 0;
@@ -507,6 +515,34 @@ describe('library source identity follows the committed backend epoch', () => {
     expect(useSourcesStore.getState().root).toBe('/ws-c');
     expect(h.editResolutions).toEqual([]);
     expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
+  });
+
+  it('does not toast when an older Edit read fails after a newer source switch starts', async () => {
+    installSecondWorkspaceLibraryDocument();
+    const documentPath = '/ws-b/notes/local.md';
+    h.readGate = deferred();
+    h.gatedReadPath = documentPath;
+    h.failedReadPath = documentPath;
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+    await waitFor(() => expect(h.readCalls).toContain(documentPath));
+
+    h.pickedPath = '/ws-c';
+    fireEvent.click(screen.getByTitle('Open folder…'));
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-c'));
+
+    await act(async () => {
+      h.readGate!.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText(/Could not open for editing/i)).toBeNull();
+    expect(useSourcesStore.getState().root).toBe('/ws-c');
   });
 
   it('resolves a Library-relative path through its activated membership before reading for edit', async () => {

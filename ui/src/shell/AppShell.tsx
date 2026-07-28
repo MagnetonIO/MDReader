@@ -739,7 +739,9 @@ export function AppShell() {
       if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
       useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
     } catch (cause) {
-      toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
+      if (sourceIntentIsCurrent()) {
+        toast(`Could not open for editing — ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
     }
   }, []);
 
