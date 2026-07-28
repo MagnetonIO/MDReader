@@ -9,10 +9,11 @@
  *
  * It owns the fiddly macOS session lifecycle so `scripts/macos-smoke.sh` is a
  * one-liner:
- *   - registers the bundle with LaunchServices so the session can attach by id;
- *   - wipes the plugin-store + engine index and RE-SEEDS the fixture workspace;
+ *   - validates the exact isolated bundle and its embedded source revision;
+ *   - wipes only the E2E profile + engine index and RE-SEEDS the fixture workspace;
  *   - compiles the `axquery` helper;
- *   - launches the app with `MDREADER_DEV_HASH_EMBED=1` (offline, instant index);
+ *   - asks mac2 to launch that exact app path with the offline hash embedder;
+ *   - binds AX reads and cleanup to the executable mac2 actually loaded;
  *   - connects a WebdriverIO session to a local Appium server (spawning one if
  *     none is already listening), runs the flow, and tears everything down.
  *
