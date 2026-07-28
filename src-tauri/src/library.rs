@@ -154,7 +154,6 @@ pub(crate) struct LibrarySnapshot {
 pub(crate) struct LibraryQuerySnapshot {
     pub local_sources: Vec<LocalFolderSource>,
     pub cloud_sources: Vec<CloudSourceRecord>,
-    pub active_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -1943,7 +1942,6 @@ impl LibraryStore {
                     .filter(|source| source.enabled())
                     .cloned()
                     .collect(),
-                active_source_id: registry.active_source_id.clone(),
             })
         })
     }
@@ -2365,7 +2363,7 @@ pub(crate) fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), Libra
     Ok((app_data.join("library.json"), app_data))
 }
 
-fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
+pub(crate) fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
     workspace.current().map(|epoch| epoch.source_root())
 }
 
