@@ -460,6 +460,8 @@ interface StoredZipEntry {
   name: string;
   bytes: Buffer;
   descriptor?: DescriptorMode;
+  localExtra?: Buffer;
+  centralExtra?: Buffer;
 }
 
 function crc32(bytes: Buffer): number {
@@ -475,6 +477,7 @@ function crc32(bytes: Buffer): number {
 
 function storedDescriptorLocalRecord(entry: StoredZipEntry): Buffer {
   const name = Buffer.from(entry.name, 'utf8');
+  const extra = entry.localExtra ?? Buffer.alloc(0);
   const checksum = crc32(entry.bytes);
   const local = Buffer.alloc(30);
   local.writeUInt32LE(0x04034b50, 0);
@@ -482,6 +485,7 @@ function storedDescriptorLocalRecord(entry: StoredZipEntry): Buffer {
   local.writeUInt16LE(0x0008, 6);
   local.writeUInt16LE(0, 8);
   local.writeUInt16LE(name.byteLength, 26);
+  local.writeUInt16LE(extra.byteLength, 28);
   const descriptor =
     entry.descriptor === 'missing'
       ? Buffer.alloc(0)
@@ -496,7 +500,7 @@ function storedDescriptorLocalRecord(entry: StoredZipEntry): Buffer {
           value.writeUInt32LE(entry.bytes.byteLength, 12);
           return value;
         })();
-  return Buffer.concat([local, name, entry.bytes, descriptor]);
+  return Buffer.concat([local, name, extra, entry.bytes, descriptor]);
 }
 
 function storedDescriptorZip(entries: StoredZipEntry[]): Buffer {
@@ -505,6 +509,7 @@ function storedDescriptorZip(entries: StoredZipEntry[]): Buffer {
   let localOffset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.name, 'utf8');
+    const extra = entry.centralExtra ?? Buffer.alloc(0);
     const local = storedDescriptorLocalRecord(entry);
     localRecords.push(local);
     const central = Buffer.alloc(46);
@@ -517,8 +522,9 @@ function storedDescriptorZip(entries: StoredZipEntry[]): Buffer {
     central.writeUInt32LE(entry.bytes.byteLength, 20);
     central.writeUInt32LE(entry.bytes.byteLength, 24);
     central.writeUInt16LE(name.byteLength, 28);
+    central.writeUInt16LE(extra.byteLength, 30);
     central.writeUInt32LE(localOffset, 42);
-    centralRecords.push(Buffer.concat([central, name]));
+    centralRecords.push(Buffer.concat([central, name, extra]));
     localOffset += local.byteLength;
   }
   const centralDirectory = Buffer.concat(centralRecords);
@@ -535,6 +541,7 @@ async function descriptorAndroidArtifact(
   descriptor: DescriptorMode = 'valid',
   dex = dexFile(),
   extraEntries: StoredZipEntry[] = [],
+  manifestMetadata: Pick<StoredZipEntry, 'localExtra' | 'centralExtra'> = {},
 ): Promise<{ apk: string; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'mdreader-android-descriptor-'));
   const apk = join(root, 'descriptor.apk');
@@ -545,6 +552,7 @@ async function descriptorAndroidArtifact(
         name: 'AndroidManifest.xml',
         bytes: compiledAndroidManifest(),
         descriptor,
+        ...manifestMetadata,
       },
       { name: 'classes.dex', bytes: dex },
       {
@@ -1623,6 +1631,78 @@ test('Android validation accepts a bounded signed data descriptor', async () => 
     assert.equal(
       await validateAndroidApk(artifact.apk, SOURCE_COMMIT),
       artifact.apk,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation accepts one to three trailing zero alignment bytes in local extra metadata', async (context) => {
+  for (const length of [1, 2, 3]) {
+    await context.test(`${length} byte padding`, async () => {
+      const artifact = await descriptorAndroidArtifact(
+        'valid',
+        dexFile(),
+        [],
+        { localExtra: Buffer.alloc(length) },
+      );
+      try {
+        assert.equal(
+          await validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+          artifact.apk,
+        );
+      } finally {
+        await rm(artifact.root, { recursive: true });
+      }
+    });
+  }
+});
+
+test('Android validation rejects nonzero trailing local extra metadata', async () => {
+  const artifact = await descriptorAndroidArtifact(
+    'valid',
+    dexFile(),
+    [],
+    { localExtra: Buffer.from([0x01]) },
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ZIP extra metadata is truncated/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects a truncated local extra TLV', async () => {
+  const artifact = await descriptorAndroidArtifact(
+    'valid',
+    dexFile(),
+    [],
+    { localExtra: Buffer.from([0xfe, 0xca, 0x04, 0x00, 0x01]) },
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ZIP extra metadata is truncated/i,
+    );
+  } finally {
+    await rm(artifact.root, { recursive: true });
+  }
+});
+
+test('Android validation rejects trailing zero padding in central extra metadata', async () => {
+  const artifact = await descriptorAndroidArtifact(
+    'valid',
+    dexFile(),
+    [],
+    { centralExtra: Buffer.alloc(3) },
+  );
+  try {
+    await assert.rejects(
+      async () => validateAndroidApk(artifact.apk, SOURCE_COMMIT),
+      /ZIP extra metadata is truncated/i,
     );
   } finally {
     await rm(artifact.root, { recursive: true });

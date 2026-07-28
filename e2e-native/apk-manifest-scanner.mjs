@@ -136,10 +136,19 @@ function readExactly(handle, length, position) {
   return bytes;
 }
 
-function parseExtraRecords(extra) {
+function parseExtraRecords(extra, allowTrailingZeroPadding = false) {
   let offset = 0;
   while (offset < extra.length) {
-    if (offset + 4 > extra.length) fail('APK ZIP extra metadata is truncated');
+    if (offset + 4 > extra.length) {
+      const trailing = extra.subarray(offset);
+      if (
+        allowTrailingZeroPadding &&
+        trailing.every((byte) => byte === 0)
+      ) {
+        return;
+      }
+      fail('APK ZIP extra metadata is truncated');
+    }
     const id = extra.readUInt16LE(offset);
     const size = extra.readUInt16LE(offset + 2);
     offset += 4;
@@ -404,7 +413,7 @@ function inspectArchive(handle, limits) {
       localExtraLength,
       descriptor.localOffset + 30 + localNameLength,
     );
-    parseExtraRecords(localExtra);
+    parseExtraRecords(localExtra, true);
     const dataOffset = descriptor.localOffset + localMetadataLength;
     const dataEnd = checkedAdd(
       dataOffset,
