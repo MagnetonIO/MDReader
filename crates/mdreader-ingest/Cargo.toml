@@ -22,6 +22,10 @@ path = "src/bin/catdb.rs"
 name = "catdb-demo-server"
 path = "src/bin/catdb-demo-server.rs"
 
+[[example]]
+name = "e2e_read_only_server"
+required-features = ["e2e-test-support"]
+
 [features]
 # Passthrough to catdb-cli (and transitively catdb-embed): compiles the
 # fastembed/ORT provider. Default-on so the shipped `catdb` binary embeds
@@ -33,6 +37,8 @@ external-connectors = ["catdb-cli/external-connectors"]
 # reviewed Task 3 catalog-revision authority is merged and can verify the
 # deployment pin against the opened workspace.
 authoritative-catalog = []
+# Test-only read composition used by the loopback Playwright harness.
+e2e-test-support = ["catdb-server/e2e-test-support"]
 
 [dependencies]
 catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }

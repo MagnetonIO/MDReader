@@ -12,8 +12,10 @@
  * This deliberately does not invoke production `catdb serve`: V1's
  * authenticated network gateway refuses legacy search/read DTOs because they
  * cannot express source and field authorization. The E2E example mounts only
- * `read_only_router`, with no mutations, index operations, MCP, or filesystem
- * roots, and refuses any non-loopback bind.
+ * the feature-gated E2E hybrid read router, with no mutations, index
+ * operations, MCP, or filesystem roots, and refuses any non-loopback bind.
+ * Its deterministic hash embedder is reproducible test evidence only, not
+ * semantic-provider parity.
  *
  * FAIL CLOSED, IN TWO LAYERS.
  *  1. Here: any failure is recorded as `{ ok: false, error }`, and
@@ -265,6 +267,8 @@ export async function startServer(): Promise<void> {
         'catdb',
         '--example',
         'e2e_read_only_server',
+        '--features',
+        'e2e-test-support',
       ],
       {
         cwd: repoRoot,

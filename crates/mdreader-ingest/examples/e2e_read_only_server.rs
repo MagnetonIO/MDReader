@@ -4,10 +4,13 @@
 //! entity-query API. The older search/read DTOs cannot carry V1 source and
 //! field authorization, so production correctly refuses them. This executable
 //! is an example target used only by the local Playwright harness: it binds
-//! loopback and mounts CatDB's deliberately bounded `read_only_router`, whose
-//! route set contains no mutation, index, MCP, or server-filesystem surface.
+//! loopback and mounts CatDB's explicitly test-scoped bounded hybrid read
+//! router, whose route set contains no mutation, index, MCP, or
+//! server-filesystem surface.
 //! Opening an embedded engine can perform catalog/rotation maintenance, so this
 //! claims only an HTTP read boundary, not a physically read-only database open.
+//! Its deterministic hash embedder makes the corpus reproducible; it is test
+//! evidence only and does not establish semantic-provider parity.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -82,7 +85,7 @@ async fn main() -> Result<(), String> {
             .local_addr()
             .map_err(|error| format!("cannot inspect E2E listener: {error}"))?
     );
-    let router = catdb_server::read_only_router(Arc::new(engine)).layer(
+    let router = catdb_server::hybrid_read_only_router_for_e2e_tests(Arc::new(engine)).layer(
         middleware::from_fn_with_state(RunIdentity(Arc::from(run_identity)), require_run_identity),
     );
     axum::serve(listener, router)
