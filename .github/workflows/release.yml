@@ -461,6 +461,10 @@ jobs:
               join('target', process.env.RELEASE_TARGET, 'release', process.env.RELEASE_BINARY),
               join('target', process.env.RELEASE_TARGET, 'release', process.env.RELEASE_BINARY),
             ],
+            [
+              join('scripts', 'release', 'public-oauth-authority.json'),
+              join('scripts', 'release', 'public-oauth-authority.json'),
+            ],
             ...[
               '32x32.png',
               '128x128.png',
@@ -912,6 +916,7 @@ jobs:
           ];
           const expectedHandoffPaths = [
             ...iconPaths,
+            'scripts/release/public-oauth-authority.json',
             `target/${target}/release/${tuple[2]}`,
           ].sort();
           if (
@@ -941,6 +946,31 @@ jobs:
             [...handoff.files].sort((left, right) => left.path.localeCompare(right.path)),
             'unsigned handoff',
           );
+          const oauthAuthority = parse(
+            join(unsignedPayload, 'scripts', 'release', 'public-oauth-authority.json'),
+            'public OAuth authority',
+          );
+          if (
+            oauthAuthority === null ||
+            typeof oauthAuthority !== 'object' ||
+            Array.isArray(oauthAuthority) ||
+            JSON.stringify(Object.keys(oauthAuthority).sort()) !==
+              JSON.stringify([
+                'dropboxClientIdSha256',
+                'dropboxRedirectUriSha256',
+                'googleDriveClientIdSha256',
+                'schemaVersion',
+              ]) ||
+            oauthAuthority.schemaVersion !== 1 ||
+            oauthAuthority.googleDriveClientIdSha256 !==
+              handoff.googleDriveClientIdSha256 ||
+            oauthAuthority.dropboxClientIdSha256 !==
+              handoff.dropboxClientIdSha256 ||
+            oauthAuthority.dropboxRedirectUriSha256 !==
+              handoff.dropboxRedirectUriSha256
+          ) {
+            throw new Error('public OAuth authority does not match the handoff identity');
+          }
           const executable = readFileSync(
             join(unsignedPayload, 'target', target, 'release', tuple[2]),
           );
