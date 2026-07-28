@@ -12,7 +12,11 @@ import { build } from 'esbuild';
 import {
   assertMdreaderCloudflareDestinationPlan,
   assertMdreaderPinnedCopySupport,
+  createMdreaderCloudflareOutputStage,
+  discardMdreaderCloudflareOutputStage,
+  publishMdreaderCloudflareOutput,
   readPinnedMdreaderCloudflareSource,
+  snapshotMdreaderCloudflareOutputManifest,
   snapshotMdreaderCloudflareSourceFile,
   snapshotMdreaderCloudflareSourceTree,
   stageMdreaderCloudflareAssetPlan,
@@ -23,7 +27,6 @@ const APP = realpathSync.native(resolve(ROOT, process.argv[2] ?? 'apps/web'));
 const NEXT = join(APP, '.next');
 const SERVER_APP = join(NEXT, 'server', 'app');
 const OPEN_NEXT = join(APP, '.open-next');
-const ASSETS = join(OPEN_NEXT, 'assets');
 const PUBLIC = join(APP, 'public');
 
 assertMdreaderPinnedCopySupport();
@@ -164,28 +167,34 @@ addRequiredRoute(
 
 // The complete mapping must be unambiguous before .open-next is touched.
 assertMdreaderCloudflareDestinationPlan(assetPlan);
-const assetSet = stageMdreaderCloudflareAssetPlan(
-  assetPlan,
-  OPEN_NEXT,
-  ASSETS,
-);
-
-const workerBuild = await build({
-  entryPoints: [join(APP, 'cloudflare-worker.ts')],
-  outfile: join(OPEN_NEXT, 'worker.js'),
-  bundle: true,
-  format: 'esm',
-  platform: 'browser',
-  target: 'es2022',
-  minify: true,
-  legalComments: 'none',
-  logLevel: 'warning',
-  metafile: true,
-});
-writeFileSync(
-  join(OPEN_NEXT, 'worker.meta.json'),
-  `${JSON.stringify(workerBuild.metafile, null, 2)}\n`,
-);
+const outputStage = createMdreaderCloudflareOutputStage(OPEN_NEXT);
+let assetSet;
+let published = false;
+try {
+  assetSet = stageMdreaderCloudflareAssetPlan(assetPlan, outputStage);
+  const workerBuild = await build({
+    entryPoints: [join(APP, 'cloudflare-worker.ts')],
+    outfile: join(outputStage.stagingRoot, 'worker.js'),
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    legalComments: 'none',
+    logLevel: 'warning',
+    metafile: true,
+  });
+  writeFileSync(
+    join(outputStage.stagingRoot, 'worker.meta.json'),
+    `${JSON.stringify(workerBuild.metafile, null, 2)}\n`,
+  );
+  const outputManifest =
+    snapshotMdreaderCloudflareOutputManifest(outputStage);
+  publishMdreaderCloudflareOutput(outputStage, outputManifest);
+  published = true;
+} finally {
+  if (!published) discardMdreaderCloudflareOutputStage(outputStage);
+}
 
 console.log(
   `Staged ${Object.keys(prerenderManifest.routes).length} MDReader prerenders, ${assetSet.fileCount} bounded assets (${assetSet.totalBytes} bytes), and the bounded CatDB proxy Worker`,

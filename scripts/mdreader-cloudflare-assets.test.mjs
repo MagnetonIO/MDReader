@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -18,6 +19,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
+
+import {
+  assertMdreaderCloudflareDestinationPlan,
+} from './mdreader-cloudflare-assets.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const BUNDLE_GATE = join(ROOT, 'scripts/assert-mdreader-cloudflare-bundle.mjs');
@@ -149,7 +154,7 @@ function sourceSwapSeam(fixture, options) {
 } from 'node:fs';
 
 let swapped = false;
-globalThis[Symbol.for('mdreader.cloudflare.before-source-open')] = ({ source }) => {
+globalThis[Symbol.for(process.env.MDREADER_TEST_SWAP_SEAM)] = ({ source }) => {
   if (swapped || source !== process.env.MDREADER_TEST_SWAP_SOURCE) return;
   swapped = true;
   writeFileSync(process.env.MDREADER_TEST_SWAP_MARKER, 'ran\\n');
@@ -171,6 +176,8 @@ globalThis[Symbol.for('mdreader.cloudflare.before-source-open')] = ({ source }) 
       MDREADER_TEST_SWAP_EXTERNAL: options.external,
       MDREADER_TEST_SWAP_KIND: options.kind,
       MDREADER_TEST_SWAP_MARKER: marker,
+      MDREADER_TEST_SWAP_SEAM:
+        options.seam ?? 'mdreader.cloudflare.before-source-open',
       MDREADER_TEST_SWAP_SOURCE: options.source,
       NODE_OPTIONS: [
         existingNodeOptions,
@@ -181,6 +188,104 @@ globalThis[Symbol.for('mdreader.cloudflare.before-source-open')] = ({ source }) 
     },
     marker,
   };
+}
+
+function prepublicationMutationSeam(fixture) {
+  const hook = join(fixture.directory, 'mutate-staged-output.mjs');
+  const marker = join(fixture.directory, 'mutate-staged-output.ran');
+  write(
+    hook,
+    `import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+globalThis[Symbol.for('mdreader.cloudflare.before-publication')] = ({ stagingRoot }) => {
+  writeFileSync(process.env.MDREADER_TEST_MUTATION_MARKER, 'ran\\n');
+  writeFileSync(join(stagingRoot, 'assets', 'BUILD_ID'), 'evil-build\\n');
+};
+`,
+  );
+  const existingNodeOptions = process.env.NODE_OPTIONS?.trim();
+  return {
+    environment: {
+      MDREADER_TEST_MUTATION_MARKER: marker,
+      NODE_OPTIONS: [
+        existingNodeOptions,
+        `--import=${pathToFileURL(hook).href}`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    },
+    marker,
+  };
+}
+
+function snapshotTree(root) {
+  const entries = [];
+  function walk(current, relativeDirectory = '') {
+    for (const entry of readdirSync(current).sort()) {
+      const path = join(current, entry);
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry}`
+        : entry;
+      const metadata = lstatSync(path);
+      assert.equal(metadata.isSymbolicLink(), false);
+      if (metadata.isDirectory()) {
+        entries.push({
+          kind: 'directory',
+          mode: metadata.mode & 0o777,
+          path: relativePath,
+        });
+        walk(path, relativePath);
+        continue;
+      }
+      assert.equal(metadata.isFile(), true);
+      entries.push({
+        bytes: readFileSync(path).toString('base64'),
+        kind: 'file',
+        mode: metadata.mode & 0o777,
+        path: relativePath,
+      });
+    }
+  }
+  walk(root);
+  return entries;
+}
+
+function seedPublishedOutput(fixture) {
+  const output = join(fixture.app, '.open-next');
+  write(join(output, 'worker.js'), 'export default { old: true };\n');
+  write(join(output, 'worker.meta.json'), '{"old":true}\n');
+  write(join(output, 'assets/old.txt'), 'OLD-PUBLISHED-BYTES\n');
+  return { output, snapshot: snapshotTree(output) };
+}
+
+function assertPublishedOutputUnchanged(published) {
+  assert.equal(
+    existsSync(published.output),
+    true,
+    'staging removed the previously published output',
+  );
+  assert.deepEqual(
+    snapshotTree(published.output),
+    published.snapshot,
+    'staging changed the previously published output',
+  );
+  const siblings = readdirSync(dirname(published.output))
+    .filter((entry) =>
+      entry.startsWith('.open-next-stage-')
+        || entry.startsWith('.open-next-backup-'));
+  assert.deepEqual(
+    siblings,
+    [],
+    `staging leaked private output trees: ${siblings.join(', ')}`,
+  );
+}
+
+function destinationPlan(...destinations) {
+  return destinations.map((destination) => ({
+    destination,
+    source: { identity: { size: 1n } },
+  }));
 }
 
 function assertExternalBytesAbsent(app, destination, sentinel) {
@@ -288,6 +393,53 @@ test('staging rejects an ancestor tree swapped exactly before source open', () =
   }
 });
 
+test('staging rejects an ancestor swapped after its final check but before source open', () => {
+  const fixture = stageFixture();
+  const sentinel = 'EXTERNAL-POST-CHECK-BYTES';
+  const external = join(fixture.directory, 'external-static-post-check');
+  write(join(external, 'chunks/real.js'), sentinel);
+  const staticRoot = join(fixture.next, 'static');
+  const seam = sourceSwapSeam(fixture, {
+    ancestor: staticRoot,
+    external,
+    kind: 'post-check-tree',
+    seam: 'mdreader.cloudflare.after-source-ancestor-check',
+    source: join(staticRoot, 'chunks/real.js'),
+  });
+  const published = seedPublishedOutput(fixture);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /source.*(?:ancestor|identity|changed)|symbolic link/is);
+    assert.equal(
+      existsSync(seam.marker),
+      true,
+      `post-check source-open seam did not run:\n${output(result)}`,
+    );
+    assertPublishedOutputUnchanged(published);
+    assertExternalBytesAbsent(
+      fixture.app,
+      '_next/static/chunks/real.js',
+      sentinel,
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects a multiply-linked source file', () => {
+  const fixture = stageFixture();
+  const externalLink = join(fixture.directory, 'external-build-id-link');
+  linkSync(join(fixture.next, 'BUILD_ID'), externalLink);
+  try {
+    assertRejected(
+      run(STAGE, fixture.app),
+      /source.*(?:multiple|link)|link count/is,
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test('staging rejects colliding destinations before writing either source', () => {
   const fixture = stageFixture({
     publicFiles: { BUILD_ID: 'PUBLIC-COLLISION\n' },
@@ -317,6 +469,92 @@ test('staging rejects file and directory destination overlap before writing', ()
       false,
       'staging created output before rejecting the destination overlap',
     );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('destination plan rejects case-only collisions within and across asset families', () => {
+  for (const destinations of [
+    ['README.txt', 'readme.txt'],
+    ['_NEXT/static/chunks/app.js', '_next/static/chunks/app.js'],
+  ]) {
+    assert.throws(
+      () => assertMdreaderCloudflareDestinationPlan(destinationPlan(...destinations)),
+      /destination.*collid/is,
+    );
+  }
+});
+
+test('destination plan rejects Unicode-canonically-equivalent collisions', () => {
+  for (const destinations of [
+    ['café.txt', 'cafe\u0301.txt'],
+    ['public/café.txt', 'public/cafe\u0301.txt'],
+  ]) {
+    assert.throws(
+      () => assertMdreaderCloudflareDestinationPlan(destinationPlan(...destinations)),
+      /destination.*collid/is,
+    );
+  }
+});
+
+test('destination plan rejects normalized file and directory prefix conflicts', () => {
+  for (const destinations of [
+    ['Docs', 'docs/page.html'],
+    ['café', 'cafe\u0301/page.html'],
+  ]) {
+    assert.throws(
+      () => assertMdreaderCloudflareDestinationPlan(destinationPlan(...destinations)),
+      /destination.*collid/is,
+    );
+  }
+});
+
+test('source-copy failure preserves the previously published Worker tree', () => {
+  const fixture = stageFixture();
+  const sentinel = 'EXTERNAL-SOURCE-FAILURE';
+  const external = join(fixture.directory, 'external-source-failure');
+  write(external, sentinel);
+  const seam = sourceSwapSeam(fixture, {
+    external,
+    kind: 'file',
+    source: join(fixture.next, 'BUILD_ID'),
+  });
+  const published = seedPublishedOutput(fixture);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /source.*(?:identity|changed)|identity.*source/is);
+    assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('Worker compilation failure preserves the previously published Worker tree', () => {
+  const fixture = stageFixture();
+  write(join(fixture.app, 'cloudflare-worker.ts'), 'export default { broken: ; };\n');
+  const published = seedPublishedOutput(fixture);
+  try {
+    assertRejected(run(STAGE, fixture.app), /error|unexpected/i);
+    assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('prepublication staged-byte mutation preserves the published Worker tree', () => {
+  const fixture = stageFixture();
+  const seam = prepublicationMutationSeam(fixture);
+  const published = seedPublishedOutput(fixture);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /staged.*(?:digest|manifest|changed)|manifest.*differ/is);
+    assert.equal(
+      existsSync(seam.marker),
+      true,
+      `prepublication seam did not run:\n${output(result)}`,
+    );
+    assertPublishedOutputUnchanged(published);
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
   }

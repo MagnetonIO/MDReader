@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants,
   fstatSync,
@@ -28,6 +29,14 @@ import {
 } from 'node:path';
 
 const MIB = 1024 * 1024;
+const PINNED_COPY_PLATFORMS = new Set([
+  'aix',
+  'darwin',
+  'freebsd',
+  'linux',
+  'openbsd',
+  'sunos',
+]);
 
 export const MDREADER_CLOUDFLARE_ASSET_LIMITS = Object.freeze({
   maxFiles: 20_000,
@@ -53,6 +62,12 @@ function safeRelativePath(path, name) {
   return segments;
 }
 
+function destinationNamespaceKey(path) {
+  return safeRelativePath(path, 'Cloudflare asset destination')
+    .map((segment) => segment.normalize('NFC').toLowerCase().normalize('NFC'))
+    .join('/');
+}
+
 function snapshotIdentity(metadata, path, kind, name) {
   assert.equal(
     metadata.isSymbolicLink(),
@@ -68,6 +83,13 @@ function snapshotIdentity(metadata, path, kind, name) {
     metadata.dev !== 0n && metadata.ino !== 0n,
     `Cloudflare asset source cannot establish stable identity for ${name} at ${path}`,
   );
+  if (kind === 'file') {
+    assert.equal(
+      metadata.nlink,
+      1n,
+      `Cloudflare asset source rejects a file with multiple links: ${name}`,
+    );
+  }
   return Object.freeze({
     ctimeNs: metadata.ctimeNs,
     dev: metadata.dev,
@@ -75,6 +97,7 @@ function snapshotIdentity(metadata, path, kind, name) {
     kind,
     mode: metadata.mode,
     mtimeNs: metadata.mtimeNs,
+    nlink: metadata.nlink,
     size: metadata.size,
   });
 }
@@ -152,7 +175,7 @@ function assertSameIdentity(metadata, expected, name, role = 'source') {
     `Cloudflare asset ${role} identity changed for ${name}`,
   );
   const fields = expected.kind === 'file'
-    ? ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs']
+    ? ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs']
     : ['dev', 'ino', 'mode'];
   for (const field of fields) {
     assert.equal(
@@ -262,9 +285,14 @@ export function snapshotMdreaderCloudflareSourceTree(rootPath, sourceName) {
  * Fails explicitly if the host cannot guarantee no-follow source opens.
  */
 export function assertMdreaderPinnedCopySupport() {
+  const hostPlatform = platform();
+  assert.ok(
+    PINNED_COPY_PLATFORMS.has(hostPlatform),
+    `Safe pinned Cloudflare asset staging is unavailable on ${hostPlatform}: Unix file identity semantics are required`,
+  );
   assert.ok(
     Number.isInteger(constants.O_NOFOLLOW) && constants.O_NOFOLLOW !== 0,
-    `Safe pinned Cloudflare asset staging is unavailable on ${platform()}: O_NOFOLLOW is required`,
+    `Safe pinned Cloudflare asset staging is unavailable on ${hostPlatform}: O_NOFOLLOW is required`,
   );
   return constants.O_NOFOLLOW;
 }
@@ -289,6 +317,27 @@ function invokeSourceOpenSeam(source, destination) {
   );
 }
 
+function invokePostCheckSourceOpenSeam(source, destination) {
+  const seam =
+    globalThis[Symbol.for('mdreader.cloudflare.after-source-ancestor-check')];
+  if (seam === undefined) return;
+  assert.equal(
+    typeof seam,
+    'function',
+    'Cloudflare post-check source-open seam must be a function',
+  );
+  const result = seam({
+    destination,
+    source: source.path,
+    sourceName: source.sourceName,
+  });
+  assert.equal(
+    result instanceof Promise,
+    false,
+    'Cloudflare post-check source-open seam must be synchronous',
+  );
+}
+
 function consumePinnedSource(
   source,
   { destination = undefined, invokeSeam = false, onChunk, onReady },
@@ -296,6 +345,7 @@ function consumePinnedSource(
   const noFollow = assertMdreaderPinnedCopySupport();
   if (invokeSeam) invokeSourceOpenSeam(source, destination);
   for (const ancestor of source.ancestors) assertCurrentDirectory(ancestor);
+  if (invokeSeam) invokePostCheckSourceOpenSeam(source, destination);
 
   let descriptor;
   try {
@@ -308,6 +358,7 @@ function consumePinnedSource(
   }
 
   try {
+    for (const ancestor of source.ancestors) assertCurrentDirectory(ancestor);
     const before = fstatSync(descriptor, { bigint: true });
     assertSameIdentity(before, source.identity, source.sourceName);
     onReady?.();
@@ -324,6 +375,7 @@ function consumePinnedSource(
       bytes += count;
     }
 
+    for (const ancestor of source.ancestors) assertCurrentDirectory(ancestor);
     const after = fstatSync(descriptor, { bigint: true });
     assertSameIdentity(after, source.identity, source.sourceName);
     assert.equal(
@@ -352,17 +404,25 @@ export function readPinnedMdreaderCloudflareSource(source) {
 
 function assertDestinationPlan(plan) {
   assert.ok(Array.isArray(plan), 'Cloudflare destination plan must be an array');
-  const sorted = [...plan].sort((left, right) =>
-    left.destination < right.destination
+  const sorted = plan
+    .map((entry) => ({
+      entry,
+      namespaceKey: destinationNamespaceKey(entry.destination),
+    }))
+    .sort((left, right) =>
+    left.namespaceKey < right.namespaceKey
       ? -1
-      : left.destination > right.destination
+      : left.namespaceKey > right.namespaceKey
         ? 1
-        : 0);
-  const destinations = new Set();
+        : left.entry.destination < right.entry.destination
+          ? -1
+          : left.entry.destination > right.entry.destination
+            ? 1
+            : 0);
+  const destinations = new Map();
   let totalBytes = 0n;
   for (let index = 0; index < sorted.length; index += 1) {
-    const entry = sorted[index];
-    safeRelativePath(entry.destination, 'Cloudflare asset destination');
+    const { entry, namespaceKey } = sorted[index];
     assert.ok(entry.source?.identity, `Missing source snapshot for ${entry.destination}`);
     assert.ok(
       index < MDREADER_CLOUDFLARE_ASSET_LIMITS.maxFiles,
@@ -379,22 +439,22 @@ function assertDestinationPlan(plan) {
     );
 
     assert.equal(
-      destinations.has(entry.destination),
+      destinations.has(namespaceKey),
       false,
-      `Cloudflare asset destination ${entry.destination} collides with another source`,
+      `Cloudflare asset destination ${entry.destination} collides with ${destinations.get(namespaceKey) ?? 'another source'} after NFC and case normalization`,
     );
-    let slash = entry.destination.indexOf('/');
+    let slash = namespaceKey.indexOf('/');
     while (slash !== -1) {
-      const ancestor = entry.destination.slice(0, slash);
+      const ancestor = namespaceKey.slice(0, slash);
       assert.ok(
         !destinations.has(ancestor),
-        `Cloudflare asset destination ${entry.destination} collides with ${ancestor}`,
+        `Cloudflare asset destination ${entry.destination} collides with ${destinations.get(ancestor) ?? ancestor}`,
       );
-      slash = entry.destination.indexOf('/', slash + 1);
+      slash = namespaceKey.indexOf('/', slash + 1);
     }
-    destinations.add(entry.destination);
+    destinations.set(namespaceKey, entry.destination);
   }
-  return sorted;
+  return sorted.map(({ entry }) => entry);
 }
 
 /**
@@ -547,27 +607,25 @@ function stagedFilePaths(directory) {
 }
 
 /**
- * Copies a validated plan into a fresh private tree and atomically publishes
- * the completed asset set beneath the scoped .open-next directory.
+ * Creates a bounded-name, same-parent private tree for the complete Worker
+ * output while leaving any previously published .open-next tree untouched.
  */
-export function stageMdreaderCloudflareAssetPlan(plan, openNext, assets) {
-  const sorted = assertDestinationPlan(plan);
-  assertMdreaderPinnedCopySupport();
+export function createMdreaderCloudflareOutputStage(openNext) {
   const absoluteOpenNext = resolve(openNext);
-  const absoluteAssets = resolve(assets);
-  assert.equal(
-    dirname(absoluteAssets),
-    absoluteOpenNext,
-    'Cloudflare assets must be a direct child of the scoped .open-next directory',
-  );
   assert.equal(
     basename(absoluteOpenNext),
     '.open-next',
     'Cloudflare staging may replace only the scoped .open-next directory',
   );
+  const parent = snapshotDirectory(
+    dirname(absoluteOpenNext),
+    'Cloudflare output parent',
+    true,
+  );
 
+  let destinationSnapshot = null;
   try {
-    const existing = lstatSync(absoluteOpenNext);
+    const existing = lstatSync(absoluteOpenNext, { bigint: true });
     assert.equal(
       existing.isSymbolicLink(),
       false,
@@ -578,62 +636,386 @@ export function stageMdreaderCloudflareAssetPlan(plan, openNext, assets) {
       true,
       `Cloudflare asset destination is not a directory: ${absoluteOpenNext}`,
     );
+    destinationSnapshot = Object.freeze({
+      identity: snapshotIdentity(
+        existing,
+        absoluteOpenNext,
+        'directory',
+        'published Cloudflare .open-next output',
+      ),
+      name: 'published Cloudflare .open-next output',
+      path: absoluteOpenNext,
+    });
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-  rmSync(absoluteOpenNext, { recursive: true, force: true });
-  mkdirSync(absoluteOpenNext, { mode: 0o700 });
-  const openNextSnapshot = snapshotDirectory(
-    absoluteOpenNext,
-    'Cloudflare .open-next staging root',
-    true,
+
+  assertCurrentDirectory(parent, 'destination parent');
+  const stagingRoot = mkdtempSync(join(parent.path, '.open-next-stage-'));
+  try {
+    chmodSync(stagingRoot, 0o700);
+    const stagingSnapshot = snapshotDirectory(
+      stagingRoot,
+      'Cloudflare private output staging root',
+      true,
+    );
+    return Object.freeze({
+      destination: absoluteOpenNext,
+      destinationSnapshot,
+      parent,
+      stagingRoot,
+      stagingSnapshot,
+    });
+  } catch (error) {
+    rmSync(stagingRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function assertPrivateOutputStage(outputStage) {
+  assert.ok(
+    outputStage?.stagingRoot && outputStage?.destination,
+    'Cloudflare output stage is required',
   );
-  let temporary = mkdtempSync(join(absoluteOpenNext, '.assets-stage-'));
-  const temporarySnapshot = snapshotDirectory(
-    temporary,
+  assert.equal(
+    dirname(outputStage.stagingRoot),
+    outputStage.parent.path,
+    'Cloudflare private output stage must share the publication parent',
+  );
+  assert.match(
+    basename(outputStage.stagingRoot),
+    /^\.open-next-stage-[A-Za-z0-9]{6}$/,
+    'Cloudflare private output stage has an unsafe name',
+  );
+  assert.equal(
+    basename(outputStage.destination),
+    '.open-next',
+    'Cloudflare output stage may publish only .open-next',
+  );
+  assertCurrentDirectory(outputStage.parent, 'destination parent');
+  assertCurrentDirectory(outputStage.stagingSnapshot, 'private output staging root');
+}
+
+/**
+ * Copies a validated asset plan beneath an already-private whole-output tree.
+ */
+export function stageMdreaderCloudflareAssetPlan(plan, outputStage) {
+  const sorted = assertDestinationPlan(plan);
+  assertMdreaderPinnedCopySupport();
+  assertPrivateOutputStage(outputStage);
+  const assets = join(outputStage.stagingRoot, 'assets');
+
+  try {
+    lstatSync(assets);
+    assert.fail(`Cloudflare private asset destination already exists: ${assets}`);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  mkdirSync(assets, { mode: 0o700 });
+  const assetsSnapshot = snapshotDirectory(
+    assets,
     'Cloudflare private asset staging root',
     true,
   );
-  let published = false;
+
+  for (const entry of sorted) {
+    assertPrivateOutputStage(outputStage);
+    const destinationAncestors = ensureDestinationDirectory(
+      assets,
+      dirname(entry.destination),
+      assetsSnapshot,
+    );
+    copyPinnedSource(
+      entry.source,
+      join(assets, entry.destination),
+      destinationAncestors,
+    );
+  }
+  const staged = assertMdreaderCloudflareAssets(assets);
+  assert.deepEqual(
+    stagedFilePaths(assets),
+    sorted.map((entry) => entry.destination).sort(),
+    'Cloudflare private staging tree differs from the validated copy plan',
+  );
+  return staged;
+}
+
+function digestStagedOutputFile(path, stagedPath, ancestors) {
+  for (const ancestor of ancestors) {
+    assertCurrentDirectory(ancestor, 'staged output ancestor');
+  }
+  const identity = snapshotIdentity(
+    lstatBigInt(path, stagedPath),
+    path,
+    'file',
+    stagedPath,
+  );
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | assertMdreaderPinnedCopySupport(),
+    );
+  } catch (error) {
+    throw new Error(
+      `Cloudflare staged output no-follow open failed for ${stagedPath}: ${error.message}`,
+      { cause: error },
+    );
+  }
 
   try {
-    for (const entry of sorted) {
-      assertCurrentDirectory(openNextSnapshot);
-      const destinationAncestors = ensureDestinationDirectory(
-        temporary,
-        dirname(entry.destination),
-        temporarySnapshot,
-      );
-      copyPinnedSource(
-        entry.source,
-        join(temporary, entry.destination),
-        destinationAncestors,
-      );
+    for (const ancestor of ancestors) {
+      assertCurrentDirectory(ancestor, 'staged output ancestor');
     }
-    const staged = assertMdreaderCloudflareAssets(temporary);
-    assert.deepEqual(
-      stagedFilePaths(temporary),
-      sorted.map((entry) => entry.destination),
-      'Cloudflare private staging tree differs from the validated copy plan',
+    assertSameIdentity(
+      fstatSync(descriptor, { bigint: true }),
+      identity,
+      stagedPath,
+      'staged output',
     );
-    assertCurrentDirectory(openNextSnapshot);
-    assertCurrentDirectory(temporarySnapshot);
-    try {
-      lstatSync(absoluteAssets);
-      assert.fail(`Cloudflare asset publish destination already exists: ${absoluteAssets}`);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0n;
+    while (true) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+      bytes += BigInt(count);
     }
-    renameSync(temporary, absoluteAssets);
-    temporary = undefined;
-    const result = assertMdreaderCloudflareAssets(absoluteAssets);
-    assert.deepEqual(result, staged);
-    published = true;
-    return result;
+    for (const ancestor of ancestors) {
+      assertCurrentDirectory(ancestor, 'staged output ancestor');
+    }
+    assertSameIdentity(
+      fstatSync(descriptor, { bigint: true }),
+      identity,
+      stagedPath,
+      'staged output',
+    );
+    assertSameIdentity(
+      lstatBigInt(path, stagedPath),
+      identity,
+      stagedPath,
+      'staged output path',
+    );
+    assert.equal(
+      bytes,
+      identity.size,
+      `Cloudflare staged output changed while hashing ${stagedPath}`,
+    );
+    return Object.freeze({
+      kind: 'file',
+      path: stagedPath,
+      sha256: hash.digest('hex'),
+      size: bytes,
+    });
   } finally {
-    if (temporary !== undefined) rmSync(temporary, { recursive: true, force: true });
-    if (!published) rmSync(absoluteAssets, { recursive: true, force: true });
+    closeSync(descriptor);
   }
+}
+
+/**
+ * Reopens and hashes every file in the complete private Worker output.
+ */
+export function snapshotMdreaderCloudflareOutputManifest(outputStage) {
+  assertPrivateOutputStage(outputStage);
+  const manifest = [];
+
+  function walk(current, relativeDirectory, ancestors) {
+    for (const ancestor of ancestors) {
+      assertCurrentDirectory(ancestor, 'staged output ancestor');
+    }
+    const entries = readdirSync(current).sort();
+    for (const entry of entries) {
+      const path = join(current, entry);
+      const stagedPath = relativeDirectory
+        ? `${relativeDirectory}/${entry}`
+        : entry;
+      const metadata = lstatBigInt(path, stagedPath);
+      assert.equal(
+        metadata.isSymbolicLink(),
+        false,
+        `Cloudflare staged output rejects symbolic link ${stagedPath}`,
+      );
+      if (metadata.isDirectory()) {
+        const directory = Object.freeze({
+          identity: snapshotIdentity(
+            metadata,
+            path,
+            'directory',
+            stagedPath,
+          ),
+          name: stagedPath,
+          path,
+        });
+        manifest.push(Object.freeze({ kind: 'directory', path: stagedPath }));
+        walk(path, stagedPath, [...ancestors, directory]);
+        assertCurrentDirectory(directory, 'staged output directory');
+        continue;
+      }
+      assert.equal(
+        metadata.isFile(),
+        true,
+        `Cloudflare staged output rejects non-regular entry ${stagedPath}`,
+      );
+      manifest.push(digestStagedOutputFile(path, stagedPath, ancestors));
+    }
+    for (const ancestor of ancestors) {
+      assertCurrentDirectory(ancestor, 'staged output ancestor');
+    }
+  }
+
+  walk(
+    outputStage.stagingRoot,
+    '',
+    [outputStage.parent, outputStage.stagingSnapshot],
+  );
+  return Object.freeze(manifest);
+}
+
+function invokeBeforePublicationSeam(stagingRoot) {
+  const seam = globalThis[Symbol.for('mdreader.cloudflare.before-publication')];
+  if (seam === undefined) return;
+  assert.equal(
+    typeof seam,
+    'function',
+    'Cloudflare prepublication seam must be a function',
+  );
+  const result = seam({ stagingRoot });
+  assert.equal(
+    result instanceof Promise,
+    false,
+    'Cloudflare prepublication seam must be synchronous',
+  );
+}
+
+function assertPublicationDestination(outputStage) {
+  if (outputStage.destinationSnapshot !== null) {
+    assertCurrentDirectory(
+      outputStage.destinationSnapshot,
+      'publication destination',
+    );
+    return;
+  }
+  try {
+    lstatSync(outputStage.destination);
+    assert.fail(
+      `Cloudflare publication destination appeared during staging: ${outputStage.destination}`,
+    );
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+/**
+ * Revalidates the complete output manifest and atomically publishes it,
+ * restoring a prior output if either publication rename fails.
+ */
+export function publishMdreaderCloudflareOutput(outputStage, manifest) {
+  assertPrivateOutputStage(outputStage);
+  invokeBeforePublicationSeam(outputStage.stagingRoot);
+  const reverified = snapshotMdreaderCloudflareOutputManifest(outputStage);
+  assert.deepEqual(
+    reverified,
+    manifest,
+    'Cloudflare staged output manifest differs immediately before publication',
+  );
+  assertPrivateOutputStage(outputStage);
+  assertPublicationDestination(outputStage);
+
+  let backupContainer;
+  let backupPrevious;
+  let previousMoved = false;
+  let replacementMoved = false;
+  try {
+    if (outputStage.destinationSnapshot !== null) {
+      backupContainer = mkdtempSync(
+        join(outputStage.parent.path, '.open-next-backup-'),
+      );
+      chmodSync(backupContainer, 0o700);
+      backupPrevious = join(backupContainer, 'previous');
+      assertCurrentDirectory(outputStage.parent, 'destination parent');
+      assertPublicationDestination(outputStage);
+      renameSync(outputStage.destination, backupPrevious);
+      previousMoved = true;
+      assertSameIdentity(
+        lstatBigInt(backupPrevious, 'previous Cloudflare output'),
+        outputStage.destinationSnapshot.identity,
+        'previous Cloudflare output',
+        'publication backup',
+      );
+    }
+
+    assertCurrentDirectory(outputStage.parent, 'destination parent');
+    assertCurrentDirectory(
+      outputStage.stagingSnapshot,
+      'private output staging root',
+    );
+    renameSync(outputStage.stagingRoot, outputStage.destination);
+    replacementMoved = true;
+    assertSameIdentity(
+      lstatBigInt(outputStage.destination, 'published Cloudflare output'),
+      outputStage.stagingSnapshot.identity,
+      'published Cloudflare output',
+      'publication destination',
+    );
+  } catch (error) {
+    const rollbackErrors = [];
+    if (replacementMoved) {
+      try {
+        renameSync(outputStage.destination, outputStage.stagingRoot);
+        replacementMoved = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (previousMoved) {
+      try {
+        renameSync(backupPrevious, outputStage.destination);
+        previousMoved = false;
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (backupContainer !== undefined) {
+      try {
+        rmSync(backupContainer, { recursive: true, force: true });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        'Cloudflare output publication failed and rollback was incomplete',
+      );
+    }
+    throw error;
+  }
+
+  if (backupContainer !== undefined) {
+    try {
+      rmSync(backupContainer, { recursive: true, force: true });
+    } catch {
+      // Publication is already committed; retain the recoverable backup.
+    }
+  }
+}
+
+/**
+ * Removes only the validated bounded-name private output tree.
+ */
+export function discardMdreaderCloudflareOutputStage(outputStage) {
+  assert.equal(
+    dirname(outputStage.stagingRoot),
+    outputStage.parent.path,
+    'Cloudflare private output cleanup escaped its parent',
+  );
+  assert.match(
+    basename(outputStage.stagingRoot),
+    /^\.open-next-stage-[A-Za-z0-9]{6}$/,
+    'Cloudflare private output cleanup target has an unsafe name',
+  );
+  rmSync(outputStage.stagingRoot, { recursive: true, force: true });
 }
 
 export function assertMdreaderCloudflareAssets(directory) {
