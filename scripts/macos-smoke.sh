@@ -75,5 +75,13 @@ fi
 echo "==> Running macOS GUI smoke (unified mac2 runner)…"
 # Node runs the TypeScript runner directly via native type-stripping.
 # --experimental-strip-types is REQUIRED on Node 22.13–22.x; a no-op on Node >= 23.
-exec node --experimental-strip-types --no-warnings \
-  "$E2E_DIR/runners/macos.ts" --app "$APP" "${RUNNER_ARGS[@]}"
+# macOS still ships Bash 3.2; with `set -u`, expanding an empty array is an
+# "unbound variable" error. Keep the no-option path explicit so the ordinary
+# invocation reaches the runner instead of stopping after a successful build.
+if (( ${#RUNNER_ARGS[@]} > 0 )); then
+  exec node --experimental-strip-types --no-warnings \
+    "$E2E_DIR/runners/macos.ts" --app "$APP" "${RUNNER_ARGS[@]}"
+else
+  exec node --experimental-strip-types --no-warnings \
+    "$E2E_DIR/runners/macos.ts" --app "$APP"
+fi
