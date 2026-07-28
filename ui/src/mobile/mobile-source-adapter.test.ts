@@ -641,7 +641,16 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
       title: 'Semantic architecture',
       size: 128,
     });
-    listing.rows.push(structuredClone(listing.rows[0]!));
+    const twin = structuredClone(listing.rows[0]!);
+    twin.fields.path = 'papers/provenance.md';
+    for (const [field, fieldProvenance] of Object.entries(twin.provenance)) {
+      if (field === 'path') {
+        for (const considered of fieldProvenance.considered) {
+          considered.state = { state: 'observed_value', value: twin.fields.path };
+        }
+      }
+    }
+    listing.rows.push(twin);
     const adapter = createEnterpriseMobileSourceAdapter(
       config,
       sequence(response(session), response(listing)),
