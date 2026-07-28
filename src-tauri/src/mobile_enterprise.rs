@@ -1026,8 +1026,36 @@ fn pin_connected_query(
     source: &crate::library::ConnectedCatdbSourceRecord,
     request: &mut EntityQueryRequest,
 ) -> Result<String, MobileEnterpriseError> {
+    pin_connected_query_phase(source, request, ConnectedQueryPhase::Initial)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConnectedQueryPhase {
+    Initial,
+    Continuation { query_id: uuid::Uuid },
+}
+
+fn pin_connected_query_phase(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    request: &mut EntityQueryRequest,
+    phase: ConnectedQueryPhase,
+) -> Result<String, MobileEnterpriseError> {
     if source.selected_source_ids().is_empty() {
         return Err(MobileEnterpriseError::NoSourcesSelected);
+    }
+    if request.entity != "document.Document" {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    match phase {
+        ConnectedQueryPhase::Initial if request.query_id.is_some() || request.cursor.is_some() => {
+            return Err(MobileEnterpriseError::InvalidRequest);
+        }
+        ConnectedQueryPhase::Continuation { query_id }
+            if request.query_id != Some(query_id) || request.cursor.is_none() =>
+        {
+            return Err(MobileEnterpriseError::InvalidResponse);
+        }
+        ConnectedQueryPhase::Initial | ConnectedQueryPhase::Continuation { .. } => {}
     }
     request.workspace_id = source.workspace_id;
     request.catalog_revision_id = Some(source.catalog_revision_id);
@@ -1077,9 +1105,18 @@ async fn verify_connected_identity(
 async fn execute_connected_query(
     source: &crate::library::ConnectedCatdbSourceRecord,
     token: &BearerToken,
-    mut request: EntityQueryRequest,
+    request: EntityQueryRequest,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
-    let body = pin_connected_query(source, &mut request)?;
+    execute_connected_query_phase(source, token, request, ConnectedQueryPhase::Initial).await
+}
+
+async fn execute_connected_query_phase(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+    mut request: EntityQueryRequest,
+    phase: ConnectedQueryPhase,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    let body = pin_connected_query_phase(source, &mut request, phase)?;
     verify_connected_identity(source, token).await?;
     execute_http(
         &ConnectionRecord::from(source),
@@ -1098,6 +1135,7 @@ struct ConnectedPaginationBudget {
     bytes: usize,
     pages: usize,
     seen_cursors: BTreeSet<String>,
+    seen_record_keys: BTreeSet<String>,
 }
 
 impl ConnectedPaginationBudget {
@@ -1116,7 +1154,20 @@ impl ConnectedPaginationBudget {
             bytes: 0,
             pages: 0,
             seen_cursors: BTreeSet::new(),
+            seen_record_keys: BTreeSet::new(),
         })
+    }
+
+    fn record_rows(
+        &mut self,
+        rows: &[catdb_api_types::EntityRow],
+    ) -> Result<(), MobileEnterpriseError> {
+        for row in rows {
+            if !self.seen_record_keys.insert(row.record_key.clone()) {
+                return Err(MobileEnterpriseError::InvalidResponse);
+            }
+        }
+        Ok(())
     }
 
     fn record_page(
@@ -1163,12 +1214,13 @@ async fn execute_connected_library_page(
     request: EntityQueryRequest,
     cancellation: &catdb_connectors::CancellationToken,
     deadline: tokio::time::Instant,
+    phase: ConnectedQueryPhase,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
     tokio::select! {
         _ = cancellation.cancelled() => Err(MobileEnterpriseError::Cancelled),
         response = tokio::time::timeout_at(
             deadline,
-            execute_connected_query(source, token, request),
+            execute_connected_query_phase(source, token, request, phase),
         ) => response.map_err(|_| MobileEnterpriseError::TimedOut)?,
     }
 }
@@ -1227,6 +1279,22 @@ fn parse_connected_library_response(
     {
         return Err(MobileEnterpriseError::ConnectionIdentityChanged);
     }
+    let excluded_source_ids = answer
+        .sources
+        .iter()
+        .filter(|source| source.outcome != catdb_api_types::SourceOutcome::Ran)
+        .map(|source| source.source_id)
+        .collect::<Vec<_>>();
+    let derived_completeness = if excluded_source_ids.is_empty() {
+        catdb_api_types::Completeness::Complete
+    } else {
+        catdb_api_types::Completeness::Partial {
+            excluded_source_ids,
+        }
+    };
+    if answer.completeness != derived_completeness {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
     let pinned_mappings = answer
         .pins
         .mapping_version_ids
@@ -1238,11 +1306,13 @@ fn parse_connected_library_response(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let mut record_keys = BTreeSet::new();
     for row in &answer.rows {
-        if row
-            .fields
-            .keys()
-            .any(|field| !selected_fields.contains(field.as_str()))
+        if !record_keys.insert(row.record_key.as_str())
+            || row
+                .fields
+                .keys()
+                .any(|field| !selected_fields.contains(field.as_str()))
             || row
                 .provenance
                 .keys()
@@ -1505,10 +1575,12 @@ pub(crate) async fn query_connected_library_documents(
         pinned_shape.clone(),
         &cancellation,
         deadline,
+        ConnectedQueryPhase::Initial,
     )
     .await?;
     let response_bytes = response.body_json.len();
     let mut evidence = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+    budget.record_rows(&evidence.answer.rows)?;
     budget.record_page(
         evidence.answer.rows.len(),
         evidence.answer.next_cursor.as_ref(),
@@ -1518,11 +1590,20 @@ pub(crate) async fn query_connected_library_documents(
         let mut continuation = pinned_shape.clone();
         continuation.query_id = Some(evidence.answer.query_id);
         continuation.cursor = Some(cursor);
-        let response =
-            execute_connected_library_page(&source, &token, continuation, &cancellation, deadline)
-                .await?;
+        let response = execute_connected_library_page(
+            &source,
+            &token,
+            continuation,
+            &cancellation,
+            deadline,
+            ConnectedQueryPhase::Continuation {
+                query_id: evidence.answer.query_id,
+            },
+        )
+        .await?;
         let response_bytes = response.body_json.len();
         let page = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+        budget.record_rows(&page.answer.rows)?;
         budget.record_page(
             page.answer.rows.len(),
             page.answer.next_cursor.as_ref(),
@@ -1729,6 +1810,93 @@ mod tests {
         source
     }
 
+    fn connected_query_request() -> catdb_api_types::EntityQueryRequest {
+        serde_json::from_value(serde_json::json!({
+            "workspace_id": "00000000-0000-0000-0000-000000000099",
+            "catalog_revision_id": null,
+            "schema_version_id": null,
+            "entity": "document.Document",
+            "select": ["title"],
+            "filters": [],
+            "order_by": [],
+            "source_ids": null,
+            "max_staleness_ms": null,
+            "require_complete": false,
+            "page_size": 10,
+            "limit": 10,
+            "query_id": null,
+            "cursor": null
+        }))
+        .expect("valid connected Library request")
+    }
+
+    fn connected_response(
+        record_keys: &[&str],
+        outcome: catdb_api_types::SourceOutcome,
+        completeness: catdb_api_types::Completeness,
+    ) -> MobileEnterpriseResponse {
+        let provenance_rule_version_id = uuid::Uuid::from_u128(27);
+        let mapping_version_id = uuid::Uuid::from_u128(25);
+        let source_version_id = uuid::Uuid::from_u128(12);
+        let rows = record_keys
+            .iter()
+            .map(|record_key| {
+                let title = format!("Title for {record_key}");
+                let observation = catdb_provenance::FieldObservation::observed(
+                    source_version_id,
+                    *record_key,
+                    mapping_version_id,
+                    1,
+                    serde_json::json!(title),
+                );
+                let evidence = catdb_provenance::FieldProvenance::new(
+                    provenance_rule_version_id,
+                    "title",
+                    vec![observation],
+                    Some(0),
+                )
+                .expect("valid field evidence");
+                catdb_api_types::EntityRow {
+                    record_key: (*record_key).to_string(),
+                    fields: std::collections::BTreeMap::from([(
+                        "title".to_string(),
+                        serde_json::json!(title),
+                    )]),
+                    provenance: std::collections::BTreeMap::from([("title".to_string(), evidence)]),
+                }
+            })
+            .collect::<Vec<_>>();
+        let response = catdb_api_types::EntityQueryResponse {
+            query_id: uuid::Uuid::from_u128(21),
+            pins: catdb_api_types::PinnedVersions {
+                catalog_resolver_id: uuid::Uuid::from_u128(22),
+                catalog_revision_id: uuid::Uuid::from_u128(4),
+                schema_version_id: uuid::Uuid::from_u128(23),
+                physical_schema_version_ids: vec![uuid::Uuid::from_u128(24)],
+                mapping_version_ids: vec![mapping_version_id],
+                source_version_ids: vec![source_version_id],
+                policy_version_ids: vec![uuid::Uuid::from_u128(26)],
+                provenance_rule_version_id,
+            },
+            sources: vec![catdb_api_types::SourceExecution {
+                source_id: uuid::Uuid::from_u128(11),
+                source_version_id,
+                outcome,
+                retry_after_ms: None,
+                freshness_ms: (outcome == catdb_api_types::SourceOutcome::Ran).then_some(0),
+                scanned: record_keys.len() as u64,
+                returned: record_keys.len() as u64,
+            }],
+            completeness,
+            rows,
+            next_cursor: None,
+        };
+        MobileEnterpriseResponse {
+            status: 200,
+            body_json: serde_json::to_string(&response).expect("serialize connected response"),
+        }
+    }
+
     #[test]
     fn bearer_tokens_and_native_references_are_redacted() {
         let token = BearerToken("do-not-print-me".to_string());
@@ -1801,6 +1969,76 @@ mod tests {
         let mut oversized = ConnectedPaginationBudget::new(1_000, 1_000).expect("budget");
         assert_eq!(
             oversized.record_page(1_001, None, 1024),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn connected_pagination_rejects_a_record_repeated_on_a_later_page() {
+        let row = catdb_api_types::EntityRow {
+            record_key: "same.md".to_string(),
+            fields: std::collections::BTreeMap::new(),
+            provenance: std::collections::BTreeMap::new(),
+        };
+        let mut budget = ConnectedPaginationBudget::new(2_000, 1_000).expect("budget");
+        budget
+            .record_rows(std::slice::from_ref(&row))
+            .expect("first page identity");
+        assert_eq!(
+            budget.record_rows(&[row]),
+            Err(MobileEnterpriseError::InvalidResponse),
+            "a fresh cursor cannot replay an already-published record identity"
+        );
+    }
+
+    #[test]
+    fn connected_library_initial_query_rejects_renderer_identity_and_other_entities() {
+        let source = connected_source();
+        let mut continuation = connected_query_request();
+        continuation.query_id = Some(uuid::Uuid::from_u128(77));
+        continuation.cursor =
+            Some(catdb_api_types::EntityCursor::new("v1.page-two".to_string()).expect("cursor"));
+        assert_eq!(
+            pin_connected_query(&source, &mut continuation),
+            Err(MobileEnterpriseError::InvalidRequest),
+            "the renderer cannot turn an initial Library request into a continuation"
+        );
+
+        let mut other_entity = connected_query_request();
+        other_entity.entity = "crm.Customer".to_string();
+        assert_eq!(
+            pin_connected_query(&source, &mut other_entity),
+            Err(MobileEnterpriseError::InvalidRequest),
+            "MDReader's Connected CatDB membership exposes only document.Document"
+        );
+    }
+
+    #[test]
+    fn connected_library_response_cannot_claim_complete_when_a_source_did_not_run() {
+        let source = connected_source();
+        let response = connected_response(
+            &[],
+            catdb_api_types::SourceOutcome::Refused,
+            catdb_api_types::Completeness::Complete,
+        );
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_duplicate_record_identity_in_one_page() {
+        let source = connected_source();
+        let response = connected_response(
+            &["same.md", "same.md"],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Complete,
+        );
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
             Err(MobileEnterpriseError::InvalidResponse)
         );
     }
