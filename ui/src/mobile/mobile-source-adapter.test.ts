@@ -635,6 +635,81 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
   });
 
+  test('listing rejects two rows that share one record key', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    listing.rows.push(structuredClone(listing.rows[0]!));
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an ambiguous document identity.',
+    });
+  });
+
+  test('listing rejects distinct records that claim one document path', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const twin = structuredClone(listing.rows[0]!);
+    twin.record_key = 'document-2';
+    for (const fieldProvenance of Object.values(twin.provenance)) {
+      for (const considered of fieldProvenance.considered) {
+        considered.record_key = 'document-2';
+      }
+    }
+    listing.rows.push(twin);
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an ambiguous document identity.',
+    });
+  });
+
+  test('listing admits distinct records at distinct document paths', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    const twin = structuredClone(listing.rows[0]!);
+    twin.record_key = 'document-2';
+    twin.fields.path = 'papers/provenance.md';
+    for (const [field, fieldProvenance] of Object.entries(twin.provenance)) {
+      for (const considered of fieldProvenance.considered) {
+        considered.record_key = 'document-2';
+        if (field === 'path') {
+          considered.state = { state: 'observed_value', value: twin.fields.path };
+        }
+      }
+    }
+    listing.rows.push(twin);
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(listing)),
+    );
+
+    const result = await adapter.listDocuments();
+    expect(result.status).toBe('ready');
+    expect(
+      result.status === 'ready'
+        ? result.documents.map((document) => document.document.id)
+        : [],
+    ).toEqual(['document-1', 'document-2']);
+  });
+
   test('listing rejects provider observations reordered relative to pinned source order', async () => {
     const listing = queryResponse({
       path: 'papers/architecture.md',
