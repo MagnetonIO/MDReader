@@ -10,11 +10,23 @@ import { SettingsCommandError } from '../platform/settings.js';
 import {
   hydrateLibrary,
   LIBRARY_DOCUMENT_FIELDS,
+  libraryDocumentTitle,
   libraryHydrationMessage,
   memberForRow,
   physicalRecordKey,
   rowsForMember,
 } from './library-documents.js';
+
+it('uses the semantic path basename when a partial source cannot supply title', () => {
+  expect(
+    libraryDocumentTitle({
+      record_key:
+        'library:00000000-0000-4000-8000-000000000021:docs/arch/catdb-core.md',
+      fields: { path: 'docs/arch/catdb-core.md' },
+      provenance: {},
+    }),
+  ).toBe('catdb-core.md');
+});
 
 const PHYSICAL_SOURCE_ID = '00000000-0000-4000-8000-000000000011';
 const SOURCE_VERSION_ID = '00000000-0000-4000-8000-000000000012';

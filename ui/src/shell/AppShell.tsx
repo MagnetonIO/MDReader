@@ -266,7 +266,11 @@ export function AppShell() {
       }
       libraryRefreshRequest.current = null;
     };
-  }, [hydrated, refreshLibrary]);
+  // Persisted UI state can hydrate before the restored workspace has committed
+  // its backend grant. Refresh again when that grant advances the semantic
+  // generation so a startup read that raced the engine cannot leave the
+  // Library empty until the user changes Settings or presses Refresh.
+  }, [hydrated, refreshLibrary, semanticWorkspaceGeneration]);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;

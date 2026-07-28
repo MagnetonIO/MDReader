@@ -11,7 +11,7 @@ import type {
 import { FolderIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
-import { rowsForMember } from './library-documents.js';
+import { libraryDocumentTitle, rowsForMember } from './library-documents.js';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -154,9 +154,7 @@ export function Sidebar({
             evidence.memberships.map((member) => {
               const rows = rowsForMember(evidence, member).filter((row) => {
                 if (!search) return true;
-                const fields = row.fields;
-                const title = typeof fields.title === 'string' ? fields.title : row.record_key;
-                return title.toLocaleLowerCase().includes(search);
+                return libraryDocumentTitle(row).toLocaleLowerCase().includes(search);
               });
               return (
                 <section className="library-sources__source" key={member.membership_id}>
@@ -173,9 +171,7 @@ export function Sidebar({
                   {rows.length > 0 ? (
                     <ul>
                       {rows.map((row) => {
-                        const fields = row.fields;
-                        const title =
-                          typeof fields.title === 'string' ? fields.title : row.record_key;
+                        const title = libraryDocumentTitle(row);
                         return (
                           <li key={row.record_key}>
                             <button

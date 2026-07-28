@@ -62,6 +62,23 @@ export interface LibraryHydrationFailure {
   reason: unknown;
 }
 
+/** A reader-facing name from semantic fields, never CatDB's composite key when
+ * the source supplied a usable path. A partial frontmatter execution may leave
+ * `title` absent while filesystem still supplies `path`. */
+export function libraryDocumentTitle(row: EntityRow): string {
+  const fields =
+    row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields)
+      ? (row.fields as Record<string, unknown>)
+      : {};
+  if (typeof fields.title === 'string' && fields.title.trim().length > 0) {
+    return fields.title;
+  }
+  if (typeof fields.path === 'string' && fields.path.trim().length > 0) {
+    return fields.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? fields.path;
+  }
+  return row.record_key;
+}
+
 function localQueryableLibraryFields(snapshot: LibrarySnapshot): string[] {
   const queryable = new Set<string>();
   if (snapshot.sources.length > 0) {

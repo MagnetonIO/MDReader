@@ -10,7 +10,7 @@ import type {
 } from '../bindings.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { LibrarySemanticInspector } from './LibrarySemanticInspector.js';
-import { physicalRecordKey } from './library-documents.js';
+import { libraryDocumentTitle, physicalRecordKey } from './library-documents.js';
 
 export interface LibraryDocumentPaneProps {
   member: LibrarySourceExecution;
@@ -56,10 +56,7 @@ export function LibraryDocumentPane({
   onRetry,
 }: LibraryDocumentPaneProps) {
   const values = fieldsOf(row);
-  const title =
-    typeof values.title === 'string' && values.title.length > 0
-      ? values.title
-      : row.record_key;
+  const title = libraryDocumentTitle(row);
   const body =
     typeof values.body === 'string' ? values.body : null;
   const [doc, setDoc] = useState<ParsedDoc | null>(null);

@@ -138,7 +138,6 @@ it('lists a local membership from the same immutable Library answer', () => {
           record_key:
             'library:00000000-0000-4000-8000-000000000021:notes/local.md',
           fields: {
-            title: 'Local note',
             path: 'notes/local.md',
             body: '# Local note',
           },
@@ -185,6 +184,6 @@ it('lists a local membership from the same immutable Library answer', () => {
   );
 
   expect(screen.getByRole('navigation', { name: 'Library sources' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Open Local note from Local notes' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open local.md from Local notes' }));
   expect(open).toHaveBeenCalledWith(member, response.answer.rows[0]);
 });
