@@ -64,21 +64,25 @@ function safeRelativePath(path, name) {
 }
 
 /**
- * Returns the conservative collision key used for all supported publish
- * filesystems. NFKC covers compatibility characters (including long s), and
- * the supplemental default-case folds cover sharp-s and final sigma, which
- * are folded by common case-insensitive Unicode filesystems but not by
- * JavaScript's simple `toLowerCase`.
+ * Returns one namespace key for the supported Unix publication filesystems.
+ * Worker asset filenames use a bounded portable ASCII alphabet: letters,
+ * digits, dot, underscore, hyphen, exclamation mark, and dollar sign. The last
+ * two are required by generated Next segment names and have stable identity on
+ * every supported host. Slashes remain path separators, while empty and dot
+ * segments are rejected by `safeRelativePath`. Restricting the input to ASCII
+ * makes lowercase conversion a complete case fold for this namespace.
  */
 function destinationNamespaceKey(path) {
-  return safeRelativePath(path, 'Cloudflare asset destination')
-    .map((segment) => segment
-      .normalize('NFKC')
-      .toLowerCase()
-      .replaceAll('\u00df', 'ss')
-      .replaceAll('\u03c2', '\u03c3')
-      .normalize('NFC'))
-    .join('/');
+  const segments = safeRelativePath(path, 'Cloudflare asset destination');
+  assert.ok(
+    segments.every((segment) => /^[!$A-Za-z0-9._-]+$/.test(segment)),
+    'Cloudflare asset destination violates the portable ASCII filename policy; non-portable names can collide on supported Unix publication filesystems, and each segment may contain only letters, digits, dot, underscore, hyphen, exclamation mark, or dollar sign',
+  );
+  const folded = segments.map((segment) => segment.toLowerCase()).join('/');
+  return safeRelativePath(
+    folded,
+    'ASCII-folded Cloudflare asset destination',
+  ).join('/');
 }
 
 function snapshotIdentity(metadata, path, kind, name) {

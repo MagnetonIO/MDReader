@@ -625,6 +625,48 @@ test('destination plan rejects compatibility-case collisions used by supported f
   }
 });
 
+test('destination plan rejects observed APFS Unicode-fold collision pairs under the portable filename policy', () => {
+  for (const destinations of [
+    ['greek/\u0345.txt', 'greek/\u03b9.txt'],
+    ['cyrillic/\u1c80.txt', 'cyrillic/\u0432.txt'],
+  ]) {
+    assert.throws(
+      () => assertMdreaderCloudflareDestinationPlan(destinationPlan(...destinations)),
+      /portable ASCII filename policy/is,
+    );
+  }
+});
+
+test('destination plan accepts generated Next segment markers in the portable ASCII namespace', () => {
+  assert.doesNotThrow(() =>
+    assertMdreaderCloudflareDestinationPlan(destinationPlan(
+      'docs.segments/!KHNpdGUp.segment.rsc',
+      'docs.segments/!KHNpdGUp/docs/$d$slug.segment.rsc',
+    )));
+});
+
+test('staging rejects a distinct non-ASCII destination before creating output', () => {
+  const fixture = stageFixture({
+    publicFiles: { 'docs/résumé.html': 'PRIVATE DOCUMENT CONTENT\n' },
+  });
+  try {
+    const result = run(STAGE, fixture.app);
+    assertRejected(result, /portable ASCII filename policy/is);
+    assert.equal(
+      existsSync(join(fixture.app, '.open-next')),
+      false,
+      'staging created output before enforcing the portable filename policy',
+    );
+    assert.doesNotMatch(
+      output(result),
+      /PRIVATE DOCUMENT CONTENT/,
+      'the portable filename error leaked file contents',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test('source-copy failure preserves the previously published Worker tree', () => {
   const fixture = stageFixture();
   const sentinel = 'EXTERNAL-SOURCE-FAILURE';
