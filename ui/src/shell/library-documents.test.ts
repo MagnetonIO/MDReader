@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
+  LibrarySnapshot,
   LibrarySourceExecution,
 } from '../bindings.js';
 import {
@@ -94,10 +95,55 @@ const evidence: LibraryEntityQueryResponse_Serialize = {
   memberships: [member],
 };
 
+const driveLibrary: LibrarySnapshot = {
+  version: 7,
+  sources: [],
+  cloud_sources: [
+    {
+      id: 'drive-account',
+      provider: 'google-drive',
+      name: 'Google Drive',
+      enabled: true,
+      contract: {
+        connector_version: 'google-drive/v1',
+        capabilities: {
+          read: true,
+          write: false,
+          search: true,
+          watch: false,
+          open_original: true,
+          download: true,
+        },
+        mapping_version: 'mdreader.Document.cloud-mapping/v2',
+        index_policy: 'read-through',
+      },
+    },
+  ],
+  cleanup: { kind: 'complete' },
+};
+
+const localLibrary: LibrarySnapshot = {
+  version: 7,
+  sources: [
+    {
+      id: 'local-folder',
+      name: 'Notes',
+      path: '/notes',
+      state: { kind: 'available' },
+      index_state: 'present',
+      active: true,
+      restore_candidate: false,
+    },
+  ],
+  cloud_sources: [],
+  cleanup: { kind: 'complete' },
+};
+
 describe('one hydrated Library answer', () => {
   it('uses one entity-query IPC and never issues provider-specific reads', async () => {
     const queryLibraryDocuments = vi.fn(async () => evidence);
     const backend = {
+      listSources: vi.fn(async () => driveLibrary),
       prepareCloudCatalog: vi.fn(async () => ({
         workspace_id: '00000000-0000-4000-8000-000000000020',
         catalog_revision_id: '00000000-0000-4000-8000-000000000021',
@@ -113,19 +159,60 @@ describe('one hydrated Library answer', () => {
       '00000000-0000-4000-8000-000000000020',
       [],
       [
-        'providerId',
         'title',
-        'author',
         'path',
         'mediaType',
         'modifiedAt',
         'size',
-        'revision',
         'checksum',
         'body',
       ],
       'request-1',
     );
+  });
+
+  it('requests only fields that registered local connectors can answer', async () => {
+    const queryLibraryDocuments = vi.fn(async () => evidence);
+    const backend = {
+      listSources: vi.fn(async () => localLibrary),
+      prepareCloudCatalog: vi.fn(async () => ({
+        workspace_id: '00000000-0000-4000-8000-000000000020',
+        catalog_revision_id: '00000000-0000-4000-8000-000000000021',
+        schema_version_id: '00000000-0000-4000-8000-000000000022',
+      })),
+      queryLibraryDocuments,
+    };
+
+    await hydrateLibrary(backend, 'request-local');
+
+    expect(queryLibraryDocuments).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000020',
+      [],
+      ['title', 'author', 'path', 'modifiedAt', 'size', 'body'],
+      'request-local',
+    );
+  });
+
+  it('does not publish a catalog or query when the Library has no enabled sources', async () => {
+    const prepareCloudCatalog = vi.fn();
+    const queryLibraryDocuments = vi.fn();
+    const result = await hydrateLibrary(
+      {
+        listSources: vi.fn(async (): Promise<LibrarySnapshot> => ({
+          version: 7,
+          sources: [],
+          cloud_sources: [],
+          cleanup: { kind: 'complete' },
+        })),
+        prepareCloudCatalog,
+        queryLibraryDocuments,
+      },
+      'request-empty',
+    );
+
+    expect(result).toEqual({ evidence: null });
+    expect(prepareCloudCatalog).not.toHaveBeenCalled();
+    expect(queryLibraryDocuments).not.toHaveBeenCalled();
   });
 
   it('derives membership from selected provenance and keeps remote rows read-only', () => {

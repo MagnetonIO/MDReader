@@ -1,6 +1,7 @@
 import type {
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
+  LibrarySnapshot,
   LibrarySourceExecution,
 } from '../bindings.js';
 import type { SettingsBackend } from '../platform/settings.js';
@@ -18,8 +19,55 @@ export const LIBRARY_DOCUMENT_FIELDS = [
   'body',
 ] as const;
 
+const LOCAL_DOCUMENT_FIELDS = [
+  'title',
+  'author',
+  'path',
+  'modifiedAt',
+  'size',
+  'body',
+] as const;
+
+const DRIVE_DOCUMENT_FIELDS = [
+  'title',
+  'path',
+  'mediaType',
+  'modifiedAt',
+  'size',
+  'checksum',
+  'body',
+] as const;
+
+const DROPBOX_DOCUMENT_FIELDS = [
+  'providerId',
+  'title',
+  'path',
+  'modifiedAt',
+  'size',
+  'revision',
+  'checksum',
+  'body',
+] as const;
+
 export interface HydratedLibrary {
-  evidence: LibraryEntityQueryResponse_Serialize;
+  evidence: LibraryEntityQueryResponse_Serialize | null;
+}
+
+/** Canonical fields that at least one enabled Library membership can answer. */
+export function queryableLibraryFields(snapshot: LibrarySnapshot): string[] {
+  const queryable = new Set<string>();
+  if (snapshot.sources.length > 0) {
+    LOCAL_DOCUMENT_FIELDS.forEach((field) => queryable.add(field));
+  }
+  for (const source of snapshot.cloud_sources) {
+    if (!source.enabled) continue;
+    const fields =
+      source.provider === 'google-drive'
+        ? DRIVE_DOCUMENT_FIELDS
+        : DROPBOX_DOCUMENT_FIELDS;
+    fields.forEach((field) => queryable.add(field));
+  }
+  return LIBRARY_DOCUMENT_FIELDS.filter((field) => queryable.has(field));
 }
 
 /**
@@ -30,18 +78,23 @@ export interface HydratedLibrary {
 export async function hydrateLibrary(
   backend: Pick<
     SettingsBackend,
-    'prepareCloudCatalog' | 'queryLibraryDocuments'
+    'listSources' | 'prepareCloudCatalog' | 'queryLibraryDocuments'
   >,
   requestId: string,
 ): Promise<HydratedLibrary> {
   if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
     throw new Error('Library queries are unavailable.');
   }
+  const snapshot = await backend.listSources();
+  const fields = queryableLibraryFields(snapshot);
+  if (fields.length === 0) {
+    return { evidence: null };
+  }
   const catalog = await backend.prepareCloudCatalog();
   const evidence = await backend.queryLibraryDocuments(
     catalog.workspace_id,
     [],
-    [...LIBRARY_DOCUMENT_FIELDS],
+    fields,
     requestId,
   );
   return { evidence };

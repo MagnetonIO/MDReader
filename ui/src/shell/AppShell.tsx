@@ -208,7 +208,7 @@ export function AppShell() {
       );
       if (libraryRefreshGeneration.current !== generation) return;
       setLibraryEvidence(answer);
-      if (answer.answer.completeness.state === 'partial') {
+      if (answer?.answer.completeness.state === 'partial') {
         setLibraryError('Some Library sources could not answer this query.');
       }
     } catch {

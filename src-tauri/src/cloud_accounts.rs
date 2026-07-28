@@ -6680,6 +6680,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_library_query_keeps_healthy_local_sources_when_frontmatter_is_malformed() {
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/corpus")
+            .canonicalize()
+            .expect("committed corpus");
+        let temp = tempdir().expect("temporary registry");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let local = registry.add_root(&corpus).expect("admit committed corpus");
+        let membership_id = local.engine_source_id();
+        registry
+            .save_to(&registry_path)
+            .expect("persist local membership");
+
+        let admitted = admit_library_query(
+            LibraryStore::new(registry_path),
+            Arc::new(MemoryCredentialVault::default()),
+            Some(&[membership_id]),
+        )
+        .expect("admit local Library");
+        let frontmatter_source_id = admitted.members[0]
+            .sources
+            .iter()
+            .find(|source| source.source.id().as_str() == "frontmatter")
+            .map(|source| source.source_id)
+            .expect("frontmatter source");
+        let filesystem_source_id = admitted.members[0]
+            .sources
+            .iter()
+            .find(|source| source.source.id().as_str() == "filesystem")
+            .map(|source| source.source_id)
+            .expect("filesystem source");
+
+        let answer = crate::library_query::execute_registered_library_query(
+            catdb_api_types::EntityQueryRequest {
+                workspace_id: uuid::Uuid::new_v4(),
+                catalog_revision_id: None,
+                schema_version_id: None,
+                entity: "document.Document".to_string(),
+                select: vec![
+                    "title".to_string(),
+                    "author".to_string(),
+                    "path".to_string(),
+                    "modifiedAt".to_string(),
+                    "size".to_string(),
+                    "body".to_string(),
+                ],
+                filters: Vec::new(),
+                order_by: Vec::new(),
+                source_ids: Some(vec![membership_id]),
+                max_staleness_ms: None,
+                require_complete: Some(false),
+                page_size: 1_000,
+                limit: 1_000,
+                query_id: None,
+                cursor: None,
+            },
+            admitted.members,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("healthy filesystem and Git answers survive malformed frontmatter");
+
+        assert!(!answer.answer.rows.is_empty());
+        assert_eq!(
+            answer.answer.completeness,
+            catdb_api_types::Completeness::Partial {
+                excluded_source_ids: vec![frontmatter_source_id],
+            }
+        );
+        assert_eq!(
+            answer
+                .answer
+                .sources
+                .iter()
+                .find(|source| source.source_id == filesystem_source_id)
+                .map(|source| source.outcome),
+            Some(catdb_api_types::SourceOutcome::Ran)
+        );
+        assert_eq!(
+            answer
+                .answer
+                .sources
+                .iter()
+                .find(|source| source.source_id == frontmatter_source_id)
+                .map(|source| source.outcome),
+            Some(catdb_api_types::SourceOutcome::SourceFailed)
+        );
+    }
+
+    #[tokio::test]
     async fn missing_cloud_credential_is_a_typed_partial_source_not_a_library_abort() {
         let temp = tempdir().expect("temporary directory");
         let local_root = temp.path().join("healthy");

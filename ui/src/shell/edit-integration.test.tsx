@@ -170,6 +170,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     return {
       version: 4,
       sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
+      cloud_sources: [],
       cleanup: { kind: 'complete' as const },
     };
   });
