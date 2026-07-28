@@ -24,6 +24,8 @@ const MAX_ZIP_COMPRESSED_BYTES = 768 * 1024 * 1024;
 const MAX_ZIP_UNCOMPRESSED_BYTES = 1536 * 1024 * 1024;
 const MAX_ZIP_SYMLINK_TARGET_BYTES = 4096;
 const DEFAULT_INSPECTION_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
+const ANDROID_APPLICATION_LIBRARY_PATH =
+  'base/lib/arm64-v8a/libmdreader_app_lib.so';
 
 interface ZipEntry {
   path: string;
@@ -756,6 +758,7 @@ function bundletoolValue(
 function verifyAndroidJarSignatureCoverage(
   entries: readonly ZipEntry[],
   output: string,
+  soleSignerCertificateSha256: string,
 ): void {
   if (!/\bjar verified\.\s*$/m.test(output)) {
     throw new Error('Android App Bundle JAR signature was not verified');
@@ -803,10 +806,43 @@ function verifyAndroidJarSignatureCoverage(
     const record = inventory.get(entry.path);
     if (!record?.status.includes('s') || record.status.includes('?')) {
       throw new Error(
-        `Android App Bundle entry lacks signature coverage: ${JSON.stringify(entry.path)}`,
+        `Android App Bundle entry lacks signature coverage by sole signer ${soleSignerCertificateSha256}: ${JSON.stringify(entry.path)}`,
       );
     }
   }
+}
+
+function soleAndroidJarSignerCertificate(output: string): string {
+  const signers = [...output.matchAll(/^Signer #(\d+):\s*$/gm)];
+  if (signers.length !== 1 || signers[0]![1] !== '1') {
+    throw new Error('Android App Bundle must have exactly one JAR signer');
+  }
+
+  const signer = signers[0]!;
+  const signerBody = output.slice(
+    (signer.index ?? 0) + signer[0].length,
+  );
+  const certificates = [
+    ...signerBody.matchAll(/^Certificate #(\d+):\s*$/gm),
+  ];
+  if (certificates.length === 0 || certificates[0]![1] !== '1') {
+    throw new Error(
+      'Android App Bundle sole signer leaf certificate is missing',
+    );
+  }
+  const leaf = certificates[0]!;
+  const leafStart = (leaf.index ?? 0) + leaf[0].length;
+  const leafEnd = certificates[1]?.index ?? signerBody.length;
+  const leafBody = signerBody.slice(leafStart, leafEnd);
+  const fingerprints = [
+    ...leafBody.matchAll(/^\s*SHA256:\s*([0-9A-Fa-f:]{64,95})\s*$/gm),
+  ];
+  if (fingerprints.length !== 1) {
+    throw new Error(
+      'Android App Bundle sole signer certificate SHA-256 is missing or ambiguous',
+    );
+  }
+  return normalizeFingerprint(fingerprints[0]![1]!);
 }
 
 /**
@@ -849,6 +885,21 @@ export async function inspectAndroidBetaArtifact(
     throw new Error('Android App Bundle has no JAR signing block');
   }
 
+  const certificateSha256 = soleAndroidJarSignerCertificate(
+    run('keytool', [
+      '-J-Duser.language=en',
+      '-J-Duser.country=US',
+      '-printcert',
+      '-jarfile',
+      toolArtifactPath,
+    ]),
+  );
+  requireEqual(
+    certificateSha256,
+    normalizeFingerprint(expected.certificateSha256),
+    'Android upload certificate SHA-256',
+  );
+
   run('java', ['-jar', bundletoolJarPath, 'validate', `--bundle=${toolArtifactPath}`]);
   verifyAndroidJarSignatureCoverage(
     entries,
@@ -861,6 +912,7 @@ export async function inspectAndroidBetaArtifact(
       '-certs',
       toolArtifactPath,
     ]),
+    certificateSha256,
   );
 
   const packageId = bundletoolValue(
@@ -900,42 +952,29 @@ export async function inspectAndroidBetaArtifact(
       `Android beta architecture must be exactly arm64-v8a; found ${architectures.join(', ')}`,
     );
   }
-  if (
-    !nativeLibraries.some((entry) => {
-      const body = readZipEntry(
+  const applicationLibrary = nativeLibraries.find(
+    (entry) => entry.path === ANDROID_APPLICATION_LIBRARY_PATH,
+  );
+  if (!applicationLibrary) {
+    throw new Error(
+      `Android application library is missing: ${ANDROID_APPLICATION_LIBRARY_PATH}`,
+    );
+  }
+  try {
+    verifyReleaseIdentity(
+      readZipEntry(
         toolArtifactPath,
-        entry.path,
+        applicationLibrary.path,
         toolTimeoutMs,
         options.artifactDescriptor,
-      );
-      try {
-        verifyReleaseIdentity(body, expected.sourceCommit);
-        return true;
-      } catch {
-        return false;
-      }
-    })
-  ) {
-    throw new Error('Android native libraries do not carry the expected release identity');
+      ),
+      expected.sourceCommit,
+    );
+  } catch {
+    throw new Error(
+      `${ANDROID_APPLICATION_LIBRARY_PATH} does not carry the expected release identity`,
+    );
   }
-
-  const certificateOutput = run('keytool', [
-    '-printcert',
-    '-jarfile',
-    toolArtifactPath,
-  ]);
-  const certificate = certificateOutput.match(
-    /SHA256:\s*([0-9A-Fa-f:]{64,95})/,
-  )?.[1];
-  if (!certificate) {
-    throw new Error('Android package signer certificate SHA-256 is missing');
-  }
-  const certificateSha256 = normalizeFingerprint(certificate);
-  requireEqual(
-    certificateSha256,
-    normalizeFingerprint(expected.certificateSha256),
-    'Android upload certificate SHA-256',
-  );
 
   return {
     platform: 'android',

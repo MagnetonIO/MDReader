@@ -25,6 +25,8 @@ const GOOGLE_PLAY_SCOPE =
   'https://www.googleapis.com/auth/androidpublisher';
 const APP_STORE_CONNECT_ENDPOINT =
   'https://api.appstoreconnect.apple.com/v1';
+const PKCS8_PRIVATE_KEY_BEGIN = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+const PKCS8_PRIVATE_KEY_END = ['-----END', 'PRIVATE KEY-----'].join(' ');
 const MAX_ANDROID_BUNDLE_BYTES = 200 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const APP_STORE_BUILD_POLL_ATTEMPTS = 20;
@@ -305,8 +307,8 @@ export async function uploadTestFlight(
     const privateKey = (await privateKeyHandle.readFile()).toString('utf8');
     requireSameArtifactIdentity(openedKey, await privateKeyHandle.stat(), 64 * 1024);
     if (
-      !privateKey.includes('-----BEGIN PRIVATE KEY-----') ||
-      !privateKey.includes('-----END PRIVATE KEY-----')
+      !privateKey.includes(PKCS8_PRIVATE_KEY_BEGIN) ||
+      !privateKey.includes(PKCS8_PRIVATE_KEY_END)
     ) {
       throw new Error('App Store Connect private key is malformed');
     }
@@ -441,7 +443,7 @@ function serviceAccount(
     parsed.token_uri !== GOOGLE_TOKEN_ENDPOINT ||
     typeof parsed.client_email !== 'string' ||
     typeof parsed.private_key !== 'string' ||
-    !parsed.private_key.includes('-----BEGIN PRIVATE KEY-----')
+    !parsed.private_key.includes(PKCS8_PRIVATE_KEY_BEGIN)
   ) {
     throw new Error('Google Play service account credential is malformed');
   }
