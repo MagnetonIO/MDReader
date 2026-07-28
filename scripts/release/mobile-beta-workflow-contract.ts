@@ -41,6 +41,7 @@ const REQUIRED_STEPS: Record<string, readonly string[]> = {
   'publish-ios-beta': [
     'checkout-source',
     'setup-node',
+    'install-dependencies',
     'download-ios-handoff',
     'verify-ios-handoff',
     'sign-ios',
@@ -51,6 +52,7 @@ const REQUIRED_STEPS: Record<string, readonly string[]> = {
   'publish-android-beta': [
     'checkout-source',
     'setup-node',
+    'install-dependencies',
     'setup-java',
     'download-android-handoff',
     'verify-android-handoff',
@@ -184,6 +186,16 @@ export function validateMobileBetaWorkflow(document: unknown): void {
     if (!scalar(job.if, `${name}.if`).includes('inputs.publish == true')) {
       throw new Error(`${name} must be disabled unless publishing is explicit`);
     }
+    requireRun(indexed.get(name)!, 'install-dependencies', [
+      'corepack enable',
+      'pnpm install --frozen-lockfile',
+    ]);
+  }
+  if (
+    serialized(jobs.prepare).includes('MDREADER_GOOGLE_PLAY_CLOSED_TRACK') ||
+    serialized(jobs.prepare).includes('google_closed_track')
+  ) {
+    throw new Error('Google Play track may only resolve inside the protected publisher');
   }
 
   const iosBuild = indexed.get('build-ios-unsigned')!;
@@ -205,7 +217,25 @@ export function validateMobileBetaWorkflow(document: unknown): void {
     'inspect-ios',
     '--snapshot',
     '--manifest',
+    '--provisioning-profile-sha256',
   ]);
+  const profileEnvironment = mapping(
+    indexed.get('publish-ios-beta')!.get('inspect-ios')!.env,
+    'inspect-ios.env',
+  );
+  exactKeys(
+    profileEnvironment,
+    ['IOS_PROVISIONING_PROFILE_SHA256'],
+    'inspect-ios.env',
+  );
+  if (
+    profileEnvironment.IOS_PROVISIONING_PROFILE_SHA256 !==
+    '${{ vars.MDREADER_IOS_PROVISIONING_PROFILE_SHA256 }}'
+  ) {
+    throw new Error(
+      'iOS publisher must use the protected reviewed provisioning-profile digest',
+    );
+  }
   requireRun(indexed.get('publish-ios-beta')!, 'upload-testflight', [
     'upload-ios',
     '--manifest',
@@ -227,11 +257,37 @@ export function validateMobileBetaWorkflow(document: unknown): void {
     'inspect-android',
     '--snapshot',
     '--manifest',
+    '--closed-track "$GOOGLE_CLOSED_TRACK"',
   ]);
+  const playTrackEnvironment = mapping(
+    indexed.get('publish-android-beta')!.get('inspect-android')!.env,
+    'inspect-android.env',
+  );
+  exactKeys(playTrackEnvironment, ['GOOGLE_CLOSED_TRACK'], 'inspect-android.env');
+  if (
+    playTrackEnvironment.GOOGLE_CLOSED_TRACK !==
+    '${{ vars.MDREADER_GOOGLE_PLAY_CLOSED_TRACK }}'
+  ) {
+    throw new Error(
+      'Google Play publisher must use the protected reviewed closed track',
+    );
+  }
   requireRun(indexed.get('publish-android-beta')!, 'upload-google-play', [
     'upload-android',
     '--manifest',
   ]);
+  if (
+    ['--closed-track', '--version-code', '--release-name'].some((option) =>
+      scalar(
+      indexed.get('publish-android-beta')!.get('upload-google-play')!.run,
+      'upload-google-play.run',
+      ).includes(option),
+    )
+  ) {
+    throw new Error(
+      'Google Play upload must derive its track and release identity from the manifest',
+    );
+  }
 
   const source = serialized(root);
   for (const forbidden of [

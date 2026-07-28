@@ -39,7 +39,6 @@ jobs:
       appstore_api_key_id: ${{ steps.authorize-source-and-release.outputs.appstore_api_key_id }}
       appstore_api_issuer_id: ${{ steps.authorize-source-and-release.outputs.appstore_api_issuer_id }}
       google_service_account_email: ${{ steps.authorize-source-and-release.outputs.google_service_account_email }}
-      google_closed_track: ${{ steps.authorize-source-and-release.outputs.google_closed_track }}
     steps:
       - name: Checkout exact release source
         id: checkout-source
@@ -66,7 +65,6 @@ jobs:
           APPSTORE_API_KEY_ID: ${{ vars.MDREADER_APPSTORE_API_KEY_ID }}
           APPSTORE_API_ISSUER_ID: ${{ vars.MDREADER_APPSTORE_API_ISSUER_ID }}
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ vars.MDREADER_GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL }}
-          GOOGLE_CLOSED_TRACK: ${{ vars.MDREADER_GOOGLE_PLAY_CLOSED_TRACK }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/main
@@ -104,10 +102,6 @@ jobs:
             /^[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com$/,
             'Google service-account identity',
           );
-          const track = requireMatch(env.GOOGLE_CLOSED_TRACK, /^[a-z][a-z0-9-]{2,63}$/, 'Google closed track');
-          if (new Set(['production', 'beta', 'alpha', 'qa', 'internal']).has(track)) {
-            throw new Error('Google Play track must be a reviewed custom closed track');
-          }
           const outputs = {
             source_commit: env.GITHUB_SHA,
             version,
@@ -119,7 +113,6 @@ jobs:
             appstore_api_key_id: apiKey,
             appstore_api_issuer_id: issuer,
             google_service_account_email: serviceEmail,
-            google_closed_track: track,
           };
           fs.appendFileSync(env.GITHUB_OUTPUT, `${Object.entries(outputs).map(([key, value]) => `${key}=${value}`).join('\n')}\n`);
           NODE
@@ -324,6 +317,12 @@ jobs:
         with:
           node-version: 24.18.0
 
+      - name: Install immutable JavaScript dependencies
+        id: install-dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
       - name: Download exact unsigned iOS handoff
         id: download-ios-handoff
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -353,6 +352,8 @@ jobs:
 
       - name: Inspect and retain the signed TestFlight candidate
         id: inspect-ios
+        env:
+          IOS_PROVISIONING_PROFILE_SHA256: ${{ vars.MDREADER_IOS_PROVISIONING_PROFILE_SHA256 }}
         run: |
           set -euo pipefail
           corepack enable
@@ -364,7 +365,8 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --build-number "${{ needs.prepare.outputs.build_number }}" \
             --team-id "${{ needs.prepare.outputs.apple_team_id }}" \
-            --certificate-sha256 "${{ needs.prepare.outputs.ios_certificate_sha256 }}"
+            --certificate-sha256 "${{ needs.prepare.outputs.ios_certificate_sha256 }}" \
+            --provisioning-profile-sha256 "$IOS_PROVISIONING_PROFILE_SHA256"
 
       - name: Upload only the manifest-bound retained IPA
         id: upload-testflight
@@ -417,6 +419,12 @@ jobs:
         with:
           node-version: 24.18.0
 
+      - name: Install immutable JavaScript dependencies
+        id: install-dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
       - name: Set up pinned Java
         id: setup-java
         uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
@@ -466,6 +474,8 @@ jobs:
 
       - name: Inspect and retain the signed Google Play candidate
         id: inspect-android
+        env:
+          GOOGLE_CLOSED_TRACK: ${{ vars.MDREADER_GOOGLE_PLAY_CLOSED_TRACK }}
         run: |
           set -euo pipefail
           corepack enable
@@ -477,6 +487,7 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --build-number "${{ needs.prepare.outputs.build_number }}" \
             --certificate-sha256 "${{ needs.prepare.outputs.android_certificate_sha256 }}" \
+            --closed-track "$GOOGLE_CLOSED_TRACK" \
             --bundletool target/mobile-beta/tools/bundletool-all-1.18.3.jar
 
       - name: Upload only the manifest-bound retained AAB
@@ -494,9 +505,6 @@ jobs:
             --manifest target/mobile-beta/android-signed/mobile-beta-manifest.json \
             --service-account-file "$credential_path" \
             --service-account-email "${{ needs.prepare.outputs.google_service_account_email }}" \
-            --closed-track "${{ needs.prepare.outputs.google_closed_track }}" \
-            --version-code "${{ needs.prepare.outputs.build_number }}" \
-            --release-name "MDReader ${{ needs.prepare.outputs.version }} (${{ needs.prepare.outputs.build_number }})" \
             --receipt target/mobile-beta/android-signed/mobile-beta-receipt.json
 
       - name: Retain signed Android evidence

@@ -19,6 +19,17 @@ export type MobileBetaSigningIdentity =
       certificateSha256: string;
     };
 
+export interface MobileBetaIosAuthority {
+  provisioningProfileUuid: string;
+  provisioningProfileSha256: string;
+  profileEntitlementsSha256: string;
+  signedEntitlementsSha256: string;
+}
+
+export interface MobileBetaAndroidAuthority {
+  googlePlayTrack: string;
+}
+
 export interface MobileBetaArtifactEvidence {
   platform: MobileBetaPlatform;
   channel: MobileBetaChannel;
@@ -29,6 +40,8 @@ export interface MobileBetaArtifactEvidence {
   packageId: string;
   architectures: string[];
   signingIdentity: MobileBetaSigningIdentity;
+  iosAuthority?: MobileBetaIosAuthority;
+  androidAuthority?: MobileBetaAndroidAuthority;
 }
 
 export interface MobileBetaExpectedAuthority {
@@ -37,10 +50,11 @@ export interface MobileBetaExpectedAuthority {
   expectedBuildNumber: string;
   expectedAppleTeamId?: string;
   expectedSigningCertificateSha256: string;
+  expectedGooglePlayTrack?: string;
 }
 
 export interface MobileBetaManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   platform: MobileBetaPlatform;
   channel: MobileBetaChannel;
   sourceCommit: string;
@@ -49,6 +63,8 @@ export interface MobileBetaManifest {
   packageId: typeof MOBILE_PRODUCTION_PACKAGE_ID;
   architectures: string[];
   signingIdentity: MobileBetaSigningIdentity;
+  iosAuthority?: MobileBetaIosAuthority;
+  androidAuthority?: MobileBetaAndroidAuthority;
   artifact: {
     fileName: string;
     bytes: number;
@@ -60,6 +76,11 @@ export interface MobileBetaArtifactSnapshot {
   path: string;
   bytes: number;
   sha256: string;
+}
+
+export interface OpenedMobileBetaArtifact {
+  handle: FileHandle;
+  identity: Stats;
 }
 
 const COPY_BUFFER_BYTES = 1024 * 1024;
@@ -149,6 +170,20 @@ function validatePlatform(evidence: MobileBetaArtifactEvidence): void {
     if (evidence.signingIdentity.kind !== 'apple-distribution') {
       throw new Error('an iOS beta candidate must use an Apple distribution signer');
     }
+    const iosAuthority = evidence.iosAuthority;
+    if (
+      !iosAuthority ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+        iosAuthority.provisioningProfileUuid,
+      ) ||
+      ![
+        iosAuthority.provisioningProfileSha256,
+        iosAuthority.profileEntitlementsSha256,
+        iosAuthority.signedEntitlementsSha256,
+      ].every((digest) => /^[0-9a-f]{64}$/.test(digest))
+    ) {
+      throw new Error('iOS profile and entitlement authority is missing or malformed');
+    }
     return;
   }
 
@@ -171,6 +206,17 @@ function validatePlatform(evidence: MobileBetaArtifactEvidence): void {
   }
 }
 
+function validateGooglePlayTrack(value: string | undefined): string {
+  if (
+    !value ||
+    !/^[a-z][a-z0-9-]{2,63}$/.test(value) ||
+    new Set(['production', 'beta', 'alpha', 'qa', 'internal']).has(value)
+  ) {
+    throw new Error('reviewed Google Play closed track is missing or malformed');
+  }
+  return value;
+}
+
 /**
  * Builds the immutable manifest for one already-inspected, signed mobile
  * package. The artifact itself is hashed after identity checks so the manifest
@@ -179,6 +225,7 @@ function validatePlatform(evidence: MobileBetaArtifactEvidence): void {
 export async function createMobileBetaManifest(
   evidence: MobileBetaArtifactEvidence,
   authority: MobileBetaExpectedAuthority,
+  openedArtifact?: OpenedMobileBetaArtifact,
 ): Promise<MobileBetaManifest> {
   validateCommon(evidence, authority);
   validatePlatform(evidence);
@@ -195,29 +242,40 @@ export async function createMobileBetaManifest(
       'artifact Apple team identifier',
     );
   }
+  const googlePlayTrack =
+    evidence.platform === 'android'
+      ? validateGooglePlayTrack(authority.expectedGooglePlayTrack)
+      : undefined;
 
-  const pathIdentity = await lstat(evidence.artifactPath);
-  if (!pathIdentity.isFile() || pathIdentity.isSymbolicLink()) {
-    throw new Error('mobile beta artifact must be a regular, non-symlink file');
-  }
-  const artifact = await open(
-    evidence.artifactPath,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  );
   let identity: MobileBetaArtifactSnapshot;
-  try {
-    const openedIdentity = await artifact.stat();
-    requireSameFileIdentity(pathIdentity, openedIdentity);
-    identity = await hashOpenedMobileBetaArtifact(artifact, openedIdentity);
-  } finally {
-    await artifact.close();
+  if (openedArtifact) {
+    identity = await hashOpenedMobileBetaArtifact(
+      openedArtifact.handle,
+      openedArtifact.identity,
+    );
+  } else {
+    const pathIdentity = await lstat(evidence.artifactPath);
+    if (!pathIdentity.isFile() || pathIdentity.isSymbolicLink()) {
+      throw new Error('mobile beta artifact must be a regular, non-symlink file');
+    }
+    const artifact = await open(
+      evidence.artifactPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      const openedIdentity = await artifact.stat();
+      requireSameFileIdentity(pathIdentity, openedIdentity);
+      identity = await hashOpenedMobileBetaArtifact(artifact, openedIdentity);
+    } finally {
+      await artifact.close();
+    }
   }
   if (identity.bytes <= 0) {
     throw new Error('mobile beta artifact is empty');
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     platform: evidence.platform,
     channel: evidence.channel,
     sourceCommit: evidence.sourceCommit,
@@ -226,6 +284,13 @@ export async function createMobileBetaManifest(
     packageId: MOBILE_PRODUCTION_PACKAGE_ID,
     architectures: [...evidence.architectures],
     signingIdentity: { ...evidence.signingIdentity },
+    ...(evidence.platform === 'ios'
+      ? { iosAuthority: { ...evidence.iosAuthority! } }
+      : {
+          androidAuthority: {
+            googlePlayTrack: googlePlayTrack!,
+          },
+        }),
     artifact: {
       fileName: basename(evidence.artifactPath),
       bytes: identity.bytes,

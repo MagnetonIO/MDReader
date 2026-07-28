@@ -373,7 +373,7 @@ export async function uploadTestFlight(
       privateKeySnapshot.sha256,
       64 * 1024,
     );
-    const providerUpload = parseJsonObject(
+    parseJsonObject(
       run('xcrun', [
         'altool',
         '--upload-app',
@@ -414,7 +414,10 @@ export async function uploadTestFlight(
       privateKeySnapshot.sha256,
       64 * 1024,
     );
-    return { providerUpload, appStoreConnect };
+    return {
+      submission: { tool: 'altool', completed: true },
+      appStoreConnect,
+    };
   } finally {
     await artifact?.handle.close();
     await privateKeyHandle.close();
@@ -1012,6 +1015,7 @@ export async function uploadGooglePlayClosedBeta(
       throw new Error('Google Play returned an invalid fresh read-back edit');
     }
     const readBackPath = `${editsUrl}/${encodeURIComponent(readBackEditId)}`;
+    let readBackFailure: unknown;
     try {
       const readBackTrack = await responseJson(
         await fetcher(
@@ -1045,7 +1049,11 @@ export async function uploadGooglePlayClosedBeta(
           'Google Play closed-track read-back does not match the uploaded release',
         );
       }
-    } finally {
+    } catch (error) {
+      readBackFailure = error;
+    }
+    let cleanupFailure: unknown;
+    try {
       const cleanup = await fetcher(readBackPath, {
         method: 'DELETE',
         headers: { authorization: `Bearer ${token}` },
@@ -1054,7 +1062,11 @@ export async function uploadGooglePlayClosedBeta(
       if (!cleanup.ok) {
         throw new Error('Google Play fresh read-back edit cleanup failed');
       }
+    } catch (error) {
+      cleanupFailure = error;
     }
+    if (readBackFailure) throw readBackFailure;
+    if (cleanupFailure) throw cleanupFailure;
     return {
       editId,
       packageId: MOBILE_PRODUCTION_PACKAGE_ID,

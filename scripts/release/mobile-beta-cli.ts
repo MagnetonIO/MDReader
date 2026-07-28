@@ -157,6 +157,7 @@ function parseBoundManifest(
     'signingIdentity',
     'sourceCommit',
     'version',
+    ...(manifest.platform === 'ios' ? ['iosAuthority'] : ['androidAuthority']),
   ].sort();
   const artifactKeys = Object.keys(manifest.artifact).sort();
   const signingKeys = Object.keys(manifest.signingIdentity).sort();
@@ -164,12 +165,24 @@ function parseBoundManifest(
     manifest.signingIdentity.kind === 'apple-distribution'
       ? ['certificateSha256', 'kind', 'teamId']
       : ['certificateSha256', 'kind'];
+  const iosAuthorityKeys =
+    manifest.iosAuthority &&
+    typeof manifest.iosAuthority === 'object' &&
+    !Array.isArray(manifest.iosAuthority)
+      ? Object.keys(manifest.iosAuthority).sort()
+      : [];
+  const androidAuthorityKeys =
+    manifest.androidAuthority &&
+    typeof manifest.androidAuthority === 'object' &&
+    !Array.isArray(manifest.androidAuthority)
+      ? Object.keys(manifest.androidAuthority).sort()
+      : [];
   if (
     JSON.stringify(rootKeys) !== JSON.stringify(expectedRootKeys) ||
     JSON.stringify(artifactKeys) !==
       JSON.stringify(['bytes', 'fileName', 'sha256']) ||
     JSON.stringify(signingKeys) !== JSON.stringify(expectedSigningKeys) ||
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     !['ios', 'android'].includes(manifest.platform) ||
     !['testflight', 'google-play-closed'].includes(manifest.channel) ||
     manifest.packageId !== 'dev.mdreader.app' ||
@@ -200,7 +213,23 @@ function parseBoundManifest(
         !/^[A-Z0-9]{10}$/.test(manifest.signingIdentity.teamId) ||
         !/^[0-9a-f]{64}$/.test(
           manifest.signingIdentity.certificateSha256,
-        ))) ||
+        ) ||
+        !manifest.iosAuthority ||
+        JSON.stringify(iosAuthorityKeys) !==
+          JSON.stringify([
+            'profileEntitlementsSha256',
+            'provisioningProfileSha256',
+            'provisioningProfileUuid',
+            'signedEntitlementsSha256',
+          ]) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          manifest.iosAuthority.provisioningProfileUuid,
+        ) ||
+        ![
+          manifest.iosAuthority.provisioningProfileSha256,
+          manifest.iosAuthority.profileEntitlementsSha256,
+          manifest.iosAuthority.signedEntitlementsSha256,
+        ].every((digest) => /^[0-9a-f]{64}$/.test(digest)))) ||
     (manifest.platform === 'android' &&
       (manifest.channel !== 'google-play-closed' ||
         manifest.architectures.length !== 1 ||
@@ -208,6 +237,15 @@ function parseBoundManifest(
         manifest.signingIdentity.kind !== 'google-play-upload' ||
         !/^[0-9a-f]{64}$/.test(
           manifest.signingIdentity.certificateSha256,
+        ) ||
+        !manifest.androidAuthority ||
+        JSON.stringify(androidAuthorityKeys) !==
+          JSON.stringify(['googlePlayTrack']) ||
+        !/^[a-z][a-z0-9-]{2,63}$/.test(
+          manifest.androidAuthority.googlePlayTrack,
+        ) ||
+        new Set(['production', 'beta', 'alpha', 'qa', 'internal']).has(
+          manifest.androidAuthority.googlePlayTrack,
         )))
   ) {
     throw new Error('mobile beta manifest platform authority is inconsistent');
@@ -229,6 +267,117 @@ export async function readMobileBetaUploadManifest(path: string): Promise<{
   };
 }
 
+function exactReceiptObject(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} provider receipt is malformed`);
+  }
+  const object = value as Record<string, unknown>;
+  if (
+    JSON.stringify(Object.keys(object).sort()) !==
+    JSON.stringify([...keys].sort())
+  ) {
+    throw new Error(`${label} provider receipt contains unreviewed fields`);
+  }
+  return object;
+}
+
+function normalizedProviderReceipt(
+  manifest: MobileBetaManifest,
+  value: unknown,
+): Record<string, unknown> | null {
+  if (value === null) return null;
+  if (manifest.platform === 'ios') {
+    const receipt = exactReceiptObject(
+      value,
+      ['submission', 'appStoreConnect'],
+      'TestFlight',
+    );
+    const submission = exactReceiptObject(
+      receipt.submission,
+      ['tool', 'completed'],
+      'TestFlight submission',
+    );
+    const readBack = exactReceiptObject(
+      receipt.appStoreConnect,
+      [
+        'appId',
+        'buildId',
+        'preReleaseVersionId',
+        'processingState',
+        'betaGroupId',
+        'verified',
+      ],
+      'App Store Connect read-back',
+    );
+    if (
+      submission.tool !== 'altool' ||
+      submission.completed !== true ||
+      readBack.processingState !== 'VALID' ||
+      readBack.verified !== true ||
+      ![
+        readBack.appId,
+        readBack.buildId,
+        readBack.preReleaseVersionId,
+        readBack.betaGroupId,
+      ].every(
+        (item) =>
+          typeof item === 'string' &&
+          /^[A-Za-z0-9._-]{1,128}$/.test(item),
+      )
+    ) {
+      throw new Error('TestFlight provider receipt is malformed');
+    }
+    return {
+      submission: { tool: 'altool', completed: true },
+      appStoreConnect: {
+        appId: readBack.appId,
+        buildId: readBack.buildId,
+        preReleaseVersionId: readBack.preReleaseVersionId,
+        processingState: 'VALID',
+        betaGroupId: readBack.betaGroupId,
+        verified: true,
+      },
+    };
+  }
+
+  const receipt = exactReceiptObject(
+    value,
+    [
+      'editId',
+      'packageId',
+      'track',
+      'versionCode',
+      'committed',
+      'providerVerified',
+    ],
+    'Google Play',
+  );
+  if (
+    !manifest.androidAuthority ||
+    typeof receipt.editId !== 'string' ||
+    !/^[A-Za-z0-9._-]{1,128}$/.test(receipt.editId) ||
+    receipt.packageId !== manifest.packageId ||
+    receipt.track !== manifest.androidAuthority?.googlePlayTrack ||
+    receipt.versionCode !== manifest.buildNumber ||
+    receipt.committed !== true ||
+    receipt.providerVerified !== true
+  ) {
+    throw new Error('Google Play provider receipt is malformed');
+  }
+  return {
+    editId: receipt.editId,
+    packageId: manifest.packageId,
+    track: manifest.androidAuthority.googlePlayTrack,
+    versionCode: manifest.buildNumber,
+    committed: true,
+    providerVerified: true,
+  };
+}
+
 export function createMobileBetaUploadReceipt(
   manifestPath: string,
   manifestSha256: string,
@@ -239,7 +388,7 @@ export function createMobileBetaUploadReceipt(
     throw new Error('mobile beta manifest receipt digest is invalid');
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'succeeded',
     platform: manifest.platform,
     channel: manifest.channel,
@@ -252,7 +401,7 @@ export function createMobileBetaUploadReceipt(
       fileName: basename(manifestPath),
       sha256: manifestSha256,
     },
-    providerReceipt,
+    providerReceipt: normalizedProviderReceipt(manifest, providerReceipt),
   };
 }
 
@@ -354,8 +503,8 @@ async function inspect(platform: 'ios' | 'android', args: string[]): Promise<voi
   exactOptions(
     values,
     platform === 'ios'
-      ? [...common, '--team-id']
-      : [...common, '--bundletool'],
+      ? [...common, '--team-id', '--provisioning-profile-sha256']
+      : [...common, '--bundletool', '--closed-track'],
   );
   const sourceCommit = required(values, '--source-commit');
   const version = required(values, '--version');
@@ -366,44 +515,78 @@ async function inspect(platform: 'ios' | 'android', args: string[]): Promise<voi
     required(values, '--artifact'),
     snapshot,
   );
-  const evidence =
-    platform === 'ios'
-      ? await inspectIosBetaArtifact(snapshot, {
-          sourceCommit,
-          version,
-          buildNumber,
-          teamId: required(values, '--team-id'),
-          certificateSha256,
-        })
-      : await (async () => {
-          const bundletool = required(values, '--bundletool');
-          await verifyBundletool(bundletool);
-          return inspectAndroidBetaArtifact(
+  const retainedPathIdentity = await lstat(snapshot);
+  const inspectedArtifact = await open(
+    snapshot,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const inspectedIdentity = await inspectedArtifact.stat();
+    requireSameMetadataFile(
+      retainedPathIdentity,
+      inspectedIdentity,
+      4 * 1024 * 1024 * 1024,
+    );
+    const evidence =
+      platform === 'ios'
+        ? await inspectIosBetaArtifact(
             snapshot,
-            bundletool,
             {
               sourceCommit,
               version,
               buildNumber,
+              teamId: required(values, '--team-id'),
               certificateSha256,
+              provisioningProfileSha256: required(
+                values,
+                '--provisioning-profile-sha256',
+              ).toLowerCase(),
             },
-          );
-        })();
-  const manifest = await createMobileBetaManifest(evidence, {
-    expectedSourceCommit: sourceCommit,
-    expectedVersion: version,
-    expectedBuildNumber: buildNumber,
-    expectedAppleTeamId:
-      platform === 'ios' ? required(values, '--team-id') : undefined,
-    expectedSigningCertificateSha256: certificateSha256,
-  });
-  if (
-    manifest.artifact.bytes !== retained.bytes ||
-    manifest.artifact.sha256 !== retained.sha256
-  ) {
-    throw new Error('inspection and manifest did not consume the retained artifact');
+            undefined,
+            { artifactDescriptor: inspectedArtifact.fd },
+          )
+        : await (async () => {
+            const bundletool = required(values, '--bundletool');
+            await verifyBundletool(bundletool);
+            return inspectAndroidBetaArtifact(
+              snapshot,
+              bundletool,
+              {
+                sourceCommit,
+                version,
+                buildNumber,
+                certificateSha256,
+              },
+              undefined,
+              { artifactDescriptor: inspectedArtifact.fd },
+            );
+          })();
+    const manifest = await createMobileBetaManifest(
+      evidence,
+      {
+        expectedSourceCommit: sourceCommit,
+        expectedVersion: version,
+        expectedBuildNumber: buildNumber,
+        expectedAppleTeamId:
+          platform === 'ios' ? required(values, '--team-id') : undefined,
+        expectedSigningCertificateSha256: certificateSha256,
+        expectedGooglePlayTrack:
+          platform === 'android'
+            ? required(values, '--closed-track')
+            : undefined,
+      },
+      { handle: inspectedArtifact, identity: inspectedIdentity },
+    );
+    if (
+      manifest.artifact.bytes !== retained.bytes ||
+      manifest.artifact.sha256 !== retained.sha256
+    ) {
+      throw new Error('inspection and manifest did not consume the retained artifact');
+    }
+    await writeMobileBetaManifest(required(values, '--manifest'), manifest);
+  } finally {
+    await inspectedArtifact.close();
   }
-  await writeMobileBetaManifest(required(values, '--manifest'), manifest);
 }
 
 async function uploadIos(args: string[]): Promise<void> {
@@ -448,9 +631,6 @@ async function uploadAndroid(args: string[]): Promise<void> {
     '--manifest',
     '--service-account-file',
     '--service-account-email',
-    '--closed-track',
-    '--version-code',
-    '--release-name',
     '--receipt',
   ]);
   const manifestPath = required(values, '--manifest');
@@ -482,9 +662,9 @@ async function uploadAndroid(args: string[]): Promise<void> {
           '--service-account-email',
         ),
         packageId: 'dev.mdreader.app',
-        closedTrack: required(values, '--closed-track'),
-        versionCode: required(values, '--version-code'),
-        releaseName: required(values, '--release-name'),
+        closedTrack: manifest.androidAuthority!.googlePlayTrack,
+        versionCode: manifest.buildNumber,
+        releaseName: `MDReader ${manifest.version} (${manifest.buildNumber})`,
       }),
   );
 }

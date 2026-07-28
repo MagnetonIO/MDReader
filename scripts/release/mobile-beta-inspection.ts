@@ -23,6 +23,7 @@ const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 768 * 1024 * 1024;
 const MAX_ZIP_COMPRESSED_BYTES = 768 * 1024 * 1024;
 const MAX_ZIP_UNCOMPRESSED_BYTES = 1536 * 1024 * 1024;
 const MAX_ZIP_SYMLINK_TARGET_BYTES = 4096;
+const DEFAULT_INSPECTION_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface ZipEntry {
   path: string;
@@ -41,6 +42,7 @@ interface IosExpected {
   buildNumber: string;
   teamId: string;
   certificateSha256: string;
+  provisioningProfileSha256: string;
 }
 
 interface AndroidExpected {
@@ -50,12 +52,59 @@ interface AndroidExpected {
   certificateSha256: string;
 }
 
-function runTool(command: string, args: readonly string[]): string {
+interface MobileBetaInspectionOptions {
+  toolTimeoutMs?: number;
+  artifactDescriptor?: number;
+}
+
+function isTimeout(error: Error | undefined): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+}
+
+export function createMobileBetaInspectionToolRunner(
+  timeoutMs: number,
+  artifactDescriptor?: number,
+): MobileBetaToolRunner {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('mobile package inspection timeout is invalid');
+  }
+  if (
+    artifactDescriptor !== undefined &&
+    (!Number.isSafeInteger(artifactDescriptor) ||
+      artifactDescriptor <= 2 ||
+      artifactDescriptor > 1024)
+  ) {
+    throw new Error('mobile package inspection descriptor is invalid');
+  }
+  return (command, args) =>
+    runTool(command, args, timeoutMs, artifactDescriptor);
+}
+
+function runTool(
+  command: string,
+  args: readonly string[],
+  timeoutMs: number,
+  artifactDescriptor?: number,
+): string {
+  const stdio: Array<'ignore' | 'pipe' | number> = [
+    'ignore',
+    'pipe',
+    'pipe',
+  ];
+  if (artifactDescriptor !== undefined) {
+    while (stdio.length <= artifactDescriptor) stdio.push('ignore');
+    stdio[artifactDescriptor] = artifactDescriptor;
+  }
   const result = spawnSync(command, [...args], {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio,
     maxBuffer: 16 * 1024 * 1024,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
   });
+  if (isTimeout(result.error)) {
+    throw new Error(`${basename(command)} timed out during mobile package inspection`);
+  }
   if (result.status !== 0) {
     const detail = `${result.stderr ?? ''}`.trim();
     throw new Error(
@@ -79,6 +128,37 @@ function normalizeFingerprint(value: string): string {
     throw new Error('signing certificate SHA-256 is missing or malformed');
   }
   return normalized;
+}
+
+function canonicalObject(value: Record<string, unknown>): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+  );
+}
+
+function requireExactEntitlements(
+  actual: Record<string, unknown>,
+  expected: Record<string, unknown>,
+  label: string,
+): string {
+  const unexpected = Object.keys(actual).filter(
+    (key) => !Object.hasOwn(expected, key),
+  );
+  if (unexpected.length > 0) {
+    throw new Error(
+      `unexpected ${label} entitlement(s): ${unexpected.sort().join(', ')}`,
+    );
+  }
+  const actualCanonical = canonicalObject(actual);
+  const expectedCanonical = canonicalObject(expected);
+  if (actualCanonical !== expectedCanonical) {
+    throw new Error(`${label} entitlements do not match the reviewed allowlist`);
+  }
+  return createHash('sha256').update(actualCanonical).digest('hex');
 }
 
 function expectedReleaseIdentity(sourceCommit: string): Buffer {
@@ -300,12 +380,31 @@ function validateIosArchiveLinks(
   }
 }
 
-function readZipEntry(artifactPath: string, entry: string): Buffer {
+function readZipEntry(
+  artifactPath: string,
+  entry: string,
+  timeoutMs: number,
+  artifactDescriptor?: number,
+): Buffer {
+  const stdio: Array<'ignore' | 'pipe' | number> = [
+    'ignore',
+    'pipe',
+    'pipe',
+  ];
+  if (artifactDescriptor !== undefined) {
+    while (stdio.length <= artifactDescriptor) stdio.push('ignore');
+    stdio[artifactDescriptor] = artifactDescriptor;
+  }
   const result = spawnSync('unzip', ['-p', artifactPath, entry], {
     encoding: 'buffer',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio,
     maxBuffer: 256 * 1024 * 1024,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
   });
+  if (isTimeout(result.error)) {
+    throw new Error('unzip timed out while reading a native package entry');
+  }
   if (result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
     throw new Error(`cannot read ZIP entry ${JSON.stringify(entry)}`);
   }
@@ -381,12 +480,25 @@ function stringField(
 export async function inspectIosBetaArtifact(
   artifactPath: string,
   expected: IosExpected,
-  run: MobileBetaToolRunner = runTool,
+  runner?: MobileBetaToolRunner,
+  options: MobileBetaInspectionOptions = {},
 ): Promise<MobileBetaArtifactEvidence> {
+  const toolTimeoutMs =
+    options.toolTimeoutMs ?? DEFAULT_INSPECTION_TOOL_TIMEOUT_MS;
+  const toolArtifactPath =
+    options.artifactDescriptor === undefined
+      ? artifactPath
+      : `/dev/fd/${options.artifactDescriptor}`;
+  const run =
+    runner ??
+    createMobileBetaInspectionToolRunner(
+      toolTimeoutMs,
+      options.artifactDescriptor,
+    );
   if (!artifactPath.toLowerCase().endsWith('.ipa')) {
     throw new Error('iOS beta artifact must be an IPA');
   }
-  const entries = zipEntries(artifactPath, run);
+  const entries = zipEntries(toolArtifactPath, run);
   const infoEntries = entries.filter((entry) =>
     /^Payload\/[^/]+\.app\/Info\.plist$/.test(entry.path),
   );
@@ -394,11 +506,11 @@ export async function inspectIosBetaArtifact(
     throw new Error(`expected exactly one iOS application; found ${infoEntries.length}`);
   }
   const appPrefix = infoEntries[0]!.path.slice(0, -'Info.plist'.length);
-  validateIosArchiveLinks(artifactPath, entries, appPrefix, run);
+  validateIosArchiveLinks(toolArtifactPath, entries, appPrefix, run);
 
   const staging = await mkdtemp(join(tmpdir(), 'mdreader-ios-beta-'));
   try {
-    run('unzip', ['-q', artifactPath, '-d', staging]);
+    run('unzip', ['-q', toolArtifactPath, '-d', staging]);
     await verifyExtractedTree(staging);
     const appPath = join(staging, appPrefix);
     const info = await plistJson(join(appPath, 'Info.plist'), run);
@@ -451,9 +563,27 @@ export async function inspectIosBetaArtifact(
       '-i',
       join(appPath, 'embedded.mobileprovision'),
     ]);
+    const provisioningProfileSha256 = createHash('sha256')
+      .update(await readFile(join(appPath, 'embedded.mobileprovision')))
+      .digest('hex');
+    requireEqual(
+      provisioningProfileSha256,
+      normalizeFingerprint(expected.provisioningProfileSha256),
+      'embedded provisioning profile SHA-256',
+    );
     const profilePath = join(staging, 'profile.plist');
     await writeFile(profilePath, extractXml(profileXml, 'embedded provisioning profile'));
     const profile = await plistJson(profilePath, run);
+    const provisioningProfileUuid =
+      typeof profile.UUID === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        profile.UUID,
+      )
+        ? profile.UUID.toLowerCase()
+        : undefined;
+    if (!provisioningProfileUuid) {
+      throw new Error('embedded provisioning profile UUID is malformed');
+    }
     const profileTeams = profile.TeamIdentifier;
     if (
       !Array.isArray(profileTeams) ||
@@ -502,6 +632,17 @@ export async function inspectIosBetaArtifact(
     ) {
       throw new Error('iOS App Store provisioning profile is expired or malformed');
     }
+    const profileEntitlementsSha256 = requireExactEntitlements(
+      profileValues,
+      {
+        'application-identifier': `${teamId}.${MOBILE_PRODUCTION_PACKAGE_ID}`,
+        'beta-reports-active': true,
+        'com.apple.developer.team-identifier': teamId,
+        'get-task-allow': false,
+        'keychain-access-groups': [`${teamId}.*`],
+      },
+      'provisioning profile',
+    );
 
     const entitlementsXml = run('codesign', [
       '-d',
@@ -528,6 +669,15 @@ export async function inspectIosBetaArtifact(
     if (entitlements['get-task-allow'] !== false) {
       throw new Error('signed iOS beta package permits debugging');
     }
+    const signedEntitlementsSha256 = requireExactEntitlements(
+      entitlements,
+      {
+        'application-identifier': `${teamId}.${MOBILE_PRODUCTION_PACKAGE_ID}`,
+        'com.apple.developer.team-identifier': teamId,
+        'get-task-allow': false,
+      },
+      'signed iOS',
+    );
 
     return {
       platform: 'ios',
@@ -542,6 +692,12 @@ export async function inspectIosBetaArtifact(
         kind: 'apple-distribution',
         teamId,
         certificateSha256,
+      },
+      iosAuthority: {
+        provisioningProfileUuid,
+        provisioningProfileSha256,
+        profileEntitlementsSha256,
+        signedEntitlementsSha256,
       },
     };
   } finally {
@@ -565,6 +721,30 @@ function bundletoolValue(
   ]).trim();
 }
 
+function verifyAndroidJarSignatureCoverage(
+  entries: readonly ZipEntry[],
+  output: string,
+): void {
+  if (!/\bjar verified\.\s*$/m.test(output)) {
+    throw new Error('Android App Bundle JAR signature was not verified');
+  }
+  const lines = output.split(/\r?\n/);
+  for (const entry of entries) {
+    const isJarSignatureInfrastructure =
+      entry.path === 'META-INF/MANIFEST.MF' ||
+      /^META-INF\/[^/]+\.(SF|RSA|DSA|EC)$/.test(entry.path);
+    if (entry.kind !== 'file' || isJarSignatureInfrastructure) continue;
+    const inventoryLine = lines.find((line) =>
+      line.endsWith(` ${entry.path}`),
+    );
+    if (!inventoryLine || !/^s[mk ]*\s+\d+\s/.test(inventoryLine.trimStart())) {
+      throw new Error(
+        `Android App Bundle entry lacks signature coverage: ${JSON.stringify(entry.path)}`,
+      );
+    }
+  }
+}
+
 /**
  * Inspects a signed Android App Bundle using the reviewed bundletool binary,
  * JDK signature tools, and the package's real native libraries.
@@ -573,12 +753,25 @@ export async function inspectAndroidBetaArtifact(
   artifactPath: string,
   bundletoolJarPath: string,
   expected: AndroidExpected,
-  run: MobileBetaToolRunner = runTool,
+  runner?: MobileBetaToolRunner,
+  options: MobileBetaInspectionOptions = {},
 ): Promise<MobileBetaArtifactEvidence> {
+  const toolTimeoutMs =
+    options.toolTimeoutMs ?? DEFAULT_INSPECTION_TOOL_TIMEOUT_MS;
+  const toolArtifactPath =
+    options.artifactDescriptor === undefined
+      ? artifactPath
+      : `/dev/fd/${options.artifactDescriptor}`;
+  const run =
+    runner ??
+    createMobileBetaInspectionToolRunner(
+      toolTimeoutMs,
+      options.artifactDescriptor,
+    );
   if (!artifactPath.toLowerCase().endsWith('.aab')) {
     throw new Error('Android beta artifact must be an AAB');
   }
-  const entries = zipEntries(artifactPath, run);
+  const entries = zipEntries(toolArtifactPath, run);
   if (entries.some((entry) => entry.kind === 'symlink')) {
     throw new Error('Android App Bundle may not contain archive symlinks');
   }
@@ -592,24 +785,27 @@ export async function inspectAndroidBetaArtifact(
     throw new Error('Android App Bundle has no JAR signing block');
   }
 
-  run('java', ['-jar', bundletoolJarPath, 'validate', `--bundle=${artifactPath}`]);
-  run('jarsigner', ['-verify', '-verbose', '-certs', artifactPath]);
+  run('java', ['-jar', bundletoolJarPath, 'validate', `--bundle=${toolArtifactPath}`]);
+  verifyAndroidJarSignatureCoverage(
+    entries,
+    run('jarsigner', ['-verify', '-verbose', '-certs', toolArtifactPath]),
+  );
 
   const packageId = bundletoolValue(
     bundletoolJarPath,
-    artifactPath,
+    toolArtifactPath,
     '/manifest/@package',
     run,
   );
   const version = bundletoolValue(
     bundletoolJarPath,
-    artifactPath,
+    toolArtifactPath,
     '/manifest/@android:versionName',
     run,
   );
   const buildNumber = bundletoolValue(
     bundletoolJarPath,
-    artifactPath,
+    toolArtifactPath,
     '/manifest/@android:versionCode',
     run,
   );
@@ -634,7 +830,12 @@ export async function inspectAndroidBetaArtifact(
   }
   if (
     !nativeLibraries.some((entry) => {
-      const body = readZipEntry(artifactPath, entry.path);
+      const body = readZipEntry(
+        toolArtifactPath,
+        entry.path,
+        toolTimeoutMs,
+        options.artifactDescriptor,
+      );
       try {
         verifyReleaseIdentity(body, expected.sourceCommit);
         return true;
@@ -649,7 +850,7 @@ export async function inspectAndroidBetaArtifact(
   const certificateOutput = run('keytool', [
     '-printcert',
     '-jarfile',
-    artifactPath,
+    toolArtifactPath,
   ]);
   const certificate = certificateOutput.match(
     /SHA256:\s*([0-9A-Fa-f:]{64,95})/,
