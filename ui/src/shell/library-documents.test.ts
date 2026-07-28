@@ -6,9 +6,11 @@ import type {
   LibrarySnapshot,
   LibrarySourceExecution,
 } from '../bindings.js';
+import { SettingsCommandError } from '../platform/settings.js';
 import {
   hydrateLibrary,
   LIBRARY_DOCUMENT_FIELDS,
+  libraryHydrationMessage,
   memberForRow,
   physicalRecordKey,
   rowsForMember,
@@ -98,7 +100,7 @@ const evidence: LibraryEntityQueryResponse_Serialize = {
 };
 
 const driveLibrary: LibrarySnapshot = {
-  version: 7,
+  version: 8,
   sources: [],
   cloud_sources: [
     {
@@ -127,7 +129,7 @@ const driveLibrary: LibrarySnapshot = {
 };
 
 const localLibrary: LibrarySnapshot = {
-  version: 7,
+  version: 8,
   sources: [
     {
       id: 'local-folder',
@@ -205,7 +207,7 @@ describe('one hydrated Library answer', () => {
     const result = await hydrateLibrary(
       {
         listSources: vi.fn(async (): Promise<LibrarySnapshot> => ({
-          version: 7,
+          version: 8,
           sources: [],
           cloud_sources: [],
           connected_catdb: null,
@@ -337,6 +339,68 @@ describe('one hydrated Library answer', () => {
     );
 
     expect(result.evidence).toEqual([connectedEvidence]);
-    expect(result.failures).toEqual([{ authority: 'embedded' }]);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.authority).toBe('embedded');
+    expect(result.failures[0]?.reason).toBeInstanceOf(Error);
+  });
+
+  it('preserves identity and permission failures for distinct recovery copy', async () => {
+    const connected = {
+      connection_id: 'connected-catdb',
+      label: 'Research CatDB',
+      workspace_id: '00000000-0000-4000-8000-000000000030',
+      catalog_revision_id: '00000000-0000-4000-8000-000000000031',
+      selected_source_ids: [PHYSICAL_SOURCE_ID],
+      contract: {
+        connector_version: 'connected-catdb/v1',
+        capabilities: {
+          read: true,
+          write: false,
+          search: true,
+          watch: false,
+          open_original: false,
+          download: false,
+        },
+        mapping_version: '00000000-0000-4000-8000-000000000031',
+        index_policy: 'read-through' as const,
+      },
+    };
+    const identityChanged = new SettingsCommandError('connected-catdb', {
+      kind: 'connection-identity-changed' as const,
+    });
+    const result = await hydrateLibrary(
+      {
+        listSources: vi.fn(async (): Promise<LibrarySnapshot> => ({
+          version: 8,
+          sources: [],
+          cloud_sources: [],
+          connected_catdb: connected,
+          connected_catdb_rediscovery_required: false,
+          cleanup: { kind: 'complete' },
+        })),
+        queryConnectedCatdbDocuments: vi.fn(async () => {
+          throw identityChanged;
+        }),
+      },
+      'request-identity-changed',
+    );
+
+    expect(result.evidence).toEqual([]);
+    expect(result.failures).toEqual([
+      { authority: 'connected-catdb', reason: identityChanged },
+    ]);
+    expect(libraryHydrationMessage(result)).toBe(
+      'Connected CatDB changed identity. Reconnect it in Settings.',
+    );
+
+    const permissionDenied = new SettingsCommandError('connected-catdb', {
+      kind: 'permission-denied' as const,
+    });
+    expect(
+      libraryHydrationMessage({
+        evidence: [],
+        failures: [{ authority: 'connected-catdb', reason: permissionDenied }],
+      }),
+    ).toBe('Connected CatDB denied access. Reconnect it in Settings.');
   });
 });

@@ -4,7 +4,7 @@ import type {
   LibrarySnapshot,
   LibrarySourceExecution,
 } from '../bindings.js';
-import type { SettingsBackend } from '../platform/settings.js';
+import { SettingsCommandError, type SettingsBackend } from '../platform/settings.js';
 
 export const LIBRARY_DOCUMENT_FIELDS = [
   'providerId',
@@ -58,6 +58,8 @@ export interface HydratedLibrary {
 
 export interface LibraryHydrationFailure {
   authority: 'embedded' | 'connected-catdb';
+  /** Preserve the native typed error so the UI can offer the right recovery. */
+  reason: unknown;
 }
 
 function localQueryableLibraryFields(snapshot: LibrarySnapshot): string[] {
@@ -144,9 +146,43 @@ export async function hydrateLibrary(
   return {
     evidence: settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
     failures: settled.flatMap((result, index) =>
-      result.status === 'rejected' ? [{ authority: reads[index]!.authority }] : [],
+      result.status === 'rejected'
+        ? [{ authority: reads[index]!.authority, reason: result.reason }]
+        : [],
     ),
   };
+}
+
+function connectedCatdbFailureKind(failure: LibraryHydrationFailure): string | null {
+  if (
+    failure.authority !== 'connected-catdb' ||
+    !(failure.reason instanceof SettingsCommandError)
+  ) {
+    return null;
+  }
+  const detail = failure.reason.detail;
+  if (typeof detail !== 'object' || detail === null || !('kind' in detail)) return null;
+  return typeof detail.kind === 'string' ? detail.kind : null;
+}
+
+/** Reader-facing recovery for whole-authority failures and partial answers. */
+export function libraryHydrationMessage(result: HydratedLibrary): string | null {
+  const kinds = new Set(result.failures.map(connectedCatdbFailureKind));
+  if (kinds.has('connection-identity-changed')) {
+    return 'Connected CatDB changed identity. Reconnect it in Settings.';
+  }
+  if (kinds.has('permission-denied')) {
+    return 'Connected CatDB denied access. Reconnect it in Settings.';
+  }
+  if (
+    result.failures.length === 0 &&
+    result.evidence.every((answer) => answer.answer.completeness.state !== 'partial')
+  ) {
+    return null;
+  }
+  return result.evidence.length === 0
+    ? 'Library sources could not be read.'
+    : 'Some Library sources could not answer this query.';
 }
 
 export interface HydratedLibrarySelection {
