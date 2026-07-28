@@ -1,12 +1,7 @@
 import assert from 'node:assert/strict';
 import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
+  lstatSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -15,25 +10,31 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 import {
-  assertMdreaderCloudflareAssets,
-  assertMdreaderCloudflareSourceFile,
-  assertMdreaderCloudflareSourceTree,
+  assertMdreaderCloudflareDestinationPlan,
+  assertMdreaderPinnedCopySupport,
+  readPinnedMdreaderCloudflareSource,
+  snapshotMdreaderCloudflareSourceFile,
+  snapshotMdreaderCloudflareSourceTree,
+  stageMdreaderCloudflareAssetPlan,
 } from './mdreader-cloudflare-assets.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const APP = resolve(ROOT, process.argv[2] ?? 'apps/web');
+const APP = realpathSync.native(resolve(ROOT, process.argv[2] ?? 'apps/web'));
 const NEXT = join(APP, '.next');
 const SERVER_APP = join(NEXT, 'server', 'app');
 const OPEN_NEXT = join(APP, '.open-next');
 const ASSETS = join(OPEN_NEXT, 'assets');
 const PUBLIC = join(APP, 'public');
 
+assertMdreaderPinnedCopySupport();
+
 function readJson(relativePath) {
-  const source = assertMdreaderCloudflareSourceFile(
-    join(NEXT, relativePath),
+  const source = snapshotMdreaderCloudflareSourceFile(
+    NEXT,
+    relativePath,
     `.next/${relativePath}`,
   );
-  return JSON.parse(readFileSync(source, 'utf8'));
+  return JSON.parse(readPinnedMdreaderCloudflareSource(source).toString('utf8'));
 }
 
 function routeFile(route, suffix) {
@@ -43,14 +44,48 @@ function routeFile(route, suffix) {
   return `${base}${suffix}`;
 }
 
-function copyRequired(sourceRelative, destinationRelative = sourceRelative) {
-  const source = assertMdreaderCloudflareSourceFile(
-    join(SERVER_APP, sourceRelative),
+function sourceExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function addFile(plan, root, sourceRelative, sourceName, destination) {
+  plan.push({
+    destination,
+    source: snapshotMdreaderCloudflareSourceFile(
+      root,
+      sourceRelative,
+      sourceName,
+    ),
+  });
+}
+
+function addTree(plan, root, sourceName, destinationRoot) {
+  for (const source of snapshotMdreaderCloudflareSourceTree(root, sourceName)) {
+    plan.push({
+      destination: `${destinationRoot}/${source.relativePath}`,
+      source,
+    });
+  }
+}
+
+function addRequiredRoute(
+  plan,
+  sourceRelative,
+  destinationRelative = sourceRelative,
+) {
+  addFile(
+    plan,
+    SERVER_APP,
+    sourceRelative,
     `.next/server/app/${sourceRelative}`,
+    destinationRelative,
   );
-  const destination = join(ASSETS, destinationRelative);
-  mkdirSync(dirname(destination), { recursive: true });
-  copyFileSync(source, destination);
 }
 
 const routesManifest = readJson('routes-manifest.json');
@@ -67,69 +102,25 @@ assert.deepEqual(routesManifest.rewrites, {
 });
 
 const prerenderManifest = readJson('prerender-manifest.json');
-assertMdreaderCloudflareSourceFile(
-  join(NEXT, 'BUILD_ID'),
+const assetPlan = [];
+addFile(
+  assetPlan,
+  NEXT,
+  'BUILD_ID',
   '.next/BUILD_ID',
+  'BUILD_ID',
 );
-assertMdreaderCloudflareSourceTree(
+addTree(
+  assetPlan,
   join(NEXT, 'static'),
   '.next/static',
+  '_next/static',
 );
-if (existsSync(PUBLIC)) {
-  assertMdreaderCloudflareSourceTree(PUBLIC, 'public');
-}
-for (const [route, metadata] of Object.entries(prerenderManifest.routes)) {
-  if (metadata.dataRoute) {
-    const html = routeFile(route, '.html');
-    assertMdreaderCloudflareSourceFile(
-      join(SERVER_APP, html),
-      `.next/server/app/${html}`,
-    );
-    const dataRoute = metadata.dataRoute.slice(1);
-    assertMdreaderCloudflareSourceFile(
-      join(SERVER_APP, dataRoute),
-      `.next/server/app/${dataRoute}`,
-    );
-    const segments = join(SERVER_APP, routeFile(route, '.segments'));
-    if (existsSync(segments)) {
-      assertMdreaderCloudflareSourceTree(
-        segments,
-        `.next/server/app/${routeFile(route, '.segments')}`,
-      );
-    }
-  } else {
-    const body = routeFile(route, '.body');
-    assertMdreaderCloudflareSourceFile(
-      join(SERVER_APP, body),
-      `.next/server/app/${body}`,
-    );
+if (sourceExists(PUBLIC)) {
+  for (const source of snapshotMdreaderCloudflareSourceTree(PUBLIC, 'public')) {
+    assetPlan.push({ destination: source.relativePath, source });
   }
 }
-assertMdreaderCloudflareSourceFile(
-  join(SERVER_APP, '_not-found.html'),
-  '.next/server/app/_not-found.html',
-);
-
-rmSync(OPEN_NEXT, { recursive: true, force: true });
-mkdirSync(ASSETS, { recursive: true });
-copyFileSync(
-  assertMdreaderCloudflareSourceFile(
-    join(NEXT, 'BUILD_ID'),
-    '.next/BUILD_ID',
-  ),
-  join(ASSETS, 'BUILD_ID'),
-);
-assertMdreaderCloudflareSourceTree(join(NEXT, 'static'), '.next/static');
-cpSync(join(NEXT, 'static'), join(ASSETS, '_next', 'static'), {
-  recursive: true,
-});
-if (existsSync(PUBLIC)) {
-  assertMdreaderCloudflareSourceTree(PUBLIC, 'public');
-  for (const entry of readdirSync(PUBLIC)) {
-    cpSync(join(PUBLIC, entry), join(ASSETS, entry), { recursive: true });
-  }
-}
-
 for (const [route, metadata] of Object.entries(prerenderManifest.routes)) {
   assert.equal(
     metadata.initialRevalidateSeconds,
@@ -138,29 +129,46 @@ for (const [route, metadata] of Object.entries(prerenderManifest.routes)) {
   );
   if (metadata.dataRoute) {
     const html = routeFile(route, '.html');
-    copyRequired(html);
-    copyRequired(metadata.dataRoute.slice(1));
-
-    const segments = join(SERVER_APP, routeFile(route, '.segments'));
-    if (existsSync(segments)) {
-      assertMdreaderCloudflareSourceTree(
+    addRequiredRoute(
+      assetPlan,
+      html,
+    );
+    const dataRoute = metadata.dataRoute.slice(1);
+    addRequiredRoute(
+      assetPlan,
+      dataRoute,
+    );
+    const segmentsRelative = routeFile(route, '.segments');
+    const segments = join(SERVER_APP, segmentsRelative);
+    if (sourceExists(segments)) {
+      addTree(
+        assetPlan,
         segments,
-        `.next/server/app/${routeFile(route, '.segments')}`,
-      );
-      cpSync(
-        segments,
-        join(ASSETS, routeFile(route, '.segments')),
-        { recursive: true },
+        `.next/server/app/${segmentsRelative}`,
+        segmentsRelative,
       );
     }
   } else {
-    copyRequired(routeFile(route, '.body'), route.slice(1));
+    addRequiredRoute(
+      assetPlan,
+      routeFile(route, '.body'),
+      route.slice(1),
+    );
   }
 }
+addRequiredRoute(
+  assetPlan,
+  '_not-found.html',
+  '404.html',
+);
 
-copyRequired('_not-found.html', '404.html');
-
-const assetSet = assertMdreaderCloudflareAssets(ASSETS);
+// The complete mapping must be unambiguous before .open-next is touched.
+assertMdreaderCloudflareDestinationPlan(assetPlan);
+const assetSet = stageMdreaderCloudflareAssetPlan(
+  assetPlan,
+  OPEN_NEXT,
+  ASSETS,
+);
 
 const workerBuild = await build({
   entryPoints: [join(APP, 'cloudflare-worker.ts')],

@@ -3,8 +3,12 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -12,7 +16,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -25,10 +29,11 @@ function write(path, contents = '') {
   writeFileSync(path, contents);
 }
 
-function run(script, app) {
+function run(script, app, environment = {}) {
   return spawnSync(process.execPath, [script, app], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, ...environment },
     timeout: 60_000,
   });
 }
@@ -77,8 +82,14 @@ process.stdout.write('Total Upload: 1.00 KiB / gzip: 1.00 KiB\\n');
   return { app, assets, directory };
 }
 
-function stageFixture({ publicSymlink = false, staticSymlink = false } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'mdreader-assets-stage-'));
+function stageFixture({
+  publicFiles = {},
+  publicSymlink = false,
+  staticSymlink = false,
+} = {}) {
+  const directory = realpathSync.native(
+    mkdtempSync(join(tmpdir(), 'mdreader-assets-stage-')),
+  );
   const app = join(directory, 'app');
   const next = join(app, '.next');
 
@@ -112,13 +123,91 @@ function stageFixture({ publicSymlink = false, staticSymlink = false } = {}) {
     const externalPublic = join(directory, 'external-public');
     write(join(externalPublic, 'leak.txt'), 'must not be staged\n');
     symlinkSync(externalPublic, join(app, 'public'), 'dir');
+  } else {
+    for (const [name, contents] of Object.entries(publicFiles)) {
+      write(join(app, 'public', name), contents);
+    }
   }
   write(
     join(app, 'cloudflare-worker.ts'),
     "export default { fetch() { return new Response('ok'); } };\n",
   );
 
-  return { app, directory };
+  return { app, directory, next };
+}
+
+function sourceSwapSeam(fixture, options) {
+  const hook = join(fixture.directory, `swap-${options.kind}.mjs`);
+  const marker = join(fixture.directory, `swap-${options.kind}.ran`);
+  write(
+    hook,
+    `import {
+  copyFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+
+let swapped = false;
+globalThis[Symbol.for('mdreader.cloudflare.before-source-open')] = ({ source }) => {
+  if (swapped || source !== process.env.MDREADER_TEST_SWAP_SOURCE) return;
+  swapped = true;
+  writeFileSync(process.env.MDREADER_TEST_SWAP_MARKER, 'ran\\n');
+  if (process.env.MDREADER_TEST_SWAP_KIND === 'file') {
+    renameSync(source, source + '.validated');
+    copyFileSync(process.env.MDREADER_TEST_SWAP_EXTERNAL, source);
+    return;
+  }
+  const ancestor = process.env.MDREADER_TEST_SWAP_ANCESTOR;
+  renameSync(ancestor, ancestor + '.validated');
+  symlinkSync(process.env.MDREADER_TEST_SWAP_EXTERNAL, ancestor, 'dir');
+};
+`,
+  );
+  const existingNodeOptions = process.env.NODE_OPTIONS?.trim();
+  return {
+    environment: {
+      MDREADER_TEST_SWAP_ANCESTOR: options.ancestor ?? '',
+      MDREADER_TEST_SWAP_EXTERNAL: options.external,
+      MDREADER_TEST_SWAP_KIND: options.kind,
+      MDREADER_TEST_SWAP_MARKER: marker,
+      MDREADER_TEST_SWAP_SOURCE: options.source,
+      NODE_OPTIONS: [
+        existingNodeOptions,
+        `--import=${pathToFileURL(hook).href}`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    },
+    marker,
+  };
+}
+
+function assertExternalBytesAbsent(app, destination, sentinel) {
+  const openNext = join(app, '.open-next');
+  if (!existsSync(openNext)) return;
+  const sentinelBytes = Buffer.from(sentinel);
+  function walk(current) {
+    for (const entry of readdirSync(current)) {
+      const path = join(current, entry);
+      const metadata = lstatSync(path);
+      assert.equal(
+        metadata.isSymbolicLink(),
+        false,
+        `staging left a symbolic link after rejecting ${destination}`,
+      );
+      if (metadata.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      assert.equal(
+        readFileSync(path).includes(sentinelBytes),
+        false,
+        `external bytes reached .open-next while staging ${destination}`,
+      );
+    }
+  }
+  walk(openNext);
 }
 
 test('staging rejects a symlink before publishing the asset set', () => {
@@ -139,6 +228,113 @@ test('staging rejects a symlinked source root before copying its bytes', () => {
       existsSync(join(fixture.app, '.open-next/assets/leak.txt')),
       false,
       'staging copied bytes through the symlinked public root',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects a validated leaf swapped exactly before source open', () => {
+  const fixture = stageFixture();
+  const sentinel = 'EXTERNAL-LEAF-BYTES';
+  const external = join(fixture.directory, 'external-build-id');
+  write(external, sentinel);
+  const seam = sourceSwapSeam(fixture, {
+    external,
+    kind: 'file',
+    source: join(fixture.next, 'BUILD_ID'),
+  });
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /source.*(?:identity|changed)|identity.*source/is);
+    assert.equal(
+      existsSync(seam.marker),
+      true,
+      `source-open seam did not run:\n${output(result)}`,
+    );
+    assertExternalBytesAbsent(fixture.app, 'BUILD_ID', sentinel);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects an ancestor tree swapped exactly before source open', () => {
+  const fixture = stageFixture();
+  const sentinel = 'EXTERNAL-ANCESTOR-BYTES';
+  const external = join(fixture.directory, 'external-static');
+  write(join(external, 'chunks/real.js'), sentinel);
+  const staticRoot = join(fixture.next, 'static');
+  const seam = sourceSwapSeam(fixture, {
+    ancestor: staticRoot,
+    external,
+    kind: 'tree',
+    source: join(staticRoot, 'chunks/real.js'),
+  });
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /source.*(?:ancestor|identity|changed)|symbolic link/is);
+    assert.equal(
+      existsSync(seam.marker),
+      true,
+      `source-open seam did not run:\n${output(result)}`,
+    );
+    assertExternalBytesAbsent(
+      fixture.app,
+      '_next/static/chunks/real.js',
+      sentinel,
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects colliding destinations before writing either source', () => {
+  const fixture = stageFixture({
+    publicFiles: { BUILD_ID: 'PUBLIC-COLLISION\n' },
+  });
+  try {
+    const result = run(STAGE, fixture.app);
+    assertRejected(result, /destination.*BUILD_ID.*collid/is);
+    assert.equal(
+      existsSync(join(fixture.app, '.open-next')),
+      false,
+      'staging created output before rejecting the destination collision',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects file and directory destination overlap before writing', () => {
+  const fixture = stageFixture({
+    publicFiles: { _next: 'PUBLIC-PREFIX-COLLISION\n' },
+  });
+  try {
+    const result = run(STAGE, fixture.app);
+    assertRejected(result, /destination.*_next.*collid/is);
+    assert.equal(
+      existsSync(join(fixture.app, '.open-next')),
+      false,
+      'staging created output before rejecting the destination overlap',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('staging rejects a symlinked output root without touching its target', () => {
+  const fixture = stageFixture();
+  const external = join(fixture.directory, 'external-output');
+  const sentinel = join(external, 'keep.txt');
+  write(sentinel, 'KEEP-EXTERNAL-OUTPUT\n');
+  symlinkSync(external, join(fixture.app, '.open-next'), 'dir');
+  try {
+    const result = run(STAGE, fixture.app);
+    assertRejected(result, /destination.*symbolic link.*\.open-next/is);
+    assert.equal(
+      readFileSync(sentinel, 'utf8'),
+      'KEEP-EXTERNAL-OUTPUT\n',
+      'staging touched the symlinked output target',
     );
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
