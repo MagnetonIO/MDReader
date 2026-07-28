@@ -119,6 +119,16 @@ export class WebviewAdapter implements PlatformDriver {
     await this.b.keys(this.chordKeys(chord));
   }
 
+  async focusInput(cssClass: string): Promise<void> {
+    await this.ensureActivated();
+    await this.b.$(`.${cssClass}`).click();
+  }
+
+  async inputValue(cssClass: string): Promise<string> {
+    await this.ensureActivated();
+    return this.b.$(`.${cssClass}`).getValue();
+  }
+
   async type(text: string): Promise<void> {
     await this.b.keys([...text]);
   }

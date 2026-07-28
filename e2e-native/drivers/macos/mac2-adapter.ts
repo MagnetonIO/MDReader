@@ -210,6 +210,16 @@ export class Mac2Adapter implements PlatformDriver {
     await sleep(400);
   }
 
+  async focusInput(cssClass: string): Promise<void> {
+    const point = await this.ax.point(cssClass, 0);
+    await this.b.execute('macos: click', point);
+    await sleep(150);
+  }
+
+  async inputValue(cssClass: string): Promise<string> {
+    return this.ax.text(cssClass);
+  }
+
   async type(text: string): Promise<void> {
     await this.b.execute('macos: keys', { keys: [...text].map((c) => ({ key: c })) });
   }

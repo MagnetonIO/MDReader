@@ -142,6 +142,14 @@ export interface PlatformDriver {
    * "the app ignored it", and both must stay distinguishable.
    */
   chordDirect?(chord: Chord): Promise<void>;
+  /** Focus the exact input carrying `cssClass`. A visible surface is not enough:
+   *  its autofocus may land one render later than the container, and typing
+   *  before that point would go to the page behind it. */
+  focusInput(cssClass: string): Promise<void>;
+  /** Read that input's current value so the flow can prove the query was entered,
+   *  rather than infer successful typing from whatever results happened to
+   *  appear. */
+  inputValue(cssClass: string): Promise<string>;
   /** Type literal text into the focused input. */
   type(text: string): Promise<void>;
 

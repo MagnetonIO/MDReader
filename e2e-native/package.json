@@ -10,7 +10,7 @@
     "build:e2e:mobile": "node build-mobile-e2e.mjs",
     "smoke:macos": "node --experimental-strip-types --no-warnings runners/macos.ts",
     "test:build-identity": "tsx --test build-identity.test.ts build-e2e.test.ts",
-    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts mobile-fixture.test.ts build-e2e.test.ts",
+    "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts mobile-fixture.test.ts build-e2e.test.ts drivers/ax-helper.test.ts",
     "test:desktop": "wdio run ./config/wdio.desktop.conf.ts",
     "test:ios": "wdio run ./config/wdio.ios.conf.ts",
     "test:android": "wdio run ./config/wdio.android.conf.ts",

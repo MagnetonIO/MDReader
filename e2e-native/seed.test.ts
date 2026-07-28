@@ -232,18 +232,98 @@ test('a failed native flow is not replaced by a later fixture-count error', asyn
   assert.ok(flow >= 0 && gate > flow && fixtureCheck > gate);
 });
 
+test('the file palette proves a result is ready before selecting it', async () => {
+  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const openDoc = runner.slice(
+    runner.indexOf("case 'openDoc':"),
+    runner.indexOf("case 'search':"),
+  );
+  const open = openDoc.indexOf("openSurface(\n        d,\n        'Mod+P'");
+  const focus = openDoc.indexOf(
+    "enterInput(d, 'mdsearch__input', step.query, 'the file palette input')",
+  );
+  const result = openDoc.indexOf("await d.countClass('mdsearch__item')");
+  const select = openDoc.indexOf("await d.chord('Enter')");
+  assert.ok(open >= 0 && focus > open && result > focus && select > result);
+});
+
+test('the search palette proves it opened before typing the query', async () => {
+  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const search = runner.slice(
+    runner.indexOf("case 'search':"),
+    runner.indexOf("case 'jumpToHit':"),
+  );
+  const open = search.indexOf("openSurface(\n        d,\n        'Mod+K'");
+  const palette = search.indexOf("'mdsearch'", open);
+  const type = search.indexOf(
+    "enterInput(d, 'mdsearch__input', step.query, 'the search palette input')",
+  );
+  const result = search.indexOf('await d.countClass(rowClass)');
+  assert.ok(open >= 0 && palette > open && type > palette && result > type);
+});
+
+test('the provenance jump observes the palette without a state-changing frame activation', async () => {
+  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const jump = runner.slice(
+    runner.indexOf("case 'jumpToHit':"),
+    runner.indexOf("case 'viewAs':"),
+  );
+  const palette = jump.indexOf('await d.paletteContainerCount()');
+  const enter = jump.indexOf("await d.chord('Enter')");
+  const reader = jump.indexOf('await d.readerText()');
+  assert.ok(palette >= 0 && enter > palette && reader > enter);
+  assert.equal(jump.includes('captureFrame'), false);
+});
+
 test('the shared native flow makes the P8 federated Document surface load-bearing', () => {
   const step = FLOW.find((candidate) => candidate.id === 'federated-document');
   assert.equal(step?.kind, 'inspectFederation');
   assert.equal(SEMANTIC_KINDS.includes('inspectFederation'), true);
+  if (step?.kind !== 'inspectFederation') {
+    assert.fail('missing federated Document native step');
+  }
+  assert.match(
+    [
+      'Federated document',
+      'COMPLETE',
+      'title',
+      'broken-app',
+      'from ',
+      'frontmatter',
+    ].join('\n'),
+    new RegExp(step.resultPattern),
+  );
+  assert.match(
+    ['filesystem', 'RAN', 'git', 'RAN', 'frontmatter', 'RAN'].join('\n'),
+    new RegExp(step.sourcesPattern),
+  );
+  assert.match(
+    [
+      'modifiedAt',
+      'filesystem.modifiedAt',
+      'SELECTED',
+      'git.modifiedAt',
+      'ALSO OBSERVED',
+    ].join('\n'),
+    new RegExp(step.provenancePattern),
+  );
   const libraryStep = FLOW.find((candidate) => candidate.id === 'unified-library-document');
   assert.equal(libraryStep?.kind, 'inspectLibraryDocument');
   assert.equal(SEMANTIC_KINDS.includes('inspectLibraryDocument'), true);
   if (libraryStep?.kind !== 'inspectLibraryDocument') {
     assert.fail('missing unified Library native step');
   }
+  assert.match(
+    ['corpus', 'catdb-core.md', 'Edit local file'].join('\n'),
+    new RegExp(libraryStep.readerPattern),
+  );
   assert.match(libraryStep.resultPattern, /Complete/);
   assert.match(libraryStep.sourcesPattern, /ran/);
+  assert.match(
+    ['COMPLETE', 'catdb-core.md'].join('\n'),
+    new RegExp(libraryStep.resultPattern),
+  );
+  assert.match(['RAN', 'RAN', 'RAN'].join('\n'), new RegExp(libraryStep.sourcesPattern));
   assert.match(libraryStep.provenancePattern, /provenance rule/);
   assert.match(libraryStep.schemaPattern, /Provenance rule pin/);
   const partialStep = FLOW.find(
@@ -259,9 +339,35 @@ test('the shared native flow makes the P8 federated Document surface load-bearin
   assert.match(partialStep.driveResultPattern, /Complete/);
   assert.match(partialStep.driveSourcesPattern, /Google Drive fixture/);
   assert.match(partialStep.driveProvenancePattern, /\.name/);
+  assert.match(
+    ['COMPLETE', 'mdreader-e2e-drive-document', 'Drive fixture note.md'].join('\n'),
+    new RegExp(partialStep.driveResultPattern),
+  );
+  assert.match(
+    ['Google Drive fixture', 'RAN', '1 scanned · 1 returned'].join('\n'),
+    new RegExp(partialStep.driveSourcesPattern),
+  );
   assert.match(partialStep.resultPattern, /Excluded source/);
   assert.match(partialStep.sourcesPattern, /Retry after/);
   assert.match(partialStep.provenancePattern, /Isolated Enterprise fixture/);
+  assert.match(
+    [
+      'PARTIAL',
+      'Excluded source 00000000-0000-0000-0000-000000000213',
+      'mobile-e2e-document',
+    ].join('\n'),
+    new RegExp(partialStep.resultPattern),
+  );
+  assert.match(
+    [
+      '00000000-0000-0000-0000-000000000206',
+      'RAN',
+      '00000000-0000-0000-0000-000000000213',
+      'REFUSED',
+      'Retry after 42 ms',
+    ].join('\n'),
+    new RegExp(partialStep.sourcesPattern),
+  );
 });
 
 test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {

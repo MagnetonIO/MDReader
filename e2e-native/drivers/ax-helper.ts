@@ -71,6 +71,16 @@ export class AxNotHittable extends Error {}
 const UNREADABLE_TRIES = 8;
 const UNREADABLE_WAIT_MS = 400;
 
+/** WebKit can invalidate a node already yielded by an AX traversal
+ * (`kAXErrorInvalidUIElement`) or return `kAXErrorCannotComplete` while it
+ * republishes a changing accessibility subtree. A fresh helper invocation starts
+ * from the application's current root again, so retry only those two transition
+ * outcomes. Missing elements, invalid processes, denied access, and every other
+ * read error still propagate on the first attempt. */
+const TRANSIENT_AX_CODES = ['code=-25202', 'code=-25204'] as const;
+const TRANSIENT_AX_TRIES = 4;
+const TRANSIENT_AX_WAIT_MS = 150;
+
 /** Block the calling (synchronous) read for `ms`. The whole AX surface is sync
  *  `execFileSync`, so the retry has to be too — Node built-ins only. */
 function sleepSync(ms: number): void {
@@ -152,8 +162,22 @@ export interface Ax {
  * adapter's read-path fault probes) therefore turns the step RED, never green.
  */
 export function makeAx(bin: string, pid: number): Ax {
-  const run = (sub: string, extra: string[] = []): string =>
-    execFileSync(bin, [sub, String(pid), ...extra], { encoding: 'utf8' }).trim();
+  const run = (sub: string, extra: string[] = []): string => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return execFileSync(bin, [sub, String(pid), ...extra], {
+          encoding: 'utf8',
+        }).trim();
+      } catch (error) {
+        const stderr = String((error as { stderr?: string }).stderr ?? '');
+        const retryable =
+          (error as { status?: number }).status === 3 &&
+          TRANSIENT_AX_CODES.some((code) => stderr.includes(code));
+        if (!retryable || attempt >= TRANSIENT_AX_TRIES) throw error;
+        sleepSync(TRANSIENT_AX_WAIT_MS);
+      }
+    }
+  };
   const parseRect = (out: string, what: string): AxRect => {
     const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
     if (parts.length !== 4 || parts.some((n) => !Number.isSafeInteger(n))) {

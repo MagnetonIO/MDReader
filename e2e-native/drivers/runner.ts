@@ -105,6 +105,31 @@ async function openSurface(d: PlatformDriver, chord: Chord, cssClass: string, wh
   );
 }
 
+/** Focus and type into a named input, then prove the real control carries the
+ * exact query. The palette container can be present a render before React's
+ * autofocus lands; treating container presence as input readiness made native
+ * runs intermittently type into the page behind the palette. */
+async function enterInput(
+  d: PlatformDriver,
+  cssClass: string,
+  value: string,
+  what: string,
+): Promise<void> {
+  await d.focusInput(cssClass);
+  await d.type(value);
+  let actual = '';
+  const entered = await waitUntil(async () => {
+    actual = await d.inputValue(cssClass);
+    return actual.trim() === value;
+  }, 5_000);
+  if (!entered) {
+    throw new Error(
+      `${what} did not receive the query: expected ${JSON.stringify(value)}, ` +
+        `read ${JSON.stringify(actual.trim())}`,
+    );
+  }
+}
+
 /**
  * Run the whole shared FLOW against `driver`. Window-channel steps a driver can't
  * assert (webview-only sessions) are registered PENDING with the driver's reason;
@@ -224,10 +249,21 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
     case 'openDoc': {
       const before = d.frameOracle && d.captureFrame ? await d.captureFrame() : null;
       await d.focus();
-      await d.chord('Mod+P');
-      await sleep(700);
-      await d.type(step.query);
-      await sleep(1200);
+      const paletteOpened = await openSurface(
+        d,
+        'Mod+P',
+        'mdsearch',
+        'the file palette',
+      );
+      await enterInput(d, 'mdsearch__input', step.query, 'the file palette input');
+      let rows = 0;
+      const resultReady = await waitUntil(async () => {
+        rows = await d.countClass('mdsearch__item');
+        return rows >= 1;
+      }, 15_000);
+      if (!resultReady) {
+        throw new Error(`Cmd+P "${step.query}" returned no file result rows`);
+      }
       await d.chord('Enter');
       // Same contract as every leg: a rendered heading matches. FAULT: demand a
       // heading the doc does not have.
@@ -244,15 +280,19 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
       const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, `openDoc "${step.query}"`) : null;
-      return `opened "${step.query}" — heading /${step.headingPattern}/ rendered${frameNote(frac)}`;
+      return `opened "${step.query}" — heading /${step.headingPattern}/ rendered${frameNote(frac)}${paletteOpened}`;
     }
 
     case 'search': {
       const before = d.frameOracle && d.captureFrame ? await d.captureFrame() : null;
       await d.focus();
-      await d.chord('Mod+K');
-      await sleep(700);
-      await d.type(step.query);
+      const paletteOpened = await openSurface(
+        d,
+        'Mod+K',
+        'mdsearch',
+        'the search palette',
+      );
+      await enterInput(d, 'mdsearch__input', step.query, 'the search palette input');
       // Same contract: >= 1 result row. FAULT: count a class no row carries → 0
       // rows, standing in for "the search returned nothing".
       const rowClass = faulted(step.id) ? 'mdsearch__item__ABSENT' : 'mdsearch__item';
@@ -263,11 +303,21 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       }, 15_000);
       if (!ok) throw new Error(`Cmd+K "${step.query}" returned no result rows`);
       const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, `search "${step.query}"`) : null;
-      return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn${frameNote(frac)}`;
+      return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn${frameNote(frac)}${paletteOpened}`;
     }
 
     case 'jumpToHit': {
-      const before = d.frameOracle && d.captureFrame ? await d.captureFrame() : null;
+      // Do not take a new "before" screenshot here. mac2's capture precondition
+      // activates the app, and activating a transient command palette can commit
+      // its selected row before this step sends Enter. The load-bearing oracle
+      // is stronger and non-perturbing: the palette must exist now, then be
+      // absent with the exact heading and provenance text after Enter.
+      const paletteBefore = await d.paletteContainerCount();
+      if (paletteBefore !== 1) {
+        throw new Error(
+          `the search palette was not present immediately before Enter (found ${paletteBefore})`,
+        );
+      }
       // FAULT "jump-to-hit": skip the Enter that jumps → the palette stays open →
       // closure assertion fires. (The mac2 adapter owns the READ-PATH faults
       // jump-closure-error / jump-ax-read-error inside paletteContainerCount.)
@@ -293,8 +343,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
             `provenance line /${provRe.source}/ ${provRe.test(readerText) ? 'shown' : 'MISSING'} (reader region).`,
         );
       }
-      const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, 'jumpToHit') : null;
-      return `Enter landed on the hit — palette gone, heading /${step.headingPattern}/ + provenance /${step.provenancePattern}/ in reader${frameNote(frac)}`;
+      return `Enter landed on the hit — palette gone, heading /${step.headingPattern}/ + provenance /${step.provenancePattern}/ in reader`;
     }
 
     // ---- P7 W5: the semantic surfaces ------------------------------------
@@ -395,11 +444,13 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       }
 
       const readTab = async (label: string, pattern: string): Promise<string> => {
-        if (label !== 'Result') await clickIn('document-inspector__tab', label);
         const expected = new RegExp(pattern);
         let text = '';
         const ok = await waitUntil(async () => {
           if ((await d.countClass('document-inspector')) === 0) return false;
+          if (label !== 'Result') {
+            await clickIn('document-inspector__tab', label);
+          }
           text = await scopedText('document-inspector');
           return expected.test(text);
         }, 15_000);
@@ -456,10 +507,16 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       }
 
       const readTab = async (label: string, pattern: string): Promise<string> => {
-        if (label !== 'Result') await clickIn('document-inspector__tab', label);
         const expected = new RegExp(pattern);
-        const text = await scopedText('document-inspector');
-        if (!expected.test(text)) {
+        let text = '';
+        const ready = await waitUntil(async () => {
+          if (label !== 'Result') {
+            await clickIn('document-inspector__tab', label);
+          }
+          text = await scopedText('document-inspector');
+          return expected.test(text);
+        }, 15_000);
+        if (!ready) {
           throw new Error(
             `the unified Library ${label} tab did not report /${expected.source}/ ` +
               `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 320))})`,
@@ -523,10 +580,16 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         pattern: string,
         sourceLabel: string,
       ): Promise<string> => {
-        if (label !== 'Result') await clickIn('document-inspector__tab', label);
         const expected = new RegExp(pattern);
-        const text = await scopedText('document-inspector');
-        if (!expected.test(text)) {
+        let text = '';
+        const ready = await waitUntil(async () => {
+          if (label !== 'Result') {
+            await clickIn('document-inspector__tab', label);
+          }
+          text = await scopedText('document-inspector');
+          return expected.test(text);
+        }, 15_000);
+        if (!ready) {
           throw new Error(
             `the ${sourceLabel} ${label} evidence did not report /${expected.source}/ ` +
               `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 420))})`,
@@ -581,17 +644,11 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
 
-      await clickIn('document-inspector__tab', 'Sources');
-      const sourcesRe = new RegExp(
+      inspector = await assertInspectorTab(
+        'Sources',
         faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
+        'connected Library',
       );
-      inspector = await scopedText('document-inspector');
-      if (!sourcesRe.test(inspector)) {
-        throw new Error(
-          `the connected Library Sources did not report /${sourcesRe.source}/ ` +
-            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 420))})`,
-        );
-      }
       const retryBefore = /Retry after (\d+) ms/.exec(inspector)?.[1];
       if (!retryBefore) {
         throw new Error('the partial source did not expose retry timing');
@@ -610,15 +667,11 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
 
-      await clickIn('document-inspector__tab', 'Provenance');
-      const provenanceRe = new RegExp(step.provenancePattern);
-      inspector = await scopedText('document-inspector');
-      if (!provenanceRe.test(inspector)) {
-        throw new Error(
-          `the connected Library Provenance did not report /${provenanceRe.source}/ ` +
-            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 420))})`,
-        );
-      }
+      inspector = await assertInspectorTab(
+        'Provenance',
+        step.provenancePattern,
+        'connected Library',
+      );
       return (
         'Drive and Connected CatDB memberships were rendered from native queries; ' +
         `the partial answer named its excluded source and winner, and retry advanced ${retryBefore}→${retryAfter} ms`

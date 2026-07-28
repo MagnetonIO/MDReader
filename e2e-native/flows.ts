@@ -580,11 +580,11 @@ export const FLOW: readonly Step[] = [
     title: 'The active Document is assembled across filesystem, Git, and frontmatter',
     channel: 'dom',
     resultPattern:
-      'Federated document[\\s\\S]*Complete[\\s\\S]*title[\\s\\S]*broken-app[\\s\\S]*from frontmatter',
+      'Federated document[\\s\\S]*(?:Complete|COMPLETE)[\\s\\S]*title[\\s\\S]*broken-app[\\s\\S]*from\\s+frontmatter',
     sourcesPattern:
-      'filesystem[\\s\\S]*ran[\\s\\S]*git[\\s\\S]*ran[\\s\\S]*frontmatter[\\s\\S]*ran',
+      'filesystem[\\s\\S]*(?:ran|RAN)[\\s\\S]*git[\\s\\S]*(?:ran|RAN)[\\s\\S]*frontmatter[\\s\\S]*(?:ran|RAN)',
     provenancePattern:
-      'modifiedAt[\\s\\S]*filesystem\\.modifiedAt[\\s\\S]*selected[\\s\\S]*git\\.modifiedAt[\\s\\S]*also observed',
+      'modifiedAt[\\s\\S]*filesystem\\.modifiedAt[\\s\\S]*(?:selected|SELECTED)[\\s\\S]*git\\.modifiedAt[\\s\\S]*(?:also observed|ALSO OBSERVED)',
     schemaPattern:
       'document · v[0-9a-f]{8}-[0-9a-f-]{27,}[\\s\\S]*blake3:[0-9a-f]{64}[\\s\\S]*semantic interpretation[\\s\\S]*not the Markdown file',
   },
@@ -634,9 +634,9 @@ export const FLOW: readonly Step[] = [
     title: 'The unified Library opens and inspects the same local Document answer',
     channel: 'dom',
     document: 'catdb-core',
-    readerPattern: 'Edit local file[\\s\\S]*catdb-core',
-    resultPattern: 'Complete[\\s\\S]*catdb-core\\.md',
-    sourcesPattern: 'ran[\\s\\S]*ran[\\s\\S]*ran',
+    readerPattern: 'catdb-core[\\s\\S]*Edit local file',
+    resultPattern: '(?:Complete|COMPLETE)[\\s\\S]*catdb-core\\.md',
+    sourcesPattern: '(?:ran|RAN)[\\s\\S]*(?:ran|RAN)[\\s\\S]*(?:ran|RAN)',
     provenancePattern:
       'title[\\s\\S]*provenance rule[\\s\\S]*\\.title[\\s\\S]*record[^\\n]*catdb-core\\.md',
     schemaPattern:
@@ -654,16 +654,16 @@ export const FLOW: readonly Step[] = [
     driveReaderPattern:
       'Google Drive fixture[\\s\\S]*Drive fixture note\\.md[\\s\\S]*Read-only[\\s\\S]*This document came through the Google Drive connector',
     driveResultPattern:
-      'Complete[\\s\\S]*mdreader-e2e-drive-document[\\s\\S]*Drive fixture note\\.md',
+      '(?:Complete|COMPLETE)[\\s\\S]*mdreader-e2e-drive-document[\\s\\S]*Drive fixture note\\.md',
     driveSourcesPattern:
-      'Google Drive fixture[\\s\\S]*ran[\\s\\S]*1 scanned · 1 returned',
+      'Google Drive fixture[\\s\\S]*(?:ran|RAN)[\\s\\S]*1 scanned · 1 returned',
     driveProvenancePattern:
       'title[\\s\\S]*Google Drive fixture[\\s\\S]*\\.name[\\s\\S]*record mdreader-e2e-drive-document',
     readerPattern: 'Isolated Enterprise fixture[\\s\\S]*Mobile evidence handbook[\\s\\S]*Read-only',
     resultPattern:
-      'Partial[\\s\\S]*Excluded source 00000000-0000-0000-0000-000000000213[\\s\\S]*mobile-e2e-document',
+      '(?:Partial|PARTIAL)[\\s\\S]*Excluded source 00000000-0000-0000-0000-000000000213[\\s\\S]*mobile-e2e-document',
     sourcesPattern:
-      '00000000-0000-0000-0000-000000000206[\\s\\S]*ran[\\s\\S]*00000000-0000-0000-0000-000000000213[\\s\\S]*refused[\\s\\S]*Retry after \\d+ ms',
+      '00000000-0000-0000-0000-000000000206[\\s\\S]*(?:ran|RAN)[\\s\\S]*00000000-0000-0000-0000-000000000213[\\s\\S]*(?:refused|REFUSED)[\\s\\S]*Retry after \\d+ ms',
     provenancePattern:
       'title[\\s\\S]*Isolated Enterprise fixture[\\s\\S]*00000000-0000-0000-0000-000000000207[\\s\\S]*observed Mobile evidence handbook',
   },
