@@ -649,6 +649,30 @@ fn validate_current_cloud_record(
     Ok(())
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn validate_current_library_memberships(
+    registry: &LibraryStore,
+    expected_locals: &[crate::library::LocalFolderSource],
+    expected_clouds: &[CloudSourceRecord],
+) -> Result<(), CloudSourceError> {
+    let current = registry
+        .read_query_snapshot()
+        .map_err(crate::library::map_library_cloud_error)?;
+    for expected in expected_locals {
+        if !current
+            .local_sources
+            .iter()
+            .any(|source| source == expected)
+        {
+            return Err(CloudSourceError::QueryRetired);
+        }
+    }
+    for expected in expected_clouds {
+        validate_current_cloud_record(&current.cloud_sources, expected)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CloudSourceRecord {
@@ -2316,6 +2340,7 @@ async fn query_cloud_documents_inner(
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 struct AdmittedLibraryQuery {
     members: Vec<crate::library_query::LibraryQueryMember>,
+    local_records: Vec<crate::library::LocalFolderSource>,
     clouds: Vec<(CloudSourceRecord, Option<SecretBundle>)>,
     registry: LibraryStore,
     vault: Arc<dyn CredentialVault>,
@@ -2504,12 +2529,13 @@ fn admit_library_query(
     };
     let active_source_id = snapshot.active_source_id;
 
-    let mut members = Vec::new();
-    for local in snapshot
+    let local_records = snapshot
         .local_sources
         .into_iter()
         .filter(|source| selected(source.engine_source_id()))
-    {
+        .collect::<Vec<_>>();
+    let mut members = Vec::new();
+    for local in local_records.iter().cloned() {
         let membership_id = local.engine_source_id();
         let registry_id = local.id.clone();
         let active = active_source_id.as_deref() == Some(registry_id.as_str());
@@ -2563,6 +2589,7 @@ fn admit_library_query(
     }
     Ok(AdmittedLibraryQuery {
         members,
+        local_records,
         clouds,
         registry,
         vault,
@@ -2789,6 +2816,7 @@ pub(crate) async fn query_library_documents(
             let catalog = ensure_cloud_catalog(&app, &state).await?;
             let AdmittedLibraryQuery {
                 mut members,
+                local_records,
                 clouds,
                 registry,
                 vault,
@@ -2876,12 +2904,7 @@ pub(crate) async fn query_library_documents(
                 }
             })?;
             tauri::async_runtime::spawn_blocking(move || {
-                registry.read_cloud(|sources| {
-                    for expected in &expected_clouds {
-                        validate_current_cloud_record(sources, expected)?;
-                    }
-                    Ok(())
-                })
+                validate_current_library_memberships(&registry, &local_records, &expected_clouds)
             })
             .await
             .map_err(|_| CloudSourceError::PersistFailed)??;
@@ -7371,6 +7394,7 @@ mod tests {
         assert!(admitted.clouds[0].1.is_none());
         let AdmittedLibraryQuery {
             mut members,
+            local_records: _,
             clouds,
             registry,
             vault,
@@ -7520,6 +7544,45 @@ mod tests {
         assert!(sources
             .iter()
             .all(|source| source.outcome == catdb_api_types::SourceOutcome::RuntimeRefused));
+    }
+
+    #[test]
+    fn forgetting_local_membership_retires_admitted_query_before_publication() {
+        let temp = tempdir().expect("temporary directory");
+        let root = temp.path().join("notes");
+        fs::create_dir(&root).expect("local source");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let admitted = registry.add_root(&root).expect("admit local membership");
+        registry
+            .save_to(&registry_path)
+            .expect("persist admitted membership");
+
+        let (query_admitted_tx, query_admitted_rx) = std::sync::mpsc::channel();
+        let (publish_tx, publish_rx) = std::sync::mpsc::channel();
+        let query_store = LibraryStore::new(registry_path.clone());
+        let expected = admitted.clone();
+        let query = std::thread::spawn(move || {
+            query_admitted_tx.send(()).expect("query admitted");
+            publish_rx.recv().expect("release publication");
+            super::validate_current_library_memberships(
+                &query_store,
+                std::slice::from_ref(&expected),
+                &[],
+            )
+        });
+        query_admitted_rx.recv().expect("query admission");
+        registry
+            .forget(&admitted.id, None)
+            .expect("forget overlapping membership");
+        registry
+            .save_to(&registry_path)
+            .expect("publish forgotten membership");
+        publish_tx.send(()).expect("release query publication");
+        assert_eq!(
+            query.join().expect("query publication check"),
+            Err(CloudSourceError::QueryRetired)
+        );
     }
 
     #[cfg(unix)]

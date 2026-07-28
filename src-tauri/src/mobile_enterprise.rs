@@ -296,6 +296,8 @@ struct ActiveMobileEnterpriseOperation {
 struct MobileEnterpriseOperationHandle {
     operation_id: String,
     serial: u64,
+    lifecycle: bool,
+    connection_generation: u64,
     cancellation: catdb_connectors::CancellationToken,
     phase: Arc<AtomicU8>,
 }
@@ -306,8 +308,7 @@ const MOBILE_OPERATION_COMPLETE: u8 = 2;
 
 #[derive(Clone)]
 struct MobileEnterpriseCommitAuthority {
-    active_operations: Arc<Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>>,
-    operation_id: String,
+    lifecycle_operation: Arc<Mutex<Option<ActiveMobileEnterpriseOperation>>>,
     serial: u64,
     cancellation: catdb_connectors::CancellationToken,
     phase: Arc<AtomicU8>,
@@ -315,11 +316,11 @@ struct MobileEnterpriseCommitAuthority {
 
 impl MobileEnterpriseCommitAuthority {
     fn begin_commit(&self) -> Result<(), MobileEnterpriseError> {
-        let active = self
-            .active_operations
+        let lifecycle = self
+            .lifecycle_operation
             .lock()
             .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
-        match active.get(&self.operation_id) {
+        match lifecycle.as_ref() {
             Some(entry)
                 if entry.serial == self.serial
                     && !self.cancellation.is_cancelled()
@@ -342,12 +343,12 @@ impl MobileEnterpriseCommitAuthority {
     fn finish_commit(&self) {
         self.phase
             .store(MOBILE_OPERATION_COMPLETE, Ordering::SeqCst);
-        if let Ok(mut active) = self.active_operations.lock() {
-            if active
-                .get(&self.operation_id)
+        if let Ok(mut lifecycle) = self.lifecycle_operation.lock() {
+            if lifecycle
+                .as_ref()
                 .is_some_and(|entry| entry.serial == self.serial)
             {
-                active.remove(&self.operation_id);
+                lifecycle.take();
             }
         }
     }
@@ -371,14 +372,21 @@ impl<'a> MobileEnterpriseOperationOwner<'a> {
         })
     }
 
+    fn begin_lifecycle(state: &'a MobileEnterpriseState) -> Result<Self, MobileEnterpriseError> {
+        Ok(Self {
+            state,
+            handle: state.begin_lifecycle_operation()?,
+            settled: false,
+        })
+    }
+
     fn cancellation(&self) -> catdb_connectors::CancellationToken {
         self.handle.cancellation.clone()
     }
 
     fn commit_authority(&self) -> MobileEnterpriseCommitAuthority {
         MobileEnterpriseCommitAuthority {
-            active_operations: Arc::clone(&self.state.active_operations),
-            operation_id: self.handle.operation_id.clone(),
+            lifecycle_operation: Arc::clone(&self.state.lifecycle_operation),
             serial: self.handle.serial,
             cancellation: self.handle.cancellation.clone(),
             phase: Arc::clone(&self.handle.phase),
@@ -412,6 +420,8 @@ impl Drop for MobileEnterpriseOperationOwner<'_> {
 pub(crate) struct MobileEnterpriseState {
     lifecycle_commits: Arc<Mutex<()>>,
     active_operations: Arc<Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>>,
+    lifecycle_operation: Arc<Mutex<Option<ActiveMobileEnterpriseOperation>>>,
+    connection_generation: AtomicU64,
     next_operation_serial: AtomicU64,
 }
 
@@ -420,6 +430,8 @@ impl Default for MobileEnterpriseState {
         Self {
             lifecycle_commits: Arc::new(Mutex::new(())),
             active_operations: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle_operation: Arc::new(Mutex::new(None)),
+            connection_generation: AtomicU64::new(1),
             next_operation_serial: AtomicU64::new(1),
         }
     }
@@ -440,6 +452,14 @@ impl MobileEnterpriseState {
             .active_operations
             .lock()
             .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        let lifecycle = self
+            .lifecycle_operation
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        if lifecycle.is_some() {
+            return Err(MobileEnterpriseError::Cancelled);
+        }
+        let connection_generation = self.connection_generation.load(Ordering::SeqCst);
         if let Some(retired) = active.insert(
             operation_id.to_string(),
             ActiveMobileEnterpriseOperation {
@@ -455,6 +475,51 @@ impl MobileEnterpriseState {
         Ok(MobileEnterpriseOperationHandle {
             operation_id: operation_id.to_string(),
             serial,
+            lifecycle: false,
+            connection_generation,
+            cancellation,
+            phase,
+        })
+    }
+
+    fn begin_lifecycle_operation(
+        &self,
+    ) -> Result<MobileEnterpriseOperationHandle, MobileEnterpriseError> {
+        let serial = self.next_operation_serial.fetch_add(1, Ordering::SeqCst);
+        let cancellation = catdb_connectors::CancellationToken::new();
+        let phase = Arc::new(AtomicU8::new(MOBILE_OPERATION_PENDING));
+        let mut active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        let mut lifecycle = self
+            .lifecycle_operation
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        for (_, operation) in active.drain() {
+            operation.cancellation.cancel();
+        }
+        if let Some(retired) = lifecycle.replace(ActiveMobileEnterpriseOperation {
+            serial,
+            cancellation: cancellation.clone(),
+            phase: Arc::clone(&phase),
+        }) {
+            if retired.phase.load(Ordering::SeqCst) == MOBILE_OPERATION_PENDING {
+                retired.cancellation.cancel();
+            }
+        }
+        let connection_generation = self
+            .connection_generation
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?
+            + 1;
+        Ok(MobileEnterpriseOperationHandle {
+            operation_id: LIBRARY_LIFECYCLE_OPERATION_ID.to_string(),
+            serial,
+            lifecycle: true,
+            connection_generation,
             cancellation,
             phase,
         })
@@ -464,10 +529,43 @@ impl MobileEnterpriseState {
         &self,
         operation: &MobileEnterpriseOperationHandle,
     ) -> Result<(), MobileEnterpriseError> {
+        if operation.lifecycle {
+            let mut lifecycle = self
+                .lifecycle_operation
+                .lock()
+                .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+            return match lifecycle.as_ref() {
+                Some(entry) if entry.serial == operation.serial => {
+                    lifecycle.take();
+                    if operation.cancellation.is_cancelled() {
+                        Err(MobileEnterpriseError::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                }
+                _ => Err(MobileEnterpriseError::Cancelled),
+            };
+        }
         let mut active = self
             .active_operations
             .lock()
             .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        let lifecycle = self
+            .lifecycle_operation
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        if lifecycle.is_some()
+            || self.connection_generation.load(Ordering::SeqCst) != operation.connection_generation
+        {
+            if active
+                .get(&operation.operation_id)
+                .is_some_and(|entry| entry.serial == operation.serial)
+            {
+                active.remove(&operation.operation_id);
+            }
+            operation.cancellation.cancel();
+            return Err(MobileEnterpriseError::Cancelled);
+        }
         match active.get(&operation.operation_id) {
             Some(entry) if entry.serial == operation.serial => {
                 active.remove(&operation.operation_id);
@@ -492,6 +590,7 @@ impl MobileEnterpriseState {
         true
     }
 
+    #[cfg(test)]
     fn cancel_all_operations(&self) -> Result<(), MobileEnterpriseError> {
         let mut active = self
             .active_operations
@@ -905,6 +1004,7 @@ async fn discover_connected_catdb(
         return Err(MobileEnterpriseError::InvalidResponse);
     }
     let mut source_ids = std::collections::HashSet::new();
+    let mut source_version_ids = std::collections::HashSet::new();
     let permitted_sources = catalog
         .sources
         .into_iter()
@@ -912,6 +1012,7 @@ async fn discover_connected_catdb(
             if source.source_id.is_nil()
                 || source.source_version_id.is_nil()
                 || !source_ids.insert(source.source_id)
+                || !source_version_ids.insert(source.source_version_id)
                 || source
                     .connector_id
                     .as_deref()
@@ -1393,6 +1494,7 @@ fn parse_connected_library_response(
         .iter()
         .map(|descriptor| (descriptor.source_id, descriptor.source_version_id))
         .collect::<BTreeMap<_, _>>();
+    let mut expected_source_versions = BTreeSet::new();
     let expected = source
         .selected_source_ids()
         .iter()
@@ -1400,7 +1502,11 @@ fn parse_connected_library_response(
             permitted
                 .get(source_id)
                 .copied()
-                .map(|version_id| (*source_id, version_id))
+                .and_then(|version_id| {
+                    expected_source_versions
+                        .insert(version_id)
+                        .then_some((*source_id, version_id))
+                })
                 .ok_or(MobileEnterpriseError::ConnectionIdentityChanged)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -1448,7 +1554,6 @@ fn parse_connected_library_response(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let expected_source_versions = expected.values().copied().collect::<BTreeSet<_>>();
     let selected_fields = selected_fields
         .iter()
         .map(String::as_str)
@@ -1503,6 +1608,17 @@ fn parse_connected_library_response(
             active: false,
         }],
     })
+}
+
+fn validate_current_connected_source(
+    expected: &crate::library::ConnectedCatdbSourceRecord,
+    current: Option<&crate::library::ConnectedCatdbSourceRecord>,
+) -> Result<(), MobileEnterpriseError> {
+    if current == Some(expected) {
+        Ok(())
+    } else {
+        Err(MobileEnterpriseError::ConnectionIdentityChanged)
+    }
 }
 
 #[tauri::command(async)]
@@ -1589,7 +1705,7 @@ pub(crate) async fn enroll_connected_catdb(
     }
     #[cfg(not(mobile))]
     {
-        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
+        let owner = MobileEnterpriseOperationOwner::begin_lifecycle(&state)?;
         let cancellation = owner.cancellation();
         let server_origin = exact_origin(&server_origin)?;
         let token = BearerToken(bearer_token);
@@ -1630,8 +1746,7 @@ pub(crate) async fn set_connected_catdb_source_enabled(
     }
     #[cfg(not(mobile))]
     {
-        state.cancel_all_operations()?;
-        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
+        let owner = MobileEnterpriseOperationOwner::begin_lifecycle(&state)?;
         let store = library_store(&app)?;
         commit_mobile_enterprise_operation(&state, owner, move || {
             store
@@ -1657,8 +1772,7 @@ pub(crate) async fn disconnect_connected_catdb(
     }
     #[cfg(not(mobile))]
     {
-        state.cancel_all_operations()?;
-        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
+        let owner = MobileEnterpriseOperationOwner::begin_lifecycle(&state)?;
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
         let legacy_path = legacy_registry_path(&app)?;
@@ -1803,6 +1917,11 @@ pub(crate) async fn query_connected_library_documents(
         evidence.answer.rows.extend(page.answer.rows);
         evidence.answer.next_cursor = page.answer.next_cursor;
     }
+    let current = tokio::select! {
+        _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+        current = connected_source_or_migrate(&app) => current?,
+    };
+    validate_current_connected_source(&source, current.as_ref())?;
     owner.finish()?;
     Ok(evidence)
 }
@@ -1946,10 +2065,11 @@ mod tests {
         migrate_legacy_connection, parse_connected_library_response, persist_connected_catdb,
         pin_connected_query, publish_legacy_migration,
         publish_legacy_migration_transaction_with_rename, publish_legacy_migration_with_rename,
-        retire_matching_legacy_after_publication, with_legacy_migration_lock, BearerToken,
-        BearerVault, ConnectedCatdbState, ConnectedPaginationBudget, ConnectionRecord,
-        MobileEnterpriseError, MobileEnterpriseOperation, MobileEnterpriseOperationOwner,
-        MobileEnterpriseResponse, MobileEnterpriseState,
+        retire_matching_legacy_after_publication, validate_current_connected_source,
+        with_legacy_migration_lock, BearerToken, BearerVault, ConnectedCatdbState,
+        ConnectedPaginationBudget, ConnectionRecord, MobileEnterpriseError,
+        MobileEnterpriseOperation, MobileEnterpriseOperationOwner, MobileEnterpriseResponse,
+        MobileEnterpriseState,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
@@ -2005,7 +2125,7 @@ mod tests {
 
         let state = MobileEnterpriseState::default();
         let owner =
-            MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("enrollment owner");
+            MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("enrollment owner");
         let mutated = Arc::new(AtomicBool::new(false));
         let worker_mutated = Arc::clone(&mutated);
         let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
@@ -2047,8 +2167,7 @@ mod tests {
     #[tokio::test]
     async fn a_stale_lifecycle_serial_cannot_mutate_after_replacement() {
         let state = MobileEnterpriseState::default();
-        let owner =
-            MobileEnterpriseOperationOwner::begin(&state, "disconnect").expect("first owner");
+        let owner = MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("first owner");
         let mutated = Arc::new(AtomicBool::new(false));
         let worker_mutated = Arc::clone(&mutated);
         let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
@@ -2071,7 +2190,7 @@ mod tests {
             }
         }
         let replacement =
-            MobileEnterpriseOperationOwner::begin(&state, "disconnect").expect("replacement owner");
+            MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("replacement owner");
         release_commit.send(()).expect("release commit point");
         commit_gate.join().expect("commit gate did not panic");
         assert_eq!(disconnect.await, Err(MobileEnterpriseError::Cancelled));
@@ -2082,7 +2201,7 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_lifecycle_worker_releases_ownership_and_the_commit_lease() {
         let state = MobileEnterpriseState::default();
-        let owner = MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("first owner");
+        let owner = MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("first owner");
         let result = commit_mobile_enterprise_operation(&state, owner, || -> Result<(), _> {
             panic!("deliberate worker panic")
         })
@@ -2090,7 +2209,7 @@ mod tests {
         assert_eq!(result, Err(MobileEnterpriseError::PersistFailed));
 
         let replacement =
-            MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("replacement owner");
+            MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("replacement owner");
         assert_eq!(
             commit_mobile_enterprise_operation(&state, replacement, || Ok("enrolled")).await,
             Ok("enrolled")
@@ -2219,6 +2338,65 @@ mod tests {
         let rendered = format!("{record:?}");
         assert!(!rendered.contains("secret-reference-1"));
         assert!(rendered.contains("[native-secure-reference]"));
+    }
+
+    #[test]
+    fn lifecycle_generation_retires_inflight_and_rejects_late_query_publication() {
+        let state = MobileEnterpriseState::default();
+        let inflight =
+            MobileEnterpriseOperationOwner::begin(&state, "inflight-query").expect("query owner");
+        let lifecycle =
+            MobileEnterpriseOperationOwner::begin_lifecycle(&state).expect("lifecycle owner");
+
+        assert!(inflight.cancellation().is_cancelled());
+        assert_eq!(inflight.finish(), Err(MobileEnterpriseError::Cancelled));
+        assert!(matches!(
+            MobileEnterpriseOperationOwner::begin(&state, "late-renderer-query"),
+            Err(MobileEnterpriseError::Cancelled)
+        ));
+        assert_eq!(lifecycle.finish(), Ok(()));
+        assert_eq!(
+            MobileEnterpriseOperationOwner::begin(&state, "post-lifecycle-query")
+                .expect("admission reopens")
+                .finish(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn lifecycle_admission_retires_a_query_admitted_before_disconnect() {
+        let state = MobileEnterpriseState::default();
+        let query = state
+            .begin_operation("query-before-disconnect")
+            .expect("query admission");
+        let lifecycle = state
+            .begin_lifecycle_operation()
+            .expect("disconnect admission");
+
+        assert!(query.cancellation.is_cancelled());
+        assert_eq!(
+            state.finish_operation(&query),
+            Err(MobileEnterpriseError::Cancelled)
+        );
+        assert_eq!(state.finish_operation(&lifecycle), Ok(()));
+    }
+
+    #[test]
+    fn renderer_reserved_id_cannot_replace_or_cancel_lifecycle() {
+        let state = MobileEnterpriseState::default();
+        let lifecycle = state
+            .begin_lifecycle_operation()
+            .expect("trusted lifecycle operation");
+        assert!(matches!(
+            state.begin_operation(super::LIBRARY_LIFECYCLE_OPERATION_ID),
+            Err(MobileEnterpriseError::Cancelled)
+        ));
+        assert!(
+            !state.cancel_operation(super::LIBRARY_LIFECYCLE_OPERATION_ID),
+            "renderer cancellation reached the trusted lifecycle namespace"
+        );
+        assert!(!lifecycle.cancellation.is_cancelled());
+        assert_eq!(state.finish_operation(&lifecycle), Ok(()));
     }
 
     #[test]
@@ -2615,6 +2793,66 @@ mod tests {
 
         assert_eq!(
             parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_distinct_sources_with_one_version_authority() {
+        let mut source = connected_source();
+        let shared_version = source.permitted_sources[0].source_version_id;
+        let second_source = uuid::Uuid::from_u128(13);
+        source
+            .permitted_sources
+            .push(crate::library::ConnectedCatdbSourceDescriptor {
+                source_id: second_source,
+                source_version_id: shared_version,
+                runtime_bound: true,
+                connector_id: Some("snowflake-secondary".to_string()),
+            });
+        source.selected_source_ids.push(second_source);
+
+        let mut response = connected_response(
+            &["remote.md"],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Complete,
+        );
+        let mut body: catdb_api_types::EntityQueryResponse =
+            serde_json::from_str(&response.body_json).expect("response");
+        let mut second_execution = body.sources[0].clone();
+        second_execution.source_id = second_source;
+        body.sources.push(second_execution);
+        body.pins.source_version_ids.push(shared_version);
+        response.body_json = serde_json::to_string(&body).expect("response");
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn connected_query_publication_revalidates_the_exact_connection_record() {
+        let expected = connected_source();
+        let mut changed_selection = expected.clone();
+        changed_selection.selected_source_ids.clear();
+        let mut changed_credential = expected.clone();
+        changed_credential.credential_reference = "credential-reference-2".to_string();
+
+        assert_eq!(
+            validate_current_connected_source(&expected, Some(&expected)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_current_connected_source(&expected, Some(&changed_selection)),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+        assert_eq!(
+            validate_current_connected_source(&expected, Some(&changed_credential)),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+        assert_eq!(
+            validate_current_connected_source(&expected, None),
             Err(MobileEnterpriseError::ConnectionIdentityChanged)
         );
     }
@@ -3321,6 +3559,86 @@ mod tests {
         assert_eq!(source.catalog_revision_id, uuid::Uuid::from_u128(4));
         assert_eq!(source.permitted_sources.len(), 1);
         assert!(source.selected_source_ids.is_empty());
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn enrollment_rejects_distinct_sources_with_one_version_authority() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            for (expected_path, body) in [
+                (
+                    "/v1/session",
+                    serde_json::json!({
+                        "principal_kind": "service",
+                        "deployment_id": "00000000-0000-0000-0000-000000000002",
+                        "workspace_ids": ["00000000-0000-0000-0000-000000000003"],
+                        "scopes": ["query", "catalog_read"]
+                    }),
+                ),
+                (
+                    "/v1/control/workspaces/00000000-0000-0000-0000-000000000003/catalog",
+                    serde_json::json!({
+                        "workspace_id": "00000000-0000-0000-0000-000000000003",
+                        "resolver_id": "00000000-0000-0000-0000-000000000005",
+                        "revision": {
+                            "revision_id": "00000000-0000-0000-0000-000000000004",
+                            "parent_revision_id": null,
+                            "actor": "test",
+                            "timestamp_ms": 1
+                        },
+                        "default_schema_version_id": "00000000-0000-0000-0000-000000000006",
+                        "schemas": [{
+                            "schema_version_id": "00000000-0000-0000-0000-000000000006",
+                            "name": "document",
+                            "content_id": "00000000-0000-0000-0000-000000000007",
+                            "compatibility": "compatible",
+                            "spec": {}
+                        }],
+                        "mappings": [],
+                        "sources": [
+                            {
+                                "source_id": "00000000-0000-0000-0000-000000000011",
+                                "source_version_id": "00000000-0000-0000-0000-000000000012",
+                                "checksum": "checksum-a",
+                                "runtime_bound": true,
+                                "connector_id": "postgres-primary"
+                            },
+                            {
+                                "source_id": "00000000-0000-0000-0000-000000000013",
+                                "source_version_id": "00000000-0000-0000-0000-000000000012",
+                                "checksum": "checksum-b",
+                                "runtime_bound": true,
+                                "connector_id": "snowflake-secondary"
+                            }
+                        ],
+                        "policies": []
+                    }),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = vec![0_u8; 16 * 1024];
+                let count = stream.read(&mut request).await.expect("read");
+                assert!(String::from_utf8_lossy(&request[..count])
+                    .starts_with(&format!("GET {expected_path} ")));
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+
+        assert_eq!(
+            discover_connected_catdb(
+                url::Url::parse(&format!("http://{address}")).expect("origin"),
+                &BearerToken("native-secret".to_string()),
+            )
+            .await,
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
         server.await.expect("server");
     }
 

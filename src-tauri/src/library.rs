@@ -1686,10 +1686,12 @@ fn validate_connected_catdb_source(
         return Err(LibraryError::CorruptRegistry);
     }
     let mut permitted = HashSet::new();
+    let mut permitted_versions = HashSet::new();
     for descriptor in &source.permitted_sources {
         if descriptor.source_id.is_nil()
             || descriptor.source_version_id.is_nil()
             || !permitted.insert(descriptor.source_id)
+            || !permitted_versions.insert(descriptor.source_version_id)
             || descriptor
                 .connector_id
                 .as_deref()
@@ -1731,10 +1733,12 @@ fn validate_connected_catdb_source_v7(
         return Err(LibraryError::CorruptRegistry);
     }
     let mut permitted = HashSet::new();
+    let mut permitted_versions = HashSet::new();
     for descriptor in &source.permitted_sources {
         if descriptor.source_id.is_nil()
             || descriptor.source_version_id.is_nil()
             || !permitted.insert(descriptor.source_id)
+            || !permitted_versions.insert(descriptor.source_version_id)
             || descriptor
                 .connector_id
                 .as_deref()
@@ -2090,6 +2094,22 @@ impl LibraryStore {
             #[cfg(test)]
             fail_next_cloud_persist: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    #[cfg(any(test, feature = "e2e-build"))]
+    pub(crate) fn replace_with_e2e_local_membership(
+        &self,
+        corpus_root: &Path,
+    ) -> Result<LocalFolderSource, LibraryError> {
+        let _lease = self.acquire()?;
+        let mut registry = LibraryRegistry::empty();
+        // This path comes from the isolated runner process, but it becomes
+        // authority only after the backend canonicalizes it and captures the
+        // native filesystem identity through `add_root`.
+        let source = registry.add_root(corpus_root)?;
+        registry.active_source_id = Some(source.id.clone());
+        registry.save_to(&self.registry_path)?;
+        Ok(source)
     }
 
     pub(crate) fn registry_path(&self) -> &Path {
@@ -2555,6 +2575,24 @@ pub(crate) fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), Libra
         .app_data_dir()
         .map_err(|_| LibraryError::PersistFailed)?;
     Ok((app_data.join("library.json"), app_data))
+}
+
+#[cfg(all(
+    feature = "e2e-build",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+pub(crate) fn seed_e2e_local_membership(app: &AppHandle) -> Result<(), LibraryError> {
+    const E2E_IDENTIFIER: &str = "dev.mdreader.app.e2e";
+    const E2E_CORPUS_ROOT_ENV: &str = "MDREADER_E2E_CORPUS_ROOT";
+
+    if app.config().identifier != E2E_IDENTIFIER {
+        return Err(LibraryError::PersistFailed);
+    }
+    let corpus_root = std::env::var_os(E2E_CORPUS_ROOT_ENV).ok_or(LibraryError::InvalidRoot)?;
+    let (registry_path, _) = registry_path(app)?;
+    LibraryStore::new(registry_path)
+        .replace_with_e2e_local_membership(Path::new(&corpus_root))
+        .map(|_| ())
 }
 
 fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
@@ -4811,6 +4849,98 @@ mod tests {
     }
 
     #[test]
+    fn isolated_e2e_setup_admits_only_the_backend_captured_corpus_before_remote_members() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let corpus = mkdir(temp.path(), "fixture-corpus");
+        let outsider = mkdir(temp.path(), "outsider");
+        let store = LibraryStore::new(registry_path.clone());
+
+        let admitted = store
+            .replace_with_e2e_local_membership(&corpus)
+            .expect("backend captures the runner-owned corpus");
+        let drive: crate::cloud_accounts::CloudSourceRecord =
+            serde_json::from_value(serde_json::json!({
+                "id": "d".repeat(64),
+                "provider": "google-drive",
+                "label": "Google Drive",
+                "enabled": true,
+                "credential_reference": "mdreader-e2e-google-drive",
+                "config": {
+                    "kind": "google-drive",
+                    "selections": [{
+                        "id": "drive-fixture-note",
+                        "resource_key": null,
+                        "folder": false
+                    }]
+                },
+                "contract": {
+                    "connector_version": "google-drive/v1",
+                    "capabilities": {
+                        "read": true,
+                        "write": false,
+                        "search": true,
+                        "watch": false,
+                        "open_original": true,
+                        "download": true
+                    },
+                    "mapping_version": crate::cloud_accounts::CLOUD_DOCUMENT_MAPPING_VERSION,
+                    "index_policy": "read-through"
+                }
+            }))
+            .expect("valid E2E Drive record");
+        store
+            .update_cloud(|sources| {
+                sources.push(drive);
+                Ok(())
+            })
+            .expect("add E2E Drive member after local admission");
+
+        let remote_source_id = uuid::Uuid::from_u128(0x206);
+        let mut connected = super::ConnectedCatdbSourceRecord::new(
+            "Isolated Enterprise fixture".to_string(),
+            "http://127.0.0.1:43210/".to_string(),
+            "mdreader-e2e-connected-catdb".to_string(),
+            super::ConnectedCatdbAuthority {
+                deployment_id: uuid::Uuid::from_u128(0x201),
+                workspace_id: uuid::Uuid::from_u128(0x202),
+                catalog_revision_id: uuid::Uuid::from_u128(0x204),
+                default_schema_version_id: uuid::Uuid::from_u128(0x205),
+            },
+            vec![super::ConnectedCatdbSourceDescriptor {
+                source_id: remote_source_id,
+                source_version_id: uuid::Uuid::from_u128(0x207),
+                runtime_bound: true,
+                connector_id: Some("postgres-e2e".to_string()),
+            }],
+        );
+        connected.selected_source_ids = vec![remote_source_id];
+        store
+            .add_connected_catdb(connected)
+            .expect("add E2E Connected member after local admission");
+
+        let registry =
+            LibraryRegistry::load_from(&registry_path).expect("load composed E2E Library");
+        assert_eq!(registry.sources().len(), 1);
+        assert_eq!(registry.cloud_source_count(), 1);
+        assert!(registry.connected_catdb().is_some());
+        assert_eq!(registry.restore_source_id(), Some(admitted.id.as_str()));
+
+        let restored = store
+            .reconcile_restore_or_migrate(Some(&corpus), &app_data)
+            .expect("reconcile exact admitted corpus")
+            .expect("exact admitted corpus restores");
+        assert_eq!(restored.id, admitted.id);
+        assert_eq!(
+            store
+                .reconcile_restore_or_migrate(Some(&outsider), &app_data)
+                .expect("outsider is a typed refusal"),
+            None
+        );
+    }
+
+    #[test]
     fn library_transport_never_serializes_free_form_native_or_secret_context() {
         let sentinel =
             "/Users/private-user/secret.md token=blue-lantern postgres://name:pass@host/db $1";
@@ -4911,6 +5041,67 @@ mod tests {
         assert!(persisted.contains("\"selected_source_ids\""));
         assert!(!persisted.contains("bearer"));
         assert!(!persisted.contains("native-secret"));
+    }
+
+    #[test]
+    fn persisted_connected_catdb_rejects_distinct_sources_with_one_version_authority() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("library.json");
+        let first_source_id = "00000000-0000-0000-0000-000000000011";
+        let second_source_id = "00000000-0000-0000-0000-000000000013";
+        let shared_version_id = "00000000-0000-0000-0000-000000000012";
+        let body = serde_json::json!({
+            "version": LIBRARY_VERSION,
+            "active_source_id": null,
+            "sources": [{
+                "kind": "connected-catdb",
+                "id": "a".repeat(64),
+                "label": "Research CatDB",
+                "server_origin": "https://catdb.example.com/",
+                "credential_reference": "credential-reference-1",
+                "deployment_id": "00000000-0000-0000-0000-000000000002",
+                "workspace_id": "00000000-0000-0000-0000-000000000003",
+                "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
+                "default_schema_version_id": "00000000-0000-0000-0000-000000000005",
+                "permitted_sources": [{
+                    "source_id": first_source_id,
+                    "source_version_id": shared_version_id,
+                    "runtime_bound": true,
+                    "connector_id": "postgres-primary"
+                }, {
+                    "source_id": second_source_id,
+                    "source_version_id": shared_version_id,
+                    "runtime_bound": true,
+                    "connector_id": "snowflake-secondary"
+                }],
+                "selected_source_ids": [first_source_id, second_source_id],
+                "contract": {
+                    "connector_version": "connected-catdb/v1",
+                    "capabilities": {
+                        "read": true,
+                        "write": false,
+                        "search": true,
+                        "watch": false,
+                        "open_original": false,
+                        "download": false
+                    },
+                    "mapping_version": "00000000-0000-0000-0000-000000000004",
+                    "index_policy": "read-through"
+                }
+            }],
+            "connected_catdb_rediscovery_required": false,
+            "cleanup_pending": []
+        });
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&body).expect("serialize fixture"),
+        )
+        .expect("write fixture");
+
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
+            Err(LibraryError::CorruptRegistry)
+        ));
     }
 
     #[test]

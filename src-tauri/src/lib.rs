@@ -283,8 +283,9 @@ pub fn run() {
         .setup(move |app| {
             app.state::<cloud_accounts::CloudAccountsState>()
                 .configure_catalog(app.handle())?;
-            #[cfg(feature = "e2e-build")]
+            #[cfg(all(feature = "e2e-build", not(mobile)))]
             {
+                library::seed_e2e_local_membership(app.handle())?;
                 cloud_accounts::seed_e2e_cloud_membership(app.handle())?;
                 mobile_enterprise::seed_e2e_connected_membership(app.handle())?;
             }
@@ -382,6 +383,23 @@ mod tests {
         assert!(
             export_called.get(),
             "desktop debug startup no longer refreshes generated bindings"
+        );
+    }
+
+    #[test]
+    fn ios_and_android_e2e_setup_excludes_desktop_keyring_seeders() {
+        let source = include_str!("lib.rs");
+        let desktop_only_seed = concat!(
+            "#[cfg(all(feature = \"e2e-build\", not(mobile)))]\n",
+            "            {\n",
+            "                library::seed_e2e_local_membership(app.handle())?;\n",
+            "                cloud_accounts::seed_e2e_cloud_membership(app.handle())?;\n",
+            "                mobile_enterprise::seed_e2e_connected_membership(app.handle())?;\n",
+        );
+
+        assert!(
+            source.contains(desktop_only_seed),
+            "mobile e2e-build setup can still compile calls to desktop keyring seeders"
         );
     }
 

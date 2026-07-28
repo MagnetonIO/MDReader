@@ -1,15 +1,11 @@
 /**
  * Milestone PT — workspace seeding, shared by both GUI harnesses.
  *
- * The app grants a workspace one of two ways: the user picks a folder in the
- * native OS picker, or a persisted session is restored on launch (see
- * `AppShell`'s startup effect → `openRoot(session.root)`). Driving the native
- * NSOpenPanel / GTK file chooser from a test is brittle and, on a headless CI
- * runner, impossible — so instead we SEED the persisted session before launch:
- * write a `session.json` naming the fixture corpus as the workspace root, and the
- * app re-grants + indexes it on startup with no dialog. The backend command
- * (`watch_workspace`) canonicalises and grants the folder directly — no picker
- * involved — so a seeded root is a fully legitimate grant.
+ * A persisted renderer session is a restore request, never filesystem
+ * authority. The isolated desktop runner writes that request before launch and
+ * separately passes the same canonical corpus to the E2E-build-only backend
+ * setup path, which captures native identity and persists membership before
+ * startup reconciliation. Production builds still require the native picker.
  *
  * `session.json` is a tauri-plugin-store file. The plugin resolves a bare store
  * name against the app's config dir, so this module reproduces that path per-OS
@@ -207,6 +203,16 @@ const SESSION_VERSION = 1;
  * signs.
  */
 const STORE_FILES = ['session.json', 'settings.json'] as const;
+const CATDB_MANAGED_ENTRIES = [
+  'workspaces',
+  'legacy-v1-path-workspaces',
+  'managed-delete-staging',
+  'library.json',
+  'library.lock',
+  'cloud-library.catdb',
+  'cloud-library.catdb-wal',
+  'cloud-library.catdb-shm',
+] as const;
 
 /**
  * The directory tauri-plugin-store resolves a bare store filename against — the
@@ -231,10 +237,24 @@ function platformConfigDir(identifier: string): string {
   }
 }
 
+/** The directory Tauri resolves for backend-owned application data. */
+function platformDataDir(identifier: string): string {
+  const home = homedir();
+  switch (process.platform) {
+    case 'darwin':
+      return join(home, 'Library', 'Application Support', identifier);
+    case 'win32':
+      return join(process.env.APPDATA ?? join(home, 'AppData', 'Roaming'), identifier);
+    default:
+      return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), identifier);
+  }
+}
+
 /** A profile accepted by the native harness's fail-closed cleanup boundary. */
 export interface E2EProfile {
   readonly identifier: typeof E2E_BUNDLE_IDENTIFIER;
   readonly configDir: string;
+  readonly dataDir: string;
 }
 
 function isStrictDescendant(path: string, parent: string): boolean {
@@ -305,46 +325,99 @@ async function assertNotSymlink(path: string): Promise<void> {
 export function createE2EProfile(
   identifier: string = E2E_BUNDLE_IDENTIFIER,
   configDir: string = platformConfigDir(E2E_BUNDLE_IDENTIFIER),
+  dataDir?: string,
 ): E2EProfile {
-  const profile = { identifier, configDir: resolve(configDir) } as E2EProfile;
+  const expectedConfig = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const resolvedConfig = resolve(configDir);
+  const profile = {
+    identifier,
+    configDir: resolvedConfig,
+    dataDir: resolve(
+      dataDir ??
+        (resolvedConfig === expectedConfig
+          ? platformDataDir(E2E_BUNDLE_IDENTIFIER)
+          : resolvedConfig),
+    ),
+  } as E2EProfile;
   assertE2EProfile(profile);
   return profile;
 }
 
 /** Refuse non-E2E identities and broad paths before any state mutation. */
 export function assertE2EProfile(profile: E2EProfile): asserts profile is E2EProfile {
-  const candidate = profile as { identifier?: unknown; configDir?: unknown };
-  if (candidate.identifier !== E2E_BUNDLE_IDENTIFIER || typeof candidate.configDir !== 'string') {
+  const candidate = profile as {
+    identifier?: unknown;
+    configDir?: unknown;
+    dataDir?: unknown;
+  };
+  if (
+    candidate.identifier !== E2E_BUNDLE_IDENTIFIER ||
+    typeof candidate.configDir !== 'string' ||
+    typeof candidate.dataDir !== 'string'
+  ) {
     throw new Error('refusing destructive seed operation without a validated E2E profile');
   }
 
-  const configDir = resolve(candidate.configDir);
-  const expected = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const directories = [
+    {
+      path: resolve(candidate.configDir),
+      expected: resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER)),
+    },
+    {
+      path: resolve(candidate.dataDir),
+      expected: resolve(platformDataDir(E2E_BUNDLE_IDENTIFIER)),
+    },
+  ];
   const temporary = resolve(tmpdir());
-  const testOwned = isStrictDescendant(configDir, temporary) && basename(configDir).startsWith('mdreader-e2e-');
-  if (configDir !== expected && !testOwned) {
-    throw new Error('refusing destructive seed operation without a validated E2E profile');
+  for (const directory of directories) {
+    const testOwned =
+      isStrictDescendant(directory.path, temporary) &&
+      basename(directory.path).startsWith('mdreader-e2e-');
+    if (directory.path !== directory.expected && !testOwned) {
+      throw new Error('refusing destructive seed operation without a validated E2E profile');
+    }
   }
 }
 
-/** Canonical E2E state directory, validated again immediately before mutation. */
-async function validatedConfigDir(profile: E2EProfile): Promise<string> {
+async function validatedProfileDir(
+  profile: E2EProfile,
+  kind: 'config' | 'data',
+): Promise<string> {
   assertE2EProfile(profile);
-  const rawConfigDir = resolve(profile.configDir);
-  const rawExpected = resolve(platformConfigDir(E2E_BUNDLE_IDENTIFIER));
+  const rawDirectory = resolve(kind === 'config' ? profile.configDir : profile.dataDir);
+  const rawExpected = resolve(
+    kind === 'config'
+      ? platformConfigDir(E2E_BUNDLE_IDENTIFIER)
+      : platformDataDir(E2E_BUNDLE_IDENTIFIER),
+  );
   const rawTemporary = resolve(tmpdir());
-  if (rawConfigDir === rawExpected) await assertNoSymlinksBelow(rawConfigDir, dirname(rawExpected));
-  else if (isStrictDescendant(rawConfigDir, rawTemporary)) await assertNoSymlinksBelow(rawConfigDir, rawTemporary);
+  if (rawDirectory === rawExpected) {
+    await assertNoSymlinksBelow(rawDirectory, dirname(rawExpected));
+  } else if (isStrictDescendant(rawDirectory, rawTemporary)) {
+    await assertNoSymlinksBelow(rawDirectory, rawTemporary);
+  }
   else throw new Error('refusing destructive seed operation without a validated E2E profile');
 
-  const configDir = await canonicalPath(rawConfigDir);
+  const directory = await canonicalPath(rawDirectory);
   const expected = await canonicalPath(rawExpected);
   const temporary = await canonicalPath(rawTemporary);
-  const testOwned = isStrictDescendant(configDir, temporary) && basename(configDir).startsWith('mdreader-e2e-');
-  if (configDir !== expected && !testOwned) {
+  const testOwned =
+    isStrictDescendant(directory, temporary) &&
+    basename(directory).startsWith('mdreader-e2e-');
+  if (directory !== expected && !testOwned) {
     throw new Error('refusing destructive seed operation without a validated E2E profile');
   }
-  return configDir;
+  return directory;
+}
+
+/** Canonical E2E config directory, validated again immediately before mutation. */
+async function validatedConfigDir(profile: E2EProfile): Promise<string> {
+  return validatedProfileDir(profile, 'config');
+}
+
+/** Canonical E2E data directory, validated again immediately before mutation. */
+async function validatedDataDir(profile: E2EProfile): Promise<string> {
+  return validatedProfileDir(profile, 'data');
 }
 
 /** Validated E2E config directory. */
@@ -358,7 +431,7 @@ export function sessionStorePath(profile: E2EProfile): string {
   return join(appConfigDir(profile), 'session.json');
 }
 
-/** The tauri-plugin-store payload that grants `rootAbs` on next launch. */
+/** The tauri-plugin-store payload that requests restoration of `rootAbs`. */
 export function buildSessionSeed(rootAbs: string): Record<string, unknown> {
   return {
     [SESSION_KEY]: {
@@ -375,15 +448,17 @@ export function buildSessionSeed(rootAbs: string): Record<string, unknown> {
 }
 
 /**
- * Write the seed so the next launch grants `rootAbs`. Creates the config dir if
- * absent. Returns the path written, for logging.
+ * Write the restore request for the next launch. The E2E-only native backend
+ * independently captures this canonical corpus as authority. Creates the
+ * config dir if absent and returns the path written, for logging.
  */
 export async function seedWorkspace(profile: E2EProfile, rootAbs: string): Promise<string> {
   const dir = await validatedConfigDir(profile);
   const path = join(dir, 'session.json');
+  const canonicalRoot = await realpath(resolve(rootAbs));
   await assertNotSymlink(path);
   await mkdir(dir, { recursive: true });
-  await writeFile(path, JSON.stringify(buildSessionSeed(rootAbs), null, 2), 'utf8');
+  await writeFile(path, JSON.stringify(buildSessionSeed(canonicalRoot), null, 2), 'utf8');
   return path;
 }
 
@@ -401,9 +476,18 @@ export async function clearSeed(profile: E2EProfile): Promise<void> {
   }
 }
 
-/** Remove only the validated E2E profile's engine workspace state. */
+/**
+ * Remove only CatDB-managed state beneath the validated E2E profile.
+ *
+ * This starts the backend setup from no registry or catalog while retaining
+ * unrelated profile files. Exact fixture credential references are
+ * deterministically overwritten by E2E startup after this cleanup.
+ */
 export async function clearWorkspaceIndex(profile: E2EProfile): Promise<void> {
-  const path = join(await validatedConfigDir(profile), 'workspaces');
-  await assertNotSymlink(path);
-  await rm(path, { recursive: true, force: true });
+  const dir = await validatedDataDir(profile);
+  for (const entry of CATDB_MANAGED_ENTRIES) {
+    const path = join(dir, entry);
+    await assertNotSymlink(path);
+    await rm(path, { recursive: true, force: true });
+  }
 }

@@ -26,6 +26,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { remote } from 'webdriverio';
@@ -202,8 +203,9 @@ async function main(): Promise<number> {
     );
     return 1;
   }
+  const corpusRoot = await realpath(opts.corpus);
 
-  const summary = await withNativeRunArtifacts(opts.artifacts, opts.corpus, async (artifacts) => {
+  const summary = await withNativeRunArtifacts(opts.artifacts, corpusRoot, async (artifacts) => {
     console.log(`run:       ${artifacts}`);
 
     // Register the bundle so the mac2 session can attach to it by bundle id.
@@ -212,11 +214,11 @@ async function main(): Promise<number> {
       ['-f', opts.app],
     );
 
-    // Fresh state: wipe the plugin-store + engine index, then re-seed the fixture
-    // workspace so the app re-grants + re-indexes from scratch on launch.
+    // Fresh state: wipe only the isolated profile's UI and CatDB-managed state,
+    // then request restore of the same canonical corpus the backend captures.
     await clearSeed(opts.profile);
     await clearWorkspaceIndex(opts.profile);
-    const seedPath = await seedWorkspace(opts.profile, opts.corpus);
+    const seedPath = await seedWorkspace(opts.profile, corpusRoot);
     console.log(`seeded:    ${seedPath}`);
 
     // Seed the REVIEW state into the very workspace the app is about to open, so
@@ -234,7 +236,7 @@ async function main(): Promise<number> {
         'seed_reviewed_workspace',
         '--no-default-features',
         '--',
-        opts.corpus,
+        corpusRoot,
         appConfigDir(opts.profile),
         REVIEWER,
         REVIEWED_SCHEMA,
@@ -262,6 +264,7 @@ async function main(): Promise<number> {
         env: {
           ...process.env,
           MDREADER_DEV_HASH_EMBED: '1',
+          MDREADER_E2E_CORPUS_ROOT: corpusRoot,
           MDREADER_E2E_CONNECTED_ORIGIN: fixture.origin,
         },
         stdio: 'ignore',

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { FLOW, SEMANTIC_KINDS } from './flows.ts';
@@ -11,6 +20,7 @@ import {
   createE2EProfile,
   E2E_BUNDLE_IDENTIFIER,
   fingerprintSourceTree,
+  seedWorkspace,
   type E2EProfile,
 } from './seed.ts';
 
@@ -107,8 +117,14 @@ test('validated test-owned E2E state clears only its persisted state', async () 
   const profile = createE2EProfile(E2E_BUNDLE_IDENTIFIER, configDir);
   const unrelatedPath = join(configDir, 'keep.txt');
   await mkdir(join(configDir, 'workspaces'), { recursive: true });
+  await mkdir(join(configDir, 'managed-delete-staging'), { recursive: true });
   await writeFile(join(configDir, 'session.json'), 'stale session');
   await writeFile(join(configDir, 'settings.json'), 'stale settings');
+  await writeFile(join(configDir, 'library.json'), 'stale membership');
+  await writeFile(join(configDir, 'library.lock'), 'stale lease');
+  await writeFile(join(configDir, 'cloud-library.catdb'), 'stale catalog');
+  await writeFile(join(configDir, 'cloud-library.catdb-wal'), 'stale catalog wal');
+  await writeFile(join(configDir, 'cloud-library.catdb-shm'), 'stale catalog shm');
   await writeFile(unrelatedPath, 'must remain');
 
   try {
@@ -117,10 +133,78 @@ test('validated test-owned E2E state clears only its persisted state', async () 
     await assert.rejects(() => readFile(join(configDir, 'session.json')));
     await assert.rejects(() => readFile(join(configDir, 'settings.json')));
     await assert.rejects(() => readFile(join(configDir, 'workspaces')));
+    await assert.rejects(() => readFile(join(configDir, 'managed-delete-staging')));
+    await assert.rejects(() => readFile(join(configDir, 'library.json')));
+    await assert.rejects(() => readFile(join(configDir, 'library.lock')));
+    await assert.rejects(() => readFile(join(configDir, 'cloud-library.catdb')));
+    await assert.rejects(() => readFile(join(configDir, 'cloud-library.catdb-wal')));
+    await assert.rejects(() => readFile(join(configDir, 'cloud-library.catdb-shm')));
     assert.equal(await readFile(unrelatedPath, 'utf8'), 'must remain');
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
+});
+
+test('CatDB cleanup targets the isolated data profile when config and data directories differ', async () => {
+  const configDir = await temporaryE2EConfig();
+  const dataDir = await temporaryE2EConfig();
+  const profile = {
+    ...createE2EProfile(E2E_BUNDLE_IDENTIFIER, configDir),
+    dataDir,
+  };
+  await writeFile(join(configDir, 'library.json'), 'config-store must remain');
+  await writeFile(join(dataDir, 'library.json'), 'stale data registry');
+  await mkdir(join(dataDir, 'workspaces'));
+
+  try {
+    await clearWorkspaceIndex(profile);
+    assert.equal(
+      await readFile(join(configDir, 'library.json'), 'utf8'),
+      'config-store must remain',
+    );
+    await assert.rejects(() => readFile(join(dataDir, 'library.json')));
+    await assert.rejects(() => readFile(join(dataDir, 'workspaces')));
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('seedWorkspace persists the canonical runner-owned corpus path', async () => {
+  const configDir = await temporaryE2EConfig();
+  const profile = createE2EProfile(E2E_BUNDLE_IDENTIFIER, configDir);
+  const corpus = join(configDir, 'fixture-corpus');
+  await mkdir(corpus);
+  const nonCanonicalCorpus = relative(process.cwd(), corpus);
+
+  try {
+    const seedPath = await seedWorkspace(profile, nonCanonicalCorpus);
+    const seed = JSON.parse(await readFile(seedPath, 'utf8')) as {
+      session?: { root?: unknown };
+    };
+    assert.equal(seed.session?.root, await realpath(corpus));
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('desktop launchers pass the canonical corpus to the isolated backend seed', async () => {
+  const macos = await readFile(join(process.cwd(), 'runners', 'macos.ts'), 'utf8');
+  const portable = await readFile(
+    join(process.cwd(), 'config', 'wdio.desktop.conf.ts'),
+    'utf8',
+  );
+
+  assert.match(macos, /MDREADER_E2E_CORPUS_ROOT:\s*corpusRoot/);
+  assert.match(portable, /process\.env\.MDREADER_E2E_CORPUS_ROOT\s*=\s*corpusRoot/);
+  assert.ok(
+    macos.indexOf('clearWorkspaceIndex(opts.profile)') <
+      macos.indexOf('seedWorkspace(opts.profile, corpusRoot)'),
+  );
+  assert.ok(
+    portable.indexOf('clearWorkspaceIndex(E2E_PROFILE)') <
+      portable.indexOf('seedWorkspace(E2E_PROFILE, corpusRoot)'),
+  );
 });
 
 test('the shared native flow makes the P8 federated Document surface load-bearing', () => {

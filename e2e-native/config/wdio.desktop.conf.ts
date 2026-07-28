@@ -17,12 +17,18 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FLOW_CONFIG } from '../flows.ts';
 import { desktopCapabilitiesFor } from '../capabilities.ts';
-import { clearSeed, createE2EProfile, seedWorkspace } from '../seed.ts';
+import {
+  clearSeed,
+  clearWorkspaceIndex,
+  createE2EProfile,
+  seedWorkspace,
+} from '../seed.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = resolve(HERE, '..');
@@ -49,10 +55,14 @@ export const config: WebdriverIO.Config = {
   reporters: ['spec'],
   mochaOpts: { ui: 'bdd', timeout: 180_000 },
 
-  // Seed the workspace so the app grants the fixture corpus on launch.
+  // Seed a restore request and pass the same canonical path to the isolated
+  // backend, which captures the filesystem identity before reconciliation.
   onPrepare: async () => {
+    const corpusRoot = await realpath(CORPUS);
     await clearSeed(E2E_PROFILE);
-    await seedWorkspace(E2E_PROFILE, CORPUS);
+    await clearWorkspaceIndex(E2E_PROFILE);
+    process.env.MDREADER_E2E_CORPUS_ROOT = corpusRoot;
+    await seedWorkspace(E2E_PROFILE, corpusRoot);
   },
 
   // tauri-driver must be running before the WebDriver session connects. It inherits
