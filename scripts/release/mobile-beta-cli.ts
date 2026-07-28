@@ -10,8 +10,8 @@ import {
 } from './mobile-beta-inspection';
 import {
   createMobileBetaManifest,
+  retainMobileBetaArtifact,
   type MobileBetaManifest,
-  snapshotMobileBetaArtifact,
   writeMobileBetaManifest,
 } from './mobile-beta-manifest';
 import {
@@ -511,22 +511,13 @@ async function inspect(platform: 'ios' | 'android', args: string[]): Promise<voi
   const buildNumber = required(values, '--build-number');
   const certificateSha256 = required(values, '--certificate-sha256').toLowerCase();
   const snapshot = required(values, '--snapshot');
-  const retained = await snapshotMobileBetaArtifact(
+  const retained = await retainMobileBetaArtifact(
     required(values, '--artifact'),
     snapshot,
   );
-  const retainedPathIdentity = await lstat(snapshot);
-  const inspectedArtifact = await open(
-    snapshot,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  );
+  const inspectedArtifact = retained.openedArtifact.handle;
   try {
-    const inspectedIdentity = await inspectedArtifact.stat();
-    requireSameMetadataFile(
-      retainedPathIdentity,
-      inspectedIdentity,
-      4 * 1024 * 1024 * 1024,
-    );
+    const inspectedIdentity = retained.openedArtifact.identity;
     const evidence =
       platform === 'ios'
         ? await inspectIosBetaArtifact(

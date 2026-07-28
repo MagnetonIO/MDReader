@@ -194,6 +194,14 @@ function zipEntries(
   const entries = run('unzip', ['-Z1', artifactPath])
     .split(/\r?\n/)
     .filter(Boolean);
+  validateZipEntryPaths(entries);
+  if (entries.length > MAX_ZIP_ENTRIES) {
+    throw new Error(`ZIP entry count exceeds the ${MAX_ZIP_ENTRIES}-entry limit`);
+  }
+  return validateZipSizes(artifactPath, entries, run);
+}
+
+function validateZipEntryPaths(entries: readonly string[]): void {
   if (entries.length === 0) {
     throw new Error('mobile package ZIP is empty');
   }
@@ -230,10 +238,34 @@ function zipEntries(
     }
     portable.set(collisionKey, canonical);
   }
-  if (entries.length > MAX_ZIP_ENTRIES) {
-    throw new Error(`ZIP entry count exceeds the ${MAX_ZIP_ENTRIES}-entry limit`);
+}
+
+function androidZipEntries(
+  artifactPath: string,
+  run: MobileBetaToolRunner,
+): ZipEntry[] {
+  const inventory = zipEntries(artifactPath, run);
+  const exactPaths = run('jar', [
+    '-J-Dfile.encoding=UTF-8',
+    '--list',
+    '--file',
+    artifactPath,
+  ])
+    .split(/\r?\n/)
+    .filter(Boolean);
+  validateZipEntryPaths(exactPaths);
+  if (exactPaths.length !== inventory.length) {
+    throw new Error('JDK ZIP inventory does not match the bounded archive inventory');
   }
-  return validateZipSizes(artifactPath, entries, run);
+  return inventory.map((entry, index) => {
+    const path = exactPaths[index]!;
+    if ((entry.kind === 'directory') !== path.endsWith('/')) {
+      throw new Error(
+        `JDK ZIP inventory type conflicts with its path: ${JSON.stringify(path)}`,
+      );
+    }
+    return { ...entry, path };
+  });
 }
 
 function validateZipSizes(
@@ -245,7 +277,7 @@ function validateZipSizes(
     .split(/\r?\n/)
     .flatMap((line) => {
       const match = line.match(
-        /^(\S+)\s+\S+\s+\S+\s+(\d+)\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.+)$/,
+        /^(\S+)\s+\S+\s+\S+\s+(\d+)\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+ (.*)$/,
       );
       if (!match) return [];
       return [
@@ -728,16 +760,48 @@ function verifyAndroidJarSignatureCoverage(
   if (!/\bjar verified\.\s*$/m.test(output)) {
     throw new Error('Android App Bundle JAR signature was not verified');
   }
-  const lines = output.split(/\r?\n/);
+  const inventoryPattern =
+    /^\s*([smk?]*)\s+(\d+)\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+UTC\s+\d{4} (.*)$/u;
+  const entriesByPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const inventory = new Map<
+    string,
+    { status: string; uncompressedBytes: number }
+  >();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(inventoryPattern);
+    if (!match) continue;
+    const status = match[1]!;
+    const uncompressedBytes = Number(match[2]);
+    const path = match[3]!;
+    const entry = entriesByPath.get(path);
+    if (!entry) {
+      throw new Error(
+        `jarsigner inventory has no exact ZIP entry: ${JSON.stringify(path)}`,
+      );
+    }
+    if (inventory.has(path)) {
+      throw new Error(
+        `duplicate jarsigner inventory record: ${JSON.stringify(path)}`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(uncompressedBytes) ||
+      uncompressedBytes !== entry.uncompressedBytes
+    ) {
+      throw new Error(
+        `jarsigner inventory entry size differs from ZIP entry: ${JSON.stringify(path)}`,
+      );
+    }
+    inventory.set(path, { status, uncompressedBytes });
+  }
+
   for (const entry of entries) {
     const isJarSignatureInfrastructure =
       entry.path === 'META-INF/MANIFEST.MF' ||
       /^META-INF\/[^/]+\.(SF|RSA|DSA|EC)$/.test(entry.path);
     if (entry.kind !== 'file' || isJarSignatureInfrastructure) continue;
-    const inventoryLine = lines.find((line) =>
-      line.endsWith(` ${entry.path}`),
-    );
-    if (!inventoryLine || !/^s[mk ]*\s+\d+\s/.test(inventoryLine.trimStart())) {
+    const record = inventory.get(entry.path);
+    if (!record?.status.includes('s') || record.status.includes('?')) {
       throw new Error(
         `Android App Bundle entry lacks signature coverage: ${JSON.stringify(entry.path)}`,
       );
@@ -771,7 +835,7 @@ export async function inspectAndroidBetaArtifact(
   if (!artifactPath.toLowerCase().endsWith('.aab')) {
     throw new Error('Android beta artifact must be an AAB');
   }
-  const entries = zipEntries(toolArtifactPath, run);
+  const entries = androidZipEntries(toolArtifactPath, run);
   if (entries.some((entry) => entry.kind === 'symlink')) {
     throw new Error('Android App Bundle may not contain archive symlinks');
   }
@@ -788,7 +852,15 @@ export async function inspectAndroidBetaArtifact(
   run('java', ['-jar', bundletoolJarPath, 'validate', `--bundle=${toolArtifactPath}`]);
   verifyAndroidJarSignatureCoverage(
     entries,
-    run('jarsigner', ['-verify', '-verbose', '-certs', toolArtifactPath]),
+    run('jarsigner', [
+      '-J-Duser.language=en',
+      '-J-Duser.country=US',
+      '-J-Duser.timezone=UTC',
+      '-verify',
+      '-verbose',
+      '-certs',
+      toolArtifactPath,
+    ]),
   );
 
   const packageId = bundletoolValue(

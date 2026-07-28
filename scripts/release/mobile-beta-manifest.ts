@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, open, type FileHandle, unlink } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
+import {
+  lstat,
+  mkdtemp,
+  open,
+  rm,
+  type FileHandle,
+  unlink,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, extname, join } from 'node:path';
 
 export const MOBILE_PRODUCTION_PACKAGE_ID = 'dev.mdreader.app';
 
@@ -81,6 +89,11 @@ export interface MobileBetaArtifactSnapshot {
 export interface OpenedMobileBetaArtifact {
   handle: FileHandle;
   identity: Stats;
+}
+
+export interface RetainedMobileBetaArtifact
+  extends MobileBetaArtifactSnapshot {
+  openedArtifact: OpenedMobileBetaArtifact;
 }
 
 const COPY_BUFFER_BYTES = 1024 * 1024;
@@ -354,6 +367,21 @@ async function hashOpenedMobileBetaArtifact(
   return { path: '', ...identity };
 }
 
+async function writeChunk(destination: FileHandle, chunk: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const { bytesWritten } = await destination.write(
+      chunk,
+      offset,
+      chunk.byteLength - offset,
+    );
+    if (bytesWritten <= 0) {
+      throw new Error('mobile beta snapshot write made no progress');
+    }
+    offset += bytesWritten;
+  }
+}
+
 /**
  * Retains immutable candidate bytes from one already-open descriptor. Renaming
  * or replacing the source path after open cannot change the copied or hashed
@@ -370,20 +398,7 @@ export async function snapshotOpenedMobileBetaArtifact(
     const identity = await readOpenedArtifact(
       source,
       openedIdentity,
-      async (chunk) => {
-        let offset = 0;
-        while (offset < chunk.byteLength) {
-          const { bytesWritten } = await destination.write(
-            chunk,
-            offset,
-            chunk.byteLength - offset,
-          );
-          if (bytesWritten <= 0) {
-            throw new Error('mobile beta snapshot write made no progress');
-          }
-          offset += bytesWritten;
-        }
-      },
+      (chunk) => writeChunk(destination, chunk),
     );
     await destination.sync();
     complete = true;
@@ -391,6 +406,99 @@ export async function snapshotOpenedMobileBetaArtifact(
   } finally {
     await destination.close();
     if (!complete) {
+      await unlink(snapshotPath).catch(() => undefined);
+    }
+  }
+}
+
+/**
+ * Retains the named upload artifact while giving inspection an unlinked,
+ * read-only descriptor over the exact same captured bytes.
+ */
+export async function retainMobileBetaArtifact(
+  sourcePath: string,
+  snapshotPath: string,
+): Promise<RetainedMobileBetaArtifact> {
+  const pathIdentity = await lstat(sourcePath);
+  if (!pathIdentity.isFile() || pathIdentity.isSymbolicLink()) {
+    throw new Error('mobile beta source must be a regular, non-symlink file');
+  }
+  const source = await open(
+    sourcePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  let destination: FileHandle | undefined;
+  let privateWriter: FileHandle | undefined;
+  let privateReader: FileHandle | undefined;
+  let privateRoot: string | undefined;
+  let keepSnapshot = false;
+  let keepReader = false;
+  try {
+    const openedIdentity = await source.stat();
+    requireSameFileIdentity(pathIdentity, openedIdentity);
+    destination = await open(snapshotPath, 'wx', 0o600);
+    privateRoot = await mkdtemp(join(tmpdir(), 'mdreader-mobile-inspection-'));
+    const privatePath = join(privateRoot, 'artifact');
+    privateWriter = await open(privatePath, 'wx', 0o600);
+    const identity = await readOpenedArtifact(
+      source,
+      openedIdentity,
+      async (chunk) => {
+        await writeChunk(destination!, chunk);
+        await writeChunk(privateWriter!, chunk);
+      },
+    );
+    await destination.sync();
+    await privateWriter.sync();
+
+    const privatePathIdentity = await lstat(privatePath);
+    privateReader = await open(
+      privatePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const privateIdentity = await privateReader.stat();
+    requireSameFileIdentity(privatePathIdentity, privateIdentity);
+    await unlink(privatePath);
+    await rm(privateRoot, { recursive: true, force: true });
+    privateRoot = undefined;
+    await privateWriter.close();
+    privateWriter = undefined;
+
+    const privateSnapshot = await hashOpenedMobileBetaArtifact(
+      privateReader,
+      privateIdentity,
+    );
+    if (
+      privateSnapshot.bytes !== identity.bytes ||
+      privateSnapshot.sha256 !== identity.sha256
+    ) {
+      throw new Error('private inspection artifact differs from retained bytes');
+    }
+    await destination.close();
+    destination = undefined;
+    keepSnapshot = true;
+    keepReader = true;
+    return {
+      path: snapshotPath,
+      ...identity,
+      openedArtifact: {
+        handle: privateReader,
+        identity: privateIdentity,
+      },
+    };
+  } finally {
+    await source.close();
+    await destination?.close().catch(() => undefined);
+    await privateWriter?.close().catch(() => undefined);
+    if (!keepReader) {
+      await privateReader?.close().catch(() => undefined);
+    }
+    if (privateRoot) {
+      await rm(privateRoot, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
+    if (!keepSnapshot) {
       await unlink(snapshotPath).catch(() => undefined);
     }
   }
