@@ -85,6 +85,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
       onOpenRecent={vi.fn()}
       libraryEvidence={response}
       librarySearch=""
+      libraryError="Some Library sources could not answer this query."
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
       onRefreshLibrary={vi.fn()}
@@ -187,6 +188,7 @@ it('keeps the direct workspace tree available alongside immutable Library eviden
       onOpenRecent={vi.fn()}
       libraryEvidence={response}
       librarySearch=""
+      libraryError="Some Library sources could not answer this query."
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
       onRefreshLibrary={vi.fn()}

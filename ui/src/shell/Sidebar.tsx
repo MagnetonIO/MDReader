@@ -134,7 +134,7 @@ export function Sidebar({
         </div>
       )}
 
-      {supplementaryMemberships.length > 0 || libraryLoading || libraryError ? (
+      {supplementaryMemberships.length > 0 ? (
         <nav className="library-sources" aria-label="Library sources">
           <div className="library-sources__heading">
             <span>Library</span>

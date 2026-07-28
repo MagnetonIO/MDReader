@@ -615,6 +615,23 @@ export function AppShell() {
             return useSourcesStore.getState().root === folder;
           }
           activeSourceIdRef.current = sourceId;
+          // Library hydration can finish before session restore commits the
+          // active workspace. Reconcile the already-returned presentation
+          // metadata immediately, then supersede that read so the next answer
+          // comes from the post-commit registry revision.
+          setLibraryEvidence((evidence) =>
+            evidence
+              ? {
+                  ...evidence,
+                  memberships: evidence.memberships.map((member) =>
+                    member.kind === 'local-folder'
+                      ? { ...member, active: member.registry_id === sourceId }
+                      : member,
+                  ),
+                }
+              : evidence,
+          );
+          void refreshLibrary();
           recordDiagnosticEventNonBlocking({
             kind: 'workspace',
             source_id: sourceId,
@@ -640,7 +657,7 @@ export function AppShell() {
       );
       return result;
     },
-    [openRoot],
+    [openRoot, refreshLibrary],
   );
   commitSwitchRef.current = commitSwitch;
 
