@@ -303,6 +303,7 @@ pub(crate) enum CloudSourceError {
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     OauthDenied,
     OauthTimeout,
+    OauthCancelled,
     OauthTransport,
     OauthRateLimited {
         retry_after_ms: Option<u32>,
@@ -413,6 +414,7 @@ impl fmt::Display for CloudSourceError {
             #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
             Self::OauthDenied => "cloud-oauth-denied",
             Self::OauthTimeout => "cloud-oauth-timeout",
+            Self::OauthCancelled => "cloud-oauth-cancelled",
             Self::OauthTransport => "cloud-oauth-transport-failed",
             Self::OauthRateLimited { .. } => "cloud-oauth-rate-limited",
             Self::ProviderRejected => "cloud-oauth-provider-rejected",
@@ -1222,6 +1224,63 @@ struct ActiveCloudQuery {
 }
 
 #[derive(Debug)]
+struct ActiveCloudConnect {
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+#[derive(Debug)]
+struct CloudConnectHandle {
+    provider: CloudProvider,
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+struct CloudConnectOwner<'a> {
+    state: &'a CloudAccountsState,
+    handle: CloudConnectHandle,
+    settled: bool,
+}
+
+impl<'a> CloudConnectOwner<'a> {
+    fn begin(
+        state: &'a CloudAccountsState,
+        provider: CloudProvider,
+    ) -> Result<Self, CloudSourceError> {
+        Ok(Self {
+            state,
+            handle: state.begin_connect(provider)?,
+            settled: false,
+        })
+    }
+
+    fn cancellation(&self) -> catdb_connectors::CancellationToken {
+        self.handle.cancellation.clone()
+    }
+
+    fn ensure_current(&self) -> Result<(), CloudSourceError> {
+        self.state.ensure_connect_current(&self.handle)
+    }
+
+    fn finish(mut self) -> Result<(), CloudSourceError> {
+        let result = self.state.finish_connect(&self.handle);
+        self.settled = true;
+        result
+    }
+}
+
+impl Drop for CloudConnectOwner<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.handle.cancellation.cancel();
+        let _ = self.state.finish_connect(&self.handle);
+        self.settled = true;
+    }
+}
+
+#[derive(Debug)]
 struct CloudQueryHandle {
     request_id: String,
     serial: u64,
@@ -1273,20 +1332,24 @@ struct RequestedCatalogPins {
 }
 
 pub(crate) struct CloudAccountsState {
-    operations: tokio::sync::Mutex<()>,
+    lifecycle_commits: tokio::sync::Mutex<()>,
     catalog: tokio::sync::Mutex<Option<CloudCatalogAuthority>>,
     catalog_location: Mutex<Option<(PathBuf, uuid::Uuid)>>,
+    active_connects: Mutex<HashMap<CloudProvider, ActiveCloudConnect>>,
     active_queries: Mutex<HashMap<String, ActiveCloudQuery>>,
+    next_connect_serial: AtomicU64,
     next_query_serial: AtomicU64,
 }
 
 impl Default for CloudAccountsState {
     fn default() -> Self {
         Self {
-            operations: tokio::sync::Mutex::new(()),
+            lifecycle_commits: tokio::sync::Mutex::new(()),
             catalog: tokio::sync::Mutex::new(None),
             catalog_location: Mutex::new(None),
+            active_connects: Mutex::new(HashMap::new()),
             active_queries: Mutex::new(HashMap::new()),
+            next_connect_serial: AtomicU64::new(1),
             next_query_serial: AtomicU64::new(1),
         }
     }
@@ -1334,6 +1397,84 @@ impl CloudAccountsState {
         if catalog.schema_version == authority.pins.schema_version {
             catalog.catalog_version = authority.pins.catalog_version.clone();
         }
+    }
+
+    fn begin_connect(
+        &self,
+        provider: CloudProvider,
+    ) -> Result<CloudConnectHandle, CloudSourceError> {
+        let serial = self.next_connect_serial.fetch_add(1, Ordering::SeqCst);
+        let cancellation = catdb_connectors::CancellationToken::new();
+        let mut active = self
+            .active_connects
+            .lock()
+            .map_err(|_| CloudSourceError::OauthTransport)?;
+        if let Some(retired) = active.insert(
+            provider,
+            ActiveCloudConnect {
+                serial,
+                cancellation: cancellation.clone(),
+            },
+        ) {
+            retired.cancellation.cancel();
+        }
+        Ok(CloudConnectHandle {
+            provider,
+            serial,
+            cancellation,
+        })
+    }
+
+    fn ensure_connect_current(&self, connect: &CloudConnectHandle) -> Result<(), CloudSourceError> {
+        let active = self
+            .active_connects
+            .lock()
+            .map_err(|_| CloudSourceError::OauthTransport)?;
+        match active.get(&connect.provider) {
+            Some(entry)
+                if entry.serial == connect.serial && !connect.cancellation.is_cancelled() =>
+            {
+                Ok(())
+            }
+            _ => Err(CloudSourceError::OauthCancelled),
+        }
+    }
+
+    fn finish_connect(&self, connect: &CloudConnectHandle) -> Result<(), CloudSourceError> {
+        let mut active = self
+            .active_connects
+            .lock()
+            .map_err(|_| CloudSourceError::OauthTransport)?;
+        match active.get(&connect.provider) {
+            Some(entry) if entry.serial == connect.serial => {
+                active.remove(&connect.provider);
+                if connect.cancellation.is_cancelled() {
+                    Err(CloudSourceError::OauthCancelled)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Err(CloudSourceError::OauthCancelled),
+        }
+    }
+
+    fn cancel_provider_activity(&self, provider: CloudProvider) -> Result<(), CloudSourceError> {
+        if let Some(connect) = self
+            .active_connects
+            .lock()
+            .map_err(|_| CloudSourceError::OauthTransport)?
+            .remove(&provider)
+        {
+            connect.cancellation.cancel();
+        }
+        let mut queries = self
+            .active_queries
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+        for (_, query) in queries.drain() {
+            query.cancellation.cancel();
+        }
+        Ok(())
     }
 
     fn begin_query(&self, request_id: &str) -> Result<CloudQueryHandle, CloudSourceError> {
@@ -1942,12 +2083,9 @@ async fn query_cloud_documents_inner(
         let query = CloudQueryOwner::begin(state, &request_id)?;
         let cancellation = query.cancellation();
         let result = async {
-            let _operation = tokio::select! {
-                _ = cancellation.cancelled() => {
-                    return Err(CloudSourceError::QueryCancelled);
-                }
-                operation = state.operations.lock() => operation,
-            };
+            if cancellation.is_cancelled() {
+                return Err(CloudSourceError::QueryCancelled);
+            }
             let admission = blocking_cloud_operation(app.clone(), move |registry, vault| {
                 admit_cloud_read(registry, vault, provider)
             });
@@ -2474,12 +2612,9 @@ pub(crate) async fn query_library_documents(
         let owner = CloudQueryOwner::begin(&state, &request_id)?;
         let cancellation = owner.cancellation();
         let result = async {
-            let _operation = tokio::select! {
-                _ = cancellation.cancelled() => {
-                    return Err(CloudSourceError::QueryCancelled);
-                }
-                operation = state.operations.lock() => operation,
-            };
+            if cancellation.is_cancelled() {
+                return Err(CloudSourceError::QueryCancelled);
+            }
             let selected = request.source_ids.clone();
             let admitted = blocking_cloud_operation(app.clone(), move |registry, vault| {
                 admit_library_query(registry, Arc::new(vault), selected.as_deref())
@@ -3888,9 +4023,8 @@ async fn execute_cloud_query(
 #[specta::specta]
 pub(crate) async fn list_cloud_sources(
     app: AppHandle,
-    state: tauri::State<'_, CloudAccountsState>,
+    _state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.operations.lock().await;
     blocking_cloud_operation(app, |registry, vault| {
         CloudAccountService::new(registry, &vault).snapshot()
     })
@@ -3905,7 +4039,8 @@ pub(crate) async fn set_cloud_source_enabled(
     enabled: bool,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.operations.lock().await;
+    state.cancel_provider_activity(provider)?;
+    let _commit = state.lifecycle_commits.lock().await;
     blocking_cloud_operation(app, move |registry, vault| {
         CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)
     })
@@ -3919,11 +4054,27 @@ pub(crate) async fn disconnect_cloud_source(
     provider: CloudProvider,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.operations.lock().await;
+    state.cancel_provider_activity(provider)?;
+    let _commit = state.lifecycle_commits.lock().await;
     blocking_cloud_operation(app, move |registry, vault| {
         CloudAccountService::new(registry, &vault).disconnect(provider)
     })
     .await
+}
+
+async fn commit_cloud_connect<T, Install, InstallFuture>(
+    state: &CloudAccountsState,
+    owner: CloudConnectOwner<'_>,
+    install: Install,
+) -> Result<T, CloudSourceError>
+where
+    Install: FnOnce() -> InstallFuture,
+    InstallFuture: std::future::Future<Output = Result<T, CloudSourceError>>,
+{
+    let _commit = state.lifecycle_commits.lock().await;
+    owner.ensure_current()?;
+    owner.finish()?;
+    install().await
 }
 
 #[tauri::command(async)]
@@ -3933,7 +4084,8 @@ pub(crate) async fn connect_cloud_source(
     provider: CloudProvider,
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-    let _operation = state.operations.lock().await;
+    let owner = CloudConnectOwner::begin(&state, provider)?;
+    let cancellation = owner.cancellation();
     let client_id = oauth_client_id(provider)?;
     let callback_configuration = oauth_callback_configuration(
         provider,
@@ -3953,18 +4105,29 @@ pub(crate) async fn connect_cloud_source(
     .await
     .map_err(|_| CloudSourceError::OauthTransport)??;
 
-    let callback = receive_oauth_callback(listener, &redirect_uri).await?;
+    let callback = tokio::select! {
+        _ = cancellation.cancelled() => return Err(CloudSourceError::OauthCancelled),
+        callback = receive_oauth_callback(listener, &redirect_uri) => callback?,
+    };
     let authorization = attempt.verify_callback(&callback)?;
-    let token = exchange_authorization_code(provider, client_id, &attempt, &authorization).await?;
-    let config = cloud_source_config(provider, &token, &authorization).await?;
+    let token = tokio::select! {
+        _ = cancellation.cancelled() => return Err(CloudSourceError::OauthCancelled),
+        token = exchange_authorization_code(provider, client_id, &attempt, &authorization) => token?,
+    };
+    let config = tokio::select! {
+        _ = cancellation.cancelled() => return Err(CloudSourceError::OauthCancelled),
+        config = cloud_source_config(provider, &token, &authorization) => config?,
+    };
     let secret = SecretBundle::new(
         token.access_token.as_str().to_owned(),
         token.refresh_token.as_str().to_owned(),
         expires_at_unix_seconds(token.expires_in_seconds)?,
         new_cursor_key(),
     )?;
-    blocking_cloud_operation(app, move |registry, vault| {
-        CloudAccountService::new(registry, &vault).install(provider, config, secret)
+    commit_cloud_connect(&state, owner, || {
+        blocking_cloud_operation(app, move |registry, vault| {
+            CloudAccountService::new(registry, &vault).install(provider, config, secret)
+        })
     })
     .await
 }
@@ -4698,14 +4861,14 @@ mod tests {
 
     use super::{
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
-        bind_library_cloud_source, bind_oauth_callback_listener, dropbox_redirect_configuration,
-        execute_cloud_query, oauth_callback_configuration, receive_oauth_callback,
-        refresh_token_form, validate_oauth_client_id, AdmittedLibraryQuery, CloudAccountService,
-        CloudAccountsState, CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
-        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
-        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
-        SecretBundle, MAX_CALLBACK_BYTES,
+        bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
+        dropbox_redirect_configuration, execute_cloud_query, oauth_callback_configuration,
+        receive_oauth_callback, refresh_token_form, validate_oauth_client_id, AdmittedLibraryQuery,
+        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectOwner,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
+        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
+        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        MemoryCredentialVault, OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::{
         file_lock::AdvisoryFileLock,
@@ -5884,6 +6047,69 @@ mod tests {
         assert!(state.cancel_query("browse:google-drive"));
         assert!(second.cancellation.is_cancelled());
         assert!(!state.cancel_query("browse:google-drive"));
+    }
+
+    #[test]
+    fn disconnect_cancels_inflight_oauth_and_queries_before_local_cleanup() {
+        let state = CloudAccountsState::default();
+        let connect = state
+            .begin_connect(CloudProvider::GoogleDrive)
+            .expect("connect owner");
+        let query = state
+            .begin_query("library:disconnect")
+            .expect("query owner");
+
+        state
+            .cancel_provider_activity(CloudProvider::GoogleDrive)
+            .expect("cancel provider activity");
+
+        assert!(connect.cancellation.is_cancelled());
+        assert!(query.cancellation.is_cancelled());
+        assert!(!state.cancel_query("library:disconnect"));
+    }
+
+    #[test]
+    fn a_replaced_oauth_attempt_cannot_publish_after_its_successor() {
+        let state = CloudAccountsState::default();
+        let first = state
+            .begin_connect(CloudProvider::Dropbox)
+            .expect("first OAuth attempt");
+        let replacement = state
+            .begin_connect(CloudProvider::Dropbox)
+            .expect("replacement OAuth attempt");
+
+        assert!(first.cancellation.is_cancelled());
+        assert_eq!(
+            state.finish_connect(&first),
+            Err(CloudSourceError::OauthCancelled)
+        );
+        assert_eq!(state.finish_connect(&replacement), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_connect_cannot_be_retired_after_its_publication_has_started() {
+        let state = CloudAccountsState::default();
+        let owner =
+            CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("first OAuth attempt");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+        let publication = commit_cloud_connect(&state, owner, || async move {
+            started_tx.send(()).expect("signal publication");
+            release_rx.await.expect("release publication");
+            Ok("installed")
+        });
+        let replacement = async {
+            started_rx.await.expect("publication started");
+            let replacement = CloudConnectOwner::begin(&state, CloudProvider::Dropbox)
+                .expect("replacement OAuth attempt");
+            release_tx.send(()).expect("release publication");
+            replacement
+        };
+
+        let (published, replacement) = tokio::join!(publication, replacement);
+        assert_eq!(published, Ok("installed"));
+        assert_eq!(replacement.finish(), Ok(()));
     }
 
     #[test]

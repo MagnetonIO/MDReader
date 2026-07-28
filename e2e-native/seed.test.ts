@@ -130,6 +130,13 @@ test('the shared native flow makes the P8 federated Document surface load-bearin
   const libraryStep = FLOW.find((candidate) => candidate.id === 'unified-library-document');
   assert.equal(libraryStep?.kind, 'inspectLibraryDocument');
   assert.equal(SEMANTIC_KINDS.includes('inspectLibraryDocument'), true);
+  if (libraryStep?.kind !== 'inspectLibraryDocument') {
+    assert.fail('missing unified Library native step');
+  }
+  assert.match(libraryStep.resultPattern, /Complete/);
+  assert.match(libraryStep.sourcesPattern, /ran/);
+  assert.match(libraryStep.provenancePattern, /provenance rule/);
+  assert.match(libraryStep.schemaPattern, /Provenance rule pin/);
 });
 
 test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {

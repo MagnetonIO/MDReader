@@ -81,6 +81,15 @@ export function LibrarySemanticInspector({
           {complete ? 'Complete' : 'Partial'}
         </span>
       </div>
+      {evidence.answer.completeness.state === 'partial' ? (
+        <ul className="document-inspector__excluded" aria-label="Excluded sources">
+          {evidence.answer.completeness.excluded_source_ids.map((sourceId) => (
+            <li key={sourceId} className="lens-mono">
+              Excluded source {sourceId}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <div className="document-inspector__tabs" role="tablist" aria-label="Document evidence">
         {TABS.map((item) => (
           <button
@@ -185,6 +194,9 @@ function SourcesTab({ evidence }: { evidence: LibraryEntityQueryResponse_Seriali
             <p>
               {source.scanned} scanned · {source.returned} returned
             </p>
+            {source.retry_after_ms === null ? null : (
+              <p>Retry after {source.retry_after_ms} ms</p>
+            )}
           </li>
         );
       })}
@@ -218,6 +230,9 @@ function ProvenanceTab({
             <span>
               {field.selected === null ? 'No selected provider' : `selected ${field.selected}`}
             </span>
+            <small className="lens-mono">
+              provenance rule {field.provenance_rule_version_id}
+            </small>
           </div>
           <ol>
             {field.considered.map((observation, index) => (
@@ -254,6 +269,7 @@ function SchemaTab({ evidence }: { evidence: LibraryEntityQueryResponse_Serializ
     ['Mappings', pins.mapping_version_ids.join(', ')],
     ['Sources', pins.source_version_ids.join(', ')],
     ['Policies', pins.policy_version_ids.join(', ')],
+    ['Provenance rule pin', pins.provenance_rule_version_id],
   ] as const;
   return (
     <dl className="document-schema">

@@ -141,11 +141,23 @@ pub(crate) struct LibraryCloudSourceDto {
     pub contract: LibrarySourceContract,
 }
 
+/// Non-secret Connected CatDB membership exposed through the unified Library snapshot.
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct LibraryConnectedCatdbDto {
+    pub connection_id: String,
+    pub label: String,
+    pub workspace_id: uuid::Uuid,
+    pub catalog_revision_id: uuid::Uuid,
+    pub selected_source_ids: Vec<uuid::Uuid>,
+    pub contract: LibrarySourceContract,
+}
+
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct LibrarySnapshot {
     pub version: u32,
     pub sources: Vec<LibrarySourceDto>,
     pub cloud_sources: Vec<LibraryCloudSourceDto>,
+    pub connected_catdb: Option<LibraryConnectedCatdbDto>,
     pub cleanup: LibraryCleanupStatus,
 }
 
@@ -1018,10 +1030,21 @@ impl LibraryRegistry {
                 })
             })
             .collect::<Result<Vec<_>, LibraryError>>()?;
+        let connected_catdb = self
+            .connected_catdb()
+            .map(|source| LibraryConnectedCatdbDto {
+                connection_id: source.id.clone(),
+                label: source.label.clone(),
+                workspace_id: source.workspace_id,
+                catalog_revision_id: source.catalog_revision_id,
+                selected_source_ids: source.selected_source_ids.clone(),
+                contract: source.contract.clone(),
+            });
         Ok(LibrarySnapshot {
             version: LIBRARY_VERSION,
             sources,
             cloud_sources,
+            connected_catdb,
             cleanup: self.cleanup_status(),
         })
     }
@@ -4690,6 +4713,21 @@ mod tests {
 
         let registry =
             LibraryRegistry::load_from(&registry_path).expect("load Connected CatDB membership");
+        let snapshot = registry
+            .snapshot(temp.path(), None)
+            .expect("snapshot Connected CatDB membership");
+        let connected = snapshot
+            .connected_catdb
+            .expect("Connected CatDB belongs to the Library snapshot");
+        assert_eq!(connected.connection_id, source_id);
+        assert_eq!(connected.label, "Research CatDB");
+        assert_eq!(
+            connected.selected_source_ids,
+            [uuid::Uuid::parse_str(remote_source_id).expect("remote source UUID")]
+        );
+        let rendered = serde_json::to_string(&connected).expect("serialize snapshot");
+        assert!(!rendered.contains("credential-reference-1"));
+        assert!(!rendered.contains("server_origin"));
         registry
             .save_to(&registry_path)
             .expect("persist membership");

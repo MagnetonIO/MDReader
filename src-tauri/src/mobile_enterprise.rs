@@ -5,12 +5,18 @@
 //! restricts calls to the session/entity-query contract, and bounds the
 //! response before returning JSON to the renderer.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 
-use catdb_api_types::{ControlPlaneSnapshot, EntityQueryRequest, SessionResponse};
+use catdb_api_types::{
+    ControlPlaneSnapshot, EntityQueryRequest, EntityQueryResponse, SessionResponse,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
@@ -24,6 +30,7 @@ const MAX_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
 const MAX_CONNECTED_SOURCES: usize = 128;
 const MAX_LEGACY_CONNECTIONS: usize = 16;
 const MAX_LEGACY_REGISTRY_BYTES: usize = 64 * 1024;
+const MAX_OPERATION_ID_BYTES: usize = 256;
 const LEGACY_REGISTRY_VERSION: u32 = 1;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -105,6 +112,7 @@ pub(crate) enum MobileEnterpriseError {
     NoSourcesSelected,
     PersistFailed,
     RollbackFailed,
+    Cancelled,
 }
 
 impl fmt::Display for MobileEnterpriseError {
@@ -124,6 +132,7 @@ impl fmt::Display for MobileEnterpriseError {
             Self::NoSourcesSelected => "mobile-enterprise-no-sources-selected",
             Self::PersistFailed => "mobile-enterprise-persist-failed",
             Self::RollbackFailed => "mobile-enterprise-rollback-failed",
+            Self::Cancelled => "mobile-enterprise-cancelled",
         })
     }
 }
@@ -255,8 +264,170 @@ impl BearerVault for KeyringBearerVault {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct MobileEnterpriseState(tokio::sync::Mutex<()>);
+#[derive(Debug)]
+struct ActiveMobileEnterpriseOperation {
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+#[derive(Debug)]
+struct MobileEnterpriseOperationHandle {
+    operation_id: String,
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+}
+
+struct MobileEnterpriseOperationOwner<'a> {
+    state: &'a MobileEnterpriseState,
+    handle: MobileEnterpriseOperationHandle,
+    settled: bool,
+}
+
+impl<'a> MobileEnterpriseOperationOwner<'a> {
+    fn begin(
+        state: &'a MobileEnterpriseState,
+        operation_id: &str,
+    ) -> Result<Self, MobileEnterpriseError> {
+        Ok(Self {
+            state,
+            handle: state.begin_operation(operation_id)?,
+            settled: false,
+        })
+    }
+
+    fn cancellation(&self) -> catdb_connectors::CancellationToken {
+        self.handle.cancellation.clone()
+    }
+
+    fn ensure_current(&self) -> Result<(), MobileEnterpriseError> {
+        self.state.ensure_operation_current(&self.handle)
+    }
+
+    fn finish(mut self) -> Result<(), MobileEnterpriseError> {
+        let result = self.state.finish_operation(&self.handle);
+        self.settled = true;
+        result
+    }
+}
+
+impl Drop for MobileEnterpriseOperationOwner<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.handle.cancellation.cancel();
+        let _ = self.state.finish_operation(&self.handle);
+        self.settled = true;
+    }
+}
+
+pub(crate) struct MobileEnterpriseState {
+    lifecycle_commits: tokio::sync::Mutex<()>,
+    active_operations: Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>,
+    next_operation_serial: AtomicU64,
+}
+
+impl Default for MobileEnterpriseState {
+    fn default() -> Self {
+        Self {
+            lifecycle_commits: tokio::sync::Mutex::new(()),
+            active_operations: Mutex::new(HashMap::new()),
+            next_operation_serial: AtomicU64::new(1),
+        }
+    }
+}
+
+impl MobileEnterpriseState {
+    fn begin_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<MobileEnterpriseOperationHandle, MobileEnterpriseError> {
+        if !valid_identifier(operation_id, MAX_OPERATION_ID_BYTES) {
+            return Err(MobileEnterpriseError::InvalidRequest);
+        }
+        let serial = self.next_operation_serial.fetch_add(1, Ordering::SeqCst);
+        let cancellation = catdb_connectors::CancellationToken::new();
+        let mut active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        if let Some(retired) = active.insert(
+            operation_id.to_string(),
+            ActiveMobileEnterpriseOperation {
+                serial,
+                cancellation: cancellation.clone(),
+            },
+        ) {
+            retired.cancellation.cancel();
+        }
+        Ok(MobileEnterpriseOperationHandle {
+            operation_id: operation_id.to_string(),
+            serial,
+            cancellation,
+        })
+    }
+
+    fn ensure_operation_current(
+        &self,
+        operation: &MobileEnterpriseOperationHandle,
+    ) -> Result<(), MobileEnterpriseError> {
+        let active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        match active.get(&operation.operation_id) {
+            Some(entry)
+                if entry.serial == operation.serial && !operation.cancellation.is_cancelled() =>
+            {
+                Ok(())
+            }
+            _ => Err(MobileEnterpriseError::Cancelled),
+        }
+    }
+
+    fn finish_operation(
+        &self,
+        operation: &MobileEnterpriseOperationHandle,
+    ) -> Result<(), MobileEnterpriseError> {
+        let mut active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        match active.get(&operation.operation_id) {
+            Some(entry) if entry.serial == operation.serial => {
+                active.remove(&operation.operation_id);
+                if operation.cancellation.is_cancelled() {
+                    Err(MobileEnterpriseError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Err(MobileEnterpriseError::Cancelled),
+        }
+    }
+
+    fn cancel_operation(&self, operation_id: &str) -> bool {
+        let Ok(mut active) = self.active_operations.lock() else {
+            return false;
+        };
+        let Some(operation) = active.remove(operation_id) else {
+            return false;
+        };
+        operation.cancellation.cancel();
+        true
+    }
+
+    fn cancel_all_operations(&self) -> Result<(), MobileEnterpriseError> {
+        let mut active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        for (_, operation) in active.drain() {
+            operation.cancellation.cancel();
+        }
+        Ok(())
+    }
+}
 
 fn valid_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
@@ -918,25 +1089,144 @@ async fn execute_connected_query(
     .await
 }
 
+fn parse_connected_library_response(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    response: MobileEnterpriseResponse,
+    selected_fields: &[String],
+) -> Result<crate::library_query::LibraryEntityQueryResponse, MobileEnterpriseError> {
+    if matches!(response.status, 401 | 403) {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    if response.status != 200 {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
+    let answer: EntityQueryResponse = serde_json::from_str(&response.body_json)
+        .map_err(|_| MobileEnterpriseError::InvalidResponse)?;
+    if answer.pins.catalog_revision_id != source.catalog_revision_id {
+        return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+    }
+
+    let permitted = source
+        .permitted_sources
+        .iter()
+        .map(|descriptor| (descriptor.source_id, descriptor.source_version_id))
+        .collect::<BTreeMap<_, _>>();
+    let expected = source
+        .selected_source_ids()
+        .iter()
+        .map(|source_id| {
+            permitted
+                .get(source_id)
+                .copied()
+                .map(|version_id| (*source_id, version_id))
+                .ok_or(MobileEnterpriseError::ConnectionIdentityChanged)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let mut observed = BTreeMap::new();
+    for execution in &answer.sources {
+        if observed
+            .insert(execution.source_id, execution.source_version_id)
+            .is_some()
+            || expected.get(&execution.source_id) != Some(&execution.source_version_id)
+        {
+            return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+        }
+    }
+    if observed != expected
+        || answer
+            .pins
+            .source_version_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != expected.values().copied().collect()
+    {
+        return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+    }
+    let pinned_mappings = answer
+        .pins
+        .mapping_version_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let expected_source_versions = expected.values().copied().collect::<BTreeSet<_>>();
+    let selected_fields = selected_fields
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for row in &answer.rows {
+        if row
+            .fields
+            .keys()
+            .any(|field| !selected_fields.contains(field.as_str()))
+            || row
+                .provenance
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                != selected_fields
+        {
+            return Err(MobileEnterpriseError::InvalidResponse);
+        }
+        for (field, evidence) in &row.provenance {
+            let selected_value_matches = match (row.fields.get(field), evidence.selected()) {
+                (Some(value), Some(observation)) if value.is_null() => {
+                    observation.state().kind() == catdb_provenance::ObservationKind::ObservedNull
+                }
+                (Some(value), Some(observation)) => observation.state().value() == Some(value),
+                (None, None) => true,
+                _ => false,
+            };
+            if evidence.field() != field
+                || !selected_value_matches
+                || evidence.provenance_rule_version_id() != answer.pins.provenance_rule_version_id
+                || evidence.considered().iter().any(|observation| {
+                    !expected_source_versions.contains(&observation.source_version_id())
+                        || !pinned_mappings.contains(&observation.mapping_version_id())
+                })
+            {
+                return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+            }
+        }
+    }
+
+    Ok(crate::library_query::LibraryEntityQueryResponse {
+        answer,
+        memberships: vec![crate::library_query::LibrarySourceExecution {
+            membership_id: crate::library_query::membership_id(&source.id),
+            registry_id: source.id.clone(),
+            name: source.label.clone(),
+            kind: crate::library_query::LibraryQueryMemberKind::ConnectedCatdb,
+            source_ids: source.selected_source_ids().to_vec(),
+            editable: false,
+            active: false,
+        }],
+    })
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn connected_catdb_state(
     app: AppHandle,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
     #[cfg(mobile)]
     {
-        let _ = app;
+        let _ = (app, state);
         return Ok(disconnected_state());
     }
     #[cfg(not(mobile))]
     {
-        connected_source_or_migrate(&app).await.map(|source| {
-            source
-                .as_ref()
-                .map_or_else(disconnected_state, connected_state)
-        })
+        let owner = MobileEnterpriseOperationOwner::begin(&state, "connected-state")?;
+        let cancellation = owner.cancellation();
+        let source = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            source = connected_source_or_migrate(&app) => source?,
+        };
+        owner.finish()?;
+        Ok(source
+            .as_ref()
+            .map_or_else(disconnected_state, connected_state))
     }
 }
 
@@ -948,26 +1238,40 @@ pub(crate) async fn enroll_connected_catdb(
     bearer_token: String,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
     #[cfg(mobile)]
     {
-        let _ = (app, server_origin, bearer_token);
+        let _ = (app, server_origin, bearer_token, state);
         return Err(MobileEnterpriseError::InvalidRequest);
     }
     #[cfg(not(mobile))]
     {
+        let owner = MobileEnterpriseOperationOwner::begin(&state, "enroll")?;
+        let cancellation = owner.cancellation();
         let server_origin = exact_origin(&server_origin)?;
         let token = BearerToken(bearer_token);
         validate_bearer(&token.0)?;
-        if connected_source_or_migrate(&app).await?.is_some() {
+        let current = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            current = connected_source_or_migrate(&app) => current?,
+        };
+        if current.is_some() {
             return Err(MobileEnterpriseError::AlreadyConfigured);
         }
-        let source = discover_connected_catdb(server_origin, &token).await?;
+        let source = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            source = discover_connected_catdb(server_origin, &token) => source?,
+        };
+        let _commit = state.lifecycle_commits.lock().await;
+        owner.ensure_current()?;
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
-        tokio::task::spawn_blocking(move || persist_connected_catdb(&store, &vault, source, &token))
-            .await
-            .map_err(|_| MobileEnterpriseError::PersistFailed)?
+        let enrolled = tokio::task::spawn_blocking(move || {
+            persist_connected_catdb(&store, &vault, source, &token)
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+        owner.finish()?;
+        Ok(enrolled)
     }
 }
 
@@ -980,14 +1284,15 @@ pub(crate) async fn set_connected_catdb_source_enabled(
     enabled: bool,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
     #[cfg(mobile)]
     {
-        let _ = (app, connection_id, source_id, enabled);
+        let _ = (app, connection_id, source_id, enabled, state);
         return Err(MobileEnterpriseError::InvalidRequest);
     }
     #[cfg(not(mobile))]
     {
+        state.cancel_all_operations()?;
+        let _commit = state.lifecycle_commits.lock().await;
         let store = library_store(&app)?;
         tokio::task::spawn_blocking(move || {
             store
@@ -1007,14 +1312,15 @@ pub(crate) async fn disconnect_connected_catdb(
     connection_id: String,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
     #[cfg(mobile)]
     {
-        let _ = (app, connection_id);
+        let _ = (app, connection_id, state);
         return Err(MobileEnterpriseError::InvalidRequest);
     }
     #[cfg(not(mobile))]
     {
+        state.cancel_all_operations()?;
+        let _commit = state.lifecycle_commits.lock().await;
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
         let legacy_path = legacy_registry_path(&app)?;
@@ -1034,19 +1340,23 @@ pub(crate) async fn connected_catdb_entity_query(
     request: EntityQueryRequest,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
     #[cfg(mobile)]
     {
-        let _ = (app, connection_id, request);
+        let _ = (app, connection_id, request, state);
         return Err(MobileEnterpriseError::InvalidRequest);
     }
     #[cfg(not(mobile))]
     {
+        let operation_id = format!("entity-query:{connection_id}");
+        let owner = MobileEnterpriseOperationOwner::begin(&state, &operation_id)?;
+        let cancellation = owner.cancellation();
         let identifier = app.config().identifier.clone();
-        let source = connected_source_or_migrate(&app)
-            .await?
-            .filter(|source| source.id == connection_id)
-            .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
+        let source = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            source = connected_source_or_migrate(&app) => source?,
+        }
+        .filter(|source| source.id == connection_id)
+        .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
         let credential_reference = source.credential_reference.clone();
         let token = tokio::task::spawn_blocking(move || {
             let vault = KeyringBearerVault::new(&identifier)?;
@@ -1060,8 +1370,87 @@ pub(crate) async fn connected_catdb_entity_query(
         // Deployment, workspace, revision, and source membership are native
         // authority. The renderer supplies only semantic shape such as fields
         // and filters.
-        execute_connected_query(&source, &token, request).await
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            response = execute_connected_query(&source, &token, request) => response?,
+        };
+        owner.finish()?;
+        Ok(response)
     }
+}
+
+/// Query one authenticated Connected CatDB membership as an exact Library evidence group.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn query_connected_library_documents(
+    app: AppHandle,
+    connection_id: String,
+    request_id: String,
+    request: EntityQueryRequest,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<crate::library_query::LibraryEntityQueryResponse, MobileEnterpriseError> {
+    if request_id.is_empty() {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    let owner = MobileEnterpriseOperationOwner::begin(&state, &request_id)?;
+    let cancellation = owner.cancellation();
+    let identifier = app.config().identifier.clone();
+    let source = tokio::select! {
+        _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+        source = connected_source_or_migrate(&app) => source?,
+    }
+    .filter(|source| source.id == connection_id)
+    .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
+    let credential_reference = source.credential_reference.clone();
+    let token = tokio::task::spawn_blocking(move || {
+        let vault = KeyringBearerVault::new(&identifier)?;
+        vault
+            .get(&credential_reference)?
+            .ok_or(MobileEnterpriseError::CredentialUnavailable)
+    })
+    .await
+    .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+    let pinned_shape = request;
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+        response = execute_connected_query(&source, &token, pinned_shape.clone()) => response?,
+    };
+    let mut evidence = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+    while let Some(cursor) = evidence.answer.next_cursor.take() {
+        let mut continuation = pinned_shape.clone();
+        continuation.query_id = Some(evidence.answer.query_id);
+        continuation.cursor = Some(cursor);
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            response = execute_connected_query(&source, &token, continuation) => response?,
+        };
+        let page = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+        if page.answer.query_id != evidence.answer.query_id
+            || page.answer.pins != evidence.answer.pins
+            || page.answer.sources != evidence.answer.sources
+            || page.answer.completeness != evidence.answer.completeness
+            || page.memberships != evidence.memberships
+        {
+            return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+        }
+        evidence.answer.rows.extend(page.answer.rows);
+        evidence.answer.next_cursor = page.answer.next_cursor;
+    }
+    owner.finish()?;
+    Ok(evidence)
+}
+
+/// Cancel one renderer-owned Connected CatDB Library query before it publishes evidence.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn cancel_connected_catdb_query(
+    request_id: String,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<bool, MobileEnterpriseError> {
+    if !valid_identifier(&request_id, MAX_OPERATION_ID_BYTES) {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    Ok(state.cancel_operation(&request_id))
 }
 
 #[tauri::command(async)]
@@ -1070,7 +1459,8 @@ pub(crate) async fn mobile_enterprise_connection(
     app: AppHandle,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<Option<MobileEnterpriseConnection>, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
+    let owner = MobileEnterpriseOperationOwner::begin(&state, "connection-state")?;
+    let cancellation = owner.cancellation();
     #[cfg(feature = "e2e-build")]
     let record = e2e_record();
     #[cfg(not(feature = "e2e-build"))]
@@ -1079,13 +1469,17 @@ pub(crate) async fn mobile_enterprise_connection(
     #[cfg(not(feature = "e2e-build"))]
     #[cfg(not(mobile))]
     let record = {
-        let source = connected_source_or_migrate(&app).await?;
+        let source = tokio::select! {
+            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+            source = connected_source_or_migrate(&app) => source?,
+        };
         let Some(source) = source else {
             return Ok(None);
         };
         ConnectionRecord::from(&source)
     };
     let _ = app;
+    owner.finish()?;
     Ok(Some(MobileEnterpriseConnection {
         connection_id: record.id,
         label: record.label,
@@ -1101,7 +1495,9 @@ pub(crate) async fn mobile_enterprise_request(
     body_json: Option<String>,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
-    let _operation = state.0.lock().await;
+    let operation_id = format!("transport:{connection_id}:{operation:?}");
+    let owner = MobileEnterpriseOperationOwner::begin(&state, &operation_id)?;
+    let cancellation = owner.cancellation();
     #[cfg(feature = "e2e-build")]
     let (record, token, connected_source) = {
         if connection_id != E2E_CONNECTION_ID {
@@ -1123,10 +1519,12 @@ pub(crate) async fn mobile_enterprise_request(
         #[cfg(not(mobile))]
         {
             let identifier = app.config().identifier.clone();
-            let source = connected_source_or_migrate(&app)
-                .await?
-                .filter(|source| source.id == connection_id)
-                .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
+            let source = tokio::select! {
+                _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+                source = connected_source_or_migrate(&app) => source?,
+            }
+            .filter(|source| source.id == connection_id)
+            .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
             tokio::task::spawn_blocking(move || {
                 let record = ConnectionRecord::from(&source);
                 let vault = KeyringBearerVault::new(&identifier)?;
@@ -1148,10 +1546,20 @@ pub(crate) async fn mobile_enterprise_request(
                     .ok_or(MobileEnterpriseError::InvalidRequest)?,
             )
             .map_err(|_| MobileEnterpriseError::InvalidRequest)?;
-            return execute_connected_query(&source, &token, request).await;
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+                response = execute_connected_query(&source, &token, request) => response?,
+            };
+            owner.finish()?;
+            return Ok(response);
         }
     }
-    execute_request(record, token, operation, body_json).await
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
+        response = execute_request(record, token, operation, body_json) => response?,
+    };
+    owner.finish()?;
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -1163,12 +1571,12 @@ mod tests {
     use super::{
         disconnect_connected_catdb_from, disconnect_connected_catdb_operation,
         discover_connected_catdb, execute_connected_query, execute_request,
-        migrate_legacy_connection, persist_connected_catdb, pin_connected_query,
-        publish_legacy_migration, publish_legacy_migration_transaction_with_rename,
-        publish_legacy_migration_with_rename, retire_matching_legacy_after_publication,
-        with_legacy_migration_lock, BearerToken, BearerVault, ConnectedCatdbState,
-        ConnectionRecord, MobileEnterpriseError, MobileEnterpriseOperation,
-        MobileEnterpriseResponse,
+        migrate_legacy_connection, parse_connected_library_response, persist_connected_catdb,
+        pin_connected_query, publish_legacy_migration,
+        publish_legacy_migration_transaction_with_rename, publish_legacy_migration_with_rename,
+        retire_matching_legacy_after_publication, with_legacy_migration_lock, BearerToken,
+        BearerVault, ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError,
+        MobileEnterpriseOperation, MobileEnterpriseResponse, MobileEnterpriseState,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
@@ -1230,6 +1638,130 @@ mod tests {
         let rendered = format!("{record:?}");
         assert!(!rendered.contains("secret-reference-1"));
         assert!(rendered.contains("[native-secure-reference]"));
+    }
+
+    #[test]
+    fn disconnect_retires_inflight_connected_oauth_and_query_operations() {
+        let state = MobileEnterpriseState::default();
+        let enrollment = state
+            .begin_operation("enroll")
+            .expect("enrollment operation");
+        let query = state
+            .begin_operation("library:connected")
+            .expect("connected query");
+
+        state.cancel_all_operations().expect("cancel operations");
+
+        assert!(enrollment.cancellation.is_cancelled());
+        assert!(query.cancellation.is_cancelled());
+        assert_eq!(
+            state.finish_operation(&enrollment),
+            Err(MobileEnterpriseError::Cancelled)
+        );
+        assert_eq!(
+            state.finish_operation(&query),
+            Err(MobileEnterpriseError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn a_replaced_connected_query_cannot_publish_after_its_successor() {
+        let state = MobileEnterpriseState::default();
+        let first = state
+            .begin_operation("library:connected")
+            .expect("first query");
+        let replacement = state
+            .begin_operation("library:connected")
+            .expect("replacement query");
+
+        assert!(first.cancellation.is_cancelled());
+        assert_eq!(
+            state.finish_operation(&first),
+            Err(MobileEnterpriseError::Cancelled)
+        );
+        assert_eq!(state.finish_operation(&replacement), Ok(()));
+    }
+
+    #[test]
+    fn connected_library_response_rejects_a_different_remote_catalog_pin() {
+        let source = connected_source();
+        let response = MobileEnterpriseResponse {
+            status: 200,
+            body_json: serde_json::json!({
+                "query_id": "00000000-0000-0000-0000-000000000021",
+                "pins": {
+                    "catalog_resolver_id": "00000000-0000-0000-0000-000000000022",
+                    "catalog_revision_id": "00000000-0000-0000-0000-000000000099",
+                    "schema_version_id": "00000000-0000-0000-0000-000000000023",
+                    "physical_schema_version_ids": ["00000000-0000-0000-0000-000000000024"],
+                    "mapping_version_ids": ["00000000-0000-0000-0000-000000000025"],
+                    "source_version_ids": ["00000000-0000-0000-0000-00000000000c"],
+                    "policy_version_ids": ["00000000-0000-0000-0000-000000000026"],
+                    "provenance_rule_version_id": "00000000-0000-0000-0000-000000000027"
+                },
+                "rows": [],
+                "sources": [{
+                    "source_id": "00000000-0000-0000-0000-00000000000b",
+                    "source_version_id": "00000000-0000-0000-0000-00000000000c",
+                    "outcome": "ran",
+                    "retry_after_ms": null,
+                    "freshness_ms": 0,
+                    "scanned": 0,
+                    "returned": 0
+                }],
+                "completeness": {"state": "complete"},
+                "next_cursor": null
+            })
+            .to_string(),
+        };
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_a_value_without_field_provenance() {
+        let source = connected_source();
+        let response = MobileEnterpriseResponse {
+            status: 200,
+            body_json: serde_json::json!({
+                "query_id": "00000000-0000-0000-0000-000000000021",
+                "pins": {
+                    "catalog_resolver_id": "00000000-0000-0000-0000-000000000022",
+                    "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
+                    "schema_version_id": "00000000-0000-0000-0000-000000000023",
+                    "physical_schema_version_ids": ["00000000-0000-0000-0000-000000000024"],
+                    "mapping_version_ids": ["00000000-0000-0000-0000-000000000025"],
+                    "source_version_ids": ["00000000-0000-0000-0000-00000000000c"],
+                    "policy_version_ids": ["00000000-0000-0000-0000-000000000026"],
+                    "provenance_rule_version_id": "00000000-0000-0000-0000-000000000027"
+                },
+                "rows": [{
+                    "record_key": "remote-document",
+                    "fields": {"title": "Unproven value"},
+                    "provenance": {}
+                }],
+                "sources": [{
+                    "source_id": "00000000-0000-0000-0000-00000000000b",
+                    "source_version_id": "00000000-0000-0000-0000-00000000000c",
+                    "outcome": "ran",
+                    "retry_after_ms": null,
+                    "freshness_ms": 0,
+                    "scanned": 1,
+                    "returned": 1
+                }],
+                "completeness": {"state": "complete"},
+                "next_cursor": null
+            })
+            .to_string(),
+        };
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
     }
 
     #[tokio::test]

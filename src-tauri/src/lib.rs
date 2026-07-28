@@ -82,6 +82,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_enterprise::set_connected_catdb_source_enabled,
             mobile_enterprise::disconnect_connected_catdb,
             mobile_enterprise::connected_catdb_entity_query,
+            mobile_enterprise::query_connected_library_documents,
+            mobile_enterprise::cancel_connected_catdb_query,
             mobile_enterprise::mobile_enterprise_connection,
             mobile_enterprise::mobile_enterprise_request,
             library::list_library_sources,

@@ -455,28 +455,30 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         throw new Error('the unified Library document did not open its Semantic Inspector');
       }
 
-      await clickIn('document-inspector__tab', 'Provenance');
-      const provenanceRe = new RegExp(step.provenancePattern);
-      const provenance = await scopedText('document-inspector');
-      if (!provenanceRe.test(provenance)) {
-        throw new Error(
-          `the unified Library provenance did not report /${provenanceRe.source}/ ` +
-            `(inspector: ${JSON.stringify(provenance.replace(/\n/g, ' | ').slice(0, 320))})`,
-        );
-      }
+      const readTab = async (label: string, pattern: string): Promise<string> => {
+        if (label !== 'Result') await clickIn('document-inspector__tab', label);
+        const expected = new RegExp(pattern);
+        const text = await scopedText('document-inspector');
+        if (!expected.test(text)) {
+          throw new Error(
+            `the unified Library ${label} tab did not report /${expected.source}/ ` +
+              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 320))})`,
+          );
+        }
+        return text;
+      };
 
-      await clickIn('document-inspector__tab', 'Schema');
-      const schemaRe = new RegExp(step.schemaPattern);
-      const schema = await scopedText('document-inspector');
-      if (!schemaRe.test(schema)) {
-        throw new Error(
-          `the unified Library schema did not report /${schemaRe.source}/ ` +
-            `(inspector: ${JSON.stringify(schema.replace(/\n/g, ' | ').slice(0, 320))})`,
-        );
-      }
+      await readTab('Result', step.resultPattern);
+      await readTab(
+        'Sources',
+        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
+      );
+      await readTab('Provenance', step.provenancePattern);
+      await readTab('Schema', step.schemaPattern);
       return (
-        'one Library answer supplied the local reader, edit capability, provenance, ' +
-        'and pinned schema; the runner fingerprint verifies the source tree stayed unchanged'
+        'one complete Library answer supplied the local reader, edit capability, source ' +
+        'executions, provenance-rule evidence, and pinned schema; the runner fingerprint ' +
+        'verifies the source tree stayed unchanged'
       );
     }
 
