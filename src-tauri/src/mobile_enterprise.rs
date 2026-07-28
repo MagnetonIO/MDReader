@@ -2086,6 +2086,45 @@ mod tests {
         let parsed = parse_connected_library_response(&source, response, &["title".to_string()])
             .expect("excluded-source order does not change completeness");
         assert_eq!(parsed.answer.completeness, answer.completeness);
+
+        let mut duplicate_exclusions = answer;
+        duplicate_exclusions.completeness = catdb_api_types::Completeness::Partial {
+            excluded_source_ids: vec![
+                uuid::Uuid::from_u128(11),
+                uuid::Uuid::from_u128(13),
+                uuid::Uuid::from_u128(11),
+            ],
+        };
+        assert_eq!(
+            parse_connected_library_response(
+                &source,
+                MobileEnterpriseResponse {
+                    status: 200,
+                    body_json: serde_json::to_string(&duplicate_exclusions)
+                        .expect("serialize duplicate exclusions"),
+                },
+                &["title".to_string()],
+            ),
+            Err(MobileEnterpriseError::InvalidResponse),
+            "duplicate exclusion identities are not normalized into a valid set"
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_an_empty_partial_exclusion_set() {
+        let source = connected_source();
+        let response = connected_response(
+            &[],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Partial {
+                excluded_source_ids: Vec::new(),
+            },
+        );
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
     }
 
     #[test]
