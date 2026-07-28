@@ -61,6 +61,8 @@ const h = vi.hoisted(() => ({
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
   listGate: null as null | { promise: Promise<void>; resolve: () => void },
+  sourceListGate: null as null | { promise: Promise<void>; resolve: () => void },
+  sourceListCalls: 0,
   watchResponseGate: null as null | { promise: Promise<void>; resolve: () => void },
   gatedWatchSourceId: null as string | null,
   failedWatchSourceId: null as string | null,
@@ -157,11 +159,15 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     active,
     restore_candidate: active,
   });
-  const listSources = vi.fn(async () => ({
-    version: 4,
-    sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
-    cleanup: { kind: 'complete' as const },
-  }));
+  const listSources = vi.fn(async () => {
+    h.sourceListCalls += 1;
+    if (h.sourceListGate) await h.sourceListGate.promise;
+    return {
+      version: 4,
+      sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
+      cleanup: { kind: 'complete' as const },
+    };
+  });
   const pickAndAddSource = vi.fn(async () => ({
     source: source(h.pickedPath, h.pickedPath === '/ws'),
     added: true,
@@ -420,6 +426,8 @@ beforeEach(() => {
   h.onClose = null;
   h.gate = null;
   h.listGate = null;
+  h.sourceListGate = null;
+  h.sourceListCalls = 0;
   h.watchResponseGate = null;
   h.gatedWatchSourceId = null;
   h.failedWatchSourceId = null;
@@ -471,6 +479,36 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('does not resume an older Edit after a newer source switch starts', async () => {
+    installSecondWorkspaceLibraryDocument();
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+
+    const callsBeforeEdit = h.sourceListCalls;
+    h.sourceListGate = deferred();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+    await waitFor(() => expect(h.sourceListCalls).toBe(callsBeforeEdit + 1));
+
+    h.pickedPath = '/ws-c';
+    fireEvent.click(screen.getByTitle('Open folder…'));
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-c'));
+    h.libraryWatch.mockClear();
+
+    await act(async () => {
+      h.sourceListGate!.resolve();
+      for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+    });
+
+    expect(h.libraryWatch).not.toHaveBeenCalledWith('b'.repeat(64));
+    expect(useSourcesStore.getState().root).toBe('/ws-c');
+    expect(h.editResolutions).toEqual([]);
+    expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
+  });
+
   it('resolves a Library-relative path through its activated membership before reading for edit', async () => {
     installSecondWorkspaceLibraryDocument();
 
@@ -546,6 +584,51 @@ describe('library source identity follows the committed backend epoch', () => {
     await screen.findByRole('alertdialog', { name: /unsaved changes/i });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+    expect(h.editResolutions).toEqual([]);
+    expect(useSourcesStore.getState().root).toBe('/ws');
+    expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
+    expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
+  });
+
+  it('dirty cross-workspace Edit does not resume when Save conflicts', async () => {
+    installSecondWorkspaceLibraryDocument();
+    const dirtyTabId = await openDirtyDoc();
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
+    h.disk.set(NOTE, { content: 'newer disk content', hash: 'external-hash' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+    expect(h.editResolutions).toEqual([]);
+    expect(useSourcesStore.getState().root).toBe('/ws');
+    expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
+    expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
+  });
+
+  it('dirty cross-workspace Edit does not resume after a failed source switch', async () => {
+    installSecondWorkspaceLibraryDocument();
+    const dirtyTabId = await openDirtyDoc();
+    h.failedWatchSourceId = 'b'.repeat(64);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open Local note from Second workspace',
+      }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    await waitFor(() => expect(h.libraryWatch).toHaveBeenCalledWith('b'.repeat(64)));
+    await act(async () => {});
 
     expect(h.editResolutions).toEqual([]);
     expect(useSourcesStore.getState().root).toBe('/ws');

@@ -652,8 +652,12 @@ export function AppShell() {
         member: LibrarySourceExecution;
         row: EntityRow;
       },
+      existingSourceIntent?: number,
     ): Promise<boolean> => {
-      const expectedSourceIntent = beginSourceIntent();
+      const expectedSourceIntent = existingSourceIntent ?? beginSourceIntent();
+      if (sourceIntentRef.current !== expectedSourceIntent) {
+        return Promise.resolve(false);
+      }
       const currentRoot = useSourcesStore.getState().root;
       const isRealSwitch = currentRoot !== null && currentRoot !== folder;
       if (isRealSwitch && useEditorStore.getState().dirtyTabIds().length > 0) {
@@ -666,7 +670,7 @@ export function AppShell() {
   );
 
   const onPickFolder = useCallback(async () => {
-    beginSourceIntent();
+    const expectedSourceIntent = beginSourceIntent();
     let picked: { source: LibrarySourceDto | null };
     try {
       picked = await pickAndAddLibrarySource();
@@ -674,8 +678,9 @@ export function AppShell() {
       toast('Could not add this folder to the library');
       return;
     }
+    if (sourceIntentRef.current !== expectedSourceIntent) return;
     if (!picked.source) return;
-    await switchWorkspace(picked.source.path, picked.source.id);
+    await switchWorkspace(picked.source.path, picked.source.id, undefined, expectedSourceIntent);
   }, [beginSourceIntent, switchWorkspace]);
 
   // Re-run the import for the current workspace. When the failure was the model
@@ -708,7 +713,10 @@ export function AppShell() {
   // (content + hash) so the save guard is anchored to exactly what was on disk
   // when editing began. Keyed by (tab, doc), so a doc the tab navigated away from
   // keeps its own entry untouched.
-  const setEditorMode = useCallback(async (mode: EditorMode) => {
+  const setEditorMode = useCallback(async (mode: EditorMode, expectedSourceIntent?: number) => {
+    const sourceIntentIsCurrent = () =>
+      expectedSourceIntent === undefined || sourceIntentRef.current === expectedSourceIntent;
+    if (!sourceIntentIsCurrent()) return;
     const tab = selectActiveTab(useTabsStore.getState());
     if (!tab) return;
     const tabId = tab.id;
@@ -724,6 +732,7 @@ export function AppShell() {
     }
     try {
       const doc = await readDoc(docPath);
+      if (!sourceIntentIsCurrent()) return;
       // The active tab may have changed (or navigated) during the read — seed only
       // if it still stands on the same document.
       const landed = selectActiveTab(useTabsStore.getState());
@@ -740,12 +749,9 @@ export function AppShell() {
       row: EntityRow,
       expectedSourceIntent?: number,
     ): Promise<void> => {
-      if (
-        expectedSourceIntent !== undefined &&
-        sourceIntentRef.current !== expectedSourceIntent
-      ) {
-        return;
-      }
+      const editSourceIntent = expectedSourceIntent ?? beginSourceIntent();
+      const sourceIntentIsCurrent = () => sourceIntentRef.current === editSourceIntent;
+      if (!sourceIntentIsCurrent()) return;
       if (!member.editable) return;
       const path = typeof row.fields.path === 'string' ? row.fields.path : null;
       if (!path) {
@@ -756,15 +762,10 @@ export function AppShell() {
       try {
         snapshot = await settingsBackend.listSources();
       } catch {
-        toast('Could not resolve this Library source');
+        if (sourceIntentIsCurrent()) toast('Could not resolve this Library source');
         return;
       }
-      if (
-        expectedSourceIntent !== undefined &&
-        sourceIntentRef.current !== expectedSourceIntent
-      ) {
-        return;
-      }
+      if (!sourceIntentIsCurrent()) return;
       const source = snapshot.sources.find((candidate) => candidate.id === member.registry_id);
       if (!source) {
         toast('This Library source is no longer registered');
@@ -775,9 +776,10 @@ export function AppShell() {
           kind: 'library-edit',
           member,
           row,
-        });
+        }, editSourceIntent);
         if (!switched) return;
       }
+      if (!sourceIntentIsCurrent()) return;
       if (!settingsBackend.resolveLibraryDocumentEdit) {
         toast('Local Library editing is unavailable');
         return;
@@ -786,23 +788,21 @@ export function AppShell() {
       try {
         documentPath = await settingsBackend.resolveLibraryDocumentEdit(source.id, path);
       } catch {
-        toast('This Library document is no longer available for editing');
+        if (sourceIntentIsCurrent()) {
+          toast('This Library document is no longer available for editing');
+        }
         return;
       }
-      if (
-        expectedSourceIntent !== undefined &&
-        sourceIntentRef.current !== expectedSourceIntent
-      ) {
-        return;
-      }
+      if (!sourceIntentIsCurrent()) return;
       const title =
         typeof row.fields.title === 'string' && row.fields.title.length > 0
           ? row.fields.title
           : path.split(/[\\/]+/).pop() ?? path;
       openRef({ path: documentPath, name: title });
-      await setEditorMode('source');
+      if (!sourceIntentIsCurrent()) return;
+      await setEditorMode('source', editSourceIntent);
     },
-    [openRef, setEditorMode, switchWorkspace],
+    [beginSourceIntent, openRef, setEditorMode, switchWorkspace],
   );
   editLibraryDocumentRef.current = editLibraryDocument;
 
