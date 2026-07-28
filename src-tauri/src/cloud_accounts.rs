@@ -2784,6 +2784,7 @@ fn shared_entity_response(
             ),
             source_version_id,
             outcome: SourceOutcome::Ran,
+            retry_after_ms: None,
             freshness_ms: Some(source_report.freshness_ms),
             scanned,
             returned,

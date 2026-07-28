@@ -84,6 +84,7 @@ const evidence: LibraryEntityQueryResponse_Serialize = {
         source_id: PHYSICAL_SOURCE_ID,
         source_version_id: SOURCE_VERSION_ID,
         outcome: 'ran',
+        retry_after_ms: null,
         freshness_ms: 0,
         scanned: 1,
         returned: 1,

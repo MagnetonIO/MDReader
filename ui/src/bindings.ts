@@ -1915,6 +1915,8 @@ export type SourceExecution = {
 	source_version_id: string,
 	/**  Typed execution outcome. */
 	outcome: SourceOutcome,
+	/**  Provider-requested delay before retrying a rate-limited source. */
+	retry_after_ms: number | null,
 	/**  Age at execution time, or `None` when the source did not run. */
 	freshness_ms: number | null,
 	/**  Candidates examined across all source pages. */
@@ -1940,6 +1942,16 @@ export type SourceOutcome =
 "budget_exceeded" |
 /**  The source rejected or could not refresh its runtime credential. */
 "authentication_failed" |
+/**
+ *  The physical source rejected the read because its request rate was
+ *  exceeded.
+ */
+"rate_limited" |
+/**
+ *  The source returned a successful-looking page while reporting that
+ *  some storage domains were omitted.
+ */
+"incomplete_search" |
 /**  Communication with the physical source failed. */
 "transport_failed" |
 /**  The physical source cancelled its own work independently of CatDB. */

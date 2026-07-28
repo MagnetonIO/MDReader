@@ -14,6 +14,8 @@ const SOURCE_OUTCOMES = {
   runtime_refused: true,
   budget_exceeded: true,
   authentication_failed: true,
+  rate_limited: true,
+  incomplete_search: true,
   transport_failed: true,
   source_cancelled: true,
   schema_drift: true,
