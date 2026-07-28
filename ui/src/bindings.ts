@@ -506,6 +506,8 @@ export type CloudVersionPins = {
 	source_checksum: string,
 	policy_version: string,
 	policy_checksum: string,
+	provenance_rule_version: string,
+	provenance_rule_checksum: string,
 };
 
 /**  Derived answer completeness. */
@@ -966,6 +968,7 @@ export type FieldProvenance = FieldProvenance_Serialize | FieldProvenance_Deseri
 
 /**  Provenance for one resolved field. */
 export type FieldProvenance_Deserialize = {
+	provenance_rule_version_id: string,
 	field: string,
 	selected: number | null,
 	considered: FieldObservation_Deserialize[],
@@ -973,6 +976,7 @@ export type FieldProvenance_Deserialize = {
 
 /**  Provenance for one resolved field. */
 export type FieldProvenance_Serialize = {
+	provenance_rule_version_id: string,
 	field: string,
 	selected: number | null,
 	considered: FieldObservation_Serialize[],
@@ -1460,6 +1464,8 @@ export type PinnedVersions = {
 	source_version_ids: string[],
 	/**  Policy versions in authoritative revision order. */
 	policy_version_ids: string[],
+	/**  Exact provenance rule version used to reconcile every field. */
+	provenance_rule_version_id: string,
 };
 
 /**

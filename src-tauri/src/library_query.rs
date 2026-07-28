@@ -26,7 +26,7 @@ use catdb_policy::{
 use catdb_provenance::FieldProvenance;
 use catdb_storage::{
     catalog_content_checksum, CatalogRevision, Compatibility, MappingCapability, MappingVersion,
-    PolicyVersion, SchemaContent, SchemaVersion, SourceVersion,
+    PolicyVersion, ProvenanceRuleVersion, SchemaContent, SchemaVersion, SourceVersion,
 };
 use serde::Serialize;
 use specta::Type;
@@ -151,11 +151,24 @@ pub(crate) struct LibraryPhysicalSource {
     pub source: Arc<dyn DataSource>,
     /// Complete mapping into `document.Document`.
     pub mapping: Mapping,
+    /// Stable source family used by the declared semantic precedence.
+    precedence_source_id: catdb_connectors::SourceId,
 }
 
 impl LibraryPhysicalSource {
     /// Derive a stable physical identity from a membership and connector.
     pub(crate) fn new(membership_id: Uuid, source: Arc<dyn DataSource>, mapping: Mapping) -> Self {
+        let precedence_source_id = source.id().clone();
+        Self::new_as(membership_id, source, mapping, precedence_source_id)
+    }
+
+    /// Bind an account-specific source identity to its declared provider family.
+    pub(crate) fn new_as(
+        membership_id: Uuid,
+        source: Arc<dyn DataSource>,
+        mapping: Mapping,
+        precedence_source_id: catdb_connectors::SourceId,
+    ) -> Self {
         let mut identity = membership_id.as_bytes().to_vec();
         identity.extend_from_slice(source.id().as_str().as_bytes());
         Self {
@@ -165,6 +178,7 @@ impl LibraryPhysicalSource {
                 source,
             }),
             mapping,
+            precedence_source_id,
         }
     }
 }
@@ -342,6 +356,9 @@ fn build_runtime(
     let mut mapping_versions = Vec::new();
     let mut source_versions = Vec::new();
     let mut source_policy_fields = Vec::new();
+    let mut provider_versions = BTreeMap::<(String, String, String), Vec<(Uuid, Uuid)>>::new();
+    let mut mapped_field_providers = BTreeMap::<String, BTreeSet<(Uuid, Uuid)>>::new();
+    let mut source_mapping_pairs = BTreeSet::new();
     let mut bindings = Vec::new();
     let mut reports = Vec::new();
 
@@ -395,6 +412,26 @@ fn build_runtime(
                 spec: source_spec,
                 checksum: source_checksum,
             };
+            for (source_attr, target) in &physical.mapping.attr_map {
+                if target.path.arrows.is_empty()
+                    && target.path.start.as_str() == mdreader_domain::federated::ENTITY
+                {
+                    let provider = (source_version_id, mapping_version_id);
+                    provider_versions
+                        .entry((
+                            physical.precedence_source_id.as_str().to_string(),
+                            source_attr.as_str().to_string(),
+                            target.attr.as_str().to_string(),
+                        ))
+                        .or_default()
+                        .push(provider);
+                    mapped_field_providers
+                        .entry(target.attr.as_str().to_string())
+                        .or_default()
+                        .insert(provider);
+                    source_mapping_pairs.insert(provider);
+                }
+            }
             mapping_version
                 .verify()
                 .and_then(|()| source_version.verify())
@@ -429,6 +466,61 @@ fn build_runtime(
             active: member.active,
         });
     }
+
+    let mut rule_fields = Vec::new();
+    let mut declared_provider_pairs = BTreeSet::new();
+    for declaration in mdreader_domain::federated::precedence().fields() {
+        let mut providers = Vec::new();
+        let mut provider_pairs = Vec::new();
+        for provider in &declaration.order {
+            if let Some(versions) = provider_versions.get(&(
+                provider.source.as_str().to_string(),
+                provider.attr.as_str().to_string(),
+                declaration.field.as_str().to_string(),
+            )) {
+                for (source_version_id, mapping_version_id) in versions {
+                    provider_pairs.push((*source_version_id, *mapping_version_id));
+                    providers.push(serde_json::json!({
+                        "source_version_id": source_version_id,
+                        "mapping_version_id": mapping_version_id,
+                    }));
+                }
+            }
+        }
+        if providers.is_empty() {
+            continue;
+        }
+        if provider_pairs.iter().copied().collect::<BTreeSet<_>>()
+            != mapped_field_providers
+                .get(declaration.field.as_str())
+                .cloned()
+                .unwrap_or_default()
+        {
+            return Err(LibraryQueryError::InvalidCatalog);
+        }
+        declared_provider_pairs.extend(provider_pairs);
+        rule_fields.push(serde_json::json!({
+            "entity": "document.Document",
+            "field": declaration.field.as_str(),
+            "rationale": declaration.rationale,
+            "providers": providers,
+        }));
+    }
+    if declared_provider_pairs != source_mapping_pairs {
+        return Err(LibraryQueryError::InvalidCatalog);
+    }
+    let provenance_rule_spec = serde_json::json!({ "fields": rule_fields });
+    let provenance_rule_checksum = catalog_content_checksum(&provenance_rule_spec);
+    let provenance_rule_version_id =
+        version_id("provenance-rule", workspace_id, &provenance_rule_checksum);
+    let provenance_rule_version = ProvenanceRuleVersion {
+        provenance_rule_version_id,
+        spec: provenance_rule_spec,
+        checksum: provenance_rule_checksum,
+    };
+    provenance_rule_version
+        .verify()
+        .map_err(|_| LibraryQueryError::InvalidCatalog)?;
 
     let policy_document = PolicyDocument {
         rules: source_policy_fields
@@ -466,6 +558,7 @@ fn build_runtime(
         "mappings": mapping_versions.iter().map(|version| version.mapping_version_id).collect::<Vec<_>>(),
         "sources": source_versions.iter().map(|version| version.source_version_id).collect::<Vec<_>>(),
         "policy": policy_version_id,
+        "provenance_rule": provenance_rule_version_id,
     });
     let revision_checksum = catalog_content_checksum(&revision_spec);
     let revision_id = version_id("catalog", workspace_id, &revision_checksum);
@@ -495,6 +588,7 @@ fn build_runtime(
             .map(|version| version.source_version_id)
             .collect(),
         policy_version_ids: vec![policy_version_id],
+        provenance_rule_version_ids: vec![provenance_rule_version_id],
     };
     let catalog = RuntimeCatalog {
         revision,
@@ -503,7 +597,9 @@ fn build_runtime(
         mapping_versions,
         source_versions,
         policy_versions: vec![policy_version],
+        provenance_rule_versions: vec![provenance_rule_version],
         default_schema_version_id: semantic_schema_version_id,
+        deferred_integrity: Default::default(),
     };
     catalog
         .validate_control_plane_integrity()
@@ -568,8 +664,13 @@ fn restore_membership_provenance(
             }
             restored.insert(
                 field.clone(),
-                FieldProvenance::new(field, considered, selected_restored)
-                    .map_err(|_| LibraryQueryError::InvalidResponse)?,
+                FieldProvenance::new(
+                    evidence.provenance_rule_version_id(),
+                    field,
+                    considered,
+                    selected_restored,
+                )
+                .map_err(|_| LibraryQueryError::InvalidResponse)?,
             );
         }
         row.provenance = restored;
@@ -687,7 +788,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use catdb_api_types::{Completeness, EntityQueryRequest};
+    use catdb_api_types::{Completeness, EntityFilter, EntityQueryRequest, FilterOperator};
     use catdb_connectors::{
         DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext, SourceAttr,
         SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel,
@@ -872,7 +973,15 @@ mod tests {
             },
             editable: false,
             active: false,
-            sources: vec![LibraryPhysicalSource::new(membership_id, source, mapping)],
+            sources: vec![LibraryPhysicalSource::new_as(
+                membership_id,
+                source,
+                mapping,
+                SourceId::new(match provider {
+                    mdreader_domain::library::CloudDocumentSource::GoogleDrive => "google-drive",
+                    mdreader_domain::library::CloudDocumentSource::Dropbox => "dropbox",
+                }),
+            )],
         }
     }
 
@@ -963,6 +1072,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn frontmatter_author_precedes_the_git_commit_author() {
+        let tree = tempfile::tempdir().expect("temp tree");
+        std::fs::write(
+            tree.path().join("note.md"),
+            "---\nauthor: Document Author\n---\n# Note\n",
+        )
+        .expect("fixture");
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "Git Committer"],
+            &["config", "user.email", "committer@example.com"],
+            &["add", "note.md"],
+            &["commit", "-qm", "fixture"],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tree.path())
+                .output()
+                .expect("git");
+            assert!(
+                output.status.success(),
+                "git {:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let workspace = Uuid::new_v4();
+        let membership = Uuid::new_v4();
+        let member = local_member(tree.path(), membership);
+        let frontmatter_source_id = member
+            .sources
+            .iter()
+            .find(|source| source.source.id().as_str() == FrontmatterSource::ID)
+            .expect("frontmatter source")
+            .source_id;
+        let mut query = request(workspace, vec![membership]);
+        query.select = vec!["author".to_string()];
+
+        let answer =
+            execute_registered_library_query(query, vec![member], CancellationToken::new())
+                .await
+                .expect("local Library query");
+        let frontmatter_version_id = answer
+            .answer
+            .sources
+            .iter()
+            .find(|source| source.source_id == frontmatter_source_id)
+            .expect("frontmatter execution")
+            .source_version_id;
+        let row = answer.answer.rows.first().expect("document row");
+
+        assert_eq!(row.fields["author"], serde_json::json!("Document Author"));
+        assert_eq!(
+            row.provenance["author"]
+                .selected()
+                .expect("selected author")
+                .source_version_id(),
+            frontmatter_version_id
+        );
+
+        let mut lower_priority_filter = request(workspace, vec![membership]);
+        lower_priority_filter.select = vec!["path".to_string(), "author".to_string()];
+        lower_priority_filter.filters = vec![EntityFilter {
+            field: "author".to_string(),
+            operator: FilterOperator::Eq,
+            value: "Git Committer".to_string(),
+        }];
+        let rejected = execute_registered_library_query(
+            lower_priority_filter,
+            vec![local_member(tree.path(), membership)],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("lower-priority filter query");
+        assert!(
+            rejected.answer.rows.is_empty(),
+            "a lower-priority provider must not make a semantic filter match"
+        );
+        assert_eq!(rejected.answer.completeness, Completeness::Complete);
+
+        let mut winning_filter = request(workspace, vec![membership]);
+        winning_filter.select = vec!["path".to_string(), "author".to_string()];
+        winning_filter.filters = vec![EntityFilter {
+            field: "author".to_string(),
+            operator: FilterOperator::Eq,
+            value: "Document Author".to_string(),
+        }];
+        let accepted = execute_registered_library_query(
+            winning_filter,
+            vec![local_member(tree.path(), membership)],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("winning filter query");
+        assert_eq!(accepted.answer.rows.len(), 1);
+        assert_eq!(
+            accepted.answer.rows[0].fields["author"],
+            serde_json::json!("Document Author")
+        );
+    }
+
+    #[tokio::test]
     async fn partial_providers_union_over_the_shipping_document_projection() {
         let tree = tempfile::tempdir().expect("temp tree");
         std::fs::write(tree.path().join("note.md"), "# Local\n").expect("fixture");
@@ -1019,12 +1231,53 @@ mod tests {
         for row in &answer.answer.rows {
             let (membership, _) =
                 split_scoped_record_key(&row.record_key).expect("membership-scoped row");
-            let expected_providers = if membership == local { 3 } else { 1 };
             assert_eq!(row.provenance.len(), 10);
-            assert!(row
+            let provider_counts = row
                 .provenance
-                .values()
-                .all(|field| field.considered().len() == expected_providers));
+                .iter()
+                .map(|(field, evidence)| (field.as_str(), evidence.considered().len()))
+                .collect::<BTreeMap<_, _>>();
+            let expected = if membership == local {
+                BTreeMap::from([
+                    ("author", 2),
+                    ("body", 1),
+                    ("checksum", 0),
+                    ("mediaType", 0),
+                    ("modifiedAt", 2),
+                    ("path", 3),
+                    ("providerId", 0),
+                    ("revision", 0),
+                    ("size", 1),
+                    ("title", 1),
+                ])
+            } else if membership == drive {
+                BTreeMap::from([
+                    ("author", 0),
+                    ("body", 1),
+                    ("checksum", 1),
+                    ("mediaType", 1),
+                    ("modifiedAt", 1),
+                    ("path", 1),
+                    ("providerId", 0),
+                    ("revision", 0),
+                    ("size", 1),
+                    ("title", 1),
+                ])
+            } else {
+                BTreeMap::from([
+                    ("author", 0),
+                    ("body", 1),
+                    ("checksum", 1),
+                    ("mediaType", 0),
+                    ("modifiedAt", 1),
+                    ("path", 1),
+                    ("providerId", 1),
+                    ("revision", 1),
+                    ("size", 1),
+                    ("title", 1),
+                ])
+            };
+            assert_eq!(provider_counts, expected);
         }
     }
 
@@ -1061,7 +1314,7 @@ mod tests {
         let row = answer.answer.rows.first().expect("local row");
         assert_eq!(row.fields.len(), 1);
         assert_eq!(row.fields["body"], serde_json::json!("# Local body\n"));
-        assert_eq!(row.provenance["body"].considered().len(), 3);
+        assert_eq!(row.provenance["body"].considered().len(), 1);
         assert_eq!(
             row.provenance["body"]
                 .considered()
@@ -1070,7 +1323,7 @@ mod tests {
                     observation.state().kind() == catdb_provenance::ObservationKind::NotAsked
                 })
                 .count(),
-            2
+            0
         );
     }
 
@@ -1118,7 +1371,7 @@ mod tests {
         );
         assert_eq!(
             answer.answer.rows[0].provenance["body"].considered().len(),
-            3
+            1
         );
     }
 
@@ -1209,12 +1462,19 @@ mod tests {
             BTreeSet::from(["First membership", "Second membership"])
         );
         for row in &answer.answer.rows {
-            for field in row.provenance.values() {
+            for (field_name, field) in &row.provenance {
                 assert!(field
                     .considered()
                     .iter()
                     .all(|observation| observation.record_key() == "note.md"));
-                assert_eq!(field.considered().len(), 3);
+                assert_eq!(
+                    field.considered().len(),
+                    match field_name.as_str() {
+                        "path" => 3,
+                        "title" | "body" => 1,
+                        other => panic!("unexpected field {other}"),
+                    }
+                );
             }
         }
     }

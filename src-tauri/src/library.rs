@@ -2449,14 +2449,14 @@ mod tests {
     }
 
     #[test]
-    fn version_two_recovers_an_authentic_v9_catalog_without_mutating_it() {
+    fn version_two_recovers_an_authentic_v10_catalog_without_mutating_it() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
         let root = bound_root(&mkdir(temp.path(), "notes"));
         fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
         let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
         let (source_id, schema_version) = create_authentic_v2_index_with_schema(&old_db, &root);
-        assert_eq!(schema_version, 9, "fixture must traverse the real v9 DDL");
+        assert_eq!(schema_version, 10, "fixture must traverse the real v10 DDL");
         let before = fs::read(&old_db).expect("read index before legacy inspection");
         assert_no_sqlite_sidecars(&old_db);
 
@@ -3201,7 +3201,7 @@ mod tests {
     #[test]
     fn version_two_refuses_newer_and_partial_catalog_mutations_without_writing_them() {
         for (label, mutation) in [
-            ("newer", "PRAGMA user_version = 10;"),
+            ("newer", "PRAGMA user_version = 11;"),
             (
                 "partial",
                 "PRAGMA foreign_keys = OFF;

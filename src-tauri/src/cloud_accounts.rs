@@ -68,6 +68,9 @@ const CLOUD_SOURCE_VERSION_NAMESPACE: uuid::Uuid =
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_POLICY_VERSION_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_70_6f_6c_5f_01_00);
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const CLOUD_PROVENANCE_RULE_VERSION_NAMESPACE: uuid::Uuid =
+    uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_70_72_76_5f_01_00);
 const CLOUD_CATALOG_REVISION_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_63_61_74_5f_01_00);
 const CLOUD_WORKSPACE_NAMESPACE: uuid::Uuid =
@@ -251,6 +254,8 @@ pub(crate) struct CloudVersionPins {
     pub source_checksum: String,
     pub policy_version: String,
     pub policy_checksum: String,
+    pub provenance_rule_version: String,
+    pub provenance_rule_checksum: String,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq)]
@@ -2107,10 +2112,14 @@ async fn bind_library_cloud_source(
         },
         editable: false,
         active: false,
-        sources: vec![crate::library_query::LibraryPhysicalSource::new(
+        sources: vec![crate::library_query::LibraryPhysicalSource::new_as(
             membership_id,
             source,
             mapping,
+            catdb_connectors::SourceId::new(match provider {
+                CloudProvider::GoogleDrive => "google-drive",
+                CloudProvider::Dropbox => "dropbox",
+            }),
         )],
     })
 }
@@ -2288,6 +2297,7 @@ fn shared_entity_response(
         .ok_or(CloudSourceError::QueryInvalidResponse)?;
     let source_version_id = parse_pin(&response.version_pins.source_version)?;
     let mapping_version_id = parse_pin(&response.version_pins.mapping_version)?;
+    let provenance_rule_version_id = parse_pin(&response.version_pins.provenance_rule_version)?;
     let rows = response
         .rows
         .into_iter()
@@ -2380,8 +2390,13 @@ fn shared_entity_response(
                         .map(usize::try_from)
                         .transpose()
                         .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
-                    let evidence = FieldProvenance::new(field.field.clone(), considered, selected)
-                        .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+                    let evidence = FieldProvenance::new(
+                        provenance_rule_version_id,
+                        field.field.clone(),
+                        considered,
+                        selected,
+                    )
+                    .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
                     Ok((field.field, evidence))
                 })
                 .collect::<Result<BTreeMap<_, _>, CloudSourceError>>()?;
@@ -2409,6 +2424,7 @@ fn shared_entity_response(
             mapping_version_ids: vec![mapping_version_id],
             source_version_ids: vec![source_version_id],
             policy_version_ids: vec![parse_pin(&response.version_pins.policy_version)?],
+            provenance_rule_version_id,
         },
         rows,
         sources: vec![SourceExecution {
@@ -2818,6 +2834,7 @@ pub(crate) fn open_cloud_catalog(
                             mapping_versions: Vec::new(),
                             source_versions: Vec::new(),
                             policy_versions: Vec::new(),
+                            provenance_rule_versions: Vec::new(),
                         },
                     )
                     .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
@@ -2840,6 +2857,7 @@ pub(crate) fn open_cloud_catalog(
                         mapping_versions: Vec::new(),
                         source_versions: Vec::new(),
                         policy_versions: Vec::new(),
+                        provenance_rule_versions: Vec::new(),
                     },
                 )
                 .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
@@ -2906,11 +2924,65 @@ fn content_version(namespace: &uuid::Uuid, spec: &serde_json::Value) -> (String,
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn cloud_provenance_rule_spec(
+    provider: CloudProvider,
+    mapping: &catdb_core::Mapping,
+    source_version_id: uuid::Uuid,
+    mapping_version_id: uuid::Uuid,
+) -> Result<serde_json::Value, CloudSourceError> {
+    let declared_source = match provider {
+        CloudProvider::GoogleDrive => "google-drive",
+        CloudProvider::Dropbox => "dropbox",
+    };
+    let precedence = mdreader_domain::federated::precedence();
+    let mut fields = BTreeMap::new();
+    for (physical, target) in &mapping.attr_map {
+        if !target.path.arrows.is_empty()
+            || target.path.start.as_str() != mdreader_domain::federated::ENTITY
+        {
+            continue;
+        }
+        let declaration = precedence
+            .of(&target.attr)
+            .filter(|declaration| {
+                declaration.order.iter().any(|candidate| {
+                    candidate.source.as_str() == declared_source && candidate.attr == *physical
+                })
+            })
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        if fields
+            .insert(
+                target.attr.as_str().to_string(),
+                serde_json::json!({
+                    "entity": "document.Document",
+                    "field": target.attr.as_str(),
+                    "rationale": declaration.rationale,
+                    "providers": [{
+                        "source_version_id": source_version_id,
+                        "mapping_version_id": mapping_version_id,
+                    }],
+                }),
+            )
+            .is_some()
+        {
+            return Err(CloudSourceError::QueryCatalogInvalid);
+        }
+    }
+    if fields.is_empty() {
+        return Err(CloudSourceError::QueryCatalogInvalid);
+    }
+    Ok(serde_json::json!({
+        "fields": fields.into_values().collect::<Vec<_>>(),
+    }))
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 struct CloudExecutionSpecs {
     mapping: serde_json::Value,
     physical_schema: serde_json::Value,
     source: serde_json::Value,
     policy: serde_json::Value,
+    provenance_rule: serde_json::Value,
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -2924,7 +2996,7 @@ fn persist_cloud_execution_pins(
 ) -> Result<String, CloudSourceError> {
     use catdb_storage::{
         CatalogDraft, Compatibility, MappingCapability, MappingVersion, PolicyVersion,
-        SchemaContent, SchemaVersion, SourceVersion,
+        ProvenanceRuleVersion, SchemaContent, SchemaVersion, SourceVersion,
     };
 
     let store = catdb_storage_sqlite::SqliteStore::open(path)
@@ -2980,10 +3052,16 @@ fn persist_cloud_execution_pins(
         spec: specs.policy,
         checksum: pins.policy_checksum.clone(),
     };
+    let provenance_rule_version = ProvenanceRuleVersion {
+        provenance_rule_version_id: parse_pin(&pins.provenance_rule_version)?,
+        spec: specs.provenance_rule,
+        checksum: pins.provenance_rule_checksum.clone(),
+    };
     mapping_version
         .verify()
         .and_then(|()| source_version.verify())
         .and_then(|()| policy_version.verify())
+        .and_then(|()| provenance_rule_version.verify())
         .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
 
     let schema_ids = vec![
@@ -2995,6 +3073,8 @@ fn persist_cloud_execution_pins(
             && revision.mapping_version_ids == [mapping_version.mapping_version_id]
             && revision.source_version_ids == [source_version.source_version_id]
             && revision.policy_version_ids == [policy_version.policy_version_id]
+            && revision.provenance_rule_version_ids
+                == [provenance_rule_version.provenance_rule_version_id]
     };
     let verify_authority = |revision: &catdb_storage::CatalogRevision| {
         let stored_canonical = store
@@ -3017,11 +3097,16 @@ fn persist_cloud_execution_pins(
             .get_policy_version_now(policy_version.policy_version_id)
             .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
             .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+        let stored_provenance_rule = store
+            .get_provenance_rule_version_now(provenance_rule_version.provenance_rule_version_id)
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)?
+            .ok_or(CloudSourceError::QueryCatalogInvalid)?;
         if stored_canonical != canonical_version
             || stored_physical != physical_version
             || stored_mapping != mapping_version
             || stored_source != source_version
             || stored_policy != policy_version
+            || stored_provenance_rule != provenance_rule_version
         {
             return Err(CloudSourceError::QueryCatalogInvalid);
         }
@@ -3046,6 +3131,7 @@ fn persist_cloud_execution_pins(
         "mapping": mapping_version.mapping_version_id,
         "source": source_version.source_version_id,
         "policy": policy_version.policy_version_id,
+        "provenance_rule": provenance_rule_version.provenance_rule_version_id,
     });
     let revision_id = uuid::Uuid::new_v5(
         &CLOUD_CATALOG_REVISION_NAMESPACE,
@@ -3063,6 +3149,7 @@ fn persist_cloud_execution_pins(
                 mapping_versions: vec![mapping_version],
                 source_versions: vec![source_version],
                 policy_versions: vec![policy_version],
+                provenance_rule_versions: vec![provenance_rule_version],
             },
         )
         .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
@@ -3100,6 +3187,16 @@ fn resolve_cloud_execution_authority(
     let source_spec = source.source_spec();
     let (source_version, source_checksum) =
         content_version(&CLOUD_SOURCE_VERSION_NAMESPACE, &source_spec);
+    let provenance_rule_spec = cloud_provenance_rule_spec(
+        provider,
+        mapping.mapping(),
+        parse_pin(&source_version)?,
+        parse_pin(&mapping_version)?,
+    )?;
+    let (provenance_rule_version, provenance_rule_checksum) = content_version(
+        &CLOUD_PROVENANCE_RULE_VERSION_NAMESPACE,
+        &provenance_rule_spec,
+    );
     let policy_spec = serde_json::json!({
         "kind": "mdreader-cloud-read",
         "provider": provider,
@@ -3126,6 +3223,8 @@ fn resolve_cloud_execution_authority(
         source_checksum,
         policy_version,
         policy_checksum,
+        provenance_rule_version,
+        provenance_rule_checksum,
     };
     if let Some(path) = catalog.catalog_path.as_deref() {
         pins.catalog_version = persist_cloud_execution_pins(
@@ -3137,6 +3236,7 @@ fn resolve_cloud_execution_authority(
                 physical_schema: source_schema_spec,
                 source: source_spec,
                 policy: policy_spec,
+                provenance_rule: provenance_rule_spec,
             },
             &pins,
             requested_revision_id,
