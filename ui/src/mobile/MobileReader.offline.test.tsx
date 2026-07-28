@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { TabState } from '../stores/types';
 import { MobileReader } from './MobileReader';
+import { MobileSourceReadError } from './mobile-source-adapter';
 import type { MobileDocumentIdentity } from './offline-cache';
 
 const fixtures = vi.hoisted(() => ({
@@ -195,6 +196,33 @@ describe('mobile offline document fallback', () => {
       expect(screen.getByRole('status').textContent).toMatch(/identity changed/i),
     );
     expect(screen.queryByText('Wrong authority', { selector: 'h1' })).toBeNull();
+  });
+
+  test('surfaces reconnect and verification guidance for a changed Enterprise identity', async () => {
+    fixtures.cache = { version: 3, entries: [] };
+    const loadDocument = vi.fn(async () => {
+      throw new MobileSourceReadError(
+        'identity-changed',
+        'The Enterprise connection identity changed. Reconnect and verify the server and workspace before reading this document again.',
+      );
+    });
+
+    render(
+      <MobileReader
+        tab={tab}
+        mode="reader"
+        sourceIdentity={identity}
+        loadDocument={loadDocument}
+        onBack={() => undefined}
+        onModeChange={() => undefined}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(
+        /reconnect and verify the server and workspace/i,
+      ),
+    );
   });
 
   test('a superseded cached parse cannot paint beneath the newly selected document', async () => {

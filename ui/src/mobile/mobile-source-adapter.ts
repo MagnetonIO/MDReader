@@ -36,6 +36,7 @@ export interface MobileLibraryDocument extends MobileDocumentIdentity {
 export type MobileLibraryResult =
   | { status: 'ready'; label: string; documents: MobileLibraryDocument[] }
   | { status: 'refused'; message: string }
+  | { status: 'identity-changed'; message: string }
   | { status: 'unavailable'; message: string }
   | { status: 'invalid-response'; message: string };
 
@@ -49,7 +50,12 @@ export interface MobileDocumentPayload extends MobileDocumentIdentity {
 }
 
 export class MobileSourceReadError extends Error {
-  readonly kind: 'refused' | 'unavailable' | 'invalid-response' | 'identity-mismatch';
+  readonly kind:
+    | 'refused'
+    | 'identity-changed'
+    | 'unavailable'
+    | 'invalid-response'
+    | 'identity-mismatch';
 
   constructor(
     kind: MobileSourceReadError['kind'],
@@ -356,6 +362,16 @@ function libraryFailure(cause: unknown): MobileLibraryResult {
   if (cause instanceof CatdbApiError && (cause.status === 401 || cause.status === 403)) {
     return { status: 'refused', message: 'The Enterprise session was refused.' };
   }
+  if (
+    cause instanceof NativeEnterpriseError &&
+    cause.detail.kind === 'connection-identity-changed'
+  ) {
+    return {
+      status: 'identity-changed',
+      message:
+        'The Enterprise connection identity changed. Reconnect and verify the server and workspace before trying again.',
+    };
+  }
   if (cause instanceof ResponseBoundError) {
     return {
       status: 'invalid-response',
@@ -375,6 +391,15 @@ function readFailure(cause: unknown): MobileSourceReadError {
   if (cause instanceof MobileSourceReadError) return cause;
   if (cause instanceof CatdbApiError && (cause.status === 401 || cause.status === 403)) {
     return new MobileSourceReadError('refused', 'The Enterprise session was refused.');
+  }
+  if (
+    cause instanceof NativeEnterpriseError &&
+    cause.detail.kind === 'connection-identity-changed'
+  ) {
+    return new MobileSourceReadError(
+      'identity-changed',
+      'The Enterprise connection identity changed. Reconnect and verify the server and workspace before reading this document again.',
+    );
   }
   if (cause instanceof ResponseBoundError) {
     return new MobileSourceReadError(

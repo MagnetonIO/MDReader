@@ -312,6 +312,22 @@ fn retired_legacy_registry_path(path: &Path) -> Result<PathBuf, MobileEnterprise
         .ok_or(MobileEnterpriseError::PersistFailed)
 }
 
+fn legacy_migration_lock_path(path: &Path) -> Result<PathBuf, MobileEnterpriseError> {
+    path.parent()
+        .map(|parent| parent.join("mobile-enterprise-migration.lock"))
+        .ok_or(MobileEnterpriseError::PersistFailed)
+}
+
+fn with_legacy_migration_lock<T>(
+    legacy_path: &Path,
+    operation: impl FnOnce() -> Result<T, MobileEnterpriseError>,
+) -> Result<T, MobileEnterpriseError> {
+    let _lease =
+        crate::file_lock::AdvisoryFileLock::acquire(&legacy_migration_lock_path(legacy_path)?)
+            .map_err(|_| MobileEnterpriseError::PersistFailed)?;
+    operation()
+}
+
 fn read_legacy_active_record(
     path: &Path,
 ) -> Result<Option<ConnectionRecord>, MobileEnterpriseError> {
@@ -622,6 +638,50 @@ fn publish_legacy_migration(
     legacy_path: &Path,
     source: crate::library::ConnectedCatdbSourceRecord,
 ) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    publish_legacy_migration_with_rename(store, legacy_path, source, |from, to| {
+        std::fs::rename(from, to)
+    })
+}
+
+fn legacy_matches_source(
+    record: &ConnectionRecord,
+    source: &crate::library::ConnectedCatdbSourceRecord,
+) -> bool {
+    let same_origin = exact_origin(&record.server_origin)
+        .map(|origin| origin.to_string() == source.server_origin)
+        .unwrap_or(false);
+    record.label == source.label
+        && same_origin
+        && record.credential_reference == source.credential_reference
+}
+
+fn publish_legacy_migration_with_rename(
+    store: &crate::library::LibraryStore,
+    legacy_path: &Path,
+    source: crate::library::ConnectedCatdbSourceRecord,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    with_legacy_migration_lock(legacy_path, || {
+        publish_legacy_migration_transaction_with_rename(store, legacy_path, source, rename)
+    })
+}
+
+fn publish_legacy_migration_transaction_with_rename(
+    store: &crate::library::LibraryStore,
+    legacy_path: &Path,
+    source: crate::library::ConnectedCatdbSourceRecord,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    if let Some(current) = store.read_connected_catdb().map_err(map_library_error)? {
+        retire_matching_legacy_after_publication(legacy_path, &current)?;
+        return Ok(current);
+    }
+    if !read_legacy_active_record(legacy_path)?
+        .as_ref()
+        .is_some_and(|record| legacy_matches_source(record, &source))
+    {
+        return Err(MobileEnterpriseError::PersistFailed);
+    }
     let retired_path = retired_legacy_registry_path(legacy_path)?;
     match std::fs::symlink_metadata(&retired_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -630,11 +690,25 @@ fn publish_legacy_migration(
     store
         .add_connected_catdb(source.clone())
         .map_err(map_library_error)?;
-    if std::fs::rename(legacy_path, retired_path).is_err() {
-        if store.remove_connected_catdb(&source.id).is_err() {
-            return Err(MobileEnterpriseError::RollbackFailed);
+    if rename(legacy_path, &retired_path).is_err() {
+        match read_legacy_active_record(legacy_path) {
+            Ok(Some(_)) => {
+                if store.remove_connected_catdb(&source.id).is_err() {
+                    return Err(MobileEnterpriseError::RollbackFailed);
+                }
+                return Err(MobileEnterpriseError::PersistFailed);
+            }
+            Ok(None)
+                if read_legacy_active_record(&retired_path)
+                    .ok()
+                    .flatten()
+                    .as_ref()
+                    .is_some_and(|record| legacy_matches_source(record, &source)) =>
+            {
+                return Ok(source);
+            }
+            Ok(None) | Err(_) => return Err(MobileEnterpriseError::PersistFailed),
         }
-        return Err(MobileEnterpriseError::PersistFailed);
     }
     Ok(source)
 }
@@ -646,13 +720,7 @@ fn retire_matching_legacy_after_publication(
     let Ok(Some(record)) = read_legacy_active_record(legacy_path) else {
         return Ok(());
     };
-    let same_origin = exact_origin(&record.server_origin)
-        .map(|origin| origin.to_string() == source.server_origin)
-        .unwrap_or(false);
-    if record.label != source.label
-        || !same_origin
-        || record.credential_reference != source.credential_reference
-    {
+    if !legacy_matches_source(&record, source) {
         return Ok(());
     }
     let retired_path = retired_legacy_registry_path(legacy_path)?;
@@ -669,35 +737,32 @@ async fn migrate_legacy_connection(
     vault: Arc<dyn BearerVault>,
 ) -> Result<Option<crate::library::ConnectedCatdbSourceRecord>, MobileEnterpriseError> {
     let current_store = store.clone();
-    if let Some(source) = tokio::task::spawn_blocking(move || current_store.read_connected_catdb())
-        .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)?
-        .map_err(map_library_error)?
-    {
-        let cleanup_path = legacy_path.clone();
-        let cleanup_source = source.clone();
-        tokio::task::spawn_blocking(move || {
-            retire_matching_legacy_after_publication(&cleanup_path, &cleanup_source)
-        })
-        .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)??;
-        return Ok(Some(source));
-    }
-
     let read_path = legacy_path.clone();
+    let read_vault = vault.clone();
     let legacy = tokio::task::spawn_blocking(move || {
-        let Some(record) = read_legacy_active_record(&read_path)? else {
-            return Ok(None);
-        };
-        let token = vault
-            .get(&record.credential_reference)?
-            .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
-        Ok::<_, MobileEnterpriseError>(Some((record, token)))
+        with_legacy_migration_lock(&read_path, || {
+            if let Some(source) = current_store
+                .read_connected_catdb()
+                .map_err(map_library_error)?
+            {
+                retire_matching_legacy_after_publication(&read_path, &source)?;
+                return Ok(LegacyMigrationDecision::Current(source));
+            }
+            let Some(record) = read_legacy_active_record(&read_path)? else {
+                return Ok(LegacyMigrationDecision::Absent);
+            };
+            let token = read_vault
+                .get(&record.credential_reference)?
+                .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
+            Ok(LegacyMigrationDecision::Pending(record, token))
+        })
     })
     .await
     .map_err(|_| MobileEnterpriseError::PersistFailed)??;
-    let Some((record, token)) = legacy else {
-        return Ok(None);
+    let (record, token) = match legacy {
+        LegacyMigrationDecision::Current(source) => return Ok(Some(source)),
+        LegacyMigrationDecision::Pending(record, token) => (record, token),
+        LegacyMigrationDecision::Absent => return Ok(None),
     };
 
     let mut source = discover_connected_catdb(exact_origin(&record.server_origin)?, &token).await?;
@@ -716,6 +781,12 @@ async fn connected_source_or_migrate(
     let legacy_path = legacy_registry_path(app)?;
     let vault: Arc<dyn BearerVault> = Arc::new(KeyringBearerVault::new(&app.config().identifier)?);
     migrate_legacy_connection(store, legacy_path, vault).await
+}
+
+enum LegacyMigrationDecision {
+    Current(crate::library::ConnectedCatdbSourceRecord),
+    Pending(ConnectionRecord, BearerToken),
+    Absent,
 }
 
 fn persist_connected_catdb(
@@ -929,8 +1000,11 @@ pub(crate) async fn disconnect_connected_catdb(
     {
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
+        let legacy_path = legacy_registry_path(&app)?;
         tokio::task::spawn_blocking(move || {
-            disconnect_connected_catdb_from(&store, &vault, &connection_id)
+            with_legacy_migration_lock(&legacy_path, || {
+                disconnect_connected_catdb_from(&store, &vault, &connection_id)
+            })
         })
         .await
         .map_err(|_| MobileEnterpriseError::PersistFailed)?
@@ -1074,8 +1148,11 @@ mod tests {
     use super::{
         disconnect_connected_catdb_from, discover_connected_catdb, execute_connected_query,
         execute_request, migrate_legacy_connection, persist_connected_catdb, pin_connected_query,
-        BearerToken, BearerVault, ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError,
-        MobileEnterpriseOperation, MobileEnterpriseResponse,
+        publish_legacy_migration, publish_legacy_migration_transaction_with_rename,
+        publish_legacy_migration_with_rename, retire_matching_legacy_after_publication,
+        with_legacy_migration_lock, BearerToken, BearerVault, ConnectedCatdbState,
+        ConnectionRecord, MobileEnterpriseError, MobileEnterpriseOperation,
+        MobileEnterpriseResponse,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
@@ -1487,6 +1564,189 @@ mod tests {
             "native-secret"
         );
         server.await.expect("server");
+    }
+
+    #[test]
+    fn failed_publisher_cannot_erase_membership_after_another_participant_retires_legacy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library_path = temp.path().join("library.json");
+        let legacy_path = temp.path().join("mobile-enterprise.json");
+        let retired_path = temp.path().join("mobile-enterprise.json.migrated");
+        let publisher = LibraryStore::new(library_path.clone());
+        let observer = LibraryStore::new(library_path);
+        let source = connected_source();
+        std::fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "active_connection_id": "legacy-connection",
+                "connections": [{
+                    "id": "legacy-connection",
+                    "label": source.label,
+                    "server_origin": source.server_origin,
+                    "credential_reference": source.credential_reference
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write legacy registry");
+
+        let result = publish_legacy_migration_transaction_with_rename(
+            &publisher,
+            &legacy_path,
+            source,
+            |from, _to| {
+                let observed = observer
+                    .read_connected_catdb()
+                    .expect("independent participant reads membership")
+                    .expect("published membership");
+                retire_matching_legacy_after_publication(from, &observed)
+                    .expect("independent participant retires matching legacy");
+                Err(std::io::Error::other("publisher rename lost the race"))
+            },
+        );
+
+        assert!(result.is_ok() || matches!(result, Err(MobileEnterpriseError::PersistFailed)));
+        assert!(
+            retired_path.exists(),
+            "the observer retired the legacy file"
+        );
+        assert!(
+            legacy_path.exists()
+                || publisher
+                    .read_connected_catdb()
+                    .expect("read final membership")
+                    .is_some(),
+            "every interleaving must leave authoritative legacy or unified membership"
+        );
+    }
+
+    #[test]
+    fn migration_publication_serializes_independent_retirement_participants() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library_path = temp.path().join("library.json");
+        let legacy_path = temp.path().join("mobile-enterprise.json");
+        let publisher_path = legacy_path.clone();
+        let observer_path = legacy_path.clone();
+        let publisher = LibraryStore::new(library_path.clone());
+        let observer = LibraryStore::new(library_path);
+        let source = connected_source();
+        std::fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "active_connection_id": "legacy-connection",
+                "connections": [{
+                    "id": "legacy-connection",
+                    "label": source.label,
+                    "server_origin": source.server_origin,
+                    "credential_reference": source.credential_reference
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write legacy registry");
+        let (published_tx, published_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first = std::thread::spawn(move || {
+            publish_legacy_migration_with_rename(&publisher, &publisher_path, source, |from, to| {
+                published_tx.send(()).expect("signal unified publication");
+                release_rx.recv().expect("release legacy retirement");
+                std::fs::rename(from, to)
+            })
+        });
+        published_rx
+            .recv()
+            .expect("publisher added unified membership under lease");
+
+        let (observer_done_tx, observer_done_rx) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let result = with_legacy_migration_lock(&observer_path, || {
+                let observed = observer
+                    .read_connected_catdb()
+                    .expect("read published membership")
+                    .expect("unified membership");
+                retire_matching_legacy_after_publication(&observer_path, &observed)
+            });
+            observer_done_tx
+                .send(())
+                .expect("signal observer completion");
+            result
+        });
+        assert!(
+            observer_done_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "an independent retirement participant must block until publication and retirement are one outcome"
+        );
+        release_tx.send(()).expect("release publisher retirement");
+        first.join().expect("join publisher").expect("publication");
+        second
+            .join()
+            .expect("join observer")
+            .expect("observer retirement");
+        assert!(!legacy_path.exists());
+    }
+
+    #[test]
+    fn failed_retirement_preserves_legacy_and_a_retry_publishes_unified_membership() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy_path = temp.path().join("mobile-enterprise.json");
+        let retired_path = temp.path().join("mobile-enterprise.json.migrated");
+        let store = LibraryStore::new(temp.path().join("library.json"));
+        let source = connected_source();
+        std::fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "active_connection_id": "legacy-connection",
+                "connections": [{
+                    "id": "legacy-connection",
+                    "label": source.label,
+                    "server_origin": source.server_origin,
+                    "credential_reference": source.credential_reference
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write legacy registry");
+
+        assert_eq!(
+            publish_legacy_migration_transaction_with_rename(
+                &store,
+                &legacy_path,
+                source.clone(),
+                |_from, _to| Err(std::io::Error::other("injected rename failure")),
+            ),
+            Err(MobileEnterpriseError::PersistFailed)
+        );
+        assert!(
+            legacy_path.exists(),
+            "failed retirement keeps legacy authoritative"
+        );
+        assert!(!retired_path.exists());
+        assert!(
+            store
+                .read_connected_catdb()
+                .expect("read rolled-back membership")
+                .is_none(),
+            "rollback must not leave a second authoritative membership"
+        );
+
+        assert_eq!(
+            publish_legacy_migration(&store, &legacy_path, source.clone())
+                .expect("retry migration"),
+            source
+        );
+        assert!(!legacy_path.exists());
+        assert!(retired_path.exists());
+        assert!(
+            store
+                .read_connected_catdb()
+                .expect("read retried membership")
+                .is_some(),
+            "retry must publish unified membership before retiring legacy"
+        );
     }
 
     #[tokio::test]

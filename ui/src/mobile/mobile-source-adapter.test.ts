@@ -4,6 +4,7 @@ import type {
   SessionResponse,
 } from '@catdb/client';
 
+import { commands } from '../bindings';
 import {
   createEnterpriseMobileSourceAdapter,
   MobileSourceReadError,
@@ -152,6 +153,13 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
+function nativeResponse(body: unknown, status = 200) {
+  return {
+    status: 'ok' as const,
+    data: { status, body_json: JSON.stringify(body) },
+  };
+}
+
 function sequence(...responses: Response[]) {
   return vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
     void _input;
@@ -256,6 +264,45 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     await expect(malformed.listDocuments()).resolves.toEqual({
       status: 'invalid-response',
       message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('listing preserves a native connection identity change with reconnect guidance', async () => {
+    vi.spyOn(commands, 'mobileEnterpriseRequest').mockResolvedValue({
+      status: 'error',
+      error: { kind: 'connection-identity-changed' },
+    });
+    const adapter = createEnterpriseMobileSourceAdapter(config);
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'identity-changed',
+      message:
+        'The Enterprise connection identity changed. Reconnect and verify the server and workspace before trying again.',
+    });
+  });
+
+  test('reading preserves a native connection identity change with reconnect guidance', async () => {
+    const listing = queryResponse({
+      path: 'papers/architecture.md',
+      title: 'Semantic architecture',
+      size: 128,
+    });
+    vi.spyOn(commands, 'mobileEnterpriseRequest')
+      .mockResolvedValueOnce(nativeResponse(session))
+      .mockResolvedValueOnce(nativeResponse(listing))
+      .mockResolvedValueOnce({
+        status: 'error',
+        error: { kind: 'connection-identity-changed' },
+      });
+    const adapter = createEnterpriseMobileSourceAdapter(config);
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'identity-changed',
+      message:
+        'The Enterprise connection identity changed. Reconnect and verify the server and workspace before reading this document again.',
     });
   });
 
