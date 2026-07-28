@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type {
@@ -9,35 +9,83 @@ import { Sidebar } from './Sidebar.js';
 
 afterEach(cleanup);
 
-it('navigates connected read-through sources from the primary Library rail', () => {
+function fixtureForMember({
+  id,
+  registryId,
+  name,
+  kind,
+  editable,
+  active,
+  title,
+  path,
+}: {
+  id: number;
+  registryId: string;
+  name: string;
+  kind: LibrarySourceExecution['kind'];
+  editable: boolean;
+  active: boolean;
+  title: string;
+  path: string;
+}): {
+  member: LibrarySourceExecution;
+  response: LibraryEntityQueryResponse_Serialize;
+} {
+  const uuid = (offset: number) =>
+    `00000000-0000-4000-8000-${String(id + offset).padStart(12, '0')}`;
   const member: LibrarySourceExecution = {
-    membership_id: '00000000-0000-4000-8000-000000000011',
-    registry_id: 'dropbox',
-    name: 'Dropbox',
-    kind: 'dropbox',
-    source_ids: ['00000000-0000-4000-8000-000000000012'],
-    editable: false,
-    active: false,
+    membership_id: uuid(0),
+    registry_id: registryId,
+    name,
+    kind,
+    source_ids: [uuid(1)],
+    editable,
+    active,
+  };
+  const sourceVersionId = uuid(2);
+  const mappingVersionId = uuid(3);
+  const provenanceRuleVersionId = uuid(4);
+  const recordKey = `library:${member.membership_id}:${path}`;
+  const row = {
+    record_key: recordKey,
+    fields: { title, path },
+    provenance: {
+      path: {
+        field: 'path',
+        provenance_rule_version_id: provenanceRuleVersionId,
+        selected: 0,
+        considered: [
+          {
+            source_version_id: sourceVersionId,
+            record_key: path,
+            mapping_version_id: mappingVersionId,
+            physical_attribute: 'path',
+            observed_at_ms: 1,
+            state: { state: 'observed_value' as const, value: path },
+          },
+        ],
+      },
+    },
   };
   const response: LibraryEntityQueryResponse_Serialize = {
     memberships: [member],
     answer: {
-      query_id: '00000000-0000-4000-8000-000000000013',
+      query_id: uuid(5),
       pins: {
-        catalog_resolver_id: '00000000-0000-4000-8000-000000000014',
-        catalog_revision_id: '00000000-0000-4000-8000-000000000015',
-        schema_version_id: '00000000-0000-4000-8000-000000000016',
-        physical_schema_version_ids: ['00000000-0000-4000-8000-000000000017'],
-        mapping_version_ids: ['00000000-0000-4000-8000-000000000018'],
-        source_version_ids: ['00000000-0000-4000-8000-000000000019'],
-        policy_version_ids: ['00000000-0000-4000-8000-000000000020'],
-        provenance_rule_version_id: '00000000-0000-4000-8000-000000000031',
+        catalog_resolver_id: uuid(6),
+        catalog_revision_id: uuid(7),
+        schema_version_id: uuid(8),
+        physical_schema_version_ids: [uuid(9)],
+        mapping_version_ids: [mappingVersionId],
+        source_version_ids: [sourceVersionId],
+        policy_version_ids: [uuid(10)],
+        provenance_rule_version_id: provenanceRuleVersionId,
       },
       completeness: { state: 'complete' },
       sources: [
         {
           source_id: member.source_ids[0]!,
-          source_version_id: '00000000-0000-4000-8000-000000000019',
+          source_version_id: sourceVersionId,
           freshness_ms: 0,
           outcome: 'ran',
           retry_after_ms: null,
@@ -45,33 +93,27 @@ it('navigates connected read-through sources from the primary Library rail', () 
           returned: 1,
         },
       ],
-      rows: [
-        {
-          record_key: '/notes/cloud.md',
-          fields: { title: 'Cloud note.md', path: '/notes/cloud.md' },
-          provenance: {
-            path: {
-              field: 'path',
-              provenance_rule_version_id: '00000000-0000-4000-8000-000000000031',
-              selected: 0,
-              considered: [
-                {
-                  source_version_id: '00000000-0000-4000-8000-000000000019',
-                  record_key: '/notes/cloud.md',
-                  mapping_version_id: '00000000-0000-4000-8000-000000000018',
-                  physical_attribute: 'path',
-                  observed_at_ms: 1,
-                  state: { state: 'observed_value', value: '/notes/cloud.md' },
-                },
-              ],
-            },
-          },
-        },
-      ],
+      rows: [row],
       next_cursor: null,
     },
   };
+
+  return { member, response };
+}
+
+it('navigates connected read-through sources from the primary Library rail', () => {
+  const dropbox = fixtureForMember({
+    id: 20,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Cloud note.md',
+    path: '/notes/cloud.md',
+  });
   const open = vi.fn();
+
   render(
     <Sidebar
       collapsed={false}
@@ -83,7 +125,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
       onPickFolder={vi.fn()}
       onOpenFile={vi.fn()}
       onOpenRecent={vi.fn()}
-      libraryEvidence={[response]}
+      libraryEvidence={[dropbox.response]}
       librarySearch=""
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
@@ -94,84 +136,66 @@ it('navigates connected read-through sources from the primary Library rail', () 
   expect(screen.getByRole('navigation', { name: 'Library sources' })).toBeTruthy();
   expect(screen.getByText('Read-only')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Open Cloud note.md from Dropbox' }));
-  expect(open).toHaveBeenCalledWith(member, response.answer.rows[0]);
+  expect(open).toHaveBeenCalledWith(dropbox.member, dropbox.response.answer.rows[0]);
 });
 
-it('keeps the active workspace tree browsable without duplicating its Library membership', () => {
-  const member: LibrarySourceExecution = {
-    membership_id: '00000000-0000-4000-8000-000000000021',
-    registry_id: 'local-source-id',
-    name: 'Local notes',
+it('keeps the active workspace and every supplemental membership across evidence groups', () => {
+  const activeLocal = fixtureForMember({
+    id: 100,
+    registryId: 'active-local-source',
+    name: 'Active notes',
     kind: 'local-folder',
-    source_ids: ['00000000-0000-4000-8000-000000000022'],
     editable: true,
     active: true,
-  };
-  const response: LibraryEntityQueryResponse_Serialize = {
-    memberships: [member],
-    answer: {
-      query_id: '00000000-0000-4000-8000-000000000023',
-      pins: {
-        catalog_resolver_id: '00000000-0000-4000-8000-000000000024',
-        catalog_revision_id: '00000000-0000-4000-8000-000000000025',
-        schema_version_id: '00000000-0000-4000-8000-000000000026',
-        physical_schema_version_ids: ['00000000-0000-4000-8000-000000000027'],
-        mapping_version_ids: ['00000000-0000-4000-8000-000000000028'],
-        source_version_ids: ['00000000-0000-4000-8000-000000000029'],
-        policy_version_ids: ['00000000-0000-4000-8000-000000000030'],
-        provenance_rule_version_id: '00000000-0000-4000-8000-000000000032',
-      },
-      completeness: { state: 'complete' },
-      sources: [
-        {
-          source_id: member.source_ids[0]!,
-          source_version_id: '00000000-0000-4000-8000-000000000029',
-          freshness_ms: 0,
-          outcome: 'ran',
-          retry_after_ms: null,
-          scanned: 1,
-          returned: 1,
-        },
-      ],
-      rows: [
-        {
-          record_key:
-            'library:00000000-0000-4000-8000-000000000021:notes/local.md',
-          fields: {
-            path: 'notes/local.md',
-            body: '# Local note',
-          },
-          provenance: {
-            path: {
-              field: 'path',
-              provenance_rule_version_id: '00000000-0000-4000-8000-000000000032',
-              selected: 0,
-              considered: [
-                {
-                  source_version_id: '00000000-0000-4000-8000-000000000029',
-                  record_key: 'notes/local.md',
-                  mapping_version_id: '00000000-0000-4000-8000-000000000028',
-                  physical_attribute: 'path',
-                  observed_at_ms: 1,
-                  state: { state: 'observed_value', value: 'notes/local.md' },
-                },
-              ],
-            },
-          },
-        },
-      ],
-      next_cursor: null,
-    },
-  };
+    title: 'workspace.md',
+    path: 'notes/workspace.md',
+  });
+  const inactiveLocal = fixtureForMember({
+    id: 120,
+    registryId: 'inactive-local-source',
+    name: 'Archived notes',
+    kind: 'local-folder',
+    editable: true,
+    active: false,
+    title: 'Archived.md',
+    path: 'archive/archived.md',
+  });
+  const dropbox = fixtureForMember({
+    id: 140,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Cloud note.md',
+    path: '/notes/cloud.md',
+  });
+  const connectedCatdb = fixtureForMember({
+    id: 160,
+    registryId: 'connected-catdb',
+    name: 'Research CatDB',
+    kind: 'connected-catdb',
+    editable: false,
+    active: true,
+    title: 'Shared research.md',
+    path: 'research/shared.md',
+  });
+  const evidenceGroups = Object.freeze([
+    activeLocal.response,
+    inactiveLocal.response,
+    dropbox.response,
+    connectedCatdb.response,
+  ]);
   const open = vi.fn();
+
   render(
     <Sidebar
       collapsed={false}
-      root="/Library/Local notes"
+      root="/Library/Active notes"
       files={[
         {
-          path: '/Library/Local notes/notes/local.md',
-          name: 'local.md',
+          path: '/Library/Active notes/notes/workspace.md',
+          name: 'workspace.md',
           dir: 'notes',
           mtime: 1,
           size: 12,
@@ -184,7 +208,7 @@ it('keeps the active workspace tree browsable without duplicating its Library me
       onPickFolder={vi.fn()}
       onOpenFile={vi.fn()}
       onOpenRecent={vi.fn()}
-      libraryEvidence={[response]}
+      libraryEvidence={[...evidenceGroups]}
       librarySearch=""
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
@@ -193,6 +217,81 @@ it('keeps the active workspace tree browsable without duplicating its Library me
   );
 
   expect(screen.getByRole('tree', { name: 'Workspace files' })).toBeTruthy();
-  expect(screen.queryByRole('navigation', { name: 'Library sources' })).toBeNull();
-  expect(open).not.toHaveBeenCalled();
+
+  const rail = screen.getByRole('navigation', { name: 'Library sources' });
+  expect(within(rail).queryByText(activeLocal.member.name)).toBeNull();
+  expect(within(rail).getByText(inactiveLocal.member.name)).toBeTruthy();
+  expect(within(rail).getByText(dropbox.member.name)).toBeTruthy();
+  expect(within(rail).getByText(connectedCatdb.member.name)).toBeTruthy();
+
+  fireEvent.click(
+    within(rail).getByRole('button', { name: 'Open Archived.md from Archived notes' }),
+  );
+  fireEvent.click(
+    within(rail).getByRole('button', { name: 'Open Cloud note.md from Dropbox' }),
+  );
+  fireEvent.click(
+    within(rail).getByRole('button', {
+      name: 'Open Shared research.md from Research CatDB',
+    }),
+  );
+
+  expect(open).toHaveBeenNthCalledWith(
+    1,
+    inactiveLocal.member,
+    inactiveLocal.response.answer.rows[0],
+  );
+  expect(open).toHaveBeenNthCalledWith(2, dropbox.member, dropbox.response.answer.rows[0]);
+  expect(open).toHaveBeenNthCalledWith(
+    3,
+    connectedCatdb.member,
+    connectedCatdb.response.answer.rows[0],
+  );
+  expect(open).toHaveBeenCalledTimes(3);
+});
+
+it('keeps a workspace listing error visible after Library evidence arrives', () => {
+  const dropbox = fixtureForMember({
+    id: 180,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Cloud note.md',
+    path: '/notes/cloud.md',
+  });
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root="/Library/Active notes"
+      files={[]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      listingError={{
+        kind: 'unreadable',
+        path: '/Library/Active notes',
+        reason: 'Permission denied',
+        remedy: 'Allow access to this folder in System Settings.',
+      }}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[dropbox.response]}
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+    />,
+  );
+
+  const listingError = screen.getByRole('alert', { name: 'Workspace files' });
+  expect(within(listingError).getByText('This folder could not be read.')).toBeTruthy();
+  expect(within(listingError).getByText('Permission denied')).toBeTruthy();
+  expect(
+    within(listingError).getByText('Allow access to this folder in System Settings.'),
+  ).toBeTruthy();
+  expect(screen.getByRole('navigation', { name: 'Library sources' })).toBeTruthy();
 });
