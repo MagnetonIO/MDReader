@@ -54,6 +54,7 @@ import type {
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
 } from '../bindings.js';
+import { events } from '../bindings.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
@@ -130,6 +131,25 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void events.mdreaderShowSettings
+      .listen(() => setSettingsOpen(true))
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {
+        /* not a live Tauri event surface */
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
   const [libraryDocument, setLibraryDocument] = useState<{
     member: LibrarySourceExecution;
     row: EntityRow;

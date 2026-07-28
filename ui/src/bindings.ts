@@ -375,6 +375,7 @@ export const commands = {
 /** Events */
 export const events = {
 	mdreaderFsChanged: makeEvent<FsChanged>("mdreader://fs-changed"),
+	mdreaderShowSettings: makeEvent<ShowSettings>("mdreader://show-settings"),
 	mdreaderWatchError: makeEvent<WatchError>("mdreader://watch-error"),
 };
 
@@ -1892,6 +1893,12 @@ export type SearchResults = {
 	 */
 	semantic_unavailable: string | null,
 };
+
+/**
+ *  Request emitted by the native application menu when the user chooses
+ *  Settings. The renderer owns the sheet; the native menu only requests it.
+ */
+export type ShowSettings = Record<string, never>;
 
 /**  What Σ did, or why it did not run. */
 export type SigmaOutcomeDto = {

@@ -747,6 +747,12 @@ pub async fn pick_workspace_folder(app: AppHandle) -> Result<Option<String>, Str
 // Library-source watcher
 // --------------------------------------------------------------------------
 
+/// Request emitted by the native application menu when the user chooses
+/// Settings. The renderer owns the sheet; the native menu only requests it.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[tauri_specta(event_name = "mdreader://show-settings")]
+pub struct ShowSettings {}
+
 /// Payload for the `mdreader://fs-changed` event. tauri-specta emits a typed
 /// `events.fsChanged` listener into the bindings.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
