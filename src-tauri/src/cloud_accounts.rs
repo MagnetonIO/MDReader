@@ -4325,6 +4325,7 @@ pub(crate) async fn connect_cloud_source(
     let owner = CloudConnectOwner::begin(&state, provider)?;
     let cancellation = owner.cancellation();
     let client_id = oauth_client_id(provider)?;
+    let _ = oauth_client_secret(provider)?;
     let callback_configuration = oauth_callback_configuration(
         provider,
         match provider {
@@ -4378,6 +4379,32 @@ fn oauth_client_id(provider: CloudProvider) -> Result<&'static str, CloudSourceE
     .ok_or(CloudSourceError::ClientConfigurationMissing)?;
     validate_oauth_client_id(provider, client_id)?;
     Ok(client_id)
+}
+
+fn oauth_client_secret(provider: CloudProvider) -> Result<Option<&'static str>, CloudSourceError> {
+    match provider {
+        CloudProvider::GoogleDrive => {
+            let client_secret = option_env!("MDREADER_GOOGLE_DRIVE_CLIENT_SECRET")
+                .ok_or(CloudSourceError::ClientConfigurationMissing)?;
+            validate_google_oauth_client_secret(client_secret)?;
+            Ok(Some(client_secret))
+        }
+        CloudProvider::Dropbox => Ok(None),
+    }
+}
+
+fn validate_google_oauth_client_secret(client_secret: &str) -> Result<(), CloudSourceError> {
+    let valid = client_secret.strip_prefix("GOCSPX-").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && client_secret.len() <= 512
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+    if !valid {
+        return Err(CloudSourceError::ClientConfigurationMissing);
+    }
+    Ok(())
 }
 
 fn validate_oauth_client_id(
@@ -4677,8 +4704,10 @@ async fn exchange_authorization_code(
         CloudProvider::Dropbox => DROPBOX_TOKEN_ENDPOINT,
     };
     let verifier = attempt.verifier()?;
+    let client_secret = oauth_client_secret(provider)?;
     let form = authorization_code_token_form(
         client_id,
+        client_secret,
         authorization.code(),
         verifier,
         attempt.redirect_uri(),
@@ -4702,17 +4731,22 @@ async fn exchange_authorization_code(
 
 fn authorization_code_token_form<'a>(
     client_id: &'a str,
+    client_secret: Option<&'a str>,
     code: &'a str,
     verifier: &'a str,
     redirect_uri: &'a str,
-) -> [(&'static str, &'a str); 5] {
-    [
+) -> Vec<(&'static str, &'a str)> {
+    let mut form = vec![
         ("client_id", client_id),
         ("code", code),
         ("code_verifier", verifier),
         ("grant_type", "authorization_code"),
         ("redirect_uri", redirect_uri),
-    ]
+    ];
+    if let Some(client_secret) = client_secret {
+        form.push(("client_secret", client_secret));
+    }
+    form
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -4737,7 +4771,8 @@ async fn exchange_refresh_token(
         CloudProvider::GoogleDrive => GOOGLE_TOKEN_ENDPOINT,
         CloudProvider::Dropbox => DROPBOX_TOKEN_ENDPOINT,
     };
-    let form = refresh_token_form(client_id, refresh_token);
+    let client_secret = oauth_client_secret(provider)?;
+    let form = refresh_token_form(client_id, client_secret, refresh_token);
     let response = client
         .post(endpoint)
         .form(&form)
@@ -4775,13 +4810,18 @@ async fn exchange_refresh_token(
 
 fn refresh_token_form<'a>(
     client_id: &'a str,
+    client_secret: Option<&'a str>,
     refresh_token: &'a str,
-) -> [(&'static str, &'a str); 3] {
-    [
+) -> Vec<(&'static str, &'a str)> {
+    let mut form = vec![
         ("client_id", client_id),
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
-    ]
+    ];
+    if let Some(client_secret) = client_secret {
+        form.push(("client_secret", client_secret));
+    }
+    form
 }
 
 fn oauth_token_scope_is_acceptable(provider: CloudProvider, scope: Option<&str>) -> bool {
@@ -5123,12 +5163,13 @@ mod tests {
         bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
         commit_cloud_connect_observed, dropbox_redirect_configuration, execute_cloud_query,
         oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
-        validate_authorization_token_response, validate_oauth_client_id, AdmittedLibraryQuery,
-        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectOwner,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
-        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
-        MemoryCredentialVault, OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
+        validate_authorization_token_response, validate_google_oauth_client_secret,
+        validate_oauth_client_id, AdmittedLibraryQuery, CloudAccountService, CloudAccountsState,
+        CloudCompleteness, CloudConnectOwner, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
+        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
+        OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::{
         file_lock::AdvisoryFileLock,
@@ -8428,6 +8469,7 @@ mod tests {
 
         let authorization_form = authorization_code_token_form(
             "desktop-client",
+            Some("desktop-secret"),
             "provider-code",
             "pkce-verifier",
             "http://127.0.0.1:53682/oauth/dropbox",
@@ -8465,11 +8507,26 @@ mod tests {
             1,
             "the authorization-code exchange must preserve the registered redirect URI"
         );
-        assert!(!authorization_form
-            .iter()
-            .any(|(key, _)| *key == "client_secret"));
+        assert_eq!(
+            authorization_form
+                .iter()
+                .filter(|(key, value)| { *key == "client_secret" && *value == "desktop-secret" })
+                .count(),
+            1,
+            "the Google desktop credential must be sent exactly once"
+        );
+        assert!(!authorization_code_token_form(
+            "dropbox-client",
+            None,
+            "provider-code",
+            "pkce-verifier",
+            "http://127.0.0.1:53682/oauth/dropbox",
+        )
+        .iter()
+        .any(|(key, _)| *key == "client_secret"));
 
-        let refresh_form = refresh_token_form("desktop-client", "refresh-token");
+        let refresh_form =
+            refresh_token_form("desktop-client", Some("desktop-secret"), "refresh-token");
         for required in ["client_id", "grant_type", "refresh_token"] {
             assert_eq!(
                 refresh_form
@@ -8483,11 +8540,32 @@ mod tests {
         assert_eq!(
             refresh_form
                 .iter()
+                .filter(|(key, value)| { *key == "client_secret" && *value == "desktop-secret" })
+                .count(),
+            1,
+            "the Google desktop credential must be sent on refresh"
+        );
+        assert_eq!(
+            refresh_form
+                .iter()
                 .filter(|(key, value)| *key == "grant_type" && *value == "refresh_token")
                 .count(),
             1
         );
-        assert!(!refresh_form.iter().any(|(key, _)| *key == "client_secret"));
+        assert!(!refresh_token_form("dropbox-client", None, "refresh-token")
+            .iter()
+            .any(|(key, _)| *key == "client_secret"));
+    }
+
+    #[test]
+    fn google_desktop_client_secret_is_validated_without_becoming_runtime_state() {
+        assert!(validate_google_oauth_client_secret("GOCSPX-reference-value").is_ok());
+        for invalid in ["", "not-google", "GOCSPX-has\ncontrol"] {
+            assert_eq!(
+                validate_google_oauth_client_secret(invalid),
+                Err(CloudSourceError::ClientConfigurationMissing)
+            );
+        }
     }
 
     #[test]
