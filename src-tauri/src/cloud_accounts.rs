@@ -1812,8 +1812,8 @@ async fn query_cloud_documents_inner(
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 struct AdmittedLibraryQuery {
     members: Vec<crate::library_query::LibraryQueryMember>,
-    clouds: Vec<(CloudSourceRecord, SecretBundle)>,
-    vault: Arc<KeyringCredentialVault>,
+    clouds: Vec<(CloudSourceRecord, Option<SecretBundle>)>,
+    vault: Arc<dyn CredentialVault>,
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1937,9 +1937,36 @@ fn bind_identity_bound_local_sources(
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn bind_unavailable_local_sources(
+    membership_id: uuid::Uuid,
+    path: &Path,
+) -> Result<Vec<crate::library_query::LibraryPhysicalSource>, CloudSourceError> {
+    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+
+    let reason = "the registered directory identity is not currently available";
+    let sources: [Arc<dyn DataSource>; 3] = [
+        Arc::new(FilesystemSource::unavailable(path, reason)),
+        Arc::new(GitSource::unavailable(path, reason)),
+        Arc::new(FrontmatterSource::unavailable(path, reason)),
+    ];
+    sources
+        .into_iter()
+        .map(|source| {
+            let mapping = mdreader_domain::federated::source_mapping(source.as_ref())
+                .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+            Ok(crate::library_query::LibraryPhysicalSource::new(
+                membership_id,
+                source,
+                mapping,
+            ))
+        })
+        .collect()
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn admit_library_query(
     registry: LibraryStore,
-    vault: KeyringCredentialVault,
+    vault: Arc<dyn CredentialVault>,
     requested_source_ids: Option<&[uuid::Uuid]>,
 ) -> Result<AdmittedLibraryQuery, CloudSourceError> {
     let snapshot = registry
@@ -1981,23 +2008,35 @@ fn admit_library_query(
         let membership_id = local.engine_source_id();
         let registry_id = local.id.clone();
         let active = active_source_id.as_deref() == Some(registry_id.as_str());
-        let root = local.root().map_err(|error| match error {
-            crate::library::LibraryError::SourceUnavailable => CloudSourceError::QueryRefused {
-                source_id: membership_id.to_string(),
-                reason: CloudQueryRefusal::Unavailable,
-            },
-            error => crate::library::map_library_cloud_error(error),
-        })?;
-        let physical = bind_identity_bound_local_sources(membership_id, &root)?;
+        let path = local
+            .path()
+            .map_err(crate::library::map_library_cloud_error)?;
+        let (physical, name) = match local.root() {
+            Ok(root) => {
+                let name = root
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Local folder")
+                    .to_string();
+                (
+                    bind_identity_bound_local_sources(membership_id, &root)?,
+                    name,
+                )
+            }
+            Err(crate::library::LibraryError::SourceUnavailable) => (
+                bind_unavailable_local_sources(membership_id, &path)?,
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Local folder")
+                    .to_string(),
+            ),
+            Err(error) => return Err(crate::library::map_library_cloud_error(error)),
+        };
         members.push(crate::library_query::LibraryQueryMember {
             membership_id,
             registry_id,
-            name: root
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Local folder")
-                .to_string(),
+            name,
             kind: crate::library_query::LibraryQueryMemberKind::LocalFolder,
             editable: true,
             active,
@@ -2005,16 +2044,13 @@ fn admit_library_query(
         });
     }
 
-    let vault = Arc::new(vault);
     let mut clouds = Vec::new();
     for record in snapshot
         .cloud_sources
         .into_iter()
         .filter(|source| selected(crate::library_query::membership_id(source.id())))
     {
-        let credential = vault
-            .get(&record.credential_reference)?
-            .ok_or(CloudSourceError::CredentialMissing)?;
+        let credential = vault.get(&record.credential_reference)?;
         clouds.push((record, credential));
     }
     if members.is_empty() && clouds.is_empty() {
@@ -2030,8 +2066,8 @@ fn admit_library_query(
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 async fn bind_library_cloud_source(
     record: CloudSourceRecord,
-    credential: SecretBundle,
-    vault: Arc<KeyringCredentialVault>,
+    credential: Option<SecretBundle>,
+    vault: Arc<dyn CredentialVault>,
     schema_version: &str,
 ) -> Result<crate::library_query::LibraryQueryMember, CloudSourceError> {
     use catdb_connectors::DataSource;
@@ -2039,12 +2075,14 @@ async fn bind_library_cloud_source(
     let provider = record.provider;
     let membership_id = crate::library_query::membership_id(record.id());
     let registry_id = record.id().to_string();
-    let resolver = Arc::new(CloudCredentialResolver::from_admitted(
-        provider,
-        record.credential_reference.clone(),
-        credential,
-        vault,
-    ));
+    let resolver = credential.map(|credential| {
+        Arc::new(CloudCredentialResolver::from_admitted(
+            provider,
+            record.credential_reference.clone(),
+            credential,
+            vault,
+        ))
+    });
     let source: Arc<dyn DataSource> = match record.config {
         #[cfg(feature = "google-drive-connector")]
         CloudSourceConfig::GoogleDrive { selections } => {
@@ -2063,11 +2101,24 @@ async fn bind_library_cloud_source(
             let spec =
                 catdb_connector_google_drive::PinnedDriveSourceSpec::new(config, schema_version)
                     .map_err(|error| query_invalid(error.to_string()))?;
-            Arc::new(
-                catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
-                    .await
-                    .map_err(|error| query_failed(error.to_string()))?,
-            )
+            match resolver {
+                Some(resolver) => Arc::new(
+                    catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
+                        .await
+                        .map_err(|error| query_failed(error.to_string()))?,
+                ),
+                None => {
+                    let model = catdb_connector_google_drive::DriveSource::declared_model(&spec)
+                        .map_err(|error| query_invalid(error.to_string()))?;
+                    let source_spec = serde_json::to_value(&spec)
+                        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+                    crate::library_query::declared_unavailable_source(
+                        model,
+                        source_spec,
+                        "the registered Google Drive credential is not currently available",
+                    )
+                }
+            }
         }
         #[cfg(not(feature = "google-drive-connector"))]
         CloudSourceConfig::GoogleDrive { .. } => {
@@ -2090,11 +2141,24 @@ async fn bind_library_cloud_source(
             let spec =
                 catdb_connector_dropbox::PinnedDropboxSourceSpec::new(config, schema_version)
                     .map_err(|error| query_invalid(error.to_string()))?;
-            Arc::new(
-                catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
-                    .await
-                    .map_err(|error| query_failed(error.to_string()))?,
-            )
+            match resolver {
+                Some(resolver) => Arc::new(
+                    catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
+                        .await
+                        .map_err(|error| query_failed(error.to_string()))?,
+                ),
+                None => {
+                    let model = catdb_connector_dropbox::DropboxSource::declared_model(&spec)
+                        .map_err(|error| query_invalid(error.to_string()))?;
+                    let source_spec = serde_json::to_value(&spec)
+                        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+                    crate::library_query::declared_unavailable_source(
+                        model,
+                        source_spec,
+                        "the registered Dropbox credential is not currently available",
+                    )
+                }
+            }
         }
         #[cfg(not(feature = "dropbox-connector"))]
         CloudSourceConfig::Dropbox => return Err(CloudSourceError::ConnectorUnavailable),
@@ -2154,7 +2218,7 @@ pub(crate) async fn query_library_documents(
             };
             let selected = request.source_ids.clone();
             let admitted = blocking_cloud_operation(app.clone(), move |registry, vault| {
-                admit_library_query(registry, vault, selected.as_deref())
+                admit_library_query(registry, Arc::new(vault), selected.as_deref())
             })
             .await?;
             let catalog = ensure_cloud_catalog(&app, &state).await?;
@@ -4311,13 +4375,14 @@ mod tests {
 
     use super::{
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
-        bind_oauth_callback_listener, dropbox_redirect_configuration, execute_cloud_query,
-        oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
-        validate_oauth_client_id, CloudAccountService, CloudAccountsState, CloudCompleteness,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
-        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
-        MemoryCredentialVault, OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
+        bind_library_cloud_source, bind_oauth_callback_listener, dropbox_redirect_configuration,
+        execute_cloud_query, oauth_callback_configuration, receive_oauth_callback,
+        refresh_token_form, validate_oauth_client_id, CloudAccountService, CloudAccountsState,
+        CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
+        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
+        SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -5553,37 +5618,236 @@ mod tests {
         assert_eq!(sources[1]["contract"]["capabilities"]["write"], false);
     }
 
-    #[test]
-    fn local_query_admission_refuses_a_replacement_at_the_persisted_path() {
+    #[tokio::test]
+    async fn local_query_admission_keeps_a_replaced_membership_as_a_typed_partial_source() {
         let temp = tempdir().expect("temporary directory");
-        let root = temp.path().join("notes");
-        fs::create_dir(&root).expect("local source");
-        fs::write(root.join("original.md"), "# original").expect("original document");
+        let unavailable_root = temp.path().join("unavailable");
+        let healthy_root = temp.path().join("healthy");
+        fs::create_dir(&unavailable_root).expect("unavailable source");
+        fs::create_dir(&healthy_root).expect("healthy source");
+        fs::write(unavailable_root.join("original.md"), "# original").expect("original document");
+        fs::write(healthy_root.join("healthy.md"), "# healthy").expect("healthy document");
+        let healthy_git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&healthy_root)
+            .output()
+            .expect("initialize healthy git source");
+        assert!(healthy_git.status.success());
         let registry_path = temp.path().join("library.json");
         let mut registry = LibraryRegistry::empty();
-        let source = registry.add_root(&root).expect("admit original object");
-        let membership_id = source.engine_source_id();
+        let unavailable = registry
+            .add_root(&unavailable_root)
+            .expect("admit original object");
+        let healthy = registry
+            .add_root(&healthy_root)
+            .expect("admit healthy object");
+        let unavailable_membership = unavailable.engine_source_id();
+        let healthy_membership = healthy.engine_source_id();
         registry
             .save_to(&registry_path)
             .expect("persist original identity");
 
-        fs::rename(&root, temp.path().join("retired")).expect("retire original object");
-        fs::create_dir(&root).expect("same-path replacement");
-        fs::write(root.join("replacement.md"), "# replacement").expect("replacement document");
+        fs::rename(&unavailable_root, temp.path().join("retired")).expect("retire original object");
+        fs::create_dir(&unavailable_root).expect("same-path replacement");
+        fs::write(unavailable_root.join("replacement.md"), "# replacement")
+            .expect("replacement document");
 
-        let result = admit_library_query(
+        let admitted = admit_library_query(
             LibraryStore::new(registry_path),
-            KeyringCredentialVault::new("dev.mdreader.identity-test").expect("test vault"),
-            Some(&[membership_id]),
-        );
+            Arc::new(
+                KeyringCredentialVault::new("dev.mdreader.identity-test").expect("test vault"),
+            ),
+            Some(&[unavailable_membership, healthy_membership]),
+        )
+        .expect("admit healthy and unavailable memberships");
+        let unavailable_source_ids = admitted
+            .members
+            .iter()
+            .find(|member| member.membership_id == unavailable_membership)
+            .expect("unavailable membership")
+            .sources
+            .iter()
+            .map(|source| source.source_id)
+            .collect::<Vec<_>>();
 
-        assert!(matches!(
-            result,
-            Err(CloudSourceError::QueryRefused {
-                source_id,
-                reason: CloudQueryRefusal::Unavailable,
-            }) if source_id == membership_id.to_string()
-        ));
+        let partial_request = catdb_api_types::EntityQueryRequest {
+            workspace_id: uuid::Uuid::new_v4(),
+            catalog_revision_id: None,
+            schema_version_id: None,
+            entity: "document.Document".to_string(),
+            select: vec!["path".to_string(), "body".to_string()],
+            filters: Vec::new(),
+            order_by: Vec::new(),
+            source_ids: Some(vec![unavailable_membership, healthy_membership]),
+            max_staleness_ms: None,
+            require_complete: Some(false),
+            page_size: 100,
+            limit: 100,
+            query_id: None,
+            cursor: None,
+        };
+        let result = crate::library_query::execute_registered_library_query(
+            partial_request.clone(),
+            admitted.members.clone(),
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("healthy rows survive unavailable membership");
+
+        assert_eq!(
+            result.answer.completeness,
+            catdb_api_types::Completeness::Partial {
+                excluded_source_ids: unavailable_source_ids.clone(),
+            }
+        );
+        assert_eq!(result.answer.rows.len(), 1);
+        assert_eq!(
+            result.answer.rows[0].record_key,
+            format!("library:{healthy_membership}:healthy.md")
+        );
+        assert!(result
+            .answer
+            .rows
+            .iter()
+            .all(|row| { row.fields.get("body") != Some(&serde_json::json!("# replacement")) }));
+
+        let mut complete_request = partial_request;
+        complete_request.require_complete = Some(true);
+        let strict = crate::library_query::execute_registered_library_query(
+            complete_request,
+            admitted.members,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(
+            strict,
+            Err(crate::library_query::LibraryQueryError::Incomplete {
+                source_ids: unavailable_source_ids,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_cloud_credential_is_a_typed_partial_source_not_a_library_abort() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("healthy");
+        fs::create_dir(&local_root).expect("healthy source");
+        fs::write(local_root.join("healthy.md"), "# healthy").expect("healthy document");
+        let healthy_git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&local_root)
+            .output()
+            .expect("initialize healthy git source");
+        assert!(healthy_git.status.success());
+
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let local = registry
+            .add_root(&local_root)
+            .expect("admit healthy object");
+        let local_membership = local.engine_source_id();
+        registry
+            .save_to(&registry_path)
+            .expect("persist healthy source");
+
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let service =
+            CloudAccountService::new(LibraryStore::new(registry_path.clone()), vault.as_ref());
+        service
+            .install(CloudProvider::GoogleDrive, google_config(), credentials())
+            .expect("install Drive");
+        let drive_membership = LibraryStore::new(registry_path.clone())
+            .read_query_snapshot()
+            .expect("read unified Library")
+            .cloud_sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::GoogleDrive)
+            .map(|source| crate::library_query::membership_id(source.id()))
+            .expect("Drive membership");
+        vault.clear();
+
+        let admitted = admit_library_query(
+            LibraryStore::new(registry_path),
+            vault.clone(),
+            Some(&[local_membership, drive_membership]),
+        )
+        .expect("missing credential remains an admitted unavailable source");
+        assert_eq!(admitted.clouds.len(), 1);
+        assert!(admitted.clouds[0].1.is_none());
+        let mut members = admitted.members;
+        for (record, credential) in admitted.clouds {
+            members.push(
+                bind_library_cloud_source(
+                    record,
+                    credential,
+                    admitted.vault.clone(),
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .await
+                .expect("bind declared unavailable Drive source"),
+            );
+        }
+        let unavailable_source_id = members
+            .iter()
+            .find(|member| member.membership_id == drive_membership)
+            .and_then(|member| member.sources.first())
+            .map(|source| source.source_id)
+            .expect("unavailable Drive source");
+
+        let answer = crate::library_query::execute_registered_library_query(
+            catdb_api_types::EntityQueryRequest {
+                workspace_id: uuid::Uuid::new_v4(),
+                catalog_revision_id: None,
+                schema_version_id: None,
+                entity: "document.Document".to_string(),
+                select: vec!["path".to_string(), "body".to_string()],
+                filters: Vec::new(),
+                order_by: Vec::new(),
+                source_ids: Some(vec![local_membership, drive_membership]),
+                max_staleness_ms: None,
+                require_complete: Some(false),
+                page_size: 100,
+                limit: 100,
+                query_id: None,
+                cursor: None,
+            },
+            members,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("healthy rows survive missing cloud credential");
+
+        assert_eq!(
+            answer.answer.completeness,
+            catdb_api_types::Completeness::Partial {
+                excluded_source_ids: vec![unavailable_source_id],
+            }
+        );
+        assert_eq!(answer.answer.rows.len(), 1);
+        assert_eq!(
+            answer.answer.rows[0].record_key,
+            format!("library:{local_membership}:healthy.md")
+        );
+        let unavailable_report = answer
+            .answer
+            .sources
+            .iter()
+            .find(|source| source.source_id == unavailable_source_id)
+            .expect("unavailable Drive report");
+        assert_eq!(
+            unavailable_report.outcome,
+            catdb_api_types::SourceOutcome::Refused
+        );
+        assert!(
+            answer.answer.rows.iter().all(|row| {
+                row.provenance.values().all(|field| {
+                    field.considered().iter().all(|observation| {
+                        observation.source_version_id() != unavailable_report.source_version_id
+                    })
+                })
+            }),
+            "a missing credential cannot make Drive a considered provider for a local record"
+        );
     }
 
     #[tokio::test]
@@ -5607,7 +5871,10 @@ mod tests {
             .expect("persist original identity");
         let admitted = admit_library_query(
             LibraryStore::new(registry_path),
-            KeyringCredentialVault::new("dev.mdreader.identity-effect-test").expect("test vault"),
+            Arc::new(
+                KeyringCredentialVault::new("dev.mdreader.identity-effect-test")
+                    .expect("test vault"),
+            ),
             Some(&[membership_id]),
         )
         .expect("admit exact original object");

@@ -1116,6 +1116,32 @@ impl fmt::Debug for DriveSource {
 }
 
 impl DriveSource {
+    fn attributes() -> Vec<catdb_connectors::SourceAttr> {
+        vec![
+            catdb_connectors::SourceAttr::text("id"),
+            catdb_connectors::SourceAttr::text("name"),
+            catdb_connectors::SourceAttr::text("mimeType"),
+            catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
+            catdb_connectors::SourceAttr::parsed("size", BaseType::Int),
+            catdb_connectors::SourceAttr::text("checksum"),
+            catdb_connectors::SourceAttr::text("body"),
+        ]
+    }
+
+    /// Return the connector-owned schema declaration without resolving or
+    /// exposing runtime credentials.
+    pub fn declared_model(
+        spec: &PinnedDriveSourceSpec,
+    ) -> Result<SourceModel, DriveConnectorError> {
+        spec.config.validate()?;
+        Ok(SourceModel::new(
+            SourceId::new(spec.config.source_id.clone()),
+            &spec.config.catdb_schema,
+            &spec.config.catdb_entity,
+            Self::attributes(),
+        ))
+    }
+
     /// Resolve credentials and open with the production HTTPS transport.
     pub async fn open_pinned(
         spec: PinnedDriveSourceSpec,
@@ -1155,21 +1181,7 @@ impl DriveSource {
         resolver: Option<Arc<dyn DriveSecretResolver>>,
         transport: Arc<dyn DriveTransport>,
     ) -> Result<Self, DriveConnectorError> {
-        spec.config.validate()?;
-        let model = SourceModel::new(
-            SourceId::new(spec.config.source_id.clone()),
-            &spec.config.catdb_schema,
-            &spec.config.catdb_entity,
-            vec![
-                catdb_connectors::SourceAttr::text("id"),
-                catdb_connectors::SourceAttr::text("name"),
-                catdb_connectors::SourceAttr::text("mimeType"),
-                catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
-                catdb_connectors::SourceAttr::parsed("size", BaseType::Int),
-                catdb_connectors::SourceAttr::text("checksum"),
-                catdb_connectors::SourceAttr::text("body"),
-            ],
-        );
+        let model = Self::declared_model(&spec)?;
         let source_spec =
             serde_json::to_value(&spec).map_err(|_| DriveConnectorError::InvalidConfiguration {
                 field: "source_spec",

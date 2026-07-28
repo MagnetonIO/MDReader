@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use catdb_api_types::{EntityQueryRequest, EntityQueryResponse, SourceExecution};
 use catdb_connectors::{
-    CancellationToken, DataSource, ReadContext, SourceCursor, SourceError, SourceFreshness,
-    SourcePage, SourcePlan,
+    CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError,
+    SourceFreshness, SourceModel, SourcePage, SourcePlan,
 };
 use catdb_core::Mapping;
 use catdb_federation::{
@@ -64,6 +64,70 @@ fn split_scoped_record_key(value: &str) -> Option<(Uuid, &str)> {
 struct MembershipScopedSource {
     membership_id: Uuid,
     source: Arc<dyn DataSource>,
+}
+
+struct DeclaredUnavailableSource {
+    model: SourceModel,
+    capabilities: SourceCapabilities,
+    source_spec: serde_json::Value,
+    reason: String,
+}
+
+pub(crate) fn declared_unavailable_source(
+    model: SourceModel,
+    source_spec: serde_json::Value,
+    reason: impl Into<String>,
+) -> Arc<dyn DataSource> {
+    let reason = reason.into();
+    Arc::new(DeclaredUnavailableSource {
+        model,
+        capabilities: SourceCapabilities::unavailable(reason.clone()),
+        source_spec,
+        reason,
+    })
+}
+
+#[async_trait]
+impl DataSource for DeclaredUnavailableSource {
+    fn id(&self) -> &catdb_connectors::SourceId {
+        self.model.id()
+    }
+
+    fn schema(&self) -> &catdb_core::Schema {
+        self.model.schema()
+    }
+
+    fn capabilities(&self) -> &SourceCapabilities {
+        &self.capabilities
+    }
+
+    fn source_spec(&self) -> serde_json::Value {
+        self.source_spec.clone()
+    }
+
+    fn compile(
+        &self,
+        _query: &catdb_query::EntityQuery,
+        _authorized_fields: &[String],
+    ) -> Result<SourcePlan, SourceError> {
+        Err(SourceError::Unavailable {
+            source_id: self.model.id().clone(),
+            reason: self.reason.clone(),
+        })
+    }
+
+    async fn execute_page(
+        &self,
+        _plan: &SourcePlan,
+        _cursor: Option<&SourceCursor>,
+        context: &ReadContext,
+    ) -> Result<SourcePage, SourceError> {
+        context.check()?;
+        Err(SourceError::Unavailable {
+            source_id: self.model.id().clone(),
+            reason: self.reason.clone(),
+        })
+    }
 }
 
 #[async_trait]
@@ -947,6 +1011,23 @@ mod tests {
         }
     }
 
+    fn unavailable_local_member(root: &Path, membership_id: Uuid) -> LibraryQueryMember {
+        let source: Arc<dyn DataSource> = Arc::new(FilesystemSource::unavailable(
+            root,
+            "registered folder is unavailable",
+        ));
+        let mapping = mdreader_domain::federated::source_mapping(source.as_ref()).expect("mapping");
+        LibraryQueryMember {
+            membership_id,
+            registry_id: membership_id.to_string(),
+            name: "Unavailable folder".to_string(),
+            kind: LibraryQueryMemberKind::LocalFolder,
+            editable: true,
+            active: false,
+            sources: vec![LibraryPhysicalSource::new(membership_id, source, mapping)],
+        }
+    }
+
     fn cloud_member(
         membership_id: Uuid,
         source: Arc<dyn DataSource>,
@@ -1477,6 +1558,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn unavailable_membership_is_typed_partial_without_discarding_healthy_rows() {
+        let healthy_tree = tempfile::tempdir().expect("healthy tree");
+        std::fs::write(healthy_tree.path().join("note.md"), "# Healthy\n")
+            .expect("healthy document");
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(healthy_tree.path())
+            .output()
+            .expect("git");
+        assert!(output.status.success());
+
+        let workspace = Uuid::new_v4();
+        let healthy = Uuid::new_v4();
+        let unavailable = Uuid::new_v4();
+        let unavailable_member =
+            unavailable_local_member(&healthy_tree.path().join("missing"), unavailable);
+        let unavailable_source_id = unavailable_member.sources[0].source_id;
+        let mut query = request(workspace, vec![healthy, unavailable]);
+        query.require_complete = Some(false);
+
+        let answer = execute_registered_library_query(
+            query,
+            vec![
+                local_member(healthy_tree.path(), healthy),
+                unavailable_member,
+            ],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("healthy source must survive an unavailable peer");
+
+        assert_eq!(answer.answer.rows.len(), 1);
+        assert_eq!(
+            answer.answer.completeness,
+            Completeness::Partial {
+                excluded_source_ids: vec![unavailable_source_id],
+            }
+        );
+        let unavailable_report = answer
+            .answer
+            .sources
+            .iter()
+            .find(|source| source.source_id == unavailable_source_id)
+            .expect("unavailable source report");
+        assert_eq!(
+            unavailable_report.outcome,
+            catdb_api_types::SourceOutcome::Refused
+        );
+        assert_eq!(unavailable_report.scanned, 0);
+        assert_eq!(unavailable_report.returned, 0);
+        assert!(
+            answer.answer.rows.iter().all(|row| {
+                row.provenance.values().all(|field| {
+                    field.considered().iter().all(|observation| {
+                        observation.source_version_id() != unavailable_report.source_version_id
+                    })
+                })
+            }),
+            "a source that could not observe any record must not appear in per-record provenance"
+        );
     }
 
     #[tokio::test]
