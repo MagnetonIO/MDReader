@@ -51,6 +51,10 @@ const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 #[cfg(target_os = "macos")]
 const MENU_CLOSE_WINDOW: &str = "mdreader:close-window";
 
+/// Menu id for the standard macOS Settings item.
+#[cfg(target_os = "macos")]
+const MENU_SETTINGS: &str = "mdreader:settings";
+
 /// Builds the tauri-specta command + event registry. Single source of truth for
 /// both the runtime `invoke_handler`/`mount_events` and the binding exporter.
 ///
@@ -125,7 +129,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             updater::check_for_update,
             updater::install_update,
         ])
-        .events(collect_events![commands::FsChanged, commands::WatchError])
+        .events(collect_events![
+            commands::ShowSettings,
+            commands::FsChanged,
+            commands::WatchError
+        ])
 }
 
 /// The mobile webview can inspect semantic state but cannot invoke document,
@@ -202,8 +210,15 @@ fn runtime_specta_builder(
 fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
+    let settings = MenuItemBuilder::new("Settings…")
+        .id(MENU_SETTINGS)
+        .accelerator("CmdOrCtrl+,")
+        .build(handle)?;
+
     let app_menu = SubmenuBuilder::new(handle, "MDReader")
         .about(Some(AboutMetadata::default()))
+        .separator()
+        .item(&settings)
         .separator()
         .hide()
         .hide_others()
@@ -291,10 +306,17 @@ pub fn run() {
             .menu(build_app_menu)
             .on_menu_event(|app, event| {
                 use tauri::Manager;
-                if event.id().0.as_str() == MENU_CLOSE_WINDOW {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.close();
+                use tauri_specta::Event as _;
+                match event.id().0.as_str() {
+                    MENU_SETTINGS => {
+                        let _ = commands::ShowSettings {}.emit(app);
                     }
+                    MENU_CLOSE_WINDOW => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.close();
+                        }
+                    }
+                    _ => {}
                 }
             });
     }
@@ -355,6 +377,30 @@ mod tests {
         assert!(
             export_called.get(),
             "desktop debug startup no longer refreshes generated bindings"
+        );
+    }
+
+    #[test]
+    fn native_settings_menu_is_typed_and_routes_to_the_renderer() {
+        let source = include_str!("lib.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(
+            source.contains(".id(MENU_SETTINGS)")
+                && source.contains("commands::ShowSettings {}.emit(app)"),
+            "the macOS application menu must expose Settings and route it through a typed event"
+        );
+        assert!(
+            source.contains("commands::ShowSettings"),
+            "the Settings event must be registered in the Specta event surface"
+        );
+        let renderer = include_str!("../../ui/src/shell/AppShell.tsx")
+            .split_whitespace()
+            .collect::<String>();
+        assert!(
+            renderer.contains("events.mdreaderShowSettings.listen"),
+            "the renderer must listen for the native Settings request"
         );
     }
 
