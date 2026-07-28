@@ -37,20 +37,30 @@ export function FileTree({
   isIgnored,
 }: FileTreeProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const search = filter.trim().toLocaleLowerCase();
+  const isFiltering = search.length > 0;
+  const unfilteredTree = useMemo(() => buildTree(files, root), [files, root]);
   const visibleFiles = useMemo(() => {
-    const search = filter.trim().toLocaleLowerCase();
-    if (!search) return files;
+    if (!isFiltering) return files;
     return files.filter((file) => file.name.toLocaleLowerCase().includes(search));
-  }, [files, filter]);
-  const tree = useMemo(() => buildTree(visibleFiles, root), [visibleFiles, root]);
+  }, [files, isFiltering, search]);
+  const tree = useMemo(
+    () => (isFiltering ? buildTree(visibleFiles, root) : unfilteredTree),
+    [isFiltering, root, unfilteredTree, visibleFiles],
+  );
 
   // Default: expand every directory so the corpus is visible at a glance.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(collectDirPaths(tree)));
-  useEffect(() => {
-    setExpanded(new Set(collectDirPaths(tree)));
-  }, [tree]);
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(collectDirPaths(unfilteredTree)),
+  );
+  const effectiveExpanded = useMemo(() => {
+    if (!isFiltering) return expanded;
+    const forced = new Set(expanded);
+    for (const path of collectDirPaths(tree)) forced.add(path);
+    return forced;
+  }, [expanded, isFiltering, tree]);
 
-  const rows = useMemo(() => flattenTree(tree, expanded), [tree, expanded]);
+  const rows = useMemo(() => flattenTree(tree, effectiveExpanded), [tree, effectiveExpanded]);
 
   const [focusIndex, setFocusIndex] = useState(0);
   const pendingFocus = useRef<number | null>(null);
@@ -66,6 +76,7 @@ export function FileTree({
   });
 
   function toggle(path: string) {
+    if (isFiltering) return;
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
