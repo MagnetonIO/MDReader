@@ -23,6 +23,23 @@ const TABS: Array<{ id: InspectorTab; label: string }> = [
   { id: 'schema', label: 'Schema' },
 ];
 
+const DOCUMENT_FIELD_ORDER = ['title', 'author', 'modifiedAt', 'size', 'path', 'body'] as const;
+
+function orderedDocumentFields(fields: FederatedDocument['document']['fields']) {
+  return fields
+    .map((field, index) => ({
+      field,
+      index,
+      rank: DOCUMENT_FIELD_ORDER.indexOf(field.name as (typeof DOCUMENT_FIELD_ORDER)[number]),
+    }))
+    .sort((left, right) => {
+      const leftRank = left.rank === -1 ? DOCUMENT_FIELD_ORDER.length : left.rank;
+      const rightRank = right.rank === -1 ? DOCUMENT_FIELD_ORDER.length : right.rank;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map(({ field }) => field);
+}
+
 function valueText(value: unknown | null): string {
   if (value === null) return 'Not provided';
   if (typeof value === 'string') return value;
@@ -171,7 +188,7 @@ function ResultTab({ answer }: { answer: FederatedDocument }) {
     <>
       <p className="document-inspector__path lens-mono">{answer.document.path}</p>
       <dl className="document-result">
-        {answer.document.fields.map((field) => (
+        {orderedDocumentFields(answer.document.fields).map((field) => (
           <div key={field.name}>
             <dt>{field.name}</dt>
             <dd>
@@ -222,7 +239,7 @@ function SourcesTab({ answer }: { answer: FederatedDocument }) {
 function ProvenanceTab({ answer }: { answer: FederatedDocument }) {
   return (
     <ol className="document-provenance">
-      {answer.document.fields.map((field) => (
+      {orderedDocumentFields(answer.document.fields).map((field) => (
         <li key={field.name}>
           <div className="document-provenance__field">
             <strong>{field.name}</strong>

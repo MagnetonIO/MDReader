@@ -160,6 +160,37 @@ it('presents Result, Sources, Provenance, and Schema as one document answer', as
   ).toBeTruthy();
 });
 
+it('presents semantic Document fields in reader order rather than connector order', async () => {
+  const reversed = {
+    ...answer,
+    document: {
+      ...answer.document,
+      fields: [...answer.document.fields].reverse(),
+    },
+  };
+  render(
+    <DocumentInspector
+      path="/library/notes/a.md"
+      query={vi.fn().mockResolvedValue(reversed)}
+      cancel={vi.fn(async () => {})}
+      workspaceKey="/library"
+      workspaceGeneration={1}
+    />,
+  );
+
+  expect(await screen.findByText('A title')).toBeTruthy();
+  expect(
+    [...document.querySelectorAll('.document-result dt')].map((term) => term.textContent),
+  ).toEqual(['title', 'modifiedAt']);
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Provenance' }));
+  expect(
+    [...document.querySelectorAll('.document-provenance > li strong')].map(
+      (term) => term.textContent,
+    ),
+  ).toEqual(['title', 'modifiedAt']);
+});
+
 it('drops a late answer after the active workspace changes', async () => {
   const pending: Array<(value: FederatedDocument) => void> = [];
   const query = vi.fn<
