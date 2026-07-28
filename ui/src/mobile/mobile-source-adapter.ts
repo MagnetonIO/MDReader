@@ -582,6 +582,8 @@ export function createEnterpriseMobileSourceAdapter(
           };
         }
         const documents: MobileLibraryDocument[] = [];
+        const seenRecordKeys = new Set<string>();
+        const seenPaths = new Set<string>();
         for (const row of response.rows) {
           const provenance = mobileProvenanceOf(
             {
@@ -599,6 +601,22 @@ export function createEnterpriseMobileSourceAdapter(
               message: 'The Enterprise server returned an invalid semantic response.',
             };
           }
+          // Two rows that share a record key are the same document under two
+          // identities; two rows that share a path can never be read back,
+          // because `readRequest` admits exactly one row for a path. Either way
+          // the library would present an entry MDReader cannot address, so the
+          // whole answer fails closed rather than listing an ambiguous document.
+          if (
+            seenRecordKeys.has(document.document.id) ||
+            seenPaths.has(document.document.path)
+          ) {
+            return {
+              status: 'invalid-response',
+              message: 'The Enterprise server returned an ambiguous document identity.',
+            };
+          }
+          seenRecordKeys.add(document.document.id);
+          seenPaths.add(document.document.path);
           documents.push(document);
         }
         admitted = { workspaceId, source };
