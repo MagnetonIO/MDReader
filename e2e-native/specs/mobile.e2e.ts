@@ -57,13 +57,13 @@ describe('MDReader native mobile product flow', () => {
     await expect(await $('button=Use server')).not.toExist();
     await expect(await $('p*=Connected to Enterprise Document library')).toExist();
     await (await $('button=Library')).click();
-    await expect(await $('button=mobile-e2e.md')).toExist();
+    await expect(await $('button*=mobile-e2e.md')).toExist();
   });
 
   it('searches the admitted title, reads it, and inspects versioned provenance', async () => {
     await (await $('button=Search')).click();
     await (await $('input[type="search"]')).setValue('Mobile evidence handbook');
-    await (await $('button=mobile-e2e.md')).click();
+    await (await $('button*=mobile-e2e.md')).click();
     await expect(await $('h1=Mobile evidence handbook')).toExist();
     await expect(await $('main[aria-label="Reader"]')).toExist();
     await (await $('button=Evidence')).click();
@@ -82,7 +82,7 @@ describe('MDReader native mobile product flow', () => {
 
   it('uses the identity-authorized offline copy when the fixture read becomes unavailable', async () => {
     await (await $('button=Back')).click();
-    await (await $('button=mobile-e2e.md')).click();
+    await (await $('button*=mobile-e2e.md')).click();
     await expect(await $('h1=Mobile evidence handbook')).toExist();
     await expect(await $('aside*=Offline copy')).toExist();
     await expect(await $(`aside*=${MOBILE_FIXTURE_IDS.source}`)).toExist();
