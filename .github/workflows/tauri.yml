@@ -295,14 +295,7 @@ jobs:
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE"
           pnpm --filter @mdreader/app tauri ios init --ci
-          pnpm --filter @mdreader/app tauri ios build \
-            --debug \
-            --target aarch64-sim \
-            --features e2e-build \
-            --config src-tauri/tauri.e2e.conf.json \
-            --no-sign \
-            --archive-only \
-            --ci
+          node apps/mdreader/e2e-native/build-mobile-e2e.mjs ios
 
       - name: Validate and export iOS app
         shell: bash
@@ -438,14 +431,7 @@ jobs:
             --ci
 
       - name: Build MDReader Android debug APK
-        run: |
-          pnpm --filter @mdreader/app tauri android build \
-            --debug \
-            --target x86_64 \
-            --features e2e-build \
-            --config src-tauri/tauri.e2e.conf.json \
-            --apk \
-            --ci
+        run: node apps/mdreader/e2e-native/build-mobile-e2e.mjs android
 
       - name: Validate and export Android APK
         shell: bash

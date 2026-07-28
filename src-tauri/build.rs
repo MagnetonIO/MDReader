@@ -35,8 +35,38 @@ fn main() {
     println!("cargo:rustc-env=MDREADER_RELEASE_SOURCE_COMMIT={release_source_commit}");
 
     let source_commit = if e2e_build {
-        let source_commit = std::env::var("MDREADER_SOURCE_COMMIT")
-            .expect("e2e-build requires MDREADER_SOURCE_COMMIT");
+        let environment_commit = std::env::var("MDREADER_SOURCE_COMMIT").ok();
+        let mobile_handoff_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".e2e-source-commit");
+        let mobile_handoff = match std::fs::read_to_string(&mobile_handoff_path) {
+            Ok(value) => Some(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!(
+                "failed to read mobile E2E source-identity handoff {}: {error}",
+                mobile_handoff_path.display()
+            ),
+        };
+        println!("cargo:rerun-if-changed={}", mobile_handoff_path.display());
+        let mobile_commit = mobile_handoff.map(|value| {
+            value
+                .strip_suffix('\n')
+                .filter(|commit| !commit.contains('\n'))
+                .expect(
+                    "mobile E2E source-identity handoff must contain one newline-terminated SHA",
+                )
+                .to_owned()
+        });
+        if let (Some(environment_commit), Some(mobile_commit)) =
+            (&environment_commit, &mobile_commit)
+        {
+            assert_eq!(
+                environment_commit, mobile_commit,
+                "E2E source commit identities do not match"
+            );
+        }
+        let source_commit = environment_commit.or(mobile_commit).expect(
+            "e2e-build requires MDREADER_SOURCE_COMMIT or a mobile source-identity handoff",
+        );
         assert!(
             source_commit.len() == 40
                 && source_commit

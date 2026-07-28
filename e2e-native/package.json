@@ -7,6 +7,7 @@
   "scripts": {
     "appium:driver:macos": "appium driver install mac2",
     "build:e2e": "node build-e2e.mjs",
+    "build:e2e:mobile": "node build-mobile-e2e.mjs",
     "smoke:macos": "node --experimental-strip-types --no-warnings runners/macos.ts",
     "test:build-identity": "tsx --test build-identity.test.ts build-e2e.test.ts",
     "test:seed": "tsx --test seed.test.ts lifecycle.test.ts capabilities.test.ts mobile-fixture.test.ts build-e2e.test.ts",

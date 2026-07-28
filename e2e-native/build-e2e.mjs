@@ -1,9 +1,17 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
+const MOBILE_SOURCE_COMMIT_FILE = resolve(
+  REPO_ROOT,
+  'apps',
+  'mdreader',
+  'src-tauri',
+  '.e2e-source-commit',
+);
 
 export function resolveSourceCommit(
   configured = process.env.MDREADER_SOURCE_COMMIT,
@@ -37,7 +45,41 @@ export function pnpmInvocation(
   };
 }
 
-function runPnpm(args, sourceCommit) {
+export function stageMobileSourceCommit(
+  configured,
+  destination = MOBILE_SOURCE_COMMIT_FILE,
+) {
+  const sourceCommit = resolveSourceCommit(configured, () => {
+    throw new Error('mobile source identity must be supplied explicitly');
+  });
+  const contents = `${sourceCommit}\n`;
+  try {
+    writeFileSync(destination, contents, { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'EEXIST'
+    ) {
+      throw new Error(
+        `refusing to replace an existing mobile source-identity handoff: ${destination}`,
+      );
+    }
+    throw error;
+  }
+
+  return () => {
+    const current = readFileSync(destination, 'utf8');
+    if (current !== contents) {
+      throw new Error(
+        `refusing to remove a changed mobile source-identity handoff: ${destination}`,
+      );
+    }
+    rmSync(destination);
+  };
+}
+
+export function runPnpm(args, sourceCommit) {
   const invocation = pnpmInvocation(args);
   const result = spawnSync(invocation.command, invocation.args, {
     cwd: REPO_ROOT,
@@ -45,25 +87,31 @@ function runPnpm(args, sourceCommit) {
     stdio: 'inherit',
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  return result.status ?? 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const sourceCommit = resolveSourceCommit();
-  runPnpm(['--filter', '@mdreader/app...', 'run', 'build'], sourceCommit);
-  runPnpm(
-    [
-      '--filter',
-      '@mdreader/app',
-      'tauri',
-      'build',
-      '--bundles',
-      'app',
-      '--features',
-      'e2e-build',
-      '--config',
-      'src-tauri/tauri.e2e.conf.json',
-    ],
+  let status = runPnpm(
+    ['--filter', '@mdreader/app...', 'run', 'build'],
     sourceCommit,
   );
+  if (status === 0) {
+    status = runPnpm(
+      [
+        '--filter',
+        '@mdreader/app',
+        'tauri',
+        'build',
+        '--bundles',
+        'app',
+        '--features',
+        'e2e-build',
+        '--config',
+        'src-tauri/tauri.e2e.conf.json',
+      ],
+      sourceCommit,
+    );
+  }
+  process.exitCode = status;
 }
