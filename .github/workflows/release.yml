@@ -74,8 +74,8 @@ jobs:
             exit 1
           fi
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-          SOURCE_COMMIT="$(git rev-parse "$GITHUB_SHA^{commit}")"
-          MAIN_TIP="$(git rev-parse refs/remotes/origin/main^{commit})"
+          SOURCE_COMMIT="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          MAIN_TIP="$(git rev-parse 'refs/remotes/origin/main^{commit}')"
           [[ "$SOURCE_COMMIT" == "$MAIN_TIP" ]] || {
             echo "release source must equal the current origin/main tip" >&2
             exit 1
