@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "version": "1.23.2",
+  "archiveUrl": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-universal2-1.23.2.tgz",
+  "archiveBytes": 42818339,
+  "archiveSha256": "49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809",
+  "archiveEntry": "onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib",
+  "dylibName": "libonnxruntime.1.23.2.dylib",
+  "linkerAlias": "libonnxruntime.dylib",
+  "linkerAliasTarget": "libonnxruntime.1.23.2.dylib",
+  "dylibBytes": 74902752,
+  "dylibSha256": "6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa",
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "installName": "@rpath/libonnxruntime.1.23.2.dylib"
+}

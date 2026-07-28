@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 
 const STABLE_SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -17,6 +18,7 @@ export interface ReleaseConfigInput {
   updaterPublicKey: string;
   updaterEndpoint: string;
   macosSigningIdentity?: string;
+  macosFramework?: string;
   windowsCertificateThumbprint?: string;
   windowsInstallerHooks?: string;
   windowsSignCommand?: string;
@@ -32,7 +34,8 @@ export interface DirectReleaseConfig {
     createUpdaterArtifacts: true;
     macOS?: {
       minimumSystemVersion: '12.0';
-      signingIdentity: string;
+      signingIdentity?: string;
+      frameworks: [string];
     };
     windows?: {
       digestAlgorithm: 'sha256';
@@ -139,6 +142,23 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
     throw new Error('macOS signing identity cannot be empty');
   }
   if (
+    input.macosFramework !== undefined &&
+    (!isAbsolute(input.macosFramework) ||
+      !input.macosFramework.endsWith('/libonnxruntime.1.23.2.dylib'))
+  ) {
+    throw new Error(
+      'macOS release framework must be the absolute reviewed ONNX Runtime 1.23.2 dylib path',
+    );
+  }
+  if (
+    input.macosSigningIdentity !== undefined &&
+    input.macosFramework === undefined
+  ) {
+    throw new Error(
+      'credentialed macOS releases require the reviewed ONNX Runtime framework',
+    );
+  }
+  if (
     input.windowsCertificateThumbprint !== undefined &&
     !WINDOWS_THUMBPRINT.test(input.windowsCertificateThumbprint)
   ) {
@@ -178,11 +198,14 @@ export function createReleaseConfig(input: ReleaseConfigInput): DirectReleaseCon
     },
     bundle: {
       createUpdaterArtifacts: true,
-      ...(input.macosSigningIdentity
+      ...(input.macosFramework
         ? {
             macOS: {
               minimumSystemVersion: '12.0',
-              signingIdentity: input.macosSigningIdentity,
+              ...(input.macosSigningIdentity
+                ? { signingIdentity: input.macosSigningIdentity }
+                : {}),
+              frameworks: [input.macosFramework],
             },
           }
         : {}),

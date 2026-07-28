@@ -269,22 +269,28 @@ jobs:
           else
             rustup target add "${{ matrix.target }}"
           fi
+      - name: Prepare the reviewed universal macOS ONNX Runtime
+        id: prepare-macos-ort-runtime
+        if: matrix.platform == 'macos'
+        run: node scripts/release/prepare-macos-ort-runtime.mjs --output "$RUNNER_TEMP/mdreader-ort-runtime"
       - name: Generate unsigned direct-updater build configuration
         id: generate-unsigned-release-config
         env:
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
           EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
+          MDREADER_MACOS_ORT_DYLIB: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_path }}
         run: |
           ACTUAL_KEY_SHA256="$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write(createHash("sha256").update(process.env.MDREADER_UPDATER_PUBLIC_KEY || "", "utf8").digest("hex"))')"
           [[ "$ACTUAL_KEY_SHA256" == "$EXPECTED_UPDATER_PUBLIC_KEY_SHA256" ]] || {
             echo "public updater key differs from the pre-build authority" >&2
             exit 1
           }
-          scripts/release/generate-direct-release-config.sh linux "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
+          scripts/release/generate-direct-release-config.sh "${{ matrix.platform }}" "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Attest immutable compile inputs before application build
         id: attest-unsigned-build
         env:
           EXPECTED_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_RELEASE_PLATFORM: ${{ matrix.platform }}
           EXPECTED_RELEASE_TARGET: ${{ matrix.target }}
           EXPECTED_RELEASE_BUNDLES: ${{ matrix.bundles }}
           MDREADER_GOOGLE_DRIVE_CLIENT_ID: ${{ vars.MDREADER_GOOGLE_DRIVE_CLIENT_ID }}
@@ -293,6 +299,10 @@ jobs:
           EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           EXPECTED_DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           EXPECTED_DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
+          MACOS_ORT_MANIFEST_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_path }}
+          MACOS_ORT_DYLIB_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_path }}
+          EXPECTED_MACOS_ORT_MANIFEST_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_sha256 }}
+          EXPECTED_MACOS_ORT_DYLIB_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_sha256 }}
         run: |
           node scripts/release/public-oauth-config.mjs assert-hashes
           node <<'NODE'
@@ -307,9 +317,31 @@ jobs:
           const configPath = `${process.env.RUNNER_TEMP}/mdreader-release-config.json`;
           const configBytes = readFileSync(configPath);
           const config = JSON.parse(configBytes.toString('utf8'));
+          const platform = required('EXPECTED_RELEASE_PLATFORM');
+          const macosOrt =
+            platform === 'macos'
+              ? {
+                  manifestSha256: hash(
+                    readFileSync(required('MACOS_ORT_MANIFEST_PATH')),
+                  ),
+                  dylibSha256: hash(
+                    readFileSync(required('MACOS_ORT_DYLIB_PATH')),
+                  ),
+                }
+              : null;
+          if (
+            platform === 'macos' &&
+            (macosOrt.manifestSha256 !==
+              required('EXPECTED_MACOS_ORT_MANIFEST_SHA256') ||
+              macosOrt.dylibSha256 !==
+                required('EXPECTED_MACOS_ORT_DYLIB_SHA256'))
+          ) {
+            throw new Error('macOS ONNX Runtime changed before compile attestation');
+          }
           const encoded = `${JSON.stringify({
-            schemaVersion: 3,
+            schemaVersion: 4,
             version: process.env.EXPECTED_RELEASE_VERSION,
+            platform,
             target: process.env.EXPECTED_RELEASE_TARGET,
             bundles: process.env.EXPECTED_RELEASE_BUNDLES,
             releaseConfigSha256: hash(configBytes),
@@ -325,6 +357,7 @@ jobs:
             dropboxRedirectUriSha256: hash(
               Buffer.from(required('MDREADER_DROPBOX_REDIRECT_URI'), 'utf8'),
             ),
+            macosOrt,
           }, null, 2)}\n`;
           writeFileSync(
             `${process.env.RUNNER_TEMP}/mdreader-release-attestation.json`,
@@ -347,6 +380,8 @@ jobs:
           EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           EXPECTED_DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           EXPECTED_DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
+          MDREADER_MACOS_ORT_LIB_LOCATION: ${{ steps.prepare-macos-ort-runtime.outputs.ort_lib_location }}
+          MDREADER_MACOS_ORT_MANIFEST: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_path }}
         run: scripts/release/prepare-direct-release.sh "${{ matrix.target }}" "${{ matrix.bundles }}" "$RUNNER_TEMP/mdreader-release-config.json"
       - name: Verify immutable compile inputs after application build
         id: verify-unsigned-build
@@ -366,11 +401,22 @@ jobs:
           EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           EXPECTED_DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           EXPECTED_DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
+          MACOS_ORT_LIB_LOCATION: ${{ steps.prepare-macos-ort-runtime.outputs.ort_lib_location }}
+          MACOS_ORT_MANIFEST_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_path }}
+          MACOS_ORT_DYLIB_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_path }}
+          EXPECTED_MACOS_ORT_MANIFEST_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_sha256 }}
+          EXPECTED_MACOS_ORT_DYLIB_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_sha256 }}
         run: |
+          if [[ "$EXPECTED_RELEASE_PLATFORM" == "macos" ]]; then
+            node scripts/release/prepare-macos-ort-runtime.mjs \
+              --verify \
+              --output "$MACOS_ORT_LIB_LOCATION"
+          fi
           node scripts/release/public-oauth-config.mjs assert-hashes
           node <<'NODE'
           const { createHash } = require('node:crypto');
           const { readFileSync } = require('node:fs');
+          const { resolve } = require('node:path');
           const hash = (body) => createHash('sha256').update(body).digest('hex');
           const required = (name) => {
             const value = process.env[name];
@@ -396,9 +442,21 @@ jobs:
           const attestation = JSON.parse(attestationBytes.toString('utf8'));
           const configBytes = readFileSync(required('RELEASE_CONFIG_PATH'));
           const config = JSON.parse(configBytes.toString('utf8'));
+          const macosOrt =
+            platform === 'macos'
+              ? {
+                  manifestSha256: hash(
+                    readFileSync(required('MACOS_ORT_MANIFEST_PATH')),
+                  ),
+                  dylibSha256: hash(
+                    readFileSync(required('MACOS_ORT_DYLIB_PATH')),
+                  ),
+                }
+              : null;
           if (
-            attestation.schemaVersion !== 3 ||
+            attestation.schemaVersion !== 4 ||
             attestation.version !== required('EXPECTED_RELEASE_VERSION') ||
+            attestation.platform !== platform ||
             attestation.target !== target ||
             attestation.bundles !== bundles ||
             attestation.releaseConfigSha256 !== hash(configBytes) ||
@@ -410,12 +468,25 @@ jobs:
               required('EXPECTED_DROPBOX_CLIENT_ID_SHA256') ||
             attestation.dropboxRedirectUriSha256 !==
               required('EXPECTED_DROPBOX_REDIRECT_URI_SHA256') ||
+            JSON.stringify(attestation.macosOrt) !==
+              JSON.stringify(macosOrt) ||
+            (platform === 'macos' &&
+              (macosOrt.manifestSha256 !==
+                required('EXPECTED_MACOS_ORT_MANIFEST_SHA256') ||
+                macosOrt.dylibSha256 !==
+                  required('EXPECTED_MACOS_ORT_DYLIB_SHA256'))) ||
             config.identifier !== 'dev.mdreader.app' ||
             config.version !== attestation.version ||
             config.build?.beforeBuildCommand !== '' ||
             config.bundle?.createUpdaterArtifacts !== true ||
             config.bundle?.windows !== undefined ||
-            config.bundle?.macOS !== undefined ||
+            (platform === 'macos'
+              ? config.bundle?.macOS?.minimumSystemVersion !== '12.0' ||
+                config.bundle.macOS.signingIdentity !== undefined ||
+                config.bundle.macOS.frameworks?.length !== 1 ||
+                resolve(config.bundle.macOS.frameworks[0]) !==
+                  resolve(required('MACOS_ORT_DYLIB_PATH'))
+              : config.bundle?.macOS !== undefined) ||
             config.plugins?.updater?.endpoints?.length !== 1 ||
             config.plugins.updater.endpoints[0] !==
               'https://downloads.mdreader.dev/channels/stable/updater.json' ||
@@ -438,6 +509,11 @@ jobs:
           GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
+          MACOS_ORT_MANIFEST_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_path }}
+          MACOS_ORT_DYLIB_PATH: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_path }}
+          MACOS_ORT_MANIFEST_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_sha256 }}
+          MACOS_ORT_DYLIB_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_dylib_sha256 }}
+          MACOS_ORT_AUTHORITY_SHA256: ${{ steps.prepare-macos-ort-runtime.outputs.ort_authority_sha256 }}
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -476,6 +552,30 @@ jobs:
               join('icons', icon),
             ]),
           ];
+          const macosOrt =
+            process.env.RELEASE_PLATFORM === 'macos'
+              ? {
+                  authoritySha256: process.env.MACOS_ORT_AUTHORITY_SHA256,
+                  manifestSha256: process.env.MACOS_ORT_MANIFEST_SHA256,
+                  dylibSha256: process.env.MACOS_ORT_DYLIB_SHA256,
+                }
+              : null;
+          if (macosOrt) {
+            sources.push(
+              [
+                join('scripts', 'release', 'macos-ort-runtime.json'),
+                join('scripts', 'release', 'macos-ort-runtime.json'),
+              ],
+              [
+                process.env.MACOS_ORT_MANIFEST_PATH,
+                join('runtime', 'macos', 'runtime.json'),
+              ],
+              [
+                process.env.MACOS_ORT_DYLIB_PATH,
+                join('runtime', 'macos', 'libonnxruntime.1.23.2.dylib'),
+              ],
+            );
+          }
           const files = [];
           for (const [source, relativePath] of sources) {
             const metadata = lstatSync(source);
@@ -495,7 +595,7 @@ jobs:
           }
           files.sort((left, right) => left.path.localeCompare(right.path));
           const encoded = `${JSON.stringify({
-            schemaVersion: 2,
+            schemaVersion: 3,
             version: process.env.RELEASE_VERSION,
             sourceCommit: process.env.SOURCE_COMMIT,
             platform: process.env.RELEASE_PLATFORM,
@@ -505,6 +605,7 @@ jobs:
             googleDriveClientIdSha256: process.env.GOOGLE_DRIVE_CLIENT_ID_SHA256,
             dropboxClientIdSha256: process.env.DROPBOX_CLIENT_ID_SHA256,
             dropboxRedirectUriSha256: process.env.DROPBOX_REDIRECT_URI_SHA256,
+            macosOrt,
             files,
           }, null, 2)}\n`;
           writeFileSync(join(root, 'handoff.json'), encoded, { mode: 0o600 });
@@ -806,6 +907,8 @@ jobs:
           EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           EXPECTED_DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           EXPECTED_DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
+          EXPECTED_MACOS_ORT_AUTHORITY_SHA256: '4dfa82f27c3abff2af24db9d77fbc218743ce70dd4336eb9ac8383b59824f758'
+          EXPECTED_MACOS_ORT_DYLIB_SHA256: '6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa'
           EXPECTED_TAURI_CLI_INTEGRITY: 'sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ=='
           EXPECTED_TAURI_NATIVE_PACKAGE: ${{ matrix.native_package }}
           EXPECTED_TAURI_NATIVE_INTEGRITY: ${{ matrix.native_integrity }}
@@ -918,9 +1021,26 @@ jobs:
             ...iconPaths,
             'scripts/release/public-oauth-authority.json',
             `target/${target}/release/${tuple[2]}`,
+            ...(platform === 'macos'
+              ? [
+                  'runtime/macos/libonnxruntime.1.23.2.dylib',
+                  'runtime/macos/runtime.json',
+                  'scripts/release/macos-ort-runtime.json',
+                ]
+              : []),
           ].sort();
+          const expectedMacosOrt =
+            platform === 'macos'
+              ? {
+                  authoritySha256: required(
+                    'EXPECTED_MACOS_ORT_AUTHORITY_SHA256',
+                  ),
+                  manifestSha256: handoff.macosOrt?.manifestSha256,
+                  dylibSha256: required('EXPECTED_MACOS_ORT_DYLIB_SHA256'),
+                }
+              : null;
           if (
-            handoff.schemaVersion !== 2 ||
+            handoff.schemaVersion !== 3 ||
             handoff.version !== required('EXPECTED_RELEASE_VERSION') ||
             handoff.sourceCommit !== required('EXPECTED_SOURCE_COMMIT') ||
             handoff.platform !== platform ||
@@ -934,6 +1054,8 @@ jobs:
               required('EXPECTED_DROPBOX_CLIENT_ID_SHA256') ||
             handoff.dropboxRedirectUriSha256 !==
               required('EXPECTED_DROPBOX_REDIRECT_URI_SHA256') ||
+            JSON.stringify(handoff.macosOrt) !==
+              JSON.stringify(expectedMacosOrt) ||
             !Array.isArray(handoff.files) ||
             JSON.stringify(handoff.files.map((entry) => entry.path).sort()) !==
               JSON.stringify(expectedHandoffPaths)
@@ -970,6 +1092,204 @@ jobs:
               handoff.dropboxRedirectUriSha256
           ) {
             throw new Error('public OAuth authority does not match the handoff identity');
+          }
+          let macosOrtDylib;
+          if (platform === 'macos') {
+            const ortAuthorityPath = join(
+              unsignedPayload,
+              'scripts',
+              'release',
+              'macos-ort-runtime.json',
+            );
+            const ortAuthorityBytes = readFileSync(ortAuthorityPath);
+            const ortAuthority = parse(
+              ortAuthorityPath,
+              'macOS ONNX Runtime authority',
+            );
+            const ortManifestPath = join(
+              unsignedPayload,
+              'runtime',
+              'macos',
+              'runtime.json',
+            );
+            const ortManifestBytes = readFileSync(ortManifestPath);
+            const ortManifest = parse(
+              ortManifestPath,
+              'macOS ONNX Runtime manifest',
+            );
+            macosOrtDylib = join(
+              unsignedPayload,
+              'runtime',
+              'macos',
+              'libonnxruntime.1.23.2.dylib',
+            );
+            const ortDylibBytes = readFileSync(macosOrtDylib);
+            if (
+              hash(ortAuthorityBytes) !==
+                required('EXPECTED_MACOS_ORT_AUTHORITY_SHA256') ||
+              JSON.stringify(Object.keys(ortAuthority).sort()) !==
+                JSON.stringify([
+                  'architectures',
+                  'archiveBytes',
+                  'archiveEntry',
+                  'archiveSha256',
+                  'archiveUrl',
+                  'dylibBytes',
+                  'dylibName',
+                  'dylibSha256',
+                  'installName',
+                  'linkerAlias',
+                  'linkerAliasTarget',
+                  'schemaVersion',
+                  'version',
+                ]) ||
+              ortAuthority.schemaVersion !== 1 ||
+              ortAuthority.version !== '1.23.2' ||
+              ortAuthority.archiveUrl !==
+                'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-universal2-1.23.2.tgz' ||
+              ortAuthority.archiveBytes !== 42818339 ||
+              ortAuthority.archiveSha256 !==
+                '49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809' ||
+              ortAuthority.archiveEntry !==
+                'onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib' ||
+              ortAuthority.dylibName !==
+                'libonnxruntime.1.23.2.dylib' ||
+              ortAuthority.linkerAlias !== 'libonnxruntime.dylib' ||
+              ortAuthority.linkerAliasTarget !==
+                ortAuthority.dylibName ||
+              !Number.isSafeInteger(ortAuthority.dylibBytes) ||
+              ortAuthority.dylibBytes < 1 ||
+              ortAuthority.dylibSha256 !==
+                required('EXPECTED_MACOS_ORT_DYLIB_SHA256') ||
+              JSON.stringify(ortAuthority.architectures) !==
+                JSON.stringify(['arm64', 'x86_64']) ||
+              ortAuthority.installName !==
+                '@rpath/libonnxruntime.1.23.2.dylib' ||
+              hash(ortManifestBytes) !== handoff.macosOrt.manifestSha256 ||
+              ortManifest.schemaVersion !== 1 ||
+              ortManifest.authoritySha256 !== hash(ortAuthorityBytes) ||
+              ortManifest.version !== ortAuthority.version ||
+              ortManifest.archiveUrl !== ortAuthority.archiveUrl ||
+              ortManifest.archiveBytes !== ortAuthority.archiveBytes ||
+              ortManifest.archiveSha256 !== ortAuthority.archiveSha256 ||
+              JSON.stringify(ortManifest.dylib) !==
+                JSON.stringify({
+                  path: ortAuthority.dylibName,
+                  bytes: ortAuthority.dylibBytes,
+                  sha256: ortAuthority.dylibSha256,
+                  architectures: ortAuthority.architectures,
+                  installName: ortAuthority.installName,
+                }) ||
+              JSON.stringify(ortManifest.linkerAlias) !==
+                JSON.stringify({
+                  path: ortAuthority.linkerAlias,
+                  target: ortAuthority.linkerAliasTarget,
+                }) ||
+              hash(ortDylibBytes) !==
+                required('EXPECTED_MACOS_ORT_DYLIB_SHA256')
+            ) {
+              throw new Error(
+                'macOS ONNX Runtime handoff does not match its reviewed universal2 identity',
+              );
+            }
+            const assertUniversalDylib = (body) => {
+              if (
+                body.length < 48 ||
+                body.readUInt32BE(0) !== 0xcafebabe ||
+                body.readUInt32BE(4) !== 2
+              ) {
+                throw new Error(
+                  'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                );
+              }
+              const architectures = new Set();
+              for (let index = 0; index < 2; index += 1) {
+                const entry = 8 + index * 20;
+                const cpu = body.readUInt32BE(entry);
+                const architecture =
+                  cpu === 0x0100000c
+                    ? 'arm64'
+                    : cpu === 0x01000007
+                      ? 'x86_64'
+                      : null;
+                const offset = body.readUInt32BE(entry + 8);
+                const size = body.readUInt32BE(entry + 12);
+                if (
+                  architecture === null ||
+                  architectures.has(architecture) ||
+                  offset < 48 ||
+                  size < 56 ||
+                  offset > body.length - size ||
+                  body.readUInt32LE(offset) !== 0xfeedfacf ||
+                  body.readUInt32LE(offset + 4) !== cpu ||
+                  body.readUInt32LE(offset + 12) !== 6
+                ) {
+                  throw new Error(
+                    'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                  );
+                }
+                const commands = body.readUInt32LE(offset + 16);
+                const commandBytes = body.readUInt32LE(offset + 20);
+                let cursor = offset + 32;
+                const end = cursor + commandBytes;
+                let installName = null;
+                if (
+                  commands < 1 ||
+                  end > offset + size
+                ) {
+                  throw new Error(
+                    'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                  );
+                }
+                for (let commandIndex = 0; commandIndex < commands; commandIndex += 1) {
+                  const command = body.readUInt32LE(cursor);
+                  const commandSize = body.readUInt32LE(cursor + 4);
+                  if (
+                    commandSize < 8 ||
+                    cursor + commandSize > end
+                  ) {
+                    throw new Error(
+                      'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                    );
+                  }
+                  if (command === 0x0d) {
+                    const nameOffset = body.readUInt32LE(cursor + 8);
+                    const nameStart = cursor + nameOffset;
+                    const nameEnd = body.indexOf(0, nameStart);
+                    if (
+                      nameOffset < 24 ||
+                      nameStart >= cursor + commandSize ||
+                      nameEnd < nameStart ||
+                      nameEnd >= cursor + commandSize
+                    ) {
+                      throw new Error(
+                        'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                      );
+                    }
+                    installName = body.toString('utf8', nameStart, nameEnd);
+                  }
+                  cursor += commandSize;
+                }
+                if (
+                  cursor !== end ||
+                  installName !== '@rpath/libonnxruntime.1.23.2.dylib'
+                ) {
+                  throw new Error(
+                    'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                  );
+                }
+                architectures.add(architecture);
+              }
+              if (
+                !architectures.has('arm64') ||
+                !architectures.has('x86_64')
+              ) {
+                throw new Error(
+                  'macOS ONNX Runtime handoff is not one universal @rpath dylib',
+                );
+              }
+            };
+            assertUniversalDylib(ortDylibBytes);
           }
           const executable = readFileSync(
             join(unsignedPayload, 'target', target, 'release', tuple[2]),
@@ -1280,6 +1600,20 @@ jobs:
           ]) {
             copyFileSync(join(supportPayload, name), join(supportDestination, name));
           }
+          let macosOrtDylibDestination = '';
+          if (macosOrtDylib) {
+            macosOrtDylibDestination = join(
+              workspace,
+              'runtime',
+              'macos',
+              'libonnxruntime.1.23.2.dylib',
+            );
+            mkdirSync(dirname(macosOrtDylibDestination), {
+              recursive: true,
+              mode: 0o700,
+            });
+            copyFileSync(macosOrtDylib, macosOrtDylibDestination);
+          }
           writeFileSync(
             join(tauriRoot, 'Cargo.toml'),
             `[package]\nname = "mdreader-app"\nversion = "${handoff.version}"\nedition = "2021"\ndescription = "MDReader desktop shell"\nlicense = "Apache-2.0 OR MIT"\n\n[features]\ndirect-updater = []\n\n[[bin]]\nname = "mdreader-app"\npath = "src/main.rs"\n`,
@@ -1330,6 +1664,8 @@ jobs:
               `reviewed_binary_sha256=${hash(executable)}`,
               `windows_signer_path=${join(supportDestination, 'sign-windows-from-store.ps1')}`,
               `windows_hook_path=${join(supportDestination, 'windows-minimum.nsh')}`,
+              `macos_ort_dylib_path=${macosOrtDylibDestination}`,
+              `macos_ort_dylib_sha256=${macosOrtDylibDestination ? hash(readFileSync(macosOrtDylibDestination)) : ''}`,
             ].join('\n') + '\n',
             { flag: 'a' },
           );
@@ -1440,6 +1776,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}
           MDREADER_UPDATER_PUBLIC_KEY: ${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          MACOS_ORT_DYLIB_PATH: ${{ steps.verify-credential-boundaries.outputs.macos_ort_dylib_path }}
         run: |
           node <<'NODE'
           const { writeFileSync } = require('node:fs');
@@ -1452,6 +1789,7 @@ jobs:
               macOS: {
                 minimumSystemVersion: '12.0',
                 signingIdentity: process.env.APPLE_SIGNING_IDENTITY,
+                frameworks: [process.env.MACOS_ORT_DYLIB_PATH],
               },
             },
             plugins: {
@@ -1552,6 +1890,8 @@ jobs:
           EXPECTED_UPDATER_PUBLIC_KEY_SHA256: ${{ needs.prepare.outputs.updater_public_key_sha256 }}
           WINDOWS_SIGNER_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_signer_path }}
           WINDOWS_HOOK_PATH: ${{ steps.verify-credential-boundaries.outputs.windows_hook_path }}
+          MACOS_ORT_DYLIB_PATH: ${{ steps.verify-credential-boundaries.outputs.macos_ort_dylib_path }}
+          EXPECTED_MACOS_ORT_DYLIB_SHA256: ${{ steps.verify-credential-boundaries.outputs.macos_ort_dylib_sha256 }}
         run: |
           node <<'NODE'
           const { createHash } = require('node:crypto');
@@ -1619,9 +1959,18 @@ jobs:
             platform === 'macos' &&
             (macos?.minimumSystemVersion !== '12.0' ||
               typeof macos.signingIdentity !== 'string' ||
-              macos.signingIdentity.length === 0)
+              macos.signingIdentity.length === 0 ||
+              !Array.isArray(macos.frameworks) ||
+              macos.frameworks.length !== 1 ||
+              resolve(String(macos.frameworks[0])) !==
+                resolve(required('MACOS_ORT_DYLIB_PATH')) ||
+              hash(
+                readFileSync(resolve(String(macos.frameworks[0]))),
+              ) !== required('EXPECTED_MACOS_ORT_DYLIB_SHA256'))
           ) {
-            throw new Error('macOS release config is missing its exact identity and minimum OS');
+            throw new Error(
+              'macOS release config is missing its exact identity, minimum OS, or reviewed ONNX Runtime',
+            );
           }
           if (platform === 'linux' && macos !== undefined) {
             throw new Error('Linux release config contains macOS signing state');
@@ -2104,7 +2453,9 @@ jobs:
       - name: Verify macOS Developer ID signature
         id: macos-verify-signature
         if: matrix.platform == 'macos'
-        run: scripts/release/verify-macos-signature.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle"
+        env:
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+        run: scripts/release/verify-macos-signature.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$EXPECTED_APPLE_TEAM_ID"
       - name: Verify notarization and stapling
         id: macos-verify-notarization
         if: matrix.platform == 'macos'

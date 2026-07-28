@@ -63,6 +63,7 @@ async function writeConfig(args: string[]): Promise<void> {
       option(args, '--updater-endpoint', false) ??
       'https://downloads.mdreader.dev/channels/stable/updater.json',
     macosSigningIdentity: option(args, '--macos-signing-identity', false),
+    macosFramework: option(args, '--macos-framework', false),
     windowsCertificateThumbprint: option(args, '--windows-thumbprint', false),
     windowsInstallerHooks: option(args, '--windows-thumbprint', false)
       ? join(ROOT, 'scripts', 'release', 'windows-minimum.nsh')
