@@ -475,6 +475,16 @@ mod tests {
             bindings.contains("\"entity_query\""),
             "the shared entity-query command must be generated for the renderer"
         );
+        assert!(
+            registry.contains("mobile_enterprise::query_connected_library_documents,")
+                && registry.contains("mobile_enterprise::cancel_connected_catdb_query,"),
+            "Connected CatDB Library query and cancellation must share the native boundary"
+        );
+        assert!(
+            bindings.contains("\"query_connected_library_documents\"")
+                && bindings.contains("\"cancel_connected_catdb_query\""),
+            "Connected CatDB Library commands must be generated for the renderer"
+        );
         assert!(bindings.contains("EntityQueryRequest"));
         assert!(bindings.contains("EntityQueryResponse"));
     }
