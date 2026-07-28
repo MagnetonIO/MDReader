@@ -81,6 +81,7 @@ function validState(value: unknown): boolean {
 export function mobileProvenanceOf(
   value: unknown,
   expectedRecordKey?: string,
+  completeness?: EntityQueryResponse['completeness'],
 ): MobileDocumentProvenance | null {
   const candidate = record(value);
   const pins = record(candidate?.pins);
@@ -129,9 +130,44 @@ export function mobileProvenanceOf(
       (source.freshness_ms !== null &&
         source.freshness_ms !== undefined &&
         !nonNegative(source.freshness_ms)) ||
+      (source.retry_after_ms !== null &&
+        source.retry_after_ms !== undefined &&
+        (!Number.isSafeInteger(source.retry_after_ms) ||
+          !nonNegative(source.retry_after_ms))) ||
+      (source.outcome !== 'rate_limited' &&
+        source.retry_after_ms !== null &&
+        source.retry_after_ms !== undefined) ||
       !sourceOutcome(source.outcome)
     ) {
       return null;
+    }
+  }
+  if (completeness !== undefined) {
+    const state = record(completeness);
+    if (!state || (state.state !== 'complete' && state.state !== 'partial')) {
+      return null;
+    }
+    const failedSourceIds = candidate.sources.flatMap((value) => {
+      const source = record(value);
+      return source &&
+        source.outcome !== 'ran' &&
+        typeof source.source_id === 'string'
+        ? [source.source_id]
+        : [];
+    });
+    if (state.state === 'complete') {
+      if (failedSourceIds.length !== 0) return null;
+    } else {
+      const excludedSourceIds = state.excluded_source_ids;
+      if (
+        !Array.isArray(excludedSourceIds) ||
+        !excludedSourceIds.every((sourceId) => text(sourceId)) ||
+        new Set(excludedSourceIds).size !== excludedSourceIds.length ||
+        failedSourceIds.length !== excludedSourceIds.length ||
+        failedSourceIds.some((sourceId) => !excludedSourceIds.includes(sourceId))
+      ) {
+        return null;
+      }
     }
   }
   for (const [fieldName, provenanceValue] of Object.entries(fields)) {

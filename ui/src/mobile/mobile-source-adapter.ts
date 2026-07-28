@@ -1,6 +1,7 @@
 import {
   CatdbApiError,
   createCatdbClient,
+  type EntityExecutionErrorDetails,
   type EntityQueryRequest,
   type EntityQueryResponse,
   type EntityRow,
@@ -37,6 +38,9 @@ export type MobileLibraryResult =
   | { status: 'ready'; label: string; documents: MobileLibraryDocument[] }
   | { status: 'refused'; message: string }
   | { status: 'identity-changed'; message: string }
+  | { status: 'rate-limited'; message: string; retryAfterMs: number | null }
+  | { status: 'incomplete'; message: string }
+  | { status: 'source-failed'; message: string; execution: EntityExecutionErrorDetails }
   | { status: 'unavailable'; message: string }
   | { status: 'invalid-response'; message: string };
 
@@ -53,17 +57,28 @@ export class MobileSourceReadError extends Error {
   readonly kind:
     | 'refused'
     | 'identity-changed'
+    | 'rate-limited'
+    | 'incomplete'
+    | 'source-failed'
     | 'unavailable'
     | 'invalid-response'
     | 'identity-mismatch';
+  readonly retryAfterMs: number | null;
+  readonly execution: EntityExecutionErrorDetails | null;
 
   constructor(
     kind: MobileSourceReadError['kind'],
     message: string,
+    options: {
+      retryAfterMs?: number | null;
+      execution?: EntityExecutionErrorDetails | null;
+    } = {},
   ) {
     super(message);
     this.name = 'MobileSourceReadError';
     this.kind = kind;
+    this.retryAfterMs = options.retryAfterMs ?? null;
+    this.execution = options.execution ?? null;
   }
 }
 
@@ -379,6 +394,39 @@ function libraryFailure(cause: unknown): MobileLibraryResult {
         'The Enterprise connection identity changed. Reconnect and verify the server and workspace before trying again.',
     };
   }
+  if (cause instanceof CatdbApiError && cause.execution) {
+    const rateLimited = cause.execution.sources.find(
+      (source) => source.outcome === 'rate_limited',
+    );
+    if (rateLimited) {
+      return {
+        status: 'rate-limited',
+        message: 'The Enterprise source asked MDReader to retry later.',
+        retryAfterMs: rateLimited.retry_after_ms ?? null,
+      };
+    }
+    if (cause.execution.sources.some((source) => source.outcome === 'incomplete_search')) {
+      return {
+        status: 'incomplete',
+        message: 'The Enterprise source could not search all of its data.',
+      };
+    }
+    if (
+      cause.execution.sources.some(
+        (source) => source.outcome === 'authentication_failed',
+      )
+    ) {
+      return {
+        status: 'refused',
+        message: 'An Enterprise source requires renewed credentials.',
+      };
+    }
+    return {
+      status: 'source-failed',
+      message: 'An Enterprise source could not complete the query.',
+      execution: cause.execution,
+    };
+  }
   if (cause instanceof ResponseBoundError) {
     return {
       status: 'invalid-response',
@@ -406,6 +454,44 @@ function readFailure(cause: unknown): MobileSourceReadError {
     return new MobileSourceReadError(
       'identity-changed',
       'The Enterprise connection identity changed. Reconnect and verify the server and workspace before reading this document again.',
+    );
+  }
+  if (cause instanceof CatdbApiError && cause.execution) {
+    const rateLimited = cause.execution.sources.find(
+      (source) => source.outcome === 'rate_limited',
+    );
+    if (rateLimited) {
+      return new MobileSourceReadError(
+        'rate-limited',
+        'The Enterprise source asked MDReader to retry later.',
+        {
+          retryAfterMs: rateLimited.retry_after_ms ?? null,
+          execution: cause.execution,
+        },
+      );
+    }
+    if (cause.execution.sources.some((source) => source.outcome === 'incomplete_search')) {
+      return new MobileSourceReadError(
+        'incomplete',
+        'The Enterprise source could not search all of its data.',
+        { execution: cause.execution },
+      );
+    }
+    if (
+      cause.execution.sources.some(
+        (source) => source.outcome === 'authentication_failed',
+      )
+    ) {
+      return new MobileSourceReadError(
+        'refused',
+        'An Enterprise source requires renewed credentials.',
+        { execution: cause.execution },
+      );
+    }
+    return new MobileSourceReadError(
+      'source-failed',
+      'An Enterprise source could not complete the query.',
+      { execution: cause.execution },
     );
   }
   if (cause instanceof ResponseBoundError) {
@@ -488,7 +574,7 @@ export function createEnterpriseMobileSourceAdapter(
             pins: response.pins,
             fields: {},
             sources: response.sources,
-          })
+          }, undefined, response.completeness)
         ) {
           return {
             status: 'invalid-response',
@@ -504,6 +590,7 @@ export function createEnterpriseMobileSourceAdapter(
               sources: response.sources,
             },
             row.record_key,
+            response.completeness,
           );
           const document = documentOf(response, workspaceId, source, row);
           if (!provenance || !document) {
@@ -612,6 +699,7 @@ export function createEnterpriseMobileSourceAdapter(
             sources: response.sources,
           },
           row.record_key,
+          response.completeness,
         );
         if (!provenance || response.pins.policy_version_ids.length === 0) {
           throw new MobileSourceReadError(

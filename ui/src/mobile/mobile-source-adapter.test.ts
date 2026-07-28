@@ -10,6 +10,7 @@ import {
   MobileSourceReadError,
   type MobileLibraryDocument,
 } from './mobile-source-adapter';
+import { mobileProvenanceOf } from './mobile-provenance';
 
 const config = {
   connectionId: 'managed-connection-42',
@@ -337,6 +338,92 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
   });
 
+  test('preserves a typed provider retry instead of collapsing it to unavailability', async () => {
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(
+        response(session),
+        response(
+          {
+            error: 'entity_execution_failed',
+            message: 'authorized source execution did not complete',
+            details: {
+              sources: [
+                {
+                  source_id: IDS.source,
+                  source_version_id: IDS.sourceVersion,
+                  outcome: 'rate_limited',
+                  retry_after_ms: 17_000,
+                  freshness_ms: null,
+                  scanned: 0,
+                  returned: 0,
+                },
+              ],
+            },
+          },
+          502,
+        ),
+      ),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'rate-limited',
+      message: 'The Enterprise source asked MDReader to retry later.',
+      retryAfterMs: 17_000,
+    });
+  });
+
+  test('rejects failed source outcomes inside a response declared complete', async () => {
+    const contradictory = queryResponse({
+      path: 'papers/partial.md',
+      title: 'Partial',
+      size: 128,
+    });
+    contradictory.sources[0] = {
+      ...contradictory.sources[0]!,
+      outcome: 'incomplete_search',
+      retry_after_ms: null,
+    };
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(response(session), response(contradictory)),
+    );
+
+    await expect(adapter.listDocuments()).resolves.toEqual({
+      status: 'invalid-response',
+      message: 'The Enterprise server returned an invalid semantic response.',
+    });
+  });
+
+  test('rejects invalid retry timing even when partial completeness matches the source', () => {
+    const partial = queryResponse({
+      path: 'papers/partial.md',
+      title: 'Partial',
+      size: 128,
+    });
+    partial.sources[0] = {
+      ...partial.sources[0]!,
+      outcome: 'rate_limited',
+      retry_after_ms: -1,
+    };
+    partial.completeness = {
+      state: 'partial',
+      excluded_source_ids: [IDS.source],
+    };
+
+    expect(
+      mobileProvenanceOf(
+        {
+          pins: partial.pins,
+          fields: {},
+          sources: partial.sources,
+        },
+        undefined,
+        partial.completeness,
+      ),
+    ).toBeNull();
+  });
+
   test('rejects an oversized response before parsing it', async () => {
     const oversized = createEnterpriseMobileSourceAdapter(
       config,
@@ -424,6 +511,49 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
         }),
       }),
     );
+  });
+
+  test('preserves typed provider retry evidence when a document read fails', async () => {
+    const listing = queryResponse({
+      path: 'papers/retry.md',
+      title: 'Retry',
+      size: 128,
+    });
+    const adapter = createEnterpriseMobileSourceAdapter(
+      config,
+      sequence(
+        response(session),
+        response(listing),
+        response(
+          {
+            error: 'entity_execution_failed',
+            message: 'authorized source execution did not complete',
+            details: {
+              sources: [
+                {
+                  source_id: IDS.source,
+                  source_version_id: IDS.sourceVersion,
+                  outcome: 'rate_limited',
+                  retry_after_ms: 3_000,
+                  freshness_ms: null,
+                  scanned: 0,
+                  returned: 0,
+                },
+              ],
+            },
+          },
+          502,
+        ),
+      ),
+    );
+    const listed = await adapter.listDocuments();
+    if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+    await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+      name: MobileSourceReadError.name,
+      kind: 'rate-limited',
+      retryAfterMs: 3_000,
+    });
   });
 
   test('preserves logical document identity when path and body select different providers', async () => {
