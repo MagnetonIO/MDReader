@@ -14,6 +14,7 @@ import {
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
+  type ConnectedCatdbState,
   type DiagnosticError,
   type DiagnosticEvent,
   type DiagnosticExport,
@@ -24,6 +25,7 @@ import {
   type LibraryError,
   type LibrarySnapshot,
   type LibrarySourceDto,
+  type MobileEnterpriseError,
   type PickedLibrarySource,
   type WorkspaceGrant,
 } from '../bindings';
@@ -33,6 +35,7 @@ export type {
   CloudFilterInput,
   CloudSourceDto,
   CloudSourcesSnapshot,
+  ConnectedCatdbState,
   DiagnosticEvent,
   DiagnosticExport,
   DiagnosticInfo,
@@ -50,7 +53,7 @@ export type CloudSourcesView = CloudSourcesSnapshot;
 export class SettingsCommandError<T> extends Error {
   readonly detail: T;
 
-  constructor(area: 'library' | 'diagnostics' | 'cloud', detail: T) {
+  constructor(area: 'library' | 'diagnostics' | 'cloud' | 'connected-catdb', detail: T) {
     super(`${area} command failed`);
     this.name = 'SettingsCommandError';
     this.detail = detail;
@@ -69,22 +72,45 @@ function cloudFailure(error: CloudSourceError): never {
   throw new SettingsCommandError('cloud', error);
 }
 
-/**
- * Connected CatDB is admitted only through an authenticated server session
- * that can return the source descriptors permitted to that principal.
- */
-export type ConnectedCatdbState = {
-  kind: 'connected-catdb';
-  state: 'unavailable';
-  reason: 'authenticated-descriptor-endpoint-required';
-};
+function connectedCatdbFailure(error: MobileEnterpriseError): never {
+  throw new SettingsCommandError('connected-catdb', error);
+}
 
 export async function connectedCatdbState(): Promise<ConnectedCatdbState> {
-  return {
-    kind: 'connected-catdb',
-    state: 'unavailable',
-    reason: 'authenticated-descriptor-endpoint-required',
-  };
+  const result = await commands.connectedCatdbState();
+  if (result.status === 'error') return connectedCatdbFailure(result.error);
+  return result.data;
+}
+
+export async function enrollConnectedCatdb(
+  serverOrigin: string,
+  bearerToken: string,
+): Promise<ConnectedCatdbState> {
+  const result = await commands.enrollConnectedCatdb(serverOrigin, bearerToken);
+  if (result.status === 'error') return connectedCatdbFailure(result.error);
+  return result.data;
+}
+
+export async function setConnectedCatdbSourceEnabled(
+  connectionId: string,
+  sourceId: string,
+  enabled: boolean,
+): Promise<ConnectedCatdbState> {
+  const result = await commands.setConnectedCatdbSourceEnabled(
+    connectionId,
+    sourceId,
+    enabled,
+  );
+  if (result.status === 'error') return connectedCatdbFailure(result.error);
+  return result.data;
+}
+
+export async function disconnectConnectedCatdb(
+  connectionId: string,
+): Promise<ConnectedCatdbState> {
+  const result = await commands.disconnectConnectedCatdb(connectionId);
+  if (result.status === 'error') return connectedCatdbFailure(result.error);
+  return result.data;
 }
 
 export interface SettingsBackend {
@@ -122,6 +148,18 @@ export interface SettingsBackend {
   ) => Promise<LibraryEntityQueryResponse_Serialize>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
   connectedCatdbState?: () => Promise<ConnectedCatdbState>;
+  enrollConnectedCatdb?: (
+    serverOrigin: string,
+    bearerToken: string,
+  ) => Promise<ConnectedCatdbState>;
+  setConnectedCatdbSourceEnabled?: (
+    connectionId: string,
+    sourceId: string,
+    enabled: boolean,
+  ) => Promise<ConnectedCatdbState>;
+  disconnectConnectedCatdb?: (
+    connectionId: string,
+  ) => Promise<ConnectedCatdbState>;
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
@@ -310,6 +348,9 @@ export const settingsBackend: SettingsBackend = {
   queryLibraryDocuments,
   cancelCloudDocumentQuery,
   connectedCatdbState,
+  enrollConnectedCatdb,
+  setConnectedCatdbSourceEnabled,
+  disconnectConnectedCatdb,
 };
 
 /**

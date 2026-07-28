@@ -117,6 +117,22 @@ function errorMessage(cause: unknown): string {
     case 'invalid-configuration':
     case 'rollback-failed':
       return 'MDReader could not safely update the cloud source. Nothing was connected.';
+    case 'permission-denied':
+      return 'That CatDB token does not grant one workspace with query and catalog access.';
+    case 'already-configured':
+      return 'Disconnect the current CatDB workspace before connecting another.';
+    case 'connection-not-found':
+      return 'That CatDB workspace is no longer connected.';
+    case 'no-sources-selected':
+      return 'Choose at least one permitted CatDB source before querying.';
+    case 'transport-unavailable':
+    case 'timed-out':
+      return 'The CatDB server could not be reached. Check its URL and try again.';
+    case 'response-too-large':
+    case 'invalid-response':
+      return 'The CatDB server returned a response MDReader could not safely use.';
+    case 'invalid-request':
+      return 'The CatDB connection request was rejected before it left this device.';
     default:
       return 'The request could not be completed.';
   }
@@ -169,6 +185,8 @@ export function SettingsSheet({
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
   const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
   const [connectedCatdb, setConnectedCatdb] = useState<ConnectedCatdbState | null>(null);
+  const [connectedCatdbOrigin, setConnectedCatdbOrigin] = useState('');
+  const [connectedCatdbBearer, setConnectedCatdbBearer] = useState('');
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -192,9 +210,13 @@ export function SettingsSheet({
   useEffect(() => {
     if (!backend.connectedCatdbState) return;
     let live = true;
-    void backend.connectedCatdbState().then((state) => {
-      if (live) setConnectedCatdb(state);
-    });
+    void backend.connectedCatdbState()
+      .then((state) => {
+        if (live) setConnectedCatdb(state);
+      })
+      .catch((cause: unknown) => {
+        if (live) setFailure(errorMessage(cause));
+      });
     return () => {
       live = false;
     };
@@ -236,6 +258,17 @@ export function SettingsSheet({
           connect: backend.connectCloudSource,
           setEnabled: backend.setCloudSourceEnabled,
           disconnect: backend.disconnectCloudSource,
+        }
+      : null;
+  const connectedCatdbControls =
+    backend.connectedCatdbState &&
+    backend.enrollConnectedCatdb &&
+    backend.setConnectedCatdbSourceEnabled &&
+    backend.disconnectConnectedCatdb
+      ? {
+          enroll: backend.enrollConnectedCatdb,
+          setEnabled: backend.setConnectedCatdbSourceEnabled,
+          disconnect: backend.disconnectConnectedCatdb,
         }
       : null;
 
@@ -337,6 +370,46 @@ export function SettingsSheet({
       );
     },
     [cloudControls, run],
+  );
+
+  const enrollCatdb = useCallback(() => {
+    if (!connectedCatdbControls) return;
+    const bearer = connectedCatdbBearer;
+    setConnectedCatdbBearer('');
+    void run(
+      'connected-catdb:enroll',
+      () => connectedCatdbControls.enroll(connectedCatdbOrigin, bearer),
+      setConnectedCatdb,
+    );
+  }, [
+    connectedCatdbBearer,
+    connectedCatdbControls,
+    connectedCatdbOrigin,
+    run,
+  ]);
+
+  const setCatdbSourceEnabled = useCallback(
+    (connectionId: string, sourceId: string, enabled: boolean) => {
+      if (!connectedCatdbControls) return;
+      void run(
+        `connected-catdb:source:${sourceId}`,
+        () => connectedCatdbControls.setEnabled(connectionId, sourceId, enabled),
+        setConnectedCatdb,
+      );
+    },
+    [connectedCatdbControls, run],
+  );
+
+  const disconnectCatdb = useCallback(
+    (connectionId: string) => {
+      if (!connectedCatdbControls) return;
+      void run(
+        'connected-catdb:disconnect',
+        () => connectedCatdbControls.disconnect(connectionId),
+        setConnectedCatdb,
+      );
+    },
+    [connectedCatdbControls, run],
   );
 
   const setLevel = useCallback(
@@ -671,7 +744,7 @@ export function SettingsSheet({
                 </p>
               </div>
             ) : null}
-            {connectedCatdb ? (
+            {connectedCatdb && connectedCatdbControls ? (
               <div className="cloud-sources">
                 <div className="cloud-sources__heading">
                   <div>
@@ -682,27 +755,131 @@ export function SettingsSheet({
                     </p>
                   </div>
                 </div>
-                <article className="cloud-source">
-                  <div className="cloud-source__copy">
-                    <div className="cloud-source__title">
-                      <h4>CatDB workspace</h4>
+                {connectedCatdb.state === 'disconnected' ? (
+                  <article className="cloud-source connected-catdb-card">
+                    <div className="connected-catdb-form">
+                      <label>
+                        <span>CatDB server URL</span>
+                        <input
+                          type="url"
+                          inputMode="url"
+                          autoComplete="url"
+                          value={connectedCatdbOrigin}
+                          placeholder="https://catdb.example.com"
+                          disabled={busy !== null}
+                          onChange={(event) => setConnectedCatdbOrigin(event.currentTarget.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>CatDB bearer token</span>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={connectedCatdbBearer}
+                          disabled={busy !== null}
+                          onChange={(event) => setConnectedCatdbBearer(event.currentTarget.value)}
+                        />
+                      </label>
+                      <p>
+                        Direct database credentials are never stored in MDReader. The bearer is
+                        written once to the operating system credential store and cleared here.
+                      </p>
                     </div>
-                    <p>
-                      This app has no authenticated source-descriptor endpoint. Direct database
-                      credentials are never stored in MDReader.
+                    <div className="cloud-source__actions">
+                      <button
+                        type="button"
+                        disabled={
+                          busy !== null ||
+                          connectedCatdbOrigin.trim().length === 0 ||
+                          connectedCatdbBearer.length === 0
+                        }
+                        aria-label="Connect CatDB workspace"
+                        onClick={enrollCatdb}
+                      >
+                        {busy === 'connected-catdb:enroll' ? 'Connecting…' : 'Connect'}
+                      </button>
+                    </div>
+                  </article>
+                ) : (
+                  <>
+                    <article className="cloud-source">
+                      <div className="cloud-source__copy">
+                        <div className="cloud-source__title">
+                          <h4>{connectedCatdb.label}</h4>
+                          <span>Connected</span>
+                        </div>
+                        <p>
+                          Workspace {connectedCatdb.workspace_id} · catalog{' '}
+                          {connectedCatdb.catalog_revision_id}
+                        </p>
+                      </div>
+                      <div className="cloud-source__actions">
+                        <button
+                          type="button"
+                          className="settings-button--quiet"
+                          disabled={busy !== null}
+                          aria-label={`Disconnect ${connectedCatdb.label}`}
+                          onClick={() => disconnectCatdb(connectedCatdb.connection_id)}
+                        >
+                          {busy === 'connected-catdb:disconnect'
+                            ? 'Disconnecting…'
+                            : 'Disconnect'}
+                        </button>
+                      </div>
+                    </article>
+                    <div className="cloud-sources__list" aria-live="polite">
+                      {connectedCatdb.sources.length === 0 ? (
+                        <div className="settings-empty">
+                          This workspace exposes no permitted sources.
+                        </div>
+                      ) : null}
+                      {connectedCatdb.sources.map((source) => {
+                        const label = source.connector_id ?? source.source_id;
+                        return (
+                          <article className="cloud-source" key={source.source_id}>
+                            <div className="cloud-source__copy">
+                              <div className="cloud-source__title">
+                                <h4>{label}</h4>
+                                {!source.runtime_bound ? (
+                                  <span className="settings-state--warning">Unavailable</span>
+                                ) : source.enabled ? (
+                                  <span>Included</span>
+                                ) : (
+                                  <span>Paused</span>
+                                )}
+                              </div>
+                              <p>Source {source.source_id}</p>
+                            </div>
+                            <div className="cloud-source__actions">
+                              <button
+                                type="button"
+                                className="source-switch"
+                                role="switch"
+                                aria-label={`Include ${label} in Connected CatDB queries`}
+                                aria-checked={source.enabled}
+                                disabled={!source.runtime_bound || busy !== null}
+                                onClick={() =>
+                                  setCatdbSourceEnabled(
+                                    connectedCatdb.connection_id,
+                                    source.source_id,
+                                    !source.enabled,
+                                  )
+                                }
+                              >
+                                <span aria-hidden="true" />
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                    <p className="settings-footnote">
+                      Queries are pinned natively to this workspace, catalog revision, and the
+                      enabled sources above. Direct database credentials are never stored in
+                      MDReader; they remain server-managed.
                     </p>
-                  </div>
-                  <div className="cloud-source__actions">
-                    <button
-                      type="button"
-                      disabled
-                      aria-label="Connect CatDB workspace"
-                      data-unavailable-reason={connectedCatdb.reason}
-                    >
-                      Connect
-                    </button>
-                  </div>
-                </article>
+                  </>
+                )}
               </div>
             ) : null}
           </section>

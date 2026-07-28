@@ -281,14 +281,57 @@ describe('Settings sheet', () => {
     expect(screen.queryByRole('button', { name: 'Browse Google Drive' })).toBeNull();
   });
 
-  it('keeps Connected CatDB typed-unavailable until an authenticated descriptor endpoint exists', async () => {
-    const api = backend({
-      connectedCatdbState: vi.fn(async () => ({
-        kind: 'connected-catdb' as const,
-        state: 'unavailable' as const,
-        reason: 'authenticated-descriptor-endpoint-required' as const,
-      })),
+  it('enrolls Connected CatDB with a write-only bearer and renders only permitted sources', async () => {
+    const connected = {
+      kind: 'connected-catdb' as const,
+      state: 'connected' as const,
+      connection_id: 'c'.repeat(64),
+      label: 'catdb.example.com',
+      server_origin: 'https://catdb.example.com/',
+      workspace_id: '00000000-0000-0000-0000-000000000003',
+      catalog_revision_id: '00000000-0000-0000-0000-000000000004',
+      sources: [{
+        source_id: '00000000-0000-0000-0000-000000000011',
+        source_version_id: '00000000-0000-0000-0000-000000000012',
+        connector_id: 'postgres-primary',
+        runtime_bound: true,
+        enabled: false,
+      }],
+      contract: {
+        connector_version: 'connected-catdb/v1',
+        capabilities: {
+          read: true,
+          write: false,
+          search: true,
+          watch: false,
+          open_original: false,
+          download: false,
+        },
+        mapping_version: '00000000-0000-0000-0000-000000000004',
+        index_policy: 'read-through' as const,
+      },
+    };
+    let state: unknown = {
+      kind: 'connected-catdb',
+      state: 'disconnected',
+    };
+    const enroll = vi.fn(async (serverOrigin: string, bearerToken: string) => {
+      state = connected;
+      return connected;
     });
+    const setSourceEnabled = vi.fn(async () => connected);
+    const disconnect = vi.fn(async () => ({
+      kind: 'connected-catdb' as const,
+      state: 'disconnected' as const,
+    }));
+    const api = {
+      ...backend({
+        connectedCatdbState: vi.fn(async () => state as never),
+      }),
+      enrollConnectedCatdb: enroll,
+      setConnectedCatdbSourceEnabled: setSourceEnabled,
+      disconnectConnectedCatdb: disconnect,
+    } as SettingsBackend;
     render(
       <SettingsSheet
         backend={api}
@@ -300,12 +343,85 @@ describe('Settings sheet', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'Connected CatDB' })).toBeTruthy();
-    const connect = screen.getByRole('button', { name: 'Connect CatDB workspace' });
-    expect(connect.hasAttribute('disabled')).toBe(true);
-    expect(connect.getAttribute('data-unavailable-reason')).toBe(
-      'authenticated-descriptor-endpoint-required',
-    );
+    const origin = screen.getByRole('textbox', { name: 'CatDB server URL' });
+    const bearer = screen.getByLabelText('CatDB bearer token') as HTMLInputElement;
+    fireEvent.change(origin, { target: { value: 'https://catdb.example.com' } });
+    fireEvent.change(bearer, { target: { value: 'native-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect CatDB workspace' }));
+
+    await waitFor(() => {
+      expect(enroll).toHaveBeenCalledWith('https://catdb.example.com', 'native-secret');
+    });
+    expect(bearer.value).toBe('');
+    expect(await screen.findByRole('switch', {
+      name: 'Include postgres-primary in Connected CatDB queries',
+    })).toBeTruthy();
+    expect(screen.queryByLabelText(/database password|connection string/i)).toBeNull();
     expect(screen.getByText(/Direct database credentials are never stored/i)).toBeTruthy();
+  });
+
+  it('persists Connected CatDB source selection through the native backend', async () => {
+    const sourceId = '00000000-0000-0000-0000-000000000011';
+    const connectionId = 'c'.repeat(64);
+    const connected = {
+      kind: 'connected-catdb' as const,
+      state: 'connected' as const,
+      connection_id: connectionId,
+      label: 'catdb.example.com',
+      server_origin: 'https://catdb.example.com/',
+      workspace_id: '00000000-0000-0000-0000-000000000003',
+      catalog_revision_id: '00000000-0000-0000-0000-000000000004',
+      sources: [{
+        source_id: sourceId,
+        source_version_id: '00000000-0000-0000-0000-000000000012',
+        connector_id: null,
+        runtime_bound: true,
+        enabled: false,
+      }],
+      contract: {
+        connector_version: 'connected-catdb/v1',
+        capabilities: {
+          read: true,
+          write: false,
+          search: true,
+          watch: false,
+          open_original: false,
+          download: false,
+        },
+        mapping_version: '00000000-0000-0000-0000-000000000004',
+        index_policy: 'read-through' as const,
+      },
+    };
+    const setSourceEnabled = vi.fn(async () => ({
+      ...connected,
+      sources: [{ ...connected.sources[0], enabled: true }],
+    }));
+    const api = {
+      ...backend({
+        connectedCatdbState: vi.fn(async () => connected as never),
+      }),
+      enrollConnectedCatdb: vi.fn(),
+      setConnectedCatdbSourceEnabled: setSourceEnabled,
+      disconnectConnectedCatdb: vi.fn(),
+    } as SettingsBackend;
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const toggle = await screen.findByRole('switch', {
+      name: `Include ${sourceId} in Connected CatDB queries`,
+    });
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(setSourceEnabled).toHaveBeenCalledWith(connectionId, sourceId, true);
+    });
   });
 
   it('activates a persisted member through the shell-owned switch callback', async () => {

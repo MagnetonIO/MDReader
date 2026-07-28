@@ -74,6 +74,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::query_library_documents,
             cloud_accounts::query_cloud_documents,
             cloud_accounts::cancel_cloud_document_query,
+            mobile_enterprise::connected_catdb_state,
+            mobile_enterprise::enroll_connected_catdb,
+            mobile_enterprise::set_connected_catdb_source_enabled,
+            mobile_enterprise::disconnect_connected_catdb,
+            mobile_enterprise::connected_catdb_entity_query,
             mobile_enterprise::mobile_enterprise_connection,
             mobile_enterprise::mobile_enterprise_request,
             library::list_library_sources,
@@ -328,6 +333,26 @@ mod tests {
         let bindings = include_str!("../../ui/src/bindings.ts");
         let adapter = include_str!("../../ui/src/mobile/mobile-source-adapter.ts");
         for (rust_command, invoke_name) in [
+            (
+                "mobile_enterprise::connected_catdb_state,",
+                "\"connected_catdb_state\"",
+            ),
+            (
+                "mobile_enterprise::enroll_connected_catdb,",
+                "\"enroll_connected_catdb\"",
+            ),
+            (
+                "mobile_enterprise::set_connected_catdb_source_enabled,",
+                "\"set_connected_catdb_source_enabled\"",
+            ),
+            (
+                "mobile_enterprise::disconnect_connected_catdb,",
+                "\"disconnect_connected_catdb\"",
+            ),
+            (
+                "mobile_enterprise::connected_catdb_entity_query,",
+                "\"connected_catdb_entity_query\"",
+            ),
             (
                 "mobile_enterprise::mobile_enterprise_connection,",
                 "\"mobile_enterprise_connection\"",

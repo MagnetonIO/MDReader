@@ -6,21 +6,20 @@
 //! response before returning JSON to the renderer.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use catdb_api_types::{ControlPlaneSnapshot, EntityQueryRequest, SessionResponse};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use url::Url;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use zeroize::Zeroizing;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const REGISTRY_VERSION: u32 = 1;
-const MAX_CONNECTIONS: usize = 16;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
+const MAX_CONNECTED_SOURCES: usize = 128;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 
 #[cfg(feature = "e2e-build")]
@@ -51,10 +50,42 @@ pub(crate) struct MobileEnterpriseResponse {
     pub body_json: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ConnectedCatdbKind {
+    ConnectedCatdb,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct ConnectedCatdbSourceView {
+    pub source_id: uuid::Uuid,
+    pub source_version_id: uuid::Uuid,
+    pub runtime_bound: bool,
+    pub connector_id: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub(crate) enum ConnectedCatdbState {
+    Disconnected {
+        kind: ConnectedCatdbKind,
+    },
+    Connected {
+        kind: ConnectedCatdbKind,
+        connection_id: String,
+        label: String,
+        server_origin: String,
+        workspace_id: uuid::Uuid,
+        catalog_revision_id: uuid::Uuid,
+        sources: Vec<ConnectedCatdbSourceView>,
+        contract: crate::library::LibrarySourceContract,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum MobileEnterpriseError {
-    NotConfigured,
     ConnectionNotFound,
     CredentialUnavailable,
     InvalidConfiguration,
@@ -63,12 +94,16 @@ pub(crate) enum MobileEnterpriseError {
     TimedOut,
     ResponseTooLarge,
     InvalidResponse,
+    PermissionDenied,
+    AlreadyConfigured,
+    NoSourcesSelected,
+    PersistFailed,
+    RollbackFailed,
 }
 
 impl fmt::Display for MobileEnterpriseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::NotConfigured => "mobile-enterprise-not-configured",
             Self::ConnectionNotFound => "mobile-enterprise-connection-not-found",
             Self::CredentialUnavailable => "mobile-enterprise-credential-unavailable",
             Self::InvalidConfiguration => "mobile-enterprise-invalid-configuration",
@@ -77,6 +112,11 @@ impl fmt::Display for MobileEnterpriseError {
             Self::TimedOut => "mobile-enterprise-timeout",
             Self::ResponseTooLarge => "mobile-enterprise-response-too-large",
             Self::InvalidResponse => "mobile-enterprise-invalid-response",
+            Self::PermissionDenied => "mobile-enterprise-permission-denied",
+            Self::AlreadyConfigured => "mobile-enterprise-already-configured",
+            Self::NoSourcesSelected => "mobile-enterprise-no-sources-selected",
+            Self::PersistFailed => "mobile-enterprise-persist-failed",
+            Self::RollbackFailed => "mobile-enterprise-rollback-failed",
         })
     }
 }
@@ -104,14 +144,6 @@ impl fmt::Debug for ConnectionRecord {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConnectionRegistry {
-    version: u32,
-    active_connection_id: Option<String>,
-    connections: Vec<ConnectionRecord>,
-}
-
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 struct BearerToken(String);
 
@@ -123,6 +155,8 @@ impl fmt::Debug for BearerToken {
 
 trait BearerVault: Send + Sync {
     fn get(&self, reference: &str) -> Result<Option<BearerToken>, MobileEnterpriseError>;
+    fn set(&self, reference: &str, token: &BearerToken) -> Result<(), MobileEnterpriseError>;
+    fn delete(&self, reference: &str) -> Result<(), MobileEnterpriseError>;
 }
 
 #[derive(Clone)]
@@ -161,6 +195,42 @@ impl BearerVault for KeyringBearerVault {
             };
             validate_bearer(token.as_str())?;
             Ok(Some(BearerToken(token.as_str().to_owned())))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = reference;
+            Err(MobileEnterpriseError::CredentialUnavailable)
+        }
+    }
+
+    fn set(&self, reference: &str, token: &BearerToken) -> Result<(), MobileEnterpriseError> {
+        if !valid_identifier(reference, 256) {
+            return Err(MobileEnterpriseError::CredentialUnavailable);
+        }
+        validate_bearer(&token.0)?;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            self.entry(reference)?
+                .set_password(&token.0)
+                .map_err(|_| MobileEnterpriseError::CredentialUnavailable)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = (reference, token);
+            Err(MobileEnterpriseError::CredentialUnavailable)
+        }
+    }
+
+    fn delete(&self, reference: &str) -> Result<(), MobileEnterpriseError> {
+        if !valid_identifier(reference, 256) {
+            return Err(MobileEnterpriseError::CredentialUnavailable);
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            match self.entry(reference)?.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(_) => Err(MobileEnterpriseError::CredentialUnavailable),
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
@@ -214,77 +284,81 @@ fn validate_record(record: &ConnectionRecord) -> Result<(), MobileEnterpriseErro
     Ok(())
 }
 
-fn read_registry(path: &Path) -> Result<ConnectionRegistry, MobileEnterpriseError> {
-    let bytes = std::fs::read(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            MobileEnterpriseError::NotConfigured
-        } else {
+fn map_library_error(error: crate::library::LibraryError) -> MobileEnterpriseError {
+    match error {
+        crate::library::LibraryError::DuplicateRoot => MobileEnterpriseError::AlreadyConfigured,
+        crate::library::LibraryError::SourceNotFound => MobileEnterpriseError::ConnectionNotFound,
+        crate::library::LibraryError::SourceUnavailable => MobileEnterpriseError::InvalidRequest,
+        crate::library::LibraryError::CorruptRegistry
+        | crate::library::LibraryError::UnsupportedVersion { .. } => {
             MobileEnterpriseError::InvalidConfiguration
         }
-    })?;
-    if bytes.len() > 64 * 1024 {
-        return Err(MobileEnterpriseError::InvalidConfiguration);
+        _ => MobileEnterpriseError::PersistFailed,
     }
-    let registry: ConnectionRegistry =
-        serde_json::from_slice(&bytes).map_err(|_| MobileEnterpriseError::InvalidConfiguration)?;
-    if registry.version != REGISTRY_VERSION || registry.connections.len() > MAX_CONNECTIONS {
-        return Err(MobileEnterpriseError::InvalidConfiguration);
-    }
-    for connection in &registry.connections {
-        validate_record(connection)?;
-    }
-    let unique = registry
-        .connections
-        .iter()
-        .map(|connection| connection.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    if unique.len() != registry.connections.len()
-        || registry
-            .active_connection_id
-            .as_ref()
-            .is_some_and(|active| {
-                registry
-                    .connections
-                    .iter()
-                    .filter(|connection| &connection.id == active)
-                    .count()
-                    != 1
-            })
-    {
-        return Err(MobileEnterpriseError::InvalidConfiguration);
-    }
-    Ok(registry)
 }
 
-fn registry_path(app: &AppHandle) -> Result<PathBuf, MobileEnterpriseError> {
-    app.path()
-        .app_data_dir()
-        .map(|path| path.join("mobile-enterprise.json"))
-        .map_err(|_| MobileEnterpriseError::InvalidConfiguration)
+fn library_store(app: &AppHandle) -> Result<crate::library::LibraryStore, MobileEnterpriseError> {
+    let (path, _) = crate::library::registry_path(app).map_err(map_library_error)?;
+    Ok(crate::library::LibraryStore::new(path))
 }
 
-fn active_record(path: &Path) -> Result<ConnectionRecord, MobileEnterpriseError> {
-    let registry = read_registry(path)?;
-    let active = registry
-        .active_connection_id
-        .ok_or(MobileEnterpriseError::NotConfigured)?;
-    registry
-        .connections
-        .into_iter()
-        .find(|connection| connection.id == active)
-        .ok_or(MobileEnterpriseError::InvalidConfiguration)
+impl From<&crate::library::ConnectedCatdbSourceRecord> for ConnectionRecord {
+    fn from(source: &crate::library::ConnectedCatdbSourceRecord) -> Self {
+        Self {
+            id: source.id.clone(),
+            label: source.label.clone(),
+            server_origin: source.server_origin.clone(),
+            credential_reference: source.credential_reference.clone(),
+        }
+    }
 }
 
-fn record_for(path: &Path, connection_id: &str) -> Result<ConnectionRecord, MobileEnterpriseError> {
+fn record_for(
+    store: &crate::library::LibraryStore,
+    connection_id: &str,
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
     if !valid_identifier(connection_id, 200) {
         return Err(MobileEnterpriseError::ConnectionNotFound);
     }
-    let registry = read_registry(path)?;
-    registry
-        .connections
-        .into_iter()
-        .find(|connection| connection.id == connection_id)
+    store
+        .read_connected_catdb()
+        .map_err(map_library_error)?
+        .filter(|source| source.id == connection_id)
         .ok_or(MobileEnterpriseError::ConnectionNotFound)
+}
+
+fn disconnected_state() -> ConnectedCatdbState {
+    ConnectedCatdbState::Disconnected {
+        kind: ConnectedCatdbKind::ConnectedCatdb,
+    }
+}
+
+fn connected_state(source: &crate::library::ConnectedCatdbSourceRecord) -> ConnectedCatdbState {
+    let selected = source
+        .selected_source_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    ConnectedCatdbState::Connected {
+        kind: ConnectedCatdbKind::ConnectedCatdb,
+        connection_id: source.id.clone(),
+        label: source.label.clone(),
+        server_origin: source.server_origin.clone(),
+        workspace_id: source.workspace_id,
+        catalog_revision_id: source.catalog_revision_id,
+        sources: source
+            .permitted_sources
+            .iter()
+            .map(|descriptor| ConnectedCatdbSourceView {
+                source_id: descriptor.source_id,
+                source_version_id: descriptor.source_version_id,
+                runtime_bound: descriptor.runtime_bound,
+                connector_id: descriptor.connector_id.clone(),
+                enabled: selected.contains(&descriptor.source_id),
+            })
+            .collect(),
+        contract: source.contract.clone(),
+    }
 }
 
 #[cfg(feature = "e2e-build")]
@@ -297,28 +371,15 @@ fn e2e_record() -> ConnectionRecord {
     }
 }
 
-async fn execute_request(
-    record: ConnectionRecord,
-    token: BearerToken,
-    operation: MobileEnterpriseOperation,
-    body_json: Option<String>,
+async fn execute_http(
+    record: &ConnectionRecord,
+    token: &BearerToken,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<String>,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
     validate_record(&record)?;
     validate_bearer(&token.0)?;
-    let (path, method, body) = match (operation, body_json) {
-        (MobileEnterpriseOperation::Session, None) => ("/v1/session", reqwest::Method::GET, None),
-        (MobileEnterpriseOperation::EntityQuery, Some(body))
-            if !body.is_empty() && body.len() <= MAX_REQUEST_BYTES =>
-        {
-            let parsed: serde_json::Value =
-                serde_json::from_str(&body).map_err(|_| MobileEnterpriseError::InvalidRequest)?;
-            if !parsed.is_object() {
-                return Err(MobileEnterpriseError::InvalidRequest);
-            }
-            ("/v1/entity/query", reqwest::Method::POST, Some(body))
-        }
-        _ => return Err(MobileEnterpriseError::InvalidRequest),
-    };
     let endpoint = exact_origin(&record.server_origin)?
         .join(path)
         .map_err(|_| MobileEnterpriseError::InvalidConfiguration)?;
@@ -367,6 +428,355 @@ async fn execute_request(
     Ok(MobileEnterpriseResponse { status, body_json })
 }
 
+async fn execute_request(
+    record: ConnectionRecord,
+    token: BearerToken,
+    operation: MobileEnterpriseOperation,
+    body_json: Option<String>,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    let (path, method, body) = match (operation, body_json) {
+        (MobileEnterpriseOperation::Session, None) => ("/v1/session", reqwest::Method::GET, None),
+        (MobileEnterpriseOperation::EntityQuery, Some(body))
+            if !body.is_empty() && body.len() <= MAX_REQUEST_BYTES =>
+        {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&body).map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+            let object = parsed
+                .as_object()
+                .ok_or(MobileEnterpriseError::InvalidRequest)?;
+            if object
+                .get("source_ids")
+                .is_some_and(|source_ids| !source_ids.is_null())
+            {
+                return Err(MobileEnterpriseError::InvalidRequest);
+            }
+            ("/v1/entity/query", reqwest::Method::POST, Some(body))
+        }
+        _ => return Err(MobileEnterpriseError::InvalidRequest),
+    };
+    execute_http(&record, &token, method, path, body).await
+}
+
+async fn discover_connected_catdb(
+    server_origin: Url,
+    token: &BearerToken,
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    let label = server_origin
+        .host_str()
+        .filter(|host| valid_identifier(host, 200))
+        .ok_or(MobileEnterpriseError::InvalidConfiguration)?
+        .to_string();
+    let record = ConnectionRecord {
+        id: "connected-catdb-enrollment".to_string(),
+        label: label.clone(),
+        server_origin: server_origin.to_string(),
+        credential_reference: "pending-native-credential".to_string(),
+    };
+    let session_response =
+        execute_http(&record, token, reqwest::Method::GET, "/v1/session", None).await?;
+    if matches!(session_response.status, 401 | 403) {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    if session_response.status != 200 {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
+    let session: SessionResponse = serde_json::from_str(&session_response.body_json)
+        .map_err(|_| MobileEnterpriseError::InvalidResponse)?;
+    if session.deployment_id.is_nil()
+        || session.workspace_ids.len() != 1
+        || session.workspace_ids[0].is_nil()
+        || !session.scopes.iter().any(|scope| scope == "query")
+        || !session.scopes.iter().any(|scope| scope == "catalog_read")
+    {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    let workspace_id = session.workspace_ids[0];
+    let catalog_response = execute_http(
+        &record,
+        token,
+        reqwest::Method::GET,
+        &format!("/v1/control/workspaces/{workspace_id}/catalog"),
+        None,
+    )
+    .await?;
+    if matches!(catalog_response.status, 401 | 403) {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    if catalog_response.status != 200 {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
+    let catalog: ControlPlaneSnapshot = serde_json::from_str(&catalog_response.body_json)
+        .map_err(|_| MobileEnterpriseError::InvalidResponse)?;
+    if catalog.workspace_id != workspace_id
+        || catalog.resolver_id.is_nil()
+        || catalog.revision.revision_id.is_nil()
+        || catalog.sources.len() > MAX_CONNECTED_SOURCES
+    {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
+    let mut source_ids = std::collections::HashSet::new();
+    let permitted_sources = catalog
+        .sources
+        .into_iter()
+        .map(|source| {
+            if source.source_id.is_nil()
+                || source.source_version_id.is_nil()
+                || !source_ids.insert(source.source_id)
+                || source
+                    .connector_id
+                    .as_deref()
+                    .is_some_and(|connector| !valid_identifier(connector, 200))
+            {
+                return Err(MobileEnterpriseError::InvalidResponse);
+            }
+            Ok(crate::library::ConnectedCatdbSourceDescriptor {
+                source_id: source.source_id,
+                source_version_id: source.source_version_id,
+                runtime_bound: source.runtime_bound,
+                connector_id: source.connector_id,
+            })
+        })
+        .collect::<Result<Vec<_>, MobileEnterpriseError>>()?;
+    Ok(crate::library::ConnectedCatdbSourceRecord::new(
+        label,
+        server_origin.to_string(),
+        format!("connected-catdb-{}", uuid::Uuid::new_v4()),
+        session.deployment_id,
+        workspace_id,
+        catalog.revision.revision_id,
+        permitted_sources,
+    ))
+}
+
+fn persist_connected_catdb(
+    store: &crate::library::LibraryStore,
+    vault: &dyn BearerVault,
+    source: crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    if store
+        .read_connected_catdb()
+        .map_err(map_library_error)?
+        .is_some()
+    {
+        return Err(MobileEnterpriseError::AlreadyConfigured);
+    }
+    vault.set(&source.credential_reference, token)?;
+    if let Err(error) = store.add_connected_catdb(source.clone()) {
+        if vault.delete(&source.credential_reference).is_err() {
+            return Err(MobileEnterpriseError::RollbackFailed);
+        }
+        return Err(map_library_error(error));
+    }
+    Ok(connected_state(&source))
+}
+
+fn disconnect_connected_catdb_from(
+    store: &crate::library::LibraryStore,
+    vault: &dyn BearerVault,
+    connection_id: &str,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    let source = record_for(store, connection_id)?;
+    let token = vault.get(&source.credential_reference)?;
+    vault.delete(&source.credential_reference)?;
+    if let Err(error) = store.remove_connected_catdb(connection_id) {
+        if token
+            .as_ref()
+            .is_some_and(|token| vault.set(&source.credential_reference, token).is_err())
+        {
+            return Err(MobileEnterpriseError::RollbackFailed);
+        }
+        return Err(map_library_error(error));
+    }
+    Ok(disconnected_state())
+}
+
+fn pin_connected_query(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    request: &mut EntityQueryRequest,
+) -> Result<String, MobileEnterpriseError> {
+    if source.selected_source_ids().is_empty() {
+        return Err(MobileEnterpriseError::NoSourcesSelected);
+    }
+    request.workspace_id = source.workspace_id;
+    request.catalog_revision_id = Some(source.catalog_revision_id);
+    request.source_ids = Some(source.selected_source_ids().to_vec());
+    request
+        .validate()
+        .map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+    let body =
+        serde_json::to_string(&request).map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    Ok(body)
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn connected_catdb_state(
+    app: AppHandle,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    let _operation = state.0.lock().await;
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        return Ok(disconnected_state());
+    }
+    #[cfg(not(mobile))]
+    {
+        let store = library_store(&app)?;
+        tokio::task::spawn_blocking(move || {
+            store
+                .read_connected_catdb()
+                .map_err(map_library_error)
+                .map(|source| {
+                    source
+                        .as_ref()
+                        .map_or_else(disconnected_state, connected_state)
+                })
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)?
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn enroll_connected_catdb(
+    app: AppHandle,
+    server_origin: String,
+    bearer_token: String,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    let _operation = state.0.lock().await;
+    #[cfg(mobile)]
+    {
+        let _ = (app, server_origin, bearer_token);
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    #[cfg(not(mobile))]
+    {
+        let server_origin = exact_origin(&server_origin)?;
+        let token = BearerToken(bearer_token);
+        validate_bearer(&token.0)?;
+        let store = library_store(&app)?;
+        let already_configured = {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || store.read_connected_catdb())
+                .await
+                .map_err(|_| MobileEnterpriseError::PersistFailed)?
+                .map_err(map_library_error)?
+                .is_some()
+        };
+        if already_configured {
+            return Err(MobileEnterpriseError::AlreadyConfigured);
+        }
+        let source = discover_connected_catdb(server_origin, &token).await?;
+        let vault = KeyringBearerVault::new(&app.config().identifier)?;
+        tokio::task::spawn_blocking(move || persist_connected_catdb(&store, &vault, source, &token))
+            .await
+            .map_err(|_| MobileEnterpriseError::PersistFailed)?
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn set_connected_catdb_source_enabled(
+    app: AppHandle,
+    connection_id: String,
+    source_id: uuid::Uuid,
+    enabled: bool,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    let _operation = state.0.lock().await;
+    #[cfg(mobile)]
+    {
+        let _ = (app, connection_id, source_id, enabled);
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    #[cfg(not(mobile))]
+    {
+        let store = library_store(&app)?;
+        tokio::task::spawn_blocking(move || {
+            store
+                .set_connected_catdb_source_enabled(&connection_id, source_id, enabled)
+                .map_err(map_library_error)
+                .map(|source| connected_state(&source))
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)?
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn disconnect_connected_catdb(
+    app: AppHandle,
+    connection_id: String,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    let _operation = state.0.lock().await;
+    #[cfg(mobile)]
+    {
+        let _ = (app, connection_id);
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    #[cfg(not(mobile))]
+    {
+        let store = library_store(&app)?;
+        let vault = KeyringBearerVault::new(&app.config().identifier)?;
+        tokio::task::spawn_blocking(move || {
+            disconnect_connected_catdb_from(&store, &vault, &connection_id)
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)?
+    }
+}
+
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn connected_catdb_entity_query(
+    app: AppHandle,
+    connection_id: String,
+    mut request: EntityQueryRequest,
+    state: tauri::State<'_, MobileEnterpriseState>,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    let _operation = state.0.lock().await;
+    #[cfg(mobile)]
+    {
+        let _ = (app, connection_id, request);
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    #[cfg(not(mobile))]
+    {
+        let store = library_store(&app)?;
+        let identifier = app.config().identifier.clone();
+        let (source, token) = tokio::task::spawn_blocking(move || {
+            let source = record_for(&store, &connection_id)?;
+            let vault = KeyringBearerVault::new(&identifier)?;
+            let token = vault
+                .get(&source.credential_reference)?
+                .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
+            Ok((source, token))
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+        // Workspace, revision, and source membership are native authority. The
+        // renderer supplies only semantic shape such as fields and filters.
+        let body = pin_connected_query(&source, &mut request)?;
+        execute_http(
+            &ConnectionRecord::from(&source),
+            &token,
+            reqwest::Method::POST,
+            "/v1/entity/query",
+            Some(body),
+        )
+        .await
+    }
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn mobile_enterprise_connection(
@@ -381,10 +791,16 @@ pub(crate) async fn mobile_enterprise_connection(
     let record: ConnectionRecord = return Ok(None);
     #[cfg(not(feature = "e2e-build"))]
     #[cfg(not(mobile))]
-    let record = match active_record(&registry_path(&app)?) {
-        Ok(record) => record,
-        Err(MobileEnterpriseError::NotConfigured) => return Ok(None),
-        Err(error) => return Err(error),
+    let record = {
+        let store = library_store(&app)?;
+        let source = tokio::task::spawn_blocking(move || store.read_connected_catdb())
+            .await
+            .map_err(|_| MobileEnterpriseError::PersistFailed)?
+            .map_err(map_library_error)?;
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        ConnectionRecord::from(&source)
     };
     let _ = app;
     Ok(Some(MobileEnterpriseConnection {
@@ -404,35 +820,121 @@ pub(crate) async fn mobile_enterprise_request(
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
     let _operation = state.0.lock().await;
     #[cfg(feature = "e2e-build")]
-    let (record, token) = {
+    let (record, token, connected_source) = {
         if connection_id != E2E_CONNECTION_ID {
             return Err(MobileEnterpriseError::ConnectionNotFound);
         }
-        (e2e_record(), BearerToken(E2E_BEARER.to_string()))
+        (
+            e2e_record(),
+            BearerToken(E2E_BEARER.to_string()),
+            None::<crate::library::ConnectedCatdbSourceRecord>,
+        )
     };
     #[cfg(not(feature = "e2e-build"))]
-    let (record, token) = {
-        let record = record_for(&registry_path(&app)?, &connection_id)?;
-        let vault = KeyringBearerVault::new(&app.config().identifier)?;
-        let token = vault
-            .get(&record.credential_reference)?
-            .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
-        (record, token)
+    let (record, token, connected_source) = {
+        #[cfg(mobile)]
+        {
+            let _ = (&app, &connection_id);
+            return Err(MobileEnterpriseError::ConnectionNotFound);
+        }
+        #[cfg(not(mobile))]
+        {
+            let store = library_store(&app)?;
+            let identifier = app.config().identifier.clone();
+            tokio::task::spawn_blocking(move || {
+                let source = record_for(&store, &connection_id)?;
+                let record = ConnectionRecord::from(&source);
+                let vault = KeyringBearerVault::new(&identifier)?;
+                let token = vault
+                    .get(&record.credential_reference)?
+                    .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
+                Ok::<_, MobileEnterpriseError>((record, token, Some(source)))
+            })
+            .await
+            .map_err(|_| MobileEnterpriseError::PersistFailed)??
+        }
     };
     let _ = app;
+    if operation == MobileEnterpriseOperation::EntityQuery {
+        if let Some(source) = connected_source {
+            let mut request: EntityQueryRequest = serde_json::from_str(
+                body_json
+                    .as_deref()
+                    .ok_or(MobileEnterpriseError::InvalidRequest)?,
+            )
+            .map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+            let body = pin_connected_query(&source, &mut request)?;
+            return execute_http(
+                &record,
+                &token,
+                reqwest::Method::POST,
+                "/v1/entity/query",
+                Some(body),
+            )
+            .await;
+        }
+    }
     execute_request(record, token, operation, body_json).await
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use super::{
-        execute_request, BearerToken, ConnectionRecord, MobileEnterpriseOperation,
+        disconnect_connected_catdb_from, discover_connected_catdb, execute_request,
+        persist_connected_catdb, pin_connected_query, BearerToken, BearerVault,
+        ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError, MobileEnterpriseOperation,
         MobileEnterpriseResponse,
+    };
+    use crate::library::{
+        ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
+
+    #[derive(Default)]
+    struct MemoryBearerVault(Mutex<HashMap<String, BearerToken>>);
+
+    impl BearerVault for MemoryBearerVault {
+        fn get(&self, reference: &str) -> Result<Option<BearerToken>, MobileEnterpriseError> {
+            Ok(self.0.lock().expect("vault lock").get(reference).cloned())
+        }
+
+        fn set(&self, reference: &str, token: &BearerToken) -> Result<(), MobileEnterpriseError> {
+            self.0
+                .lock()
+                .expect("vault lock")
+                .insert(reference.to_string(), token.clone());
+            Ok(())
+        }
+
+        fn delete(&self, reference: &str) -> Result<(), MobileEnterpriseError> {
+            self.0.lock().expect("vault lock").remove(reference);
+            Ok(())
+        }
+    }
+
+    fn connected_source() -> ConnectedCatdbSourceRecord {
+        let mut source = ConnectedCatdbSourceRecord::new(
+            "catdb.example.com".to_string(),
+            "https://catdb.example.com/".to_string(),
+            "credential-reference-1".to_string(),
+            uuid::Uuid::from_u128(2),
+            uuid::Uuid::from_u128(3),
+            uuid::Uuid::from_u128(4),
+            vec![ConnectedCatdbSourceDescriptor {
+                source_id: uuid::Uuid::from_u128(11),
+                source_version_id: uuid::Uuid::from_u128(12),
+                runtime_bound: true,
+                connector_id: Some("postgres-primary".to_string()),
+            }],
+        );
+        source.selected_source_ids = vec![uuid::Uuid::from_u128(11)];
+        source
+    }
 
     #[test]
     fn bearer_tokens_and_native_references_are_redacted() {
@@ -488,6 +990,216 @@ mod tests {
                 body_json: r#"{"deployment_id":"deployment-1"}"#.to_string(),
             }
         );
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn native_transport_rejects_renderer_supplied_entity_query_source_ids() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0_u8; 16 * 1024];
+            let count = stream.read(&mut request).await.expect("read");
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(
+                !request.contains("\"source_ids\":[\"00000000-0000-0000-0000-000000000099\"]"),
+                "renderer-selected source authority crossed the native boundary"
+            );
+            let body = r#"{"rows":[]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("write");
+        });
+        let body = serde_json::json!({
+            "workspace_id": "00000000-0000-0000-0000-000000000001",
+            "entity": "document.Document",
+            "select": ["title"],
+            "filters": [],
+            "order_by": [],
+            "source_ids": ["00000000-0000-0000-0000-000000000099"],
+            "page_size": 10,
+            "limit": 10
+        })
+        .to_string();
+        let result = execute_request(
+            ConnectionRecord {
+                id: "connection-1".to_string(),
+                label: "Test".to_string(),
+                server_origin: format!("http://{address}"),
+                credential_reference: "native-reference".to_string(),
+            },
+            BearerToken("native-secret".to_string()),
+            MobileEnterpriseOperation::EntityQuery,
+            Some(body),
+        )
+        .await;
+
+        assert_eq!(result, Err(MobileEnterpriseError::InvalidRequest));
+        server.abort();
+    }
+
+    #[test]
+    fn connected_query_pins_native_workspace_revision_and_selected_sources() {
+        let source = connected_source();
+        let mut request: catdb_api_types::EntityQueryRequest =
+            serde_json::from_value(serde_json::json!({
+                "workspace_id": "00000000-0000-0000-0000-000000000099",
+                "catalog_revision_id": "00000000-0000-0000-0000-000000000098",
+                "schema_version_id": null,
+                "entity": "document.Document",
+                "select": ["title"],
+                "filters": [],
+                "order_by": [],
+                "source_ids": ["00000000-0000-0000-0000-000000000097"],
+                "max_staleness_ms": null,
+                "require_complete": true,
+                "page_size": 10,
+                "limit": 10,
+                "cursor": null
+            }))
+            .expect("request");
+
+        let body = pin_connected_query(&source, &mut request).expect("pin query");
+        let forwarded: serde_json::Value = serde_json::from_str(&body).expect("forwarded body");
+
+        assert_eq!(
+            forwarded["workspace_id"],
+            serde_json::json!("00000000-0000-0000-0000-000000000003")
+        );
+        assert_eq!(
+            forwarded["catalog_revision_id"],
+            serde_json::json!("00000000-0000-0000-0000-000000000004")
+        );
+        assert_eq!(
+            forwarded["source_ids"],
+            serde_json::json!(["00000000-0000-0000-0000-00000000000b"])
+        );
+        assert_eq!(forwarded["select"], serde_json::json!(["title"]));
+    }
+
+    #[test]
+    fn connected_membership_and_token_have_separate_persistence_lifecycles() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let registry_path = temp.path().join("library.json");
+        let store = LibraryStore::new(registry_path.clone());
+        let vault = MemoryBearerVault::default();
+        let source = connected_source();
+        let connection_id = source.id.clone();
+        let credential_reference = source.credential_reference.clone();
+
+        let state = persist_connected_catdb(
+            &store,
+            &vault,
+            source,
+            &BearerToken("native-secret".to_string()),
+        )
+        .expect("persist");
+        assert!(matches!(state, ConnectedCatdbState::Connected { .. }));
+        let bytes = std::fs::read_to_string(&registry_path).expect("registry");
+        assert!(bytes.contains("\"kind\": \"connected-catdb\""));
+        assert!(!bytes.contains("native-secret"));
+        assert_eq!(
+            vault
+                .get(&credential_reference)
+                .expect("vault")
+                .expect("token")
+                .0,
+            "native-secret"
+        );
+
+        store
+            .update_cloud(|_| Ok::<(), crate::cloud_accounts::CloudSourceError>(()))
+            .expect("unrelated cloud update");
+        assert!(
+            store
+                .read_connected_catdb()
+                .expect("read membership")
+                .is_some(),
+            "cloud membership updates must retain Connected CatDB"
+        );
+
+        disconnect_connected_catdb_from(&store, &vault, &connection_id).expect("disconnect");
+        assert!(store
+            .read_connected_catdb()
+            .expect("read disconnected")
+            .is_none());
+        assert!(vault
+            .get(&credential_reference)
+            .expect("read vault")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn enrollment_uses_session_then_authorized_catalog_descriptors() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            for (expected_path, body) in [
+                (
+                    "/v1/session",
+                    serde_json::json!({
+                        "principal_kind": "service",
+                        "deployment_id": "00000000-0000-0000-0000-000000000002",
+                        "workspace_ids": ["00000000-0000-0000-0000-000000000003"],
+                        "scopes": ["query", "catalog_read"]
+                    }),
+                ),
+                (
+                    "/v1/control/workspaces/00000000-0000-0000-0000-000000000003/catalog",
+                    serde_json::json!({
+                        "workspace_id": "00000000-0000-0000-0000-000000000003",
+                        "resolver_id": "00000000-0000-0000-0000-000000000005",
+                        "revision": {
+                            "revision_id": "00000000-0000-0000-0000-000000000004",
+                            "parent_revision_id": null,
+                            "actor": "test",
+                            "timestamp_ms": 1
+                        },
+                        "default_schema_version_id": "00000000-0000-0000-0000-000000000006",
+                        "schemas": [],
+                        "mappings": [],
+                        "sources": [{
+                            "source_id": "00000000-0000-0000-0000-000000000011",
+                            "source_version_id": "00000000-0000-0000-0000-000000000012",
+                            "checksum": "checksum",
+                            "runtime_bound": true,
+                            "connector_id": "postgres-primary"
+                        }],
+                        "policies": []
+                    }),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = vec![0_u8; 16 * 1024];
+                let count = stream.read(&mut request).await.expect("read");
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with(&format!("GET {expected_path} ")));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("\r\nauthorization: bearer native-secret\r\n"));
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+
+        let source = discover_connected_catdb(
+            url::Url::parse(&format!("http://{address}")).expect("origin"),
+            &BearerToken("native-secret".to_string()),
+        )
+        .await
+        .expect("discover");
+
+        assert_eq!(source.workspace_id, uuid::Uuid::from_u128(3));
+        assert_eq!(source.catalog_revision_id, uuid::Uuid::from_u128(4));
+        assert_eq!(source.permitted_sources.len(), 1);
+        assert!(source.selected_source_ids.is_empty());
         server.await.expect("server");
     }
 

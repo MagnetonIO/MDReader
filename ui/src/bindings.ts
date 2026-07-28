@@ -51,6 +51,11 @@ export const commands = {
 	queryLibraryDocuments: (requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("query_library_documents", { requestId, request })),
 	queryCloudDocuments: (requestId: string, provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { requestId, provider, filters, fields })),
 	cancelCloudDocumentQuery: (requestId: string) => typedError<boolean, CloudSourceError>(__TAURI_INVOKE("cancel_cloud_document_query", { requestId })),
+	connectedCatdbState: () => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_state")),
+	enrollConnectedCatdb: (serverOrigin: string, bearerToken: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("enroll_connected_catdb", { serverOrigin, bearerToken })),
+	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),
+	disconnectConnectedCatdb: (connectionId: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("disconnect_connected_catdb", { connectionId })),
+	connectedCatdbEntityQuery: (connectionId: string, request: EntityQueryRequest_Deserialize) => typedError<MobileEnterpriseResponse, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_entity_query", { connectionId, request })),
 	mobileEnterpriseConnection: () => typedError<{
 	connection_id: string,
 	label: string,
@@ -562,6 +567,18 @@ export type ConceptDto = {
 	/**  The concept's name, as the schema declares it. */
 	name: string,
 };
+
+export type ConnectedCatdbKind = "connected-catdb";
+
+export type ConnectedCatdbSourceView = {
+	source_id: string,
+	source_version_id: string,
+	runtime_bound: boolean,
+	connector_id: string | null,
+	enabled: boolean,
+};
+
+export type ConnectedCatdbState = { state: "disconnected"; kind: ConnectedCatdbKind } | { state: "connected"; kind: ConnectedCatdbKind; connection_id: string; label: string; server_origin: string; workspace_id: string; catalog_revision_id: string; sources: ConnectedCatdbSourceView[]; contract: LibrarySourceContract };
 
 /**  The result of running every registered schema's laws over the graph. */
 export type ConstraintReport = {
@@ -1411,7 +1428,7 @@ export type MobileEnterpriseConnection = {
 	label: string,
 };
 
-export type MobileEnterpriseError = { kind: "not-configured" } | { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" };
+export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" };
 
 export type MobileEnterpriseOperation = "session" | "entity-query";
 
