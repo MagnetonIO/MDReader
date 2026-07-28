@@ -42,6 +42,7 @@ const STEP_IDS: Record<string, string[]> = {
     'setup-node-prepare',
     'checkout-release-source',
     'authorize-release-source',
+    'authorize-apple-team',
     'seal-release-support',
     'upload-release-support',
     'enable-corepack-prepare',
@@ -380,7 +381,7 @@ const BUNDLE_SECRET_ENVS: Record<string, Mapping> = {
     APPLE_ID: '${{ secrets.MDREADER_APPLE_ID }}',
     APPLE_PASSWORD: '${{ secrets.MDREADER_APPLE_PASSWORD }}',
     APPLE_TEAM_ID: '${{ secrets.MDREADER_APPLE_TEAM_ID }}',
-    EXPECTED_APPLE_TEAM_ID: '${{ vars.MDREADER_APPLE_TEAM_ID }}',
+    EXPECTED_APPLE_TEAM_ID: '${{ needs.prepare.outputs.apple_team_id }}',
   },
   'require-release-secrets-windows': {
     TAURI_SIGNING_PRIVATE_KEY:
@@ -707,6 +708,7 @@ function validatePrepare(
     version: '${{ steps.metadata.outputs.version }}',
     source_commit: '${{ steps.metadata.outputs.source_commit }}',
     published_at: '${{ steps.metadata.outputs.published_at }}',
+    apple_team_id: '${{ steps.authorize-apple-team.outputs.apple_team_id }}',
     publish_requested: '${{ steps.metadata.outputs.publish_requested }}',
     publisher_sha256:
       '${{ steps.authorize-publisher-bundle.outputs.publisher_sha256 }}',
@@ -792,6 +794,20 @@ function validatePrepare(
     'authorize-publisher-bundle',
     ['build-sealed-publisher.sh'],
     'publisher source is not independently authorized',
+  );
+  same(
+    mapping(
+      steps.get('authorize-apple-team')!.env,
+      'authorize-apple-team.env',
+    ).EXPECTED_APPLE_TEAM_ID,
+    '${{ vars.MDREADER_APPLE_TEAM_ID }}',
+    'the reviewed Apple publisher identity is not read in prepare',
+  );
+  requireRun(
+    steps,
+    'authorize-apple-team',
+    ['^[A-Z0-9]{10}$', 'apple_team_id=$EXPECTED_APPLE_TEAM_ID'],
+    'the Apple publisher identity is not validated before any credential is used',
   );
 }
 
@@ -1197,7 +1213,7 @@ function validateVerify(
   same(
     steps.get('verify-final-package-binaries')!.env,
     {
-      EXPECTED_APPLE_TEAM_ID: '${{ vars.MDREADER_APPLE_TEAM_ID }}',
+      EXPECTED_APPLE_TEAM_ID: '${{ needs.prepare.outputs.apple_team_id }}',
       EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT:
         '${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}',
     },

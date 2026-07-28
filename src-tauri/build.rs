@@ -1,6 +1,16 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     println!("cargo:rerun-if-changed=tauri.conf.json");
+
+    // The macOS release links the reviewed ONNX Runtime, whose install name is
+    // `@rpath/libonnxruntime.1.23.2.dylib`, and Tauri packages it under
+    // `MDReader.app/Contents/Frameworks`. Neither the linker nor the bundler
+    // records the LC_RPATH that lets dyld follow `@rpath` there, so the
+    // executable would fail to launch without this load command. Target-scoped:
+    // no other platform links through `@rpath`, so nothing else is affected.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path/../Frameworks");
+    }
     let e2e_build = std::env::var_os("CARGO_FEATURE_E2E_BUILD").is_some();
     if e2e_build {
         let base: serde_json::Value = serde_json::from_str(include_str!("tauri.conf.json"))

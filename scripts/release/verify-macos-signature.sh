@@ -59,6 +59,11 @@ LINK_COUNT="$(otool -L "$APP_BINARY" | awk '$1 == "@rpath/libonnxruntime.1.23.2.
   exit 1
 }
 
+# `@rpath` is only resolvable if the executable carries the matching LC_RPATH and
+# that rpath lands on the bundle's own Frameworks directory: assert the launch
+# closure per architecture, not just the recorded dependency.
+"$(dirname "${BASH_SOURCE[0]}")/verify-macos-runtime-linkage.sh" bundled "$APP_PATH"
+
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$RUNTIME_PATH"
 APP_TEAM_ID="$(codesign -d --verbose=4 "$APP_PATH" 2>&1 | sed -n 's/^TeamIdentifier=//p')"

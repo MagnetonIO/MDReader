@@ -6,6 +6,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   readlink,
   rename,
   stat,
@@ -103,6 +104,41 @@ export function validateAuthority(value) {
     throw new Error('macOS ONNX Runtime authority is not the reviewed universal2 identity');
   }
   return value;
+}
+
+// `ORT_LIB_LOCATION` is a search directory: ort-sys links whatever library or
+// stub it finds there, so an extra `.dylib`, `.tbd`, or `.a` alongside the
+// reviewed runtime can silently displace it. The directory is therefore closed
+// to exactly the three reviewed entries.
+export async function assertClosedRuntimeDirectory(output, authority) {
+  const expected = new Map([
+    [authority.dylibName, 'file'],
+    [authority.linkerAlias, 'symlink'],
+    ['runtime.json', 'file'],
+  ]);
+  const entries = await readdir(output, { withFileTypes: true });
+  const seen = new Set();
+  for (const entry of entries) {
+    const kind = expected.get(entry.name);
+    if (kind === undefined) {
+      throw new Error(
+        `ONNX Runtime library directory contains an unreviewed entry: ${entry.name}`,
+      );
+    }
+    if (kind === 'symlink' ? !entry.isSymbolicLink() : !entry.isFile()) {
+      throw new Error(
+        `ONNX Runtime library directory entry is not a ${kind}: ${entry.name}`,
+      );
+    }
+    seen.add(entry.name);
+  }
+  for (const name of expected.keys()) {
+    if (!seen.has(name)) {
+      throw new Error(
+        `ONNX Runtime library directory is missing its reviewed entry: ${name}`,
+      );
+    }
+  }
 }
 
 async function assertRegularFile(path, label) {
@@ -331,6 +367,7 @@ async function prepare(args) {
   const manifest = runtimeManifest(authority, authorityBytes);
 
   if (args.includes('--verify')) {
+    await assertClosedRuntimeDirectory(output, authority);
     await verifyDylib(dylibPath, authority);
     await verifyLinkerAlias(linkerAliasPath, authority);
     if ((await readFile(manifestPath, 'utf8')) !== manifest) {
@@ -386,18 +423,6 @@ async function prepare(args) {
       mode: 0o600,
     });
     await rename(temporaryManifest, manifestPath);
-
-    await emitOutputs(
-      output,
-      dylibPath,
-      manifestPath,
-      manifest,
-      authority,
-      authorityBytes,
-    );
-    process.stdout.write(
-      `prepared universal macOS ONNX Runtime ${authority.version}; ${ORT_LIB_LOCATION}=${output}\n`,
-    );
   } finally {
     for (const path of [
       temporaryArchive,
@@ -412,6 +437,21 @@ async function prepare(args) {
       }
     }
   }
+
+  // Inventoried after the temporary files are gone, so the directory handed to
+  // ort-sys is closed to exactly the reviewed runtime.
+  await assertClosedRuntimeDirectory(output, authority);
+  await emitOutputs(
+    output,
+    dylibPath,
+    manifestPath,
+    manifest,
+    authority,
+    authorityBytes,
+  );
+  process.stdout.write(
+    `prepared universal macOS ONNX Runtime ${authority.version}; ${ORT_LIB_LOCATION}=${output}\n`,
+  );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

@@ -37,6 +37,7 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       source_commit: ${{ steps.metadata.outputs.source_commit }}
       published_at: ${{ steps.metadata.outputs.published_at }}
+      apple_team_id: ${{ steps.authorize-apple-team.outputs.apple_team_id }}
       publish_requested: ${{ steps.metadata.outputs.publish_requested }}
       publisher_sha256: ${{ steps.authorize-publisher-bundle.outputs.publisher_sha256 }}
       support_sha256: ${{ steps.seal-release-support.outputs.support_sha256 }}
@@ -80,6 +81,19 @@ jobs:
             echo "release source must equal the current origin/main tip" >&2
             exit 1
           }
+      - name: Authorize the reviewed Apple publisher identity
+        id: authorize-apple-team
+        env:
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+        run: |
+          # Validated here, before anything is compiled and long before an Apple
+          # credential is imported: a missing or malformed publisher identity
+          # must reject the release instead of surfacing inside the signing job.
+          [[ "$EXPECTED_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || {
+            echo "reviewed Apple team identifier is missing or invalid" >&2
+            exit 1
+          }
+          echo "apple_team_id=$EXPECTED_APPLE_TEAM_ID" >> "$GITHUB_OUTPUT"
       - name: Seal reviewed packaging support before package code runs
         id: seal-release-support
         env:
@@ -1682,7 +1696,7 @@ jobs:
           APPLE_ID: ${{ secrets.MDREADER_APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.MDREADER_APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.MDREADER_APPLE_TEAM_ID }}
-          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+          EXPECTED_APPLE_TEAM_ID: ${{ needs.prepare.outputs.apple_team_id }}
         run: |
           [[ "$EXPECTED_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || {
             echo "reviewed Apple team identifier is missing or invalid" >&2
@@ -2454,7 +2468,7 @@ jobs:
         id: macos-verify-signature
         if: matrix.platform == 'macos'
         env:
-          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+          EXPECTED_APPLE_TEAM_ID: ${{ needs.prepare.outputs.apple_team_id }}
         run: scripts/release/verify-macos-signature.sh "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "$EXPECTED_APPLE_TEAM_ID"
       - name: Verify notarization and stapling
         id: macos-verify-notarization
@@ -2470,7 +2484,7 @@ jobs:
       - name: Verify every final package contains the reviewed MDReader executable
         id: verify-final-package-binaries
         env:
-          EXPECTED_APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+          EXPECTED_APPLE_TEAM_ID: ${{ needs.prepare.outputs.apple_team_id }}
           EXPECTED_WINDOWS_CERTIFICATE_THUMBPRINT: ${{ vars.MDREADER_WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: scripts/release/verify-final-packages.sh "${{ matrix.platform }}" "$RUNNER_TEMP/mdreader-credentialed-output/bundle" "${{ needs.prepare.outputs.source_commit }}" "${{ matrix.target }}" "$RUNNER_TEMP/mdreader-final-package-binaries.json" "${{ needs.prepare.outputs.version }}"
       - name: Verify Linux package matrix without executing the AppImage runtime
