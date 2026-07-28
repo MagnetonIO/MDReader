@@ -88,6 +88,10 @@ export function Sidebar({
   onRefreshLibrary,
 }: SidebarProps) {
   const search = librarySearch.trim().toLocaleLowerCase();
+  const supplementaryMemberships =
+    libraryEvidence?.memberships.filter(
+      (member) => member.kind !== 'local-folder' || !member.active,
+    ) ?? [];
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -104,7 +108,7 @@ export function Sidebar({
         </button>
       </div>
 
-      {libraryEvidence ? null : root && listingError ? (
+      {root && listingError ? (
         <ListingErrorPanel failure={listingError} />
       ) : root && loading && files.length === 0 ? (
         // The listing has not answered YET. Saying "no markdown files" here is a
@@ -130,7 +134,7 @@ export function Sidebar({
         </div>
       )}
 
-      {libraryEvidence || libraryLoading || libraryError ? (
+      {supplementaryMemberships.length > 0 || libraryLoading || libraryError ? (
         <nav className="library-sources" aria-label="Library sources">
           <div className="library-sources__heading">
             <span>Library</span>
@@ -150,14 +154,16 @@ export function Sidebar({
             />
           ) : null}
           {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
-          {libraryEvidence?.memberships.map((member) => {
+          {supplementaryMemberships.map((member) => {
             const rows =
-              rowsForMember(libraryEvidence, member).filter((row) => {
-                if (!search) return true;
-                const fields = row.fields;
-                const title = typeof fields.title === 'string' ? fields.title : row.record_key;
-                return title.toLocaleLowerCase().includes(search);
-              });
+              libraryEvidence
+                ? rowsForMember(libraryEvidence, member).filter((row) => {
+                    if (!search) return true;
+                    const fields = row.fields;
+                    const title = typeof fields.title === 'string' ? fields.title : row.record_key;
+                    return title.toLocaleLowerCase().includes(search);
+                  })
+                : [];
             return (
               <section className="library-sources__source" key={member.membership_id}>
                 <div>
