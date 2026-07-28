@@ -15,6 +15,7 @@ export const MOBILE_FIXTURE_IDS = {
   mapping: '00000000-0000-0000-0000-000000000208',
   policy: '00000000-0000-0000-0000-000000000209',
   query: '00000000-0000-0000-0000-000000000210',
+  provenanceRule: '00000000-0000-0000-0000-000000000211',
 } as const;
 
 const CONTENT =
@@ -51,6 +52,7 @@ function provenance(fields: Record<string, unknown>): Record<string, unknown> {
       field,
       {
         field,
+        provenance_rule_version_id: MOBILE_FIXTURE_IDS.provenanceRule,
         selected: 0,
         considered: [
           {
@@ -77,6 +79,7 @@ function entityResponse(fields: Record<string, unknown>): Record<string, unknown
       mapping_version_ids: [MOBILE_FIXTURE_IDS.mapping],
       source_version_ids: [MOBILE_FIXTURE_IDS.sourceVersion],
       policy_version_ids: [MOBILE_FIXTURE_IDS.policy],
+      provenance_rule_version_id: MOBILE_FIXTURE_IDS.provenanceRule,
     },
     rows: [
       {
@@ -96,6 +99,7 @@ function entityResponse(fields: Record<string, unknown>): Record<string, unknown
       },
     ],
     completeness: { state: 'complete' },
+    next_cursor: null,
   };
 }
 

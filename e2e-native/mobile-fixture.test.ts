@@ -6,6 +6,16 @@ import {
   MOBILE_FIXTURE_BEARER,
   startMobileFixtureServer,
 } from './mobile-fixture.ts';
+import { MOBILE_NAVIGATION_TEXT_PATTERN } from './mobile-assertions.ts';
+
+test('mobile navigation text accepts both Chromium and WebKit whitespace', () => {
+  assert.match('LibrarySearchSourcesSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+  assert.match(
+    'Library\nSearch\nSources\nSettings',
+    MOBILE_NAVIGATION_TEXT_PATTERN,
+  );
+  assert.doesNotMatch('LibrarySourcesSearchSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+});
 
 test('the isolated fixture serves the real session/entity-query contract and forces offline', async () => {
   const fixture = await startMobileFixtureServer(0);
@@ -41,15 +51,34 @@ test('the isolated fixture serves the real session/entity-query contract and for
     });
     assert.equal(listing.status, 200);
     const listBody = (await listing.json()) as {
-      pins: { catalog_revision_id: string };
-      rows: Array<{ record_key: string; fields: { title: string } }>;
+      pins: {
+        catalog_revision_id: string;
+        provenance_rule_version_id?: string;
+      };
+      rows: Array<{
+        record_key: string;
+        fields: { title: string };
+        provenance: Record<string, { provenance_rule_version_id?: string }>;
+      }>;
       sources: Array<{ source_id: string }>;
+      next_cursor?: unknown;
     };
     assert.equal(listBody.pins.catalog_revision_id, MOBILE_FIXTURE_IDS.catalog);
+    assert.equal(
+      listBody.pins.provenance_rule_version_id,
+      MOBILE_FIXTURE_IDS.provenanceRule,
+    );
+    assert.equal(listBody.next_cursor, null);
     assert.equal(listBody.sources[0]?.source_id, MOBILE_FIXTURE_IDS.source);
     assert.equal(listBody.rows.length, 1);
     assert.equal(listBody.rows[0]?.record_key, 'mobile-e2e-document');
     assert.equal(listBody.rows[0]?.fields.title, 'Mobile evidence handbook');
+    for (const field of Object.values(listBody.rows[0]?.provenance ?? {})) {
+      assert.equal(
+        field.provenance_rule_version_id,
+        MOBILE_FIXTURE_IDS.provenanceRule,
+      );
+    }
 
     const readQuery = {
       workspace_id: MOBILE_FIXTURE_IDS.workspace,

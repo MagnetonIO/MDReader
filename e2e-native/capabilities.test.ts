@@ -874,6 +874,7 @@ test(
     const capabilities = iosCapabilitiesFor(app, SOURCE_COMMIT);
     assert.equal(capabilities['appium:app'], app);
     assert.equal(capabilities['appium:bundleId'], E2E_BUNDLE_IDENTIFIER);
+    assert.deepEqual(capabilities['appium:additionalWebviewBundleIds'], ['*']);
     await rm(root, { recursive: true });
   },
 );

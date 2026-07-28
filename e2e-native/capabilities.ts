@@ -401,6 +401,7 @@ export function iosCapabilitiesFor(
     ...(platformVersion ? { 'appium:platformVersion': platformVersion } : {}),
     'appium:app': validateIosApp(artifact, sourceCommit),
     'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
+    'appium:additionalWebviewBundleIds': ['*'],
     'appium:autoWebview': false,
     'appium:includeSafariInWebviews': false,
     'appium:wdaLaunchTimeout': 180_000,

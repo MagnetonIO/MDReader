@@ -8,6 +8,7 @@
 
 import { $, browser, expect } from '@wdio/globals';
 
+import { MOBILE_NAVIGATION_TEXT_PATTERN } from '../mobile-assertions.ts';
 import { MOBILE_FIXTURE_IDS } from '../mobile-fixture.ts';
 
 /** Switch the Appium session into the app's WEBVIEW context (the HTML UI). */
@@ -34,7 +35,7 @@ describe('MDReader native mobile product flow', () => {
 
   it('smoke: mounts the four mobile tabs without desktop chrome', async () => {
     const navigation = await $('nav[aria-label="Primary"]');
-    await expect(navigation).toHaveText('LibrarySearchSourcesSettings');
+    await expect(navigation).toHaveText(MOBILE_NAVIGATION_TEXT_PATTERN);
     await expect(await $('button=Source')).not.toExist();
     await expect(await $('button=Split')).not.toExist();
     await expect(await $('button*=Check for updates')).not.toExist();
