@@ -47,7 +47,10 @@ export default defineConfig({
   webServer: {
     command: 'pnpm dev',
     url: 'http://localhost:1420/e2e.html',
-    reuseExistingServer: !process.env.CI,
+    // The Vite proxy captures MDREADER_E2E_CATDB_PORT when it starts. Reusing a
+    // pre-existing dev server could silently route this invocation to another
+    // run's CatDB process. Fail closed on an occupied port instead.
+    reuseExistingServer: false,
     timeout: 120_000,
   },
 });

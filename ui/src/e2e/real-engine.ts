@@ -8,11 +8,11 @@
  * any score, any provenance chain you like.
  *
  * This module answers a subset of the same commands from a **genuinely running
- * `catdb-server`** — the axum `/v1` surface booted by `catdb serve` over a real
- * SQLite workspace, indexed from a real corpus. Every id, line number, score,
- * rank and provenance chain the UI renders in this mode came out of real
- * storage. Loaded only when the page is opened with `?realengine`; see
- * `../../e2e/real-engine.setup.ts` for how the server is started and stopped.
+ * `catdb-server`** — the bounded axum `/v1` read surface over a real SQLite
+ * workspace indexed from a real corpus. Every id, line number, score, rank and
+ * provenance field the UI renders in this mode came out of real storage.
+ * Loaded only when the page is opened with `?realengine`; see
+ * `../../e2e/support/global-setup.ts` for how the server is started and stopped.
  *
  * ## Why HTTP, and what that does and does not prove
  *
@@ -26,8 +26,9 @@
  * Three honest differences, all handled here rather than hidden:
  *  1. The shell's hit carries `abs_path`, `name` and `mtime`, which are derived
  *     from the FILESYSTEM, not the engine. `/v1` has no such fields, so they are
- *     reconstructed from the source root the engine itself reports (`abs_path`,
- *     `name`) or reported as the honest absence (`mtime: null`).
+ *     reconstructed from the independently supplied physical test root
+ *     (`abs_path`, `name`) or reported as the honest absence (`mtime: null`).
+ *     That root is never copied into the engine's provenance.
  *  2. `/v1` omits absent optionals (`skip_serializing_if`) where the shell emits
  *     explicit `null`. Normalised below with `?? null` — never with `?? 0`.
  *  3. `/v1` has no counterpart at all for the P7 overlay commands, for wikilink
@@ -170,13 +171,9 @@ interface WireRelatedResponse {
   related: WireRelated[];
 }
 
-interface WireIndexStatus {
-  phase: string;
-  files_scanned: number;
-  files_done: number;
-  chunks_embedded: number;
-  chunks_total?: number;
-  error?: string;
+interface WireDocumentsResponse {
+  count: number;
+  documents: { file_path: string }[];
 }
 
 /**
@@ -186,15 +183,26 @@ interface WireIndexStatus {
  */
 async function call<T>(route: string, body?: unknown): Promise<T> {
   const url = `${CATDB_PROXY_PREFIX}${route}`;
+  const serverIdentity = (
+    window as unknown as {
+      __REAL_ENGINE_BOOTSTRAP__?: { serverIdentity: string };
+    }
+  ).__REAL_ENGINE_BOOTSTRAP__?.serverIdentity;
+  if (serverIdentity === undefined || serverIdentity.length === 0) {
+    return fail('the run-scoped Playwright bootstrap did not provide a server identity');
+  }
   let response: Response;
   try {
     response = await fetch(
       url,
       body === undefined
-        ? { method: 'GET' }
+        ? { method: 'GET', headers: { 'x-mdreader-e2e-run': serverIdentity } }
         : {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+              'content-type': 'application/json',
+              'x-mdreader-e2e-run': serverIdentity,
+            },
             body: JSON.stringify(body),
           },
     );
@@ -229,17 +237,11 @@ async function call<T>(route: string, body?: unknown): Promise<T> {
 /**
  * The corpus root and the documents the index actually holds.
  *
- * Both are read back OUT OF THE ENGINE rather than configured into the page:
- * `type:document` is a document-granularity query, so its hits enumerate the
- * indexed corpus, and each hit's explain chain carries the `source_root` the
- * ingest recorded. That is deliberate — the page cannot know the run's tempdir,
- * so a workspace root appearing in the UI is evidence the answer came from a
- * real index.
- *
- * `/v1` has no document-enumeration endpoint (the platform SDK has no
- * `listDocuments` either, and `HttpBackend.listSources` is operator-supplied for
- * exactly this reason), so this is the honest substitute: the tree lists the
- * documents the engine can retrieve, not a filesystem walk.
+ * Documents are enumerated by the bounded public `/v1/documents` projection.
+ * The source root is supplied separately by Playwright global setup through a
+ * run-scoped bootstrap record: the public router intentionally cannot expose a
+ * server filesystem root. It is therefore test authority, not an engine answer,
+ * and the real-engine spec checks it against the physical temp corpus.
  */
 interface Workspace {
   root: string;
@@ -254,27 +256,27 @@ let realDiagnosticLevel: 'errors' | 'standard' | 'verbose' = 'standard';
 
 async function workspace(): Promise<Workspace> {
   workspacePromise ??= (async () => {
-    const response = await call<WireSearchResponse>('/v1/search', {
-      q: 'type:document',
-      limit: 1000,
-      explain: true,
-    });
-    if (response.hits.length === 0) {
+    const response = await call<WireDocumentsResponse>('/v1/documents');
+    if (response.documents.length === 0) {
       return fail(
-        'catdb-server is running but its index holds NO documents — a `type:document` query ' +
-          'returned nothing. The workspace was never indexed, or was indexed from an empty ' +
-          'directory. Refusing to present an empty index as a workspace.',
+        'the read-only CatDB server is running but `/v1/documents` returned NO documents. ' +
+          'The workspace was never indexed, or was indexed from an empty directory. Refusing ' +
+          'to present an empty index as a workspace.',
       );
     }
-    const root = response.hits.find((hit) => hit.explain?.provenance.source_root)?.explain
-      ?.provenance.source_root;
-    if (root === undefined) {
+    const root = (
+      window as unknown as {
+        __REAL_ENGINE_BOOTSTRAP__?: { corpusRoot: string; serverIdentity: string };
+      }
+    ).__REAL_ENGINE_BOOTSTRAP__?.corpusRoot;
+    if (root === undefined || !root.startsWith('/')) {
       return fail(
-        'no hit carried a `source_root`, so the corpus root the engine ingested is unknown. ' +
-          'Refusing to guess it.',
+        'the run-scoped Playwright bootstrap did not provide the physical corpus root. The ' +
+          'public read-only API deliberately redacts server filesystem roots, so refusing to ' +
+          'guess it.',
       );
     }
-    const documents = [...new Set(response.hits.map((hit) => hit.file_path))].sort();
+    const documents = [...new Set(response.documents.map((document) => document.file_path))].sort();
     return { root, documents };
   })();
   return workspacePromise;
@@ -332,11 +334,11 @@ async function realLibrarySnapshot() {
 /**
  * A `/v1` hit in the shell's `SearchHitDto` shape.
  *
- * `abs_path` and `name` are reconstructed from the source root the ENGINE
- * reported; `mtime` is `null` — the honest absence, because `/v1` carries no
- * file mtime and inventing one would be exactly the fabrication this mode
- * exists to remove. The bindings type it `number | null`, and the shell's
- * `normalizeFile`/`normalizeHit` already read `?? 0`.
+ * `abs_path` and `name` are reconstructed from the run-scoped physical corpus
+ * root because the public API deliberately redacts server paths. The displayed
+ * provenance root preserves that redacted wire value. `mtime` is `null` — the
+ * honest absence. The engine still owns every id, stored path, score, rank, and
+ * source id in the answer.
  */
 function toHit(root: string, hit: WireHit) {
   const explain = hit.explain;
@@ -380,35 +382,6 @@ function toHit(root: string, hit: WireHit) {
 }
 
 /**
- * `/v1/index_status`'s phase in the shell's `ImportProgress` vocabulary.
- *
- * The two enumerations do not coincide, and the mapping states that rather than
- * smoothing it: the server's in-flight phases (`scanning`/`syncing`/
- * `embedding`/`queued`) all mean "importing" to the shell, `failed` is `error`,
- * and `cancelled` — which the shell has no word for — is reported as `error`
- * with the reason, never as `done`.
- */
-function toImportProgress(status: WireIndexStatus) {
-  const phase =
-    status.phase === 'done'
-      ? 'done'
-      : status.phase === 'idle'
-        ? 'idle'
-        : status.phase === 'failed' || status.phase === 'cancelled'
-          ? 'error'
-          : 'importing';
-  return {
-    phase,
-    files_done: status.files_done,
-    files_total: status.files_scanned,
-    chunks_embedded: status.chunks_embedded,
-    error:
-      phase === 'error'
-        ? (status.error ?? `the index job ended in phase "${status.phase}"`)
-        : null,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // the responder
 // ---------------------------------------------------------------------------
@@ -421,7 +394,7 @@ function toImportProgress(status: WireIndexStatus) {
 function unsupported(cmd: string): never {
   const message =
     `${FAILURE_MARK}: the command "${cmd}" has no /v1 counterpart — catdb-server serves ` +
-    'search/read/related/index_status, not the overlay (claims, schemas, constraints), wikilink ' +
+    'search/read/related/documents, not the overlay (claims, schemas, constraints), wikilink ' +
     'resolution or file writes. This surface can only be driven in MOCKED mode; it is NOT being ' +
     'faked here.';
   // Logged apart from {@link fail}: this is a documented boundary of the mode,
@@ -557,10 +530,17 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
     case 'start_import':
     case 'import_status': {
       // The corpus was imported by the Playwright global setup before the
-      // browser ever launched, so this reports the REAL job state the server
-      // holds — it does not re-run an import behind the UI's back.
-      const status = await call<WireIndexStatus>('/v1/index_status');
-      return toImportProgress(status);
+      // browser ever launched. The public router intentionally exposes no job
+      // control or status route, so derive the completed count from its real
+      // document enumeration rather than inventing an in-flight job.
+      const { documents } = await workspace();
+      return {
+        phase: 'done',
+        files_done: documents.length,
+        files_total: documents.length,
+        chunks_embedded: 0,
+        error: null,
+      };
     }
 
     case 'read_doc': {
@@ -642,7 +622,7 @@ export async function answerFromRealEngine(cmd: string, args: unknown): Promise<
 
     case 'ping':
       // Prove the round trip reaches the server rather than echoing in-page.
-      await call<WireIndexStatus>('/v1/index_status');
+      await call<WireDocumentsResponse>('/v1/documents');
       return { echoed: (args as { msg: string }).msg, version: 'catdb-server' };
 
     // --- surfaces /v1 does not serve ------------------------------------

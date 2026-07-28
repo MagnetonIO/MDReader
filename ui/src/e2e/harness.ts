@@ -67,6 +67,24 @@ const MOCK_LIBRARY_ID = '7'.repeat(64);
 let mockLibraryAdded = false;
 let mockLibraryActive = false;
 let mockDiagnosticLevel: 'errors' | 'standard' | 'verbose' = 'standard';
+type MockCloudProvider = 'google-drive' | 'dropbox';
+const mockCloudSources: Record<
+  MockCloudProvider,
+  { id: string; label: string; connection: 'disconnected' | 'connected'; enabled: boolean }
+> = {
+  'google-drive': {
+    id: '',
+    label: 'Google Drive',
+    connection: 'disconnected',
+    enabled: false,
+  },
+  dropbox: {
+    id: '',
+    label: 'Dropbox',
+    connection: 'disconnected',
+    enabled: false,
+  },
+};
 
 function mockLibrarySource() {
   return {
@@ -94,6 +112,16 @@ function mockDiagnosticInfo() {
     max_file_bytes: 256 * 1024,
     max_retained_files: 3,
     max_export_bytes: 512 * 1024,
+  };
+}
+
+function mockCloudSnapshot() {
+  return {
+    version: 1,
+    sources: (['google-drive', 'dropbox'] as const).map((provider) => ({
+      provider,
+      ...mockCloudSources[provider],
+    })),
   };
 }
 
@@ -693,6 +721,18 @@ export interface E2EHooks {
 }
 
 export function installTauriMocks(): void {
+  // `App` selects the desktop/mobile composition through the OS plugin's
+  // compile-time platform record. `mockIPC` and `mockWindows` intentionally do
+  // not manufacture plugin globals, so install the one value the shipping
+  // composition reads before React renders. Without it `isTauri()` is true but
+  // `platform()` dereferences an absent `__TAURI_OS_PLUGIN_INTERNALS__`, leaving
+  // the E2E page blank before any behavioural assertion can run.
+  (
+    window as unknown as {
+      __TAURI_OS_PLUGIN_INTERNALS__?: { platform: 'macos' };
+    }
+  ).__TAURI_OS_PLUGIN_INTERNALS__ = { platform: 'macos' };
+
   // Test hook: let an e2e simulate an EXTERNAL edit landing on disk (bumping the
   // file's hash) so a subsequent save trips the guard — the watcher's own event
   // channel isn't available under a pure IPC mock — and read back what the shell
@@ -759,6 +799,36 @@ export function installTauriMocks(): void {
         if (mockLibraryActive) throw { kind: 'active-source' };
         mockLibraryAdded = false;
         return mockLibrarySnapshot();
+      case 'list_cloud_sources':
+        return mockCloudSnapshot();
+      case 'connect_cloud_source': {
+        const provider = (args as { provider: MockCloudProvider }).provider;
+        mockCloudSources[provider] = {
+          ...mockCloudSources[provider],
+          id: provider === 'google-drive' ? '8'.repeat(64) : '9'.repeat(64),
+          connection: 'connected',
+          enabled: true,
+        };
+        return mockCloudSnapshot();
+      }
+      case 'set_cloud_source_enabled': {
+        const { provider, enabled } = args as {
+          provider: MockCloudProvider;
+          enabled: boolean;
+        };
+        mockCloudSources[provider] = { ...mockCloudSources[provider], enabled };
+        return mockCloudSnapshot();
+      }
+      case 'disconnect_cloud_source': {
+        const provider = (args as { provider: MockCloudProvider }).provider;
+        mockCloudSources[provider] = {
+          ...mockCloudSources[provider],
+          id: '',
+          connection: 'disconnected',
+          enabled: false,
+        };
+        return mockCloudSnapshot();
+      }
       case 'diagnostics_info':
         return mockDiagnosticInfo();
       case 'set_diagnostics_level':

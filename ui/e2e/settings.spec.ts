@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/e2e.html');
 });
 
-test('Settings is a focused, local-only sheet with responsive desktop and narrow layouts', async ({
+test('Settings keeps local controls and connected sources usable across desktop and narrow layouts', async ({
   page,
 }, testInfo) => {
   await page.getByRole('button', { name: /^Open…$/ }).click();
@@ -22,7 +22,18 @@ test('Settings is a focused, local-only sheet with responsive desktop and narrow
   await expect(
     sheet.getByText(/256 KiB per file · up to 3 files · 512 KiB export/),
   ).toBeVisible();
-  await expect(sheet.getByText(/Google Drive|Dropbox|Notion|connector/i)).toHaveCount(0);
+  await expect(sheet.getByRole('heading', { name: 'Connected accounts' })).toBeVisible();
+  await expect(sheet.getByRole('heading', { name: 'Google Drive' })).toBeVisible();
+  await expect(sheet.getByRole('heading', { name: 'Dropbox' })).toBeVisible();
+  await expect(sheet.getByRole('button', { name: 'Connect Google Drive' })).toBeVisible();
+  const connectDropbox = sheet.getByRole('button', { name: 'Connect Dropbox' });
+  await expect(connectDropbox).toBeVisible();
+  await connectDropbox.click();
+  await expect(sheet.getByText('Included', { exact: true })).toBeVisible();
+  await expect(
+    sheet.getByRole('switch', { name: 'Include Dropbox in Library' }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(sheet.getByText(/Notion/i)).toHaveCount(0);
 
   await sheet.getByRole('button', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');

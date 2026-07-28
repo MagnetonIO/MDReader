@@ -15,13 +15,15 @@
  * That is precisely the claim a fixture cannot be trusted with, and precisely
  * the claim P8's decisive test will rest on. So the chain is ported here and
  * asserted against reality: real uuids, a file that genuinely exists in the
- * indexed corpus, and the run's own tempdir as the source root.
+ * indexed corpus. The public route deliberately redacts its server filesystem
+ * root, so the temp path from setup remains separate test authority and is
+ * never copied into an engine provenance field.
  *
- * THE ASSERTION THAT CANNOT BE FAKED. `corpusRoot` is a `mkdtemp` path invented
- * milliseconds before the browser launched. No fixture in this repository can
- * name it. When the UI paints it as the source of a hit, the hit came out of a
- * real index over a real corpus — there is no other way for that string to reach
- * the page.
+ * THE ASSERTION THAT CANNOT BE RELABELLED. Every browser request carries an
+ * opaque, per-invocation identity minted by global setup. The loopback server
+ * rejects a request for any other run before routing it. The page can use the
+ * independently supplied physical root to open files, but engine provenance
+ * remains exactly what came over the wire.
  *
  * WHAT THIS DOES NOT PROVE, and must not be described as: it does not drive the
  * native window shell, and it does not exercise the Rust *Tauri command* layer —
@@ -108,9 +110,9 @@ async function engineFailures(page: Page): Promise<string[]> {
 }
 
 /**
- * Open the real workspace. The root is not configured into the page — the
- * harness asks the engine which corpus it ingested — so the tree appearing at
- * all already means a real index answered.
+ * Open the real workspace. The physical root and opaque server identity are
+ * setup authority; document ids, stored paths, and provenance come from the
+ * identity-bound engine process.
  *
  * The wait races the tree against the harness's failure log, so a server that is
  * down or an index that is empty ERRORS BY NAME here. Left as a bare
@@ -118,6 +120,13 @@ async function engineFailures(page: Page): Promise<string[]> {
  * one thing this mode must never let a failure look like.
  */
 async function openRealWorkspace(page: Page): Promise<void> {
+  await page.addInitScript(({ corpusRoot, serverIdentity }) => {
+    (
+      window as unknown as {
+        __REAL_ENGINE_BOOTSTRAP__?: { corpusRoot: string; serverIdentity: string };
+      }
+    ).__REAL_ENGINE_BOOTSTRAP__ = { corpusRoot, serverIdentity };
+  }, engine);
   await page.goto('/e2e.html?realengine');
   await page.getByRole('button', { name: /^Open…$/ }).click();
   const deadline = Date.now() + 30_000;
@@ -217,10 +226,12 @@ test('Query Explanation over a REAL engine: every hit’s chain is a genuine chu
     // list the page supplied.
     expect(corpusFiles.has(chain.file), `${chain.file} exists in the indexed corpus`).toBe(true);
 
-    // THE ONE NO FIXTURE CAN SATISFY: the source is this run's tempdir, made by
-    // `mkdtemp` moments ago. There is no way for that string to reach the page
-    // except out of the index the engine built over it.
-    expect(chain.source, `source root in "${chain.text}"`).toBe(engine.corpusRoot);
+    // The public read router intentionally redacts server filesystem roots.
+    // Setup's root must not be relabelled as engine provenance, while the
+    // engine's source id remains visible in the chain.
+    expect(chain.source, `redacted source root in "${chain.text}"`).toBeNull();
+    expect(chain.text, `source identity in "${chain.text}"`).toMatch(/source [0-9a-f]{8}/);
+    expect(chain.text).not.toContain('no attributing source');
   }
 
   // The chain's DOCUMENT link is stable per file and distinct across files —
