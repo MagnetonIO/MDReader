@@ -5754,7 +5754,10 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
                 .expect("parse migrated registry");
-        assert_eq!(persisted["version"], serde_json::json!(6));
+        assert_eq!(
+            persisted["version"],
+            serde_json::json!(crate::library::LIBRARY_VERSION)
+        );
         assert!(persisted.get("cloud_sources").is_none());
         assert_eq!(persisted["sources"][0]["kind"], "local-folder");
         assert_eq!(persisted["sources"][1]["kind"], "google-drive");
@@ -5797,7 +5800,10 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).expect("read migrated registry"))
                 .expect("parse migrated registry");
-        assert_eq!(persisted["version"], serde_json::json!(6));
+        assert_eq!(
+            persisted["version"],
+            serde_json::json!(crate::library::LIBRARY_VERSION)
+        );
         assert_eq!(
             persisted["sources"][0]["contract"]["connector_version"],
             "local-folder/v1"

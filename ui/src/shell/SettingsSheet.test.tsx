@@ -315,7 +315,7 @@ describe('Settings sheet', () => {
       kind: 'connected-catdb',
       state: 'disconnected',
     };
-    const enroll = vi.fn(async (serverOrigin: string, bearerToken: string) => {
+    const enroll = vi.fn(async () => {
       state = connected;
       return connected;
     });

@@ -1081,6 +1081,34 @@ mod tests {
     }
 
     #[test]
+    fn connected_query_refuses_an_empty_native_selection() {
+        let mut source = connected_source();
+        source.selected_source_ids.clear();
+        let mut request: catdb_api_types::EntityQueryRequest =
+            serde_json::from_value(serde_json::json!({
+                "workspace_id": "00000000-0000-0000-0000-000000000099",
+                "catalog_revision_id": null,
+                "schema_version_id": null,
+                "entity": "document.Document",
+                "select": ["title"],
+                "filters": [],
+                "order_by": [],
+                "source_ids": null,
+                "max_staleness_ms": null,
+                "require_complete": true,
+                "page_size": 10,
+                "limit": 10,
+                "cursor": null
+            }))
+            .expect("request");
+
+        assert_eq!(
+            pin_connected_query(&source, &mut request),
+            Err(MobileEnterpriseError::NoSourcesSelected)
+        );
+    }
+
+    #[test]
     fn connected_membership_and_token_have_separate_persistence_lifecycles() {
         let temp = tempfile::tempdir().expect("tempdir");
         let registry_path = temp.path().join("library.json");
@@ -1129,6 +1157,34 @@ mod tests {
         assert!(vault
             .get(&credential_reference)
             .expect("read vault")
+            .is_none());
+    }
+
+    #[test]
+    fn failed_membership_admission_rolls_back_the_new_bearer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = LibraryStore::new(temp.path().join("library.json"));
+        let vault = MemoryBearerVault::default();
+        let mut source = connected_source();
+        source.label.clear();
+        let credential_reference = source.credential_reference.clone();
+
+        assert_eq!(
+            persist_connected_catdb(
+                &store,
+                &vault,
+                source,
+                &BearerToken("native-secret".to_string()),
+            ),
+            Err(MobileEnterpriseError::InvalidConfiguration)
+        );
+        assert!(vault
+            .get(&credential_reference)
+            .expect("read vault")
+            .is_none());
+        assert!(store
+            .read_connected_catdb()
+            .expect("read membership")
             .is_none());
     }
 
@@ -1200,6 +1256,46 @@ mod tests {
         assert_eq!(source.catalog_revision_id, uuid::Uuid::from_u128(4));
         assert_eq!(source.permitted_sources.len(), 1);
         assert!(source.selected_source_ids.is_empty());
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn enrollment_refuses_a_session_without_catalog_read_scope() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0_u8; 16 * 1024];
+            let count = stream.read(&mut request).await.expect("read");
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /v1/session "));
+            let body = serde_json::json!({
+                "principal_kind": "service",
+                "deployment_id": "00000000-0000-0000-0000-000000000002",
+                "workspace_ids": ["00000000-0000-0000-0000-000000000003"],
+                "scopes": ["query"]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("write");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                    .await
+                    .is_err(),
+                "catalog discovery ran without catalog_read"
+            );
+        });
+
+        assert_eq!(
+            discover_connected_catdb(
+                url::Url::parse(&format!("http://{address}")).expect("origin"),
+                &BearerToken("native-secret".to_string()),
+            )
+            .await,
+            Err(MobileEnterpriseError::PermissionDenied)
+        );
         server.await.expect("server");
     }
 
