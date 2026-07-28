@@ -93,6 +93,12 @@ export function Sidebar({
       (member) => member.kind !== 'local-folder' || !member.active,
     ),
   );
+  const hasFilterableActiveWorkspace = Boolean(root && onLibrarySearch);
+  const showLibraryRail =
+    hasFilterableActiveWorkspace ||
+    hasSupplementalMemberships ||
+    libraryLoading ||
+    Boolean(libraryError);
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -125,6 +131,7 @@ export function Sidebar({
           root={root}
           activePath={activePath}
           onOpen={onOpenFile}
+          filter={librarySearch}
           isIgnored={isIgnored}
         />
       ) : (
@@ -135,7 +142,7 @@ export function Sidebar({
         </div>
       )}
 
-      {hasSupplementalMemberships || libraryLoading || libraryError ? (
+      {showLibraryRail ? (
         <nav className="library-sources" aria-label="Library sources">
           <div className="library-sources__heading">
             <span>Library</span>

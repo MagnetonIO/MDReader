@@ -1,4 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -133,6 +141,31 @@ afterEach(() => {
 });
 
 describe('Settings sheet', () => {
+  it('keeps semantic headings and theme choices without decorative product or ordinal markers', () => {
+    render(
+      <SettingsSheet
+        backend={backend()}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(dialog).getByRole('heading', { name: 'Settings', level: 1 })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Appearance', level: 2 })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Library', level: 2 })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Diagnostics', level: 2 })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'System' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Light' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Dark' })).toBeTruthy();
+    expect(within(dialog).queryByText('MDReader', { exact: true })).toBeNull();
+    for (const ordinal of ['01', '02', '03']) {
+      expect(within(dialog).queryByText(ordinal, { exact: true })).toBeNull();
+    }
+  });
+
   it.each([
     ['successful', false],
     ['failed', true],

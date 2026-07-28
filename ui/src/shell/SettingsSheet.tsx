@@ -488,7 +488,6 @@ export function SettingsSheet({
       >
         <header className="settings-sheet__header">
           <div>
-            <div className="settings-sheet__eyebrow">MDReader</div>
             <h1 className="settings-sheet__title">Settings</h1>
           </div>
           <button
@@ -506,7 +505,6 @@ export function SettingsSheet({
           <section className="settings-section" aria-labelledby="settings-appearance">
             <div className="settings-section__intro">
               <div>
-                <div className="settings-section__number">01</div>
                 <h2 id="settings-appearance">Appearance</h2>
               </div>
               <p>Shape the reading room. These preferences use the same store as the titlebar.</p>
@@ -579,7 +577,6 @@ export function SettingsSheet({
           <section className="settings-section" aria-labelledby="settings-library">
             <div className="settings-section__intro">
               <div>
-                <div className="settings-section__number">02</div>
                 <h2 id="settings-library">Library</h2>
               </div>
               <p>
@@ -932,7 +929,6 @@ export function SettingsSheet({
           <section className="settings-section" aria-labelledby="settings-diagnostics">
             <div className="settings-section__intro">
               <div>
-                <div className="settings-section__number">03</div>
                 <h2 id="settings-diagnostics">Diagnostics</h2>
               </div>
               <p>
@@ -1040,7 +1036,7 @@ export function SettingsSheet({
               aria-label="Clear diagnostic logs"
               onMouseDown={(event) => event.stopPropagation()}
             >
-              <div className="settings-section__number">Local action</div>
+              <div className="settings-confirm__eyebrow">Local action</div>
               <h2>Clear diagnostic logs?</h2>
               <p>
                 This removes MDReader’s retained log files from this device. It cannot be undone.

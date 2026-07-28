@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type {
@@ -248,6 +249,123 @@ it('keeps the active workspace and every supplemental membership across evidence
     connectedCatdb.response.answer.rows[0],
   );
   expect(open).toHaveBeenCalledTimes(3);
+});
+
+it('keeps the Library document filter available for an active-local-only Library', () => {
+  const activeLocal = fixtureForMember({
+    id: 180,
+    registryId: 'active-local-source',
+    name: 'Active notes',
+    kind: 'local-folder',
+    editable: true,
+    active: true,
+    title: 'workspace.md',
+    path: 'notes/workspace.md',
+  });
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root="/Library/Active notes"
+      files={[
+        {
+          path: '/Library/Active notes/notes/workspace.md',
+          name: 'workspace.md',
+          dir: 'notes',
+          mtime: 1,
+          size: 12,
+          ignored: false,
+        },
+      ]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[activeLocal.response]}
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+    />,
+  );
+
+  const rail = screen.getByRole('navigation', { name: 'Library sources' });
+  expect(
+    within(rail).getByRole('searchbox', { name: 'Filter Library documents' }),
+  ).toBeTruthy();
+  expect(within(rail).queryByText(activeLocal.member.name)).toBeNull();
+});
+
+it('routes one Library document filter to the active workspace tree and supplemental rows', () => {
+  const activeLocal = fixtureForMember({
+    id: 200,
+    registryId: 'active-local-source',
+    name: 'Active notes',
+    kind: 'local-folder',
+    editable: true,
+    active: true,
+    title: 'workspace.md',
+    path: 'notes/workspace.md',
+  });
+  const dropbox = fixtureForMember({
+    id: 220,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Cloud note.md',
+    path: '/notes/cloud.md',
+  });
+
+  function Harness() {
+    const [search, setSearch] = useState('');
+    return (
+      <Sidebar
+        collapsed={false}
+        root="/Library/Active notes"
+        files={[
+          {
+            path: '/Library/Active notes/notes/workspace.md',
+            name: 'workspace.md',
+            dir: 'notes',
+            mtime: 1,
+            size: 12,
+            ignored: false,
+          },
+        ]}
+        recent={[]}
+        activePath={null}
+        loading={false}
+        onPickFolder={vi.fn()}
+        onOpenFile={vi.fn()}
+        onOpenRecent={vi.fn()}
+        libraryEvidence={[activeLocal.response, dropbox.response]}
+        librarySearch={search}
+        onLibrarySearch={setSearch}
+        onOpenLibrary={vi.fn()}
+        onRefreshLibrary={vi.fn()}
+      />
+    );
+  }
+
+  render(<Harness />);
+
+  const filter = screen.getByRole('searchbox', { name: 'Filter Library documents' });
+  const tree = screen.getByRole('tree', { name: 'Workspace files' });
+  const rail = screen.getByRole('navigation', { name: 'Library sources' });
+
+  fireEvent.change(filter, { target: { value: 'cloud' } });
+  expect(within(tree).getByText('No Library documents match.')).toBeTruthy();
+  expect(
+    within(rail).getByRole('button', { name: 'Open Cloud note.md from Dropbox' }),
+  ).toBeTruthy();
+
+  fireEvent.change(filter, { target: { value: 'workspace' } });
+  expect(within(tree).queryByText('No Library documents match.')).toBeNull();
+  expect(within(rail).getByText('No Library documents match.')).toBeTruthy();
 });
 
 it('keeps a workspace listing error visible after Library evidence arrives', () => {

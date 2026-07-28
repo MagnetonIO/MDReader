@@ -179,16 +179,6 @@ body {
   background: color-mix(in srgb, var(--color-surface-raised) 64%, var(--color-surface));
 }
 
-.settings-sheet__eyebrow,
-.settings-section__number {
-  color: var(--color-accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  line-height: 1.4;
-  text-transform: uppercase;
-}
-
 .settings-sheet__title {
   margin: 2px 0 0;
   font-family: var(--font-reading, Georgia, serif);
@@ -254,6 +244,15 @@ body {
   color: var(--color-muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.settings-confirm__eyebrow {
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.4;
+  text-transform: uppercase;
 }
 
 .settings-field {

@@ -22,13 +22,27 @@ export interface FileTreeProps {
   root: string;
   activePath: string | null;
   onOpen: (file: WorkspaceFile) => void;
+  /** The Library document filter shared with supplemental source rows. */
+  filter?: string;
   /** Predicate marking a path as gitignored (dimmed). */
   isIgnored?: (path: string) => boolean;
 }
 
-export function FileTree({ files, root, activePath, onOpen, isIgnored }: FileTreeProps) {
+export function FileTree({
+  files,
+  root,
+  activePath,
+  onOpen,
+  filter = '',
+  isIgnored,
+}: FileTreeProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const tree = useMemo(() => buildTree(files, root), [files, root]);
+  const visibleFiles = useMemo(() => {
+    const search = filter.trim().toLocaleLowerCase();
+    if (!search) return files;
+    return files.filter((file) => file.name.toLocaleLowerCase().includes(search));
+  }, [files, filter]);
+  const tree = useMemo(() => buildTree(visibleFiles, root), [visibleFiles, root]);
 
   // Default: expand every directory so the corpus is visible at a glance.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(collectDirPaths(tree)));
@@ -40,6 +54,9 @@ export function FileTree({ files, root, activePath, onOpen, isIgnored }: FileTre
 
   const [focusIndex, setFocusIndex] = useState(0);
   const pendingFocus = useRef<number | null>(null);
+  useEffect(() => {
+    setFocusIndex((current) => Math.min(current, Math.max(rows.length - 1, 0)));
+  }, [rows.length]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -124,6 +141,14 @@ export function FileTree({ files, root, activePath, onOpen, isIgnored }: FileTre
     return (
       <div className="filetree" role="tree" aria-label="Workspace files">
         <p className="filetree__empty">No markdown files in this folder yet.</p>
+      </div>
+    );
+  }
+
+  if (visibleFiles.length === 0) {
+    return (
+      <div className="filetree" role="tree" aria-label="Workspace files">
+        <p className="filetree__empty">No Library documents match.</p>
       </div>
     );
   }
