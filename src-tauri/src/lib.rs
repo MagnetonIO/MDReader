@@ -3,7 +3,7 @@
 //! All app logic lives here so both the desktop binary (`main.rs`) and future
 //! mobile entry points (P6) can share `run()`. The tauri-specta [`Builder`] is
 //! constructed once in [`specta_builder`] and reused by both the running app
-//! and the `export_bindings` test, guaranteeing the committed
+//! and the headless `export_bindings_up_to_date` test, guaranteeing the committed
 //! `apps/mdreader/ui/src/bindings.ts` always matches the live command surface.
 
 #[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
@@ -58,12 +58,6 @@ use tauri::Manager;
 #[cfg(not(mobile))]
 use tauri_specta::collect_events;
 use tauri_specta::{collect_commands, Builder};
-
-/// TypeScript bindings destination, relative to this crate's manifest dir
-/// (`apps/mdreader/src-tauri`). `cargo test` and `tauri dev` both run with that
-/// as the working directory, so this resolves to `apps/mdreader/ui/src`.
-#[cfg(any(debug_assertions, test))]
-const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 
 /// Menu id for the remapped "Close Window" item (macOS). See [`build_app_menu`].
 #[cfg(target_os = "macos")]
@@ -189,34 +183,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
     mobile_specta_builder()
 }
 
-#[cfg(debug_assertions)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeTarget {
-    Desktop,
-    Mobile,
-}
-
-#[cfg(debug_assertions)]
-impl RuntimeTarget {
-    const fn current() -> Self {
-        if cfg!(mobile) {
-            Self::Mobile
-        } else {
-            Self::Desktop
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-fn runtime_specta_builder(
-    target: RuntimeTarget,
-    export: impl FnOnce(&Builder<tauri::Wry>),
-) -> Builder<tauri::Wry> {
-    let builder = specta_builder();
-    if target == RuntimeTarget::Desktop {
-        export(&builder);
-    }
-    builder
+fn runtime_specta_builder() -> Builder<tauri::Wry> {
+    specta_builder()
 }
 
 /// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the
@@ -278,14 +246,7 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     std::hint::black_box(release_identity());
-    #[cfg(debug_assertions)]
-    let builder = runtime_specta_builder(RuntimeTarget::current(), |builder| {
-        // Desktop `tauri dev` refreshes the committed bindings on launch.
-        // Packaged mobile runtimes cannot and must not write source artifacts.
-        export_bindings(builder).expect("failed to export typescript bindings");
-    });
-    #[cfg(not(debug_assertions))]
-    let builder = specta_builder();
+    let builder = runtime_specta_builder();
 
     #[allow(unused_mut)]
     let mut tauri_builder = tauri::Builder::default()
@@ -351,13 +312,16 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+#[cfg(test)]
+const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
+
 /// Writes the TypeScript bindings for the current command surface, then strips
 /// trailing whitespace from every line. specta emits blank doc-comment
 /// continuation lines as `\t * ` (a trailing space), which would trip
 /// `git diff --check`; trimming keeps the committed bindings pristine. The pass
 /// is deterministic, so drift detection is unaffected — a real command change
 /// still surfaces as a diff.
-#[cfg(any(debug_assertions, test))]
+#[cfg(test)]
 fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescript::Error> {
     builder.export(specta_typescript::Typescript::default(), BINDINGS_PATH)?;
     if let Ok(contents) = std::fs::read_to_string(BINDINGS_PATH) {
@@ -373,11 +337,9 @@ fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescrip
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::process::Command;
 
-    use super::{
-        export_bindings, release_identity, runtime_specta_builder, specta_builder, RuntimeTarget,
-    };
+    use super::{export_bindings, release_identity, runtime_specta_builder, specta_builder};
 
     /// Regenerates `apps/mdreader/ui/src/bindings.ts` headlessly (no window, no
     /// webview). `scripts/check-bindings.sh` runs this then `git diff
@@ -388,22 +350,36 @@ mod tests {
     }
 
     #[test]
-    fn mobile_runtime_skips_binding_export_while_desktop_debug_exports() {
-        let export_called = Cell::new(false);
-        let _mobile_builder = runtime_specta_builder(RuntimeTarget::Mobile, |_| {
-            export_called.set(true);
-        });
-        assert!(
-            !export_called.get(),
-            "mobile runtime attempted to write generated bindings"
-        );
+    fn production_runtime_never_exports_bindings() {
+        const CHILD_PROCESS: &str = "MDREADER_TEST_RUNTIME_BUILDER_CHILD";
 
-        let _desktop_builder = runtime_specta_builder(RuntimeTarget::Desktop, |_| {
-            export_called.set(true);
-        });
+        if std::env::var_os(CHILD_PROCESS).is_some() {
+            let _builder = runtime_specta_builder();
+            return;
+        }
+
+        let launch_root = tempfile::tempdir().expect("create isolated launch root");
+        let launch_directory = launch_root.path().join("finder-cwd");
+        std::fs::create_dir(&launch_directory).expect("create isolated launch directory");
+
+        let status = Command::new(std::env::current_exe().expect("resolve test executable"))
+            .args([
+                "--exact",
+                "tests::production_runtime_never_exports_bindings",
+                "--nocapture",
+            ])
+            .env(CHILD_PROCESS, "1")
+            .current_dir(&launch_directory)
+            .status()
+            .expect("launch runtime-builder child process");
+
         assert!(
-            export_called.get(),
-            "desktop debug startup no longer refreshes generated bindings"
+            status.success(),
+            "production runtime builder depended on the launch working directory"
+        );
+        assert!(
+            !launch_root.path().join("ui/src/bindings.ts").exists(),
+            "production runtime wrote generated bindings during launch"
         );
     }
 
