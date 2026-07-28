@@ -14,6 +14,7 @@ import {
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
+  type CloseAndForgetLibrarySourceOutcome,
   type ConnectedCatdbState,
   type DiagnosticError,
   type DiagnosticEvent,
@@ -42,6 +43,7 @@ export type {
   DiagnosticLevel,
   LibrarySnapshot,
   LibrarySourceDto,
+  CloseAndForgetLibrarySourceOutcome,
   PickedLibrarySource,
 };
 
@@ -210,6 +212,14 @@ export async function markLibrarySourceActive(sourceId: string): Promise<Library
 
 export async function forgetLibrarySource(sourceId: string): Promise<LibrarySnapshot> {
   const result = await commands.forgetLibrarySource(sourceId);
+  if (result.status === 'error') return libraryFailure(result.error);
+  return result.data;
+}
+
+export async function closeAndForgetLibrarySource(
+  sourceId: string,
+): Promise<CloseAndForgetLibrarySourceOutcome> {
+  const result = await commands.closeAndForgetLibrarySource(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }

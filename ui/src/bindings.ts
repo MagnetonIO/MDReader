@@ -119,6 +119,12 @@ export const commands = {
 	 */
 	forgetLibrarySource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("forget_library_source", { sourceId })),
 	/**
+	 *  Close the exact active local source, revoke its epoch and watcher, then
+	 *  forget its membership and private CatDB-managed state. User source bytes are
+	 *  never cleanup targets.
+	 */
+	closeAndForgetLibrarySource: (sourceId: string) => typedError<CloseAndForgetLibrarySourceOutcome, LibraryError>(__TAURI_INVOKE("close_and_forget_library_source", { sourceId })),
+	/**
 	 *  Return the local diagnostic policy and bounds without exposing filesystem
 	 *  authority.
 	 */
@@ -416,6 +422,24 @@ export type BoostsDto = {
 	/**  Graph proximity to a `linked-to:` document. */
 	graph: number | null,
 };
+
+/**
+ *  Result returned after the native active-source close transaction has crossed
+ *  its authority-revocation boundary.
+ */
+export type CloseAndForgetLibrarySourceOutcome = {
+	status: CloseAndForgetStatus,
+	workspace_generation: number,
+};
+
+/**  Native close-and-forget state after the active workspace authority is gone. */
+export type CloseAndForgetStatus =
+/**  Membership and private managed state were removed. */
+{ kind: "complete" } |
+/**  Membership is gone; deletion of quarantined private state will retry. */
+{ kind: "cleanup-pending" } |
+/**  The workspace is closed, but membership remains available for retry. */
+{ kind: "inactive"; error: LibraryError };
 
 /**  Explicit readiness proof for the Library-owned cloud CatDB catalog. */
 export type CloudCatalogReady = {

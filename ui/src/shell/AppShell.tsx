@@ -40,6 +40,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
 import {
+  closeAndForgetLibrarySource,
   grantLibrarySource,
   markLibrarySourceActive,
   pickAndAddLibrarySource,
@@ -94,6 +95,15 @@ function isEditable(element: Element | null): boolean {
     tag === 'SELECT' ||
     (element as HTMLElement).isContentEditable
   );
+}
+
+async function boundedPersistenceDrain(pending: Promise<unknown>): Promise<void> {
+  await Promise.race([
+    pending,
+    new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 2000);
+    }),
+  ]);
 }
 
 export function AppShell() {
@@ -187,6 +197,11 @@ export function AppShell() {
           member: LibrarySourceExecution;
           row: EntityRow;
         };
+      }
+    | {
+        kind: 'forget';
+        source: LibrarySourceDto;
+        expectedSourceIntent: number;
       }
     | null
   >(null);
@@ -283,6 +298,9 @@ export function AppShell() {
   const commitSwitchRef = useRef<
     (folder: string, sourceId?: string, expectedSourceIntent?: number) => Promise<boolean>
   >(() => Promise.resolve(false));
+  const commitForgetRef = useRef<
+    (source: LibrarySourceDto, expectedSourceIntent: number) => Promise<void>
+  >(() => Promise.resolve());
   const editLibraryDocumentRef = useRef<
     (
       member: LibrarySourceExecution,
@@ -677,6 +695,70 @@ export function AppShell() {
     [openRoot, refreshLibrary],
   );
   commitSwitchRef.current = commitSwitch;
+
+  const commitForget = useCallback(
+    (source: LibrarySourceDto, expectedSourceIntent: number): Promise<void> => {
+      const run = async () => {
+        if (sourceIntentRef.current !== expectedSourceIntent) return;
+        const closingRoot = useSourcesStore.getState().root;
+        if (closingRoot !== source.path || activeSourceIdRef.current !== source.id) {
+          toast('That source is no longer the active workspace');
+          return;
+        }
+        let outcome;
+        try {
+          outcome = await closeAndForgetLibrarySource(source.id);
+        } catch {
+          toast('Could not close and forget this source');
+          return;
+        }
+
+        // Native success means the exact epoch and watcher are already gone.
+        // Clear every renderer-held echo of that authority before best-effort
+        // library hydration or any later queued source operation.
+        openEpochRef.current += 1;
+        watcherGenRef.current = -1;
+        activeSourceIdRef.current = null;
+        setSemanticWorkspaceGeneration(outcome.workspace_generation);
+        libraryRefreshGeneration.current += 1;
+        setLibraryDocument(null);
+        setLibraryEvidence([]);
+        setLibrarySearch('');
+        useTabsStore.getState().closeAll();
+        useEditorStore.getState().reset();
+        useSourcesStore.getState().forgetRoot(closingRoot);
+        flushSessionRef.current();
+        await boundedPersistenceDrain(sessionWriter.drain());
+
+        if (outcome.status.kind === 'cleanup-pending') {
+          toast('Source closed. MDReader will retry private index cleanup.');
+        } else if (outcome.status.kind === 'inactive') {
+          toast('Source closed, but its private index could not be removed. Retry Forget.');
+        }
+        void refreshLibrary();
+      };
+      const result = switchQueueRef.current.then(run, run);
+      switchQueueRef.current = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
+    },
+    [refreshLibrary],
+  );
+  commitForgetRef.current = commitForget;
+
+  const forgetActiveSource = useCallback(
+    async (source: LibrarySourceDto) => {
+      const expectedSourceIntent = beginSourceIntent();
+      if (useEditorStore.getState().dirtyTabIds().length > 0) {
+        setCloseGuard({ kind: 'forget', source, expectedSourceIntent });
+        return;
+      }
+      await commitForget(source, expectedSourceIntent);
+    },
+    [beginSourceIntent, commitForget],
+  );
 
   // Switch the active workspace to `folder`. A real switch (a different root)
   // retires the previous workspace's tabs, which would tear down any unsaved edit
@@ -1194,11 +1276,18 @@ export function AppShell() {
               member: LibrarySourceExecution;
               row: EntityRow;
             };
+          }
+        | {
+            kind: 'forget';
+            source: LibrarySourceDto;
+            expectedSourceIntent: number;
           },
     ) => {
       if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
       else if (guard.kind === 'quit') void performQuit();
-      else {
+      else if (guard.kind === 'forget') {
+        void commitForgetRef.current(guard.source, guard.expectedSourceIntent);
+      } else {
         void (async () => {
           const committed = await commitSwitchRef.current(
             guard.folder,
@@ -1672,10 +1761,7 @@ export function AppShell() {
           // (theme, font, text size, related rail) survives an immediate quit.
           flushSession();
           const settingsWrite = flushSettings();
-          await Promise.race([
-            Promise.all([sessionWriter.drain(), settingsWrite]),
-            new Promise((resolve) => setTimeout(resolve, 2000)),
-          ]);
+          await boundedPersistenceDrain(Promise.all([sessionWriter.drain(), settingsWrite]));
           if (useEditorStore.getState().dirtyTabIds().length > 0) {
             setCloseGuard({ kind: 'quit' }); // guard clears dirty + re-closes
             return;
@@ -2071,6 +2157,7 @@ export function AppShell() {
           watcher={watcher}
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
+          onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
           onLibraryChanged={() => void refreshLibrary()}
           onClose={() => setSettingsOpen(false)}

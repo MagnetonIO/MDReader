@@ -37,6 +37,7 @@ export interface SettingsSheetProps {
   watcher: WatcherStatus;
   importState: ImportState | null;
   onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
+  onForgetActiveSource: (source: LibrarySourceDto) => Promise<void>;
   onSourceIntent?: () => void;
   onLibraryChanged?: () => void;
   onClose: () => void;
@@ -177,6 +178,7 @@ export function SettingsSheet({
   watcher,
   importState,
   onActivateSource,
+  onForgetActiveSource,
   onSourceIntent = () => {},
   onLibraryChanged = () => {},
   onClose,
@@ -187,6 +189,7 @@ export function SettingsSheet({
   const confirmDialogRef = useRef<HTMLDivElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmWasOpenRef = useRef(false);
+  const confirmTriggerRef = useRef<HTMLElement | null>(null);
   const operationSerials = useRef(new Map<string, number>());
   const invokingFocusRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
@@ -201,6 +204,7 @@ export function SettingsSheet({
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmForget, setConfirmForget] = useState<LibrarySourceDto | null>(null);
 
   const theme = useSettingsStore((state) => state.theme);
   const readingFont = useSettingsStore((state) => state.readingFont);
@@ -232,14 +236,15 @@ export function SettingsSheet({
   }, [backend]);
 
   useEffect(() => {
-    if (confirmClear) {
+    if (confirmClear || confirmForget) {
       confirmWasOpenRef.current = true;
       confirmCancelRef.current?.focus();
     } else if (confirmWasOpenRef.current) {
       confirmWasOpenRef.current = false;
-      clearTriggerRef.current?.focus();
+      confirmTriggerRef.current?.focus();
+      confirmTriggerRef.current = null;
     }
-  }, [confirmClear]);
+  }, [confirmClear, confirmForget]);
 
   useEffect(() => {
     let live = true;
@@ -343,7 +348,12 @@ export function SettingsSheet({
   }, [activate, backend, onLibraryChanged, onSourceIntent, run]);
 
   const forget = useCallback(
-    (source: LibrarySourceDto) => {
+    (source: LibrarySourceDto, trigger: HTMLElement) => {
+      if (source.active) {
+        confirmTriggerRef.current = trigger;
+        setConfirmForget(source);
+        return;
+      }
       onSourceIntent();
       void run(
         `forget:${source.id}`,
@@ -452,12 +462,14 @@ export function SettingsSheet({
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        if (confirmClear) setConfirmClear(false);
+        if (confirmForget) setConfirmForget(null);
+        else if (confirmClear) setConfirmClear(false);
         else onClose();
         return;
       }
       if (event.key !== 'Tab') return;
-      const focusScope = confirmClear ? confirmDialogRef.current : dialogRef.current;
+      const focusScope =
+        confirmClear || confirmForget ? confirmDialogRef.current : dialogRef.current;
       const focusable = Array.from(
         focusScope?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
       );
@@ -472,7 +484,7 @@ export function SettingsSheet({
         last.focus();
       }
     },
-    [confirmClear, onClose],
+    [confirmClear, confirmForget, onClose],
   );
 
   return (
@@ -646,13 +658,13 @@ export function SettingsSheet({
                           type="button"
                           className="settings-button--quiet"
                           aria-label={`Forget ${source.name}`}
-                          disabled={source.active || busy !== null}
+                          disabled={busy !== null}
                           title={
                             source.active
-                              ? 'Activate another source before forgetting this one'
+                              ? 'Closes this source, removes its private MDReader index, and keeps every file'
                               : 'Removes this entry and its local MDReader index; your files stay'
                           }
-                          onClick={() => forget(source)}
+                          onClick={(event) => forget(source, event.currentTarget)}
                         >
                           {busy === `forget:${source.id}` ? 'Forgetting…' : 'Forget'}
                         </button>
@@ -1003,7 +1015,10 @@ export function SettingsSheet({
                     type="button"
                     className="settings-button--danger"
                     disabled={busy !== null}
-                    onClick={() => setConfirmClear(true)}
+                    onClick={() => {
+                      confirmTriggerRef.current = clearTriggerRef.current;
+                      setConfirmClear(true);
+                    }}
                   >
                     Clear logs
                   </button>
@@ -1023,6 +1038,47 @@ export function SettingsSheet({
         {notice ? (
           <div className="settings-sheet__message" role="status">
             {notice}
+          </div>
+        ) : null}
+
+        {confirmForget ? (
+          <div className="settings-confirm-scrim" onMouseDown={() => setConfirmForget(null)}>
+            <div
+              ref={confirmDialogRef}
+              className="settings-confirm"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label={`Forget ${confirmForget.name}`}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="settings-confirm__eyebrow">Local Library</div>
+              <h2>Forget the active source?</h2>
+              <p>
+                MDReader will close this source and its open tabs, then remove its private index.
+                The folder and every Markdown file stay untouched.
+              </p>
+              <div className="settings-confirm__actions">
+                <button
+                  ref={confirmCancelRef}
+                  type="button"
+                  onClick={() => setConfirmForget(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="settings-button--danger"
+                  onClick={() => {
+                    const source = confirmForget;
+                    setConfirmForget(null);
+                    onClose();
+                    void onForgetActiveSource(source);
+                  }}
+                >
+                  Forget source
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
 

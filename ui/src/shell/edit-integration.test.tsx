@@ -80,6 +80,11 @@ const h = vi.hoisted(() => ({
   markStarted: false,
   markSucceeded: false,
   editResolutions: [] as { sourceId: string; relativePath: string }[],
+  closeForgetCalls: [] as string[],
+  closeForgetStatus: { kind: 'complete' as const } as
+    | { kind: 'complete' }
+    | { kind: 'cleanup-pending' }
+    | { kind: 'inactive'; error: { kind: 'persist-failed' } },
   seq: 0,
   pickedPath: '/ws',
   watch: vi.fn(async (root: string) => ({ root, generation: 1 })),
@@ -286,6 +291,15 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     ),
     markLibrarySourceActive: markActive,
     reconcileLibraryRestore: settingsBackend.reconcileRestore,
+    closeAndForgetLibrarySource: vi.fn(async (sourceId: string) => {
+      h.closeForgetCalls.push(sourceId);
+      h.backendRoot = null;
+      h.backendGeneration += 1;
+      return {
+        status: h.closeForgetStatus,
+        workspace_generation: h.backendGeneration,
+      };
+    }),
     recordDiagnosticEventNonBlocking: vi.fn((event: unknown) => {
       h.diagnosticEvents.push(event);
     }),
@@ -328,7 +342,7 @@ import { useTabsStore } from '../stores/tabs';
 import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
 import { useEditorStore } from '../stores/editor';
-import { saveSettings } from './persistence.js';
+import { saveSettings, sessionWriter } from './persistence.js';
 
 const NOTE = '/ws/note.md';
 const mac = detectMac();
@@ -361,6 +375,13 @@ async function openDirtyDoc() {
   act(() => useEditorStore.getState().edit(tabId, NOTE, 'hello + my local edit'));
   expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
   return tabId;
+}
+
+async function confirmActiveSourceForget() {
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  await screen.findByText('Workspace');
+  fireEvent.click(screen.getByRole('button', { name: 'Forget Workspace' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Forget source' }));
 }
 
 function installSecondWorkspaceLibraryDocument() {
@@ -473,6 +494,8 @@ beforeEach(() => {
   h.markStarted = false;
   h.markSucceeded = false;
   h.editResolutions.length = 0;
+  h.closeForgetCalls.length = 0;
+  h.closeForgetStatus = { kind: 'complete' };
   h.closed = false;
   h.drainGate = null;
   h.seq = 0;
@@ -968,6 +991,96 @@ describe('memory: navigating away from a clean doc evicts its buffer (real wirin
 });
 
 describe('unsaved-changes guard is transactional (close / quit)', () => {
+  it('cancels active-source Forget without IPC, then Discard closes authority and clears only that source state', async () => {
+    await openDirtyDoc();
+    act(() => {
+      useSourcesStore
+        .getState()
+        .addRecent({ path: NOTE, name: 'note.md' }, '/ws');
+      useSourcesStore
+        .getState()
+        .addRecent({ path: '/ws-b/keep.md', name: 'keep.md' }, '/ws-b');
+    });
+
+    await confirmActiveSourceForget();
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(h.closeForgetCalls).toEqual([]);
+    expect(useSourcesStore.getState().root).toBe('/ws');
+    expect(useEditorStore.getState().dirtyTabIds()).not.toHaveLength(0);
+
+    const writesBeforeForget = vi.mocked(sessionWriter.write).mock.calls.length;
+    await confirmActiveSourceForget();
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => expect(h.closeForgetCalls).toEqual(['a'.repeat(64)]));
+    await waitFor(() => expect(useSourcesStore.getState().root).toBeNull());
+    expect(useTabsStore.getState().tabs).toEqual([]);
+    expect(useEditorStore.getState().dirtyTabIds()).toEqual([]);
+    expect(useSourcesStore.getState().recent).toEqual([
+      { root: '/ws-b', path: '/ws-b/keep.md', name: 'keep.md' },
+    ]);
+    const closeWrites = vi.mocked(sessionWriter.write).mock.calls.slice(writesBeforeForget);
+    expect(closeWrites).toContainEqual([
+      expect.objectContaining({
+        root: null,
+        tabs: [],
+        recent: [{ root: '/ws-b', path: '/ws-b/keep.md', name: 'keep.md' }],
+      }),
+    ]);
+    expect(h.drain).toHaveBeenCalled();
+  });
+
+  it('Save writes every dirty buffer before active-source Forget closes it', async () => {
+    await openDirtyDoc();
+    await confirmActiveSourceForget();
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(h.closeForgetCalls).toEqual(['a'.repeat(64)]));
+    expect(h.disk.get(NOTE)?.content).toBe('hello + my local edit');
+    expect(useSourcesStore.getState().root).toBeNull();
+    expect(useTabsStore.getState().tabs).toEqual([]);
+  });
+
+  it('a conflicted Save refuses active-source Forget and leaves authority and edits live', async () => {
+    const tabId = await openDirtyDoc();
+    h.disk.set(NOTE, { content: 'external edit', hash: 'h-external' });
+    await confirmActiveSourceForget();
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(useEditorStore.getState().entry(tabId, NOTE)?.conflict?.source).toBe('save'),
+    );
+    expect(h.closeForgetCalls).toEqual([]);
+    expect(useSourcesStore.getState().root).toBe('/ws');
+    expect(useEditorStore.getState().isDirty(tabId, NOTE)).toBe(true);
+  });
+
+  it('bounds a stuck session drain so a newer source activation can leave the closed state', async () => {
+    render(<App />);
+    await act(async () => {});
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    });
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws'));
+    h.drainGate = { promise: new Promise<void>(() => {}) };
+
+    await confirmActiveSourceForget();
+    await waitFor(() => expect(useSourcesStore.getState().root).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await screen.findByText('Second workspace');
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
+
+    await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-b'), {
+      timeout: 3000,
+    });
+  });
+
   it('routes a Settings library activation through the same unsaved-switch guard', async () => {
     await openDirtyDoc();
     h.watch.mockClear();

@@ -23,7 +23,7 @@ use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, Clo
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 8;
+pub(crate) const LIBRARY_VERSION: u32 = 9;
 const MAX_LIBRARY_SOURCES: usize = 128;
 const MAX_CONNECTED_CATDB_SOURCES: usize = 128;
 
@@ -160,6 +160,32 @@ pub(crate) struct LibrarySnapshot {
     pub connected_catdb: Option<LibraryConnectedCatdbDto>,
     pub connected_catdb_rediscovery_required: bool,
     pub cleanup: LibraryCleanupStatus,
+}
+
+/// Native close-and-forget state after the active workspace authority is gone.
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum CloseAndForgetStatus {
+    /// Membership and private managed state were removed.
+    Complete,
+    /// Membership is gone; deletion of quarantined private state will retry.
+    CleanupPending,
+    /// The workspace is closed, but membership remains available for retry.
+    Inactive { error: LibraryError },
+}
+
+#[derive(Debug)]
+struct CloseAndForgetStoreOutcome {
+    status: CloseAndForgetStatus,
+    workspace_generation: u32,
+}
+
+/// Result returned after the native active-source close transaction has crossed
+/// its authority-revocation boundary.
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct CloseAndForgetLibrarySourceOutcome {
+    pub status: CloseAndForgetStatus,
+    pub workspace_generation: u32,
 }
 
 /// Immutable source membership captured under the Library registry lease.
@@ -611,6 +637,20 @@ impl LibrarySource {
 struct StoredLibrary {
     version: u32,
     active_source_id: Option<String>,
+    #[serde(default)]
+    restore_suppressed_source_ids: Vec<String>,
+    sources: Vec<LibrarySource>,
+    #[serde(default)]
+    connected_catdb_rediscovery_required: bool,
+    #[serde(default)]
+    cleanup_pending: Vec<PendingCleanup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV8 {
+    version: u32,
+    active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
     #[serde(default)]
     connected_catdb_rediscovery_required: bool,
@@ -747,6 +787,7 @@ struct PendingCleanup {
 #[derive(Debug, Clone)]
 pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
+    restore_suppressed_source_ids: Vec<String>,
     sources: Vec<LibrarySource>,
     connected_catdb_rediscovery_required: bool,
     cleanup_pending: Vec<PendingCleanup>,
@@ -756,6 +797,7 @@ impl LibraryRegistry {
     pub(crate) fn empty() -> Self {
         Self {
             active_source_id: None,
+            restore_suppressed_source_ids: Vec::new(),
             sources: Vec::new(),
             connected_catdb_rediscovery_required: false,
             cleanup_pending: Vec::new(),
@@ -1011,6 +1053,8 @@ impl LibraryRegistry {
             return Err(LibraryError::ActiveSource);
         }
         self.sources.remove(index);
+        self.restore_suppressed_source_ids
+            .retain(|suppressed| suppressed != source_id);
         if self.active_source_id.as_deref() == Some(source_id) {
             self.active_source_id = None;
         }
@@ -1030,6 +1074,8 @@ impl LibraryRegistry {
             .verify()
             .map_err(|_| LibraryError::SourceUnavailable)?;
         self.active_source_id = Some(source_id.to_string());
+        self.restore_suppressed_source_ids
+            .retain(|suppressed| suppressed != source_id);
         Ok(())
     }
 
@@ -1150,6 +1196,13 @@ impl LibraryRegistry {
             if source.path()? != canonical {
                 continue;
             }
+            if self
+                .restore_suppressed_source_ids
+                .iter()
+                .any(|suppressed| suppressed == &source.id)
+            {
+                return Ok(None);
+            }
             return Ok(matches!(
                 self.source_state(&source.id)?,
                 LibrarySourceState::Available
@@ -1192,6 +1245,9 @@ impl LibraryRegistry {
         if version.version == 7 {
             return Self::migrate_v7(path, &bytes);
         }
+        if version.version == 8 {
+            return Self::migrate_v8(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -1201,9 +1257,15 @@ impl LibraryRegistry {
         let stored: StoredLibrary =
             serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        Self::validate_restore_suppression(
+            stored.active_source_id.as_deref(),
+            &stored.restore_suppressed_source_ids,
+            &stored.sources,
+        )?;
         Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
         Ok(Self {
             active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: stored.restore_suppressed_source_ids,
             sources: stored.sources,
             connected_catdb_rediscovery_required: stored.connected_catdb_rediscovery_required,
             cleanup_pending: stored.cleanup_pending,
@@ -1215,6 +1277,7 @@ impl LibraryRegistry {
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         let mut migrated = Self {
             active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: stored.restore_suppressed_source_ids,
             sources: stored.sources,
             connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
@@ -1233,6 +1296,7 @@ impl LibraryRegistry {
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
         let mut migrated = Self {
             active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: Vec::new(),
             sources: stored.sources,
             connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
@@ -1288,12 +1352,29 @@ impl LibraryRegistry {
             active_source_id: stored
                 .active_source_id
                 .filter(|active| quarantined_connected_id.as_deref() != Some(active.as_str())),
+            restore_suppressed_source_ids: Vec::new(),
             sources,
             connected_catdb_rediscovery_required: rediscovery_required,
             cleanup_pending: stored.cleanup_pending,
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
         Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
+        migrated.save_to(path)?;
+        Ok(migrated)
+    }
+
+    fn migrate_v8(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibraryV8 =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
+        Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
+        let migrated = Self {
+            active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: Vec::new(),
+            sources: stored.sources,
+            connected_catdb_rediscovery_required: stored.connected_catdb_rediscovery_required,
+            cleanup_pending: stored.cleanup_pending,
+        };
         migrated.save_to(path)?;
         Ok(migrated)
     }
@@ -1313,6 +1394,7 @@ impl LibraryRegistry {
         quarantine_v1_workspaces(path, &stored.sources)?;
         let migrated = Self {
             active_source_id: None,
+            restore_suppressed_source_ids: Vec::new(),
             // V1 stores only historical paths. They are recovery hints, not
             // live membership; the native picker must explicitly re-admit the
             // filesystem object. Legacy managed bytes were quarantined above
@@ -1380,6 +1462,7 @@ impl LibraryRegistry {
                 .active_source_id
                 .as_ref()
                 .and_then(|old| id_map.get(old).cloned()),
+            restore_suppressed_source_ids: Vec::new(),
             sources,
             connected_catdb_rediscovery_required: false,
             cleanup_pending: Vec::new(),
@@ -1408,6 +1491,7 @@ impl LibraryRegistry {
         Self::validate_pending_local_cleanup(&stored.cleanup_pending, &stored.sources)?;
         let migrated = Self {
             active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: Vec::new(),
             sources: stored
                 .sources
                 .into_iter()
@@ -1446,6 +1530,7 @@ impl LibraryRegistry {
         );
         let migrated = Self {
             active_source_id: stored.active_source_id,
+            restore_suppressed_source_ids: Vec::new(),
             sources,
             connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
@@ -1588,6 +1673,30 @@ impl LibraryRegistry {
         Ok(())
     }
 
+    fn validate_restore_suppression(
+        active_source_id: Option<&str>,
+        suppressed: &[String],
+        sources: &[LibrarySource],
+    ) -> Result<(), LibraryError> {
+        if suppressed.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        let local_ids = sources
+            .iter()
+            .filter_map(LibrarySource::local)
+            .map(|source| source.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut seen = HashSet::new();
+        if suppressed.iter().any(|source_id| {
+            !seen.insert(source_id.as_str())
+                || !local_ids.contains(source_id.as_str())
+                || active_source_id == Some(source_id.as_str())
+        }) {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        Ok(())
+    }
+
     fn validate_pending_local_cleanup(
         pending: &[PendingCleanup],
         sources: &[LocalFolderSource],
@@ -1602,12 +1711,18 @@ impl LibraryRegistry {
 
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
         Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
+        Self::validate_restore_suppression(
+            self.active_source_id.as_deref(),
+            &self.restore_suppressed_source_ids,
+            &self.sources,
+        )?;
         Self::validate_pending_cleanup(&self.cleanup_pending, &self.sources)?;
         let parent = path.parent().ok_or(LibraryError::PersistFailed)?;
         fs::create_dir_all(parent).map_err(|_| LibraryError::PersistFailed)?;
         let body = serde_json::to_vec_pretty(&StoredLibrary {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
+            restore_suppressed_source_ids: self.restore_suppressed_source_ids.clone(),
             sources: self.sources.clone(),
             connected_catdb_rediscovery_required: self.connected_catdb_rediscovery_required,
             cleanup_pending: self.cleanup_pending.clone(),
@@ -2425,6 +2540,216 @@ impl LibraryStore {
         Ok(updated.cleanup_status())
     }
 
+    /// Preflight the exact active membership, then revoke its native authority
+    /// before the first quarantine/delete effect. Once `deactivate` succeeds,
+    /// every later failure is returned as a typed inactive outcome rather than
+    /// an error that could leave the renderer presenting stale authority.
+    #[allow(clippy::too_many_arguments)]
+    fn close_and_forget_source_with_cleanup_ops(
+        &self,
+        source_id: &str,
+        active_root: &SourceRoot,
+        active_engine_source_id: Option<uuid::Uuid>,
+        app_data: &Path,
+        deactivate: impl FnOnce() -> Result<u32, LibraryError>,
+        rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        cleanup: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<CloseAndForgetStoreOutcome, LibraryError> {
+        self.close_and_forget_source_with_ops(
+            source_id,
+            active_root,
+            active_engine_source_id,
+            app_data,
+            deactivate,
+            rename,
+            cleanup,
+            |registry, path| registry.save_to(path),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn close_and_forget_source_with_ops(
+        &self,
+        source_id: &str,
+        active_root: &SourceRoot,
+        active_engine_source_id: Option<uuid::Uuid>,
+        app_data: &Path,
+        deactivate: impl FnOnce() -> Result<u32, LibraryError>,
+        rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        mut cleanup: impl FnMut(&Path) -> io::Result<()>,
+        mut persist: impl FnMut(&LibraryRegistry, &Path) -> Result<(), LibraryError>,
+    ) -> Result<CloseAndForgetStoreOutcome, LibraryError> {
+        let _lease = self.acquire()?;
+        if self.app_data()?.as_path() != app_data {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+        let registry = LibraryRegistry::load_from(&self.registry_path)?;
+        let source = registry
+            .source_for(source_id)
+            .ok_or(LibraryError::SourceNotFound)?;
+        let source_root = source.root()?;
+        if &source_root != active_root {
+            return Err(LibraryError::GrantMismatch);
+        }
+        if active_engine_source_id != Some(source.engine_source_id()) {
+            return Err(LibraryError::GrantMismatch);
+        }
+        if registry
+            .active_source_id
+            .as_deref()
+            .is_some_and(|active_source_id| active_source_id != source_id)
+        {
+            return Err(LibraryError::GrantMismatch);
+        }
+        let identity = source
+            .identity
+            .as_ref()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?;
+        let managed = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
+        let mut inactive_registry = registry.clone();
+        inactive_registry.active_source_id = None;
+        if !inactive_registry
+            .restore_suppressed_source_ids
+            .iter()
+            .any(|suppressed| suppressed == source_id)
+        {
+            inactive_registry
+                .restore_suppressed_source_ids
+                .push(source_id.to_string());
+        }
+        let mut updated = inactive_registry.clone();
+        // The direct registry API remains strict. This distinct app-owned path
+        // has already proven the requested membership is the exact active root,
+        // and performs native revocation below before touching managed state.
+        updated.forget(source_id, None)?;
+
+        let managed_metadata = match fs::symlink_metadata(&managed) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(_) => {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })
+            }
+        };
+        if managed_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_dir())
+        {
+            return Err(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            });
+        }
+
+        let staged = if managed_metadata.is_some() {
+            let staging_root = app_data.join("managed-delete-staging");
+            fs::create_dir_all(&staging_root).map_err(|_| LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?;
+            let staging_metadata =
+                fs::symlink_metadata(&staging_root).map_err(|_| LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                })?;
+            if staging_metadata.file_type().is_symlink() || !staging_metadata.is_dir() {
+                return Err(LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::ManagedStateUnavailable,
+                });
+            }
+            let staged = staging_root.join(source_id);
+            match fs::symlink_metadata(&staged) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(LibraryError::CleanupFailed {
+                        reason: LibraryCleanupReason::ManagedStateUnavailable,
+                    })
+                }
+            }
+            Some(staged)
+        } else {
+            None
+        };
+
+        // Make the close intent durable before revoking native authority. A
+        // cleanup failure or process restart after revocation can therefore
+        // never restore this retained membership from a stale session root.
+        persist(&inactive_registry, &self.registry_path)?;
+        let workspace_generation = match deactivate() {
+            Ok(generation) => generation,
+            Err(error) => {
+                if persist(&registry, &self.registry_path).is_err() {
+                    return Err(LibraryError::CleanupFailed {
+                        reason: LibraryCleanupReason::RollbackFailed,
+                    });
+                }
+                return Err(error);
+            }
+        };
+        let inactive = |error| CloseAndForgetStoreOutcome {
+            status: CloseAndForgetStatus::Inactive { error },
+            workspace_generation,
+        };
+
+        let Some(staged) = staged else {
+            return match persist(&updated, &self.registry_path) {
+                Ok(()) => Ok(CloseAndForgetStoreOutcome {
+                    status: CloseAndForgetStatus::Complete,
+                    workspace_generation,
+                }),
+                Err(error) => Ok(inactive(error)),
+            };
+        };
+
+        if rename(&managed, &staged).is_err() {
+            return Ok(inactive(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            }));
+        }
+        updated.cleanup_pending.push(PendingCleanup {
+            source_id: source_id.to_string(),
+            tombstone: source_id.to_string(),
+        });
+        if let Err(error) = persist(&updated, &self.registry_path) {
+            let retained_error = if fs::rename(&staged, &managed).is_ok() {
+                error
+            } else {
+                LibraryError::CleanupFailed {
+                    reason: LibraryCleanupReason::RollbackFailed,
+                }
+            };
+            return Ok(inactive(retained_error));
+        }
+
+        if cleanup(&staged).is_err() {
+            return Ok(CloseAndForgetStoreOutcome {
+                status: CloseAndForgetStatus::CleanupPending,
+                workspace_generation,
+            });
+        }
+        let mut completed = updated.clone();
+        completed
+            .cleanup_pending
+            .retain(|entry| entry.source_id != source_id);
+        if persist(&completed, &self.registry_path).is_err() {
+            return Ok(CloseAndForgetStoreOutcome {
+                status: CloseAndForgetStatus::CleanupPending,
+                workspace_generation,
+            });
+        }
+        Ok(CloseAndForgetStoreOutcome {
+            status: CloseAndForgetStatus::Complete,
+            workspace_generation,
+        })
+    }
+
     #[cfg(test)]
     fn retry_pending_cleanup_with(
         &self,
@@ -2845,6 +3170,73 @@ pub(crate) fn forget_library_source(
     store.read(|registry| registry.snapshot(&app_data, active.as_ref()))
 }
 
+/// Close the exact active local source, revoke its epoch and watcher, then
+/// forget its membership and private CatDB-managed state. User source bytes are
+/// never cleanup targets.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn close_and_forget_library_source(
+    app: AppHandle,
+    source_id: String,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
+    watcher: tauri::State<'_, crate::commands::WatcherState>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<CloseAndForgetLibrarySourceOutcome, LibraryError> {
+    let _guard = lock_library(&state)?;
+    let (path, app_data) = registry_path(&app)?;
+    close_and_forget_library_source_at(path, app_data, &source_id, &workspace, &watcher)
+}
+
+fn close_and_forget_library_source_at(
+    registry_path: PathBuf,
+    app_data: PathBuf,
+    source_id: &str,
+    workspace: &crate::commands::WorkspaceState,
+    watcher: &crate::commands::WatcherState,
+) -> Result<CloseAndForgetLibrarySourceOutcome, LibraryError> {
+    close_and_forget_library_source_at_with_ops(
+        registry_path,
+        app_data,
+        source_id,
+        workspace,
+        watcher,
+        |from, to| fs::rename(from, to),
+        |path| fs::remove_dir_all(path),
+    )
+}
+
+fn close_and_forget_library_source_at_with_ops(
+    registry_path: PathBuf,
+    app_data: PathBuf,
+    source_id: &str,
+    workspace: &crate::commands::WorkspaceState,
+    watcher: &crate::commands::WatcherState,
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    cleanup: impl FnMut(&Path) -> io::Result<()>,
+) -> Result<CloseAndForgetLibrarySourceOutcome, LibraryError> {
+    let epoch = workspace.current().ok_or(LibraryError::GrantMismatch)?;
+    let active = epoch.source_root();
+    let active_engine_source_id = epoch.source_id();
+    let outcome = LibraryStore::new(registry_path).close_and_forget_source_with_cleanup_ops(
+        source_id,
+        &active,
+        active_engine_source_id,
+        &app_data,
+        move || {
+            let revoked = crate::commands::revoke_workspace(&epoch, workspace, watcher)
+                .map_err(|_| LibraryError::OpenFailed);
+            drop(epoch);
+            revoked
+        },
+        rename,
+        cleanup,
+    )?;
+    Ok(CloseAndForgetLibrarySourceOutcome {
+        status: outcome.status,
+        workspace_generation: outcome.workspace_generation,
+    })
+}
+
 pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
     match error.kind() {
         io::ErrorKind::NotFound => LibrarySourceState::Missing,
@@ -2859,7 +3251,9 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -2867,8 +3261,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        classify_probe_error, LibraryError, LibraryIndexState, LibraryRegistry, LibrarySourceState,
-        LibraryStore, NativePath, LIBRARY_VERSION,
+        classify_probe_error, close_and_forget_library_source_at,
+        close_and_forget_library_source_at_with_ops, CloseAndForgetStatus, LibraryError,
+        LibraryIndexState, LibraryRegistry, LibrarySourceState, LibraryStore, NativePath,
+        LIBRARY_VERSION,
     };
     use mdreader_ingest::SourceRoot;
 
@@ -3423,6 +3819,90 @@ mod tests {
             .expect("write identity-less registry");
         assert!(matches!(
             LibraryRegistry::load_from(&file),
+            Err(LibraryError::CorruptRegistry)
+        ));
+    }
+
+    #[test]
+    fn v8_registry_migrates_to_v9_with_an_explicit_empty_restore_suppression_set() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("mark active");
+        registry.save_to(&registry_path).expect("write v9 fixture");
+        let mut v8: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read fixture"))
+                .expect("decode fixture");
+        v8["version"] = serde_json::json!(8);
+        v8.as_object_mut()
+            .expect("registry object")
+            .remove("restore_suppressed_source_ids");
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&v8).expect("encode v8"),
+        )
+        .expect("write v8");
+
+        let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate v8");
+
+        assert_eq!(migrated.restore_source_id(), Some(source.id.as_str()));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read migrated"))
+                .expect("decode migrated");
+        assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
+        assert_eq!(
+            persisted["restore_suppressed_source_ids"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn corrupt_restore_suppression_ids_are_rejected_on_load() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .save_to(&registry_path)
+            .expect("write valid registry");
+        let valid: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read valid registry"))
+                .expect("decode registry");
+
+        for suppressed in [
+            serde_json::json!(["f".repeat(64)]),
+            serde_json::json!([source.id.clone(), source.id.clone()]),
+        ] {
+            let mut corrupt = valid.clone();
+            corrupt["restore_suppressed_source_ids"] = suppressed;
+            fs::write(
+                &registry_path,
+                serde_json::to_vec_pretty(&corrupt).expect("encode corrupt registry"),
+            )
+            .expect("write corrupt registry");
+            assert!(matches!(
+                LibraryRegistry::load_from(&registry_path),
+                Err(LibraryError::CorruptRegistry)
+            ));
+        }
+
+        let mut active_and_suppressed = valid;
+        active_and_suppressed["active_source_id"] = serde_json::json!(source.id.clone());
+        active_and_suppressed["restore_suppressed_source_ids"] = serde_json::json!([source.id]);
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&active_and_suppressed)
+                .expect("encode active+suppress registry"),
+        )
+        .expect("write corrupt registry");
+        assert!(matches!(
+            LibraryRegistry::load_from(&registry_path),
             Err(LibraryError::CorruptRegistry)
         ));
     }
@@ -4048,6 +4528,10 @@ mod tests {
             .as_object_mut()
             .expect("registry object")
             .remove("connected_catdb_rediscovery_required");
+        legacy
+            .as_object_mut()
+            .expect("registry object")
+            .remove("restore_suppressed_source_ids");
         fs::write(
             &registry_path,
             serde_json::to_vec_pretty(&legacy).expect("encode V3"),
@@ -4331,6 +4815,426 @@ mod tests {
                 .modified()
                 .expect("document mtime after forget"),
             before
+        );
+    }
+
+    #[test]
+    fn closing_the_sole_active_source_revokes_before_private_cleanup_and_preserves_user_bytes() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let document = root.join("keep.md");
+        fs::write(&document, b"# user authority").expect("write user document");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add sole source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("mark restore candidate");
+        let managed = crate::engine::db_path_under(&app_data, &active)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(&managed).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"private index").expect("write private index");
+        registry.save_to(&registry_path).expect("save registry");
+        let deactivated = Arc::new(AtomicBool::new(false));
+        let app_data_for_rename = app_data.clone();
+        let managed_for_rename = managed.clone();
+        let app_data_for_cleanup = app_data.clone();
+        let root_for_cleanup = root.clone();
+
+        let outcome = LibraryStore::new(registry_path.clone())
+            .close_and_forget_source_with_cleanup_ops(
+                &source.id,
+                &active,
+                Some(source.engine_source_id()),
+                &app_data,
+                {
+                    let deactivated = Arc::clone(&deactivated);
+                    move || {
+                        deactivated.store(true, Ordering::Release);
+                        Ok(7)
+                    }
+                },
+                {
+                    let deactivated = Arc::clone(&deactivated);
+                    move |from, to| {
+                        assert!(
+                            deactivated.load(Ordering::Acquire),
+                            "authority must be revoked before quarantine"
+                        );
+                        assert_eq!(from, managed_for_rename);
+                        assert!(to.starts_with(app_data_for_rename.join("managed-delete-staging")));
+                        fs::rename(from, to)
+                    }
+                },
+                {
+                    let deactivated = Arc::clone(&deactivated);
+                    move |path| {
+                        assert!(
+                            deactivated.load(Ordering::Acquire),
+                            "authority must be revoked before private deletion"
+                        );
+                        assert_ne!(path, root_for_cleanup);
+                        assert!(
+                            path.starts_with(app_data_for_cleanup.join("managed-delete-staging"))
+                        );
+                        fs::remove_dir_all(path)
+                    }
+                },
+            )
+            .expect("close and forget sole source");
+
+        assert_eq!(outcome.status, CloseAndForgetStatus::Complete);
+        assert_eq!(outcome.workspace_generation, 7);
+        assert!(LibraryRegistry::load_from(&registry_path)
+            .expect("reload completed registry")
+            .sources()
+            .is_empty());
+        assert_eq!(
+            fs::read(document).expect("user document survives"),
+            b"# user authority"
+        );
+    }
+
+    #[test]
+    fn close_and_forget_command_core_revokes_the_exact_active_membership() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("persist active membership");
+        registry.save_to(&registry_path).expect("save registry");
+        let workspace = crate::commands::WorkspaceState::default();
+        workspace
+            .switch_bound_with_source(active.clone(), Some(source.engine_source_id()))
+            .expect("grant exact semantic source");
+        let watcher = crate::commands::WatcherState::default();
+        let old_epoch = workspace.current().expect("active epoch");
+
+        let outcome = close_and_forget_library_source_at(
+            registry_path.clone(),
+            app_data,
+            &source.id,
+            &workspace,
+            &watcher,
+        )
+        .expect("close exact active source");
+
+        assert_eq!(outcome.status, CloseAndForgetStatus::Complete);
+        assert!(LibraryRegistry::load_from(&registry_path)
+            .expect("load completed registry")
+            .sources()
+            .is_empty());
+        assert!(workspace.current().is_none());
+        assert!(!workspace.is_current(&old_epoch));
+        assert!(outcome.workspace_generation > old_epoch.generation as u32);
+    }
+
+    #[test]
+    fn command_drops_the_captured_epoch_before_private_quarantine_and_cleanup() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("persist active membership");
+        let managed = crate::engine::db_path_under(&app_data, &active)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(&managed).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"private index").expect("write private index");
+        registry.save_to(&registry_path).expect("save registry");
+        let workspace = crate::commands::WorkspaceState::default();
+        workspace
+            .switch_bound_with_source(active, Some(source.engine_source_id()))
+            .expect("grant exact semantic source");
+        let epoch = workspace.current().expect("active epoch");
+        let epoch_weak = Arc::downgrade(&epoch);
+        drop(epoch);
+        let watcher = crate::commands::WatcherState::default();
+        let weak_for_rename = epoch_weak.clone();
+
+        close_and_forget_library_source_at_with_ops(
+            registry_path,
+            app_data,
+            &source.id,
+            &workspace,
+            &watcher,
+            move |from, to| {
+                assert!(
+                    weak_for_rename.upgrade().is_none(),
+                    "the exact epoch and its engine handles must die before quarantine"
+                );
+                fs::rename(from, to)
+            },
+            move |path| {
+                assert!(
+                    epoch_weak.upgrade().is_none(),
+                    "the exact epoch must stay dead before private deletion"
+                );
+                fs::remove_dir_all(path)
+            },
+        )
+        .expect("close after dropping native authority");
+    }
+
+    #[test]
+    fn close_and_forget_command_core_rejects_a_different_membership_without_revoking() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root_a = mkdir(temp.path(), "notes-a");
+        let root_b = mkdir(temp.path(), "notes-b");
+        let active_a = bound_root(&root_a);
+        let mut registry = LibraryRegistry::empty();
+        let source_a = registry.add_root(&root_a).expect("add active source");
+        let source_b = registry.add_root(&root_b).expect("add other source");
+        registry
+            .mark_active(&source_a.id, Some(&active_a))
+            .expect("persist active membership");
+        registry.save_to(&registry_path).expect("save registry");
+        let workspace = crate::commands::WorkspaceState::default();
+        workspace
+            .switch_bound_with_source(bound_root(&root_b), Some(source_b.engine_source_id()))
+            .expect("grant source B while stale registry restore candidate still names A");
+        let watcher = crate::commands::WatcherState::default();
+        let old_epoch = workspace.current().expect("active epoch");
+        let generation = workspace.generation();
+
+        assert_eq!(
+            close_and_forget_library_source_at(
+                registry_path.clone(),
+                app_data,
+                &source_b.id,
+                &workspace,
+                &watcher,
+            ),
+            Err(LibraryError::GrantMismatch)
+        );
+        assert!(workspace.is_current(&old_epoch));
+        assert_eq!(workspace.generation(), generation);
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("registry remains valid")
+                .restore_source_id(),
+            Some(source_a.id.as_str())
+        );
+    }
+
+    #[test]
+    fn close_and_forget_rejects_same_root_with_a_different_semantic_source_identity() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("persist active membership");
+        registry.save_to(&registry_path).expect("save registry");
+        let workspace = crate::commands::WorkspaceState::default();
+        workspace
+            .switch_bound_with_source(active, Some(uuid::Uuid::new_v4()))
+            .expect("grant the same root under a different semantic source");
+        let watcher = crate::commands::WatcherState::default();
+        let epoch = workspace.current().expect("active epoch");
+        let generation = workspace.generation();
+
+        assert_eq!(
+            close_and_forget_library_source_at(
+                registry_path.clone(),
+                app_data,
+                &source.id,
+                &workspace,
+                &watcher,
+            ),
+            Err(LibraryError::GrantMismatch)
+        );
+        assert!(workspace.is_current(&epoch));
+        assert_eq!(workspace.generation(), generation);
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("registry unchanged")
+                .restore_source_id(),
+            Some(source.id.as_str())
+        );
+    }
+
+    #[test]
+    fn post_close_quarantine_failure_returns_an_inactive_recoverable_source() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("mark restore candidate");
+        let managed = crate::engine::db_path_under(&app_data, &active)
+            .parent()
+            .expect("managed workspace")
+            .to_path_buf();
+        fs::create_dir_all(&managed).expect("create managed workspace");
+        fs::write(managed.join("catdb.db"), b"private index").expect("write private index");
+        registry.save_to(&registry_path).expect("save registry");
+
+        let outcome = LibraryStore::new(registry_path.clone())
+            .close_and_forget_source_with_cleanup_ops(
+                &source.id,
+                &active,
+                Some(source.engine_source_id()),
+                &app_data,
+                || Ok(9),
+                |_, _| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                |_| panic!("delete must not run after quarantine failure"),
+            )
+            .expect("a closed workspace returns a typed inactive outcome");
+
+        assert_eq!(
+            outcome.status,
+            CloseAndForgetStatus::Inactive {
+                error: LibraryError::CleanupFailed {
+                    reason: super::LibraryCleanupReason::ManagedStateUnavailable,
+                },
+            }
+        );
+        assert_eq!(outcome.workspace_generation, 9);
+        let retained =
+            LibraryRegistry::load_from(&registry_path).expect("reload retained membership");
+        assert_eq!(retained.sources().len(), 1);
+        assert_eq!(retained.sources()[0].id, source.id);
+        assert_eq!(
+            fs::read(managed.join("catdb.db")).expect("private state remains retryable"),
+            b"private index"
+        );
+        let snapshot = retained
+            .snapshot(&app_data, None)
+            .expect("inactive snapshot");
+        assert!(!snapshot.sources[0].active);
+        assert!(!snapshot.sources[0].restore_candidate);
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("reload inactive registry")
+                .reconcile_restore(Some(&root))
+                .expect("restart reconciliation"),
+            None,
+            "a stale session root must not reactivate the retained membership"
+        );
+    }
+
+    #[test]
+    fn close_intent_persist_failure_never_calls_the_authority_revoke() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("mark active");
+        registry.save_to(&registry_path).expect("save registry");
+        let revoked = Arc::new(AtomicBool::new(false));
+
+        let error = LibraryStore::new(registry_path.clone())
+            .close_and_forget_source_with_ops(
+                &source.id,
+                &active,
+                Some(source.engine_source_id()),
+                &app_data,
+                {
+                    let revoked = Arc::clone(&revoked);
+                    move || {
+                        revoked.store(true, Ordering::Release);
+                        Ok(11)
+                    }
+                },
+                |_, _| panic!("no managed state to quarantine"),
+                |_| panic!("no managed state to delete"),
+                |_, _| Err(LibraryError::PersistFailed),
+            )
+            .expect_err("intent must be durable before revoke");
+
+        assert_eq!(error, LibraryError::PersistFailed);
+        assert!(!revoked.load(Ordering::Acquire));
+        assert_eq!(
+            LibraryRegistry::load_from(&registry_path)
+                .expect("original registry remains")
+                .restore_source_id(),
+            Some(source.id.as_str())
+        );
+    }
+
+    #[test]
+    fn revoke_failure_with_failed_intent_rollback_reports_rollback_failure() {
+        let temp = tempdir().expect("tempdir");
+        let app_data = temp.path().join("app-data");
+        let registry_path = app_data.join("library.json");
+        let root = mkdir(temp.path(), "notes");
+        let active = bound_root(&root);
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add source");
+        registry
+            .mark_active(&source.id, Some(&active))
+            .expect("mark active");
+        registry.save_to(&registry_path).expect("save registry");
+        let persist_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let error = LibraryStore::new(registry_path.clone())
+            .close_and_forget_source_with_ops(
+                &source.id,
+                &active,
+                Some(source.engine_source_id()),
+                &app_data,
+                || Err(LibraryError::OpenFailed),
+                |_, _| panic!("no managed state to quarantine"),
+                |_| panic!("no managed state to delete"),
+                {
+                    let persist_calls = Arc::clone(&persist_calls);
+                    move |candidate, path| {
+                        if persist_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                            candidate.save_to(path)
+                        } else {
+                            Err(LibraryError::PersistFailed)
+                        }
+                    }
+                },
+            )
+            .expect_err("rollback failure must be explicit");
+
+        assert_eq!(
+            error,
+            LibraryError::CleanupFailed {
+                reason: super::LibraryCleanupReason::RollbackFailed,
+            }
+        );
+        assert_eq!(persist_calls.load(Ordering::Acquire), 2);
+        let persisted =
+            LibraryRegistry::load_from(&registry_path).expect("durable close intent remains");
+        assert!(persisted.restore_source_id().is_none());
+        assert_eq!(
+            persisted
+                .reconcile_restore(Some(&root))
+                .expect("suppressed restart restore"),
+            None
         );
     }
 
@@ -5142,6 +6046,9 @@ mod tests {
         body.as_object_mut()
             .expect("registry object")
             .remove("connected_catdb_rediscovery_required");
+        body.as_object_mut()
+            .expect("registry object")
+            .remove("restore_suppressed_source_ids");
         body["sources"]
             .as_array_mut()
             .expect("source array")

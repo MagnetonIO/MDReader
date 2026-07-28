@@ -21,7 +21,22 @@ import type {
 } from '../bindings';
 import { SettingsCommandError, type SettingsBackend } from '../platform/settings.js';
 import { useSettingsStore } from '../stores/settings.js';
-import { SettingsSheet } from './SettingsSheet.js';
+import {
+  SettingsSheet as RequiredSettingsSheet,
+  type SettingsSheetProps,
+} from './SettingsSheet.js';
+
+function SettingsSheet(
+  props: Omit<SettingsSheetProps, 'onForgetActiveSource'> &
+    Partial<Pick<SettingsSheetProps, 'onForgetActiveSource'>>,
+) {
+  return (
+    <RequiredSettingsSheet
+      {...props}
+      onForgetActiveSource={props.onForgetActiveSource ?? (async () => {})}
+    />
+  );
+}
 
 const SOURCE_ID = 'a'.repeat(64);
 const SOURCE: LibrarySourceDto = {
@@ -639,7 +654,7 @@ describe('Settings sheet', () => {
     });
   });
 
-  it('keeps unavailable membership visible and protects the active source from forgetting', async () => {
+  it('keeps unavailable membership visible and lets the app own forgetting the active source', async () => {
     const active: LibrarySourceDto = {
       ...SOURCE,
       active: true,
@@ -663,22 +678,40 @@ describe('Settings sheet', () => {
         cleanup: { kind: 'complete' as const },
       })),
     });
+    const onForgetActiveSource = vi.fn(async () => {});
+    const onClose = vi.fn();
     render(
       <SettingsSheet
         backend={api}
         watcher="watching"
         importState={null}
         onActivateSource={vi.fn(async () => true)}
-        onClose={vi.fn()}
+        onForgetActiveSource={onForgetActiveSource}
+        onClose={onClose}
       />,
     );
 
     await screen.findByText('Archive');
     expect(screen.getByText('Folder not found')).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Forget Research notes' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    const forgetActive = screen.getByRole('button', { name: 'Forget Research notes' });
+    expect((forgetActive as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(forgetActive);
+    const confirm = screen.getByRole('alertdialog', { name: 'Forget Research notes' });
+    const cancel = within(confirm).getByRole('button', { name: 'Cancel' });
+    const submit = within(confirm).getByRole('button', { name: 'Forget source' });
+    expect(document.activeElement).toBe(cancel);
+    submit.focus();
+    fireEvent.keyDown(confirm, { key: 'Tab' });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(confirm, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog', { name: 'Forget Research notes' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(forgetActive);
+
+    fireEvent.click(forgetActive);
+    fireEvent.click(screen.getByRole('button', { name: 'Forget source' }));
+    expect(onForgetActiveSource).toHaveBeenCalledWith(active);
+    expect(api.forgetSource).not.toHaveBeenCalled();
     expect(
       (screen.getByRole('button', { name: 'Activate Archive' }) as HTMLButtonElement).disabled,
     ).toBe(true);

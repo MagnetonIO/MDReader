@@ -110,6 +110,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             library::resolve_library_document_edit,
             library::mark_library_source_active,
             library::forget_library_source,
+            library::close_and_forget_library_source,
             diagnostics::diagnostics_info,
             diagnostics::set_diagnostics_level,
             diagnostics::record_diagnostic_event,

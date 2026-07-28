@@ -71,6 +71,7 @@ pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
 #[derive(Default)]
 pub struct WorkspaceState {
     current: Mutex<Option<Arc<crate::engine::Epoch>>>,
+    generation: AtomicU64,
 }
 
 impl WorkspaceState {
@@ -96,10 +97,12 @@ impl WorkspaceState {
             .is_some_and(|current| Arc::ptr_eq(&current, epoch))
     }
 
-    /// The current epoch's generation (0 when no workspace is open).
+    /// The monotonic workspace generation high-water mark. It remains advanced
+    /// while no workspace is open so stale watcher work can never collide with
+    /// a later grant.
     #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
-        self.current().map_or(0, |epoch| epoch.generation)
+        self.generation.load(Ordering::Acquire)
     }
 
     /// Create a fresh epoch for `root` (already canonicalized) and swap it in,
@@ -158,7 +161,13 @@ fn switch_bound_with_hook(
     root.verify().map_err(|error| error.to_string())?;
     after_final_verification();
     root.verify().map_err(|error| error.to_string())?;
-    let generation = slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    let generation = state
+        .generation
+        .load(Ordering::Acquire)
+        .checked_add(1)
+        .ok_or_else(|| "workspace generation overflow".to_string())?;
+    u32::try_from(generation).map_err(|_| "workspace generation overflow".to_string())?;
+    state.generation.store(generation, Ordering::Release);
     let epoch = crate::engine::Epoch::new_with_source(root, generation, source_id);
     *slot = Some(Arc::clone(&epoch));
     Ok(epoch)
@@ -807,6 +816,50 @@ struct ActiveWatcher {
 #[derive(Default)]
 pub struct WatcherState(Mutex<Option<ActiveWatcher>>);
 
+/// Revoke one exact active workspace and stop its watcher as one transaction.
+///
+/// Lock order matches [`commit_workspace`]: watcher first, then epoch. The
+/// generation advances even though the current epoch becomes `None`, so a later
+/// open cannot reuse the generation carried by an already-draining old watcher.
+pub(crate) fn revoke_workspace(
+    expected_epoch: &Arc<crate::engine::Epoch>,
+    workspace: &WorkspaceState,
+    watcher: &WatcherState,
+) -> Result<u32, String> {
+    let mut watcher_slot = watcher
+        .0
+        .lock()
+        .map_err(|_| "watcher state poisoned".to_string())?;
+    let mut epoch_slot = workspace
+        .current
+        .lock()
+        .map_err(|_| "workspace state poisoned".to_string())?;
+    let epoch = epoch_slot
+        .as_ref()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    if !Arc::ptr_eq(epoch, expected_epoch) {
+        return Err("active workspace does not match the requested source".to_string());
+    }
+    let expected_root = expected_epoch.source_root();
+    if watcher_slot.as_ref().is_some_and(|active| {
+        active._root != expected_root || active._generation != expected_epoch.generation
+    }) {
+        return Err("watcher and workspace authority diverged".to_string());
+    }
+
+    let generation = workspace
+        .generation
+        .load(Ordering::Acquire)
+        .checked_add(1)
+        .ok_or_else(|| "workspace generation overflow".to_string())?;
+    let wire_generation =
+        u32::try_from(generation).map_err(|_| "workspace generation overflow".to_string())?;
+    workspace.generation.store(generation, Ordering::Release);
+    *epoch_slot = None;
+    *watcher_slot = None;
+    Ok(wire_generation)
+}
+
 /// Library-only watch carrying the backend-owned stable CatDB source identity.
 pub(crate) fn watch_workspace_path_exact_with_source(
     app: &AppHandle,
@@ -1090,7 +1143,14 @@ fn commit_workspace(
     // Both locks held — neither write below can fail, so the swap is atomic. The
     // watcher's armed generation is published to match the new epoch exactly, so
     // its events are tagged with the era they belong to.
-    let generation = epoch_slot.as_ref().map_or(0, |epoch| epoch.generation) + 1;
+    let generation = workspace
+        .generation
+        .load(Ordering::Acquire)
+        .checked_add(1)
+        .ok_or_else(|| "workspace generation overflow".to_string())?;
+    let wire_generation =
+        u32::try_from(generation).map_err(|_| "workspace generation overflow".to_string())?;
+    workspace.generation.store(generation, Ordering::Release);
     armed_gen.store(generation, Ordering::Release);
     *epoch_slot = Some(crate::engine::Epoch::new_with_source(
         new_root.clone(),
@@ -1102,7 +1162,7 @@ fn commit_workspace(
         _root: new_root,
         _generation: generation,
     });
-    Ok(generation as u32)
+    Ok(wire_generation)
 }
 
 #[cfg(test)]
@@ -1110,9 +1170,10 @@ mod tests {
     use super::{
         canonical_dir, commit_rename, grant_workspace_path_exact,
         grant_workspace_path_exact_with_source, read_doc_guarded, read_doc_guarded_with_hooks,
-        resolve_dir, resolve_doc, resolve_within, save_doc_guarded, save_doc_guarded_with_hooks,
-        switch_bound_with_hook, watch_and_commit, watch_and_commit_path_exact,
-        watch_and_commit_path_exact_with_hooks, DebounceEventResult, WatcherState, WorkspaceState,
+        resolve_dir, resolve_doc, resolve_within, revoke_workspace, save_doc_guarded,
+        save_doc_guarded_with_hooks, switch_bound_with_hook, watch_and_commit,
+        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks, DebounceEventResult,
+        WatcherState, WorkspaceState,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1282,6 +1343,112 @@ mod tests {
         .is_err());
         assert_eq!(workspace.root().unwrap(), root_b);
         assert!(watcher.0.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn revoking_a_workspace_drops_its_watcher_stales_the_epoch_and_keeps_generation_monotonic() {
+        let (_a, root_a) = workspace();
+        let (_b, root_b) = workspace();
+        let workspace = WorkspaceState::default();
+        let watcher = WatcherState::default();
+        let armed_gen = AtomicU64::new(0);
+        watch_and_commit(
+            root_a.to_str().expect("utf8 root"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm active workspace");
+        let old_epoch = workspace.current().expect("active epoch");
+        let revoked_generation =
+            revoke_workspace(&old_epoch, &workspace, &watcher).expect("revoke exact authority");
+
+        assert!(
+            workspace.current().is_none(),
+            "the old epoch is no longer current"
+        );
+        assert!(
+            !workspace.is_current(&old_epoch),
+            "in-flight old work is stale"
+        );
+        assert!(watcher.0.lock().expect("watcher state").is_none());
+        assert!(revoked_generation > old_epoch.generation as u32);
+
+        let (_, next_generation) = watch_and_commit(
+            root_b.to_str().expect("utf8 root"),
+            &workspace,
+            &watcher,
+            &armed_gen,
+            |_result: DebounceEventResult| {},
+        )
+        .expect("open after an empty workspace");
+        assert!(
+            next_generation > revoked_generation,
+            "a close must not reset generations and let stale watcher events collide"
+        );
+    }
+
+    #[test]
+    fn revoking_a_degraded_grant_without_a_watcher_is_valid() {
+        let (_a, root_a) = workspace();
+        let workspace = WorkspaceState::granted(root_a);
+        let watcher = WatcherState::default();
+        let epoch = workspace.current().expect("degraded epoch");
+
+        revoke_workspace(&epoch, &workspace, &watcher)
+            .expect("the supported grant-only fallback has no watcher to drop");
+
+        assert!(workspace.current().is_none());
+        assert!(watcher.0.lock().expect("watcher state").is_none());
+    }
+
+    #[test]
+    fn revoking_an_old_same_root_epoch_preserves_the_new_epoch_and_generation() {
+        let (_a, root_a) = workspace();
+        let workspace = WorkspaceState::default();
+        let first = workspace
+            .switch(root_a.clone())
+            .expect("first same-root epoch");
+        let current = workspace.switch(root_a).expect("new same-root epoch");
+        let watcher = WatcherState::default();
+        let generation = workspace.generation();
+
+        assert!(revoke_workspace(&first, &workspace, &watcher).is_err());
+
+        assert!(workspace.is_current(&current));
+        assert_eq!(workspace.generation(), generation);
+        assert!(watcher.0.lock().expect("watcher state").is_none());
+    }
+
+    #[test]
+    fn a_mismatched_live_watcher_preserves_every_authority_on_revoke_failure() {
+        let (_a, root_a) = workspace();
+        let workspace = WorkspaceState::default();
+        let watcher = WatcherState::default();
+        watch_and_commit(
+            root_a.to_str().expect("utf8 root"),
+            &workspace,
+            &watcher,
+            &AtomicU64::new(0),
+            |_result: DebounceEventResult| {},
+        )
+        .expect("arm workspace");
+        let epoch = workspace.current().expect("active epoch");
+        let generation = workspace.generation();
+        watcher
+            .0
+            .lock()
+            .expect("watcher state")
+            .as_mut()
+            .unwrap()
+            ._generation += 1;
+
+        assert!(revoke_workspace(&epoch, &workspace, &watcher).is_err());
+
+        assert!(workspace.is_current(&epoch));
+        assert_eq!(workspace.generation(), generation);
+        assert!(watcher.0.lock().expect("watcher state").is_some());
     }
 
     #[test]

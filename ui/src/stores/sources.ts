@@ -42,6 +42,8 @@ export interface SourcesState {
   setImport: (importState: ImportState | null) => void;
   setFromIndex: (fromIndex: boolean) => void;
   hydrate: (partial: { root?: string | null; recent?: RecentDoc[] }) => void;
+  /** Clear one closed workspace while preserving every other source's recents. */
+  forgetRoot: (root: string) => void;
   reset: () => void;
 }
 
@@ -90,6 +92,21 @@ export const useSourcesStore = create<SourcesState>((set) => ({
     set((state) => ({
       root: partial.root !== undefined ? partial.root : state.root,
       recent: partial.recent ?? state.recent,
+    })),
+  forgetRoot: (root) =>
+    set((state) => ({
+      ...(state.root === root
+        ? {
+            root: null,
+            files: [],
+            watcher: 'idle' as const,
+            loading: false,
+            importState: null,
+            fromIndex: false,
+            listingError: null,
+          }
+        : {}),
+      recent: state.recent.filter((entry) => entry.root !== root),
     })),
   reset: () => set({ ...initialState }),
 }));

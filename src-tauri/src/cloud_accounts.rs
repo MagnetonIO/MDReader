@@ -7891,6 +7891,10 @@ mod tests {
             .as_object_mut()
             .expect("registry object")
             .remove("connected_catdb_rediscovery_required");
+        legacy
+            .as_object_mut()
+            .expect("registry object")
+            .remove("restore_suppressed_source_ids");
         fs::write(
             &registry_path,
             serde_json::to_vec_pretty(&legacy).expect("encode V4 registry"),
