@@ -242,9 +242,7 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
         .build()
 }
 
-/// Desktop (and, later, mobile) entry point.
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) {
     std::hint::black_box(release_identity());
     let builder = runtime_specta_builder();
 
@@ -307,9 +305,19 @@ pub fn run() {
             });
     }
 
+    terminal_runner(tauri_builder);
+}
+
+fn run_tauri(tauri_builder: tauri::Builder<tauri::Wry>) {
     tauri_builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Desktop (and, later, mobile) entry point.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    launch_application(run_tauri);
 }
 
 #[cfg(test)]
@@ -339,7 +347,7 @@ fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescrip
 mod tests {
     use std::process::Command;
 
-    use super::{export_bindings, release_identity, runtime_specta_builder, specta_builder};
+    use super::{export_bindings, launch_application, release_identity, specta_builder};
 
     /// Regenerates `apps/mdreader/ui/src/bindings.ts` headlessly (no window, no
     /// webview). `scripts/check-bindings.sh` runs this then `git diff
@@ -350,36 +358,49 @@ mod tests {
     }
 
     #[test]
-    fn production_runtime_never_exports_bindings() {
-        const CHILD_PROCESS: &str = "MDREADER_TEST_RUNTIME_BUILDER_CHILD";
+    fn production_entrypoint_prelaunch_never_exports_bindings() {
+        const CHILD_PROCESS: &str = "MDREADER_TEST_PRELAUNCH_CHILD";
 
         if std::env::var_os(CHILD_PROCESS).is_some() {
-            let _builder = runtime_specta_builder();
+            launch_application(|_tauri_builder| {
+                std::fs::write("terminal-runner-called", b"").expect("record terminal runner");
+            });
             return;
         }
 
         let launch_root = tempfile::tempdir().expect("create isolated launch root");
         let launch_directory = launch_root.path().join("finder-cwd");
+        let profile_directory = launch_root.path().join("profile");
         std::fs::create_dir(&launch_directory).expect("create isolated launch directory");
+        std::fs::create_dir(&profile_directory).expect("create isolated profile directory");
 
         let status = Command::new(std::env::current_exe().expect("resolve test executable"))
             .args([
                 "--exact",
-                "tests::production_runtime_never_exports_bindings",
+                "tests::production_entrypoint_prelaunch_never_exports_bindings",
                 "--nocapture",
             ])
             .env(CHILD_PROCESS, "1")
+            .env("HOME", &profile_directory)
+            .env("USERPROFILE", &profile_directory)
+            .env("XDG_CACHE_HOME", profile_directory.join("cache"))
+            .env("XDG_CONFIG_HOME", profile_directory.join("config"))
+            .env("XDG_DATA_HOME", profile_directory.join("data"))
             .current_dir(&launch_directory)
             .status()
-            .expect("launch runtime-builder child process");
+            .expect("launch production-prelaunch child process");
 
         assert!(
             status.success(),
-            "production runtime builder depended on the launch working directory"
+            "production prelaunch depended on the launch working directory"
+        );
+        assert!(
+            launch_directory.join("terminal-runner-called").exists(),
+            "production prelaunch did not reach the injected terminal runner"
         );
         assert!(
             !launch_root.path().join("ui/src/bindings.ts").exists(),
-            "production runtime wrote generated bindings during launch"
+            "production prelaunch wrote generated bindings during launch"
         );
     }
 
