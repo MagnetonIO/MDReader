@@ -4619,6 +4619,36 @@ struct OAuthToken {
     expires_in_seconds: u64,
 }
 
+fn validate_authorization_token_response(
+    provider: CloudProvider,
+    response: OAuthTokenResponse,
+) -> Result<OAuthToken, CloudSourceError> {
+    let refresh_token = response
+        .refresh_token
+        .filter(|token| !token.is_empty())
+        .ok_or(CloudSourceError::ProviderRejected)?;
+    let expires_in_seconds = response
+        .expires_in
+        .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
+        .ok_or(CloudSourceError::ProviderRejected)?;
+    if !response.token_type.eq_ignore_ascii_case("bearer")
+        || !oauth_token_scope_is_acceptable(provider, response.scope.as_deref())
+    {
+        return Err(CloudSourceError::ProviderRejected);
+    }
+    SecretBundle::new(
+        response.access_token.clone(),
+        refresh_token.clone(),
+        expires_at_unix_seconds(expires_in_seconds)?,
+        [1; 32],
+    )?;
+    Ok(OAuthToken {
+        access_token: Zeroizing::new(response.access_token),
+        refresh_token: Zeroizing::new(refresh_token),
+        expires_in_seconds,
+    })
+}
+
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 struct RefreshedOAuthToken {
     access_token: Zeroizing<String>,
@@ -4662,30 +4692,7 @@ async fn exchange_authorization_code(
     let bytes = bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES).await?;
     let response: OAuthTokenResponse =
         serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
-    let refresh_token = response
-        .refresh_token
-        .filter(|token| !token.is_empty())
-        .ok_or(CloudSourceError::ProviderRejected)?;
-    let expires_in_seconds = response
-        .expires_in
-        .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
-        .ok_or(CloudSourceError::ProviderRejected)?;
-    if !response.token_type.eq_ignore_ascii_case("bearer")
-        || !oauth_scope_is_sufficient(provider, response.scope.as_deref())
-    {
-        return Err(CloudSourceError::ProviderRejected);
-    }
-    SecretBundle::new(
-        response.access_token.clone(),
-        refresh_token.clone(),
-        expires_at_unix_seconds(expires_in_seconds)?,
-        [1; 32],
-    )?;
-    Ok(OAuthToken {
-        access_token: Zeroizing::new(response.access_token),
-        refresh_token: Zeroizing::new(refresh_token),
-        expires_in_seconds,
-    })
+    validate_authorization_token_response(provider, response)
 }
 
 fn authorization_code_token_form<'a>(
@@ -4751,7 +4758,7 @@ async fn exchange_refresh_token(
         || response
             .scope
             .as_deref()
-            .is_some_and(|scope| !oauth_scope_is_sufficient(provider, Some(scope)))
+            .is_some_and(|scope| !oauth_token_scope_is_acceptable(provider, Some(scope)))
     {
         return Err(CloudSourceError::ProviderRejected);
     }
@@ -4772,9 +4779,11 @@ fn refresh_token_form<'a>(
     ]
 }
 
-fn oauth_scope_is_sufficient(provider: CloudProvider, scope: Option<&str>) -> bool {
+fn oauth_token_scope_is_acceptable(provider: CloudProvider, scope: Option<&str>) -> bool {
     let Some(scope) = scope else {
-        return false;
+        // OAuth token responses may omit `scope` when the granted scope is
+        // unchanged from the authorization request.
+        return true;
     };
     let scopes = scope.split_whitespace().collect::<HashSet<_>>();
     #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
@@ -5098,12 +5107,12 @@ mod tests {
         bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
         commit_cloud_connect_observed, dropbox_redirect_configuration, execute_cloud_query,
         oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
-        validate_oauth_client_id, AdmittedLibraryQuery, CloudAccountService, CloudAccountsState,
-        CloudCompleteness, CloudConnectOwner, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
-        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
-        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
-        SecretBundle, MAX_CALLBACK_BYTES,
+        validate_authorization_token_response, validate_oauth_client_id, AdmittedLibraryQuery,
+        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectOwner,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
+        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
+        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        MemoryCredentialVault, OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::{
         file_lock::AdvisoryFileLock,
@@ -8055,6 +8064,38 @@ mod tests {
             .expect("standard OAuth callback");
 
         assert_eq!(authorization.picked_file_ids(), ["root"]);
+    }
+
+    #[test]
+    fn authorization_token_response_accepts_omitted_unchanged_scope() {
+        let result = validate_authorization_token_response(
+            CloudProvider::GoogleDrive,
+            OAuthTokenResponse {
+                access_token: "access-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_in: Some(3600),
+                token_type: "Bearer".to_string(),
+                scope: None,
+            },
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn authorization_token_response_rejects_an_explicit_reduced_scope() {
+        let result = validate_authorization_token_response(
+            CloudProvider::GoogleDrive,
+            OAuthTokenResponse {
+                access_token: "access-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_in: Some(3600),
+                token_type: "Bearer".to_string(),
+                scope: Some("openid email".to_string()),
+            },
+        );
+
+        assert!(matches!(result, Err(CloudSourceError::ProviderRejected)));
     }
 
     #[test]
