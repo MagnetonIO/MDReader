@@ -211,9 +211,15 @@ export class Mac2Adapter implements PlatformDriver {
   }
 
   async focusInput(cssClass: string): Promise<void> {
-    const point = await this.ax.point(cssClass, 0);
-    await this.b.execute('macos: click', point);
-    await sleep(150);
+    // The palette input owns `autoFocus`. Wait for the focus WebKit actually
+    // publishes instead of clicking an AX screen coordinate: mac2 and AX use
+    // different coordinate spaces for web content, and the old click could
+    // land on the Settings button behind the transient palette.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (this.ax.focused(cssClass)) return;
+      await sleep(100);
+    }
+    throw new Error(`.${cssClass} did not receive WebKit keyboard focus`);
   }
 
   async inputValue(cssClass: string): Promise<string> {

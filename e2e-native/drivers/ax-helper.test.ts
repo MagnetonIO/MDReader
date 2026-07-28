@@ -26,6 +26,17 @@ async function fakeAxHelper(errorLine: string): Promise<{ bin: string; attempts:
   return { bin, attempts };
 }
 
+async function focusedAxHelper(output: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'mdreader-ax-focused-'));
+  const bin = join(root, 'axquery.mjs');
+  await writeFile(
+    bin,
+    ['#!/usr/bin/env node', `console.log(${JSON.stringify(output)});`].join('\n'),
+  );
+  await chmod(bin, 0o755);
+  return bin;
+}
+
 test('a transient AX cannot-complete read is retried and never converted to empty', async () => {
   const helper = await fakeAxHelper('AX_READ_ERROR: AXRole code=-25204');
   assert.equal(makeAx(helper.bin, 42).headings(), 'Sample Project');
@@ -42,4 +53,14 @@ test('another AX read error remains fail-closed without retry', async () => {
   const helper = await fakeAxHelper('AX_READ_ERROR: AXRole code=-25205');
   assert.throws(() => makeAx(helper.bin, 42).headings());
   assert.equal(await readFile(helper.attempts, 'utf8'), '1');
+});
+
+test('focused parses only the helper boolean contract', async () => {
+  assert.equal(makeAx(await focusedAxHelper('1'), 42).focused('mdsearch__input'), true);
+  assert.equal(makeAx(await focusedAxHelper('0'), 42).focused('mdsearch__input'), false);
+  const malformed = await focusedAxHelper('yes');
+  assert.throws(
+    () => makeAx(malformed, 42).focused('mdsearch__input'),
+    /returned unparseable output/,
+  );
 });

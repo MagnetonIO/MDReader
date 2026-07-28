@@ -129,6 +129,9 @@ export interface Ax {
   text(cssClass?: string): string;
   /** Text of every rendered heading (AXHeading). */
   headings(): string;
+  /** Whether the single element carrying `cssClass` owns keyboard focus.
+   * Throws when the selector is absent or ambiguous. */
+  focused(cssClass: string): boolean;
   /** Exact native window frame owned by the pid this helper was bound to. */
   appFrame(): AxRect;
   /**
@@ -222,6 +225,15 @@ export function makeAx(bin: string, pid: number): Ax {
     },
     text: (cssClass) => run('text', cssClass ? [cssClass] : []),
     headings: () => run('headings'),
+    focused: (cssClass) => {
+      const out = run('focused', [cssClass]);
+      if (out !== '0' && out !== '1') {
+        throw new Error(
+          `axquery focused(${cssClass}) returned unparseable output: ${JSON.stringify(out)}`,
+        );
+      }
+      return out === '1';
+    },
     appFrame: () => parseRect(run('appframe'), 'appframe'),
     frame: (selector, nth, contains) => {
       // A nonzero exit (4 = no such element, 3 = a real AX error) throws out of
