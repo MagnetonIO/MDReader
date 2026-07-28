@@ -427,6 +427,23 @@ body {
   background: var(--color-bg);
 }
 
+.cloud-source--provider {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.cloud-source__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+}
+
+.cloud-source__icon svg {
+  width: 24px;
+  height: 24px;
+}
+
 .cloud-source__title,
 .cloud-source__actions {
   display: flex;

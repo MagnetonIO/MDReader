@@ -25,7 +25,12 @@ import {
   useSettingsStore,
 } from '../stores/settings.js';
 import type { WatcherStatus } from '../stores/sources.js';
-import { CloseIcon, FolderIcon } from './icons.js';
+import {
+  CloseIcon,
+  DropboxIcon,
+  FolderIcon,
+  GoogleDriveIcon,
+} from './icons.js';
 
 export interface SettingsSheetProps {
   backend?: SettingsBackend;
@@ -670,7 +675,17 @@ export function SettingsSheet({
                     const connected = source.connection !== 'disconnected';
                     const reconnect = source.connection === 'reauthorize';
                     return (
-                      <article className="cloud-source" key={source.provider}>
+                      <article
+                        className="cloud-source cloud-source--provider"
+                        key={source.provider}
+                      >
+                        <div className="cloud-source__icon">
+                          {source.provider === 'google-drive' ? (
+                            <GoogleDriveIcon />
+                          ) : (
+                            <DropboxIcon />
+                          )}
+                        </div>
                         <div className="cloud-source__copy">
                           <div className="cloud-source__title">
                             <h4>{source.label}</h4>

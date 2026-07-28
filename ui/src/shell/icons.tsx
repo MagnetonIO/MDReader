@@ -25,6 +25,43 @@ function Icon({ children, ...props }: IconProps) {
   );
 }
 
+function BrandIcon({
+  label,
+  children,
+  ...props
+}: IconProps & { label: string }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      role="img"
+      aria-label={label}
+      focusable="false"
+      {...props}
+    >
+      {children}
+    </svg>
+  );
+}
+
+export const GoogleDriveIcon = (props: IconProps) => (
+  <BrandIcon label="Google Drive" {...props}>
+    <path fill="#0F9D58" d="M8 3 3 12l3.5 6L11 10z" />
+    <path fill="#F4B400" d="M8 3h6l7 12h-6z" />
+    <path fill="#4285F4" d="m6.5 18 3.5-6h11l-3.5 6z" />
+  </BrandIcon>
+);
+
+export const DropboxIcon = (props: IconProps) => (
+  <BrandIcon label="Dropbox" {...props}>
+    <path
+      fill="#0061FF"
+      d="m6 3-5 3 5 3 5-3-5-3Zm12 0-5 3 5 3 5-3-5-3ZM6 10l-5 3 5 3 5-3-5-3Zm12 0-5 3 5 3 5-3-5-3Zm-6 5-6 3 6 3 6-3-6-3Z"
+    />
+  </BrandIcon>
+);
+
 export const ChevronRight = (props: IconProps) => (
   <Icon {...props}>
     <path d="M9 6l6 6-6 6" />

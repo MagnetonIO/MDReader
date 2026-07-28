@@ -275,6 +275,9 @@ describe('Settings sheet', () => {
       />,
     );
 
+    expect(await screen.findByRole('img', { name: 'Google Drive' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Dropbox' })).toBeTruthy();
+
     expect(await screen.findByRole('switch', {
       name: 'Include Google Drive in Library',
     })).toBeTruthy();

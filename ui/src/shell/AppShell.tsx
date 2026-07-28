@@ -188,6 +188,12 @@ export function AppShell() {
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
+  useEffect(() => {
+    const showSettings = () => setSettingsOpen(true);
+    window.addEventListener('mdreader:show-settings', showSettings);
+    return () => window.removeEventListener('mdreader:show-settings', showSettings);
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     if (!settingsBackend.prepareCloudCatalog || !settingsBackend.queryLibraryDocuments) {
       return;

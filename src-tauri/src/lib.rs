@@ -51,6 +51,14 @@ const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
 #[cfg(target_os = "macos")]
 const MENU_CLOSE_WINDOW: &str = "mdreader:close-window";
 
+/// Menu id for the native macOS Settings item.
+#[cfg(target_os = "macos")]
+const MENU_SETTINGS: &str = "mdreader:settings";
+
+/// Static renderer event used by the native Settings menu item.
+#[cfg(target_os = "macos")]
+const SHOW_SETTINGS_SCRIPT: &str = "window.dispatchEvent(new Event('mdreader:show-settings'))";
+
 /// Builds the tauri-specta command + event registry. Single source of truth for
 /// both the runtime `invoke_handler`/`mount_events` and the binding exporter.
 ///
@@ -200,8 +208,15 @@ fn runtime_specta_builder(
 fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 
+    let settings = MenuItemBuilder::new("Settings…")
+        .id(MENU_SETTINGS)
+        .accelerator("CmdOrCtrl+,")
+        .build(handle)?;
+
     let app_menu = SubmenuBuilder::new(handle, "MDReader")
         .about(Some(AboutMetadata::default()))
+        .separator()
+        .item(&settings)
         .separator()
         .hide()
         .hide_others()
@@ -289,9 +304,15 @@ pub fn run() {
             .menu(build_app_menu)
             .on_menu_event(|app, event| {
                 use tauri::Manager;
-                if event.id().0.as_str() == MENU_CLOSE_WINDOW {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.close();
+                if let Some(window) = app.get_webview_window("main") {
+                    match event.id().0.as_str() {
+                        MENU_SETTINGS => {
+                            let _ = window.eval(SHOW_SETTINGS_SCRIPT);
+                        }
+                        MENU_CLOSE_WINDOW => {
+                            let _ = window.close();
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -368,6 +389,18 @@ mod tests {
         let bindings = include_str!("../../ui/src/bindings.ts");
         assert!(!bindings.contains("__TAURI_INVOKE(\"set_workspace\""));
         assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_application_menu_routes_settings_to_the_renderer() {
+        let production = include_str!("lib.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production module");
+        assert!(production.contains("MENU_SETTINGS"));
+        assert!(production.contains(".accelerator(\"CmdOrCtrl+,\")"));
+        assert!(production.contains("mdreader:show-settings"));
     }
 
     #[test]
