@@ -86,7 +86,7 @@ describe('MDReader native mobile product flow', () => {
     await (await $('button*=mobile-e2e.md')).click();
     await expect(await $('h1=Mobile evidence handbook')).toExist();
     await expect(await $('aside*=Offline copy')).toExist();
-    await expect(await $(`aside*=${MOBILE_FIXTURE_IDS.source}`)).toExist();
+    await expect(await $(`aside*=${MOBILE_FIXTURE_IDS.deployment}`)).toExist();
     await expect(await $('aside*=sha256:')).toExist();
   });
 
