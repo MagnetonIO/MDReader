@@ -161,6 +161,36 @@ fn specta_builder() -> Builder<tauri::Wry> {
     mobile_specta_builder()
 }
 
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeTarget {
+    Desktop,
+    Mobile,
+}
+
+#[cfg(debug_assertions)]
+impl RuntimeTarget {
+    const fn current() -> Self {
+        if cfg!(mobile) {
+            Self::Mobile
+        } else {
+            Self::Desktop
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn runtime_specta_builder(
+    target: RuntimeTarget,
+    export: impl FnOnce(&Builder<tauri::Wry>),
+) -> Builder<tauri::Wry> {
+    let builder = specta_builder();
+    if target == RuntimeTarget::Desktop {
+        export(&builder);
+    }
+    builder
+}
+
 /// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the
 /// native "Close Window", which would swallow the keystroke before it reaches
 /// the webview — stealing the shell's "close tab" binding. This replacement
@@ -212,13 +242,14 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
 /// Desktop (and, later, mobile) entry point.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = specta_builder();
-
-    // In debug builds, refresh the committed bindings on every launch so local
-    // `tauri dev` iterations stay in sync. CI relies on the `export_bindings`
-    // test + `scripts/check-bindings.sh` to detect drift without launching.
     #[cfg(debug_assertions)]
-    export_bindings(&builder).expect("failed to export typescript bindings");
+    let builder = runtime_specta_builder(RuntimeTarget::current(), |builder| {
+        // Desktop `tauri dev` refreshes the committed bindings on launch.
+        // Packaged mobile runtimes cannot and must not write source artifacts.
+        export_bindings(builder).expect("failed to export typescript bindings");
+    });
+    #[cfg(not(debug_assertions))]
+    let builder = specta_builder();
 
     #[allow(unused_mut)]
     let mut tauri_builder = tauri::Builder::default()
@@ -293,7 +324,9 @@ fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescrip
 
 #[cfg(test)]
 mod tests {
-    use super::{export_bindings, specta_builder};
+    use std::cell::Cell;
+
+    use super::{export_bindings, runtime_specta_builder, specta_builder, RuntimeTarget};
 
     /// Regenerates `apps/mdreader/ui/src/bindings.ts` headlessly (no window, no
     /// webview). `scripts/check-bindings.sh` runs this then `git diff
@@ -301,6 +334,26 @@ mod tests {
     #[test]
     fn export_bindings_up_to_date() {
         export_bindings(&specta_builder()).expect("failed to export typescript bindings");
+    }
+
+    #[test]
+    fn mobile_runtime_skips_binding_export_while_desktop_debug_exports() {
+        let export_called = Cell::new(false);
+        let _mobile_builder = runtime_specta_builder(RuntimeTarget::Mobile, |_| {
+            export_called.set(true);
+        });
+        assert!(
+            !export_called.get(),
+            "mobile runtime attempted to write generated bindings"
+        );
+
+        let _desktop_builder = runtime_specta_builder(RuntimeTarget::Desktop, |_| {
+            export_called.set(true);
+        });
+        assert!(
+            export_called.get(),
+            "desktop debug startup no longer refreshes generated bindings"
+        );
     }
 
     #[test]
