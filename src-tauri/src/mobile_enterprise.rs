@@ -31,6 +31,8 @@ const MAX_CONNECTED_SOURCES: usize = 128;
 const MAX_LEGACY_CONNECTIONS: usize = 16;
 const MAX_LEGACY_REGISTRY_BYTES: usize = 64 * 1024;
 const MAX_OPERATION_ID_BYTES: usize = 256;
+const MAX_CONNECTED_LIBRARY_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CONNECTED_LIBRARY_PAGES: usize = 128;
 const LEGACY_REGISTRY_VERSION: u32 = 1;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -1089,6 +1091,88 @@ async fn execute_connected_query(
     .await
 }
 
+struct ConnectedPaginationBudget {
+    logical_limit: usize,
+    page_size: usize,
+    rows: usize,
+    bytes: usize,
+    pages: usize,
+    seen_cursors: BTreeSet<String>,
+}
+
+impl ConnectedPaginationBudget {
+    fn new(logical_limit: u32, page_size: u32) -> Result<Self, MobileEnterpriseError> {
+        let logical_limit =
+            usize::try_from(logical_limit).map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+        let page_size =
+            usize::try_from(page_size).map_err(|_| MobileEnterpriseError::InvalidRequest)?;
+        if logical_limit == 0 || page_size == 0 {
+            return Err(MobileEnterpriseError::InvalidRequest);
+        }
+        Ok(Self {
+            logical_limit,
+            page_size,
+            rows: 0,
+            bytes: 0,
+            pages: 0,
+            seen_cursors: BTreeSet::new(),
+        })
+    }
+
+    fn record_page(
+        &mut self,
+        rows: usize,
+        next_cursor: Option<&catdb_api_types::EntityCursor>,
+        response_bytes: usize,
+    ) -> Result<(), MobileEnterpriseError> {
+        self.pages = self
+            .pages
+            .checked_add(1)
+            .ok_or(MobileEnterpriseError::InvalidResponse)?;
+        self.rows = self
+            .rows
+            .checked_add(rows)
+            .ok_or(MobileEnterpriseError::InvalidResponse)?;
+        self.bytes = self
+            .bytes
+            .checked_add(response_bytes)
+            .ok_or(MobileEnterpriseError::ResponseTooLarge)?;
+        if self.pages > MAX_CONNECTED_LIBRARY_PAGES
+            || rows > self.page_size
+            || self.rows > self.logical_limit
+        {
+            return Err(MobileEnterpriseError::InvalidResponse);
+        }
+        if self.bytes > MAX_CONNECTED_LIBRARY_RESPONSE_BYTES {
+            return Err(MobileEnterpriseError::ResponseTooLarge);
+        }
+        if let Some(cursor) = next_cursor {
+            if self.rows >= self.logical_limit
+                || !self.seen_cursors.insert(cursor.as_str().to_string())
+            {
+                return Err(MobileEnterpriseError::InvalidResponse);
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn execute_connected_library_page(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+    request: EntityQueryRequest,
+    cancellation: &catdb_connectors::CancellationToken,
+    deadline: tokio::time::Instant,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(MobileEnterpriseError::Cancelled),
+        response = tokio::time::timeout_at(
+            deadline,
+            execute_connected_query(source, token, request),
+        ) => response.map_err(|_| MobileEnterpriseError::TimedOut)?,
+    }
+}
+
 fn parse_connected_library_response(
     source: &crate::library::ConnectedCatdbSourceRecord,
     response: MobileEnterpriseResponse,
@@ -1411,20 +1495,39 @@ pub(crate) async fn query_connected_library_documents(
     .await
     .map_err(|_| MobileEnterpriseError::PersistFailed)??;
     let pinned_shape = request;
-    let response = tokio::select! {
-        _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
-        response = execute_connected_query(&source, &token, pinned_shape.clone()) => response?,
-    };
+    let mut budget = ConnectedPaginationBudget::new(pinned_shape.limit, pinned_shape.page_size)?;
+    let deadline = tokio::time::Instant::now()
+        .checked_add(REQUEST_DEADLINE)
+        .ok_or(MobileEnterpriseError::TimedOut)?;
+    let response = execute_connected_library_page(
+        &source,
+        &token,
+        pinned_shape.clone(),
+        &cancellation,
+        deadline,
+    )
+    .await?;
+    let response_bytes = response.body_json.len();
     let mut evidence = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+    budget.record_page(
+        evidence.answer.rows.len(),
+        evidence.answer.next_cursor.as_ref(),
+        response_bytes,
+    )?;
     while let Some(cursor) = evidence.answer.next_cursor.take() {
         let mut continuation = pinned_shape.clone();
         continuation.query_id = Some(evidence.answer.query_id);
         continuation.cursor = Some(cursor);
-        let response = tokio::select! {
-            _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
-            response = execute_connected_query(&source, &token, continuation) => response?,
-        };
+        let response =
+            execute_connected_library_page(&source, &token, continuation, &cancellation, deadline)
+                .await?;
+        let response_bytes = response.body_json.len();
         let page = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+        budget.record_page(
+            page.answer.rows.len(),
+            page.answer.next_cursor.as_ref(),
+            response_bytes,
+        )?;
         if page.answer.query_id != evidence.answer.query_id
             || page.answer.pins != evidence.answer.pins
             || page.answer.sources != evidence.answer.sources
@@ -1575,8 +1678,9 @@ mod tests {
         pin_connected_query, publish_legacy_migration,
         publish_legacy_migration_transaction_with_rename, publish_legacy_migration_with_rename,
         retire_matching_legacy_after_publication, with_legacy_migration_lock, BearerToken,
-        BearerVault, ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError,
-        MobileEnterpriseOperation, MobileEnterpriseResponse, MobileEnterpriseState,
+        BearerVault, ConnectedCatdbState, ConnectedPaginationBudget, ConnectionRecord,
+        MobileEnterpriseError, MobileEnterpriseOperation, MobileEnterpriseResponse,
+        MobileEnterpriseState,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
@@ -1680,6 +1784,25 @@ mod tests {
             Err(MobileEnterpriseError::Cancelled)
         );
         assert_eq!(state.finish_operation(&replacement), Ok(()));
+    }
+
+    #[test]
+    fn connected_pagination_rejects_repeated_cursors_and_an_unbounded_total() {
+        let cursor = catdb_api_types::EntityCursor::new("v1.same".to_string()).expect("cursor");
+        let mut repeated = ConnectedPaginationBudget::new(2_000, 1_000).expect("budget");
+        repeated
+            .record_page(1_000, Some(&cursor), 1024)
+            .expect("first page");
+        assert_eq!(
+            repeated.record_page(1, Some(&cursor), 1024),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
+
+        let mut oversized = ConnectedPaginationBudget::new(1_000, 1_000).expect("budget");
+        assert_eq!(
+            oversized.record_page(1_001, None, 1024),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
     }
 
     #[test]
