@@ -97,7 +97,7 @@ it('navigates connected read-through sources from the primary Library rail', () 
   expect(open).toHaveBeenCalledWith(member, response.answer.rows[0]);
 });
 
-it('lists a local membership from the same immutable Library answer', () => {
+it('keeps the active workspace tree browsable without duplicating its Library membership', () => {
   const member: LibrarySourceExecution = {
     membership_id: '00000000-0000-4000-8000-000000000021',
     registry_id: 'local-source-id',
@@ -168,7 +168,16 @@ it('lists a local membership from the same immutable Library answer', () => {
     <Sidebar
       collapsed={false}
       root="/Library/Local notes"
-      files={[]}
+      files={[
+        {
+          path: '/Library/Local notes/notes/local.md',
+          name: 'local.md',
+          dir: 'notes',
+          mtime: 1,
+          size: 12,
+          ignored: false,
+        },
+      ]}
       recent={[]}
       activePath={null}
       loading={false}
@@ -183,7 +192,7 @@ it('lists a local membership from the same immutable Library answer', () => {
     />,
   );
 
-  expect(screen.getByRole('navigation', { name: 'Library sources' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Open local.md from Local notes' }));
-  expect(open).toHaveBeenCalledWith(member, response.answer.rows[0]);
+  expect(screen.getByRole('tree', { name: 'Workspace files' })).toBeTruthy();
+  expect(screen.queryByRole('navigation', { name: 'Library sources' })).toBeNull();
+  expect(open).not.toHaveBeenCalled();
 });

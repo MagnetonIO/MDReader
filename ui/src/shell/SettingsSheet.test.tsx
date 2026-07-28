@@ -88,7 +88,7 @@ function cloudBackend(
   return {
     ...backend(),
     listCloudSources: async () => snapshot,
-    connectCloudSource: async (provider) => {
+    connectCloudSource: vi.fn(async (provider) => {
       snapshot = {
         ...snapshot,
         sources: snapshot.sources.map((source) =>
@@ -98,8 +98,8 @@ function cloudBackend(
         ),
       };
       return snapshot;
-    },
-    setCloudSourceEnabled: async (provider, enabled) => {
+    }),
+    setCloudSourceEnabled: vi.fn(async (provider, enabled) => {
       snapshot = {
         ...snapshot,
         sources: snapshot.sources.map((source) =>
@@ -107,8 +107,8 @@ function cloudBackend(
         ),
       };
       return snapshot;
-    },
-    disconnectCloudSource: async (provider) => {
+    }),
+    disconnectCloudSource: vi.fn(async (provider) => {
       snapshot = {
         ...snapshot,
         sources: snapshot.sources.map((source) =>
@@ -118,7 +118,7 @@ function cloudBackend(
         ),
       };
       return snapshot;
-    },
+    }),
     cancelCloudDocumentQuery: vi.fn(async () => true),
   };
 }
@@ -283,10 +283,12 @@ describe('Settings sheet', () => {
 
     fireEvent.click(includeDrive);
     await screen.findByText('Paused');
+    expect(api.setCloudSourceEnabled).toHaveBeenCalledWith('google-drive', false);
     expect(screen.getByRole('button', { name: 'Disconnect Google Drive' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Google Drive' }));
     await screen.findByRole('button', { name: 'Connect Google Drive' });
+    expect(api.disconnectCloudSource).toHaveBeenCalledWith('google-drive');
     expect(
       screen.queryByRole('switch', { name: 'Include Google Drive in Library' }),
     ).toBeNull();
@@ -326,6 +328,7 @@ describe('Settings sheet', () => {
     const includeDropbox = await screen.findByRole('switch', {
       name: 'Include Dropbox in Library',
     });
+    expect(api.connectCloudSource).toHaveBeenCalledWith('dropbox');
     expect(includeDropbox.getAttribute('aria-checked')).toBe('true');
   });
 
@@ -359,6 +362,8 @@ describe('Settings sheet', () => {
       />,
     );
 
+    expect(await screen.findByRole('img', { name: 'Google Drive' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Dropbox' })).toBeTruthy();
     expect(await screen.findByRole('switch', {
       name: 'Include Google Drive in Library',
     })).toBeTruthy();

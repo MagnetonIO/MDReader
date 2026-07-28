@@ -88,6 +88,11 @@ export function Sidebar({
   onRefreshLibrary,
 }: SidebarProps) {
   const search = librarySearch.trim().toLocaleLowerCase();
+  const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
+    evidence.memberships.some(
+      (member) => member.kind !== 'local-folder' || !member.active,
+    ),
+  );
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -104,7 +109,7 @@ export function Sidebar({
         </button>
       </div>
 
-      {libraryEvidence.length > 0 ? null : root && listingError ? (
+      {root && listingError ? (
         <ListingErrorPanel failure={listingError} />
       ) : root && loading && files.length === 0 ? (
         // The listing has not answered YET. Saying "no markdown files" here is a
@@ -130,7 +135,7 @@ export function Sidebar({
         </div>
       )}
 
-      {libraryEvidence.length > 0 || libraryLoading || libraryError ? (
+      {hasSupplementalMemberships || libraryLoading || libraryError ? (
         <nav className="library-sources" aria-label="Library sources">
           <div className="library-sources__heading">
             <span>Library</span>
@@ -151,47 +156,49 @@ export function Sidebar({
           ) : null}
           {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
           {libraryEvidence.flatMap((evidence) =>
-            evidence.memberships.map((member) => {
-              const rows = rowsForMember(evidence, member).filter((row) => {
-                if (!search) return true;
-                return libraryDocumentTitle(row).toLocaleLowerCase().includes(search);
-              });
-              return (
-                <section className="library-sources__source" key={member.membership_id}>
-                  <div>
-                    <strong>{member.name}</strong>
-                    <small>
-                      {member.editable
-                        ? member.active
-                          ? 'Local · editable'
-                          : 'Local · open to edit'
-                        : 'Read-only'}
-                    </small>
-                  </div>
-                  {rows.length > 0 ? (
-                    <ul>
-                      {rows.map((row) => {
-                        const title = libraryDocumentTitle(row);
-                        return (
-                          <li key={row.record_key}>
-                            <button
-                              type="button"
-                              className="library-sources__document"
-                              aria-label={`Open ${title} from ${member.name}`}
-                              onClick={() => onOpenLibrary?.(member, row)}
-                            >
-                              {title}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
-                  )}
-                </section>
-              );
-            }),
+            evidence.memberships
+              .filter((member) => member.kind !== 'local-folder' || !member.active)
+              .map((member) => {
+                const rows = rowsForMember(evidence, member).filter((row) => {
+                  if (!search) return true;
+                  return libraryDocumentTitle(row).toLocaleLowerCase().includes(search);
+                });
+                return (
+                  <section className="library-sources__source" key={member.membership_id}>
+                    <div>
+                      <strong>{member.name}</strong>
+                      <small>
+                        {member.editable
+                          ? member.active
+                            ? 'Local · editable'
+                            : 'Local · open to edit'
+                          : 'Read-only'}
+                      </small>
+                    </div>
+                    {rows.length > 0 ? (
+                      <ul>
+                        {rows.map((row) => {
+                          const title = libraryDocumentTitle(row);
+                          return (
+                            <li key={row.record_key}>
+                              <button
+                                type="button"
+                                className="library-sources__document"
+                                aria-label={`Open ${title} from ${member.name}`}
+                                onClick={() => onOpenLibrary?.(member, row)}
+                              >
+                                {title}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
+                    )}
+                  </section>
+                );
+              }),
           )}
           {libraryEvidence.length === 0 && libraryLoading ? <p>Reading Library…</p> : null}
         </nav>
