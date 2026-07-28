@@ -74,6 +74,11 @@ const h = vi.hoisted(() => ({
   searchRoots: [] as (string | null)[],
   libraryEvidence: null as null | Record<string, unknown>,
   libraryQueryFails: false,
+  libraryQueryQueue: [] as Promise<Record<string, unknown>>[],
+  libraryQueryPhases: [] as Array<'pre-mark' | 'post-mark'>,
+  markGate: null as null | { promise: Promise<void>; resolve: () => void },
+  markStarted: false,
+  markSucceeded: false,
   editResolutions: [] as { sourceId: string; relativePath: string }[],
   seq: 0,
   pickedPath: '/ws',
@@ -181,15 +186,20 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     source: source(h.pickedPath, h.pickedPath === '/ws'),
     added: true,
   }));
-  const markActive = vi.fn(async () => ({
-    version: 4,
-    sources: [
-      source('/ws', h.pickedPath === '/ws'),
-      source('/ws-b', h.pickedPath === '/ws-b'),
-      source('/ws-c', h.pickedPath === '/ws-c'),
-    ],
-    cleanup: { kind: 'complete' as const },
-  }));
+  const markActive = vi.fn(async () => {
+    h.markStarted = true;
+    if (h.markGate) await h.markGate.promise;
+    h.markSucceeded = true;
+    return {
+      version: 4,
+      sources: [
+        source('/ws', h.pickedPath === '/ws'),
+        source('/ws-b', h.pickedPath === '/ws-b'),
+        source('/ws-c', h.pickedPath === '/ws-c'),
+      ],
+      cleanup: { kind: 'complete' as const },
+    };
+  });
   const emptyLibraryEvidence = {
     answer: {
       query_id: '00000000-0000-4000-8000-000000000001',
@@ -250,6 +260,9 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       schema_version_id: '00000000-0000-4000-8000-000000000008',
     })),
     queryLibraryDocuments: vi.fn(async () => {
+      h.libraryQueryPhases.push(h.markSucceeded ? 'post-mark' : 'pre-mark');
+      const queued = h.libraryQueryQueue.shift();
+      if (queued) return queued;
       if (h.libraryQueryFails) throw new Error('injected Library refresh failure');
       return h.libraryEvidence ?? emptyLibraryEvidence;
     }),
@@ -454,6 +467,11 @@ beforeEach(() => {
   h.searchRoots.length = 0;
   h.libraryEvidence = null;
   h.libraryQueryFails = false;
+  h.libraryQueryQueue.length = 0;
+  h.libraryQueryPhases.length = 0;
+  h.markGate = null;
+  h.markStarted = false;
+  h.markSucceeded = false;
   h.editResolutions.length = 0;
   h.closed = false;
   h.drainGate = null;
@@ -498,6 +516,98 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('publishes only the post-mark Library hydration after workspace activation', async () => {
+    installSecondWorkspaceLibraryDocument();
+    const preActivation = structuredClone(h.libraryEvidence!) as {
+      memberships: Array<{
+        membership_id: string;
+        registry_id: string;
+        name: string;
+        kind: 'local-folder';
+        source_ids: string[];
+        editable: boolean;
+        active: boolean;
+      }>;
+      answer: {
+        rows: Array<{ fields: Record<string, unknown> }>;
+        sources: Array<Record<string, unknown>>;
+        pins: { source_version_ids: string[] };
+      };
+    };
+    preActivation.answer.rows[0]!.fields.title = 'Pre-activation note';
+
+    const postMark = structuredClone(preActivation);
+    postMark.answer.rows[0]!.fields.title = 'Post-mark note';
+    const activePhysicalSourceId = '00000000-0000-4000-8000-000000000021';
+    const activeSourceVersionId = '00000000-0000-4000-8000-000000000022';
+    postMark.memberships.push({
+      ...postMark.memberships[0]!,
+      membership_id: '00000000-0000-4000-8000-000000000023',
+      registry_id: 'a'.repeat(64),
+      name: 'Workspace',
+      source_ids: [activePhysicalSourceId],
+      active: true,
+    });
+    postMark.answer.sources.push({
+      ...postMark.answer.sources[0],
+      source_id: activePhysicalSourceId,
+      source_version_id: activeSourceVersionId,
+      scanned: 0,
+      returned: 0,
+    });
+    postMark.answer.pins.source_version_ids.push(activeSourceVersionId);
+
+    const startupRead = deferred<Record<string, unknown>>();
+    const preMarkRead = deferred<Record<string, unknown>>();
+    const liveRead = deferred<Record<string, unknown>>();
+    h.libraryQueryQueue.push(startupRead.promise, preMarkRead.promise, liveRead.promise);
+    h.markGate = deferred();
+
+    render(<App />);
+    await waitFor(() => expect(h.libraryQueryPhases).toEqual(['pre-mark']));
+
+    fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
+    await waitFor(() => expect(h.markStarted).toBe(true));
+    await waitFor(() =>
+      expect(h.libraryQueryPhases).toEqual(['pre-mark', 'pre-mark']),
+    );
+
+    await act(async () => {
+      h.markGate!.resolve();
+      await h.markGate!.promise;
+    });
+    await waitFor(() =>
+      expect(h.libraryQueryPhases).toEqual(['pre-mark', 'pre-mark', 'post-mark']),
+    );
+
+    await act(async () => {
+      liveRead.resolve(postMark);
+      await liveRead.promise;
+    });
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open Post-mark note from Second workspace',
+      }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      startupRead.resolve(preActivation);
+      preMarkRead.resolve(preActivation);
+      await Promise.all([startupRead.promise, preMarkRead.promise]);
+    });
+
+    expect(
+      screen.queryByRole('button', {
+        name: 'Open Pre-activation note from Second workspace',
+      }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('button', {
+        name: 'Open Post-mark note from Second workspace',
+      }),
+    ).toBeTruthy();
+  });
+
   it('invalidates listed and open evidence when a refresh can no longer verify it', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);

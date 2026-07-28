@@ -643,6 +643,11 @@ export function AppShell() {
             }
             return useSourcesStore.getState().root === folder;
           }
+          // The grant is live and the restore preference is committed. Supersede
+          // every pre-activation hydration with a new backend read; renderer
+          // evidence must come from that post-commit snapshot, never from an
+          // optimistic membership.active rewrite.
+          void refreshLibrary();
           activeSourceIdRef.current = sourceId;
           recordDiagnosticEventNonBlocking({
             kind: 'workspace',
@@ -669,7 +674,7 @@ export function AppShell() {
       );
       return result;
     },
-    [openRoot],
+    [openRoot, refreshLibrary],
   );
   commitSwitchRef.current = commitSwitch;
 

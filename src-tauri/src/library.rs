@@ -167,7 +167,6 @@ pub(crate) struct LibrarySnapshot {
 pub(crate) struct LibraryQuerySnapshot {
     pub local_sources: Vec<LocalFolderSource>,
     pub cloud_sources: Vec<CloudSourceRecord>,
-    pub active_source_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -2166,7 +2165,6 @@ impl LibraryStore {
                     .filter(|source| source.enabled())
                     .cloned()
                     .collect(),
-                active_source_id: registry.active_source_id.clone(),
             })
         })
     }
@@ -2612,7 +2610,7 @@ pub(crate) fn seed_e2e_local_membership(app: &AppHandle) -> Result<(), LibraryEr
         .map(|_| ())
 }
 
-fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
+pub(crate) fn active_root(workspace: &crate::commands::WorkspaceState) -> Option<SourceRoot> {
     workspace.current().map(|epoch| epoch.source_root())
 }
 

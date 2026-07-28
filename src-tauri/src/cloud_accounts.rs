@@ -2503,6 +2503,7 @@ fn admit_library_query(
     registry: LibraryStore,
     vault: Arc<dyn CredentialVault>,
     requested_source_ids: Option<&[uuid::Uuid]>,
+    active_root: Option<&mdreader_ingest::SourceRoot>,
 ) -> Result<AdmittedLibraryQuery, CloudSourceError> {
     let snapshot = registry
         .read_query_snapshot()
@@ -2532,7 +2533,6 @@ fn admit_library_query(
             .as_ref()
             .is_none_or(|requested| requested.contains(&source_id))
     };
-    let active_source_id = snapshot.active_source_id;
 
     let local_records = snapshot
         .local_sources
@@ -2543,11 +2543,10 @@ fn admit_library_query(
     for local in local_records.iter().cloned() {
         let membership_id = local.engine_source_id();
         let registry_id = local.id.clone();
-        let active = active_source_id.as_deref() == Some(registry_id.as_str());
         let path = local
             .path()
             .map_err(crate::library::map_library_cloud_error)?;
-        let (physical, name) = match local.root() {
+        let (physical, name, active) = match local.root() {
             Ok(root) => {
                 let name = root
                     .path
@@ -2558,6 +2557,7 @@ fn admit_library_query(
                 (
                     bind_identity_bound_local_sources(membership_id, &root)?,
                     name,
+                    active_root == Some(&root),
                 )
             }
             Err(crate::library::LibraryError::SourceUnavailable) => (
@@ -2566,6 +2566,7 @@ fn admit_library_query(
                     .and_then(|name| name.to_str())
                     .unwrap_or("Local folder")
                     .to_string(),
+                false,
             ),
             Err(error) => return Err(crate::library::map_library_cloud_error(error)),
         };
@@ -2796,10 +2797,11 @@ pub(crate) async fn query_library_documents(
     request_id: String,
     request: catdb_api_types::EntityQueryRequest,
     state: tauri::State<'_, CloudAccountsState>,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
 ) -> Result<crate::library_query::LibraryEntityQueryResponse, CloudSourceError> {
     #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
     {
-        let _ = (app, request_id, request, state);
+        let _ = (app, request_id, request, state, workspace);
         Err(CloudSourceError::ConnectorUnavailable)
     }
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -2814,8 +2816,14 @@ pub(crate) async fn query_library_documents(
                 return Err(CloudSourceError::QueryCancelled);
             }
             let selected = request.source_ids.clone();
+            let active_root = crate::library::active_root(&workspace);
             let admitted = blocking_cloud_operation(app.clone(), move |registry, vault| {
-                admit_library_query(registry, Arc::new(vault), selected.as_deref())
+                admit_library_query(
+                    registry,
+                    Arc::new(vault),
+                    selected.as_deref(),
+                    active_root.as_ref(),
+                )
             })
             .await?;
             let catalog = ensure_cloud_catalog(&app, &state).await?;
@@ -7157,6 +7165,58 @@ mod tests {
         assert_eq!(sources[1]["contract"]["capabilities"]["write"], false);
     }
 
+    #[test]
+    fn local_query_membership_activity_requires_exact_live_workspace_authority() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("notes");
+        fs::create_dir(&local_root).expect("local source");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let local = registry.add_root(&local_root).expect("admit local source");
+        let membership_id = local.engine_source_id();
+        let bound_root = mdreader_ingest::SourceRoot::capture(
+            fs::canonicalize(&local_root).expect("canonical local root"),
+        )
+        .expect("capture live workspace authority");
+        registry
+            .mark_active(&local.id, Some(&bound_root))
+            .expect("persist restore candidate");
+        registry
+            .save_to(&registry_path)
+            .expect("persist local source");
+
+        let membership_active = |live_root: Option<&mdreader_ingest::SourceRoot>| {
+            admit_library_query(
+                LibraryStore::new(registry_path.clone()),
+                Arc::new(MemoryCredentialVault::default()),
+                Some(&[membership_id]),
+                live_root,
+            )
+            .expect("admit local Library")
+            .members
+            .into_iter()
+            .find(|member| member.membership_id == membership_id)
+            .expect("local membership")
+            .active
+        };
+
+        assert!(
+            !membership_active(None),
+            "a persisted restore candidate is not a live workspace grant"
+        );
+        assert!(
+            membership_active(Some(&bound_root)),
+            "the exact current SourceRoot is the live membership"
+        );
+
+        fs::rename(&local_root, temp.path().join("retired")).expect("retire admitted object");
+        fs::create_dir(&local_root).expect("same-path replacement");
+        assert!(
+            !membership_active(Some(&bound_root)),
+            "an unavailable or identity-replaced root cannot remain active"
+        );
+    }
+
     #[tokio::test]
     async fn local_query_admission_keeps_a_replaced_membership_as_a_typed_partial_source() {
         let temp = tempdir().expect("temporary directory");
@@ -7197,6 +7257,7 @@ mod tests {
                 KeyringCredentialVault::new("dev.mdreader.identity-test").expect("test vault"),
             ),
             Some(&[unavailable_membership, healthy_membership]),
+            None,
         )
         .expect("admit healthy and unavailable memberships");
         let unavailable_source_ids = admitted
@@ -7285,6 +7346,7 @@ mod tests {
             LibraryStore::new(registry_path),
             Arc::new(MemoryCredentialVault::default()),
             Some(&[membership_id]),
+            None,
         )
         .expect("admit local Library");
         let frontmatter_source_id = admitted.members[0]
@@ -7400,6 +7462,7 @@ mod tests {
             LibraryStore::new(registry_path),
             vault.clone(),
             Some(&[local_membership, drive_membership]),
+            None,
         )
         .expect("missing credential remains an admitted unavailable source");
         assert_eq!(admitted.clouds.len(), 1);
@@ -7513,6 +7576,7 @@ mod tests {
                     .expect("test vault"),
             ),
             Some(&[membership_id]),
+            None,
         )
         .expect("admit exact original object");
 
