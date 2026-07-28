@@ -1,6 +1,7 @@
-// Milestone PT — deliver ONE keyboard chord straight to the app under test.
+// Milestone PT — deliver keyboard input straight to the app under test.
 //
 //     keypost <pid> <chord>        e.g. `keypost 4321 cmd+shift+l`
+//     keypost <pid> --text <text>  e.g. `keypost 4321 --text overview`
 //
 // WHY THIS EXISTS
 //
@@ -43,8 +44,35 @@ func fail(_ message: String) -> Never {
 }
 
 let args = CommandLine.arguments
-guard args.count == 3, let pid = Int32(args[1]) else {
-    fail("usage: keypost <pid> <chord>   (chord e.g. \"cmd+shift+l\", \"escape\")")
+guard args.count >= 3, let pid = Int32(args[1]) else {
+    fail("usage: keypost <pid> <chord> | keypost <pid> --text <text>")
+}
+
+if args.count == 4 && args[2] == "--text" {
+    let text = args[3]
+    let units = Array(text.utf16)
+    guard !units.isEmpty, units.count <= 4096 else {
+        fail("literal text must contain 1...4096 UTF-16 code units")
+    }
+    let source = CGEventSource(stateID: .hidSystemState)
+    guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+    else {
+        fail("could not synthesize literal keyboard input")
+    }
+    units.withUnsafeBufferPointer { buffer in
+        guard let base = buffer.baseAddress else { return }
+        down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+        up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+    }
+    down.postToPid(pid)
+    usleep(60_000)
+    up.postToPid(pid)
+    exit(0)
+}
+
+guard args.count == 3 else {
+    fail("usage: keypost <pid> <chord> | keypost <pid> --text <text>")
 }
 
 var flags: CGEventFlags = []

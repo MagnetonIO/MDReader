@@ -152,6 +152,10 @@ export interface PlatformDriver {
   inputValue(cssClass: string): Promise<string>;
   /** Type literal text into the focused input. */
   type(text: string): Promise<void>;
+  /** Post literal keyboard events straight to the app when the platform's
+   * primary injection demonstrably left an already-focused input empty. Like
+   * `chordDirect`, this is a measured second path, never the default. */
+  typeDirect?(text: string): Promise<void>;
 
   // ---- P7 semantic surfaces (only meaningful when semanticOps === true) ----
 

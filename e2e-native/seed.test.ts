@@ -239,9 +239,7 @@ test('the file palette proves a result is ready before selecting it', async () =
     runner.indexOf("case 'search':"),
   );
   const open = openDoc.indexOf("openSurface(\n        d,\n        'Mod+P'");
-  const focus = openDoc.indexOf(
-    "enterInput(d, 'mdsearch__input', step.query, 'the file palette input')",
-  );
+  const focus = openDoc.indexOf('const inputEntered = await enterInput(');
   const result = openDoc.indexOf("await d.countClass('mdsearch__item')");
   const select = openDoc.indexOf("await d.chord('Enter')");
   assert.ok(open >= 0 && focus > open && result > focus && select > result);
@@ -255,11 +253,23 @@ test('the search palette proves it opened before typing the query', async () => 
   );
   const open = search.indexOf("openSurface(\n        d,\n        'Mod+K'");
   const palette = search.indexOf("'mdsearch'", open);
-  const type = search.indexOf(
-    "enterInput(d, 'mdsearch__input', step.query, 'the search palette input')",
-  );
+  const type = search.indexOf('const inputEntered = await enterInput(');
   const result = search.indexOf('await d.countClass(rowClass)');
   assert.ok(open >= 0 && palette > open && type > palette && result > type);
+});
+
+test('direct native text delivery is only a measured fallback after an empty primary read', async () => {
+  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const enter = runner.slice(
+    runner.indexOf('async function enterInput('),
+    runner.indexOf('/**\n * Run the whole shared FLOW', runner.indexOf('async function enterInput(')),
+  );
+  const primary = enter.indexOf('await d.type(value)');
+  const read = enter.indexOf('await waitUntil(readsExpectedValue, 1_500)');
+  const empty = enter.indexOf("actual.trim() === ''");
+  const direct = enter.indexOf('await d.typeDirect(value)');
+  const verify = enter.indexOf('await waitUntil(readsExpectedValue, 5_000)', direct);
+  assert.ok(primary >= 0 && read > primary && empty > read && direct > empty && verify > direct);
 });
 
 test('the provenance jump observes the palette without a state-changing frame activation', async () => {

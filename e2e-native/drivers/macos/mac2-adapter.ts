@@ -230,6 +230,11 @@ export class Mac2Adapter implements PlatformDriver {
     await this.b.execute('macos: keys', { keys: [...text].map((c) => ({ key: c })) });
   }
 
+  async typeDirect(text: string): Promise<void> {
+    execFileSync(this.keyBin, [String(this.pid), '--text', text]);
+    await sleep(150);
+  }
+
   // ---- P7 semantic surfaces: read + click inside the webview ----
 
   async scopedText(cssClass: string): Promise<string> {

@@ -114,20 +114,31 @@ async function enterInput(
   cssClass: string,
   value: string,
   what: string,
-): Promise<void> {
+): Promise<string> {
   await d.focusInput(cssClass);
   await d.type(value);
   let actual = '';
-  const entered = await waitUntil(async () => {
+  const readsExpectedValue = async (): Promise<boolean> => {
     actual = await d.inputValue(cssClass);
     return actual.trim() === value;
-  }, 5_000);
+  };
+  let entered = await waitUntil(readsExpectedValue, 1_500);
+  let deliveryNote = '';
+  if (!entered && actual.trim() === '' && d.typeDirect) {
+    await d.typeDirect(value);
+    entered = await waitUntil(readsExpectedValue, 5_000);
+    if (entered) {
+      deliveryNote =
+        ' (mac2 left the focused input empty; literal key events were posted directly to the app)';
+    }
+  }
   if (!entered) {
     throw new Error(
       `${what} did not receive the query: expected ${JSON.stringify(value)}, ` +
         `read ${JSON.stringify(actual.trim())}`,
     );
   }
+  return deliveryNote;
 }
 
 /**
@@ -255,7 +266,12 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         'mdsearch',
         'the file palette',
       );
-      await enterInput(d, 'mdsearch__input', step.query, 'the file palette input');
+      const inputEntered = await enterInput(
+        d,
+        'mdsearch__input',
+        step.query,
+        'the file palette input',
+      );
       let rows = 0;
       const resultReady = await waitUntil(async () => {
         rows = await d.countClass('mdsearch__item');
@@ -280,7 +296,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         );
       }
       const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, `openDoc "${step.query}"`) : null;
-      return `opened "${step.query}" — heading /${step.headingPattern}/ rendered${frameNote(frac)}${paletteOpened}`;
+      return `opened "${step.query}" — heading /${step.headingPattern}/ rendered${frameNote(frac)}${paletteOpened}${inputEntered}`;
     }
 
     case 'search': {
@@ -292,7 +308,12 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         'mdsearch',
         'the search palette',
       );
-      await enterInput(d, 'mdsearch__input', step.query, 'the search palette input');
+      const inputEntered = await enterInput(
+        d,
+        'mdsearch__input',
+        step.query,
+        'the search palette input',
+      );
       // Same contract: >= 1 result row. FAULT: count a class no row carries → 0
       // rows, standing in for "the search returned nothing".
       const rowClass = faulted(step.id) ? 'mdsearch__item__ABSENT' : 'mdsearch__item';
@@ -303,7 +324,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       }, 15_000);
       if (!ok) throw new Error(`Cmd+K "${step.query}" returned no result rows`);
       const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, `search "${step.query}"`) : null;
-      return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn${frameNote(frac)}${paletteOpened}`;
+      return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn${frameNote(frac)}${paletteOpened}${inputEntered}`;
     }
 
     case 'jumpToHit': {
