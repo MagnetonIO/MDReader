@@ -14,6 +14,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { platform } from 'node:os';
@@ -62,9 +63,21 @@ function safeRelativePath(path, name) {
   return segments;
 }
 
+/**
+ * Returns the conservative collision key used for all supported publish
+ * filesystems. NFKC covers compatibility characters (including long s), and
+ * the supplemental default-case folds cover sharp-s and final sigma, which
+ * are folded by common case-insensitive Unicode filesystems but not by
+ * JavaScript's simple `toLowerCase`.
+ */
 function destinationNamespaceKey(path) {
   return safeRelativePath(path, 'Cloudflare asset destination')
-    .map((segment) => segment.normalize('NFC').toLowerCase().normalize('NFC'))
+    .map((segment) => segment
+      .normalize('NFKC')
+      .toLowerCase()
+      .replaceAll('\u00df', 'ss')
+      .replaceAll('\u03c2', '\u03c3')
+      .normalize('NFC'))
     .join('/');
 }
 
@@ -606,6 +619,216 @@ function stagedFilePaths(directory) {
   return paths.sort();
 }
 
+const OUTPUT_RECOVERY_DIRECTORY = '.open-next-recovery';
+const OUTPUT_RECOVERY_MARKER = '.mdreader-cloudflare-output-recovery-v1';
+const OUTPUT_RECOVERY_MARKER_BYTES =
+  'mdreader-cloudflare-output-recovery-v1\n';
+
+function lstatIfPresent(path) {
+  try {
+    return lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function assertPathAbsent(path, name) {
+  assert.equal(
+    lstatIfPresent(path),
+    null,
+    `${name} already exists: ${path}`,
+  );
+}
+
+function snapshotPublishedOutput(destination) {
+  const metadata = lstatIfPresent(destination);
+  if (metadata === null) return null;
+  assert.equal(
+    metadata.isSymbolicLink(),
+    false,
+    `Cloudflare asset destination rejects symbolic link ${destination}`,
+  );
+  assert.equal(
+    metadata.isDirectory(),
+    true,
+    `Cloudflare asset destination is not a directory: ${destination}`,
+  );
+  return Object.freeze({
+    identity: snapshotIdentity(
+      metadata,
+      destination,
+      'directory',
+      'published Cloudflare .open-next output',
+    ),
+    name: 'published Cloudflare .open-next output',
+    path: destination,
+  });
+}
+
+function invokeSynchronousSeam(symbol, name, detail) {
+  const seam = globalThis[Symbol.for(symbol)];
+  if (seam === undefined) return;
+  assert.equal(typeof seam, 'function', `${name} seam must be a function`);
+  const result = seam(detail);
+  assert.equal(result instanceof Promise, false, `${name} seam must be synchronous`);
+}
+
+function invokePublicationStep(outputStage, step) {
+  invokeSynchronousSeam(
+    'mdreader.cloudflare.publication-step',
+    'Cloudflare publication',
+    {
+      destination: outputStage.destination,
+      parent: outputStage.parent.path,
+      stagingRoot: outputStage.stagingRoot,
+      step,
+    },
+  );
+}
+
+function invokeCleanupStep(outputStage, step) {
+  invokeSynchronousSeam(
+    'mdreader.cloudflare.cleanup-step',
+    'Cloudflare cleanup',
+    {
+      destination: outputStage.destination,
+      parent: outputStage.parent.path,
+      stagingRoot: outputStage.stagingRoot,
+      step,
+    },
+  );
+}
+
+/**
+ * Deletes one private directory only after the parent and target identities
+ * have been checked at the deletion boundary. The caller chooses the seam so
+ * tests can prove a pathname rebind is refused rather than recursively erased.
+ */
+function removePinnedPrivateDirectory({
+  parent,
+  snapshot,
+  role,
+  beforeRemove = undefined,
+}) {
+  beforeRemove?.();
+  assertCurrentDirectory(parent, `${role} parent`);
+  assertCurrentDirectory(snapshot, role);
+  rmSync(snapshot.path, { recursive: true, force: false });
+}
+
+function snapshotOutputRecovery(parent) {
+  const path = join(parent.path, OUTPUT_RECOVERY_DIRECTORY);
+  if (lstatIfPresent(path) === null) return null;
+  const container = snapshotDirectory(
+    path,
+    'Cloudflare output recovery directory',
+    true,
+  );
+  const entries = readdirSync(container.path).sort();
+  const allowed = new Set([OUTPUT_RECOVERY_MARKER, 'previous']);
+  assert.ok(
+    entries.every((entry) => allowed.has(entry)),
+    `Cloudflare output recovery directory has unexpected entries: ${entries.join(', ')}`,
+  );
+  assert.ok(
+    entries.length <= 2,
+    'Cloudflare output recovery directory has an unsafe layout',
+  );
+
+  let marker = null;
+  if (entries.includes(OUTPUT_RECOVERY_MARKER)) {
+    marker = snapshotFile(
+      container,
+      OUTPUT_RECOVERY_MARKER,
+      'Cloudflare output recovery marker',
+      [parent, container],
+    );
+    assert.equal(
+      readPinnedMdreaderCloudflareSource(marker).toString('utf8'),
+      OUTPUT_RECOVERY_MARKER_BYTES,
+      'Cloudflare output recovery marker is not recognized',
+    );
+  }
+
+  let previous = null;
+  if (entries.includes('previous')) {
+    assert.notEqual(
+      marker,
+      null,
+      'Cloudflare output recovery refuses an unmarked previous output',
+    );
+    previous = snapshotDirectory(
+      join(container.path, 'previous'),
+      'previous Cloudflare output recovery tree',
+      true,
+    );
+  }
+  if (marker === null) {
+    assert.equal(
+      entries.length,
+      0,
+      'Cloudflare output recovery refuses an unmarked recovery layout',
+    );
+  }
+  return Object.freeze({ container, marker, previous });
+}
+
+function discardOutputRecovery(outputStage, recovery) {
+  removePinnedPrivateDirectory({
+    parent: outputStage.parent,
+    snapshot: recovery.container,
+    role: 'Cloudflare output recovery directory',
+    beforeRemove() {
+      invokePublicationStep(outputStage, 'before-recovery-cleanup');
+    },
+  });
+}
+
+function aggregatePublicationError(primary, additional, message, properties = {}) {
+  if (additional.length === 0) return primary;
+  const combined = new AggregateError([primary, ...additional], message);
+  Object.assign(combined, properties);
+  return combined;
+}
+
+/**
+ * Recovers the one deliberate destination-absence interval in a two-rename
+ * publish. A crash after moving the old output leaves it at the fixed,
+ * discoverable `.open-next-recovery/previous`; the next invocation restores
+ * it before staging or publishing anything new.
+ */
+function recoverMdreaderCloudflareOutput(parent, destination) {
+  const recovery = snapshotOutputRecovery(parent);
+  if (recovery === null) return;
+  const published = snapshotPublishedOutput(destination);
+
+  if (recovery.previous !== null && published === null) {
+    assertCurrentDirectory(parent, 'recovery destination parent');
+    assertCurrentDirectory(recovery.container, 'Cloudflare output recovery directory');
+    assertCurrentDirectory(recovery.previous, 'previous Cloudflare output recovery tree');
+    renameSync(recovery.previous.path, destination);
+    assertSameIdentity(
+      lstatBigInt(destination, 'recovered Cloudflare output'),
+      recovery.previous.identity,
+      'recovered Cloudflare output',
+      'recovery destination',
+    );
+  }
+
+  try {
+    discardOutputRecovery({ destination, parent, stagingRoot: undefined }, recovery);
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [
+        new Error('Cloudflare output recovery completed but recovery cleanup failed'),
+        cleanupError,
+      ],
+      'Cloudflare output recovery cleanup failed',
+    );
+  }
+}
+
 /**
  * Creates a bounded-name, same-parent private tree for the complete Worker
  * output while leaving any previously published .open-next tree untouched.
@@ -623,38 +846,15 @@ export function createMdreaderCloudflareOutputStage(openNext) {
     true,
   );
 
-  let destinationSnapshot = null;
-  try {
-    const existing = lstatSync(absoluteOpenNext, { bigint: true });
-    assert.equal(
-      existing.isSymbolicLink(),
-      false,
-      `Cloudflare asset destination rejects symbolic link ${absoluteOpenNext}`,
-    );
-    assert.equal(
-      existing.isDirectory(),
-      true,
-      `Cloudflare asset destination is not a directory: ${absoluteOpenNext}`,
-    );
-    destinationSnapshot = Object.freeze({
-      identity: snapshotIdentity(
-        existing,
-        absoluteOpenNext,
-        'directory',
-        'published Cloudflare .open-next output',
-      ),
-      name: 'published Cloudflare .open-next output',
-      path: absoluteOpenNext,
-    });
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
+  recoverMdreaderCloudflareOutput(parent, absoluteOpenNext);
+  const destinationSnapshot = snapshotPublishedOutput(absoluteOpenNext);
 
   assertCurrentDirectory(parent, 'destination parent');
   const stagingRoot = mkdtempSync(join(parent.path, '.open-next-stage-'));
+  let stagingSnapshot;
   try {
     chmodSync(stagingRoot, 0o700);
-    const stagingSnapshot = snapshotDirectory(
+    stagingSnapshot = snapshotDirectory(
       stagingRoot,
       'Cloudflare private output staging root',
       true,
@@ -667,8 +867,23 @@ export function createMdreaderCloudflareOutputStage(openNext) {
       stagingSnapshot,
     });
   } catch (error) {
-    rmSync(stagingRoot, { recursive: true, force: true });
-    throw error;
+    const cleanupErrors = [];
+    if (stagingSnapshot !== undefined) {
+      try {
+        removePinnedPrivateDirectory({
+          parent,
+          snapshot: stagingSnapshot,
+          role: 'Cloudflare private output staging root',
+        });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    throw aggregatePublicationError(
+      error,
+      cleanupErrors,
+      'Cloudflare output staging creation failed and cleanup was incomplete',
+    );
   }
 }
 
@@ -906,9 +1121,126 @@ function assertPublicationDestination(outputStage) {
   }
 }
 
+function createOutputRecovery(outputStage) {
+  const path = join(outputStage.parent.path, OUTPUT_RECOVERY_DIRECTORY);
+  assertCurrentDirectory(outputStage.parent, 'destination parent');
+  assertPathAbsent(path, 'Cloudflare output recovery directory');
+  mkdirSync(path, { mode: 0o700 });
+  let container;
+  try {
+    chmodSync(path, 0o700);
+    container = snapshotDirectory(
+      path,
+      'Cloudflare output recovery directory',
+      true,
+    );
+    writeFileSync(join(path, OUTPUT_RECOVERY_MARKER), OUTPUT_RECOVERY_MARKER_BYTES, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    const recovery = snapshotOutputRecovery(outputStage.parent);
+    assert.notEqual(recovery, null, 'Cloudflare output recovery directory disappeared');
+    return recovery;
+  } catch (error) {
+    const cleanupErrors = [];
+    if (container !== undefined) {
+      try {
+        removePinnedPrivateDirectory({
+          parent: outputStage.parent,
+          snapshot: container,
+          role: 'Cloudflare output recovery directory',
+        });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    throw aggregatePublicationError(
+      error,
+      cleanupErrors,
+      'Cloudflare output recovery creation failed and cleanup was incomplete',
+    );
+  }
+}
+
+function movePreviousOutputToRecovery(outputStage, recovery, onMoved) {
+  const previous = join(recovery.container.path, 'previous');
+  invokePublicationStep(outputStage, 'before-backup-rename');
+  assertCurrentDirectory(outputStage.parent, 'destination parent');
+  assertCurrentDirectory(recovery.container, 'Cloudflare output recovery directory');
+  assertPublicationDestination(outputStage);
+  assertPathAbsent(previous, 'Cloudflare previous output recovery tree');
+  renameSync(outputStage.destination, previous);
+  onMoved();
+  const snapshot = snapshotDirectory(
+    previous,
+    'previous Cloudflare output recovery tree',
+    true,
+  );
+  assertSameIdentity(
+    lstatBigInt(previous, 'previous Cloudflare output'),
+    outputStage.destinationSnapshot.identity,
+    'previous Cloudflare output',
+    'publication backup',
+  );
+  invokePublicationStep(outputStage, 'after-backup-identity');
+  return snapshot;
+}
+
+function moveReplacementIntoDestination(outputStage, onMoved) {
+  invokePublicationStep(outputStage, 'before-replacement-rename');
+  assertCurrentDirectory(outputStage.parent, 'destination parent');
+  assertCurrentDirectory(
+    outputStage.stagingSnapshot,
+    'private output staging root',
+  );
+  assertPathAbsent(outputStage.destination, 'Cloudflare publication destination');
+  renameSync(outputStage.stagingRoot, outputStage.destination);
+  onMoved();
+  assertSameIdentity(
+    lstatBigInt(outputStage.destination, 'published Cloudflare output'),
+    outputStage.stagingSnapshot.identity,
+    'published Cloudflare output',
+    'publication destination',
+  );
+  invokePublicationStep(outputStage, 'after-replacement-identity');
+}
+
+function moveReplacementBackToStage(outputStage) {
+  invokePublicationStep(outputStage, 'before-rollback-replacement');
+  assertCurrentDirectory(outputStage.parent, 'rollback destination parent');
+  assertSameIdentity(
+    lstatBigInt(outputStage.destination, 'published Cloudflare output'),
+    outputStage.stagingSnapshot.identity,
+    'published Cloudflare output',
+    'rollback destination',
+  );
+  assertPathAbsent(outputStage.stagingRoot, 'Cloudflare private output staging root');
+  renameSync(outputStage.destination, outputStage.stagingRoot);
+  assertCurrentDirectory(outputStage.stagingSnapshot, 'private output staging root');
+}
+
+function restorePreviousOutput(outputStage, recovery, previous) {
+  invokePublicationStep(outputStage, 'before-rollback-restore');
+  assertCurrentDirectory(outputStage.parent, 'rollback destination parent');
+  assertCurrentDirectory(recovery.container, 'Cloudflare output recovery directory');
+  assertCurrentDirectory(previous, 'previous Cloudflare output recovery tree');
+  assertPathAbsent(outputStage.destination, 'Cloudflare rollback destination');
+  renameSync(previous.path, outputStage.destination);
+  assertSameIdentity(
+    lstatBigInt(outputStage.destination, 'restored Cloudflare output'),
+    outputStage.destinationSnapshot.identity,
+    'restored Cloudflare output',
+    'rollback destination',
+  );
+}
+
 /**
- * Revalidates the complete output manifest and atomically publishes it,
- * restoring a prior output if either publication rename fails.
+ * Revalidates the complete output manifest and publishes it with a
+ * discoverable crash-recovery protocol. The two same-parent renames have a
+ * short destination-absence interval, so the prior output is kept at the
+ * fixed `.open-next-recovery/previous` until the replacement has been pinned
+ * at its destination and recovery cleanup succeeds.
  */
 export function publishMdreaderCloudflareOutput(outputStage, manifest) {
   assertPrivateOutputStage(outputStage);
@@ -922,81 +1254,70 @@ export function publishMdreaderCloudflareOutput(outputStage, manifest) {
   assertPrivateOutputStage(outputStage);
   assertPublicationDestination(outputStage);
 
-  let backupContainer;
-  let backupPrevious;
+  let recovery = null;
+  let previous = null;
   let previousMoved = false;
   let replacementMoved = false;
   try {
     if (outputStage.destinationSnapshot !== null) {
-      backupContainer = mkdtempSync(
-        join(outputStage.parent.path, '.open-next-backup-'),
-      );
-      chmodSync(backupContainer, 0o700);
-      backupPrevious = join(backupContainer, 'previous');
-      assertCurrentDirectory(outputStage.parent, 'destination parent');
-      assertPublicationDestination(outputStage);
-      renameSync(outputStage.destination, backupPrevious);
-      previousMoved = true;
-      assertSameIdentity(
-        lstatBigInt(backupPrevious, 'previous Cloudflare output'),
-        outputStage.destinationSnapshot.identity,
-        'previous Cloudflare output',
-        'publication backup',
-      );
+      recovery = createOutputRecovery(outputStage);
+      previous = movePreviousOutputToRecovery(outputStage, recovery, () => {
+        previousMoved = true;
+      });
     }
-
-    assertCurrentDirectory(outputStage.parent, 'destination parent');
-    assertCurrentDirectory(
-      outputStage.stagingSnapshot,
-      'private output staging root',
-    );
-    renameSync(outputStage.stagingRoot, outputStage.destination);
-    replacementMoved = true;
-    assertSameIdentity(
-      lstatBigInt(outputStage.destination, 'published Cloudflare output'),
-      outputStage.stagingSnapshot.identity,
-      'published Cloudflare output',
-      'publication destination',
-    );
+    moveReplacementIntoDestination(outputStage, () => {
+      replacementMoved = true;
+    });
   } catch (error) {
     const rollbackErrors = [];
     if (replacementMoved) {
       try {
-        renameSync(outputStage.destination, outputStage.stagingRoot);
+        moveReplacementBackToStage(outputStage);
         replacementMoved = false;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
     }
-    if (previousMoved) {
+    if (previousMoved && replacementMoved === false) {
       try {
-        renameSync(backupPrevious, outputStage.destination);
+        restorePreviousOutput(outputStage, recovery, previous);
         previousMoved = false;
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
     }
-    if (backupContainer !== undefined) {
+
+    // A recovery tree is deleted only after its prior output was restored or
+    // was never moved. In particular, a failed restore keeps the only prior
+    // release in place for manual or next-run recovery.
+    if (recovery !== null && previousMoved === false) {
       try {
-        rmSync(backupContainer, { recursive: true, force: true });
+        discardOutputRecovery(outputStage, recovery);
       } catch (rollbackError) {
         rollbackErrors.push(rollbackError);
       }
     }
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...rollbackErrors],
-        'Cloudflare output publication failed and rollback was incomplete',
-      );
-    }
-    throw error;
+    const incomplete = previousMoved || replacementMoved;
+    throw aggregatePublicationError(
+      error,
+      rollbackErrors,
+      'Cloudflare output publication failed and rollback was incomplete',
+      incomplete ? { mdreaderCloudflarePreserveStage: true } : {},
+    );
   }
 
-  if (backupContainer !== undefined) {
+  if (recovery !== null) {
     try {
-      rmSync(backupContainer, { recursive: true, force: true });
-    } catch {
-      // Publication is already committed; retain the recoverable backup.
+      discardOutputRecovery(outputStage, recovery);
+    } catch (cleanupError) {
+      throw aggregatePublicationError(
+        new Error(
+          'Cloudflare output publication committed but recovery cleanup failed',
+        ),
+        [cleanupError],
+        'Cloudflare output publication committed with recovery cleanup failure',
+        { mdreaderCloudflarePublicationCommitted: true },
+      );
     }
   }
 }
@@ -1015,7 +1336,16 @@ export function discardMdreaderCloudflareOutputStage(outputStage) {
     /^\.open-next-stage-[A-Za-z0-9]{6}$/,
     'Cloudflare private output cleanup target has an unsafe name',
   );
-  rmSync(outputStage.stagingRoot, { recursive: true, force: true });
+  assertCurrentDirectory(outputStage.parent, 'private output cleanup parent');
+  if (lstatIfPresent(outputStage.stagingRoot) === null) return;
+  removePinnedPrivateDirectory({
+    parent: outputStage.parent,
+    snapshot: outputStage.stagingSnapshot,
+    role: 'Cloudflare private output staging root',
+    beforeRemove() {
+      invokeCleanupStep(outputStage, 'before-stage-discard');
+    },
+  });
 }
 
 export function assertMdreaderCloudflareAssets(directory) {

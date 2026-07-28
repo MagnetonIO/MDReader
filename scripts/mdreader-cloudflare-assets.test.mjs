@@ -219,6 +219,79 @@ globalThis[Symbol.for('mdreader.cloudflare.before-publication')] = ({ stagingRoo
   };
 }
 
+function publicationFaultSeam(fixture, rules) {
+  const hook = join(
+    fixture.directory,
+    `publication-fault-${Math.random().toString(36).slice(2)}.mjs`,
+  );
+  write(
+    hook,
+    `import {
+  mkdirSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
+
+const rules = JSON.parse(process.env.MDREADER_TEST_PUBLICATION_RULES);
+const consumed = new Set();
+
+function applyRule(scope, detail) {
+  const rule = rules.find((candidate, index) =>
+    candidate.scope === scope
+      && candidate.step === detail.step
+      && (!candidate.once || !consumed.has(index)));
+  if (!rule) return;
+  consumed.add(rules.indexOf(rule));
+  writeFileSync(
+    process.env.MDREADER_TEST_PUBLICATION_MARKER,
+    JSON.stringify({ scope, step: detail.step }) + '\\n',
+    { flag: 'a' },
+  );
+  if (rule.action === 'throw') {
+    throw new Error(rule.message ?? ('injected ' + scope + ' failure at ' + detail.step));
+  }
+  if (rule.action === 'exit') {
+    process.exit(Number(rule.code ?? 86));
+  }
+  if (rule.action === 'rebind-stage') {
+    renameSync(detail.stagingRoot, detail.stagingRoot + '.owned');
+    mkdirSync(detail.stagingRoot, { mode: 0o700 });
+    writeFileSync(detail.stagingRoot + '/decoy.txt', 'DO-NOT-DELETE\\n');
+    return;
+  }
+  if (rule.action === 'rebind-parent') {
+    renameSync(detail.parent, detail.parent + '.owned');
+    mkdirSync(detail.parent, { mode: 0o700 });
+    mkdirSync(detail.stagingRoot, { mode: 0o700 });
+    writeFileSync(detail.stagingRoot + '/decoy.txt', 'DO-NOT-DELETE\\n');
+    return;
+  }
+  throw new Error('unknown publication test action ' + rule.action);
+}
+
+globalThis[Symbol.for('mdreader.cloudflare.publication-step')] =
+  (detail) => applyRule('publication', detail);
+globalThis[Symbol.for('mdreader.cloudflare.cleanup-step')] =
+  (detail) => applyRule('cleanup', detail);
+`,
+  );
+  const marker = join(fixture.directory, 'publication-faults.ran');
+  const existingNodeOptions = process.env.NODE_OPTIONS?.trim();
+  return {
+    environment: {
+      MDREADER_TEST_PUBLICATION_MARKER: marker,
+      MDREADER_TEST_PUBLICATION_RULES: JSON.stringify(rules),
+      NODE_OPTIONS: [
+        existingNodeOptions,
+        `--import=${pathToFileURL(hook).href}`,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    },
+    marker,
+  };
+}
+
 function snapshotTree(root) {
   const entries = [];
   function walk(current, relativeDirectory = '') {
@@ -259,6 +332,21 @@ function seedPublishedOutput(fixture) {
   return { output, snapshot: snapshotTree(output) };
 }
 
+function privateOutputEntries(output) {
+  return readdirSync(dirname(output))
+    .filter((entry) =>
+      entry.startsWith('.open-next-stage-')
+        || entry.startsWith('.open-next-recovery')
+        || entry.includes('.owned'))
+    .sort();
+}
+
+function findPriorOutput(output) {
+  const recovery = join(dirname(output), '.open-next-recovery');
+  const previous = join(recovery, 'previous');
+  return existsSync(previous) ? previous : null;
+}
+
 function assertPublishedOutputUnchanged(published) {
   assert.equal(
     existsSync(published.output),
@@ -273,11 +361,25 @@ function assertPublishedOutputUnchanged(published) {
   const siblings = readdirSync(dirname(published.output))
     .filter((entry) =>
       entry.startsWith('.open-next-stage-')
-        || entry.startsWith('.open-next-backup-'));
+        || entry.startsWith('.open-next-backup-')
+        || entry.startsWith('.open-next-recovery'));
   assert.deepEqual(
     siblings,
     [],
     `staging leaked private output trees: ${siblings.join(', ')}`,
+  );
+}
+
+function assertPublishedOutputBytesUnchanged(published) {
+  assert.equal(
+    existsSync(published.output),
+    true,
+    'staging removed the previously published output',
+  );
+  assert.deepEqual(
+    snapshotTree(published.output),
+    published.snapshot,
+    'staging changed the previously published output',
   );
 }
 
@@ -510,6 +612,19 @@ test('destination plan rejects normalized file and directory prefix conflicts', 
   }
 });
 
+test('destination plan rejects compatibility-case collisions used by supported filesystems', () => {
+  for (const destinations of [
+    ['Straße.txt', 'STRASSE.txt'],
+    ['greek/σ.txt', 'greek/ς.txt'],
+    ['historic/ſ.txt', 'historic/s.txt'],
+  ]) {
+    assert.throws(
+      () => assertMdreaderCloudflareDestinationPlan(destinationPlan(...destinations)),
+      /destination.*collid/is,
+    );
+  }
+});
+
 test('source-copy failure preserves the previously published Worker tree', () => {
   const fixture = stageFixture();
   const sentinel = 'EXTERNAL-SOURCE-FAILURE';
@@ -555,6 +670,263 @@ test('prepublication staged-byte mutation preserves the published Worker tree', 
       `prepublication seam did not run:\n${output(result)}`,
     );
     assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('first publication rename failure preserves the prior output and cleans the stage', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'throw',
+    scope: 'publication',
+    step: 'before-backup-rename',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /before-backup-rename|publication/i);
+    assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('second publication rename failure restores the prior output', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'throw',
+    scope: 'publication',
+    step: 'before-replacement-rename',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /before-replacement-rename|publication/i);
+    assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('post-rename identity failure rolls both moves back without losing either tree', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'throw',
+    scope: 'publication',
+    step: 'after-replacement-identity',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /after-replacement-identity|publication/i);
+    assertPublishedOutputUnchanged(published);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('failed replacement rollback preserves the new output and recoverable prior tree', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [
+    {
+      action: 'throw',
+      scope: 'publication',
+      step: 'after-replacement-identity',
+    },
+    {
+      action: 'throw',
+      scope: 'publication',
+      step: 'before-rollback-replacement',
+    },
+  ]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError|rollback was incomplete/i);
+    assert.equal(existsSync(published.output), true, 'replacement disappeared');
+    const prior = findPriorOutput(published.output);
+    assert.notEqual(prior, null, 'prior output was not retained for recovery');
+    assert.deepEqual(snapshotTree(prior), published.snapshot);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('failed prior restore never deletes the only prior tree', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [
+    {
+      action: 'throw',
+      scope: 'publication',
+      step: 'before-replacement-rename',
+    },
+    {
+      action: 'throw',
+      scope: 'publication',
+      step: 'before-rollback-restore',
+    },
+  ]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError|rollback was incomplete/i);
+    assert.equal(
+      existsSync(published.output),
+      false,
+      'failed restore unexpectedly installed another tree',
+    );
+    const prior = findPriorOutput(published.output);
+    assert.notEqual(prior, null, 'failed restore deleted the prior release');
+    assert.deepEqual(snapshotTree(prior), published.snapshot);
+    assert.ok(
+      privateOutputEntries(published.output).some((entry) =>
+        entry.startsWith('.open-next-stage-')),
+      'failed restore deleted the complete replacement stage',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('backup cleanup failure preserves the published replacement and prior tree', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'throw',
+    scope: 'publication',
+    step: 'before-recovery-cleanup',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError|recovery cleanup/i);
+    assert.equal(existsSync(published.output), true, 'replacement was removed');
+    assert.notDeepEqual(snapshotTree(published.output), published.snapshot);
+    const prior = findPriorOutput(published.output);
+    assert.notEqual(prior, null, 'cleanup failure deleted the recoverable prior');
+    assert.deepEqual(snapshotTree(prior), published.snapshot);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('finally cleanup refuses a rebound staging path and preserves the primary error', () => {
+  const fixture = stageFixture();
+  write(join(fixture.app, 'cloudflare-worker.ts'), 'export default { broken: ; };\n');
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'rebind-stage',
+    scope: 'cleanup',
+    step: 'before-stage-discard',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError/i);
+    assert.match(output(result), /unexpected|error/i);
+    assert.match(output(result), /identity|rebound|cleanup/i);
+    assertPublishedOutputBytesUnchanged(published);
+    const siblings = privateOutputEntries(published.output);
+    assert.ok(siblings.some((entry) => entry.endsWith('.owned')));
+    assert.ok(siblings.some((entry) => entry.startsWith('.open-next-stage-')));
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('finally cleanup failure is aggregated without replacing the primary error', () => {
+  const fixture = stageFixture();
+  write(join(fixture.app, 'cloudflare-worker.ts'), 'export default { broken: ; };\n');
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'throw',
+    scope: 'cleanup',
+    step: 'before-stage-discard',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError/i);
+    assert.match(output(result), /unexpected|error/i);
+    assert.match(output(result), /injected cleanup failure/i);
+    assert.deepEqual(snapshotTree(published.output), published.snapshot);
+    assert.ok(
+      privateOutputEntries(published.output).some((entry) =>
+        entry.startsWith('.open-next-stage-')),
+      'failed cleanup deleted the private stage',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('finally cleanup refuses a rebound staging parent before recursive deletion', () => {
+  const fixture = stageFixture();
+  write(join(fixture.app, 'cloudflare-worker.ts'), 'export default { broken: ; }\n');
+  const published = seedPublishedOutput(fixture);
+  const seam = publicationFaultSeam(fixture, [{
+    action: 'rebind-parent',
+    scope: 'cleanup',
+    step: 'before-stage-discard',
+  }]);
+  try {
+    const result = run(STAGE, fixture.app, seam.environment);
+    assertRejected(result, /AggregateError/i);
+    assert.match(output(result), /unexpected|error/i);
+    assert.match(output(result), /identity|cleanup parent/i);
+    const originalApp = fixture.app + '.owned';
+    const originalOutput = join(originalApp, '.open-next');
+    assert.equal(existsSync(originalOutput), true);
+    assert.deepEqual(snapshotTree(originalOutput), published.snapshot);
+    assert.ok(
+      readdirSync(fixture.app).some((entry) =>
+        entry.startsWith('.open-next-stage-')),
+      'cleanup deleted the rebound-parent decoy',
+    );
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('successful replacement publishes one complete output with no recovery artifacts', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  try {
+    const result = run(STAGE, fixture.app);
+    assert.equal(result.status, 0, output(result));
+    assert.equal(existsSync(published.output), true);
+    assert.notDeepEqual(snapshotTree(published.output), published.snapshot);
+    assert.deepEqual(privateOutputEntries(published.output), []);
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('the next run restores the discoverable prior output after a crash boundary', () => {
+  const fixture = stageFixture();
+  const published = seedPublishedOutput(fixture);
+  const crash = publicationFaultSeam(fixture, [{
+    action: 'exit',
+    code: 86,
+    scope: 'publication',
+    step: 'after-backup-identity',
+  }]);
+  try {
+    const crashed = run(STAGE, fixture.app, crash.environment);
+    assert.equal(crashed.status, 86, output(crashed));
+    assert.equal(existsSync(published.output), false);
+    const prior = findPriorOutput(published.output);
+    assert.notEqual(prior, null, 'crash did not leave discoverable prior output');
+    assert.deepEqual(snapshotTree(prior), published.snapshot);
+
+    write(join(fixture.app, 'cloudflare-worker.ts'), 'export default { broken: ; };\n');
+    const recoveryRun = run(STAGE, fixture.app);
+    assertRejected(recoveryRun, /unexpected|error/i);
+    assertPublishedOutputBytesUnchanged(published);
+    assert.equal(findPriorOutput(published.output), null);
+    assert.ok(
+      privateOutputEntries(published.output).some((entry) =>
+        entry.startsWith('.open-next-stage-')),
+      'crash recovery discarded the preserved interrupted replacement',
+    );
   } finally {
     rmSync(fixture.directory, { recursive: true, force: true });
   }

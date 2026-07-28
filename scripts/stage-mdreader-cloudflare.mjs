@@ -170,6 +170,7 @@ assertMdreaderCloudflareDestinationPlan(assetPlan);
 const outputStage = createMdreaderCloudflareOutputStage(OPEN_NEXT);
 let assetSet;
 let published = false;
+let failure;
 try {
   assetSet = stageMdreaderCloudflareAssetPlan(assetPlan, outputStage);
   const workerBuild = await build({
@@ -192,8 +193,27 @@ try {
     snapshotMdreaderCloudflareOutputManifest(outputStage);
   publishMdreaderCloudflareOutput(outputStage, outputManifest);
   published = true;
+} catch (error) {
+  failure = error;
+  // A committed replacement can still report a retained-recovery cleanup
+  // error. Its staging path was renamed into .open-next, so never treat that
+  // as an unpublished private tree in finally.
+  if (error?.mdreaderCloudflarePublicationCommitted === true) published = true;
+  throw error;
 } finally {
-  if (!published) discardMdreaderCloudflareOutputStage(outputStage);
+  if (!published && failure?.mdreaderCloudflarePreserveStage !== true) {
+    try {
+      discardMdreaderCloudflareOutputStage(outputStage);
+    } catch (cleanupError) {
+      if (failure !== undefined) {
+        throw new AggregateError(
+          [failure, cleanupError],
+          'Cloudflare output staging failed and private-stage cleanup was incomplete',
+        );
+      }
+      throw cleanupError;
+    }
+  }
 }
 
 console.log(
