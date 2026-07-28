@@ -53,6 +53,7 @@ test('the isolated fixture serves the real session/entity-query contract and for
     const listBody = (await listing.json()) as {
       pins: {
         catalog_revision_id: string;
+        physical_schema_version_ids?: string[];
         provenance_rule_version_id?: string;
       };
       rows: Array<{
@@ -64,6 +65,9 @@ test('the isolated fixture serves the real session/entity-query contract and for
       next_cursor?: unknown;
     };
     assert.equal(listBody.pins.catalog_revision_id, MOBILE_FIXTURE_IDS.catalog);
+    assert.deepEqual(listBody.pins.physical_schema_version_ids, [
+      MOBILE_FIXTURE_IDS.physicalSchema,
+    ]);
     assert.equal(
       listBody.pins.provenance_rule_version_id,
       MOBILE_FIXTURE_IDS.provenanceRule,

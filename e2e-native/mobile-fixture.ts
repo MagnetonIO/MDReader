@@ -16,6 +16,7 @@ export const MOBILE_FIXTURE_IDS = {
   policy: '00000000-0000-0000-0000-000000000209',
   query: '00000000-0000-0000-0000-000000000210',
   provenanceRule: '00000000-0000-0000-0000-000000000211',
+  physicalSchema: '00000000-0000-0000-0000-000000000212',
 } as const;
 
 const CONTENT =
@@ -75,7 +76,7 @@ function entityResponse(fields: Record<string, unknown>): Record<string, unknown
       catalog_resolver_id: MOBILE_FIXTURE_IDS.resolver,
       catalog_revision_id: MOBILE_FIXTURE_IDS.catalog,
       schema_version_id: MOBILE_FIXTURE_IDS.schema,
-      physical_schema_version_ids: [],
+      physical_schema_version_ids: [MOBILE_FIXTURE_IDS.physicalSchema],
       mapping_version_ids: [MOBILE_FIXTURE_IDS.mapping],
       source_version_ids: [MOBILE_FIXTURE_IDS.sourceVersion],
       policy_version_ids: [MOBILE_FIXTURE_IDS.policy],
