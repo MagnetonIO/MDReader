@@ -4711,6 +4711,12 @@ mod tests {
         library::{LibraryRegistry, LibraryStore},
     };
 
+    // These tests deliberately release an ephemeral loopback port and then
+    // rebind its exact address. Without one in-process lease, another callback
+    // test can win that port in the gap and make the exact-bind assertion fail
+    // nondeterministically even though the production listener is correct.
+    static OAUTH_CALLBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[derive(Default)]
     struct SharedCredentialBackend {
         inner: MemoryCredentialVault,
@@ -7473,6 +7479,7 @@ mod tests {
 
     #[tokio::test]
     async fn google_callback_uses_a_random_reserved_port_for_each_attempt() {
+        let _callback_lease = OAUTH_CALLBACK_TEST_LOCK.lock().await;
         let (first_listener, first_redirect) = bind_oauth_callback_listener(
             oauth_callback_configuration(CloudProvider::GoogleDrive, None)
                 .expect("Google callback configuration"),
@@ -7512,6 +7519,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropbox_callback_binds_the_exact_configured_address_and_fails_if_occupied() {
+        let _callback_lease = OAUTH_CALLBACK_TEST_LOCK.lock().await;
         let reservation = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("reserve callback port");
@@ -7538,6 +7546,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_callback_rejects_a_terminated_request_over_16_kib() {
+        let _callback_lease = OAUTH_CALLBACK_TEST_LOCK.lock().await;
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("callback listener");
