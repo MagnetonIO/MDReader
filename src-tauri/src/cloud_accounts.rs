@@ -3625,10 +3625,42 @@ fn oauth_client_id(provider: CloudProvider) -> Result<&'static str, CloudSourceE
         CloudProvider::Dropbox => option_env!("MDREADER_DROPBOX_CLIENT_ID"),
     }
     .ok_or(CloudSourceError::ClientConfigurationMissing)?;
-    if client_id.is_empty() || client_id.len() > 512 || client_id.chars().any(char::is_control) {
+    validate_oauth_client_id(provider, client_id)?;
+    Ok(client_id)
+}
+
+fn validate_oauth_client_id(
+    provider: CloudProvider,
+    client_id: &str,
+) -> Result<(), CloudSourceError> {
+    let valid = match provider {
+        CloudProvider::GoogleDrive => {
+            let Some((project_number, provider_name)) = client_id.split_once('-') else {
+                return Err(CloudSourceError::ClientConfigurationMissing);
+            };
+            let Some(provider_name) = provider_name.strip_suffix(".apps.googleusercontent.com")
+            else {
+                return Err(CloudSourceError::ClientConfigurationMissing);
+            };
+            client_id.len() <= 512
+                && !project_number.is_empty()
+                && project_number.bytes().all(|byte| byte.is_ascii_digit())
+                && !provider_name.is_empty()
+                && provider_name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        }
+        CloudProvider::Dropbox => {
+            (8..=128).contains(&client_id.len())
+                && client_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        }
+    };
+    if !valid {
         return Err(CloudSourceError::ClientConfigurationMissing);
     }
-    Ok(client_id)
+    Ok(())
 }
 
 fn expires_at_unix_seconds(expires_in_seconds: u64) -> Result<u64, CloudSourceError> {
@@ -3682,7 +3714,7 @@ fn dropbox_redirect_configuration(
     let port = port_text
         .parse::<u16>()
         .map_err(|_| CloudSourceError::InvalidConfiguration)?;
-    if port == 0 || port_text != port.to_string() {
+    if port < 1_024 || port_text != port.to_string() {
         return Err(CloudSourceError::InvalidConfiguration);
     }
     let socket_addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -4281,11 +4313,11 @@ mod tests {
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
         bind_oauth_callback_listener, dropbox_redirect_configuration, execute_cloud_query,
         oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
-        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectionState,
-        CloudCredentialResolver, CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider,
-        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
-        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
-        OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
+        validate_oauth_client_id, CloudAccountService, CloudAccountsState, CloudCompleteness,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
+        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
+        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        MemoryCredentialVault, OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -6004,6 +6036,7 @@ mod tests {
             "https://127.0.0.1:53682/oauth/dropbox",
             "http://127.0.0.1/oauth/dropbox",
             "http://127.0.0.1:0/oauth/dropbox",
+            "http://127.0.0.1:80/oauth/dropbox",
             "http://127.0.0.1:053682/oauth/dropbox",
             "http://127.0.0.2:53682/oauth/dropbox",
             "http://[::1]:53683/oauth/dropbox",
@@ -6024,15 +6057,44 @@ mod tests {
 
     #[test]
     fn dropbox_redirect_configuration_preserves_the_exact_registered_ipv4_loopback_uri() {
-        for configured in [
-            "http://127.0.0.1:53682/oauth/dropbox",
-            "http://127.0.0.1:80/oauth/dropbox",
+        let configured = "http://127.0.0.1:53682/oauth/dropbox";
+        let redirect = dropbox_redirect_configuration(Some(configured)).expect("valid redirect");
+        assert_eq!(redirect.redirect_uri(), configured);
+        assert_ne!(redirect.socket_addr().port(), 0);
+        assert!(redirect.socket_addr().ip().is_loopback());
+    }
+
+    #[test]
+    fn runtime_oauth_client_ids_use_the_provider_specific_public_shapes() {
+        assert_eq!(
+            validate_oauth_client_id(
+                CloudProvider::GoogleDrive,
+                "123456789-example.apps.googleusercontent.com",
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_oauth_client_id(CloudProvider::Dropbox, "dropbox-public-app-key"),
+            Ok(())
+        );
+
+        for (provider, invalid) in [
+            (CloudProvider::GoogleDrive, "dropbox-public-app-key"),
+            (
+                CloudProvider::Dropbox,
+                "123456789-example.apps.googleusercontent.com",
+            ),
+            (
+                CloudProvider::GoogleDrive,
+                "123-no spaces.apps.googleusercontent.com",
+            ),
+            (CloudProvider::Dropbox, "short"),
         ] {
-            let redirect =
-                dropbox_redirect_configuration(Some(configured)).expect("valid redirect");
-            assert_eq!(redirect.redirect_uri(), configured);
-            assert_ne!(redirect.socket_addr().port(), 0);
-            assert!(redirect.socket_addr().ip().is_loopback());
+            assert_eq!(
+                validate_oauth_client_id(provider, invalid),
+                Err(CloudSourceError::ClientConfigurationMissing),
+                "{provider:?}: {invalid}",
+            );
         }
     }
 
