@@ -1059,6 +1059,10 @@ fn pin_connected_query_phase(
     }
     request.workspace_id = source.workspace_id;
     request.catalog_revision_id = Some(source.catalog_revision_id);
+    // Connected MDReader libraries use the catalog revision's authoritative
+    // default Document schema. The renderer cannot substitute another schema
+    // identity for the same native source membership.
+    request.schema_version_id = None;
     request.source_ids = Some(source.selected_source_ids().to_vec());
     request
         .validate()
@@ -1284,15 +1288,25 @@ fn parse_connected_library_response(
         .iter()
         .filter(|source| source.outcome != catdb_api_types::SourceOutcome::Ran)
         .map(|source| source.source_id)
-        .collect::<Vec<_>>();
-    let derived_completeness = if excluded_source_ids.is_empty() {
-        catdb_api_types::Completeness::Complete
-    } else {
+        .collect::<BTreeSet<_>>();
+    let reported_exclusions = match &answer.completeness {
+        catdb_api_types::Completeness::Complete if excluded_source_ids.is_empty() => {
+            BTreeSet::new()
+        }
         catdb_api_types::Completeness::Partial {
             excluded_source_ids,
+        } if !excluded_source_ids.is_empty() => {
+            let unique = excluded_source_ids.iter().copied().collect::<BTreeSet<_>>();
+            if unique.len() != excluded_source_ids.len() {
+                return Err(MobileEnterpriseError::InvalidResponse);
+            }
+            unique
+        }
+        catdb_api_types::Completeness::Complete | catdb_api_types::Completeness::Partial { .. } => {
+            return Err(MobileEnterpriseError::InvalidResponse);
         }
     };
-    if answer.completeness != derived_completeness {
+    if reported_exclusions != excluded_source_ids {
         return Err(MobileEnterpriseError::InvalidResponse);
     }
     let pinned_mappings = answer
@@ -1810,6 +1824,20 @@ mod tests {
         source
     }
 
+    fn connected_source_with_two_sources() -> ConnectedCatdbSourceRecord {
+        let mut source = connected_source();
+        source
+            .permitted_sources
+            .push(ConnectedCatdbSourceDescriptor {
+                source_id: uuid::Uuid::from_u128(13),
+                source_version_id: uuid::Uuid::from_u128(14),
+                runtime_bound: true,
+                connector_id: Some("snowflake-secondary".to_string()),
+            });
+        source.selected_source_ids.push(uuid::Uuid::from_u128(13));
+        source
+    }
+
     fn connected_query_request() -> catdb_api_types::EntityQueryRequest {
         serde_json::from_value(serde_json::json!({
             "workspace_id": "00000000-0000-0000-0000-000000000099",
@@ -2029,6 +2057,38 @@ mod tests {
     }
 
     #[test]
+    fn connected_library_completeness_compares_excluded_sources_as_a_set() {
+        let source = connected_source_with_two_sources();
+        let mut response = connected_response(
+            &[],
+            catdb_api_types::SourceOutcome::Stale,
+            catdb_api_types::Completeness::Partial {
+                excluded_source_ids: vec![uuid::Uuid::from_u128(13), uuid::Uuid::from_u128(11)],
+            },
+        );
+        let mut answer: catdb_api_types::EntityQueryResponse =
+            serde_json::from_str(&response.body_json).expect("fixture response");
+        answer
+            .pins
+            .source_version_ids
+            .push(uuid::Uuid::from_u128(14));
+        answer.sources.push(catdb_api_types::SourceExecution {
+            source_id: uuid::Uuid::from_u128(13),
+            source_version_id: uuid::Uuid::from_u128(14),
+            outcome: catdb_api_types::SourceOutcome::Refused,
+            retry_after_ms: None,
+            freshness_ms: None,
+            scanned: 0,
+            returned: 0,
+        });
+        response.body_json = serde_json::to_string(&answer).expect("serialize fixture");
+
+        let parsed = parse_connected_library_response(&source, response, &["title".to_string()])
+            .expect("excluded-source order does not change completeness");
+        assert_eq!(parsed.answer.completeness, answer.completeness);
+    }
+
+    #[test]
     fn connected_library_response_rejects_duplicate_record_identity_in_one_page() {
         let source = connected_source();
         let response = connected_response(
@@ -2222,7 +2282,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "workspace_id": "00000000-0000-0000-0000-000000000099",
                 "catalog_revision_id": "00000000-0000-0000-0000-000000000098",
-                "schema_version_id": null,
+                "schema_version_id": "00000000-0000-0000-0000-000000000096",
                 "entity": "document.Document",
                 "select": ["title"],
                 "filters": [],
@@ -2251,6 +2311,7 @@ mod tests {
             forwarded["source_ids"],
             serde_json::json!(["00000000-0000-0000-0000-00000000000b"])
         );
+        assert_eq!(forwarded["schema_version_id"], serde_json::Value::Null);
         assert_eq!(forwarded["select"], serde_json::json!(["title"]));
     }
 
