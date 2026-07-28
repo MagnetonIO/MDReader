@@ -356,6 +356,63 @@ describe('one hydrated Library answer', () => {
     expect(result.failures[0]?.reason).toBeInstanceOf(Error);
   });
 
+  it('uses metadata copy only when local files survive without an authority failure', () => {
+    const frontmatterSourceId = '00000000-0000-4000-8000-000000000099';
+    const partialLocalEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      answer: {
+        ...evidence.answer,
+        sources: [
+          ...evidence.answer.sources,
+          {
+            source_id: frontmatterSourceId,
+            source_version_id: '00000000-0000-4000-8000-000000000098',
+            outcome: 'source_failed',
+            retry_after_ms: null,
+            freshness_ms: null,
+            scanned: 0,
+            returned: 0,
+          },
+        ],
+        completeness: {
+          state: 'partial',
+          excluded_source_ids: [frontmatterSourceId],
+        },
+      },
+      memberships: [
+        {
+          ...member,
+          registry_id: 'local-folder',
+          name: 'Demo corpus',
+          kind: 'local-folder',
+          source_ids: [PHYSICAL_SOURCE_ID, frontmatterSourceId],
+          editable: true,
+          active: true,
+        },
+      ],
+    };
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [partialLocalEvidence],
+        failures: [],
+      }),
+    ).toBe(
+      'Available files are still shown. Some document metadata could not be read.',
+    );
+    expect(
+      libraryHydrationMessage({
+        evidence: [partialLocalEvidence],
+        failures: [
+          {
+            authority: 'embedded',
+            reason: new Error('embedded catalog unavailable'),
+          },
+        ],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+  });
+
   it('preserves identity and permission failures for distinct recovery copy', async () => {
     const connected = {
       connection_id: 'connected-catdb',

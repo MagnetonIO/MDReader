@@ -182,6 +182,27 @@ function connectedCatdbFailureKind(failure: LibraryHydrationFailure): string | n
   return typeof detail.kind === 'string' ? detail.kind : null;
 }
 
+function isLocalMetadataPartial(
+  answer: LibraryEntityQueryResponse_Serialize,
+): boolean {
+  const completeness = answer.answer.completeness;
+  if (
+    completeness.state !== 'partial' ||
+    completeness.excluded_source_ids.length === 0 ||
+    answer.answer.rows.length === 0
+  ) {
+    return false;
+  }
+  const localSourceIds = new Set(
+    answer.memberships
+      .filter((membership) => membership.kind === 'local-folder')
+      .flatMap((membership) => membership.source_ids),
+  );
+  return completeness.excluded_source_ids.every((sourceId) =>
+    localSourceIds.has(sourceId),
+  );
+}
+
 /** Reader-facing recovery for whole-authority failures and partial answers. */
 export function libraryHydrationMessage(result: HydratedLibrary): string | null {
   const kinds = new Set(result.failures.map(connectedCatdbFailureKind));
@@ -196,6 +217,16 @@ export function libraryHydrationMessage(result: HydratedLibrary): string | null 
     result.evidence.every((answer) => answer.answer.completeness.state !== 'partial')
   ) {
     return null;
+  }
+  const partialAnswers = result.evidence.filter(
+    (answer) => answer.answer.completeness.state === 'partial',
+  );
+  if (
+    result.failures.length === 0 &&
+    partialAnswers.length > 0 &&
+    partialAnswers.every(isLocalMetadataPartial)
+  ) {
+    return 'Available files are still shown. Some document metadata could not be read.';
   }
   return result.evidence.length === 0
     ? 'Library sources could not be read.'
