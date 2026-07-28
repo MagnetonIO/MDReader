@@ -40,3 +40,13 @@ pnpm --filter @mdreader/app tauri build \
   --target "$TARGET" \
   --features direct-updater \
   --config "$CONFIG"
+
+# The compiled macOS executable loads the reviewed runtime through `@rpath`.
+# Assert the LC_RPATH and the dependency closure here, while the build is still
+# uncredentialed, so an unresolvable application fails before signing.
+if [[ "$TARGET" == "universal-apple-darwin" ]]; then
+  scripts/release/verify-macos-runtime-linkage.sh \
+    staged \
+    "target/$TARGET/release/mdreader-app" \
+    "$MDREADER_MACOS_ORT_LIB_LOCATION"
+fi
