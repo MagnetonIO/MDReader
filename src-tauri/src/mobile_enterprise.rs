@@ -6,12 +6,14 @@
 //! response before returning JSON to the renderer.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use catdb_api_types::{ControlPlaneSnapshot, EntityQueryRequest, SessionResponse};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use url::Url;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use zeroize::Zeroizing;
@@ -20,6 +22,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
 const MAX_CONNECTED_SOURCES: usize = 128;
+const MAX_LEGACY_CONNECTIONS: usize = 16;
+const MAX_LEGACY_REGISTRY_BYTES: usize = 64 * 1024;
+const LEGACY_REGISTRY_VERSION: u32 = 1;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 
 #[cfg(feature = "e2e-build")]
@@ -95,6 +100,7 @@ pub(crate) enum MobileEnterpriseError {
     ResponseTooLarge,
     InvalidResponse,
     PermissionDenied,
+    ConnectionIdentityChanged,
     AlreadyConfigured,
     NoSourcesSelected,
     PersistFailed,
@@ -113,6 +119,7 @@ impl fmt::Display for MobileEnterpriseError {
             Self::ResponseTooLarge => "mobile-enterprise-response-too-large",
             Self::InvalidResponse => "mobile-enterprise-invalid-response",
             Self::PermissionDenied => "mobile-enterprise-permission-denied",
+            Self::ConnectionIdentityChanged => "mobile-enterprise-connection-identity-changed",
             Self::AlreadyConfigured => "mobile-enterprise-already-configured",
             Self::NoSourcesSelected => "mobile-enterprise-no-sources-selected",
             Self::PersistFailed => "mobile-enterprise-persist-failed",
@@ -130,6 +137,14 @@ struct ConnectionRecord {
     label: String,
     server_origin: String,
     credential_reference: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyConnectionRegistry {
+    version: u32,
+    active_connection_id: Option<String>,
+    connections: Vec<ConnectionRecord>,
 }
 
 impl fmt::Debug for ConnectionRecord {
@@ -282,6 +297,60 @@ fn validate_record(record: &ConnectionRecord) -> Result<(), MobileEnterpriseErro
     }
     exact_origin(&record.server_origin)?;
     Ok(())
+}
+
+fn legacy_registry_path(app: &AppHandle) -> Result<PathBuf, MobileEnterpriseError> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("mobile-enterprise.json"))
+        .map_err(|_| MobileEnterpriseError::InvalidConfiguration)
+}
+
+fn retired_legacy_registry_path(path: &Path) -> Result<PathBuf, MobileEnterpriseError> {
+    path.parent()
+        .map(|parent| parent.join("mobile-enterprise.json.migrated"))
+        .ok_or(MobileEnterpriseError::PersistFailed)
+}
+
+fn read_legacy_active_record(
+    path: &Path,
+) -> Result<Option<ConnectionRecord>, MobileEnterpriseError> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(MobileEnterpriseError::InvalidConfiguration),
+    };
+    if bytes.len() > MAX_LEGACY_REGISTRY_BYTES {
+        return Err(MobileEnterpriseError::InvalidConfiguration);
+    }
+    let registry: LegacyConnectionRegistry =
+        serde_json::from_slice(&bytes).map_err(|_| MobileEnterpriseError::InvalidConfiguration)?;
+    if registry.version != LEGACY_REGISTRY_VERSION
+        || registry.connections.len() > MAX_LEGACY_CONNECTIONS
+    {
+        return Err(MobileEnterpriseError::InvalidConfiguration);
+    }
+    let mut ids = std::collections::HashSet::new();
+    for connection in &registry.connections {
+        validate_record(connection)?;
+        if !ids.insert(connection.id.as_str()) {
+            return Err(MobileEnterpriseError::InvalidConfiguration);
+        }
+    }
+    let Some(active) = registry.active_connection_id else {
+        return Ok(None);
+    };
+    let mut matches = registry
+        .connections
+        .into_iter()
+        .filter(|connection| connection.id == active);
+    let record = matches
+        .next()
+        .ok_or(MobileEnterpriseError::InvalidConfiguration)?;
+    if matches.next().is_some() {
+        return Err(MobileEnterpriseError::InvalidConfiguration);
+    }
+    Ok(Some(record))
 }
 
 fn map_library_error(error: crate::library::LibraryError) -> MobileEnterpriseError {
@@ -548,6 +617,107 @@ async fn discover_connected_catdb(
     ))
 }
 
+fn publish_legacy_migration(
+    store: &crate::library::LibraryStore,
+    legacy_path: &Path,
+    source: crate::library::ConnectedCatdbSourceRecord,
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    let retired_path = retired_legacy_registry_path(legacy_path)?;
+    match std::fs::symlink_metadata(&retired_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) | Err(_) => return Err(MobileEnterpriseError::PersistFailed),
+    }
+    store
+        .add_connected_catdb(source.clone())
+        .map_err(map_library_error)?;
+    if std::fs::rename(legacy_path, retired_path).is_err() {
+        if store.remove_connected_catdb(&source.id).is_err() {
+            return Err(MobileEnterpriseError::RollbackFailed);
+        }
+        return Err(MobileEnterpriseError::PersistFailed);
+    }
+    Ok(source)
+}
+
+fn retire_matching_legacy_after_publication(
+    legacy_path: &Path,
+    source: &crate::library::ConnectedCatdbSourceRecord,
+) -> Result<(), MobileEnterpriseError> {
+    let Ok(Some(record)) = read_legacy_active_record(legacy_path) else {
+        return Ok(());
+    };
+    let same_origin = exact_origin(&record.server_origin)
+        .map(|origin| origin.to_string() == source.server_origin)
+        .unwrap_or(false);
+    if record.label != source.label
+        || !same_origin
+        || record.credential_reference != source.credential_reference
+    {
+        return Ok(());
+    }
+    let retired_path = retired_legacy_registry_path(legacy_path)?;
+    match std::fs::symlink_metadata(&retired_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) | Err(_) => return Err(MobileEnterpriseError::PersistFailed),
+    }
+    std::fs::rename(legacy_path, retired_path).map_err(|_| MobileEnterpriseError::PersistFailed)
+}
+
+async fn migrate_legacy_connection(
+    store: crate::library::LibraryStore,
+    legacy_path: PathBuf,
+    vault: Arc<dyn BearerVault>,
+) -> Result<Option<crate::library::ConnectedCatdbSourceRecord>, MobileEnterpriseError> {
+    let current_store = store.clone();
+    if let Some(source) = tokio::task::spawn_blocking(move || current_store.read_connected_catdb())
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)?
+        .map_err(map_library_error)?
+    {
+        let cleanup_path = legacy_path.clone();
+        let cleanup_source = source.clone();
+        tokio::task::spawn_blocking(move || {
+            retire_matching_legacy_after_publication(&cleanup_path, &cleanup_source)
+        })
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+        return Ok(Some(source));
+    }
+
+    let read_path = legacy_path.clone();
+    let legacy = tokio::task::spawn_blocking(move || {
+        let Some(record) = read_legacy_active_record(&read_path)? else {
+            return Ok(None);
+        };
+        let token = vault
+            .get(&record.credential_reference)?
+            .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
+        Ok::<_, MobileEnterpriseError>(Some((record, token)))
+    })
+    .await
+    .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+    let Some((record, token)) = legacy else {
+        return Ok(None);
+    };
+
+    let mut source = discover_connected_catdb(exact_origin(&record.server_origin)?, &token).await?;
+    source.label = record.label;
+    source.credential_reference = record.credential_reference;
+    tokio::task::spawn_blocking(move || publish_legacy_migration(&store, &legacy_path, source))
+        .await
+        .map_err(|_| MobileEnterpriseError::PersistFailed)?
+        .map(Some)
+}
+
+async fn connected_source_or_migrate(
+    app: &AppHandle,
+) -> Result<Option<crate::library::ConnectedCatdbSourceRecord>, MobileEnterpriseError> {
+    let store = library_store(app)?;
+    let legacy_path = legacy_registry_path(app)?;
+    let vault: Arc<dyn BearerVault> = Arc::new(KeyringBearerVault::new(&app.config().identifier)?);
+    migrate_legacy_connection(store, legacy_path, vault).await
+}
+
 fn persist_connected_catdb(
     store: &crate::library::LibraryStore,
     vault: &dyn BearerVault,
@@ -612,6 +782,54 @@ fn pin_connected_query(
     Ok(body)
 }
 
+async fn verify_connected_identity(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+) -> Result<(), MobileEnterpriseError> {
+    let response = execute_http(
+        &ConnectionRecord::from(source),
+        token,
+        reqwest::Method::GET,
+        "/v1/session",
+        None,
+    )
+    .await?;
+    if matches!(response.status, 401 | 403) {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    if response.status != 200 {
+        return Err(MobileEnterpriseError::InvalidResponse);
+    }
+    let session: SessionResponse = serde_json::from_str(&response.body_json)
+        .map_err(|_| MobileEnterpriseError::InvalidResponse)?;
+    if session.deployment_id != source.deployment_id
+        || session.workspace_ids.as_slice() != [source.workspace_id]
+    {
+        return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+    }
+    if !session.scopes.iter().any(|scope| scope == "query") {
+        return Err(MobileEnterpriseError::PermissionDenied);
+    }
+    Ok(())
+}
+
+async fn execute_connected_query(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+    mut request: EntityQueryRequest,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    let body = pin_connected_query(source, &mut request)?;
+    verify_connected_identity(source, token).await?;
+    execute_http(
+        &ConnectionRecord::from(source),
+        token,
+        reqwest::Method::POST,
+        "/v1/entity/query",
+        Some(body),
+    )
+    .await
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn connected_catdb_state(
@@ -626,19 +844,11 @@ pub(crate) async fn connected_catdb_state(
     }
     #[cfg(not(mobile))]
     {
-        let store = library_store(&app)?;
-        tokio::task::spawn_blocking(move || {
-            store
-                .read_connected_catdb()
-                .map_err(map_library_error)
-                .map(|source| {
-                    source
-                        .as_ref()
-                        .map_or_else(disconnected_state, connected_state)
-                })
+        connected_source_or_migrate(&app).await.map(|source| {
+            source
+                .as_ref()
+                .map_or_else(disconnected_state, connected_state)
         })
-        .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)?
     }
 }
 
@@ -661,19 +871,11 @@ pub(crate) async fn enroll_connected_catdb(
         let server_origin = exact_origin(&server_origin)?;
         let token = BearerToken(bearer_token);
         validate_bearer(&token.0)?;
-        let store = library_store(&app)?;
-        let already_configured = {
-            let store = store.clone();
-            tokio::task::spawn_blocking(move || store.read_connected_catdb())
-                .await
-                .map_err(|_| MobileEnterpriseError::PersistFailed)?
-                .map_err(map_library_error)?
-                .is_some()
-        };
-        if already_configured {
+        if connected_source_or_migrate(&app).await?.is_some() {
             return Err(MobileEnterpriseError::AlreadyConfigured);
         }
         let source = discover_connected_catdb(server_origin, &token).await?;
+        let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
         tokio::task::spawn_blocking(move || persist_connected_catdb(&store, &vault, source, &token))
             .await
@@ -740,7 +942,7 @@ pub(crate) async fn disconnect_connected_catdb(
 pub(crate) async fn connected_catdb_entity_query(
     app: AppHandle,
     connection_id: String,
-    mut request: EntityQueryRequest,
+    request: EntityQueryRequest,
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
     let _operation = state.0.lock().await;
@@ -751,29 +953,25 @@ pub(crate) async fn connected_catdb_entity_query(
     }
     #[cfg(not(mobile))]
     {
-        let store = library_store(&app)?;
         let identifier = app.config().identifier.clone();
-        let (source, token) = tokio::task::spawn_blocking(move || {
-            let source = record_for(&store, &connection_id)?;
+        let source = connected_source_or_migrate(&app)
+            .await?
+            .filter(|source| source.id == connection_id)
+            .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
+        let credential_reference = source.credential_reference.clone();
+        let token = tokio::task::spawn_blocking(move || {
             let vault = KeyringBearerVault::new(&identifier)?;
             let token = vault
-                .get(&source.credential_reference)?
+                .get(&credential_reference)?
                 .ok_or(MobileEnterpriseError::CredentialUnavailable)?;
-            Ok((source, token))
+            Ok::<_, MobileEnterpriseError>(token)
         })
         .await
         .map_err(|_| MobileEnterpriseError::PersistFailed)??;
-        // Workspace, revision, and source membership are native authority. The
-        // renderer supplies only semantic shape such as fields and filters.
-        let body = pin_connected_query(&source, &mut request)?;
-        execute_http(
-            &ConnectionRecord::from(&source),
-            &token,
-            reqwest::Method::POST,
-            "/v1/entity/query",
-            Some(body),
-        )
-        .await
+        // Deployment, workspace, revision, and source membership are native
+        // authority. The renderer supplies only semantic shape such as fields
+        // and filters.
+        execute_connected_query(&source, &token, request).await
     }
 }
 
@@ -792,11 +990,7 @@ pub(crate) async fn mobile_enterprise_connection(
     #[cfg(not(feature = "e2e-build"))]
     #[cfg(not(mobile))]
     let record = {
-        let store = library_store(&app)?;
-        let source = tokio::task::spawn_blocking(move || store.read_connected_catdb())
-            .await
-            .map_err(|_| MobileEnterpriseError::PersistFailed)?
-            .map_err(map_library_error)?;
+        let source = connected_source_or_migrate(&app).await?;
         let Some(source) = source else {
             return Ok(None);
         };
@@ -839,10 +1033,12 @@ pub(crate) async fn mobile_enterprise_request(
         }
         #[cfg(not(mobile))]
         {
-            let store = library_store(&app)?;
             let identifier = app.config().identifier.clone();
+            let source = connected_source_or_migrate(&app)
+                .await?
+                .filter(|source| source.id == connection_id)
+                .ok_or(MobileEnterpriseError::ConnectionNotFound)?;
             tokio::task::spawn_blocking(move || {
-                let source = record_for(&store, &connection_id)?;
                 let record = ConnectionRecord::from(&source);
                 let vault = KeyringBearerVault::new(&identifier)?;
                 let token = vault
@@ -857,21 +1053,13 @@ pub(crate) async fn mobile_enterprise_request(
     let _ = app;
     if operation == MobileEnterpriseOperation::EntityQuery {
         if let Some(source) = connected_source {
-            let mut request: EntityQueryRequest = serde_json::from_str(
+            let request: EntityQueryRequest = serde_json::from_str(
                 body_json
                     .as_deref()
                     .ok_or(MobileEnterpriseError::InvalidRequest)?,
             )
             .map_err(|_| MobileEnterpriseError::InvalidRequest)?;
-            let body = pin_connected_query(&source, &mut request)?;
-            return execute_http(
-                &record,
-                &token,
-                reqwest::Method::POST,
-                "/v1/entity/query",
-                Some(body),
-            )
-            .await;
+            return execute_connected_query(&source, &token, request).await;
         }
     }
     execute_request(record, token, operation, body_json).await
@@ -880,14 +1068,14 @@ pub(crate) async fn mobile_enterprise_request(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::{
-        disconnect_connected_catdb_from, discover_connected_catdb, execute_request,
-        persist_connected_catdb, pin_connected_query, BearerToken, BearerVault,
-        ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError, MobileEnterpriseOperation,
-        MobileEnterpriseResponse,
+        disconnect_connected_catdb_from, discover_connected_catdb, execute_connected_query,
+        execute_request, migrate_legacy_connection, persist_connected_catdb, pin_connected_query,
+        BearerToken, BearerVault, ConnectedCatdbState, ConnectionRecord, MobileEnterpriseError,
+        MobileEnterpriseOperation, MobileEnterpriseResponse,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
@@ -1186,6 +1374,178 @@ mod tests {
             .read_connected_catdb()
             .expect("read membership")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn authenticated_first_use_migrates_and_then_retires_the_legacy_registry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let library_path = temp.path().join("library.json");
+        let legacy_path = temp.path().join("mobile-enterprise.json");
+        let retired_path = temp.path().join("mobile-enterprise.json.migrated");
+        let store = LibraryStore::new(library_path);
+        let vault = Arc::new(MemoryBearerVault::default());
+        vault
+            .set(
+                "legacy-credential-reference",
+                &BearerToken("native-secret".to_string()),
+            )
+            .expect("seed legacy token");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        std::fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "active_connection_id": "legacy-connection",
+                "connections": [{
+                    "id": "legacy-connection",
+                    "label": "Existing Enterprise",
+                    "server_origin": format!("http://{address}"),
+                    "credential_reference": "legacy-credential-reference"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write legacy registry");
+
+        let server = tokio::spawn(async move {
+            for (expected_path, body) in [
+                (
+                    "/v1/session",
+                    serde_json::json!({
+                        "principal_kind": "service",
+                        "deployment_id": "00000000-0000-0000-0000-000000000002",
+                        "workspace_ids": ["00000000-0000-0000-0000-000000000003"],
+                        "scopes": ["query", "catalog_read"]
+                    }),
+                ),
+                (
+                    "/v1/control/workspaces/00000000-0000-0000-0000-000000000003/catalog",
+                    serde_json::json!({
+                        "workspace_id": "00000000-0000-0000-0000-000000000003",
+                        "resolver_id": "00000000-0000-0000-0000-000000000005",
+                        "revision": {
+                            "revision_id": "00000000-0000-0000-0000-000000000004",
+                            "parent_revision_id": null,
+                            "actor": "test",
+                            "timestamp_ms": 1
+                        },
+                        "default_schema_version_id": "00000000-0000-0000-0000-000000000006",
+                        "schemas": [],
+                        "mappings": [],
+                        "sources": [{
+                            "source_id": "00000000-0000-0000-0000-000000000011",
+                            "source_version_id": "00000000-0000-0000-0000-000000000012",
+                            "checksum": "checksum",
+                            "runtime_bound": true,
+                            "connector_id": "postgres-primary"
+                        }],
+                        "policies": []
+                    }),
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = vec![0_u8; 16 * 1024];
+                let count = stream.read(&mut request).await.expect("read");
+                let request = String::from_utf8_lossy(&request[..count]);
+                assert!(request.starts_with(&format!("GET {expected_path} ")));
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("write");
+            }
+        });
+
+        let migrated = migrate_legacy_connection(store.clone(), legacy_path.clone(), vault.clone())
+            .await
+            .expect("migrate")
+            .expect("legacy membership");
+
+        assert_eq!(migrated.label, "Existing Enterprise");
+        assert_eq!(migrated.credential_reference, "legacy-credential-reference");
+        assert_eq!(migrated.deployment_id, uuid::Uuid::from_u128(2));
+        assert_eq!(migrated.workspace_id, uuid::Uuid::from_u128(3));
+        assert_eq!(migrated.catalog_revision_id, uuid::Uuid::from_u128(4));
+        assert!(migrated.selected_source_ids.is_empty());
+        assert_eq!(
+            store
+                .read_connected_catdb()
+                .expect("read migrated membership"),
+            Some(migrated)
+        );
+        assert!(!legacy_path.exists());
+        assert!(retired_path.is_file());
+        assert_eq!(
+            vault
+                .get("legacy-credential-reference")
+                .expect("read vault")
+                .expect("preserved token")
+                .0,
+            "native-secret"
+        );
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn connected_query_refuses_a_changed_authenticated_deployment_before_querying() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept session");
+            let mut request = vec![0_u8; 16 * 1024];
+            let count = stream.read(&mut request).await.expect("read session");
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /v1/session "));
+            let body = serde_json::json!({
+                "principal_kind": "service",
+                "deployment_id": "00000000-0000-0000-0000-000000000099",
+                "workspace_ids": ["00000000-0000-0000-0000-000000000003"],
+                "scopes": ["query", "catalog_read"]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write session");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                    .await
+                    .is_err(),
+                "entity query ran after deployment identity changed"
+            );
+        });
+        let mut source = connected_source();
+        source.server_origin = format!("http://{address}/");
+        let request: catdb_api_types::EntityQueryRequest =
+            serde_json::from_value(serde_json::json!({
+                "workspace_id": "00000000-0000-0000-0000-000000000099",
+                "catalog_revision_id": null,
+                "schema_version_id": null,
+                "entity": "document.Document",
+                "select": ["title"],
+                "filters": [],
+                "order_by": [],
+                "source_ids": null,
+                "max_staleness_ms": null,
+                "require_complete": true,
+                "page_size": 10,
+                "limit": 10,
+                "cursor": null
+            }))
+            .expect("request");
+
+        assert_eq!(
+            execute_connected_query(&source, &BearerToken("native-secret".to_string()), request)
+                .await,
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+        server.await.expect("server");
     }
 
     #[tokio::test]

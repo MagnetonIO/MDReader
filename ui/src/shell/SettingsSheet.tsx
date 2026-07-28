@@ -119,6 +119,8 @@ function errorMessage(cause: unknown): string {
       return 'MDReader could not safely update the cloud source. Nothing was connected.';
     case 'permission-denied':
       return 'That CatDB token does not grant one workspace with query and catalog access.';
+    case 'connection-identity-changed':
+      return 'The CatDB server identity changed. Disconnect it and verify the server before reconnecting.';
     case 'already-configured':
       return 'Disconnect the current CatDB workspace before connecting another.';
     case 'connection-not-found':

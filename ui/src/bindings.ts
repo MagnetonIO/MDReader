@@ -1428,7 +1428,7 @@ export type MobileEnterpriseConnection = {
 	label: string,
 };
 
-export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" };
+export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "connection-identity-changed" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" };
 
 export type MobileEnterpriseOperation = "session" | "entity-query";
 
