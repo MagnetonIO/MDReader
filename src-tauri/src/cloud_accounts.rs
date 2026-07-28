@@ -628,6 +628,20 @@ fn validate_cleanup_references(references: &[String]) -> Result<(), CloudSourceE
     Ok(())
 }
 
+fn validate_current_cloud_record(
+    sources: &[CloudSourceRecord],
+    expected: &CloudSourceRecord,
+) -> Result<(), CloudSourceError> {
+    let current = sources
+        .iter()
+        .find(|source| source.provider == expected.provider)
+        .ok_or(CloudSourceError::QueryCatalogInvalid)?;
+    if current != expected || !current.enabled {
+        return Err(CloudSourceError::QueryCatalogInvalid);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CloudSourceRecord {
@@ -944,18 +958,22 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     fn recover_credential_cleanup(&self, provider: CloudProvider) -> Result<(), CloudSourceError> {
         let mut pending = self.vault.cleanup_references(provider)?;
         validate_cleanup_references(&pending)?;
+        let active_by_provider = self.registry.read_cloud(|sources| {
+            Ok(sources
+                .iter()
+                .map(|source| (source.provider, source.credential_reference.clone()))
+                .collect::<HashMap<_, _>>())
+        })?;
+        let active_references = active_by_provider.values().collect::<HashSet<_>>();
         for reference in pending.clone() {
-            let active_reference = self.registry.read_cloud(|sources| {
-                Ok(sources
-                    .iter()
-                    .find(|source| source.provider == provider)
-                    .map(|source| source.credential_reference.clone()))
-            })?;
-            if active_reference.as_deref() != Some(reference.as_str()) {
-                self.vault.delete(&reference)?;
-                pending.retain(|candidate| candidate != &reference);
-                self.vault.set_cleanup_references(provider, &pending)?;
+            if active_by_provider.get(&provider) == Some(&reference) {
+                continue;
             }
+            if !active_references.contains(&reference) {
+                self.vault.delete(&reference)?;
+            }
+            pending.retain(|candidate| candidate != &reference);
+            self.vault.set_cleanup_references(provider, &pending)?;
         }
         Ok(())
     }
@@ -1532,11 +1550,19 @@ async fn blocking_cloud_operation<T: Send + 'static>(
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Clone)]
+struct CloudCredentialAuthority {
+    expected: CloudSourceRecord,
+    registry: LibraryStore,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+#[derive(Clone)]
 struct CloudCredentialResolver {
     provider: CloudProvider,
     reference: String,
     vault: Arc<dyn CredentialVault>,
     admitted: Option<Arc<Mutex<SecretBundle>>>,
+    authority: Option<CloudCredentialAuthority>,
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1548,21 +1574,39 @@ impl CloudCredentialResolver {
             reference,
             vault,
             admitted: None,
+            authority: None,
         }
     }
 
     fn from_admitted(
-        provider: CloudProvider,
-        reference: String,
+        record: CloudSourceRecord,
         credential: SecretBundle,
         vault: Arc<dyn CredentialVault>,
+        registry: LibraryStore,
     ) -> Self {
         Self {
-            provider,
-            reference,
+            provider: record.provider,
+            reference: record.credential_reference.clone(),
             vault,
             admitted: Some(Arc::new(Mutex::new(credential))),
+            authority: Some(CloudCredentialAuthority {
+                expected: record,
+                registry,
+            }),
         }
+    }
+
+    async fn validate_authority(&self) -> Result<(), CloudSourceError> {
+        let Some(authority) = self.authority.clone() else {
+            return Ok(());
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            authority
+                .registry
+                .read_cloud(|sources| validate_current_cloud_record(sources, &authority.expected))
+        })
+        .await
+        .map_err(|_| CloudSourceError::PersistFailed)?
     }
 
     async fn load(&self) -> Result<SecretBundle, CloudSourceError> {
@@ -1584,9 +1628,16 @@ impl CloudCredentialResolver {
         let vault = self.vault.clone();
         let reference = self.reference.clone();
         let stored = secret.clone();
-        tauri::async_runtime::spawn_blocking(move || vault.set(&reference, &stored))
-            .await
-            .map_err(|_| CloudSourceError::CredentialUnavailable)??;
+        let authority = self.authority.clone();
+        tauri::async_runtime::spawn_blocking(move || match authority {
+            Some(authority) => authority.registry.read_cloud(|sources| {
+                validate_current_cloud_record(sources, &authority.expected)?;
+                vault.set(&reference, &stored)
+            }),
+            None => vault.set(&reference, &stored),
+        })
+        .await
+        .map_err(|_| CloudSourceError::CredentialUnavailable)??;
         if let Some(admitted) = &self.admitted {
             *admitted
                 .lock()
@@ -1797,6 +1848,7 @@ struct AdmittedCloudRead<V> {
     record: CloudSourceRecord,
     credential: SecretBundle,
     read_authority: CloudReadAuthority,
+    registry: LibraryStore,
     vault: V,
 }
 
@@ -1815,19 +1867,19 @@ fn admit_cloud_read<V: CredentialVault>(
     provider: CloudProvider,
 ) -> Result<AdmittedCloudRead<V>, CloudSourceError> {
     let (record, credential) =
-        CloudAccountService::new(registry, &vault).admitted_record(provider)?;
+        CloudAccountService::new(registry.clone(), &vault).admitted_record(provider)?;
     let read_authority = CloudReadAuthority::from_record(&record)?;
     Ok(AdmittedCloudRead {
         record,
         credential,
         read_authority,
+        registry,
         vault,
     })
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 async fn open_admitted_cloud_query<V, A, C, CFut>(
-    provider: CloudProvider,
     admission: A,
     catalog: C,
 ) -> Result<AdmittedCloudQuery, CloudSourceError>
@@ -1841,14 +1893,15 @@ where
         record,
         credential,
         read_authority,
+        registry,
         vault,
     } = admission.await?;
     let catalog = catalog().await?;
     let resolver = Arc::new(CloudCredentialResolver::from_admitted(
-        provider,
-        record.credential_reference.clone(),
+        record.clone(),
         credential,
         Arc::new(vault),
+        registry,
     ));
     Ok(AdmittedCloudQuery {
         record,
@@ -1899,10 +1952,7 @@ async fn query_cloud_documents_inner(
                 read_authority,
                 catalog,
                 resolver,
-            } = open_admitted_cloud_query(provider, admission, || {
-                ensure_cloud_catalog(&app, state)
-            })
-            .await?;
+            } = open_admitted_cloud_query(admission, || ensure_cloud_catalog(&app, state)).await?;
 
             let response = match record.config {
                 #[cfg(feature = "google-drive-connector")]
@@ -1921,10 +1971,12 @@ async fn query_cloud_documents_inner(
                         &catalog.schema_version,
                     )
                     .map_err(|error| query_invalid(error.to_string()))?;
-                    let source =
-                        catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
-                            .await
-                            .map_err(|error| query_failed(error.to_string()))?;
+                    let source = catdb_connector_google_drive::DriveSource::open_pinned(
+                        spec,
+                        resolver.clone(),
+                    )
+                    .await
+                    .map_err(|error| query_failed(error.to_string()))?;
                     let authority = resolve_cloud_execution_authority(
                         provider,
                         &source,
@@ -1974,7 +2026,7 @@ async fn query_cloud_documents_inner(
                     )
                     .map_err(|error| query_invalid(error.to_string()))?;
                     let source =
-                        catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver)
+                        catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
                             .await
                             .map_err(|error| query_failed(error.to_string()))?;
                     let authority = resolve_cloud_execution_authority(
@@ -2004,6 +2056,7 @@ async fn query_cloud_documents_inner(
                 #[cfg(not(feature = "dropbox-connector"))]
                 CloudSourceConfig::Dropbox => Err(CloudSourceError::ConnectorUnavailable),
             }?;
+            resolver.validate_authority().await?;
             Ok(response)
         }
         .await;
@@ -2016,6 +2069,7 @@ async fn query_cloud_documents_inner(
 struct AdmittedLibraryQuery {
     members: Vec<crate::library_query::LibraryQueryMember>,
     clouds: Vec<(CloudSourceRecord, Option<SecretBundle>)>,
+    registry: LibraryStore,
     vault: Arc<dyn CredentialVault>,
 }
 
@@ -2262,6 +2316,7 @@ fn admit_library_query(
     Ok(AdmittedLibraryQuery {
         members,
         clouds,
+        registry,
         vault,
     })
 }
@@ -2271,6 +2326,7 @@ async fn bind_library_cloud_source(
     record: CloudSourceRecord,
     credential: Option<SecretBundle>,
     vault: Arc<dyn CredentialVault>,
+    registry: LibraryStore,
     schema_version: &str,
 ) -> Result<crate::library_query::LibraryQueryMember, CloudSourceError> {
     use catdb_connectors::DataSource;
@@ -2280,10 +2336,10 @@ async fn bind_library_cloud_source(
     let registry_id = record.id().to_string();
     let resolver = credential.map(|credential| {
         Arc::new(CloudCredentialResolver::from_admitted(
-            provider,
-            record.credential_reference.clone(),
+            record.clone(),
             credential,
             vault,
+            registry,
         ))
     });
     let source: Arc<dyn DataSource> = match record.config {
@@ -2426,19 +2482,29 @@ pub(crate) async fn query_library_documents(
             })
             .await?;
             let catalog = ensure_cloud_catalog(&app, &state).await?;
-            let mut members = admitted.members;
-            for (record, credential) in admitted.clouds {
+            let AdmittedLibraryQuery {
+                mut members,
+                clouds,
+                registry,
+                vault,
+            } = admitted;
+            let expected_clouds = clouds
+                .iter()
+                .map(|(record, _)| record.clone())
+                .collect::<Vec<_>>();
+            for (record, credential) in clouds {
                 members.push(
                     bind_library_cloud_source(
                         record,
                         credential,
-                        admitted.vault.clone(),
+                        vault.clone(),
+                        registry.clone(),
                         &catalog.schema_version,
                     )
                     .await?,
                 );
             }
-            crate::library_query::execute_registered_library_query(
+            let response = crate::library_query::execute_registered_library_query(
                 request,
                 members,
                 cancellation.clone(),
@@ -2503,7 +2569,18 @@ pub(crate) async fn query_library_documents(
                 crate::library_query::LibraryQueryError::QueryFailed => {
                     query_failed(error.to_string())
                 }
+            })?;
+            tauri::async_runtime::spawn_blocking(move || {
+                registry.read_cloud(|sources| {
+                    for expected in &expected_clouds {
+                        validate_current_cloud_record(sources, expected)?;
+                    }
+                    Ok(())
+                })
             })
+            .await
+            .map_err(|_| CloudSourceError::PersistFailed)??;
+            Ok(response)
         }
         .await;
         owner.finish()?;
@@ -4610,8 +4687,8 @@ mod tests {
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
         bind_library_cloud_source, bind_oauth_callback_listener, dropbox_redirect_configuration,
         execute_cloud_query, oauth_callback_configuration, receive_oauth_callback,
-        refresh_token_form, validate_oauth_client_id, CloudAccountService, CloudAccountsState,
-        CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
+        refresh_token_form, validate_oauth_client_id, AdmittedLibraryQuery, CloudAccountService,
+        CloudAccountsState, CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
         CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
         CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
         IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
@@ -5256,7 +5333,6 @@ mod tests {
             let state = CloudAccountsState::default();
             let catalog_path = app_data.join("cloud-library.catdb");
             let result = super::open_admitted_cloud_query(
-                CloudProvider::GoogleDrive,
                 async {
                     super::admit_cloud_read(
                         LibraryStore::new(registry_path),
@@ -5316,18 +5392,29 @@ mod tests {
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     #[tokio::test]
     async fn admitted_credential_is_a_stable_snapshot_until_explicit_store() {
+        let temp = tempdir().expect("temporary directory");
+        let registry = LibraryStore::new(temp.path().join("library.json"));
         let vault = Arc::new(MemoryCredentialVault::default());
-        let reference = "keyring://admitted-drive";
         let admitted = credentials();
-        vault
-            .set(reference, &admitted)
+        CloudAccountService::new(registry.clone(), vault.as_ref())
+            .install(
+                CloudProvider::GoogleDrive,
+                google_config(),
+                admitted.clone(),
+            )
             .expect("seed admitted credential");
-        let resolver = CloudCredentialResolver::from_admitted(
-            CloudProvider::GoogleDrive,
-            reference.to_string(),
-            admitted,
-            vault.clone(),
-        );
+        let record = registry
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::GoogleDrive)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("admitted record");
+        let reference = record.credential_reference.clone();
+        let resolver =
+            CloudCredentialResolver::from_admitted(record, admitted, vault.clone(), registry);
 
         let replacement = SecretBundle::new(
             "replacement-access-token",
@@ -5337,7 +5424,7 @@ mod tests {
         )
         .expect("replacement credential");
         vault
-            .set(reference, &replacement)
+            .set(&reference, &replacement)
             .expect("mutate backing vault");
         let loaded_after_mutation = resolver.load().await.expect("admitted snapshot");
         assert_eq!(loaded_after_mutation.access_token, "access-token-value");
@@ -5356,7 +5443,7 @@ mod tests {
         assert_eq!(loaded_after_store.access_token, "replacement-access-token");
         assert_eq!(
             vault
-                .get(reference)
+                .get(&reference)
                 .expect("vault read")
                 .expect("stored refresh")
                 .access_token,
@@ -6179,6 +6266,129 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn retired_query_cannot_resurrect_a_credential_after_reconnect() {
+        let temp = tempdir().expect("temporary directory");
+        let registry = LibraryStore::new(temp.path().join("library.json"));
+        let vault = Arc::new(MemoryCredentialVault::default());
+        let service = CloudAccountService::new(registry.clone(), vault.as_ref());
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("initial connection");
+        let retired = registry
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .cloned()
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("retired record");
+        let resolver = CloudCredentialResolver::from_admitted(
+            retired.clone(),
+            credentials(),
+            vault.clone(),
+            registry.clone(),
+        );
+
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "replacement-access-token",
+                    "replacement-refresh-token",
+                    4_000_000_104,
+                    [45; 32],
+                )
+                .expect("replacement credential"),
+            )
+            .expect("reconnect");
+        assert!(vault
+            .get(&retired.credential_reference)
+            .expect("retired credential")
+            .is_none());
+
+        assert_eq!(
+            resolver
+                .store(
+                    SecretBundle::new(
+                        "late-access-token",
+                        "late-refresh-token",
+                        4_000_000_105,
+                        [46; 32],
+                    )
+                    .expect("late credential"),
+                )
+                .await,
+            Err(CloudSourceError::QueryCatalogInvalid)
+        );
+        assert!(
+            vault
+                .get(&retired.credential_reference)
+                .expect("retired credential after late store")
+                .is_none(),
+            "a query admitted before reconnect must not recreate its retired credential"
+        );
+    }
+
+    #[test]
+    fn cleanup_journal_never_deletes_another_providers_active_credential() {
+        let temp = tempdir().expect("temporary directory");
+        let registry = LibraryStore::new(temp.path().join("library.json"));
+        let vault = MemoryCredentialVault::default();
+        let service = CloudAccountService::new(registry.clone(), &vault);
+        service
+            .install(CloudProvider::GoogleDrive, google_config(), credentials())
+            .expect("install Drive");
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                SecretBundle::new(
+                    "dropbox-access-token",
+                    "dropbox-refresh-token",
+                    4_000_000_106,
+                    [47; 32],
+                )
+                .expect("Dropbox credential"),
+            )
+            .expect("install Dropbox");
+        let dropbox_reference = registry
+            .read_cloud(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.provider == CloudProvider::Dropbox)
+                    .map(|source| source.credential_reference.clone())
+                    .ok_or(CloudSourceError::SourceNotFound)
+            })
+            .expect("Dropbox reference");
+        vault
+            .set_cleanup_references(
+                CloudProvider::GoogleDrive,
+                std::slice::from_ref(&dropbox_reference),
+            )
+            .expect("inject cross-provider cleanup reference");
+
+        service.snapshot().expect("recover cleanup journals");
+
+        assert!(
+            vault
+                .get(&dropbox_reference)
+                .expect("Dropbox credential")
+                .is_some(),
+            "one provider's cleanup journal must never delete another provider's active credential"
+        );
+        assert!(vault
+            .cleanup_references(CloudProvider::GoogleDrive)
+            .expect("cleaned Drive journal")
+            .is_empty());
+    }
+
     #[test]
     fn panic_after_credential_staging_is_recovered_from_the_durable_journal() {
         let temp = tempdir().expect("temporary directory");
@@ -6504,13 +6714,19 @@ mod tests {
         .expect("missing credential remains an admitted unavailable source");
         assert_eq!(admitted.clouds.len(), 1);
         assert!(admitted.clouds[0].1.is_none());
-        let mut members = admitted.members;
-        for (record, credential) in admitted.clouds {
+        let AdmittedLibraryQuery {
+            mut members,
+            clouds,
+            registry,
+            vault,
+        } = admitted;
+        for (record, credential) in clouds {
             members.push(
                 bind_library_cloud_source(
                     record,
                     credential,
-                    admitted.vault.clone(),
+                    vault.clone(),
+                    registry.clone(),
                     &uuid::Uuid::new_v4().to_string(),
                 )
                 .await
