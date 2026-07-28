@@ -482,6 +482,149 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       );
     }
 
+    case 'inspectPartialLibraryDocument': {
+      const scopedText = required(d, 'scopedText');
+      const clickIn = required(d, 'clickIn');
+      const memberships = await scopedText('library-sources');
+      const membershipsRe = new RegExp(step.membershipsPattern);
+      if (!membershipsRe.test(memberships)) {
+        throw new Error(
+          `the native Library did not expose both seeded memberships /${membershipsRe.source}/ ` +
+            `(Library: ${JSON.stringify(memberships.replace(/\n/g, ' | ').slice(0, 320))})`,
+        );
+      }
+
+      const openLibraryDocument = async (
+        document: string,
+        pattern: string,
+        sourceLabel: string,
+      ): Promise<void> => {
+        const expected = new RegExp(pattern);
+        let text = '';
+        const opened = await waitUntil(async () => {
+          try {
+            await clickIn('library-sources__document', document);
+            text = await scopedText('library-reader');
+            return expected.test(text);
+          } catch {
+            return false;
+          }
+        }, 15_000);
+        if (!opened) {
+          throw new Error(
+            `the ${sourceLabel} Library row did not open ${JSON.stringify(document)} with ` +
+              `/${expected.source}/ (reader: ${JSON.stringify(text.slice(0, 360))})`,
+          );
+        }
+      };
+
+      const assertInspectorTab = async (
+        label: 'Result' | 'Sources' | 'Provenance',
+        pattern: string,
+        sourceLabel: string,
+      ): Promise<string> => {
+        if (label !== 'Result') await clickIn('document-inspector__tab', label);
+        const expected = new RegExp(pattern);
+        const text = await scopedText('document-inspector');
+        if (!expected.test(text)) {
+          throw new Error(
+            `the ${sourceLabel} ${label} evidence did not report /${expected.source}/ ` +
+              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 420))})`,
+          );
+        }
+        return text;
+      };
+
+      await openLibraryDocument(
+        step.driveDocument,
+        step.driveReaderPattern,
+        'Google Drive',
+      );
+      await clickIn('library-reader__inspect', 'Inspect');
+      await assertInspectorTab('Result', step.driveResultPattern, 'Google Drive');
+      await assertInspectorTab('Sources', step.driveSourcesPattern, 'Google Drive');
+      await assertInspectorTab(
+        'Provenance',
+        step.driveProvenancePattern,
+        'Google Drive',
+      );
+
+      const readerRe = new RegExp(step.readerPattern);
+      let reader = '';
+      const opened = await waitUntil(async () => {
+        try {
+          await clickIn('library-sources__document', step.document);
+          reader = await scopedText('library-reader');
+          return readerRe.test(reader);
+        } catch {
+          return false;
+        }
+      }, 15_000);
+      if (!opened) {
+        throw new Error(
+          `the connected Library did not open ${JSON.stringify(step.document)} with ` +
+            `/${readerRe.source}/ (reader: ${JSON.stringify(reader.slice(0, 320))})`,
+        );
+      }
+
+      await clickIn('library-reader__inspect', 'Inspect');
+      const resultRe = new RegExp(step.resultPattern);
+      let inspector = '';
+      const resultReady = await waitUntil(async () => {
+        inspector = await scopedText('document-inspector');
+        return resultRe.test(inspector);
+      }, 15_000);
+      if (!resultReady) {
+        throw new Error(
+          `the connected Library Result did not report /${resultRe.source}/ ` +
+            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 360))})`,
+        );
+      }
+
+      await clickIn('document-inspector__tab', 'Sources');
+      const sourcesRe = new RegExp(
+        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
+      );
+      inspector = await scopedText('document-inspector');
+      if (!sourcesRe.test(inspector)) {
+        throw new Error(
+          `the connected Library Sources did not report /${sourcesRe.source}/ ` +
+            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 420))})`,
+        );
+      }
+      const retryBefore = /Retry after (\d+) ms/.exec(inspector)?.[1];
+      if (!retryBefore) {
+        throw new Error('the partial source did not expose retry timing');
+      }
+
+      await clickIn('library-reader__retry', 'Retry Library');
+      let retryAfter = retryBefore;
+      const retried = await waitUntil(async () => {
+        const next = await scopedText('document-inspector');
+        retryAfter = /Retry after (\d+) ms/.exec(next)?.[1] ?? retryBefore;
+        return retryAfter !== retryBefore;
+      }, 15_000);
+      if (!retried) {
+        throw new Error(
+          `Retry Library did not publish fresh command evidence (retry stayed ${retryBefore} ms)`,
+        );
+      }
+
+      await clickIn('document-inspector__tab', 'Provenance');
+      const provenanceRe = new RegExp(step.provenancePattern);
+      inspector = await scopedText('document-inspector');
+      if (!provenanceRe.test(inspector)) {
+        throw new Error(
+          `the connected Library Provenance did not report /${provenanceRe.source}/ ` +
+            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 420))})`,
+        );
+      }
+      return (
+        'Drive and Connected CatDB memberships were rendered from native queries; ' +
+        `the partial answer named its excluded source and winner, and retry advanced ${retryBefore}→${retryAfter} ms`
+      );
+    }
+
     case 'constraintJump': {
       const scopedText = required(d, 'scopedText');
       const clickIn = required(d, 'clickIn');

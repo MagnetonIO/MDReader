@@ -11,11 +11,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-use std::sync::Arc;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex,
+    atomic::{AtomicU64, AtomicU8, Ordering},
+    Arc, Mutex,
 };
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::time::Instant;
@@ -55,6 +53,13 @@ const CLOUD_QUERY_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const CLOUD_QUERY_PAGE_SIZE: usize = 100;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+#[cfg(feature = "e2e-build")]
+const E2E_DRIVE_RECORD_ID: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+#[cfg(feature = "e2e-build")]
+const E2E_DRIVE_CREDENTIAL_REFERENCE: &str = "mdreader-e2e-google-drive";
+#[cfg(feature = "e2e-build")]
+const E2E_DRIVE_FILE_ID: &str = "mdreader-e2e-drive-document";
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_QUERY_DEADLINE: Duration = Duration::from_secs(45);
 pub(crate) const CLOUD_DOCUMENT_MAPPING_VERSION: &str = "mdreader.Document.cloud-mapping/v2";
@@ -1227,6 +1232,7 @@ struct ActiveCloudQuery {
 struct ActiveCloudConnect {
     serial: u64,
     cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
 }
 
 #[derive(Debug)]
@@ -1234,6 +1240,59 @@ struct CloudConnectHandle {
     provider: CloudProvider,
     serial: u64,
     cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
+}
+
+const CLOUD_CONNECT_PENDING: u8 = 0;
+const CLOUD_CONNECT_COMMITTING: u8 = 1;
+const CLOUD_CONNECT_COMPLETE: u8 = 2;
+
+#[derive(Clone)]
+struct CloudConnectCommitAuthority {
+    active_connects: Arc<Mutex<HashMap<CloudProvider, ActiveCloudConnect>>>,
+    provider: CloudProvider,
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
+}
+
+impl CloudConnectCommitAuthority {
+    fn begin_commit(&self) -> Result<(), CloudSourceError> {
+        let active = self
+            .active_connects
+            .lock()
+            .map_err(|_| CloudSourceError::OauthTransport)?;
+        match active.get(&self.provider) {
+            Some(entry)
+                if entry.serial == self.serial
+                    && !self.cancellation.is_cancelled()
+                    && entry
+                        .phase
+                        .compare_exchange(
+                            CLOUD_CONNECT_PENDING,
+                            CLOUD_CONNECT_COMMITTING,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok() =>
+            {
+                Ok(())
+            }
+            _ => Err(CloudSourceError::OauthCancelled),
+        }
+    }
+
+    fn finish_commit(&self) {
+        self.phase.store(CLOUD_CONNECT_COMPLETE, Ordering::SeqCst);
+        if let Ok(mut active) = self.active_connects.lock() {
+            if active
+                .get(&self.provider)
+                .is_some_and(|entry| entry.serial == self.serial)
+            {
+                active.remove(&self.provider);
+            }
+        }
+    }
 }
 
 struct CloudConnectOwner<'a> {
@@ -1258,10 +1317,21 @@ impl<'a> CloudConnectOwner<'a> {
         self.handle.cancellation.clone()
     }
 
-    fn ensure_current(&self) -> Result<(), CloudSourceError> {
-        self.state.ensure_connect_current(&self.handle)
+    fn commit_authority(&self) -> CloudConnectCommitAuthority {
+        CloudConnectCommitAuthority {
+            active_connects: Arc::clone(&self.state.active_connects),
+            provider: self.handle.provider,
+            serial: self.handle.serial,
+            cancellation: self.handle.cancellation.clone(),
+            phase: Arc::clone(&self.handle.phase),
+        }
     }
 
+    fn finish_committed(mut self) {
+        self.settled = true;
+    }
+
+    #[cfg(test)]
     fn finish(mut self) -> Result<(), CloudSourceError> {
         let result = self.state.finish_connect(&self.handle);
         self.settled = true;
@@ -1274,7 +1344,9 @@ impl Drop for CloudConnectOwner<'_> {
         if self.settled {
             return;
         }
-        self.handle.cancellation.cancel();
+        if self.handle.phase.load(Ordering::SeqCst) == CLOUD_CONNECT_PENDING {
+            self.handle.cancellation.cancel();
+        }
         let _ = self.state.finish_connect(&self.handle);
         self.settled = true;
     }
@@ -1332,10 +1404,10 @@ struct RequestedCatalogPins {
 }
 
 pub(crate) struct CloudAccountsState {
-    lifecycle_commits: tokio::sync::Mutex<()>,
+    lifecycle_commits: Arc<Mutex<()>>,
     catalog: tokio::sync::Mutex<Option<CloudCatalogAuthority>>,
     catalog_location: Mutex<Option<(PathBuf, uuid::Uuid)>>,
-    active_connects: Mutex<HashMap<CloudProvider, ActiveCloudConnect>>,
+    active_connects: Arc<Mutex<HashMap<CloudProvider, ActiveCloudConnect>>>,
     active_queries: Mutex<HashMap<String, ActiveCloudQuery>>,
     next_connect_serial: AtomicU64,
     next_query_serial: AtomicU64,
@@ -1344,10 +1416,10 @@ pub(crate) struct CloudAccountsState {
 impl Default for CloudAccountsState {
     fn default() -> Self {
         Self {
-            lifecycle_commits: tokio::sync::Mutex::new(()),
+            lifecycle_commits: Arc::new(Mutex::new(())),
             catalog: tokio::sync::Mutex::new(None),
             catalog_location: Mutex::new(None),
-            active_connects: Mutex::new(HashMap::new()),
+            active_connects: Arc::new(Mutex::new(HashMap::new())),
             active_queries: Mutex::new(HashMap::new()),
             next_connect_serial: AtomicU64::new(1),
             next_query_serial: AtomicU64::new(1),
@@ -1405,6 +1477,7 @@ impl CloudAccountsState {
     ) -> Result<CloudConnectHandle, CloudSourceError> {
         let serial = self.next_connect_serial.fetch_add(1, Ordering::SeqCst);
         let cancellation = catdb_connectors::CancellationToken::new();
+        let phase = Arc::new(AtomicU8::new(CLOUD_CONNECT_PENDING));
         let mut active = self
             .active_connects
             .lock()
@@ -1414,30 +1487,19 @@ impl CloudAccountsState {
             ActiveCloudConnect {
                 serial,
                 cancellation: cancellation.clone(),
+                phase: Arc::clone(&phase),
             },
         ) {
-            retired.cancellation.cancel();
+            if retired.phase.load(Ordering::SeqCst) == CLOUD_CONNECT_PENDING {
+                retired.cancellation.cancel();
+            }
         }
         Ok(CloudConnectHandle {
             provider,
             serial,
             cancellation,
+            phase,
         })
-    }
-
-    fn ensure_connect_current(&self, connect: &CloudConnectHandle) -> Result<(), CloudSourceError> {
-        let active = self
-            .active_connects
-            .lock()
-            .map_err(|_| CloudSourceError::OauthTransport)?;
-        match active.get(&connect.provider) {
-            Some(entry)
-                if entry.serial == connect.serial && !connect.cancellation.is_cancelled() =>
-            {
-                Ok(())
-            }
-            _ => Err(CloudSourceError::OauthCancelled),
-        }
     }
 
     fn finish_connect(&self, connect: &CloudConnectHandle) -> Result<(), CloudSourceError> {
@@ -1681,16 +1743,60 @@ async fn blocking_cloud_operation<T: Send + 'static>(
         + Send
         + 'static,
 ) -> Result<T, CloudSourceError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|_| CloudSourceError::PersistFailed)?;
-        let vault = KeyringCredentialVault::new(&app.config().identifier)?;
-        operation(LibraryStore::new(app_data.join("library.json")), vault)
+    tauri::async_runtime::spawn_blocking(move || cloud_operation(app, operation))
+        .await
+        .map_err(|_| CloudSourceError::PersistFailed)?
+}
+
+fn cloud_operation<T>(
+    app: AppHandle,
+    operation: impl FnOnce(LibraryStore, KeyringCredentialVault) -> Result<T, CloudSourceError>,
+) -> Result<T, CloudSourceError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CloudSourceError::PersistFailed)?;
+    let vault = KeyringCredentialVault::new(&app.config().identifier)?;
+    operation(LibraryStore::new(app_data.join("library.json")), vault)
+}
+
+#[cfg(feature = "e2e-build")]
+pub(crate) fn seed_e2e_cloud_membership(app: &AppHandle) -> Result<(), CloudSourceError> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| CloudSourceError::PersistFailed)?;
+    let registry = LibraryStore::new(app_data.join("library.json"));
+    let vault = KeyringCredentialVault::new(&app.config().identifier)?;
+    let credential = SecretBundle::new(
+        "mdreader-e2e-drive-access",
+        "mdreader-e2e-drive-refresh",
+        4_102_444_800,
+        [7; 32],
+    )?;
+    vault.set(E2E_DRIVE_CREDENTIAL_REFERENCE, &credential)?;
+    let record = CloudSourceRecord {
+        id: E2E_DRIVE_RECORD_ID.to_string(),
+        provider: CloudProvider::GoogleDrive,
+        label: "Google Drive fixture".to_string(),
+        enabled: true,
+        credential_reference: E2E_DRIVE_CREDENTIAL_REFERENCE.to_string(),
+        config: CloudSourceConfig::GoogleDrive {
+            selections: vec![DriveItemSelection {
+                id: E2E_DRIVE_FILE_ID.to_string(),
+                resource_key: None,
+                folder: false,
+            }],
+        },
+        contract: Some(crate::library::LibrarySourceContract::cloud(
+            CloudProvider::GoogleDrive,
+        )),
+    };
+    registry.update_cloud(|sources| {
+        sources.retain(|source| source.provider != CloudProvider::GoogleDrive);
+        sources.push(record);
+        Ok(())
     })
-    .await
-    .map_err(|_| CloudSourceError::PersistFailed)?
 }
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -2503,11 +2609,7 @@ async fn bind_library_cloud_source(
                 catdb_connector_google_drive::PinnedDriveSourceSpec::new(config, schema_version)
                     .map_err(|error| query_invalid(error.to_string()))?;
             match resolver {
-                Some(resolver) => Arc::new(
-                    catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
-                        .await
-                        .map_err(|error| query_failed(error.to_string()))?,
-                ),
+                Some(resolver) => Arc::new(open_library_drive_source(spec, resolver).await?),
                 None => {
                     let model = catdb_connector_google_drive::DriveSource::declared_model(&spec)
                         .map_err(|error| query_invalid(error.to_string()))?;
@@ -2588,6 +2690,70 @@ async fn bind_library_cloud_source(
             }),
         )],
     })
+}
+
+#[cfg(all(feature = "google-drive-connector", not(feature = "e2e-build")))]
+async fn open_library_drive_source(
+    spec: catdb_connector_google_drive::PinnedDriveSourceSpec,
+    resolver: Arc<CloudCredentialResolver>,
+) -> Result<catdb_connector_google_drive::DriveSource, CloudSourceError> {
+    catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver)
+        .await
+        .map_err(|error| query_failed(error.to_string()))
+}
+
+#[cfg(all(feature = "google-drive-connector", feature = "e2e-build"))]
+async fn open_library_drive_source(
+    spec: catdb_connector_google_drive::PinnedDriveSourceSpec,
+    resolver: Arc<CloudCredentialResolver>,
+) -> Result<catdb_connector_google_drive::DriveSource, CloudSourceError> {
+    catdb_connector_google_drive::DriveSource::open_with_resolver_and_transport(
+        spec,
+        resolver,
+        Arc::new(E2eDriveTransport),
+    )
+    .await
+    .map_err(|error| query_failed(error.to_string()))
+}
+
+#[cfg(all(feature = "google-drive-connector", feature = "e2e-build"))]
+#[derive(Debug)]
+struct E2eDriveTransport;
+
+#[cfg(all(feature = "google-drive-connector", feature = "e2e-build"))]
+const E2E_DRIVE_BODY: &[u8] =
+    b"# Drive fixture note\n\nThis document came through the Google Drive connector.";
+
+#[cfg(all(feature = "google-drive-connector", feature = "e2e-build"))]
+#[async_trait::async_trait]
+impl catdb_connector_google_drive::DriveTransport for E2eDriveTransport {
+    async fn send(
+        &self,
+        request: catdb_connector_google_drive::DriveHttpRequest,
+    ) -> Result<
+        catdb_connector_google_drive::DriveHttpResponse,
+        catdb_connector_google_drive::DriveTransportError,
+    > {
+        let path = request.path();
+        let body = if path.contains("alt=media") {
+            E2E_DRIVE_BODY.to_vec()
+        } else if path.starts_with(&format!("/drive/v3/files/{E2E_DRIVE_FILE_ID}?")) {
+            serde_json::to_vec(&serde_json::json!({
+                "id": E2E_DRIVE_FILE_ID,
+                "name": "Drive fixture note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-28T12:00:00Z",
+                "size": E2E_DRIVE_BODY.len().to_string(),
+                "md5Checksum": "11111111111111111111111111111111",
+                "parents": [],
+                "trashed": false
+            }))
+            .map_err(|_| catdb_connector_google_drive::DriveTransportError::InvalidResponse)?
+        } else {
+            return Err(catdb_connector_google_drive::DriveTransportError::InvalidResponse);
+        };
+        catdb_connector_google_drive::DriveHttpResponse::new(200, BTreeMap::new(), body)
+    }
 }
 
 /// Query all caller-selected Library memberships through one CatDB execution.
@@ -4040,9 +4206,11 @@ pub(crate) async fn set_cloud_source_enabled(
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     state.cancel_provider_activity(provider)?;
-    let _commit = state.lifecycle_commits.lock().await;
-    blocking_cloud_operation(app, move |registry, vault| {
-        CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)
+    let owner = CloudConnectOwner::begin(&state, provider)?;
+    commit_cloud_connect(&state, owner, move || {
+        cloud_operation(app, move |registry, vault| {
+            CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)
+        })
     })
     .await
 }
@@ -4055,26 +4223,56 @@ pub(crate) async fn disconnect_cloud_source(
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     state.cancel_provider_activity(provider)?;
-    let _commit = state.lifecycle_commits.lock().await;
-    blocking_cloud_operation(app, move |registry, vault| {
-        CloudAccountService::new(registry, &vault).disconnect(provider)
+    let owner = CloudConnectOwner::begin(&state, provider)?;
+    commit_cloud_connect(&state, owner, move || {
+        cloud_operation(app, move |registry, vault| {
+            CloudAccountService::new(registry, &vault).disconnect(provider)
+        })
     })
     .await
 }
 
-async fn commit_cloud_connect<T, Install, InstallFuture>(
+async fn commit_cloud_connect<T, Install>(
     state: &CloudAccountsState,
     owner: CloudConnectOwner<'_>,
     install: Install,
 ) -> Result<T, CloudSourceError>
 where
-    Install: FnOnce() -> InstallFuture,
-    InstallFuture: std::future::Future<Output = Result<T, CloudSourceError>>,
+    T: Send + 'static,
+    Install: FnOnce() -> Result<T, CloudSourceError> + Send + 'static,
 {
-    let _commit = state.lifecycle_commits.lock().await;
-    owner.ensure_current()?;
-    owner.finish()?;
-    install().await
+    commit_cloud_connect_observed(state, owner, || {}, install).await
+}
+
+async fn commit_cloud_connect_observed<T, Observe, Observation, Install>(
+    state: &CloudAccountsState,
+    owner: CloudConnectOwner<'_>,
+    observe_worker: Observe,
+    install: Install,
+) -> Result<T, CloudSourceError>
+where
+    T: Send + 'static,
+    Observe: FnOnce() -> Observation + Send + 'static,
+    Observation: Send + 'static,
+    Install: FnOnce() -> Result<T, CloudSourceError> + Send + 'static,
+{
+    let lifecycle_commits = Arc::clone(&state.lifecycle_commits);
+    let authority = owner.commit_authority();
+    let worker_authority = authority.clone();
+    let installed = tauri::async_runtime::spawn_blocking(move || {
+        let _observation = observe_worker();
+        let _commit = lifecycle_commits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        worker_authority.begin_commit()?;
+        let result = install();
+        worker_authority.finish_commit();
+        result
+    })
+    .await
+    .map_err(|_| CloudSourceError::PersistFailed)??;
+    owner.finish_committed();
+    Ok(installed)
 }
 
 #[tauri::command(async)]
@@ -4124,8 +4322,8 @@ pub(crate) async fn connect_cloud_source(
         expires_at_unix_seconds(token.expires_in_seconds)?,
         new_cursor_key(),
     )?;
-    commit_cloud_connect(&state, owner, || {
-        blocking_cloud_operation(app, move |registry, vault| {
+    commit_cloud_connect(&state, owner, move || {
+        cloud_operation(app, move |registry, vault| {
             CloudAccountService::new(registry, &vault).install(provider, config, secret)
         })
     })
@@ -4862,13 +5060,14 @@ mod tests {
     use super::{
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
         bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
-        dropbox_redirect_configuration, execute_cloud_query, oauth_callback_configuration,
-        receive_oauth_callback, refresh_token_form, validate_oauth_client_id, AdmittedLibraryQuery,
-        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectOwner,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
-        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
-        MemoryCredentialVault, OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
+        commit_cloud_connect_observed, dropbox_redirect_configuration, execute_cloud_query,
+        oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
+        validate_oauth_client_id, AdmittedLibraryQuery, CloudAccountService, CloudAccountsState,
+        CloudCompleteness, CloudConnectOwner, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
+        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
+        SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::{
         file_lock::AdvisoryFileLock,
@@ -4880,6 +5079,20 @@ mod tests {
     // test can win that port in the gap and make the exact-bind assertion fail
     // nondeterministically even though the production listener is correct.
     static OAUTH_CALLBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn park_lifecycle_commit(
+        commit: Arc<std::sync::Mutex<()>>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let gate = std::thread::spawn(move || {
+            let _lease = commit.lock().expect("hold lifecycle commit point");
+            held_tx.send(()).expect("signal held commit point");
+            release_rx.recv().expect("release lifecycle commit point");
+        });
+        held_rx.recv().expect("lifecycle commit point was held");
+        (release_tx, gate)
+    }
 
     #[derive(Default)]
     struct SharedCredentialBackend {
@@ -6091,16 +6304,19 @@ mod tests {
         let state = CloudAccountsState::default();
         let owner =
             CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("first OAuth attempt");
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
 
-        let publication = commit_cloud_connect(&state, owner, || async move {
+        let publication = commit_cloud_connect(&state, owner, move || {
             started_tx.send(()).expect("signal publication");
-            release_rx.await.expect("release publication");
+            release_rx.recv().expect("release publication");
             Ok("installed")
         });
         let replacement = async {
-            started_rx.await.expect("publication started");
+            tokio::task::spawn_blocking(move || started_rx.recv())
+                .await
+                .expect("start waiter did not panic")
+                .expect("publication started");
             let replacement = CloudConnectOwner::begin(&state, CloudProvider::Dropbox)
                 .expect("replacement OAuth attempt");
             release_tx.send(()).expect("release publication");
@@ -6110,6 +6326,109 @@ mod tests {
         let (published, replacement) = tokio::join!(publication, replacement);
         assert_eq!(published, Ok("installed"));
         assert_eq!(replacement.finish(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_connect_before_the_worker_commit_point_prevents_publication() {
+        struct Completion(std::sync::mpsc::Sender<()>);
+
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let state = CloudAccountsState::default();
+        let owner =
+            CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("OAuth attempt");
+        let published = Arc::new(AtomicBool::new(false));
+        let worker_published = Arc::clone(&published);
+        let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
+        let (worker_completed_tx, worker_completed_rx) = std::sync::mpsc::channel();
+        let (release_commit, commit_gate) =
+            park_lifecycle_commit(Arc::clone(&state.lifecycle_commits));
+        let mut publication = Box::pin(commit_cloud_connect_observed(
+            &state,
+            owner,
+            move || {
+                worker_started_tx.send(()).expect("signal worker");
+                Completion(worker_completed_tx)
+            },
+            move || {
+                worker_published.store(true, Ordering::SeqCst);
+                Ok("installed")
+            },
+        ));
+
+        tokio::select! {
+            result = &mut publication => panic!("publication completed while commit point was parked: {result:?}"),
+            started = tokio::task::spawn_blocking(move || worker_started_rx.recv()) => {
+                started.expect("start waiter did not panic").expect("worker started");
+            }
+        }
+        drop(publication);
+        release_commit.send(()).expect("release commit point");
+        commit_gate.join().expect("commit gate did not panic");
+        tokio::task::spawn_blocking(move || worker_completed_rx.recv())
+            .await
+            .expect("completion waiter did not panic")
+            .expect("worker completed");
+        assert!(
+            !published.load(Ordering::SeqCst),
+            "a detached blocking worker published after its owner future was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_connect_serial_cannot_publish_after_replacement() {
+        let state = CloudAccountsState::default();
+        let owner = CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("first owner");
+        let published = Arc::new(AtomicBool::new(false));
+        let worker_published = Arc::clone(&published);
+        let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
+        let (release_commit, commit_gate) =
+            park_lifecycle_commit(Arc::clone(&state.lifecycle_commits));
+        let mut publication = Box::pin(commit_cloud_connect_observed(
+            &state,
+            owner,
+            move || worker_started_tx.send(()).expect("signal worker"),
+            move || {
+                worker_published.store(true, Ordering::SeqCst);
+                Ok("installed")
+            },
+        ));
+
+        tokio::select! {
+            result = &mut publication => panic!("publication completed while commit point was parked: {result:?}"),
+            started = tokio::task::spawn_blocking(move || worker_started_rx.recv()) => {
+                started.expect("start waiter did not panic").expect("worker started");
+            }
+        }
+        let replacement =
+            CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("replacement owner");
+        release_commit.send(()).expect("release commit point");
+        commit_gate.join().expect("commit gate did not panic");
+        assert_eq!(publication.await, Err(CloudSourceError::OauthCancelled));
+        assert!(!published.load(Ordering::SeqCst));
+        assert_eq!(replacement.finish(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_connect_worker_releases_ownership_and_the_commit_lease() {
+        let state = CloudAccountsState::default();
+        let owner = CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("first owner");
+        let result = commit_cloud_connect(&state, owner, || -> Result<(), _> {
+            panic!("deliberate worker panic")
+        })
+        .await;
+        assert_eq!(result, Err(CloudSourceError::PersistFailed));
+
+        let replacement =
+            CloudConnectOwner::begin(&state, CloudProvider::Dropbox).expect("replacement owner");
+        assert_eq!(
+            commit_cloud_connect(&state, replacement, || Ok("installed")).await,
+            Ok("installed")
+        );
     }
 
     #[test]
@@ -7429,6 +7748,10 @@ mod tests {
         legacy["version"] = serde_json::json!(4);
         legacy["sources"] = serde_json::json!([local]);
         legacy["cloud_sources"] = serde_json::json!([drive]);
+        legacy
+            .as_object_mut()
+            .expect("registry object")
+            .remove("connected_catdb_rediscovery_required");
         fs::write(
             &registry_path,
             serde_json::to_vec_pretty(&legacy).expect("encode V4 registry"),

@@ -103,7 +103,34 @@ test('the isolated fixture serves the real session/entity-query contract and for
       body: JSON.stringify(readQuery),
     });
     assert.equal(offline.status, 503);
+    assert.deepEqual(
+      fixture
+        .requests()
+        .filter((request) => request.path === '/v1/entity/query')
+        .map(({ method, authenticated }) => ({ method, authenticated })),
+      [
+        { method: 'POST', authenticated: true },
+        { method: 'POST', authenticated: true },
+        { method: 'POST', authenticated: true },
+      ],
+    );
   } finally {
     await fixture.close();
+  }
+});
+
+test('each fixture invocation mints an isolated origin and request ledger', async () => {
+  const first = await startMobileFixtureServer();
+  const second = await startMobileFixtureServer();
+  try {
+    assert.notEqual(first.origin, second.origin);
+    const response = await fetch(`${first.origin}/v1/session`, {
+      headers: { authorization: `Bearer ${MOBILE_FIXTURE_BEARER}` },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(first.requests().length, 1);
+    assert.equal(second.requests().length, 0);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
   }
 });

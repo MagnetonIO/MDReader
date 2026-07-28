@@ -15,7 +15,6 @@ import { fileURLToPath } from 'node:url';
 
 import { androidCapabilitiesFor } from '../capabilities.ts';
 import {
-  MOBILE_FIXTURE_PORT,
   startMobileFixtureServer,
   type MobileFixtureServer,
 } from '../mobile-fixture.ts';
@@ -23,6 +22,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = resolve(HERE, '..');
 let fixture: MobileFixtureServer | undefined;
+let fixturePort: string | undefined;
 
 export const config: WebdriverIO.Config = {
   runner: 'local',
@@ -39,24 +39,32 @@ export const config: WebdriverIO.Config = {
   mochaOpts: { ui: 'bdd', timeout: 240_000 },
   onPrepare: async () => {
     fixture = await startMobileFixtureServer();
+    fixturePort = new URL(fixture.origin).port;
+    process.env.MDREADER_E2E_CONNECTED_ORIGIN = fixture.origin;
     try {
       execFileSync('adb', [
         'reverse',
-        `tcp:${MOBILE_FIXTURE_PORT}`,
-        `tcp:${MOBILE_FIXTURE_PORT}`,
+        `tcp:${fixturePort}`,
+        `tcp:${fixturePort}`,
       ]);
     } catch (error) {
       await fixture.close();
       fixture = undefined;
+      fixturePort = undefined;
+      delete process.env.MDREADER_E2E_CONNECTED_ORIGIN;
       throw error;
     }
   },
   onComplete: async () => {
     try {
-      execFileSync('adb', ['reverse', '--remove', `tcp:${MOBILE_FIXTURE_PORT}`]);
+      if (fixturePort) {
+        execFileSync('adb', ['reverse', '--remove', `tcp:${fixturePort}`]);
+      }
     } finally {
       await fixture?.close();
       fixture = undefined;
+      fixturePort = undefined;
+      delete process.env.MDREADER_E2E_CONNECTED_ORIGIN;
     }
   },
   services: [['appium', { args: { address: '127.0.0.1', port: 4723 }, command: 'appium' }]],

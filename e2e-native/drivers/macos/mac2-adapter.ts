@@ -305,7 +305,19 @@ export class Mac2Adapter implements PlatformDriver {
     if (!(await this.isProcessAlive())) return false;
     try {
       const win = await this.b.$('//XCUIElementTypeWindow');
-      return await win.isExisting();
+      if (!(await win.isExisting())) return false;
+      const loc = await win.getLocation();
+      const size = await win.getSize();
+      const webdriver = {
+        x: Math.round(loc.x),
+        y: Math.round(loc.y),
+        w: Math.round(size.width),
+        h: Math.round(size.height),
+      };
+      const owned = this.ax.appFrame();
+      return (['x', 'y', 'w', 'h'] as const).every(
+        (field) => Math.abs(webdriver[field] - owned[field]) <= 2,
+      );
     } catch {
       return false;
     }

@@ -198,7 +198,7 @@ func loops(_ el: AXUIElement, _ path: [AXUIElement]) -> Bool {
     path.contains { CFEqual($0, el) }
 }
 
-let USAGE = "usage: axquery count|text|headings|frame|point <pid> [selector] [nth] [substring]\n"
+let USAGE = "usage: axquery count|text|headings|appframe|frame|point <pid> [selector] [nth] [substring]\n"
 
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[2]) else {
@@ -426,6 +426,16 @@ do {
         }
         try walk(app, 0)
         print(lines.joined(separator: "\n"))
+
+    case "appframe":
+        let windows = try children(app).filter { try role($0) == "AXWindow" }
+        guard windows.count == 1, let rect = try frame(windows[0]) else {
+            FileHandle.standardError.write(
+                "AX_NO_WINDOW: expected one window for pid \(pid), found \(windows.count)\n"
+                    .data(using: .utf8)!)
+            exit(4)
+        }
+        print("\(Int(rect.origin.x)) \(Int(rect.origin.y)) \(Int(rect.width)) \(Int(rect.height))")
 
     case "frame", "point":
         guard args.count >= 5, let nth = Int(args[4]), nth >= 0 else { exit(2) }

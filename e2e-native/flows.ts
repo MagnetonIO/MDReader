@@ -336,6 +336,28 @@ export type Step =
       readonly schemaPattern: string;
     }
   | {
+      /** **Task 10 acceptance.** Inspect a real Connected CatDB Library answer
+       * served by the authenticated loopback fixture while a seeded Drive
+       * membership runs through the production connector in the embedded
+       * answer. Retry must execute a fresh Tauri query, not merely repaint the
+       * existing evidence. */
+      readonly kind: 'inspectPartialLibraryDocument';
+      readonly id: string;
+      readonly title: string;
+      readonly channel: 'dom';
+      readonly document: string;
+      readonly membershipsPattern: string;
+      readonly driveDocument: string;
+      readonly driveReaderPattern: string;
+      readonly driveResultPattern: string;
+      readonly driveSourcesPattern: string;
+      readonly driveProvenancePattern: string;
+      readonly readerPattern: string;
+      readonly resultPattern: string;
+      readonly sourcesPattern: string;
+      readonly provenancePattern: string;
+    }
+  | {
       /** **Task 10.** Open a local document from the unified Library answer,
        * then inspect that exact answer and prove the local edit capability is
        * exposed without a second document read. */
@@ -564,7 +586,7 @@ export const FLOW: readonly Step[] = [
     provenancePattern:
       'modifiedAt[\\s\\S]*filesystem\\.modifiedAt[\\s\\S]*selected[\\s\\S]*git\\.modifiedAt[\\s\\S]*also observed',
     schemaPattern:
-      'document[\\s\\S]*(v\\d+|not catalogued yet)[\\s\\S]*semantic interpretation[\\s\\S]*not the Markdown file',
+      'document · v[0-9a-f]{8}-[0-9a-f-]{27,}[\\s\\S]*blake3:[0-9a-f]{64}[\\s\\S]*semantic interpretation[\\s\\S]*not the Markdown file',
   },
   {
     kind: 'inspectPassage',
@@ -621,6 +643,31 @@ export const FLOW: readonly Step[] = [
       'Catalog authority[\\s\\S]*Schema[\\s\\S]*Mappings[\\s\\S]*Sources[\\s\\S]*Policies[\\s\\S]*Provenance rule pin',
   },
   {
+    kind: 'inspectPartialLibraryDocument',
+    id: 'partial-connected-library-document',
+    title: 'Connected and Drive memberships stay visible with actionable partial evidence',
+    channel: 'dom',
+    document: 'Mobile evidence handbook',
+    membershipsPattern:
+      'Google Drive fixture[\\s\\S]*Isolated Enterprise fixture',
+    driveDocument: 'Drive fixture note.md',
+    driveReaderPattern:
+      'Google Drive fixture[\\s\\S]*Drive fixture note\\.md[\\s\\S]*Read-only[\\s\\S]*This document came through the Google Drive connector',
+    driveResultPattern:
+      'Complete[\\s\\S]*mdreader-e2e-drive-document[\\s\\S]*Drive fixture note\\.md',
+    driveSourcesPattern:
+      'Google Drive fixture[\\s\\S]*ran[\\s\\S]*1 scanned · 1 returned',
+    driveProvenancePattern:
+      'title[\\s\\S]*Google Drive fixture[\\s\\S]*\\.name[\\s\\S]*record mdreader-e2e-drive-document',
+    readerPattern: 'Isolated Enterprise fixture[\\s\\S]*Mobile evidence handbook[\\s\\S]*Read-only',
+    resultPattern:
+      'Partial[\\s\\S]*Excluded source 00000000-0000-0000-0000-000000000213[\\s\\S]*mobile-e2e-document',
+    sourcesPattern:
+      '00000000-0000-0000-0000-000000000206[\\s\\S]*ran[\\s\\S]*00000000-0000-0000-0000-000000000213[\\s\\S]*refused[\\s\\S]*Retry after \\d+ ms',
+    provenancePattern:
+      'title[\\s\\S]*Isolated Enterprise fixture[\\s\\S]*00000000-0000-0000-0000-000000000207[\\s\\S]*observed Mobile evidence handbook',
+  },
+  {
     kind: 'dragWindow',
     id: 'drag-window',
     title: 'Drag the window — its position changes',
@@ -652,6 +699,7 @@ export const SEMANTIC_KINDS: readonly Step['kind'][] = [
   'viewAs',
   'inspectFederation',
   'inspectLibraryDocument',
+  'inspectPartialLibraryDocument',
   'inspectPassage',
   'constraintJump',
   'queryExplanation',

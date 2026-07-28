@@ -33,6 +33,7 @@ export interface SettingsSheetProps {
   importState: ImportState | null;
   onActivateSource: (source: LibrarySourceDto) => Promise<boolean>;
   onSourceIntent?: () => void;
+  onLibraryChanged?: () => void;
   onClose: () => void;
 }
 
@@ -172,6 +173,7 @@ export function SettingsSheet({
   importState,
   onActivateSource,
   onSourceIntent = () => {},
+  onLibraryChanged = () => {},
   onClose,
 }: SettingsSheetProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -294,6 +296,7 @@ export function SettingsSheet({
     key: string,
     task: () => Promise<T>,
     apply: (value: T) => void,
+    settled?: () => void,
   ) => {
     const serial = (operationSerials.current.get(key) ?? 0) + 1;
     operationSerials.current.set(key, serial);
@@ -308,6 +311,7 @@ export function SettingsSheet({
       if (current()) setFailure(errorMessage(cause));
     } finally {
       if (current()) setBusy(null);
+      settled?.();
     }
   }, []);
 
@@ -322,18 +326,28 @@ export function SettingsSheet({
 
   const addSource = useCallback(() => {
     onSourceIntent();
-    void run('add', () => backend.pickAndAddSource(), (picked) => {
-      if (!picked.source) return;
-      activate(picked.source, true);
-    });
-  }, [activate, backend, onSourceIntent, run]);
+    void run(
+      'add',
+      () => backend.pickAndAddSource(),
+      (picked) => {
+        if (!picked.source) return;
+        activate(picked.source, true);
+      },
+      onLibraryChanged,
+    );
+  }, [activate, backend, onLibraryChanged, onSourceIntent, run]);
 
   const forget = useCallback(
     (source: LibrarySourceDto) => {
       onSourceIntent();
-      void run(`forget:${source.id}`, () => backend.forgetSource(source.id), setLibrary);
+      void run(
+        `forget:${source.id}`,
+        () => backend.forgetSource(source.id),
+        setLibrary,
+        onLibraryChanged,
+      );
     },
-    [backend, onSourceIntent, run],
+    [backend, onLibraryChanged, onSourceIntent, run],
   );
 
   const connectCloud = useCallback(
@@ -343,9 +357,10 @@ export function SettingsSheet({
         `connect:${provider}`,
         () => cloudControls.connect(provider),
         setCloudSources,
+        onLibraryChanged,
       );
     },
-    [cloudControls, run],
+    [cloudControls, onLibraryChanged, run],
   );
 
   const setCloudEnabled = useCallback(
@@ -355,9 +370,10 @@ export function SettingsSheet({
         `toggle:${provider}`,
         () => cloudControls.setEnabled(provider, enabled),
         setCloudSources,
+        onLibraryChanged,
       );
     },
-    [cloudControls, run],
+    [cloudControls, onLibraryChanged, run],
   );
 
   const disconnectCloud = useCallback(
@@ -369,9 +385,10 @@ export function SettingsSheet({
         (snapshot) => {
           setCloudSources(snapshot);
         },
+        onLibraryChanged,
       );
     },
-    [cloudControls, run],
+    [cloudControls, onLibraryChanged, run],
   );
 
   const enrollCatdb = useCallback(() => {
@@ -382,11 +399,13 @@ export function SettingsSheet({
       'connected-catdb:enroll',
       () => connectedCatdbControls.enroll(connectedCatdbOrigin, bearer),
       setConnectedCatdb,
+      onLibraryChanged,
     );
   }, [
     connectedCatdbBearer,
     connectedCatdbControls,
     connectedCatdbOrigin,
+    onLibraryChanged,
     run,
   ]);
 
@@ -397,9 +416,10 @@ export function SettingsSheet({
         `connected-catdb:source:${sourceId}`,
         () => connectedCatdbControls.setEnabled(connectionId, sourceId, enabled),
         setConnectedCatdb,
+        onLibraryChanged,
       );
     },
-    [connectedCatdbControls, run],
+    [connectedCatdbControls, onLibraryChanged, run],
   );
 
   const disconnectCatdb = useCallback(
@@ -409,9 +429,10 @@ export function SettingsSheet({
         'connected-catdb:disconnect',
         () => connectedCatdbControls.disconnect(connectionId),
         setConnectedCatdb,
+        onLibraryChanged,
       );
     },
-    [connectedCatdbControls, run],
+    [connectedCatdbControls, onLibraryChanged, run],
   );
 
   const setLevel = useCallback(
@@ -757,6 +778,13 @@ export function SettingsSheet({
                     </p>
                   </div>
                 </div>
+                {library?.connected_catdb_rediscovery_required ? (
+                  <p className="settings-state--warning" role="status">
+                    This Library’s previous CatDB connection did not record a verified schema
+                    version. Connect it again to rediscover and pin the current schema before
+                    querying.
+                  </p>
+                ) : null}
                 {connectedCatdb.state === 'disconnected' ? (
                   <article className="cloud-source connected-catdb-card">
                     <div className="connected-catdb-form">

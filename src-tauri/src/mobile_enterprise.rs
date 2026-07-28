@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
@@ -35,15 +35,34 @@ const MAX_CONNECTED_LIBRARY_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CONNECTED_LIBRARY_PAGES: usize = 128;
 const LEGACY_REGISTRY_VERSION: u32 = 1;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+const LIBRARY_LIFECYCLE_OPERATION_ID: &str = "library-lifecycle";
 
 #[cfg(feature = "e2e-build")]
-const E2E_CONNECTION_ID: &str = "mdreader-e2e";
+const E2E_CONNECTION_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 #[cfg(feature = "e2e-build")]
 const E2E_CONNECTION_LABEL: &str = "Isolated Enterprise fixture";
 #[cfg(feature = "e2e-build")]
-const E2E_ORIGIN: &str = "http://127.0.0.1:47865";
+const E2E_ORIGIN_ENV: &str = "MDREADER_E2E_CONNECTED_ORIGIN";
 #[cfg(feature = "e2e-build")]
 const E2E_BEARER: &str = "mdreader-e2e-bearer";
+#[cfg(feature = "e2e-build")]
+const E2E_CREDENTIAL_REFERENCE: &str = "mdreader-e2e-connected-catdb";
+#[cfg(feature = "e2e-build")]
+const E2E_DEPLOYMENT_ID: uuid::Uuid = uuid::Uuid::from_u128(0x201);
+#[cfg(feature = "e2e-build")]
+const E2E_WORKSPACE_ID: uuid::Uuid = uuid::Uuid::from_u128(0x202);
+#[cfg(feature = "e2e-build")]
+const E2E_CATALOG_REVISION_ID: uuid::Uuid = uuid::Uuid::from_u128(0x204);
+#[cfg(feature = "e2e-build")]
+const E2E_SCHEMA_VERSION_ID: uuid::Uuid = uuid::Uuid::from_u128(0x205);
+#[cfg(feature = "e2e-build")]
+const E2E_SOURCE_ID: uuid::Uuid = uuid::Uuid::from_u128(0x206);
+#[cfg(feature = "e2e-build")]
+const E2E_SOURCE_VERSION_ID: uuid::Uuid = uuid::Uuid::from_u128(0x207);
+#[cfg(feature = "e2e-build")]
+const E2E_EXCLUDED_SOURCE_ID: uuid::Uuid = uuid::Uuid::from_u128(0x213);
+#[cfg(feature = "e2e-build")]
+const E2E_EXCLUDED_SOURCE_VERSION_ID: uuid::Uuid = uuid::Uuid::from_u128(0x214);
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct MobileEnterpriseConnection {
@@ -270,6 +289,7 @@ impl BearerVault for KeyringBearerVault {
 struct ActiveMobileEnterpriseOperation {
     serial: u64,
     cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
 }
 
 #[derive(Debug)]
@@ -277,6 +297,60 @@ struct MobileEnterpriseOperationHandle {
     operation_id: String,
     serial: u64,
     cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
+}
+
+const MOBILE_OPERATION_PENDING: u8 = 0;
+const MOBILE_OPERATION_COMMITTING: u8 = 1;
+const MOBILE_OPERATION_COMPLETE: u8 = 2;
+
+#[derive(Clone)]
+struct MobileEnterpriseCommitAuthority {
+    active_operations: Arc<Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>>,
+    operation_id: String,
+    serial: u64,
+    cancellation: catdb_connectors::CancellationToken,
+    phase: Arc<AtomicU8>,
+}
+
+impl MobileEnterpriseCommitAuthority {
+    fn begin_commit(&self) -> Result<(), MobileEnterpriseError> {
+        let active = self
+            .active_operations
+            .lock()
+            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
+        match active.get(&self.operation_id) {
+            Some(entry)
+                if entry.serial == self.serial
+                    && !self.cancellation.is_cancelled()
+                    && entry
+                        .phase
+                        .compare_exchange(
+                            MOBILE_OPERATION_PENDING,
+                            MOBILE_OPERATION_COMMITTING,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        )
+                        .is_ok() =>
+            {
+                Ok(())
+            }
+            _ => Err(MobileEnterpriseError::Cancelled),
+        }
+    }
+
+    fn finish_commit(&self) {
+        self.phase
+            .store(MOBILE_OPERATION_COMPLETE, Ordering::SeqCst);
+        if let Ok(mut active) = self.active_operations.lock() {
+            if active
+                .get(&self.operation_id)
+                .is_some_and(|entry| entry.serial == self.serial)
+            {
+                active.remove(&self.operation_id);
+            }
+        }
+    }
 }
 
 struct MobileEnterpriseOperationOwner<'a> {
@@ -301,8 +375,18 @@ impl<'a> MobileEnterpriseOperationOwner<'a> {
         self.handle.cancellation.clone()
     }
 
-    fn ensure_current(&self) -> Result<(), MobileEnterpriseError> {
-        self.state.ensure_operation_current(&self.handle)
+    fn commit_authority(&self) -> MobileEnterpriseCommitAuthority {
+        MobileEnterpriseCommitAuthority {
+            active_operations: Arc::clone(&self.state.active_operations),
+            operation_id: self.handle.operation_id.clone(),
+            serial: self.handle.serial,
+            cancellation: self.handle.cancellation.clone(),
+            phase: Arc::clone(&self.handle.phase),
+        }
+    }
+
+    fn finish_committed(mut self) {
+        self.settled = true;
     }
 
     fn finish(mut self) -> Result<(), MobileEnterpriseError> {
@@ -317,23 +401,25 @@ impl Drop for MobileEnterpriseOperationOwner<'_> {
         if self.settled {
             return;
         }
-        self.handle.cancellation.cancel();
+        if self.handle.phase.load(Ordering::SeqCst) == MOBILE_OPERATION_PENDING {
+            self.handle.cancellation.cancel();
+        }
         let _ = self.state.finish_operation(&self.handle);
         self.settled = true;
     }
 }
 
 pub(crate) struct MobileEnterpriseState {
-    lifecycle_commits: tokio::sync::Mutex<()>,
-    active_operations: Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>,
+    lifecycle_commits: Arc<Mutex<()>>,
+    active_operations: Arc<Mutex<HashMap<String, ActiveMobileEnterpriseOperation>>>,
     next_operation_serial: AtomicU64,
 }
 
 impl Default for MobileEnterpriseState {
     fn default() -> Self {
         Self {
-            lifecycle_commits: tokio::sync::Mutex::new(()),
-            active_operations: Mutex::new(HashMap::new()),
+            lifecycle_commits: Arc::new(Mutex::new(())),
+            active_operations: Arc::new(Mutex::new(HashMap::new())),
             next_operation_serial: AtomicU64::new(1),
         }
     }
@@ -349,6 +435,7 @@ impl MobileEnterpriseState {
         }
         let serial = self.next_operation_serial.fetch_add(1, Ordering::SeqCst);
         let cancellation = catdb_connectors::CancellationToken::new();
+        let phase = Arc::new(AtomicU8::new(MOBILE_OPERATION_PENDING));
         let mut active = self
             .active_operations
             .lock()
@@ -358,33 +445,19 @@ impl MobileEnterpriseState {
             ActiveMobileEnterpriseOperation {
                 serial,
                 cancellation: cancellation.clone(),
+                phase: Arc::clone(&phase),
             },
         ) {
-            retired.cancellation.cancel();
+            if retired.phase.load(Ordering::SeqCst) == MOBILE_OPERATION_PENDING {
+                retired.cancellation.cancel();
+            }
         }
         Ok(MobileEnterpriseOperationHandle {
             operation_id: operation_id.to_string(),
             serial,
             cancellation,
+            phase,
         })
-    }
-
-    fn ensure_operation_current(
-        &self,
-        operation: &MobileEnterpriseOperationHandle,
-    ) -> Result<(), MobileEnterpriseError> {
-        let active = self
-            .active_operations
-            .lock()
-            .map_err(|_| MobileEnterpriseError::TransportUnavailable)?;
-        match active.get(&operation.operation_id) {
-            Some(entry)
-                if entry.serial == operation.serial && !operation.cancellation.is_cancelled() =>
-            {
-                Ok(())
-            }
-            _ => Err(MobileEnterpriseError::Cancelled),
-        }
     }
 
     fn finish_operation(
@@ -620,13 +693,67 @@ fn connected_state(source: &crate::library::ConnectedCatdbSourceRecord) -> Conne
 }
 
 #[cfg(feature = "e2e-build")]
-fn e2e_record() -> ConnectionRecord {
-    ConnectionRecord {
+fn e2e_record() -> Result<ConnectionRecord, MobileEnterpriseError> {
+    let origin =
+        std::env::var(E2E_ORIGIN_ENV).map_err(|_| MobileEnterpriseError::InvalidConfiguration)?;
+    let origin = exact_origin(&origin)?.to_string();
+    Ok(ConnectionRecord {
         id: E2E_CONNECTION_ID.to_string(),
         label: E2E_CONNECTION_LABEL.to_string(),
-        server_origin: E2E_ORIGIN.to_string(),
+        server_origin: origin,
         credential_reference: "e2e-compiled-isolated-token".to_string(),
+    })
+}
+
+#[cfg(feature = "e2e-build")]
+fn e2e_connected_source_record(
+) -> Result<crate::library::ConnectedCatdbSourceRecord, MobileEnterpriseError> {
+    let origin = e2e_record()?.server_origin;
+    let mut source = crate::library::ConnectedCatdbSourceRecord::new(
+        E2E_CONNECTION_LABEL.to_string(),
+        origin,
+        E2E_CREDENTIAL_REFERENCE.to_string(),
+        crate::library::ConnectedCatdbAuthority {
+            deployment_id: E2E_DEPLOYMENT_ID,
+            workspace_id: E2E_WORKSPACE_ID,
+            catalog_revision_id: E2E_CATALOG_REVISION_ID,
+            default_schema_version_id: E2E_SCHEMA_VERSION_ID,
+        },
+        vec![
+            crate::library::ConnectedCatdbSourceDescriptor {
+                source_id: E2E_SOURCE_ID,
+                source_version_id: E2E_SOURCE_VERSION_ID,
+                runtime_bound: true,
+                connector_id: Some("postgres-e2e".to_string()),
+            },
+            crate::library::ConnectedCatdbSourceDescriptor {
+                source_id: E2E_EXCLUDED_SOURCE_ID,
+                source_version_id: E2E_EXCLUDED_SOURCE_VERSION_ID,
+                runtime_bound: true,
+                connector_id: Some("snowflake-e2e-rate-limited".to_string()),
+            },
+        ],
+    );
+    source.id = E2E_CONNECTION_ID.to_string();
+    source.selected_source_ids = vec![E2E_SOURCE_ID, E2E_EXCLUDED_SOURCE_ID];
+    Ok(source)
+}
+
+#[cfg(feature = "e2e-build")]
+pub(crate) fn seed_e2e_connected_membership(app: &AppHandle) -> Result<(), MobileEnterpriseError> {
+    let store = library_store(app)?;
+    let vault = KeyringBearerVault::new(&app.config().identifier)?;
+    let source = e2e_connected_source_record()?;
+    vault.set(
+        &source.credential_reference,
+        &BearerToken(E2E_BEARER.to_string()),
+    )?;
+    if let Some(current) = store.read_connected_catdb().map_err(map_library_error)? {
+        store
+            .remove_connected_catdb(&current.id)
+            .map_err(map_library_error)?;
     }
+    store.add_connected_catdb(source).map_err(map_library_error)
 }
 
 async fn execute_http(
@@ -768,6 +895,11 @@ async fn discover_connected_catdb(
     if catalog.workspace_id != workspace_id
         || catalog.resolver_id.is_nil()
         || catalog.revision.revision_id.is_nil()
+        || catalog.default_schema_version_id.is_nil()
+        || !catalog
+            .schemas
+            .iter()
+            .any(|schema| schema.schema_version_id == catalog.default_schema_version_id)
         || catalog.sources.len() > MAX_CONNECTED_SOURCES
     {
         return Err(MobileEnterpriseError::InvalidResponse);
@@ -799,9 +931,12 @@ async fn discover_connected_catdb(
         label,
         server_origin.to_string(),
         format!("connected-catdb-{}", uuid::Uuid::new_v4()),
-        session.deployment_id,
-        workspace_id,
-        catalog.revision.revision_id,
+        crate::library::ConnectedCatdbAuthority {
+            deployment_id: session.deployment_id,
+            workspace_id,
+            catalog_revision_id: catalog.revision.revision_id,
+            default_schema_version_id: catalog.default_schema_version_id,
+        },
         permitted_sources,
     ))
 }
@@ -1022,15 +1157,51 @@ fn disconnect_connected_catdb_operation(
     })
 }
 
+#[cfg(test)]
 fn pin_connected_query(
     source: &crate::library::ConnectedCatdbSourceRecord,
     request: &mut EntityQueryRequest,
 ) -> Result<String, MobileEnterpriseError> {
+    pin_connected_query_phase(source, request, ConnectedQueryPhase::Initial)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConnectedQueryPhase {
+    Initial,
+    Continuation { query_id: uuid::Uuid },
+}
+
+fn pin_connected_query_phase(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    request: &mut EntityQueryRequest,
+    phase: ConnectedQueryPhase,
+) -> Result<String, MobileEnterpriseError> {
     if source.selected_source_ids().is_empty() {
         return Err(MobileEnterpriseError::NoSourcesSelected);
     }
+    if request.entity != "document.Document" {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    match phase {
+        ConnectedQueryPhase::Initial if request.query_id.is_some() || request.cursor.is_some() => {
+            return Err(MobileEnterpriseError::InvalidRequest);
+        }
+        ConnectedQueryPhase::Continuation { query_id }
+            if request.query_id != Some(query_id) || request.cursor.is_none() =>
+        {
+            return Err(MobileEnterpriseError::InvalidResponse);
+        }
+        ConnectedQueryPhase::Initial | ConnectedQueryPhase::Continuation { .. } => {}
+    }
     request.workspace_id = source.workspace_id;
     request.catalog_revision_id = Some(source.catalog_revision_id);
+    if request
+        .schema_version_id
+        .is_some_and(|schema_version_id| schema_version_id != source.default_schema_version_id)
+    {
+        return Err(MobileEnterpriseError::InvalidRequest);
+    }
+    request.schema_version_id = Some(source.default_schema_version_id);
     request.source_ids = Some(source.selected_source_ids().to_vec());
     request
         .validate()
@@ -1077,9 +1248,18 @@ async fn verify_connected_identity(
 async fn execute_connected_query(
     source: &crate::library::ConnectedCatdbSourceRecord,
     token: &BearerToken,
-    mut request: EntityQueryRequest,
+    request: EntityQueryRequest,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
-    let body = pin_connected_query(source, &mut request)?;
+    execute_connected_query_phase(source, token, request, ConnectedQueryPhase::Initial).await
+}
+
+async fn execute_connected_query_phase(
+    source: &crate::library::ConnectedCatdbSourceRecord,
+    token: &BearerToken,
+    mut request: EntityQueryRequest,
+    phase: ConnectedQueryPhase,
+) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
+    let body = pin_connected_query_phase(source, &mut request, phase)?;
     verify_connected_identity(source, token).await?;
     execute_http(
         &ConnectionRecord::from(source),
@@ -1098,6 +1278,7 @@ struct ConnectedPaginationBudget {
     bytes: usize,
     pages: usize,
     seen_cursors: BTreeSet<String>,
+    seen_record_keys: BTreeSet<String>,
 }
 
 impl ConnectedPaginationBudget {
@@ -1116,7 +1297,20 @@ impl ConnectedPaginationBudget {
             bytes: 0,
             pages: 0,
             seen_cursors: BTreeSet::new(),
+            seen_record_keys: BTreeSet::new(),
         })
+    }
+
+    fn record_rows(
+        &mut self,
+        rows: &[catdb_api_types::EntityRow],
+    ) -> Result<(), MobileEnterpriseError> {
+        for row in rows {
+            if !self.seen_record_keys.insert(row.record_key.clone()) {
+                return Err(MobileEnterpriseError::InvalidResponse);
+            }
+        }
+        Ok(())
     }
 
     fn record_page(
@@ -1163,12 +1357,13 @@ async fn execute_connected_library_page(
     request: EntityQueryRequest,
     cancellation: &catdb_connectors::CancellationToken,
     deadline: tokio::time::Instant,
+    phase: ConnectedQueryPhase,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
     tokio::select! {
         _ = cancellation.cancelled() => Err(MobileEnterpriseError::Cancelled),
         response = tokio::time::timeout_at(
             deadline,
-            execute_connected_query(source, token, request),
+            execute_connected_query_phase(source, token, request, phase),
         ) => response.map_err(|_| MobileEnterpriseError::TimedOut)?,
     }
 }
@@ -1187,6 +1382,9 @@ fn parse_connected_library_response(
     let answer: EntityQueryResponse = serde_json::from_str(&response.body_json)
         .map_err(|_| MobileEnterpriseError::InvalidResponse)?;
     if answer.pins.catalog_revision_id != source.catalog_revision_id {
+        return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+    }
+    if answer.pins.schema_version_id != source.default_schema_version_id {
         return Err(MobileEnterpriseError::ConnectionIdentityChanged);
     }
 
@@ -1217,6 +1415,7 @@ fn parse_connected_library_response(
         }
     }
     if observed != expected
+        || answer.pins.source_version_ids.len() != expected.len()
         || answer
             .pins
             .source_version_ids
@@ -1226,6 +1425,22 @@ fn parse_connected_library_response(
             != expected.values().copied().collect()
     {
         return Err(MobileEnterpriseError::ConnectionIdentityChanged);
+    }
+    let excluded_source_ids = answer
+        .sources
+        .iter()
+        .filter(|source| source.outcome != catdb_api_types::SourceOutcome::Ran)
+        .map(|source| source.source_id)
+        .collect::<Vec<_>>();
+    let derived_completeness = if excluded_source_ids.is_empty() {
+        catdb_api_types::Completeness::Complete
+    } else {
+        catdb_api_types::Completeness::Partial {
+            excluded_source_ids,
+        }
+    };
+    if answer.completeness != derived_completeness {
+        return Err(MobileEnterpriseError::InvalidResponse);
     }
     let pinned_mappings = answer
         .pins
@@ -1238,11 +1453,13 @@ fn parse_connected_library_response(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let mut record_keys = BTreeSet::new();
     for row in &answer.rows {
-        if row
-            .fields
-            .keys()
-            .any(|field| !selected_fields.contains(field.as_str()))
+        if !record_keys.insert(row.record_key.as_str())
+            || row
+                .fields
+                .keys()
+                .any(|field| !selected_fields.contains(field.as_str()))
             || row
                 .provenance
                 .keys()
@@ -1314,6 +1531,49 @@ pub(crate) async fn connected_catdb_state(
     }
 }
 
+async fn commit_mobile_enterprise_operation<T, Operation>(
+    state: &MobileEnterpriseState,
+    owner: MobileEnterpriseOperationOwner<'_>,
+    operation: Operation,
+) -> Result<T, MobileEnterpriseError>
+where
+    T: Send + 'static,
+    Operation: FnOnce() -> Result<T, MobileEnterpriseError> + Send + 'static,
+{
+    commit_mobile_enterprise_operation_observed(state, owner, || {}, operation).await
+}
+
+async fn commit_mobile_enterprise_operation_observed<T, Observe, Observation, Operation>(
+    state: &MobileEnterpriseState,
+    owner: MobileEnterpriseOperationOwner<'_>,
+    observe_worker: Observe,
+    operation: Operation,
+) -> Result<T, MobileEnterpriseError>
+where
+    T: Send + 'static,
+    Observe: FnOnce() -> Observation + Send + 'static,
+    Observation: Send + 'static,
+    Operation: FnOnce() -> Result<T, MobileEnterpriseError> + Send + 'static,
+{
+    let lifecycle_commits = Arc::clone(&state.lifecycle_commits);
+    let authority = owner.commit_authority();
+    let worker_authority = authority.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _observation = observe_worker();
+        let _commit = lifecycle_commits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        worker_authority.begin_commit()?;
+        let result = operation();
+        worker_authority.finish_commit();
+        result
+    })
+    .await
+    .map_err(|_| MobileEnterpriseError::PersistFailed)??;
+    owner.finish_committed();
+    Ok(result)
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn enroll_connected_catdb(
@@ -1329,7 +1589,7 @@ pub(crate) async fn enroll_connected_catdb(
     }
     #[cfg(not(mobile))]
     {
-        let owner = MobileEnterpriseOperationOwner::begin(&state, "enroll")?;
+        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
         let cancellation = owner.cancellation();
         let server_origin = exact_origin(&server_origin)?;
         let token = BearerToken(bearer_token);
@@ -1345,17 +1605,12 @@ pub(crate) async fn enroll_connected_catdb(
             _ = cancellation.cancelled() => return Err(MobileEnterpriseError::Cancelled),
             source = discover_connected_catdb(server_origin, &token) => source?,
         };
-        let _commit = state.lifecycle_commits.lock().await;
-        owner.ensure_current()?;
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
-        let enrolled = tokio::task::spawn_blocking(move || {
+        commit_mobile_enterprise_operation(&state, owner, move || {
             persist_connected_catdb(&store, &vault, source, &token)
         })
         .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)??;
-        owner.finish()?;
-        Ok(enrolled)
     }
 }
 
@@ -1376,16 +1631,15 @@ pub(crate) async fn set_connected_catdb_source_enabled(
     #[cfg(not(mobile))]
     {
         state.cancel_all_operations()?;
-        let _commit = state.lifecycle_commits.lock().await;
+        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
         let store = library_store(&app)?;
-        tokio::task::spawn_blocking(move || {
+        commit_mobile_enterprise_operation(&state, owner, move || {
             store
                 .set_connected_catdb_source_enabled(&connection_id, source_id, enabled)
                 .map_err(map_library_error)
                 .map(|source| connected_state(&source))
         })
         .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)?
     }
 }
 
@@ -1404,15 +1658,14 @@ pub(crate) async fn disconnect_connected_catdb(
     #[cfg(not(mobile))]
     {
         state.cancel_all_operations()?;
-        let _commit = state.lifecycle_commits.lock().await;
+        let owner = MobileEnterpriseOperationOwner::begin(&state, LIBRARY_LIFECYCLE_OPERATION_ID)?;
         let store = library_store(&app)?;
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
         let legacy_path = legacy_registry_path(&app)?;
-        tokio::task::spawn_blocking(move || {
+        commit_mobile_enterprise_operation(&state, owner, move || {
             disconnect_connected_catdb_operation(&store, &vault, &legacy_path, &connection_id)
         })
         .await
-        .map_err(|_| MobileEnterpriseError::PersistFailed)?
     }
 }
 
@@ -1505,10 +1758,12 @@ pub(crate) async fn query_connected_library_documents(
         pinned_shape.clone(),
         &cancellation,
         deadline,
+        ConnectedQueryPhase::Initial,
     )
     .await?;
     let response_bytes = response.body_json.len();
     let mut evidence = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+    budget.record_rows(&evidence.answer.rows)?;
     budget.record_page(
         evidence.answer.rows.len(),
         evidence.answer.next_cursor.as_ref(),
@@ -1518,11 +1773,20 @@ pub(crate) async fn query_connected_library_documents(
         let mut continuation = pinned_shape.clone();
         continuation.query_id = Some(evidence.answer.query_id);
         continuation.cursor = Some(cursor);
-        let response =
-            execute_connected_library_page(&source, &token, continuation, &cancellation, deadline)
-                .await?;
+        let response = execute_connected_library_page(
+            &source,
+            &token,
+            continuation,
+            &cancellation,
+            deadline,
+            ConnectedQueryPhase::Continuation {
+                query_id: evidence.answer.query_id,
+            },
+        )
+        .await?;
         let response_bytes = response.body_json.len();
         let page = parse_connected_library_response(&source, response, &pinned_shape.select)?;
+        budget.record_rows(&page.answer.rows)?;
         budget.record_page(
             page.answer.rows.len(),
             page.answer.next_cursor.as_ref(),
@@ -1563,9 +1827,10 @@ pub(crate) async fn mobile_enterprise_connection(
     state: tauri::State<'_, MobileEnterpriseState>,
 ) -> Result<Option<MobileEnterpriseConnection>, MobileEnterpriseError> {
     let owner = MobileEnterpriseOperationOwner::begin(&state, "connection-state")?;
+    #[cfg(not(feature = "e2e-build"))]
     let cancellation = owner.cancellation();
     #[cfg(feature = "e2e-build")]
-    let record = e2e_record();
+    let record = e2e_record()?;
     #[cfg(not(feature = "e2e-build"))]
     #[cfg(mobile)]
     let record: ConnectionRecord = return Ok(None);
@@ -1607,7 +1872,7 @@ pub(crate) async fn mobile_enterprise_request(
             return Err(MobileEnterpriseError::ConnectionNotFound);
         }
         (
-            e2e_record(),
+            e2e_record()?,
             BearerToken(E2E_BEARER.to_string()),
             None::<crate::library::ConnectedCatdbSourceRecord>,
         )
@@ -1668,10 +1933,14 @@ pub(crate) async fn mobile_enterprise_request(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
     use std::time::Duration;
 
     use super::{
+        commit_mobile_enterprise_operation, commit_mobile_enterprise_operation_observed,
         disconnect_connected_catdb_from, disconnect_connected_catdb_operation,
         discover_connected_catdb, execute_connected_query, execute_request,
         migrate_legacy_connection, parse_connected_library_response, persist_connected_catdb,
@@ -1679,14 +1948,28 @@ mod tests {
         publish_legacy_migration_transaction_with_rename, publish_legacy_migration_with_rename,
         retire_matching_legacy_after_publication, with_legacy_migration_lock, BearerToken,
         BearerVault, ConnectedCatdbState, ConnectedPaginationBudget, ConnectionRecord,
-        MobileEnterpriseError, MobileEnterpriseOperation, MobileEnterpriseResponse,
-        MobileEnterpriseState,
+        MobileEnterpriseError, MobileEnterpriseOperation, MobileEnterpriseOperationOwner,
+        MobileEnterpriseResponse, MobileEnterpriseState,
     };
     use crate::library::{
         ConnectedCatdbSourceDescriptor, ConnectedCatdbSourceRecord, LibraryStore,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpListener;
+
+    fn park_lifecycle_commit(
+        commit: Arc<Mutex<()>>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let gate = std::thread::spawn(move || {
+            let _lease = commit.lock().expect("hold lifecycle commit point");
+            held_tx.send(()).expect("signal held commit point");
+            release_rx.recv().expect("release lifecycle commit point");
+        });
+        held_rx.recv().expect("lifecycle commit point was held");
+        (release_tx, gate)
+    }
 
     #[derive(Default)]
     struct MemoryBearerVault(Mutex<HashMap<String, BearerToken>>);
@@ -1710,14 +1993,121 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dropping_a_lifecycle_future_before_the_worker_commit_point_prevents_mutation() {
+        struct Completion(std::sync::mpsc::Sender<()>);
+
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let state = MobileEnterpriseState::default();
+        let owner =
+            MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("enrollment owner");
+        let mutated = Arc::new(AtomicBool::new(false));
+        let worker_mutated = Arc::clone(&mutated);
+        let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
+        let (worker_completed_tx, worker_completed_rx) = std::sync::mpsc::channel();
+        let (release_commit, commit_gate) =
+            park_lifecycle_commit(Arc::clone(&state.lifecycle_commits));
+        let mut enrollment = Box::pin(commit_mobile_enterprise_operation_observed(
+            &state,
+            owner,
+            move || {
+                worker_started_tx.send(()).expect("signal worker");
+                Completion(worker_completed_tx)
+            },
+            move || {
+                worker_mutated.store(true, Ordering::SeqCst);
+                Ok("enrolled")
+            },
+        ));
+
+        tokio::select! {
+            result = &mut enrollment => panic!("enrollment completed while commit point was parked: {result:?}"),
+            started = tokio::task::spawn_blocking(move || worker_started_rx.recv()) => {
+                started.expect("start waiter did not panic").expect("worker started");
+            }
+        }
+        drop(enrollment);
+        release_commit.send(()).expect("release commit point");
+        commit_gate.join().expect("commit gate did not panic");
+        tokio::task::spawn_blocking(move || worker_completed_rx.recv())
+            .await
+            .expect("completion waiter did not panic")
+            .expect("worker completed");
+        assert!(
+            !mutated.load(Ordering::SeqCst),
+            "a detached enrollment worker mutated after its owner future was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_lifecycle_serial_cannot_mutate_after_replacement() {
+        let state = MobileEnterpriseState::default();
+        let owner =
+            MobileEnterpriseOperationOwner::begin(&state, "disconnect").expect("first owner");
+        let mutated = Arc::new(AtomicBool::new(false));
+        let worker_mutated = Arc::clone(&mutated);
+        let (worker_started_tx, worker_started_rx) = std::sync::mpsc::channel();
+        let (release_commit, commit_gate) =
+            park_lifecycle_commit(Arc::clone(&state.lifecycle_commits));
+        let mut disconnect = Box::pin(commit_mobile_enterprise_operation_observed(
+            &state,
+            owner,
+            move || worker_started_tx.send(()).expect("signal worker"),
+            move || {
+                worker_mutated.store(true, Ordering::SeqCst);
+                Ok("disconnected")
+            },
+        ));
+
+        tokio::select! {
+            result = &mut disconnect => panic!("disconnect completed while commit point was parked: {result:?}"),
+            started = tokio::task::spawn_blocking(move || worker_started_rx.recv()) => {
+                started.expect("start waiter did not panic").expect("worker started");
+            }
+        }
+        let replacement =
+            MobileEnterpriseOperationOwner::begin(&state, "disconnect").expect("replacement owner");
+        release_commit.send(()).expect("release commit point");
+        commit_gate.join().expect("commit gate did not panic");
+        assert_eq!(disconnect.await, Err(MobileEnterpriseError::Cancelled));
+        assert!(!mutated.load(Ordering::SeqCst));
+        assert_eq!(replacement.finish(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_lifecycle_worker_releases_ownership_and_the_commit_lease() {
+        let state = MobileEnterpriseState::default();
+        let owner = MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("first owner");
+        let result = commit_mobile_enterprise_operation(&state, owner, || -> Result<(), _> {
+            panic!("deliberate worker panic")
+        })
+        .await;
+        assert_eq!(result, Err(MobileEnterpriseError::PersistFailed));
+
+        let replacement =
+            MobileEnterpriseOperationOwner::begin(&state, "enroll").expect("replacement owner");
+        assert_eq!(
+            commit_mobile_enterprise_operation(&state, replacement, || Ok("enrolled")).await,
+            Ok("enrolled")
+        );
+    }
+
     fn connected_source() -> ConnectedCatdbSourceRecord {
         let mut source = ConnectedCatdbSourceRecord::new(
             "catdb.example.com".to_string(),
             "https://catdb.example.com/".to_string(),
             "credential-reference-1".to_string(),
-            uuid::Uuid::from_u128(2),
-            uuid::Uuid::from_u128(3),
-            uuid::Uuid::from_u128(4),
+            crate::library::ConnectedCatdbAuthority {
+                deployment_id: uuid::Uuid::from_u128(2),
+                workspace_id: uuid::Uuid::from_u128(3),
+                catalog_revision_id: uuid::Uuid::from_u128(4),
+                default_schema_version_id: uuid::Uuid::from_u128(5),
+            },
             vec![ConnectedCatdbSourceDescriptor {
                 source_id: uuid::Uuid::from_u128(11),
                 source_version_id: uuid::Uuid::from_u128(12),
@@ -1727,6 +2117,93 @@ mod tests {
         );
         source.selected_source_ids = vec![uuid::Uuid::from_u128(11)];
         source
+    }
+
+    fn connected_query_request() -> catdb_api_types::EntityQueryRequest {
+        serde_json::from_value(serde_json::json!({
+            "workspace_id": "00000000-0000-0000-0000-000000000099",
+            "catalog_revision_id": null,
+            "schema_version_id": null,
+            "entity": "document.Document",
+            "select": ["title"],
+            "filters": [],
+            "order_by": [],
+            "source_ids": null,
+            "max_staleness_ms": null,
+            "require_complete": false,
+            "page_size": 10,
+            "limit": 10,
+            "query_id": null,
+            "cursor": null
+        }))
+        .expect("valid connected Library request")
+    }
+
+    fn connected_response(
+        record_keys: &[&str],
+        outcome: catdb_api_types::SourceOutcome,
+        completeness: catdb_api_types::Completeness,
+    ) -> MobileEnterpriseResponse {
+        let provenance_rule_version_id = uuid::Uuid::from_u128(27);
+        let mapping_version_id = uuid::Uuid::from_u128(25);
+        let source_version_id = uuid::Uuid::from_u128(12);
+        let rows = record_keys
+            .iter()
+            .map(|record_key| {
+                let title = format!("Title for {record_key}");
+                let observation = catdb_provenance::FieldObservation::observed(
+                    source_version_id,
+                    *record_key,
+                    mapping_version_id,
+                    1,
+                    serde_json::json!(title),
+                );
+                let evidence = catdb_provenance::FieldProvenance::new(
+                    provenance_rule_version_id,
+                    "title",
+                    vec![observation],
+                    Some(0),
+                )
+                .expect("valid field evidence");
+                catdb_api_types::EntityRow {
+                    record_key: (*record_key).to_string(),
+                    fields: std::collections::BTreeMap::from([(
+                        "title".to_string(),
+                        serde_json::json!(title),
+                    )]),
+                    provenance: std::collections::BTreeMap::from([("title".to_string(), evidence)]),
+                }
+            })
+            .collect::<Vec<_>>();
+        let response = catdb_api_types::EntityQueryResponse {
+            query_id: uuid::Uuid::from_u128(21),
+            pins: catdb_api_types::PinnedVersions {
+                catalog_resolver_id: uuid::Uuid::from_u128(22),
+                catalog_revision_id: uuid::Uuid::from_u128(4),
+                schema_version_id: uuid::Uuid::from_u128(5),
+                physical_schema_version_ids: vec![uuid::Uuid::from_u128(24)],
+                mapping_version_ids: vec![mapping_version_id],
+                source_version_ids: vec![source_version_id],
+                policy_version_ids: vec![uuid::Uuid::from_u128(26)],
+                provenance_rule_version_id,
+            },
+            sources: vec![catdb_api_types::SourceExecution {
+                source_id: uuid::Uuid::from_u128(11),
+                source_version_id,
+                outcome,
+                retry_after_ms: None,
+                freshness_ms: (outcome == catdb_api_types::SourceOutcome::Ran).then_some(0),
+                scanned: record_keys.len() as u64,
+                returned: record_keys.len() as u64,
+            }],
+            completeness,
+            rows,
+            next_cursor: None,
+        };
+        MobileEnterpriseResponse {
+            status: 200,
+            body_json: serde_json::to_string(&response).expect("serialize connected response"),
+        }
     }
 
     #[test]
@@ -1806,6 +2283,76 @@ mod tests {
     }
 
     #[test]
+    fn connected_pagination_rejects_a_record_repeated_on_a_later_page() {
+        let row = catdb_api_types::EntityRow {
+            record_key: "same.md".to_string(),
+            fields: std::collections::BTreeMap::new(),
+            provenance: std::collections::BTreeMap::new(),
+        };
+        let mut budget = ConnectedPaginationBudget::new(2_000, 1_000).expect("budget");
+        budget
+            .record_rows(std::slice::from_ref(&row))
+            .expect("first page identity");
+        assert_eq!(
+            budget.record_rows(&[row]),
+            Err(MobileEnterpriseError::InvalidResponse),
+            "a fresh cursor cannot replay an already-published record identity"
+        );
+    }
+
+    #[test]
+    fn connected_library_initial_query_rejects_renderer_identity_and_other_entities() {
+        let source = connected_source();
+        let mut continuation = connected_query_request();
+        continuation.query_id = Some(uuid::Uuid::from_u128(77));
+        continuation.cursor =
+            Some(catdb_api_types::EntityCursor::new("v1.page-two".to_string()).expect("cursor"));
+        assert_eq!(
+            pin_connected_query(&source, &mut continuation),
+            Err(MobileEnterpriseError::InvalidRequest),
+            "the renderer cannot turn an initial Library request into a continuation"
+        );
+
+        let mut other_entity = connected_query_request();
+        other_entity.entity = "crm.Customer".to_string();
+        assert_eq!(
+            pin_connected_query(&source, &mut other_entity),
+            Err(MobileEnterpriseError::InvalidRequest),
+            "MDReader's Connected CatDB membership exposes only document.Document"
+        );
+    }
+
+    #[test]
+    fn connected_library_response_cannot_claim_complete_when_a_source_did_not_run() {
+        let source = connected_source();
+        let response = connected_response(
+            &[],
+            catdb_api_types::SourceOutcome::Refused,
+            catdb_api_types::Completeness::Complete,
+        );
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_duplicate_record_identity_in_one_page() {
+        let source = connected_source();
+        let response = connected_response(
+            &["same.md", "same.md"],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Complete,
+        );
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::InvalidResponse)
+        );
+    }
+
+    #[test]
     fn connected_library_response_rejects_a_different_remote_catalog_pin() {
         let source = connected_source();
         let response = MobileEnterpriseResponse {
@@ -1815,7 +2362,7 @@ mod tests {
                 "pins": {
                     "catalog_resolver_id": "00000000-0000-0000-0000-000000000022",
                     "catalog_revision_id": "00000000-0000-0000-0000-000000000099",
-                    "schema_version_id": "00000000-0000-0000-0000-000000000023",
+                    "schema_version_id": "00000000-0000-0000-0000-000000000005",
                     "physical_schema_version_ids": ["00000000-0000-0000-0000-000000000024"],
                     "mapping_version_ids": ["00000000-0000-0000-0000-000000000025"],
                     "source_version_ids": ["00000000-0000-0000-0000-00000000000c"],
@@ -1854,7 +2401,7 @@ mod tests {
                 "pins": {
                     "catalog_resolver_id": "00000000-0000-0000-0000-000000000022",
                     "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
-                    "schema_version_id": "00000000-0000-0000-0000-000000000023",
+                    "schema_version_id": "00000000-0000-0000-0000-000000000005",
                     "physical_schema_version_ids": ["00000000-0000-0000-0000-000000000024"],
                     "mapping_version_ids": ["00000000-0000-0000-0000-000000000025"],
                     "source_version_ids": ["00000000-0000-0000-0000-00000000000c"],
@@ -2013,7 +2560,63 @@ mod tests {
             forwarded["source_ids"],
             serde_json::json!(["00000000-0000-0000-0000-00000000000b"])
         );
+        assert_eq!(
+            forwarded["schema_version_id"],
+            serde_json::json!("00000000-0000-0000-0000-000000000005")
+        );
         assert_eq!(forwarded["select"], serde_json::json!(["title"]));
+    }
+
+    #[test]
+    fn connected_query_rejects_a_renderer_selected_non_default_schema() {
+        let source = connected_source();
+        let mut request = connected_query_request();
+        request.schema_version_id = Some(uuid::Uuid::from_u128(99));
+
+        assert_eq!(
+            pin_connected_query(&source, &mut request),
+            Err(MobileEnterpriseError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_a_non_default_schema_pin() {
+        let source = connected_source();
+        let mut response = connected_response(
+            &["remote.md"],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Complete,
+        );
+        let mut body: catdb_api_types::EntityQueryResponse =
+            serde_json::from_str(&response.body_json).expect("response");
+        body.pins.schema_version_id = uuid::Uuid::from_u128(99);
+        response.body_json = serde_json::to_string(&body).expect("response");
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
+    }
+
+    #[test]
+    fn connected_library_response_rejects_duplicate_source_version_pins() {
+        let source = connected_source();
+        let mut response = connected_response(
+            &["remote.md"],
+            catdb_api_types::SourceOutcome::Ran,
+            catdb_api_types::Completeness::Complete,
+        );
+        let mut body: catdb_api_types::EntityQueryResponse =
+            serde_json::from_str(&response.body_json).expect("response");
+        body.pins
+            .source_version_ids
+            .push(body.pins.source_version_ids[0]);
+        response.body_json = serde_json::to_string(&body).expect("response");
+
+        assert_eq!(
+            parse_connected_library_response(&source, response, &["title".to_string()]),
+            Err(MobileEnterpriseError::ConnectionIdentityChanged)
+        );
     }
 
     #[test]
@@ -2180,7 +2783,13 @@ mod tests {
                             "timestamp_ms": 1
                         },
                         "default_schema_version_id": "00000000-0000-0000-0000-000000000006",
-                        "schemas": [],
+                        "schemas": [{
+                            "schema_version_id": "00000000-0000-0000-0000-000000000006",
+                            "name": "document",
+                            "content_id": "00000000-0000-0000-0000-000000000007",
+                            "compatibility": "compatible",
+                            "spec": {}
+                        }],
                         "mappings": [],
                         "sources": [{
                             "source_id": "00000000-0000-0000-0000-000000000011",
@@ -2665,7 +3274,13 @@ mod tests {
                             "timestamp_ms": 1
                         },
                         "default_schema_version_id": "00000000-0000-0000-0000-000000000006",
-                        "schemas": [],
+                        "schemas": [{
+                            "schema_version_id": "00000000-0000-0000-0000-000000000006",
+                            "name": "document",
+                            "content_id": "00000000-0000-0000-0000-000000000007",
+                            "compatibility": "compatible",
+                            "spec": {}
+                        }],
                         "mappings": [],
                         "sources": [{
                             "source_id": "00000000-0000-0000-0000-000000000011",

@@ -283,6 +283,11 @@ pub fn run() {
         .setup(move |app| {
             app.state::<cloud_accounts::CloudAccountsState>()
                 .configure_catalog(app.handle())?;
+            #[cfg(feature = "e2e-build")]
+            {
+                cloud_accounts::seed_e2e_cloud_membership(app.handle())?;
+                mobile_enterprise::seed_e2e_connected_membership(app.handle())?;
+            }
             let diagnostics =
                 DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
             app.manage(diagnostics);

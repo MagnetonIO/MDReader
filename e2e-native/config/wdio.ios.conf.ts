@@ -35,10 +35,12 @@ export const config: WebdriverIO.Config = {
   mochaOpts: { ui: 'bdd', timeout: 240_000 },
   onPrepare: async () => {
     fixture = await startMobileFixtureServer();
+    process.env.MDREADER_E2E_CONNECTED_ORIGIN = fixture.origin;
   },
   onComplete: async () => {
     await fixture?.close();
     fixture = undefined;
+    delete process.env.MDREADER_E2E_CONNECTED_ORIGIN;
   },
   // Spawn a local Appium server. The pinned xcuitest driver is installed with
   // this package's ordinary dependencies.

@@ -119,6 +119,8 @@ export interface Ax {
   text(cssClass?: string): string;
   /** Text of every rendered heading (AXHeading). */
   headings(): string;
+  /** Exact native window frame owned by the pid this helper was bound to. */
+  appFrame(): AxRect;
   /**
    * Screen rectangle of the `nth` (0-based, document order) element the
    * `selector` picks out, whose own subtree text contains `contains` (when
@@ -152,6 +154,17 @@ export interface Ax {
 export function makeAx(bin: string, pid: number): Ax {
   const run = (sub: string, extra: string[] = []): string =>
     execFileSync(bin, [sub, String(pid), ...extra], { encoding: 'utf8' }).trim();
+  const parseRect = (out: string, what: string): AxRect => {
+    const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
+    if (parts.length !== 4 || parts.some((n) => !Number.isSafeInteger(n))) {
+      throw new Error(`axquery ${what} returned unparseable output: ${JSON.stringify(out)}`);
+    }
+    const [x, y, w, h] = parts as [number, number, number, number];
+    if (w <= 0 || h <= 0) {
+      throw new Error(`axquery ${what} is not a window rectangle: ${w}x${h} at (${x},${y})`);
+    }
+    return { x, y, w, h };
+  };
   return {
     count: (cssClass) => {
       // A 0 is load-bearing (`jumpToHit` asserts the palette container is GONE by
@@ -185,21 +198,14 @@ export function makeAx(bin: string, pid: number): Ax {
     },
     text: (cssClass) => run('text', cssClass ? [cssClass] : []),
     headings: () => run('headings'),
+    appFrame: () => parseRect(run('appframe'), 'appframe'),
     frame: (selector, nth, contains) => {
       // A nonzero exit (4 = no such element, 3 = a real AX error) throws out of
       // `execFileSync`, which is exactly what we want: the caller must not get
       // a point to click.
       const out = run('frame', locator(selector, nth, contains));
-      const parts = out.split(/\s+/).map((token) => Number.parseInt(token, 10));
       const what = label(selector, nth, contains);
-      if (parts.length !== 4 || parts.some((n) => !Number.isSafeInteger(n))) {
-        throw new Error(`axquery frame(${what}) returned unparseable output: ${JSON.stringify(out)}`);
-      }
-      const [x, y, w, h] = parts as [number, number, number, number];
-      if (w <= 0 || h <= 0) {
-        throw new Error(`axquery frame(${what}) is not a clickable rectangle: ${w}x${h} at (${x},${y})`);
-      }
-      return { x, y, w, h };
+      return parseRect(out, `frame(${what})`);
     },
     point: (selector, nth, contains) => {
       const what = label(selector, nth, contains);

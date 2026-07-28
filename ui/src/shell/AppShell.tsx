@@ -1960,6 +1960,7 @@ export function AppShell() {
                 member={libraryDocument.member}
                 row={libraryDocument.row}
                 evidence={libraryDocument.evidence}
+                onRetry={() => void refreshLibrary()}
                 onEdit={
                   libraryDocument.member.editable
                     ? () =>
@@ -2070,10 +2071,8 @@ export function AppShell() {
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onSourceIntent={beginSourceIntent}
-          onClose={() => {
-            setSettingsOpen(false);
-            void refreshLibrary();
-          }}
+          onLibraryChanged={() => void refreshLibrary()}
+          onClose={() => setSettingsOpen(false)}
         />
       ) : null}
       {lensSheetOpen ? (

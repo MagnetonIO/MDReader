@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -30,6 +31,7 @@ const SNAPSHOT: LibrarySnapshot = {
   sources: [SOURCE],
   cloud_sources: [],
   connected_catdb: null,
+  connected_catdb_rediscovery_required: false,
   cleanup: { kind: 'complete' },
 };
 const DIAGNOSTICS: DiagnosticInfo = {
@@ -52,6 +54,7 @@ function backend(overrides: Partial<SettingsBackend> = {}): SettingsBackend {
       sources: [],
       cloud_sources: [],
       connected_catdb: null,
+      connected_catdb_rediscovery_required: false,
       cleanup: { kind: 'complete' as const },
     })),
     diagnosticsInfo: vi.fn(async () => DIAGNOSTICS),
@@ -130,6 +133,85 @@ afterEach(() => {
 });
 
 describe('Settings sheet', () => {
+  it.each([
+    ['successful', false],
+    ['failed', true],
+  ] as const)(
+    'refreshes Library evidence after a %s source mutation settles after the sheet closes',
+    async (_description, rejectMutation) => {
+      let settle!: () => void;
+      const settled = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const initial: CloudSourcesSnapshot = {
+        version: 1,
+        sources: [
+          {
+            id: 'b'.repeat(64),
+            provider: 'google-drive',
+            label: 'Google Drive',
+            connection: 'connected',
+            enabled: true,
+          },
+          {
+            id: '',
+            provider: 'dropbox',
+            label: 'Dropbox',
+            connection: 'disconnected',
+            enabled: false,
+          },
+        ],
+      };
+      const api = cloudBackend(initial);
+      api.disconnectCloudSource = async () => {
+        await settled;
+        if (rejectMutation) throw new Error('provider response was lost after commit');
+        return {
+          ...initial,
+          sources: initial.sources.map((source) =>
+            source.provider === 'google-drive'
+              ? { ...source, connection: 'disconnected', enabled: false }
+              : source,
+          ),
+        };
+      };
+
+      function Harness() {
+        const [open, setOpen] = useState(true);
+        const [refreshes, setRefreshes] = useState(0);
+        return (
+          <>
+            <output aria-label="Library refresh count">{refreshes}</output>
+            {open ? (
+              <SettingsSheet
+                backend={api}
+                watcher="idle"
+                importState={null}
+                onActivateSource={async () => true}
+                onLibraryChanged={() => setRefreshes((value) => value + 1)}
+                onClose={() => setOpen(false)}
+              />
+            ) : null}
+          </>
+        );
+      }
+
+      render(<Harness />);
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Disconnect Google Drive' }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
+      expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+      expect(screen.getByLabelText('Library refresh count').textContent).toBe('0');
+
+      await act(async () => settle());
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Library refresh count').textContent).toBe('1');
+      });
+    },
+  );
+
   it('uses the existing appearance store and presents the local-only product boundary', async () => {
     const api = backend();
     render(
@@ -362,6 +444,35 @@ describe('Settings sheet', () => {
     expect(screen.getByText(/Direct database credentials are never stored/i)).toBeTruthy();
   });
 
+  it('requires rediscovery after quarantining a connection without a schema pin', async () => {
+    render(
+      <SettingsSheet
+        backend={backend({
+          listSources: vi.fn(async () => ({
+            ...SNAPSHOT,
+            connected_catdb_rediscovery_required: true,
+          })),
+          connectedCatdbState: vi.fn(async () => ({
+            kind: 'connected-catdb' as const,
+            state: 'disconnected' as const,
+          })),
+          enrollConnectedCatdb: vi.fn(),
+          setConnectedCatdbSourceEnabled: vi.fn(),
+          disconnectConnectedCatdb: vi.fn(),
+        })}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText(/did not record a verified schema version/i),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connect CatDB workspace' })).toBeTruthy();
+  });
+
   it('persists Connected CatDB source selection through the native backend', async () => {
     const sourceId = '00000000-0000-0000-0000-000000000011';
     const connectionId = 'c'.repeat(64);
@@ -483,6 +594,7 @@ describe('Settings sheet', () => {
         sources: [],
         cloud_sources: [],
         connected_catdb: null,
+        connected_catdb_rediscovery_required: false,
         cleanup: { kind: 'complete' },
       });
       await pending;
@@ -509,6 +621,7 @@ describe('Settings sheet', () => {
         sources: [active, missing],
         cloud_sources: [],
         connected_catdb: null,
+        connected_catdb_rediscovery_required: false,
         cleanup: { kind: 'complete' as const },
       })),
     });
@@ -609,6 +722,7 @@ describe('Settings sheet', () => {
         sources: [],
         cloud_sources: [],
         connected_catdb: null,
+        connected_catdb_rediscovery_required: false,
         cleanup: { kind: 'pending' as const, source_count: 2 },
       })),
     });

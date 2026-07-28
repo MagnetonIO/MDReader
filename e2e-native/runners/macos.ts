@@ -41,10 +41,15 @@ import {
   withNativeRunArtifacts,
   type E2EProfile,
 } from '../seed.ts';
-import { withOwnedProcesses } from '../lifecycle.ts';
+import {
+  terminateOwnedProcess,
+  waitForExclusiveProcessOwner,
+  withOwnedProcesses,
+} from '../lifecycle.ts';
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
 import { consoleLog, runFlow } from '../drivers/runner.ts';
+import { startMobileFixtureServer } from '../mobile-fixture.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_ROOT = resolve(HERE, '..');
@@ -121,6 +126,22 @@ function assertE2EBundle(app: string, profile: E2EProfile): void {
   }
 }
 
+function runningE2EProcessIds(): number[] {
+  try {
+    return execFileSync('/usr/bin/pgrep', ['-x', E2E_PROCESS_NAME], {
+      encoding: 'utf8',
+    })
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter(Number.isSafeInteger);
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return [];
+    throw error;
+  }
+}
+
 async function appiumReachable(): Promise<boolean> {
   try {
     const res = await fetch(`${APPIUM_BASE}/status`, { signal: AbortSignal.timeout(2000) });
@@ -173,6 +194,14 @@ async function main(): Promise<number> {
     console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
+  const existing = runningE2EProcessIds();
+  if (existing.length > 0) {
+    console.error(
+      `\nFAIL: refusing to run while another ${E2E_PROCESS_NAME} process owns the E2E bundle: ` +
+        existing.join(', '),
+    );
+    return 1;
+  }
 
   const summary = await withNativeRunArtifacts(opts.artifacts, opts.corpus, async (artifacts) => {
     console.log(`run:       ${artifacts}`);
@@ -222,68 +251,118 @@ async function main(): Promise<number> {
     const keyBin = buildSwiftHelper(artifacts, 'keypost');
     console.log(`keypost:   ${keyBin}\n`);
 
-    const appium = await ensureAppium();
+    const fixture = await startMobileFixtureServer();
+    let appium: ChildProcess | undefined;
+    let appiumOwnedByProcessWrapper = false;
+    try {
+      appium = await ensureAppium();
 
-    // Launch the real binary (offline instant index), then attach the session to it.
-    const child = spawn(opts.binary, [], {
-      env: { ...process.env, MDREADER_DEV_HASH_EMBED: '1' },
-      stdio: 'ignore',
-      detached: false,
-    });
-    if (child.pid === undefined) {
-      appium?.kill();
-      throw new Error('could not spawn the app');
+      // Launch the real binary (offline instant index), then attach the session to it.
+      const child = spawn(opts.binary, [], {
+        env: {
+          ...process.env,
+          MDREADER_DEV_HASH_EMBED: '1',
+          MDREADER_E2E_CONNECTED_ORIGIN: fixture.origin,
+        },
+        stdio: 'ignore',
+        detached: false,
+      });
+      if (child.pid === undefined) {
+        await terminateOwnedProcess(appium);
+        throw new Error('could not spawn the app');
+      }
+      // The exact process we spawned is the only process this runner may terminate.
+      const pid = child.pid;
+      let adapter: Mac2Adapter | undefined;
+      let browser: Awaited<ReturnType<typeof remote>> | undefined;
+      let sessionBoundToSpawnedPid = false;
+      appiumOwnedByProcessWrapper = true;
+      const result = await withOwnedProcesses(
+        child,
+        appium,
+        () => opts.keep && sessionBoundToSpawnedPid,
+        async () => {
+          await waitForExclusiveProcessOwner(
+            pid,
+            runningE2EProcessIds,
+            () => sleep(100),
+          );
+          browser = await remote({
+            hostname: '127.0.0.1',
+            port: APPIUM_PORT,
+            path: '/',
+            logLevel: 'error',
+            // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
+            // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
+            // not seconds, and WebdriverIO's default session timeout aborts the POST
+            // while the build is still going — which surfaces as an opaque
+            // "operation was aborted due to timeout" and no run at all. Warm runs are
+            // still ~3s; this only has to be longer than a cold build.
+            connectionRetryTimeout: 600_000,
+            capabilities: {
+              platformName: 'mac',
+              'appium:automationName': 'mac2',
+              'appium:bundleId': opts.profile.identifier,
+              'appium:noReset': true,
+              // Same reasoning on the server side of the handshake.
+              'appium:newCommandTimeout': 600,
+              'appium:showServerLogs': true,
+            } as WebdriverIO.Capabilities,
+          });
+
+          adapter = new Mac2Adapter({
+            browser,
+            bundleId: opts.profile.identifier,
+            pid,
+            axBin,
+            keyBin,
+            artifacts,
+          });
+          const windowDeadline = Date.now() + 20_000;
+          let exactWindow = false;
+          while (!exactWindow && Date.now() < windowDeadline) {
+            exactWindow = await adapter.isWindowPresent();
+            if (!exactWindow) await sleep(250);
+          }
+          if (!exactWindow) {
+            throw new Error(
+              `WebDriver window did not match the AX window owned by spawned pid ${pid}`,
+            );
+          }
+          sessionBoundToSpawnedPid = true;
+          const outcome = await runFlow(adapter, consoleLog);
+          const authenticatedPosts = fixture
+            .requests()
+            .filter(
+              (request) =>
+                request.method === 'POST' &&
+                request.path === '/v1/entity/query',
+            );
+          if (
+            authenticatedPosts.length < 2 ||
+            authenticatedPosts.some((request) => !request.authenticated)
+          ) {
+            throw new Error(
+              'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
+            );
+          }
+          return outcome;
+        },
+        async () => {
+          if (adapter) await adapter.dispose();
+          else await browser?.deleteSession();
+        },
+      );
+      return result;
+    } finally {
+      try {
+        if (!appiumOwnedByProcessWrapper) {
+          await terminateOwnedProcess(appium);
+        }
+      } finally {
+        await fixture.close();
+      }
     }
-
-    // The exact process we spawned is the only process this runner may terminate.
-    const pid = child.pid;
-    let adapter: Mac2Adapter | undefined;
-    let browser: Awaited<ReturnType<typeof remote>> | undefined;
-    const result = await withOwnedProcesses(
-      child,
-      appium,
-      opts.keep,
-      async () => {
-        await sleep(500);
-        browser = await remote({
-          hostname: '127.0.0.1',
-          port: APPIUM_PORT,
-          path: '/',
-          logLevel: 'error',
-          // mac2 builds WebDriverAgentMac with xcodebuild the first time it runs on a
-          // machine (and after an Xcode upgrade wipes DerivedData). That is minutes,
-          // not seconds, and WebdriverIO's default session timeout aborts the POST
-          // while the build is still going — which surfaces as an opaque
-          // "operation was aborted due to timeout" and no run at all. Warm runs are
-          // still ~3s; this only has to be longer than a cold build.
-          connectionRetryTimeout: 600_000,
-          capabilities: {
-            platformName: 'mac',
-            'appium:automationName': 'mac2',
-            'appium:bundleId': opts.profile.identifier,
-            'appium:noReset': true,
-            // Same reasoning on the server side of the handshake.
-            'appium:newCommandTimeout': 600,
-            'appium:showServerLogs': true,
-          } as WebdriverIO.Capabilities,
-        });
-
-        adapter = new Mac2Adapter({
-          browser,
-          bundleId: opts.profile.identifier,
-          pid,
-          axBin,
-          keyBin,
-          artifacts,
-        });
-        return runFlow(adapter, consoleLog);
-      },
-      async () => {
-        if (adapter) await adapter.dispose();
-        else await browser?.deleteSession();
-      },
-    );
-    return result;
   });
 
   console.log('───────────────────────────────────────────────────────────');

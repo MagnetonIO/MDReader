@@ -1222,6 +1222,7 @@ export type LibrarySnapshot = {
 	sources: LibrarySourceDto[],
 	cloud_sources: LibraryCloudSourceDto[],
 	connected_catdb: LibraryConnectedCatdbDto | null,
+	connected_catdb_rediscovery_required: boolean,
 	cleanup: LibraryCleanupStatus,
 };
 

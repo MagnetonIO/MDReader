@@ -137,6 +137,22 @@ test('the shared native flow makes the P8 federated Document surface load-bearin
   assert.match(libraryStep.sourcesPattern, /ran/);
   assert.match(libraryStep.provenancePattern, /provenance rule/);
   assert.match(libraryStep.schemaPattern, /Provenance rule pin/);
+  const partialStep = FLOW.find(
+    (candidate) => candidate.id === 'partial-connected-library-document',
+  );
+  assert.equal(partialStep?.kind, 'inspectPartialLibraryDocument');
+  assert.equal(SEMANTIC_KINDS.includes('inspectPartialLibraryDocument'), true);
+  if (partialStep?.kind !== 'inspectPartialLibraryDocument') {
+    assert.fail('missing partial Connected CatDB native step');
+  }
+  assert.match(partialStep.membershipsPattern, /Google Drive fixture/);
+  assert.equal(partialStep.driveDocument, 'Drive fixture note.md');
+  assert.match(partialStep.driveResultPattern, /Complete/);
+  assert.match(partialStep.driveSourcesPattern, /Google Drive fixture/);
+  assert.match(partialStep.driveProvenancePattern, /\.name/);
+  assert.match(partialStep.resultPattern, /Excluded source/);
+  assert.match(partialStep.sourcesPattern, /Retry after/);
+  assert.match(partialStep.provenancePattern, /Isolated Enterprise fixture/);
 });
 
 test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {

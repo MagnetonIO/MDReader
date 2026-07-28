@@ -23,7 +23,7 @@ use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, Clo
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_ingest::{SourceRoot, SourceRootIdentity};
 
-pub(crate) const LIBRARY_VERSION: u32 = 7;
+pub(crate) const LIBRARY_VERSION: u32 = 8;
 const MAX_LIBRARY_SOURCES: usize = 128;
 const MAX_CONNECTED_CATDB_SOURCES: usize = 128;
 
@@ -158,6 +158,7 @@ pub(crate) struct LibrarySnapshot {
     pub sources: Vec<LibrarySourceDto>,
     pub cloud_sources: Vec<LibraryCloudSourceDto>,
     pub connected_catdb: Option<LibraryConnectedCatdbDto>,
+    pub connected_catdb_rediscovery_required: bool,
     pub cleanup: LibraryCleanupStatus,
 }
 
@@ -415,6 +416,14 @@ pub(crate) struct ConnectedCatdbSourceDescriptor {
     pub connector_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConnectedCatdbAuthority {
+    pub(crate) deployment_id: uuid::Uuid,
+    pub(crate) workspace_id: uuid::Uuid,
+    pub(crate) catalog_revision_id: uuid::Uuid,
+    pub(crate) default_schema_version_id: uuid::Uuid,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConnectedCatdbSourceRecord {
@@ -425,6 +434,7 @@ pub(crate) struct ConnectedCatdbSourceRecord {
     pub(crate) deployment_id: uuid::Uuid,
     pub(crate) workspace_id: uuid::Uuid,
     pub(crate) catalog_revision_id: uuid::Uuid,
+    pub(crate) default_schema_version_id: uuid::Uuid,
     pub(crate) permitted_sources: Vec<ConnectedCatdbSourceDescriptor>,
     pub(crate) selected_source_ids: Vec<uuid::Uuid>,
     pub(crate) contract: LibrarySourceContract,
@@ -441,6 +451,7 @@ impl std::fmt::Debug for ConnectedCatdbSourceRecord {
             .field("deployment_id", &self.deployment_id)
             .field("workspace_id", &self.workspace_id)
             .field("catalog_revision_id", &self.catalog_revision_id)
+            .field("default_schema_version_id", &self.default_schema_version_id)
             .field("permitted_sources", &self.permitted_sources)
             .field("selected_source_ids", &self.selected_source_ids)
             .field("contract", &self.contract)
@@ -453,9 +464,7 @@ impl ConnectedCatdbSourceRecord {
         label: String,
         server_origin: String,
         credential_reference: String,
-        deployment_id: uuid::Uuid,
-        workspace_id: uuid::Uuid,
-        catalog_revision_id: uuid::Uuid,
+        authority: ConnectedCatdbAuthority,
         permitted_sources: Vec<ConnectedCatdbSourceDescriptor>,
     ) -> Self {
         Self {
@@ -463,12 +472,13 @@ impl ConnectedCatdbSourceRecord {
             label,
             server_origin,
             credential_reference,
-            deployment_id,
-            workspace_id,
-            catalog_revision_id,
+            deployment_id: authority.deployment_id,
+            workspace_id: authority.workspace_id,
+            catalog_revision_id: authority.catalog_revision_id,
+            default_schema_version_id: authority.default_schema_version_id,
             permitted_sources,
             selected_source_ids: Vec::new(),
-            contract: LibrarySourceContract::connected_catdb(catalog_revision_id),
+            contract: LibrarySourceContract::connected_catdb(authority.catalog_revision_id),
         }
     }
 
@@ -604,7 +614,53 @@ struct StoredLibrary {
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
     #[serde(default)]
+    connected_catdb_rediscovery_required: bool,
+    #[serde(default)]
     cleanup_pending: Vec<PendingCleanup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredLibraryV7 {
+    version: u32,
+    active_source_id: Option<String>,
+    sources: Vec<LibrarySourceV7>,
+    #[serde(default)]
+    cleanup_pending: Vec<PendingCleanup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum LibrarySourceV7 {
+    LocalFolder(LocalFolderSource),
+    GoogleDrive(CloudSourceRecord),
+    Dropbox(CloudSourceRecord),
+    ConnectedCatdb(ConnectedCatdbSourceRecordV7),
+}
+
+impl LibrarySourceV7 {
+    fn id(&self) -> &str {
+        match self {
+            Self::LocalFolder(source) => &source.id,
+            Self::GoogleDrive(source) | Self::Dropbox(source) => source.id(),
+            Self::ConnectedCatdb(source) => &source.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectedCatdbSourceRecordV7 {
+    id: String,
+    label: String,
+    server_origin: String,
+    credential_reference: String,
+    deployment_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    catalog_revision_id: uuid::Uuid,
+    permitted_sources: Vec<ConnectedCatdbSourceDescriptor>,
+    selected_source_ids: Vec<uuid::Uuid>,
+    contract: LibrarySourceContract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -693,6 +749,7 @@ struct PendingCleanup {
 pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
     sources: Vec<LibrarySource>,
+    connected_catdb_rediscovery_required: bool,
     cleanup_pending: Vec<PendingCleanup>,
 }
 
@@ -701,6 +758,7 @@ impl LibraryRegistry {
         Self {
             active_source_id: None,
             sources: Vec::new(),
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: Vec::new(),
         }
     }
@@ -803,6 +861,7 @@ impl LibraryRegistry {
         }
         validate_connected_catdb_source(&source)?;
         self.sources.push(LibrarySource::ConnectedCatdb(source));
+        self.connected_catdb_rediscovery_required = false;
         Ok(())
     }
 
@@ -1045,6 +1104,7 @@ impl LibraryRegistry {
             sources,
             cloud_sources,
             connected_catdb,
+            connected_catdb_rediscovery_required: self.connected_catdb_rediscovery_required,
             cleanup: self.cleanup_status(),
         })
     }
@@ -1130,6 +1190,9 @@ impl LibraryRegistry {
         if version.version == 6 {
             return Self::migrate_v6(path, &bytes);
         }
+        if version.version == 7 {
+            return Self::migrate_v7(path, &bytes);
+        }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
                 found: version.version,
@@ -1143,6 +1206,7 @@ impl LibraryRegistry {
         Ok(Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
+            connected_catdb_rediscovery_required: stored.connected_catdb_rediscovery_required,
             cleanup_pending: stored.cleanup_pending,
         })
     }
@@ -1153,6 +1217,7 @@ impl LibraryRegistry {
         let mut migrated = Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
         };
         for source in &mut migrated.sources {
@@ -1170,11 +1235,64 @@ impl LibraryRegistry {
         let mut migrated = Self {
             active_source_id: stored.active_source_id,
             sources: stored.sources,
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
         };
         for source in &mut migrated.sources {
             source.refresh_contract();
         }
+        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
+        Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
+        migrated.save_to(path)?;
+        Ok(migrated)
+    }
+
+    fn migrate_v7(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLibraryV7 =
+            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        if stored.sources.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        let mut ids = HashSet::new();
+        if stored.sources.iter().any(|source| !ids.insert(source.id())) {
+            return Err(LibraryError::CorruptRegistry);
+        }
+
+        let mut rediscovery_required = false;
+        let mut connected_count = 0usize;
+        let mut quarantined_connected_id = None;
+        let mut sources = Vec::with_capacity(stored.sources.len());
+        for source in stored.sources {
+            match source {
+                LibrarySourceV7::LocalFolder(source) => {
+                    sources.push(LibrarySource::LocalFolder(source));
+                }
+                LibrarySourceV7::GoogleDrive(source) => {
+                    sources.push(LibrarySource::GoogleDrive(source));
+                }
+                LibrarySourceV7::Dropbox(source) => {
+                    sources.push(LibrarySource::Dropbox(source));
+                }
+                LibrarySourceV7::ConnectedCatdb(source) => {
+                    connected_count += 1;
+                    validate_connected_catdb_source_v7(&source)?;
+                    quarantined_connected_id = Some(source.id);
+                    rediscovery_required = true;
+                }
+            }
+        }
+        if connected_count > 1 {
+            return Err(LibraryError::CorruptRegistry);
+        }
+
+        let migrated = Self {
+            active_source_id: stored
+                .active_source_id
+                .filter(|active| quarantined_connected_id.as_deref() != Some(active.as_str())),
+            sources,
+            connected_catdb_rediscovery_required: rediscovery_required,
+            cleanup_pending: stored.cleanup_pending,
+        };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
         Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
         migrated.save_to(path)?;
@@ -1201,6 +1319,7 @@ impl LibraryRegistry {
             // filesystem object. Legacy managed bytes were quarantined above
             // and are never inherited by the object currently at that path.
             sources: Vec::new(),
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
@@ -1263,6 +1382,7 @@ impl LibraryRegistry {
                 .as_ref()
                 .and_then(|old| id_map.get(old).cloned()),
             sources,
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: Vec::new(),
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
@@ -1294,6 +1414,7 @@ impl LibraryRegistry {
                 .into_iter()
                 .map(LibrarySource::LocalFolder)
                 .collect(),
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
         };
         migrated.save_to(path)?;
@@ -1327,6 +1448,7 @@ impl LibraryRegistry {
         let migrated = Self {
             active_source_id: stored.active_source_id,
             sources,
+            connected_catdb_rediscovery_required: false,
             cleanup_pending: stored.cleanup_pending,
         };
         migrated.save_to(path)?;
@@ -1488,6 +1610,7 @@ impl LibraryRegistry {
             version: LIBRARY_VERSION,
             active_source_id: self.active_source_id.clone(),
             sources: self.sources.clone(),
+            connected_catdb_rediscovery_required: self.connected_catdb_rediscovery_required,
             cleanup_pending: self.cleanup_pending.clone(),
         })
         .map_err(|_| LibraryError::PersistFailed)?;
@@ -1547,6 +1670,52 @@ fn valid_connected_origin(value: &str) -> bool {
 
 fn validate_connected_catdb_source(
     source: &ConnectedCatdbSourceRecord,
+) -> Result<(), LibraryError> {
+    if !valid_library_id(&source.id)
+        || !valid_connected_text(&source.label, 200)
+        || !valid_connected_origin(&source.server_origin)
+        || !valid_connected_text(&source.credential_reference, 256)
+        || source.deployment_id.is_nil()
+        || source.workspace_id.is_nil()
+        || source.catalog_revision_id.is_nil()
+        || source.default_schema_version_id.is_nil()
+        || source.permitted_sources.len() > MAX_CONNECTED_CATDB_SOURCES
+        || source.selected_source_ids.len() > MAX_CONNECTED_CATDB_SOURCES
+        || source.contract != LibrarySourceContract::connected_catdb(source.catalog_revision_id)
+    {
+        return Err(LibraryError::CorruptRegistry);
+    }
+    let mut permitted = HashSet::new();
+    for descriptor in &source.permitted_sources {
+        if descriptor.source_id.is_nil()
+            || descriptor.source_version_id.is_nil()
+            || !permitted.insert(descriptor.source_id)
+            || descriptor
+                .connector_id
+                .as_deref()
+                .is_some_and(|connector| !valid_connected_text(connector, 200))
+        {
+            return Err(LibraryError::CorruptRegistry);
+        }
+    }
+    let mut selected = HashSet::new();
+    for source_id in &source.selected_source_ids {
+        let Some(descriptor) = source
+            .permitted_sources
+            .iter()
+            .find(|descriptor| descriptor.source_id == *source_id)
+        else {
+            return Err(LibraryError::CorruptRegistry);
+        };
+        if !descriptor.runtime_bound || !selected.insert(*source_id) {
+            return Err(LibraryError::CorruptRegistry);
+        }
+    }
+    Ok(())
+}
+
+fn validate_connected_catdb_source_v7(
+    source: &ConnectedCatdbSourceRecordV7,
 ) -> Result<(), LibraryError> {
     if !valid_library_id(&source.id)
         || !valid_connected_text(&source.label, 200)
@@ -3822,6 +3991,10 @@ mod tests {
             .as_object_mut()
             .expect("registry object")
             .remove("cloud_sources");
+        legacy
+            .as_object_mut()
+            .expect("registry object")
+            .remove("connected_catdb_rediscovery_required");
         fs::write(
             &registry_path,
             serde_json::to_vec_pretty(&legacy).expect("encode V3"),
@@ -4682,6 +4855,7 @@ mod tests {
                 "deployment_id": "00000000-0000-0000-0000-000000000002",
                 "workspace_id": "00000000-0000-0000-0000-000000000003",
                 "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
+                "default_schema_version_id": "00000000-0000-0000-0000-000000000005",
                 "permitted_sources": [{
                     "source_id": remote_source_id,
                     "source_version_id": "00000000-0000-0000-0000-000000000012",
@@ -4737,5 +4911,90 @@ mod tests {
         assert!(persisted.contains("\"selected_source_ids\""));
         assert!(!persisted.contains("bearer"));
         assert!(!persisted.contains("native-secret"));
+    }
+
+    #[test]
+    fn version_seven_quarantines_only_unpinned_connected_catdb_membership() {
+        let temp = tempdir().expect("tempdir");
+        let registry_path = temp.path().join("library.json");
+        let root = mkdir(temp.path(), "local-notes");
+        let mut current = LibraryRegistry::empty();
+        let local = current.add_root(&root).expect("admit local source");
+        current
+            .save_to(&registry_path)
+            .expect("persist current local registry");
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).expect("read current registry"))
+                .expect("parse current registry");
+        body["version"] = serde_json::json!(7);
+        body.as_object_mut()
+            .expect("registry object")
+            .remove("connected_catdb_rediscovery_required");
+        body["sources"]
+            .as_array_mut()
+            .expect("source array")
+            .push(serde_json::json!({
+                "kind": "connected-catdb",
+                "id": "a".repeat(64),
+                "label": "Legacy CatDB",
+                "server_origin": "https://catdb.example.com/",
+                "credential_reference": "credential-reference-1",
+                "deployment_id": "00000000-0000-0000-0000-000000000002",
+                "workspace_id": "00000000-0000-0000-0000-000000000003",
+                "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
+                "permitted_sources": [],
+                "selected_source_ids": [],
+                "contract": {
+                    "connector_version": "connected-catdb/v1",
+                    "capabilities": {
+                        "read": true,
+                        "write": false,
+                        "search": true,
+                        "watch": false,
+                        "open_original": false,
+                        "download": false
+                    },
+                    "mapping_version": "00000000-0000-0000-0000-000000000004",
+                    "index_policy": "read-through"
+                }
+            }));
+        body["active_source_id"] = serde_json::json!("a".repeat(64));
+        fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&body).expect("serialize legacy fixture"),
+        )
+        .expect("write fixture");
+
+        let migrated = LibraryRegistry::load_from(&registry_path)
+            .expect("quarantine only the unverifiable membership");
+        assert_eq!(migrated.sources().len(), 1);
+        assert_eq!(migrated.sources()[0].id, local.id);
+        assert!(migrated.connected_catdb().is_none());
+        assert_eq!(migrated.restore_source_id(), None);
+        let snapshot = migrated
+            .snapshot(temp.path(), None)
+            .expect("local Library remains readable");
+        assert!(snapshot.connected_catdb.is_none());
+        assert!(snapshot.connected_catdb_rediscovery_required);
+        assert!(
+            LibraryStore::new(registry_path.clone())
+                .read_connected_catdb()
+                .expect("read migrated connection state")
+                .is_none(),
+            "connected queries have no admitted source until fresh discovery pins a schema"
+        );
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(registry_path).expect("read migrated registry"))
+                .expect("parse migrated registry");
+        assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
+        assert_eq!(
+            persisted["connected_catdb_rediscovery_required"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            persisted["sources"].as_array().expect("source array").len(),
+            1
+        );
     }
 }

@@ -1,9 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 export const MOBILE_FIXTURE_HOST = '127.0.0.1';
-export const MOBILE_FIXTURE_PORT = 47_865;
 export const MOBILE_FIXTURE_BEARER = 'mdreader-e2e-bearer';
-export const MOBILE_FIXTURE_ORIGIN = `http://${MOBILE_FIXTURE_HOST}:${MOBILE_FIXTURE_PORT}`;
 export const MOBILE_FIXTURE_IDS = {
   deployment: '00000000-0000-0000-0000-000000000201',
   workspace: '00000000-0000-0000-0000-000000000202',
@@ -12,6 +10,8 @@ export const MOBILE_FIXTURE_IDS = {
   schema: '00000000-0000-0000-0000-000000000205',
   source: '00000000-0000-0000-0000-000000000206',
   sourceVersion: '00000000-0000-0000-0000-000000000207',
+  excludedSource: '00000000-0000-0000-0000-000000000213',
+  excludedSourceVersion: '00000000-0000-0000-0000-000000000214',
   mapping: '00000000-0000-0000-0000-000000000208',
   policy: '00000000-0000-0000-0000-000000000209',
   query: '00000000-0000-0000-0000-000000000210',
@@ -69,7 +69,10 @@ function provenance(fields: Record<string, unknown>): Record<string, unknown> {
   );
 }
 
-function entityResponse(fields: Record<string, unknown>): Record<string, unknown> {
+function entityResponse(
+  fields: Record<string, unknown>,
+  retryAfterMs: number,
+): Record<string, unknown> {
   return {
     query_id: MOBILE_FIXTURE_IDS.query,
     pins: {
@@ -78,7 +81,10 @@ function entityResponse(fields: Record<string, unknown>): Record<string, unknown
       schema_version_id: MOBILE_FIXTURE_IDS.schema,
       physical_schema_version_ids: [MOBILE_FIXTURE_IDS.physicalSchema],
       mapping_version_ids: [MOBILE_FIXTURE_IDS.mapping],
-      source_version_ids: [MOBILE_FIXTURE_IDS.sourceVersion],
+      source_version_ids: [
+        MOBILE_FIXTURE_IDS.sourceVersion,
+        MOBILE_FIXTURE_IDS.excludedSourceVersion,
+      ],
       policy_version_ids: [MOBILE_FIXTURE_IDS.policy],
       provenance_rule_version_id: MOBILE_FIXTURE_IDS.provenanceRule,
     },
@@ -98,15 +104,34 @@ function entityResponse(fields: Record<string, unknown>): Record<string, unknown
         freshness_ms: 0,
         outcome: 'ran',
       },
+      {
+        source_id: MOBILE_FIXTURE_IDS.excludedSource,
+        source_version_id: MOBILE_FIXTURE_IDS.excludedSourceVersion,
+        scanned: 0,
+        returned: 0,
+        freshness_ms: null,
+        retry_after_ms: retryAfterMs,
+        outcome: 'refused',
+      },
     ],
-    completeness: { state: 'complete' },
+    completeness: {
+      state: 'partial',
+      excluded_source_ids: [MOBILE_FIXTURE_IDS.excludedSource],
+    },
     next_cursor: null,
   };
 }
 
 export interface MobileFixtureServer {
   origin: string;
+  requests: () => readonly MobileFixtureRequest[];
   close: () => Promise<void>;
+}
+
+export interface MobileFixtureRequest {
+  method: string;
+  path: string;
+  authenticated: boolean;
 }
 
 /**
@@ -115,16 +140,25 @@ export interface MobileFixtureServer {
  * later body queries fail, forcing the product through its authorized cache.
  */
 export async function startMobileFixtureServer(
-  port = MOBILE_FIXTURE_PORT,
+  port = 0,
 ): Promise<MobileFixtureServer> {
   let documentReads = 0;
+  let entityQueries = 0;
+  const requests: MobileFixtureRequest[] = [];
   const server = createServer((request, response) => {
     void (async () => {
-      if (request.headers.authorization !== `Bearer ${MOBILE_FIXTURE_BEARER}`) {
+      const authenticated =
+        request.headers.authorization === `Bearer ${MOBILE_FIXTURE_BEARER}`;
+      const url = new URL(request.url ?? '/', `http://${MOBILE_FIXTURE_HOST}`);
+      requests.push({
+        method: request.method ?? '',
+        path: url.pathname,
+        authenticated,
+      });
+      if (!authenticated) {
         json(response, 403, { error: 'refused', message: 'session refused' });
         return;
       }
-      const url = new URL(request.url ?? '/', `http://${MOBILE_FIXTURE_HOST}`);
       if (request.method === 'GET' && url.pathname === '/v1/session') {
         json(response, 200, {
           deployment_id: MOBILE_FIXTURE_IDS.deployment,
@@ -135,6 +169,7 @@ export async function startMobileFixtureServer(
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/entity/query') {
+        entityQueries += 1;
         const query = await requestJson(request);
         const select = query.select;
         if (
@@ -145,23 +180,36 @@ export async function startMobileFixtureServer(
           json(response, 400, { error: 'invalid_query', message: 'invalid fixture query' });
           return;
         }
-        const fields: Record<string, unknown> = {
+        const availableFields: Record<string, unknown> = {
+          providerId: 'mobile-e2e-document',
+          author: 'Fixture Author',
           path: 'fixtures/mobile-e2e.md',
           title: 'Mobile evidence handbook',
+          mediaType: 'text/markdown',
+          modifiedAt: '2026-07-28T12:00:00Z',
           size: Buffer.byteLength(CONTENT),
+          revision: 'fixture-r1',
+          checksum: 'sha256:mobile-e2e-document',
+          body: CONTENT,
         };
+        const fields = Object.fromEntries(
+          select
+            .filter((field): field is string => typeof field === 'string')
+            .filter((field) => Object.hasOwn(availableFields, field))
+            .map((field) => [field, availableFields[field]]),
+        );
         if (select.includes('body')) {
-          documentReads += 1;
-          if (documentReads > 1) {
+          const connectedDesktopQuery = Array.isArray(query.source_ids);
+          if (!connectedDesktopQuery) documentReads += 1;
+          if (!connectedDesktopQuery && documentReads > 1) {
             json(response, 503, {
               error: 'fixture_offline',
               message: 'fixture is offline',
             });
             return;
           }
-          fields.body = CONTENT;
         }
-        json(response, 200, entityResponse(fields));
+        json(response, 200, entityResponse(fields, 10_000 + entityQueries));
         return;
       }
       json(response, 404, { error: 'not_found', message: 'fixture route not found' });
@@ -188,6 +236,7 @@ export async function startMobileFixtureServer(
   }
   return {
     origin: `http://${MOBILE_FIXTURE_HOST}:${address.port}`,
+    requests: () => requests.map((request) => ({ ...request })),
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

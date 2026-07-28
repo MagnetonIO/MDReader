@@ -17,6 +17,7 @@ export interface LibraryDocumentPaneProps {
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
   onEdit?: () => void;
+  onRetry?: () => void;
 }
 
 function fieldsOf(row: EntityRow): Record<string, unknown> {
@@ -52,6 +53,7 @@ export function LibraryDocumentPane({
   row,
   evidence,
   onEdit,
+  onRetry,
 }: LibraryDocumentPaneProps) {
   const values = fieldsOf(row);
   const title =
@@ -107,6 +109,11 @@ export function LibraryDocumentPane({
               onClick={() => setInspectorOpen((open) => !open)}
             >
               {inspectorOpen ? 'Close Inspector' : 'Inspect'}
+            </button>
+          ) : null}
+          {evidence.answer.completeness.state === 'partial' && onRetry ? (
+            <button type="button" className="library-reader__retry" onClick={onRetry}>
+              Retry Library
             </button>
           ) : null}
           {providerUrl ? (

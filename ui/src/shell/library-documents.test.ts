@@ -122,6 +122,7 @@ const driveLibrary: LibrarySnapshot = {
     },
   ],
   connected_catdb: null,
+  connected_catdb_rediscovery_required: false,
   cleanup: { kind: 'complete' },
 };
 
@@ -140,6 +141,7 @@ const localLibrary: LibrarySnapshot = {
   ],
   cloud_sources: [],
   connected_catdb: null,
+  connected_catdb_rediscovery_required: false,
   cleanup: { kind: 'complete' },
 };
 
@@ -207,6 +209,7 @@ describe('one hydrated Library answer', () => {
           sources: [],
           cloud_sources: [],
           connected_catdb: null,
+          connected_catdb_rediscovery_required: false,
           cleanup: { kind: 'complete' },
         })),
         prepareCloudCatalog,

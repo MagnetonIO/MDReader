@@ -173,6 +173,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       sources: [source('/ws', true), source('/ws-b', false), source('/ws-c', false)],
       cloud_sources: [],
       connected_catdb: null,
+      connected_catdb_rediscovery_required: false,
       cleanup: { kind: 'complete' as const },
     };
   });

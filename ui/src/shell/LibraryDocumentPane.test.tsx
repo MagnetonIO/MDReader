@@ -287,7 +287,7 @@ it('renders backend-authored null, absence, unobservable reason, reports, and pi
   expect(inspector.getByText(SOURCE_VERSION)).toBeTruthy();
 });
 
-it('renders partial exclusions, retry guidance, and the provenance-rule pin', () => {
+it('renders partial exclusions, retries through its owner, and keeps the provenance-rule pin', () => {
   const excludedSource = '00000000-0000-4000-8000-000000000099';
   const partial: LibraryEntityQueryResponse_Serialize = {
     ...response,
@@ -317,7 +317,17 @@ it('renders partial exclusions, retry guidance, and the provenance-rule pin', ()
       },
     ],
   };
-  render(<LibraryDocumentPane member={partial.memberships[0]!} row={row} evidence={partial} />);
+  const onRetry = vi.fn();
+  render(
+    <LibraryDocumentPane
+      member={partial.memberships[0]!}
+      row={row}
+      evidence={partial}
+      onRetry={onRetry}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Retry Library' }));
+  expect(onRetry).toHaveBeenCalledTimes(1);
 
   fireEvent.click(screen.getByRole('button', { name: 'Inspect' }));
   const inspector = within(
