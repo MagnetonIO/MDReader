@@ -3676,12 +3676,16 @@ fn dropbox_redirect_configuration(
         .strip_prefix("http://")
         .and_then(|value| value.strip_suffix("/oauth/dropbox"))
         .ok_or(CloudSourceError::InvalidConfiguration)?;
-    let socket_addr = authority
-        .parse::<SocketAddr>()
+    let port_text = authority
+        .strip_prefix("127.0.0.1:")
+        .ok_or(CloudSourceError::InvalidConfiguration)?;
+    let port = port_text
+        .parse::<u16>()
         .map_err(|_| CloudSourceError::InvalidConfiguration)?;
-    if !socket_addr.ip().is_loopback() || socket_addr.port() == 0 {
+    if port == 0 || port_text != port.to_string() {
         return Err(CloudSourceError::InvalidConfiguration);
     }
+    let socket_addr = SocketAddr::from(([127, 0, 0, 1], port));
     Ok(DropboxRedirectConfiguration {
         redirect_uri: configured.to_string(),
         socket_addr,
@@ -4277,12 +4281,11 @@ mod tests {
         admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
         bind_oauth_callback_listener, dropbox_redirect_configuration, execute_cloud_query,
         oauth_callback_configuration, receive_oauth_callback, refresh_token_form,
-        CloudAccountService,
-        CloudAccountsState, CloudCompleteness, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
-        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CredentialVault,
-        IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault, OAuthAttempt,
-        SecretBundle, MAX_CALLBACK_BYTES,
+        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectionState,
+        CloudCredentialResolver, CloudDocumentQueryResponse, CloudExecutionMode, CloudProvider,
+        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
+        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
+        OAuthAttempt, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::library::{LibraryRegistry, LibraryStore};
 
@@ -6001,6 +6004,9 @@ mod tests {
             "https://127.0.0.1:53682/oauth/dropbox",
             "http://127.0.0.1/oauth/dropbox",
             "http://127.0.0.1:0/oauth/dropbox",
+            "http://127.0.0.1:053682/oauth/dropbox",
+            "http://127.0.0.2:53682/oauth/dropbox",
+            "http://[::1]:53683/oauth/dropbox",
             "http://192.0.2.1:53682/oauth/dropbox",
             "http://user@127.0.0.1:53682/oauth/dropbox",
             "http://127.0.0.1:53682/oauth/dropbox?source=test",
@@ -6017,11 +6023,10 @@ mod tests {
     }
 
     #[test]
-    fn dropbox_redirect_configuration_preserves_the_exact_loopback_uri() {
+    fn dropbox_redirect_configuration_preserves_the_exact_registered_ipv4_loopback_uri() {
         for configured in [
             "http://127.0.0.1:53682/oauth/dropbox",
             "http://127.0.0.1:80/oauth/dropbox",
-            "http://[::1]:53683/oauth/dropbox",
         ] {
             let redirect =
                 dropbox_redirect_configuration(Some(configured)).expect("valid redirect");
