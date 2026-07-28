@@ -6,6 +6,11 @@
 //! seed_reviewed_workspace <corpus-root> <app-data-dir> <reviewer> [schema ...]
 //! ```
 //!
+//! The native harness also supplies `MDREADER_E2E_SOURCE_ID`. The fixture
+//! generator and the E2E-only Library admission path must use that same stable
+//! CatDB source identity; otherwise the app correctly refuses to reinterpret
+//! the reviewed rows as belonging to a different source.
+//!
 //! # Why this exists, and what it is NOT
 //!
 //! `apps/mdreader/e2e-native` already seeds the app's *session* so the corpus
@@ -52,6 +57,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("the reviewer must be a real, non-blank name".into());
     }
     let schemas: Vec<String> = args.collect();
+    let source_id = std::env::var("MDREADER_E2E_SOURCE_ID")
+        .map_err(|_| "missing MDREADER_E2E_SOURCE_ID")?
+        .parse::<uuid::Uuid>()
+        .map_err(|_| "MDREADER_E2E_SOURCE_ID must be a UUID")?;
+    if source_id.is_nil() {
+        return Err("MDREADER_E2E_SOURCE_ID must not be nil".into());
+    }
 
     if let Some(parent) = db.parent() {
         std::fs::create_dir_all(parent)?;
@@ -61,10 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The SAME embedder the harness launches the app with
     // (`MDREADER_DEV_HASH_EMBED=1`), so the index this seeds is the index the
     // app then serves rather than one it has to rebuild.
-    let engine = EmbeddedCatDb::open(
+    let engine = EmbeddedCatDb::open_with_source_id(
         EngineConfig::new(&db, Arc::new(HashEmbedder::new()))
             .with_domain(registration_with_proposals(Arc::clone(&store)))
             .with_actor(&reviewer),
+        source_id,
     )?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()

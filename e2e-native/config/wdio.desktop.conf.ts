@@ -27,6 +27,7 @@ import {
   clearSeed,
   clearWorkspaceIndex,
   createE2EProfile,
+  E2E_LOCAL_SOURCE_ID,
   seedWorkspace,
 } from '../seed.ts';
 
@@ -62,6 +63,7 @@ export const config: WebdriverIO.Config = {
     await clearSeed(E2E_PROFILE);
     await clearWorkspaceIndex(E2E_PROFILE);
     process.env.MDREADER_E2E_CORPUS_ROOT = corpusRoot;
+    process.env.MDREADER_E2E_SOURCE_ID = E2E_LOCAL_SOURCE_ID;
     await seedWorkspace(E2E_PROFILE, corpusRoot);
   },
 

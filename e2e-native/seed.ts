@@ -31,6 +31,9 @@ import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 export { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
+/** One test-owned CatDB identity shared by the pre-review seed and app runtime. */
+export const E2E_LOCAL_SOURCE_ID = '00000000-0000-0000-0000-00000000e2e0';
+
 export interface SourceFingerprintEntry {
   readonly kind: 'file' | 'symlink' | 'directory';
   readonly size: string;

@@ -19,6 +19,7 @@ import {
   clearWorkspaceIndex,
   createE2EProfile,
   E2E_BUNDLE_IDENTIFIER,
+  E2E_LOCAL_SOURCE_ID,
   fingerprintSourceTree,
   seedWorkspace,
   type E2EProfile,
@@ -196,7 +197,20 @@ test('desktop launchers pass the canonical corpus to the isolated backend seed',
   );
 
   assert.match(macos, /MDREADER_E2E_CORPUS_ROOT:\s*corpusRoot/);
+  assert.match(
+    macos,
+    /MDREADER_E2E_SOURCE_ID:\s*E2E_LOCAL_SOURCE_ID/g,
+  );
+  assert.match(
+    macos,
+    /env:\s*\{[\s\S]*MDREADER_E2E_SOURCE_ID:\s*E2E_LOCAL_SOURCE_ID,[\s\S]*stdio:/,
+  );
   assert.match(portable, /process\.env\.MDREADER_E2E_CORPUS_ROOT\s*=\s*corpusRoot/);
+  assert.match(
+    portable,
+    /process\.env\.MDREADER_E2E_SOURCE_ID\s*=\s*E2E_LOCAL_SOURCE_ID/,
+  );
+  assert.match(E2E_LOCAL_SOURCE_ID, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
   assert.ok(
     macos.indexOf('clearWorkspaceIndex(opts.profile)') <
       macos.indexOf('seedWorkspace(opts.profile, corpusRoot)'),
@@ -205,6 +219,17 @@ test('desktop launchers pass the canonical corpus to the isolated backend seed',
     portable.indexOf('clearWorkspaceIndex(E2E_PROFILE)') <
       portable.indexOf('seedWorkspace(E2E_PROFILE, corpusRoot)'),
   );
+});
+
+test('a failed native flow is not replaced by a later fixture-count error', async () => {
+  const macos = await readFile(join(process.cwd(), 'runners', 'macos.ts'), 'utf8');
+  const flow = macos.indexOf('outcome = await runFlow(adapter, consoleLog)');
+  const gate = macos.indexOf('if (outcome.ok)', flow);
+  const fixtureCheck = macos.indexOf(
+    'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
+    flow,
+  );
+  assert.ok(flow >= 0 && gate > flow && fixtureCheck > gate);
 });
 
 test('the shared native flow makes the P8 federated Document surface load-bearing', () => {

@@ -42,11 +42,13 @@ import {
   clearSeed,
   clearWorkspaceIndex,
   createE2EProfile,
+  E2E_LOCAL_SOURCE_ID,
   seedWorkspace,
   withNativeRunArtifacts,
   type E2EProfile,
 } from '../seed.ts';
 import {
+  resolveOwnedRunOutcome,
   terminateExclusiveExecutableOwner,
   terminateOwnedProcess,
   waitForExclusiveExecutableOwner,
@@ -254,10 +256,18 @@ async function main(): Promise<number> {
         '--',
         corpusRoot,
         appConfigDir(opts.profile),
-        REVIEWER,
-        REVIEWED_SCHEMA,
-      ],
-      { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
+      REVIEWER,
+      REVIEWED_SCHEMA,
+    ],
+      {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          MDREADER_E2E_SOURCE_ID: E2E_LOCAL_SOURCE_ID,
+        },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      },
     );
     for (const line of seeded.trimEnd().split('\n')) console.log(`review:    ${line}`);
 
@@ -273,6 +283,7 @@ async function main(): Promise<number> {
     let appium: ChildProcess | undefined;
     let adapter: Mac2Adapter | undefined;
     let browser: Awaited<ReturnType<typeof remote>> | undefined;
+    let sessionPid: number | undefined;
     let sessionBoundToExactApp = false;
     let outcome: Awaited<ReturnType<typeof runFlow>> | undefined;
     let primaryError: unknown;
@@ -290,6 +301,7 @@ async function main(): Promise<number> {
         {
           MDREADER_DEV_HASH_EMBED: '1',
           MDREADER_E2E_CORPUS_ROOT: corpusRoot,
+          MDREADER_E2E_SOURCE_ID: E2E_LOCAL_SOURCE_ID,
           MDREADER_E2E_CONNECTED_ORIGIN: fixture.origin,
         },
       );
@@ -318,6 +330,7 @@ async function main(): Promise<number> {
         runningE2EProcessOwners,
         () => sleep(100),
       );
+      sessionPid = pid;
       adapter = new Mac2Adapter({
         browser,
         bundleId: opts.profile.identifier,
@@ -339,20 +352,22 @@ async function main(): Promise<number> {
       }
       sessionBoundToExactApp = true;
       outcome = await runFlow(adapter, consoleLog);
-      const authenticatedPosts = fixture
-        .requests()
-        .filter(
-          (request) =>
-            request.method === 'POST' &&
-            request.path === '/v1/entity/query',
-        );
-      if (
-        authenticatedPosts.length < 2 ||
-        authenticatedPosts.some((request) => !request.authenticated)
-      ) {
-        throw new Error(
-          'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
-        );
+      if (outcome.ok) {
+        const authenticatedPosts = fixture
+          .requests()
+          .filter(
+            (request) =>
+              request.method === 'POST' &&
+              request.path === '/v1/entity/query',
+          );
+        if (
+          authenticatedPosts.length < 2 ||
+          authenticatedPosts.some((request) => !request.authenticated)
+        ) {
+          throw new Error(
+            'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
+          );
+        }
       }
     } catch (error) {
       primaryError = error;
@@ -371,10 +386,11 @@ async function main(): Promise<number> {
       } catch (error) {
         cleanupError ??= error;
       }
-      if (!keepExactApp) {
+      if (!keepExactApp && sessionPid !== undefined) {
         try {
           await terminateExclusiveExecutableOwner(
             expectedExecutable,
+            sessionPid,
             runningE2EProcessOwners,
             (pid, signal) => process.kill(pid, signal),
             () => sleep(100),
@@ -394,12 +410,7 @@ async function main(): Promise<number> {
         cleanupError ??= error;
       }
     }
-    if (primaryError) throw primaryError;
-    if (cleanupError) throw cleanupError;
-    if (!outcome) {
-      throw new Error('mac2 flow completed without an outcome');
-    }
-    return outcome;
+    return resolveOwnedRunOutcome(primaryError, cleanupError, outcome);
   });
 
   console.log('───────────────────────────────────────────────────────────');

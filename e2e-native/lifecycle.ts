@@ -134,6 +134,24 @@ export interface ExecutableProcessOwner {
   readonly executable: string;
 }
 
+/**
+ * Preserve the operation failure when teardown also fails. Cleanup still runs
+ * to completion before this resolver is called, but it must never replace the
+ * evidence that caused the run to fail.
+ */
+export function resolveOwnedRunOutcome<T>(
+  primaryError: unknown,
+  cleanupError: unknown,
+  outcome: T | undefined,
+): T {
+  if (primaryError !== undefined) throw primaryError;
+  if (cleanupError !== undefined) throw cleanupError;
+  if (outcome === undefined) {
+    throw new Error('owned run completed without an outcome');
+  }
+  return outcome;
+}
+
 type ObserveExecutableOwners = () => ExecutableProcessOwner[];
 type SignalExecutableOwner = (pid: number, signal: NodeJS.Signals) => void;
 
@@ -188,26 +206,36 @@ export async function waitForExclusiveExecutableOwner(
  */
 export async function terminateExclusiveExecutableOwner(
   expectedExecutable: string,
+  expectedPid: number,
   observe: ObserveExecutableOwners,
   signal: SignalExecutableOwner,
   pause: () => Promise<void>,
   termTries = 20,
   killTries = 20,
 ): Promise<void> {
-  let owner = requireExactExecutableOwner(expectedExecutable, observe());
+  const requireSessionOwner = (): ExecutableProcessOwner | undefined => {
+    const owner = requireExactExecutableOwner(expectedExecutable, observe());
+    if (owner && owner.pid !== expectedPid) {
+      throw new Error(
+        `reviewed E2E process pid changed from ${expectedPid} to ${owner.pid} at ${expectedExecutable}`,
+      );
+    }
+    return owner;
+  };
+  let owner = requireSessionOwner();
   if (!owner) return;
 
   signal(owner.pid, 'SIGTERM');
   for (let attempt = 1; attempt <= termTries; attempt++) {
     await pause();
-    owner = requireExactExecutableOwner(expectedExecutable, observe());
+    owner = requireSessionOwner();
     if (!owner) return;
   }
 
   signal(owner.pid, 'SIGKILL');
   for (let attempt = 1; attempt <= killTries; attempt++) {
     await pause();
-    owner = requireExactExecutableOwner(expectedExecutable, observe());
+    owner = requireSessionOwner();
     if (!owner) return;
   }
   throw new Error(

@@ -4,6 +4,7 @@ import { EventEmitter, once } from 'node:events';
 import test from 'node:test';
 
 import {
+  resolveOwnedRunOutcome,
   terminateExclusiveExecutableOwner,
   waitForExclusiveExecutableOwner,
   waitForExclusiveProcessOwner,
@@ -131,6 +132,7 @@ test('mac2 cleanup signals only the exact executable it observed', async () => {
   const signals: string[] = [];
   await terminateExclusiveExecutableOwner(
     '/reviewed/MDReader E2E.app/mdreader-e2e',
+    41,
     () => observations.shift() ?? [],
     (pid, signal) => signals.push(`${pid}:${signal}`),
     async () => undefined,
@@ -144,6 +146,7 @@ test('mac2 cleanup refuses to signal a foreign same-name executable', async () =
     () =>
       terminateExclusiveExecutableOwner(
         '/reviewed/MDReader E2E.app/mdreader-e2e',
+        41,
         () => [
           {
             pid: 99,
@@ -156,6 +159,41 @@ test('mac2 cleanup refuses to signal a foreign same-name executable', async () =
     /other-worktree/,
   );
   assert.deepEqual(signals, []);
+});
+
+test('mac2 cleanup never rebinds to a replacement pid at the same executable', async () => {
+  const observations = [
+    [{ pid: 41, executable: '/reviewed/MDReader E2E.app/mdreader-e2e' }],
+    [{ pid: 42, executable: '/reviewed/MDReader E2E.app/mdreader-e2e' }],
+  ];
+  const signals: string[] = [];
+  await assert.rejects(
+    () =>
+      terminateExclusiveExecutableOwner(
+        '/reviewed/MDReader E2E.app/mdreader-e2e',
+        41,
+        () => observations.shift() ?? [],
+        (pid, signal) => signals.push(`${pid}:${signal}`),
+        async () => undefined,
+        1,
+        1,
+      ),
+    /42/,
+  );
+  assert.deepEqual(signals, ['41:SIGTERM']);
+});
+
+test('native cleanup failure never replaces the primary run failure', () => {
+  const primary = new Error('primary flow failure');
+  const cleanup = new Error('cleanup failure');
+  assert.throws(
+    () => resolveOwnedRunOutcome(primary, cleanup, { ok: false }),
+    (error) => error === primary,
+  );
+  assert.throws(
+    () => resolveOwnedRunOutcome(undefined, cleanup, { ok: false }),
+    (error) => error === cleanup,
+  );
 });
 
 test('teardown escalates only its owned child when SIGTERM is ignored', async () => {

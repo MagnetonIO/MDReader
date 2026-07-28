@@ -2100,13 +2100,24 @@ impl LibraryStore {
     pub(crate) fn replace_with_e2e_local_membership(
         &self,
         corpus_root: &Path,
+        engine_source_id: uuid::Uuid,
     ) -> Result<LocalFolderSource, LibraryError> {
         let _lease = self.acquire()?;
         let mut registry = LibraryRegistry::empty();
+        if engine_source_id.is_nil() {
+            return Err(LibraryError::InvalidRoot);
+        }
         // This path comes from the isolated runner process, but it becomes
         // authority only after the backend canonicalizes it and captures the
         // native filesystem identity through `add_root`.
-        let source = registry.add_root(corpus_root)?;
+        let mut source = registry.add_root(corpus_root)?;
+        source.engine_source_id = engine_source_id;
+        registry
+            .sources
+            .iter_mut()
+            .find_map(LibrarySource::local_mut)
+            .ok_or(LibraryError::PersistFailed)?
+            .engine_source_id = engine_source_id;
         registry.active_source_id = Some(source.id.clone());
         registry.save_to(&self.registry_path)?;
         Ok(source)
@@ -2584,14 +2595,20 @@ pub(crate) fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), Libra
 pub(crate) fn seed_e2e_local_membership(app: &AppHandle) -> Result<(), LibraryError> {
     const E2E_IDENTIFIER: &str = "dev.mdreader.app.e2e";
     const E2E_CORPUS_ROOT_ENV: &str = "MDREADER_E2E_CORPUS_ROOT";
+    const E2E_SOURCE_ID_ENV: &str = "MDREADER_E2E_SOURCE_ID";
 
     if app.config().identifier != E2E_IDENTIFIER {
         return Err(LibraryError::PersistFailed);
     }
     let corpus_root = std::env::var_os(E2E_CORPUS_ROOT_ENV).ok_or(LibraryError::InvalidRoot)?;
+    let source_id = std::env::var(E2E_SOURCE_ID_ENV)
+        .ok()
+        .and_then(|value| uuid::Uuid::parse_str(&value).ok())
+        .filter(|source_id| !source_id.is_nil())
+        .ok_or(LibraryError::InvalidRoot)?;
     let (registry_path, _) = registry_path(app)?;
     LibraryStore::new(registry_path)
-        .replace_with_e2e_local_membership(Path::new(&corpus_root))
+        .replace_with_e2e_local_membership(Path::new(&corpus_root), source_id)
         .map(|_| ())
 }
 
@@ -4856,10 +4873,16 @@ mod tests {
         let corpus = mkdir(temp.path(), "fixture-corpus");
         let outsider = mkdir(temp.path(), "outsider");
         let store = LibraryStore::new(registry_path.clone());
+        let expected_engine_source_id = uuid::Uuid::from_u128(0xe2e);
 
         let admitted = store
-            .replace_with_e2e_local_membership(&corpus)
+            .replace_with_e2e_local_membership(&corpus, expected_engine_source_id)
             .expect("backend captures the runner-owned corpus");
+        assert_eq!(
+            admitted.engine_source_id(),
+            expected_engine_source_id,
+            "the pre-reviewed workspace and the E2E Library must share one source identity"
+        );
         let drive: crate::cloud_accounts::CloudSourceRecord =
             serde_json::from_value(serde_json::json!({
                 "id": "d".repeat(64),
