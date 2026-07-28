@@ -182,14 +182,13 @@ function connectedCatdbFailureKind(failure: LibraryHydrationFailure): string | n
   return typeof detail.kind === 'string' ? detail.kind : null;
 }
 
-function isLocalMetadataPartial(
+function isSafeLocalMetadataPartial(
   answer: LibraryEntityQueryResponse_Serialize,
 ): boolean {
   const completeness = answer.answer.completeness;
   if (
     completeness.state !== 'partial' ||
-    completeness.excluded_source_ids.length === 0 ||
-    answer.answer.rows.length === 0
+    completeness.excluded_source_ids.length === 0
   ) {
     return false;
   }
@@ -198,8 +197,12 @@ function isLocalMetadataPartial(
       .filter((membership) => membership.kind === 'local-folder')
       .flatMap((membership) => membership.source_ids),
   );
-  return completeness.excluded_source_ids.every((sourceId) =>
-    localSourceIds.has(sourceId),
+  const hasUsableLocalRow = answer.answer.rows.some(
+    (row) => memberForRow(answer, row)?.kind === 'local-folder',
+  );
+  return (
+    hasUsableLocalRow &&
+    completeness.excluded_source_ids.every((sourceId) => localSourceIds.has(sourceId))
   );
 }
 
@@ -224,9 +227,9 @@ export function libraryHydrationMessage(result: HydratedLibrary): string | null 
   if (
     result.failures.length === 0 &&
     partialAnswers.length > 0 &&
-    partialAnswers.every(isLocalMetadataPartial)
+    partialAnswers.every(isSafeLocalMetadataPartial)
   ) {
-    return 'Available files are still shown. Some document metadata could not be read.';
+    return null;
   }
   return result.evidence.length === 0
     ? 'Library sources could not be read.'

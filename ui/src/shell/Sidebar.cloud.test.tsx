@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -101,6 +102,46 @@ function fixtureForMember({
 
   return { member, response };
 }
+
+it('keeps Library Refresh a compact quiet action without changing its behavior', () => {
+  const onRefreshLibrary = vi.fn();
+  const commonProps = {
+    collapsed: false,
+    root: '/Library/Active notes',
+    files: [],
+    recent: [],
+    activePath: null,
+    loading: false,
+    onPickFolder: vi.fn(),
+    onOpenFile: vi.fn(),
+    onOpenRecent: vi.fn(),
+    librarySearch: '',
+    onLibrarySearch: vi.fn(),
+    onRefreshLibrary,
+  };
+  const view = render(<Sidebar {...commonProps} />);
+
+  const refresh = screen.getByRole('button', { name: 'Refresh' });
+  expect(refresh.classList.contains('library-sources__refresh')).toBe(true);
+  fireEvent.click(refresh);
+  expect(onRefreshLibrary).toHaveBeenCalledOnce();
+
+  const shellCss = readFileSync(`${process.cwd()}/src/shell/shell.css`, 'utf8');
+  const compactRule = shellCss.match(
+    /\.library-sources__heading\s+\.library-sources__refresh\s*\{([^}]*)\}/,
+  )?.[1];
+  expect(compactRule, 'the scoped compact Refresh rule').toBeTruthy();
+  expect(compactRule).toContain('padding: 2px var(--space-1);');
+  expect(compactRule).toContain('font-size: 0.68rem;');
+  expect(compactRule).toContain('line-height: 1.2;');
+
+  view.rerender(<Sidebar {...commonProps} libraryLoading />);
+  const reading = screen.getByRole('button', { name: 'Reading…' });
+  expect(reading.classList.contains('library-sources__refresh')).toBe(true);
+  expect((reading as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(reading);
+  expect(onRefreshLibrary).toHaveBeenCalledOnce();
+});
 
 it('navigates connected read-through sources from the primary Library rail', () => {
   const dropbox = fixtureForMember({

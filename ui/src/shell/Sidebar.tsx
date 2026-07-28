@@ -147,7 +147,12 @@ export function Sidebar({
           <div className="library-sources__heading">
             <span>Library</span>
             {onRefreshLibrary ? (
-              <button type="button" onClick={onRefreshLibrary} disabled={libraryLoading}>
+              <button
+                type="button"
+                className="library-sources__refresh"
+                onClick={onRefreshLibrary}
+                disabled={libraryLoading}
+              >
                 {libraryLoading ? 'Reading…' : 'Refresh'}
               </button>
             ) : null}

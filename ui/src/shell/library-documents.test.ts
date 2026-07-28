@@ -356,8 +356,9 @@ describe('one hydrated Library answer', () => {
     expect(result.failures[0]?.reason).toBeInstanceOf(Error);
   });
 
-  it('uses metadata copy only when local files survive without an authority failure', () => {
+  it('omits the primary message only when usable local rows survive metadata-only exclusions', () => {
     const frontmatterSourceId = '00000000-0000-4000-8000-000000000099';
+    const cloudSourceId = '00000000-0000-4000-8000-000000000097';
     const partialLocalEvidence: LibraryEntityQueryResponse_Serialize = {
       ...evidence,
       answer: {
@@ -397,9 +398,111 @@ describe('one hydrated Library answer', () => {
         evidence: [partialLocalEvidence],
         failures: [],
       }),
-    ).toBe(
-      'Available files are still shown. Some document metadata could not be read.',
-    );
+    ).toBeNull();
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...partialLocalEvidence,
+            answer: {
+              ...partialLocalEvidence.answer,
+              rows: [],
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...evidence,
+            answer: {
+              ...evidence.answer,
+              completeness: {
+                state: 'partial',
+                excluded_source_ids: [PHYSICAL_SOURCE_ID],
+              },
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...partialLocalEvidence,
+            memberships: [
+              {
+                ...partialLocalEvidence.memberships[0]!,
+                source_ids: [frontmatterSourceId],
+              },
+              {
+                ...member,
+                membership_id: '00000000-0000-4000-8000-000000000094',
+                registry_id: 'dropbox',
+                name: 'Dropbox',
+                kind: 'dropbox',
+                source_ids: [PHYSICAL_SOURCE_ID],
+                editable: false,
+                active: false,
+              },
+            ],
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...partialLocalEvidence,
+            answer: {
+              ...partialLocalEvidence.answer,
+              sources: [
+                ...partialLocalEvidence.answer.sources,
+                {
+                  source_id: cloudSourceId,
+                  source_version_id: '00000000-0000-4000-8000-000000000096',
+                  outcome: 'source_failed',
+                  retry_after_ms: null,
+                  freshness_ms: null,
+                  scanned: 0,
+                  returned: 0,
+                },
+              ],
+              completeness: {
+                state: 'partial',
+                excluded_source_ids: [frontmatterSourceId, cloudSourceId],
+              },
+            },
+            memberships: [
+              ...partialLocalEvidence.memberships,
+              {
+                ...member,
+                membership_id: '00000000-0000-4000-8000-000000000095',
+                registry_id: 'dropbox',
+                name: 'Dropbox',
+                kind: 'dropbox',
+                source_ids: [cloudSourceId],
+                editable: false,
+                active: false,
+              },
+            ],
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+
     expect(
       libraryHydrationMessage({
         evidence: [partialLocalEvidence],
@@ -411,6 +514,18 @@ describe('one hydrated Library answer', () => {
         ],
       }),
     ).toBe('Some Library sources could not answer this query.');
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [],
+        failures: [
+          {
+            authority: 'embedded',
+            reason: new Error('embedded catalog unavailable'),
+          },
+        ],
+      }),
+    ).toBe('Library sources could not be read.');
   });
 
   it('preserves identity and permission failures for distinct recovery copy', async () => {
