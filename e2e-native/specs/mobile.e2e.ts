@@ -68,8 +68,8 @@ describe('MDReader native mobile product flow', () => {
     await expect(await $('main[aria-label="Reader"]')).toExist();
     await (await $('button=Evidence')).click();
     await expect(await $('main[aria-label="Semantic Inspector"]')).toExist();
+    await expect(await $(`dd*=${MOBILE_FIXTURE_IDS.source}`)).toExist();
     for (const value of [
-      MOBILE_FIXTURE_IDS.source,
       MOBILE_FIXTURE_IDS.catalog,
       MOBILE_FIXTURE_IDS.schema,
       MOBILE_FIXTURE_IDS.mapping,
@@ -82,6 +82,7 @@ describe('MDReader native mobile product flow', () => {
 
   it('uses the identity-authorized offline copy when the fixture read becomes unavailable', async () => {
     await (await $('button=Back')).click();
+    await (await $('button=Library')).click();
     await (await $('button*=mobile-e2e.md')).click();
     await expect(await $('h1=Mobile evidence handbook')).toExist();
     await expect(await $('aside*=Offline copy')).toExist();
