@@ -1,8 +1,0 @@
-{
-  "extends": "@mdreader/config/tsconfig.base.json",
-  "compilerOptions": {
-    "lib": ["ES2023", "WebWorker"],
-    "noEmit": true
-  },
-  "include": ["src/**/*.ts", "*.ts", "worker-configuration.d.ts"]
-}

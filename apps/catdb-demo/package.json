@@ -4,18 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "cf:types": "wrangler types && wrangler types --check",
-    "cf:dry-run": "node ../../scripts/cloudflare-container-dry-run.mjs"
-  },
-  "dependencies": {
-    "@cloudflare/containers": "0.3.7"
-  },
-  "devDependencies": {
-    "@mdreader/config": "workspace:*",
-    "typescript": "~6.0.3",
-    "vitest": "^4.1.10",
-    "wrangler": "4.114.0"
+    "test": "node --test ../../scripts/demo-vercel-container-contract.test.mjs"
   }
 }

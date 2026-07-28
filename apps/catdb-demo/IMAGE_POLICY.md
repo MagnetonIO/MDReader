@@ -4,19 +4,23 @@ The public demo image is a reproducible input to the CatDB evidence surface,
 not an automatically floating runtime.
 
 - Builder and runtime bases are pinned to multi-platform OCI index digests.
-- Local image validation uses the Docker host's native architecture. Cloudflare
-  currently admits `linux/amd64` container images, so its Wrangler dry run must
-  execute on a native amd64 runner; Apple Silicon hosts fail closed instead of
-  invoking emulation.
+- Local image validation uses the Docker host's native architecture. Vercel
+  builds `Dockerfile.vercel` as a first-class container Function; no
+  Cloudflare Worker, Container, D1, or Durable Object owns this runtime.
 - The Rust builder version matches `rust-toolchain.toml`.
 - Dependency resolution is locked; compilation runs offline after the
   explicit locked fetch.
+- The build requires Vercel's exact lowercase `VERCEL_GIT_COMMIT_SHA` and
+  passes it to Rust as `CATDB_DEMO_SOURCE_COMMIT`; startup rechecks the
+  platform commit against the compiled identity.
 - The runtime uses an unprivileged account and the baked corpus/workspace are
   read-only to that account.
-- The build records the actual SQLite byte digest at
-  `/app/metadata/workspace.sha256`. The server remains latched off until the
-  reviewed catalog-revision authority can expose that digest together with
-  the exact source commit and verified catalog revision.
+- Image preparation writes `/app/metadata/deployment.json`, binding source
+  commit, authoritative catalog revision, corpus digest, normalized logical
+  workspace digest, SQLite byte digest, and a deployment fingerprint.
+- Startup verifies the retained no-follow image descriptor before copying its
+  exact bytes to one create-new private directory under `/tmp`; only that
+  ephemeral copy may acquire SQLite sidecars.
 
 Update a base only in a reviewed dependency-maintenance change: resolve the
 new manifest-list digest from the official image registry, update the tag and

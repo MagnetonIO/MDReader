@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 [lints]
 workspace = true
@@ -52,6 +53,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 blake3 = "1"
+sha2 = "0.10"
+tempfile = { workspace = true }
 axum = "0.7"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
 comrak = "0.54"
@@ -60,7 +63,7 @@ ignore = "0.4"
 # workspace index, never inside it. Not a new dependency in the build graph:
 # the same version and `bundled` feature already compile as part of
 # catdb-storage-sqlite, one layer down.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }
@@ -80,4 +83,3 @@ catdb-catalog = { path = "../../../../catdb/crates/catdb-catalog" }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
-tempfile = { workspace = true }
