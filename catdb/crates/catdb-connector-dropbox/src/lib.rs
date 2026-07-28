@@ -150,10 +150,27 @@ impl fmt::Debug for DropboxSourceConfig {
 }
 
 /// Source configuration pinned to one CatDB schema version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PinnedDropboxSourceSpec {
     config: DropboxSourceConfig,
     schema_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPinnedDropboxSourceSpec {
+    config: DropboxSourceConfig,
+    schema_version: String,
+}
+
+impl<'de> Deserialize<'de> for PinnedDropboxSourceSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawPinnedDropboxSourceSpec::deserialize(deserializer)?;
+        Self::new(raw.config, raw.schema_version).map_err(serde::de::Error::custom)
+    }
 }
 
 impl PinnedDropboxSourceSpec {

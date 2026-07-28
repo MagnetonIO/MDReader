@@ -647,6 +647,17 @@ fn source_specs_and_debug_output_never_contain_runtime_credentials() {
 }
 
 #[test]
+fn deserialized_pinned_spec_revalidates_schema_identity() {
+    let mut value = serde_json::to_value(
+        PinnedDriveSourceSpec::new(config(), "drive-schema-v1").expect("valid pin"),
+    )
+    .expect("serialize pin");
+    value["schema_version"] = serde_json::Value::String(String::new());
+
+    assert!(serde_json::from_value::<PinnedDriveSourceSpec>(value).is_err());
+}
+
+#[test]
 fn resource_keys_accept_bounded_header_safe_values_without_guessing_provider_grammar() {
     assert!(
         DriveSelection::file_with_resource_key("selected-file", "rk.dot~value=").is_ok(),

@@ -818,6 +818,17 @@ fn source_spec_and_debug_are_secret_free_and_surface_is_read_only() {
 }
 
 #[test]
+fn deserialized_pinned_spec_revalidates_schema_identity() {
+    let mut value = serde_json::to_value(
+        PinnedDropboxSourceSpec::new(config(), "dropbox-schema-v1").expect("valid pin"),
+    )
+    .expect("serialize pin");
+    value["schema_version"] = serde_json::Value::String(String::new());
+
+    assert!(serde_json::from_value::<PinnedDropboxSourceSpec>(value).is_err());
+}
+
+#[test]
 fn request_construction_refuses_non_dropbox_origins_redirects_and_header_injection() {
     let transport = catdb_connector_dropbox::ReqwestDropboxTransport::new().unwrap();
     assert_eq!(

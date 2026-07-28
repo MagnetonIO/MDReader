@@ -7,32 +7,40 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use catdb_connector_google_drive::{
     DriveAccessToken, DriveChangeCursor, DriveChangeOutcome, DriveConnectorError, DriveCursorKey,
-    DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver, DriveSource,
-    PinnedDriveSourceSpec,
+    DriveHttpRequest, DriveHttpResponse, DriveRuntimeSecrets, DriveSecretReference,
+    DriveSecretResolver, DriveSource, DriveTransport, DriveTransportError, PinnedDriveSourceSpec,
+    GOOGLE_DRIVE_READONLY_SCOPE,
 };
-use catdb_connectors::{read, CancellationToken, ReadContext};
+use catdb_connectors::{read, CancellationToken, ReadContext, SourceError};
 use catdb_query::{EntityQuery, EntityTarget};
+use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 const CONFIG_ENV: &str = "CATDB_GOOGLE_DRIVE_LIVE_CONFIG_JSON";
 const TOKEN_ENV: &str = "CATDB_GOOGLE_DRIVE_ACCESS_TOKEN";
 const CURSOR_KEY_ENV: &str = "CATDB_GOOGLE_DRIVE_CURSOR_KEY_HEX";
+const SCOPE_ATTESTATION_ENV: &str = "CATDB_GOOGLE_DRIVE_SCOPE_ATTESTATION_JSON";
 const MAX_FIELDS: usize = 32;
 const MAX_WORK_BUDGET: usize = 512;
 const MAX_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const MAX_DEADLINE_SECONDS: u64 = 120;
+const MAX_ATTESTATION_LIFETIME_SECONDS: u64 = 15 * 60;
+const ATTESTATION_CLOCK_SKEW_SECONDS: u64 = 60;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLiveConfig {
     pinned_spec: PinnedDriveSourceSpec,
     credential_reference: String,
+    oauth_audience: String,
+    scope_attestation_public_key_hex: String,
     entity: String,
     fields: Vec<String>,
     expected: RawExpectedRecord,
@@ -54,9 +62,25 @@ struct RawExpectedRecord {
     value_blake3: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawScopeAttestation {
+    version: String,
+    provider: String,
+    issuer: String,
+    audience: String,
+    scopes: Vec<String>,
+    token_sha256: String,
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+    signature_ed25519: String,
+}
+
 struct LiveConfig {
     pinned_spec: PinnedDriveSourceSpec,
     credential_reference: DriveSecretReference,
+    oauth_audience: String,
+    scope_attestation_public_key: [u8; 32],
     entity: String,
     fields: Vec<String>,
     expected: ExpectedRecord,
@@ -74,6 +98,23 @@ struct ExpectedRecord {
 
 struct EnvironmentResolver {
     expected_reference: DriveSecretReference,
+    expected_audience: String,
+    scope_attestation_public_key: [u8; 32],
+}
+
+struct BlockingDriveTransport {
+    started: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait]
+impl DriveTransport for BlockingDriveTransport {
+    async fn send(
+        &self,
+        _request: DriveHttpRequest,
+    ) -> Result<DriveHttpResponse, DriveTransportError> {
+        self.started.wait().await;
+        std::future::pending().await
+    }
 }
 
 impl fmt::Debug for EnvironmentResolver {
@@ -91,13 +132,25 @@ impl DriveSecretResolver for EnvironmentResolver {
         if reference != &self.expected_reference {
             return Err(DriveConnectorError::InvalidSecret);
         }
-        let token = std::env::var(TOKEN_ENV).map_err(|_| DriveConnectorError::InvalidSecret)?;
+        let token = Zeroizing::new(
+            std::env::var(TOKEN_ENV).map_err(|_| DriveConnectorError::InvalidSecret)?,
+        );
         let cursor_key = Zeroizing::new(
             std::env::var(CURSOR_KEY_ENV).map_err(|_| DriveConnectorError::InvalidSecret)?,
         );
+        let attestation = Zeroizing::new(
+            std::env::var(SCOPE_ATTESTATION_ENV).map_err(|_| DriveConnectorError::InvalidSecret)?,
+        );
+        verify_scope_attestation(
+            &attestation,
+            &token,
+            &self.expected_audience,
+            &self.scope_attestation_public_key,
+            unix_seconds()?,
+        )?;
         Ok(DriveRuntimeSecrets::new(
-            DriveAccessToken::new(token)?,
-            DriveCursorKey::new(decode_cursor_key(&cursor_key)?),
+            DriveAccessToken::new(token.as_str().to_owned())?,
+            DriveCursorKey::new(decode_hex::<32>(&cursor_key)?),
         ))
     }
 }
@@ -113,6 +166,8 @@ async fn provisioned_read_only_account_returns_the_pinned_record_and_change_curs
         config.pinned_spec,
         Arc::new(EnvironmentResolver {
             expected_reference: config.credential_reference,
+            expected_audience: config.oauth_audience,
+            scope_attestation_public_key: config.scope_attestation_public_key,
         }),
     )
     .await
@@ -189,6 +244,7 @@ async fn provisioned_read_only_account_returns_the_pinned_record_and_change_curs
 fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
     let raw: RawLiveConfig =
         serde_json::from_str(input).map_err(|error| format!("invalid JSON contract: {error}"))?;
+    validate_atom("oauth_audience", &raw.oauth_audience, 512)?;
     validate_atom("entity", &raw.entity, 256)?;
     if raw.fields.is_empty() || raw.fields.len() > MAX_FIELDS {
         return Err(format!(
@@ -206,6 +262,11 @@ fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
     validate_atom("expected.field", &raw.expected.field, 256)?;
     if !unique_fields.contains(raw.expected.field.as_str()) {
         return Err("expected.field must be included in fields".to_string());
+    }
+    if !matches!(raw.expected.field.as_str(), "body" | "checksum") {
+        return Err(
+            "expected.field must be a content-bearing Drive field: body or checksum".to_string(),
+        );
     }
     let value_blake3 = validate_blake3(&raw.expected.value_blake3)?;
     if !(1..=MAX_DEADLINE_SECONDS).contains(&raw.deadline_seconds) {
@@ -234,11 +295,15 @@ fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
     }
     let credential_reference =
         DriveSecretReference::new(raw.credential_reference).map_err(|error| error.to_string())?;
+    let scope_attestation_public_key = decode_hex::<32>(&raw.scope_attestation_public_key_hex)
+        .map_err(|error| error.to_string())?;
     DriveSource::declared_model(&raw.pinned_spec).map_err(|error| error.to_string())?;
 
     Ok(LiveConfig {
         pinned_spec: raw.pinned_spec,
         credential_reference,
+        oauth_audience: raw.oauth_audience,
+        scope_attestation_public_key,
         entity: raw.entity,
         fields: raw.fields,
         expected: ExpectedRecord {
@@ -286,11 +351,66 @@ fn validate_blake3(value: &str) -> Result<String, String> {
     Ok(value.to_ascii_lowercase())
 }
 
-fn decode_cursor_key(value: &str) -> Result<[u8; 32], DriveConnectorError> {
-    if value.len() != 64 {
+fn verify_scope_attestation(
+    input: &str,
+    token: &str,
+    expected_audience: &str,
+    public_key: &[u8; 32],
+    now: u64,
+) -> Result<(), DriveConnectorError> {
+    let attestation: RawScopeAttestation =
+        serde_json::from_str(input).map_err(|_| DriveConnectorError::InvalidSecret)?;
+    let expected_scopes = [GOOGLE_DRIVE_READONLY_SCOPE];
+    if attestation.version != "catdb-live-scope-attestation/v1"
+        || attestation.provider != "google-drive"
+        || attestation.issuer != "https://accounts.google.com"
+        || attestation.audience != expected_audience
+        || attestation.scopes.len() != expected_scopes.len()
+        || !attestation
+            .scopes
+            .iter()
+            .zip(expected_scopes)
+            .all(|(actual, expected)| actual == expected)
+        || attestation.token_sha256 != format!("{:x}", Sha256::digest(token.as_bytes()))
+        || attestation.issued_at_unix_seconds > now.saturating_add(ATTESTATION_CLOCK_SKEW_SECONDS)
+        || attestation.expires_at_unix_seconds <= now
+        || attestation.expires_at_unix_seconds <= attestation.issued_at_unix_seconds
+        || attestation
+            .expires_at_unix_seconds
+            .saturating_sub(attestation.issued_at_unix_seconds)
+            > MAX_ATTESTATION_LIFETIME_SECONDS
+    {
         return Err(DriveConnectorError::InvalidSecret);
     }
-    let mut key = [0u8; 32];
+    let canonical = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        attestation.version,
+        attestation.provider,
+        attestation.issuer,
+        attestation.audience,
+        attestation.scopes.join(" "),
+        attestation.token_sha256,
+        attestation.issued_at_unix_seconds,
+        attestation.expires_at_unix_seconds
+    );
+    let signature = decode_hex::<64>(&attestation.signature_ed25519)?;
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(canonical.as_bytes(), &signature)
+        .map_err(|_| DriveConnectorError::InvalidSecret)
+}
+
+fn unix_seconds() -> Result<u64, DriveConnectorError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| DriveConnectorError::InvalidSecret)
+}
+
+fn decode_hex<const N: usize>(value: &str) -> Result<[u8; N], DriveConnectorError> {
+    if value.len() != N.saturating_mul(2) {
+        return Err(DriveConnectorError::InvalidSecret);
+    }
+    let mut key = [0u8; N];
     for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
         key[index] = (decode_hex_nibble(pair[0])? << 4) | decode_hex_nibble(pair[1])?;
     }
@@ -348,11 +468,13 @@ fn valid_config_value() -> serde_json::Value {
             "schema_version": "drive-live-v1"
         },
         "credential_reference": "env://drive-live",
+        "oauth_audience": "drive-live-client",
+        "scope_attestation_public_key_hex": "1111111111111111111111111111111111111111111111111111111111111111",
         "entity": "drive.Document",
-        "fields": ["id", "name"],
+        "fields": ["id", "body"],
         "expected": {
             "key": "fixture-file",
-            "field": "name",
+            "field": "body",
             "value_blake3": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
     })
@@ -378,7 +500,7 @@ fn live_config_rejects_embedded_secret_material() {
 #[test]
 fn live_config_requires_the_expected_field_in_the_projection() {
     let mut value = valid_config_value();
-    value["expected"]["field"] = serde_json::Value::String("body".to_string());
+    value["expected"]["field"] = serde_json::Value::String("checksum".to_string());
 
     assert_eq!(
         parse_live_config_json(&value.to_string())
@@ -389,11 +511,162 @@ fn live_config_requires_the_expected_field_in_the_projection() {
 }
 
 #[test]
+fn live_config_rejects_identity_or_display_only_evidence() {
+    for field in ["id", "name"] {
+        let mut value = valid_config_value();
+        value["fields"] = serde_json::json!([field]);
+        value["expected"]["field"] = serde_json::Value::String(field.to_string());
+
+        let error = parse_live_config_json(&value.to_string())
+            .err()
+            .expect("identity and display fields must not stand in for content evidence");
+        assert!(
+            error.contains("content-bearing"),
+            "unexpected rejection for {field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn live_config_rejects_an_invalid_schema_revision_before_secret_resolution() {
+    for schema_version in [
+        String::new(),
+        "x".repeat(257),
+        "drive-live-\u{0000}-v1".to_string(),
+    ] {
+        let mut value = valid_config_value();
+        value["pinned_spec"]["schema_version"] = serde_json::Value::String(schema_version);
+
+        let error = parse_live_config_json(&value.to_string())
+            .err()
+            .expect("invalid schema revisions must fail before opening the source");
+        assert!(
+            error.contains("schema_version"),
+            "unexpected schema revision rejection: {error}"
+        );
+    }
+}
+
+#[test]
+fn scope_attestation_is_bound_to_the_exact_read_only_grant() {
+    let token = "drive-live-token-for-attestation-test";
+    let audience = "drive-live-client";
+    let signing_seed = [0x53; 32];
+    let now = 1_700_000_000;
+    let (valid, public_key) = sign_scope_attestation_for_test(
+        token,
+        audience,
+        &[GOOGLE_DRIVE_READONLY_SCOPE],
+        now - 10,
+        now + 300,
+        &signing_seed,
+    );
+
+    assert!(verify_scope_attestation(&valid, token, audience, &public_key, now).is_ok());
+
+    let (overprivileged, _) = sign_scope_attestation_for_test(
+        token,
+        audience,
+        &[
+            GOOGLE_DRIVE_READONLY_SCOPE,
+            "https://www.googleapis.com/auth/drive",
+        ],
+        now - 10,
+        now + 300,
+        &signing_seed,
+    );
+    assert!(verify_scope_attestation(&overprivileged, token, audience, &public_key, now).is_err());
+    assert!(
+        verify_scope_attestation(&valid, "different-token", audience, &public_key, now).is_err()
+    );
+    assert!(verify_scope_attestation(&valid, token, audience, &public_key, now + 301).is_err());
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_an_in_flight_production_connector_request() {
+    let config =
+        parse_live_config_json(&valid_config_value().to_string()).expect("valid source contract");
+    let started = Arc::new(tokio::sync::Barrier::new(2));
+    let source = DriveSource::open_with_transport(
+        config.pinned_spec,
+        DriveRuntimeSecrets::new(
+            DriveAccessToken::new("cancellation-test-token").expect("token"),
+            DriveCursorKey::new([0x31; 32]),
+        ),
+        Arc::new(BlockingDriveTransport {
+            started: Arc::clone(&started),
+        }),
+    )
+    .expect("shipping Drive source");
+    let cancellation = CancellationToken::new();
+    let context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_secs(2),
+        4,
+        4096,
+        1,
+        cancellation.clone(),
+    )
+    .expect("bounded cancellation context");
+    let query = EntityQuery {
+        target: EntityTarget::Entity(config.entity),
+        filters: Vec::new(),
+    };
+    let operation = read(&source, &query, &config.fields, &context);
+    tokio::pin!(operation);
+
+    tokio::select! {
+        result = &mut operation => panic!("request finished before cancellation: {result:?}"),
+        _ = started.wait() => {}
+    }
+    cancellation.cancel();
+    assert!(matches!(operation.await, Err(SourceError::Cancelled)));
+}
+
+#[cfg(test)]
+fn sign_scope_attestation_for_test(
+    token: &str,
+    audience: &str,
+    scopes: &[&str],
+    issued_at: u64,
+    expires_at: u64,
+    key: &[u8; 32],
+) -> (String, [u8; 32]) {
+    let token_sha256 = format!("{:x}", Sha256::digest(token.as_bytes()));
+    let canonical = format!(
+        "catdb-live-scope-attestation/v1\ngoogle-drive\nhttps://accounts.google.com\n{audience}\n{}\n{token_sha256}\n{issued_at}\n{expires_at}",
+        scopes.join(" ")
+    );
+    let signer = Ed25519KeyPair::from_seed_unchecked(key).expect("fixed Ed25519 test seed");
+    let public_key = signer
+        .public_key()
+        .as_ref()
+        .try_into()
+        .expect("Ed25519 public key is 32 bytes");
+    let signature = signer.sign(canonical.as_bytes());
+    let json = serde_json::json!({
+        "version": "catdb-live-scope-attestation/v1",
+        "provider": "google-drive",
+        "issuer": "https://accounts.google.com",
+        "audience": audience,
+        "scopes": scopes,
+        "token_sha256": token_sha256,
+        "issued_at_unix_seconds": issued_at,
+        "expires_at_unix_seconds": expires_at,
+        "signature_ed25519": signature.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    })
+    .to_string();
+    (json, public_key)
+}
+
+#[test]
 fn live_config_and_resolver_debug_never_contain_secret_material() {
     let config =
         parse_live_config_json(&valid_config_value().to_string()).expect("valid non-secret config");
     let resolver = EnvironmentResolver {
         expected_reference: config.credential_reference,
+        expected_audience: config.oauth_audience,
+        scope_attestation_public_key: config.scope_attestation_public_key,
     };
     let debug = format!("{resolver:?}");
 
@@ -406,6 +679,8 @@ fn live_config_and_resolver_debug_never_contain_secret_material() {
 async fn live_resolver_rejects_a_different_credential_reference_before_env_lookup() {
     let resolver = EnvironmentResolver {
         expected_reference: DriveSecretReference::new("env://drive-live").expect("reference"),
+        expected_audience: "drive-live-client".to_string(),
+        scope_attestation_public_key: [0x11; 32],
     };
 
     assert!(matches!(

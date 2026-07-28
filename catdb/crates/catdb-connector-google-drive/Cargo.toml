@@ -30,6 +30,7 @@ uuid = { workspace = true }
 zeroize = "1"
 
 [dev-dependencies]
+ring = "0.17"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [features]

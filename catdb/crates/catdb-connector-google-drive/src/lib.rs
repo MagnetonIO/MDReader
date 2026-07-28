@@ -296,10 +296,27 @@ impl DriveSourceConfig {
 }
 
 /// Catalog-pinned Drive configuration and semantic schema identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PinnedDriveSourceSpec {
     config: DriveSourceConfig,
     schema_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPinnedDriveSourceSpec {
+    config: DriveSourceConfig,
+    schema_version: String,
+}
+
+impl<'de> Deserialize<'de> for PinnedDriveSourceSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawPinnedDriveSourceSpec::deserialize(deserializer)?;
+        Self::new(raw.config, raw.schema_version).map_err(serde::de::Error::custom)
+    }
 }
 
 impl PinnedDriveSourceSpec {
