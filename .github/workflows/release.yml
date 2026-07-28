@@ -581,12 +581,16 @@ jobs:
                 join('scripts', 'release', 'macos-ort-runtime.json'),
               ],
               [
+                join('scripts', 'release', 'macos-ort-runtime.sha256'),
+                join('scripts', 'release', 'macos-ort-runtime.sha256'),
+              ],
+              [
                 process.env.MACOS_ORT_MANIFEST_PATH,
                 join('runtime', 'macos', 'runtime.json'),
               ],
               [
                 process.env.MACOS_ORT_DYLIB_PATH,
-                join('runtime', 'macos', 'libonnxruntime.1.23.2.dylib'),
+                join('runtime', 'macos', 'libonnxruntime.1.24.2.dylib'),
               ],
             );
           }
@@ -921,8 +925,7 @@ jobs:
           EXPECTED_GOOGLE_DRIVE_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.google_drive_client_id_sha256 }}
           EXPECTED_DROPBOX_CLIENT_ID_SHA256: ${{ needs.prepare.outputs.dropbox_client_id_sha256 }}
           EXPECTED_DROPBOX_REDIRECT_URI_SHA256: ${{ needs.prepare.outputs.dropbox_redirect_uri_sha256 }}
-          EXPECTED_MACOS_ORT_AUTHORITY_SHA256: '4dfa82f27c3abff2af24db9d77fbc218743ce70dd4336eb9ac8383b59824f758'
-          EXPECTED_MACOS_ORT_DYLIB_SHA256: '6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa'
+          EXPECTED_MACOS_ORT_AUTHORITY_SHA256: 'eb08ba6f3a0cd30e684148e1f362e57a313fd7cf066403d44c09260663065760'
           EXPECTED_TAURI_CLI_INTEGRITY: 'sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ=='
           EXPECTED_TAURI_NATIVE_PACKAGE: ${{ matrix.native_package }}
           EXPECTED_TAURI_NATIVE_INTEGRITY: ${{ matrix.native_integrity }}
@@ -1037,9 +1040,10 @@ jobs:
             `target/${target}/release/${tuple[2]}`,
             ...(platform === 'macos'
               ? [
-                  'runtime/macos/libonnxruntime.1.23.2.dylib',
+                  'runtime/macos/libonnxruntime.1.24.2.dylib',
                   'runtime/macos/runtime.json',
                   'scripts/release/macos-ort-runtime.json',
+                  'scripts/release/macos-ort-runtime.sha256',
                 ]
               : []),
           ].sort();
@@ -1050,7 +1054,7 @@ jobs:
                     'EXPECTED_MACOS_ORT_AUTHORITY_SHA256',
                   ),
                   manifestSha256: handoff.macosOrt?.manifestSha256,
-                  dylibSha256: required('EXPECTED_MACOS_ORT_DYLIB_SHA256'),
+                  dylibSha256: handoff.macosOrt?.dylibSha256,
                 }
               : null;
           if (
@@ -1116,6 +1120,15 @@ jobs:
               'macos-ort-runtime.json',
             );
             const ortAuthorityBytes = readFileSync(ortAuthorityPath);
+            const ortAuthorityDigestBytes = readFileSync(
+              join(
+                unsignedPayload,
+                'scripts',
+                'release',
+                'macos-ort-runtime.sha256',
+              ),
+              'utf8',
+            );
             const ortAuthority = parse(
               ortAuthorityPath,
               'macOS ONNX Runtime authority',
@@ -1135,72 +1148,79 @@ jobs:
               unsignedPayload,
               'runtime',
               'macos',
-              'libonnxruntime.1.23.2.dylib',
+              'libonnxruntime.1.24.2.dylib',
             );
             const ortDylibBytes = readFileSync(macosOrtDylib);
             if (
               hash(ortAuthorityBytes) !==
                 required('EXPECTED_MACOS_ORT_AUTHORITY_SHA256') ||
+              ortAuthorityDigestBytes !==
+                `${required('EXPECTED_MACOS_ORT_AUTHORITY_SHA256')}\n` ||
+              `${JSON.stringify(ortAuthority, null, 2)}\n` !==
+                ortAuthorityBytes.toString('utf8') ||
               JSON.stringify(Object.keys(ortAuthority).sort()) !==
                 JSON.stringify([
-                  'architectures',
-                  'archiveBytes',
-                  'archiveEntry',
-                  'archiveSha256',
-                  'archiveUrl',
-                  'dylibBytes',
+                  'allowedDependencies',
+                  'build',
                   'dylibName',
-                  'dylibSha256',
                   'installName',
                   'linkerAlias',
                   'linkerAliasTarget',
                   'schemaVersion',
+                  'source',
+                  'toolchain',
                   'version',
                 ]) ||
-              ortAuthority.schemaVersion !== 1 ||
-              ortAuthority.version !== '1.23.2' ||
-              ortAuthority.archiveUrl !==
-                'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-universal2-1.23.2.tgz' ||
-              ortAuthority.archiveBytes !== 42818339 ||
-              ortAuthority.archiveSha256 !==
-                '49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809' ||
-              ortAuthority.archiveEntry !==
-                'onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib' ||
+              ortAuthority.schemaVersion !== 2 ||
+              ortAuthority.version !== '1.24.2' ||
               ortAuthority.dylibName !==
-                'libonnxruntime.1.23.2.dylib' ||
+                'libonnxruntime.1.24.2.dylib' ||
               ortAuthority.linkerAlias !== 'libonnxruntime.dylib' ||
               ortAuthority.linkerAliasTarget !==
                 ortAuthority.dylibName ||
-              !Number.isSafeInteger(ortAuthority.dylibBytes) ||
-              ortAuthority.dylibBytes < 1 ||
-              ortAuthority.dylibSha256 !==
-                required('EXPECTED_MACOS_ORT_DYLIB_SHA256') ||
-              JSON.stringify(ortAuthority.architectures) !==
+              JSON.stringify(ortAuthority.build?.architectures) !==
                 JSON.stringify(['arm64', 'x86_64']) ||
+              ortAuthority.build?.deploymentTarget !== '12.0' ||
               ortAuthority.installName !==
-                '@rpath/libonnxruntime.1.23.2.dylib' ||
+                '@rpath/libonnxruntime.1.24.2.dylib' ||
               hash(ortManifestBytes) !== handoff.macosOrt.manifestSha256 ||
-              ortManifest.schemaVersion !== 1 ||
+              ortManifest.schemaVersion !== 2 ||
               ortManifest.authoritySha256 !== hash(ortAuthorityBytes) ||
               ortManifest.version !== ortAuthority.version ||
-              ortManifest.archiveUrl !== ortAuthority.archiveUrl ||
-              ortManifest.archiveBytes !== ortAuthority.archiveBytes ||
-              ortManifest.archiveSha256 !== ortAuthority.archiveSha256 ||
-              JSON.stringify(ortManifest.dylib) !==
-                JSON.stringify({
-                  path: ortAuthority.dylibName,
-                  bytes: ortAuthority.dylibBytes,
-                  sha256: ortAuthority.dylibSha256,
-                  architectures: ortAuthority.architectures,
-                  installName: ortAuthority.installName,
-                }) ||
+              JSON.stringify(ortManifest.source) !==
+                JSON.stringify(ortAuthority.source) ||
+              JSON.stringify(ortManifest.toolchain) !==
+                JSON.stringify(ortAuthority.toolchain) ||
+              JSON.stringify(ortManifest.build) !==
+                JSON.stringify(ortAuthority.build) ||
+              ortManifest.dylib?.path !== ortAuthority.dylibName ||
+              ortManifest.dylib?.bytes !== ortDylibBytes.byteLength ||
+              ortManifest.dylib?.sha256 !== handoff.macosOrt.dylibSha256 ||
+              JSON.stringify(ortManifest.dylib?.architectures) !==
+                JSON.stringify(ortAuthority.build.architectures) ||
+              ortManifest.dylib?.installName !== ortAuthority.installName ||
+              JSON.stringify(ortManifest.dylib?.allowedDependencies) !==
+                JSON.stringify(ortAuthority.allowedDependencies) ||
+              ortManifest.dylib?.deploymentTarget !==
+                ortAuthority.build.deploymentTarget ||
+              !Array.isArray(ortManifest.dylib?.slices) ||
+              JSON.stringify(
+                ortManifest.dylib.slices.map((slice) => slice.architecture),
+              ) !== JSON.stringify(ortAuthority.build.architectures) ||
+              ortManifest.dylib.slices.some(
+                (slice) =>
+                  !Number.isSafeInteger(slice.bytes) ||
+                  slice.bytes < 1 ||
+                  !/^[0-9a-f]{64}$/.test(slice.sha256),
+              ) ||
               JSON.stringify(ortManifest.linkerAlias) !==
                 JSON.stringify({
                   path: ortAuthority.linkerAlias,
                   target: ortAuthority.linkerAliasTarget,
                 }) ||
               hash(ortDylibBytes) !==
-                required('EXPECTED_MACOS_ORT_DYLIB_SHA256')
+                handoff.macosOrt.dylibSha256 ||
+              !/^[0-9a-f]{64}$/.test(handoff.macosOrt.dylibSha256)
             ) {
               throw new Error(
                 'macOS ONNX Runtime handoff does not match its reviewed universal2 identity',
@@ -1286,7 +1306,7 @@ jobs:
                 }
                 if (
                   cursor !== end ||
-                  installName !== '@rpath/libonnxruntime.1.23.2.dylib'
+                  installName !== '@rpath/libonnxruntime.1.24.2.dylib'
                 ) {
                   throw new Error(
                     'macOS ONNX Runtime handoff is not one universal @rpath dylib',
@@ -1620,7 +1640,7 @@ jobs:
               workspace,
               'runtime',
               'macos',
-              'libonnxruntime.1.23.2.dylib',
+              'libonnxruntime.1.24.2.dylib',
             );
             mkdirSync(dirname(macosOrtDylibDestination), {
               recursive: true,

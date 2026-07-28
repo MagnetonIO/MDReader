@@ -17,9 +17,7 @@ const WINDOWS_NSIS_HOOK_SHA256 =
 const SAFE_PACKAGE_EXTRACTOR_SHA256 =
   'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8';
 const MACOS_ORT_AUTHORITY_SHA256 =
-  '4dfa82f27c3abff2af24db9d77fbc218743ce70dd4336eb9ac8383b59824f758';
-const MACOS_ORT_DYLIB_SHA256 =
-  '6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa';
+  'eb08ba6f3a0cd30e684148e1f362e57a313fd7cf066403d44c09260663065760';
 const PUBLIC_OAUTH_VARIABLES = {
   MDREADER_GOOGLE_DRIVE_CLIENT_ID:
     '${{ vars.MDREADER_GOOGLE_DRIVE_CLIENT_ID }}',
@@ -908,7 +906,8 @@ function validateUnsigned(
       'dropboxClientIdSha256',
       'dropboxRedirectUriSha256',
       'macos-ort-runtime.json',
-      'libonnxruntime.1.23.2.dylib',
+      'macos-ort-runtime.sha256',
+      'libonnxruntime.1.24.2.dylib',
       'runtime.json',
       'handoff_sha256=',
     ],
@@ -1091,11 +1090,6 @@ function validateBundle(
     boundaryEnv.EXPECTED_MACOS_ORT_AUTHORITY_SHA256,
     MACOS_ORT_AUTHORITY_SHA256,
     'credential boundary does not require the reviewed macOS ONNX Runtime authority',
-  );
-  same(
-    boundaryEnv.EXPECTED_MACOS_ORT_DYLIB_SHA256,
-    MACOS_ORT_DYLIB_SHA256,
-    'credential boundary does not require the reviewed universal ONNX Runtime dylib',
   );
   for (const [name, value] of Object.entries(PUBLIC_OAUTH_HASHES)) {
     same(

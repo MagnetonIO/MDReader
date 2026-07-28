@@ -1,18 +1,51 @@
 {
-  "schemaVersion": 1,
-  "version": "1.23.2",
-  "archiveUrl": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-universal2-1.23.2.tgz",
-  "archiveBytes": 42818339,
-  "archiveSha256": "49ae8e3a66ccb18d98ad3fe7f5906b6d7887df8a5edd40f49eb2b14e20885809",
-  "archiveEntry": "onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib",
-  "dylibName": "libonnxruntime.1.23.2.dylib",
+  "schemaVersion": 2,
+  "version": "1.24.2",
+  "source": {
+    "commit": "058787ceead760166e3c50a0a4cba8a833a6f53f",
+    "archiveUrl": "https://codeload.github.com/microsoft/onnxruntime/tar.gz/058787ceead760166e3c50a0a4cba8a833a6f53f",
+    "archiveBytes": 283622099,
+    "archiveSha256": "effd7da5ab292b18618e2d0675daba14dceef62d04ab3d7adf1c0ffb8a4eeb01",
+    "directory": "onnxruntime-058787ceead760166e3c50a0a4cba8a833a6f53f",
+    "dependencyManifest": "cmake/deps.txt",
+    "dependencyManifestSha256": "a913db05c4e9965f9725aec7a5b9b10b071d13496e567283e81737ebe91ff027"
+  },
+  "toolchain": {
+    "runner": "macos-14",
+    "developerDir": "/Applications/Xcode_15.4.app/Contents/Developer",
+    "xcodeVersion": "15.4",
+    "xcodeBuild": "15F31d",
+    "sdkVersion": "14.5",
+    "cmakeVersion": "4.3.4",
+    "pythonVersion": "3.14.6"
+  },
+  "build": {
+    "configuration": "Release",
+    "target": "onnxruntime",
+    "deploymentTarget": "12.0",
+    "clientPackageBuild": true,
+    "sourceDateEpoch": 1771477564,
+    "parallelJobs": 8,
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "cmakeDefinitions": [
+      "CMAKE_OSX_DEPLOYMENT_TARGET=12.0",
+      "FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER",
+      "CMAKE_FIND_USE_PACKAGE_REGISTRY=OFF",
+      "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF"
+    ]
+  },
+  "dylibName": "libonnxruntime.1.24.2.dylib",
   "linkerAlias": "libonnxruntime.dylib",
-  "linkerAliasTarget": "libonnxruntime.1.23.2.dylib",
-  "dylibBytes": 74902752,
-  "dylibSha256": "6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa",
-  "architectures": [
-    "arm64",
-    "x86_64"
-  ],
-  "installName": "@rpath/libonnxruntime.1.23.2.dylib"
+  "linkerAliasTarget": "libonnxruntime.1.24.2.dylib",
+  "installName": "@rpath/libonnxruntime.1.24.2.dylib",
+  "allowedDependencies": [
+    "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
+    "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+    "/usr/lib/libiconv.2.dylib",
+    "/usr/lib/libc++.1.dylib",
+    "/usr/lib/libSystem.B.dylib"
+  ]
 }
