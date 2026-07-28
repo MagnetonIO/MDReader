@@ -10,8 +10,8 @@ target/
 node_modules/
 dist/
 .next/
-.open-next/
 .wrangler/
+.vercel/
 .turbo/
 next-env.d.ts
 *.tsbuildinfo
