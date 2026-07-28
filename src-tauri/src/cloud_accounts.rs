@@ -310,6 +310,8 @@ pub(crate) enum CloudSourceError {
     OauthTimeout,
     OauthCancelled,
     OauthTransport,
+    OauthTokenRejected,
+    OauthOfflineGrantMissing,
     OauthRateLimited {
         retry_after_ms: Option<u32>,
     },
@@ -421,6 +423,8 @@ impl fmt::Display for CloudSourceError {
             Self::OauthTimeout => "cloud-oauth-timeout",
             Self::OauthCancelled => "cloud-oauth-cancelled",
             Self::OauthTransport => "cloud-oauth-transport-failed",
+            Self::OauthTokenRejected => "cloud-oauth-token-rejected",
+            Self::OauthOfflineGrantMissing => "cloud-oauth-offline-grant-missing",
             Self::OauthRateLimited { .. } => "cloud-oauth-rate-limited",
             Self::ProviderRejected => "cloud-oauth-provider-rejected",
             Self::SourcePaused => "cloud-source-paused",
@@ -4626,22 +4630,23 @@ fn validate_authorization_token_response(
     let refresh_token = response
         .refresh_token
         .filter(|token| !token.is_empty())
-        .ok_or(CloudSourceError::ProviderRejected)?;
+        .ok_or(CloudSourceError::OauthOfflineGrantMissing)?;
     let expires_in_seconds = response
         .expires_in
         .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
-        .ok_or(CloudSourceError::ProviderRejected)?;
+        .ok_or(CloudSourceError::OauthTokenRejected)?;
     if !response.token_type.eq_ignore_ascii_case("bearer")
         || !oauth_token_scope_is_acceptable(provider, response.scope.as_deref())
     {
-        return Err(CloudSourceError::ProviderRejected);
+        return Err(CloudSourceError::OauthTokenRejected);
     }
     SecretBundle::new(
         response.access_token.clone(),
         refresh_token.clone(),
         expires_at_unix_seconds(expires_in_seconds)?,
         [1; 32],
-    )?;
+    )
+    .map_err(|_| CloudSourceError::OauthTokenRejected)?;
     Ok(OAuthToken {
         access_token: Zeroizing::new(response.access_token),
         refresh_token: Zeroizing::new(refresh_token),
@@ -4689,9 +4694,9 @@ async fn exchange_authorization_code(
             retry_after_ms: retry_after_ms(response.headers()),
         });
     }
-    let bytes = bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES).await?;
+    let bytes = bounded_oauth_token_response(response).await?;
     let response: OAuthTokenResponse =
-        serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
+        serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::OauthTokenRejected)?;
     validate_authorization_token_response(provider, response)
 }
 
@@ -4744,13 +4749,13 @@ async fn exchange_refresh_token(
             retry_after_ms: retry_after_ms(response.headers()),
         });
     }
-    let bytes = bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES).await?;
+    let bytes = bounded_oauth_token_response(response).await?;
     let response: OAuthTokenResponse =
-        serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::ProviderRejected)?;
+        serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::OauthTokenRejected)?;
     let expires_in_seconds = response
         .expires_in
         .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
-        .ok_or(CloudSourceError::ProviderRejected)?;
+        .ok_or(CloudSourceError::OauthTokenRejected)?;
     if response.access_token.is_empty()
         || response.access_token.len() > 16 * 1024
         || response.access_token.chars().any(char::is_control)
@@ -4760,7 +4765,7 @@ async fn exchange_refresh_token(
             .as_deref()
             .is_some_and(|scope| !oauth_token_scope_is_acceptable(provider, Some(scope)))
     {
-        return Err(CloudSourceError::ProviderRejected);
+        return Err(CloudSourceError::OauthTokenRejected);
     }
     Ok(RefreshedOAuthToken {
         access_token: Zeroizing::new(response.access_token),
@@ -4849,6 +4854,17 @@ async fn bounded_provider_response(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+async fn bounded_oauth_token_response(
+    response: reqwest::Response,
+) -> Result<Vec<u8>, CloudSourceError> {
+    bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES)
+        .await
+        .map_err(|error| match error {
+            CloudSourceError::ProviderRejected => CloudSourceError::OauthTokenRejected,
+            other => other,
+        })
 }
 
 #[derive(Deserialize)]
@@ -8095,7 +8111,26 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(CloudSourceError::ProviderRejected)));
+        assert!(matches!(result, Err(CloudSourceError::OauthTokenRejected)));
+    }
+
+    #[test]
+    fn authorization_token_response_names_a_missing_offline_grant() {
+        let result = validate_authorization_token_response(
+            CloudProvider::GoogleDrive,
+            OAuthTokenResponse {
+                access_token: "access-token".to_string(),
+                refresh_token: None,
+                expires_in: Some(3600),
+                token_type: "Bearer".to_string(),
+                scope: Some(catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE.to_string()),
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(CloudSourceError::OauthOfflineGrantMissing)
+        ));
     }
 
     #[test]

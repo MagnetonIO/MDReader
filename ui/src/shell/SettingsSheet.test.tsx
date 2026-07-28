@@ -380,6 +380,57 @@ describe('Settings sheet', () => {
     expect(includeDropbox.getAttribute('aria-checked')).toBe('true');
   });
 
+  it.each([
+    [
+      'oauth-token-rejected',
+      'Sign-in completed, but the provider rejected the token exchange. Check the OAuth app configuration and try again.',
+    ],
+    [
+      'oauth-offline-grant-missing',
+      'Sign-in completed, but the provider did not issue an offline access token. Remove MDReader from the provider’s connected apps, then connect again.',
+    ],
+    [
+      'provider-rejected',
+      'Sign-in completed, but the provider rejected the first Library read. Confirm its API is enabled for MDReader’s OAuth project and try again.',
+    ],
+  ] as const)('names the failed provider boundary for %s', async (kind, message) => {
+    const api = cloudBackend({
+      version: 1,
+      sources: [
+        {
+          id: '',
+          provider: 'google-drive',
+          label: 'Google Drive',
+          connection: 'disconnected',
+          enabled: false,
+        },
+        {
+          id: '',
+          provider: 'dropbox',
+          label: 'Dropbox',
+          connection: 'disconnected',
+          enabled: false,
+        },
+      ],
+    });
+    api.connectCloudSource = vi.fn(async () => {
+      throw new SettingsCommandError('cloud', { kind } as never);
+    });
+    render(
+      <SettingsSheet
+        backend={api}
+        watcher="idle"
+        importState={null}
+        onActivateSource={vi.fn(async () => true)}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+
+    expect(await screen.findByText(message)).toBeTruthy();
+  });
+
   it('owns cloud account membership without issuing document queries', async () => {
     const api = cloudBackend({
       version: 1,

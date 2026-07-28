@@ -112,9 +112,14 @@ function errorMessage(cause: unknown): string {
       return 'The provider sign-in was cancelled or denied.';
     case 'oauth-timeout':
       return 'Provider sign-in timed out. Try again.';
+    case 'oauth-token-rejected':
+      return 'Sign-in completed, but the provider rejected the token exchange. Check the OAuth app configuration and try again.';
+    case 'oauth-offline-grant-missing':
+      return 'Sign-in completed, but the provider did not issue an offline access token. Remove MDReader from the provider’s connected apps, then connect again.';
     case 'oauth-transport':
-    case 'provider-rejected':
       return 'The provider could not complete sign-in. Try again.';
+    case 'provider-rejected':
+      return 'Sign-in completed, but the provider rejected the first Library read. Confirm its API is enabled for MDReader’s OAuth project and try again.';
     case 'query-invalid':
       return detail.detail;
     case 'query-failed':
