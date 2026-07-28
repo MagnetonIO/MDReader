@@ -125,6 +125,8 @@ async function enterInput(
   let entered = await waitUntil(readsExpectedValue, 1_500);
   let deliveryNote = '';
   if (!entered && actual.trim() === '' && d.typeDirect) {
+    await d.focus();
+    await d.focusInput(cssClass);
     await d.typeDirect(value);
     entered = await waitUntil(readsExpectedValue, 5_000);
     if (entered) {

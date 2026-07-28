@@ -122,7 +122,6 @@ export class Mac2Adapter implements PlatformDriver {
   private readonly keyBin: string;
   private readonly artifacts: string;
   private readonly ax: Ax;
-  private inputElementId: string | null = null;
   private shotSeq = 0;
 
   constructor(o: Mac2AdapterOptions) {
@@ -190,7 +189,6 @@ export class Mac2Adapter implements PlatformDriver {
   // ---- input (mac2 `macos: keys`) ----
 
   async chord(chord: Chord): Promise<void> {
-    this.inputElementId = null;
     const keys =
       chord === 'Enter'
         ? [{ key: '\r' }]
@@ -206,7 +204,6 @@ export class Mac2Adapter implements PlatformDriver {
   }
 
   async chordDirect(chord: Chord): Promise<void> {
-    this.inputElementId = null;
     // `execFileSync` throws on a nonzero exit, so an unmappable chord FAILS the
     // step instead of quietly posting nothing (keypost exits 2).
     execFileSync(this.keyBin, [String(this.pid), keypostChord(chord)]);
@@ -220,16 +217,6 @@ export class Mac2Adapter implements PlatformDriver {
     // land on the Settings button behind the transient palette.
     for (let attempt = 0; attempt < 50; attempt++) {
       if (this.ax.focused(cssClass)) {
-        const field = await this.b.$('(//XCUIElementTypeTextField)[1]');
-        const second = await this.b.$('(//XCUIElementTypeTextField)[2]');
-        const fieldExists = await field.isExisting();
-        const secondExists = await second.isExisting();
-        if (!fieldExists || secondExists) {
-          throw new Error(
-            `.${cssClass} owns AX focus, but mac2 did not expose exactly one native text field`,
-          );
-        }
-        this.inputElementId = await field.elementId;
         return;
       }
       await sleep(100);
@@ -238,16 +225,11 @@ export class Mac2Adapter implements PlatformDriver {
   }
 
   async inputValue(cssClass: string): Promise<string> {
-    return this.ax.text(cssClass);
+    return this.ax.value(cssClass);
   }
 
   async type(text: string): Promise<void> {
-    const elementId = this.inputElementId;
-    this.inputElementId = null;
-    await this.b.execute('macos: keys', {
-      keys: [...text],
-      ...(elementId ? { elementId } : {}),
-    });
+    await this.b.execute('macos: keys', { keys: [...text] });
   }
 
   async typeDirect(text: string): Promise<void> {

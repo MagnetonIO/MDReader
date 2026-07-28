@@ -78,8 +78,8 @@ const UNREADABLE_WAIT_MS = 400;
  * outcomes. Missing elements, invalid processes, denied access, and every other
  * read error still propagate on the first attempt. */
 const TRANSIENT_AX_CODES = ['code=-25202', 'code=-25204'] as const;
-const TRANSIENT_AX_TRIES = 4;
-const TRANSIENT_AX_WAIT_MS = 150;
+const TRANSIENT_AX_TRIES = 41;
+const TRANSIENT_AX_WAIT_MS = 250;
 
 /** Block the calling (synchronous) read for `ms`. The whole AX surface is sync
  *  `execFileSync`, so the retry has to be too — Node built-ins only. */
@@ -132,6 +132,9 @@ export interface Ax {
   /** Whether the single element carrying `cssClass` owns keyboard focus.
    * Throws when the selector is absent or ambiguous. */
   focused(cssClass: string): boolean;
+  /** The matched element's AXValue only, excluding its accessible label and
+   * descendants. Throws when the selector is absent or ambiguous. */
+  value(cssClass: string): string;
   /** Exact native window frame owned by the pid this helper was bound to. */
   appFrame(): AxRect;
   /**
@@ -234,6 +237,7 @@ export function makeAx(bin: string, pid: number): Ax {
       }
       return out === '1';
     },
+    value: (cssClass) => run('value', [cssClass]),
     appFrame: () => parseRect(run('appframe'), 'appframe'),
     frame: (selector, nth, contains) => {
       // A nonzero exit (4 = no such element, 3 = a real AX error) throws out of

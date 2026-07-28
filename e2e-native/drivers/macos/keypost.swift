@@ -65,9 +65,15 @@ if args.count == 4 && args[2] == "--text" {
         down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
         up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
     }
-    down.postToPid(pid)
+    // Literal text has no global-hot-key ambiguity. Post it at the HID tap so
+    // WebKit receives the same event path as a physical keyboard; posting the
+    // Unicode event only to the process queue does not reach WKWebView text
+    // input on current macOS.
+    down.flags = []
+    up.flags = []
+    down.post(tap: .cghidEventTap)
     usleep(60_000)
-    up.postToPid(pid)
+    up.post(tap: .cghidEventTap)
     exit(0)
 }
 

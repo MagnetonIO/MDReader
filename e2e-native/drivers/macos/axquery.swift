@@ -27,6 +27,10 @@
 //                                          when it exists but is not focused.
 //                                          Exits 4 when the selector is missing
 //                                          or ambiguous.
+//   axquery value    <pid> <cssClass>   — print only the single matched
+//                                          element's AXValue (not its label,
+//                                          description, or descendants). Exits 4
+//                                          when missing or ambiguous.
 //   axquery frame    <pid> <selector> <nth> [substring]
 //                                       — print `x y w h` (screen coordinates,
 //                                          top-left origin) of the <nth>
@@ -203,7 +207,7 @@ func loops(_ el: AXUIElement, _ path: [AXUIElement]) -> Bool {
     path.contains { CFEqual($0, el) }
 }
 
-let USAGE = "usage: axquery count|text|headings|focused|appframe|frame|point <pid> [selector] [nth] [substring]\n"
+let USAGE = "usage: axquery count|text|headings|focused|value|appframe|frame|point <pid> [selector] [nth] [substring]\n"
 
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[2]) else {
@@ -444,6 +448,18 @@ do {
         }
         let focused = (try attr(matches[0], kAXFocusedAttribute as String) as? Bool) ?? false
         print(focused ? "1" : "0")
+
+    case "value":
+        guard args.count == 4 else { exit(2) }
+        let selector = args[3]
+        let matches = try locate(selector, "")
+        guard matches.count == 1 else {
+            FileHandle.standardError.write(
+                "AX_NO_ELEMENT: value(\(selector)) expected one candidate, found \(matches.count)\n"
+                    .data(using: .utf8)!)
+            exit(4)
+        }
+        print((try string(matches[0], kAXValueAttribute as String)) ?? "")
 
     case "appframe":
         let windows = try children(app).filter { try role($0) == "AXWindow" }

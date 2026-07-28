@@ -6,7 +6,10 @@ import test from 'node:test';
 
 import { makeAx } from './ax-helper.ts';
 
-async function fakeAxHelper(errorLine: string): Promise<{ bin: string; attempts: string }> {
+async function fakeAxHelper(
+  errorLine: string,
+  failuresBeforeSuccess = 1,
+): Promise<{ bin: string; attempts: string }> {
   const root = await mkdtemp(join(tmpdir(), 'mdreader-ax-helper-'));
   const bin = join(root, 'axquery.mjs');
   const attempts = join(root, 'attempts');
@@ -18,7 +21,7 @@ async function fakeAxHelper(errorLine: string): Promise<{ bin: string; attempts:
       `const attempts = ${JSON.stringify(attempts)};`,
       "const count = existsSync(attempts) ? Number(readFileSync(attempts, 'utf8')) + 1 : 1;",
       "writeFileSync(attempts, String(count));",
-      `if (count === 1) { console.error(${JSON.stringify(errorLine)}); process.exit(3); }`,
+      `if (count <= ${failuresBeforeSuccess}) { console.error(${JSON.stringify(errorLine)}); process.exit(3); }`,
       "console.log('Sample Project');",
     ].join('\n'),
   );
@@ -49,6 +52,12 @@ test('a WebKit node invalidated during traversal is retried from the current roo
   assert.equal(await readFile(helper.attempts, 'utf8'), '2');
 });
 
+test('a changing WebKit subtree may stay busy across several bounded retries', async () => {
+  const helper = await fakeAxHelper('AX_READ_ERROR: AXDOMClassList code=-25204', 5);
+  assert.equal(makeAx(helper.bin, 42).headings(), 'Sample Project');
+  assert.equal(await readFile(helper.attempts, 'utf8'), '6');
+});
+
 test('another AX read error remains fail-closed without retry', async () => {
   const helper = await fakeAxHelper('AX_READ_ERROR: AXRole code=-25205');
   assert.throws(() => makeAx(helper.bin, 42).headings());
@@ -62,5 +71,12 @@ test('focused parses only the helper boolean contract', async () => {
   assert.throws(
     () => makeAx(malformed, 42).focused('mdsearch__input'),
     /returned unparseable output/,
+  );
+});
+
+test('value returns the helper value without interpreting labels or descendants', async () => {
+  assert.equal(
+    makeAx(await focusedAxHelper('overview'), 42).value('mdsearch__input'),
+    'overview',
   );
 });
