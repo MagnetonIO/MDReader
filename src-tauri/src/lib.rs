@@ -224,6 +224,36 @@ fn specta_builder() -> Builder<tauri::Wry> {
     mobile_specta_builder()
 }
 
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeTarget {
+    Desktop,
+    Mobile,
+}
+
+#[cfg(debug_assertions)]
+impl RuntimeTarget {
+    const fn current() -> Self {
+        if cfg!(mobile) {
+            Self::Mobile
+        } else {
+            Self::Desktop
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn runtime_specta_builder(
+    target: RuntimeTarget,
+    export: impl FnOnce(&Builder<tauri::Wry>),
+) -> Builder<tauri::Wry> {
+    let builder = specta_builder();
+    if target == RuntimeTarget::Desktop {
+        export(&builder);
+    }
+    builder
+}
+
 /// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the
 /// native "Close Window", which would swallow the keystroke before it reaches
 /// the webview — stealing the shell's "close tab" binding. This replacement
