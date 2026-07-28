@@ -72,7 +72,7 @@ import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
-import { hydrateLibrary } from './library-documents.js';
+import { hydrateLibrary, libraryHydrationMessage } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -219,10 +219,11 @@ export function AppShell() {
     try {
       const requestId = `library:${globalThis.crypto.randomUUID()}`;
       libraryRefreshRequest.current = requestId;
-      const { evidence: answers, failures } = await hydrateLibrary(
+      const hydration = await hydrateLibrary(
         settingsBackend,
         requestId,
       );
+      const { evidence: answers } = hydration;
       if (libraryRefreshGeneration.current !== generation) return;
       setLibraryEvidence(answers);
       setLibraryDocument((current) => {
@@ -238,16 +239,7 @@ export function AppShell() {
         }
         return null;
       });
-      if (
-        failures.length > 0 ||
-        answers.some((answer) => answer.answer.completeness.state === 'partial')
-      ) {
-        setLibraryError(
-          answers.length === 0
-            ? 'Library sources could not be read.'
-            : 'Some Library sources could not answer this query.',
-        );
-      }
+      setLibraryError(libraryHydrationMessage(hydration));
     } catch {
       if (libraryRefreshGeneration.current === generation) {
         setLibraryEvidence([]);
