@@ -341,7 +341,9 @@ fn map_entity_query_error(error: EntityQueryError) -> LibraryQueryError {
         EntityQueryError::RowBudgetExceeded
         | EntityQueryError::ByteBudgetExceeded
         | EntityQueryError::ContinuationStateCapacityExceeded => LibraryQueryError::LimitExceeded,
-        EntityQueryError::InvalidProvenance => LibraryQueryError::InvalidResponse,
+        EntityQueryError::InvalidProvenance | EntityQueryError::InvalidSemanticResult => {
+            LibraryQueryError::InvalidResponse
+        }
     }
 }
 
