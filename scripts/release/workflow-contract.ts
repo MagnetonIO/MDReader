@@ -16,6 +16,10 @@ const WINDOWS_NSIS_HOOK_SHA256 =
   'd47e8e70f688281a29eb8d23b18e245b59fec995ff3f196307e3fa5b17b475a3';
 const SAFE_PACKAGE_EXTRACTOR_SHA256 =
   'cd47d9353b4905e50b15446b4acdeb6f672716bb52f64590923733921a72a9c8';
+const MACOS_ORT_AUTHORITY_SHA256 =
+  '4dfa82f27c3abff2af24db9d77fbc218743ce70dd4336eb9ac8383b59824f758';
+const MACOS_ORT_DYLIB_SHA256 =
+  '6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa';
 const PUBLIC_OAUTH_VARIABLES = {
   MDREADER_GOOGLE_DRIVE_CLIENT_ID:
     '${{ vars.MDREADER_GOOGLE_DRIVE_CLIENT_ID }}',
@@ -53,6 +57,7 @@ const STEP_IDS: Record<string, string[]> = {
     'install-linux-compilation',
     'install-dependencies-build',
     'install-rust-targets',
+    'prepare-macos-ort-runtime',
     'generate-unsigned-release-config',
     'attest-unsigned-build',
     'prepare-direct-release',
@@ -124,6 +129,8 @@ const STEP_IDS: Record<string, string[]> = {
 
 const CONDITIONS: Record<string, string> = {
   'build-unsigned/install-linux-compilation': "matrix.platform == 'linux'",
+  'build-unsigned/prepare-macos-ort-runtime':
+    "matrix.platform == 'macos'",
   'bundle-sign/windows-admin-preflight': "matrix.platform == 'windows'",
   'bundle-sign/require-release-secrets-macos': "matrix.platform == 'macos'",
   'bundle-sign/require-release-secrets-windows':
@@ -402,6 +409,8 @@ const BUNDLE_SECRET_ENVS: Record<string, Mapping> = {
       '${{ secrets.MDREADER_APPLE_SIGNING_IDENTITY }}',
     MDREADER_UPDATER_PUBLIC_KEY: '${{ vars.MDREADER_UPDATER_PUBLIC_KEY }}',
     RELEASE_VERSION: '${{ needs.prepare.outputs.version }}',
+    MACOS_ORT_DYLIB_PATH:
+      '${{ steps.verify-credential-boundaries.outputs.macos_ort_dylib_path }}',
   },
   'import-macos-cert': {
     APPLE_CERTIFICATE: '${{ secrets.MDREADER_APPLE_CERTIFICATE }}',
@@ -795,11 +804,20 @@ function validateUnsigned(
   }
   requireRun(
     steps,
+    'prepare-macos-ort-runtime',
+    [
+      'prepare-macos-ort-runtime.mjs',
+      'mdreader-ort-runtime',
+    ],
+    'macOS unsigned build does not prepare the reviewed universal ONNX Runtime',
+  );
+  requireRun(
+    steps,
     'generate-unsigned-release-config',
     [
       'ACTUAL_KEY_SHA256',
       'EXPECTED_UPDATER_PUBLIC_KEY_SHA256',
-      'generate-direct-release-config.sh linux',
+      'generate-direct-release-config.sh "${{ matrix.platform }}"',
     ],
     'unsigned build config does not bind the sealed updater identity',
   );
@@ -808,7 +826,8 @@ function validateUnsigned(
     'attest-unsigned-build',
     [
       'public-oauth-config.mjs assert-hashes',
-      'schemaVersion: 3',
+      'schemaVersion: 4',
+      'macosOrt',
       'googleDriveClientIdSha256',
       'dropboxClientIdSha256',
       'dropboxRedirectUriSha256',
@@ -822,6 +841,10 @@ function validateUnsigned(
       ...PUBLIC_OAUTH_HASHES,
       MDREADER_RELEASE_SOURCE_COMMIT:
         '${{ needs.prepare.outputs.source_commit }}',
+      MDREADER_MACOS_ORT_LIB_LOCATION:
+        '${{ steps.prepare-macos-ort-runtime.outputs.ort_lib_location }}',
+      MDREADER_MACOS_ORT_MANIFEST:
+        '${{ steps.prepare-macos-ort-runtime.outputs.ort_manifest_path }}',
     },
     'shipping Tauri build does not receive the exact source and public OAuth inputs',
   );
@@ -849,6 +872,9 @@ function validateUnsigned(
       'googleDriveClientIdSha256',
       'dropboxClientIdSha256',
       'dropboxRedirectUriSha256',
+      'prepare-macos-ort-runtime.mjs',
+      'EXPECTED_MACOS_ORT_DYLIB_SHA256',
+      'macosOrt',
       'config.bundle?.windows !== undefined',
       'config.bundle?.macOS !== undefined',
     ],
@@ -865,6 +891,9 @@ function validateUnsigned(
       'googleDriveClientIdSha256',
       'dropboxClientIdSha256',
       'dropboxRedirectUriSha256',
+      'macos-ort-runtime.json',
+      'libonnxruntime.1.23.2.dylib',
+      'runtime.json',
       'handoff_sha256=',
     ],
     'unsigned binary, resources, and public OAuth identities are not closed and hash-addressed',
@@ -1004,6 +1033,8 @@ function validateBundle(
       'oauthAuthority.dropboxClientIdSha256',
       'oauthAuthority.dropboxRedirectUriSha256',
       'public OAuth authority does not match the handoff identity',
+      'macOS ONNX Runtime handoff does not match its reviewed universal2 identity',
+      'macos_ort_dylib_path=',
       'Node runtime inventory mismatch',
       'MDREADER_RELEASE_IDENTITY_V1',
       'productName=MDReader',
@@ -1040,6 +1071,16 @@ function validateBundle(
     SAFE_PACKAGE_EXTRACTOR_SHA256,
     'credential boundary does not require the workflow-approved package extractor',
   );
+  same(
+    boundaryEnv.EXPECTED_MACOS_ORT_AUTHORITY_SHA256,
+    MACOS_ORT_AUTHORITY_SHA256,
+    'credential boundary does not require the reviewed macOS ONNX Runtime authority',
+  );
+  same(
+    boundaryEnv.EXPECTED_MACOS_ORT_DYLIB_SHA256,
+    MACOS_ORT_DYLIB_SHA256,
+    'credential boundary does not require the reviewed universal ONNX Runtime dylib',
+  );
   for (const [name, value] of Object.entries(PUBLIC_OAUTH_HASHES)) {
     same(
       boundaryEnv[name],
@@ -1061,6 +1102,8 @@ function validateBundle(
       "windows: ['x86_64-pc-windows-msvc', 'nsis']",
       "linux: ['x86_64-unknown-linux-gnu', 'appimage,deb,rpm']",
       'windows?.nsis?.installerHooks',
+      'macos.frameworks',
+      'EXPECTED_MACOS_ORT_DYLIB_SHA256',
       'release_config_sha256=',
     ],
     'credentialed release config lacks the exact platform tuple or Windows NSIS hook',
@@ -1163,7 +1206,11 @@ function validateVerify(
   requireRun(
     steps,
     'macos-verify-signature',
-    ['verify-macos-signature.sh', 'mdreader-credentialed-output/bundle'],
+    [
+      'verify-macos-signature.sh',
+      'mdreader-credentialed-output/bundle',
+      'EXPECTED_APPLE_TEAM_ID',
+    ],
     'macOS signature verification is incomplete',
   );
   requireRun(
