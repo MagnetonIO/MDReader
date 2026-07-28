@@ -3,6 +3,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use axum::http::{HeaderValue, Request};
+use axum::middleware::{self, Next};
+use axum::response::Response;
+use axum::Router;
 use mdreader_ingest::deployment::DemoDeploymentError;
 
 #[tokio::main]
@@ -86,6 +90,34 @@ fn runtime_path(variable: &str, default: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(default))
 }
 
+fn with_deployment_identity(
+    router: Router,
+    source_commit: &str,
+    deployment_fingerprint: &str,
+) -> Result<Router, String> {
+    let source_commit = HeaderValue::from_str(source_commit)
+        .map_err(|_| "source commit cannot be represented as an HTTP header".to_string())?;
+    let deployment_fingerprint = HeaderValue::from_str(deployment_fingerprint).map_err(|_| {
+        "deployment fingerprint cannot be represented as an HTTP header".to_string()
+    })?;
+    Ok(router.layer(middleware::from_fn(
+        move |request: Request<axum::body::Body>, next: Next| {
+            let source_commit = source_commit.clone();
+            let deployment_fingerprint = deployment_fingerprint.clone();
+            async move {
+                let mut response: Response = next.run(request).await;
+                response
+                    .headers_mut()
+                    .insert("x-catdb-source-commit", source_commit);
+                response
+                    .headers_mut()
+                    .insert("x-catdb-deployment-fingerprint", deployment_fingerprint);
+                response
+            }
+        },
+    )))
+}
+
 async fn serve() -> Result<(), String> {
     let port = std::env::var("PORT")
         .map_err(|_| "PORT is required".to_string())?
@@ -123,7 +155,12 @@ async fn serve() -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .map_err(|_| "binding the configured PORT failed".to_string())?;
-    axum::serve(listener, catdb_server::read_only_router(runtime.engine()))
+    let router = with_deployment_identity(
+        catdb_server::read_only_router(runtime.engine()),
+        &identity.source_commit,
+        &identity.deployment_fingerprint,
+    )?;
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|_| "serving the read-only demo failed".to_string())
@@ -143,5 +180,44 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, http::Request, routing::get, Router};
+    use tower::ServiceExt;
+
+    use super::with_deployment_identity;
+
+    #[tokio::test]
+    async fn every_runtime_response_exposes_only_public_immutable_identity() {
+        let source_commit = "a".repeat(40);
+        let fingerprint = format!("blake3:{}", "b".repeat(64));
+        let app = with_deployment_identity(
+            Router::new().route("/test", get(|| async { "ok" })),
+            &source_commit,
+            &fingerprint,
+        )
+        .expect("valid identity");
+
+        let response = app
+            .oneshot(Request::get("/test").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.headers().get("x-catdb-source-commit").unwrap(),
+            source_commit.as_str()
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-catdb-deployment-fingerprint")
+                .unwrap(),
+            fingerprint.as_str()
+        );
+        assert!(response.headers().get("x-catdb-catalog-revision").is_none());
+        assert!(response.headers().get("x-catdb-workspace-path").is_none());
     }
 }

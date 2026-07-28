@@ -83,3 +83,4 @@ catdb-catalog = { path = "../../../../catdb/crates/catdb-catalog" }
 catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
