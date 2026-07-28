@@ -1,0 +1,512 @@
+name: MDReader production mobile beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact stable version from the workspace Cargo manifest
+        required: true
+        type: string
+      build_number:
+        description: Positive App Store and Google Play build number
+        required: true
+        type: string
+      publish:
+        description: Sign and upload to TestFlight and the reviewed closed Play track
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mdreader-production-mobile-beta
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Authorize production mobile beta source
+    runs-on: ubuntu-24.04
+    outputs:
+      source_commit: ${{ steps.authorize-source-and-release.outputs.source_commit }}
+      version: ${{ steps.authorize-source-and-release.outputs.version }}
+      build_number: ${{ steps.authorize-source-and-release.outputs.build_number }}
+      apple_team_id: ${{ steps.authorize-source-and-release.outputs.apple_team_id }}
+      ios_certificate_sha256: ${{ steps.authorize-source-and-release.outputs.ios_certificate_sha256 }}
+      android_certificate_sha256: ${{ steps.authorize-source-and-release.outputs.android_certificate_sha256 }}
+      android_key_alias: ${{ steps.authorize-source-and-release.outputs.android_key_alias }}
+      appstore_api_key_id: ${{ steps.authorize-source-and-release.outputs.appstore_api_key_id }}
+      appstore_api_issuer_id: ${{ steps.authorize-source-and-release.outputs.appstore_api_issuer_id }}
+      google_service_account_email: ${{ steps.authorize-source-and-release.outputs.google_service_account_email }}
+      google_closed_track: ${{ steps.authorize-source-and-release.outputs.google_closed_track }}
+    steps:
+      - name: Checkout exact release source
+        id: checkout-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        id: setup-node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Authorize source, version, and non-secret release authorities
+        id: authorize-source-and-release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_BUILD_NUMBER: ${{ inputs.build_number }}
+          APPLE_TEAM_ID: ${{ vars.MDREADER_APPLE_TEAM_ID }}
+          IOS_CERTIFICATE_SHA256: ${{ vars.MDREADER_IOS_DISTRIBUTION_CERT_SHA256 }}
+          ANDROID_CERTIFICATE_SHA256: ${{ vars.MDREADER_ANDROID_UPLOAD_CERT_SHA256 }}
+          ANDROID_KEY_ALIAS: ${{ vars.MDREADER_ANDROID_UPLOAD_KEY_ALIAS }}
+          APPSTORE_API_KEY_ID: ${{ vars.MDREADER_APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ vars.MDREADER_APPSTORE_API_ISSUER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ vars.MDREADER_GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_CLOSED_TRACK: ${{ vars.MDREADER_GOOGLE_PLAY_CLOSED_TRACK }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          git fetch --no-tags origin main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const env = process.env;
+          const cargo = fs.readFileSync('Cargo.toml', 'utf8');
+          const workspaceVersion =
+            cargo.match(/^\[workspace\.package\][\s\S]*?^version = "([^"]+)"$/m)?.[1];
+          const requireMatch = (value, pattern, label) => {
+            if (!value || !pattern.test(value)) throw new Error(`${label} is missing or invalid`);
+            return value;
+          };
+          const version = requireMatch(
+            env.REQUESTED_VERSION,
+            /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/,
+            'version',
+          );
+          if (version !== workspaceVersion) throw new Error('requested version differs from Cargo workspace');
+          const build = requireMatch(env.REQUESTED_BUILD_NUMBER, /^[1-9][0-9]*$/, 'build number');
+          if (env.APPLE_TEAM_ID !== '7727LYTG96') throw new Error('Apple team differs from reviewed authority');
+          const iosCert = requireMatch(env.IOS_CERTIFICATE_SHA256, /^[0-9a-f]{64}$/, 'iOS certificate SHA-256');
+          const androidCert = requireMatch(env.ANDROID_CERTIFICATE_SHA256, /^[0-9a-f]{64}$/, 'Android certificate SHA-256');
+          const androidAlias = requireMatch(env.ANDROID_KEY_ALIAS, /^[A-Za-z0-9._-]{1,80}$/, 'Android key alias');
+          const apiKey = requireMatch(env.APPSTORE_API_KEY_ID, /^[A-Z0-9]{10}$/, 'App Store API key');
+          const issuer = requireMatch(
+            env.APPSTORE_API_ISSUER_ID,
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+            'App Store issuer',
+          );
+          const serviceEmail = requireMatch(
+            env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+            /^[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com$/,
+            'Google service-account identity',
+          );
+          const track = requireMatch(env.GOOGLE_CLOSED_TRACK, /^[a-z][a-z0-9-]{2,63}$/, 'Google closed track');
+          if (new Set(['production', 'beta', 'alpha', 'qa', 'internal']).has(track)) {
+            throw new Error('Google Play track must be a reviewed custom closed track');
+          }
+          const outputs = {
+            source_commit: env.GITHUB_SHA,
+            version,
+            build_number: build,
+            apple_team_id: env.APPLE_TEAM_ID,
+            ios_certificate_sha256: iosCert,
+            android_certificate_sha256: androidCert,
+            android_key_alias: androidAlias,
+            appstore_api_key_id: apiKey,
+            appstore_api_issuer_id: issuer,
+            google_service_account_email: serviceEmail,
+            google_closed_track: track,
+          };
+          fs.appendFileSync(env.GITHUB_OUTPUT, `${Object.entries(outputs).map(([key, value]) => `${key}=${value}`).join('\n')}\n`);
+          NODE
+
+      - name: Install immutable JavaScript dependencies
+        id: install-dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Validate the tracked mobile beta workflow contract
+        id: validate-workflow
+        run: pnpm exec tsx scripts/release/check-mobile-beta-workflow.ts .github/workflows/mobile-beta.yml
+
+  build-ios-unsigned:
+    name: Build unsigned production iOS archive
+    needs: prepare
+    runs-on: macos-14
+    outputs:
+      handoff_sha256: ${{ steps.seal-ios-handoff.outputs.handoff_sha256 }}
+    steps:
+      - name: Checkout authorized source
+        id: checkout-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        id: setup-node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Set up pinned Rust and iOS target
+        id: setup-rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.94.0
+          targets: aarch64-apple-ios
+
+      - name: Install immutable JavaScript dependencies
+        id: install-dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Build production device archive without credentials
+        id: build-ios-archive
+        env:
+          MDREADER_RELEASE_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          MOBILE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          grep -F 'PRODUCT_BUNDLE_IDENTIFIER: dev.mdreader.app' apps/mdreader/src-tauri/gen/apple/project.yml
+          mkdir -p target/mobile-beta
+          node -e '
+            const fs = require("node:fs");
+            if (!/^[1-9][0-9]*$/.test(process.env.MOBILE_BUILD_NUMBER)) process.exit(1);
+            fs.writeFileSync(
+              "target/mobile-beta/ios-release-config.json",
+              JSON.stringify({
+                identifier: "dev.mdreader.app",
+                bundle: { iOS: { bundleVersion: process.env.MOBILE_BUILD_NUMBER } },
+              }),
+            );
+          '
+          pnpm --filter "@mdreader/app..." run build
+          pnpm --filter @mdreader/app tauri ios build \
+            --config "$GITHUB_WORKSPACE/target/mobile-beta/ios-release-config.json" \
+            --target aarch64 \
+            --no-sign \
+            --archive-only \
+            --ci
+
+      - name: Seal exact unsigned archive handoff
+        id: seal-ios-handoff
+        run: |
+          set -euo pipefail
+          archives=()
+          while IFS= read -r -d '' path; do archives+=("$path"); done < <(
+            find apps/mdreader/src-tauri/gen/apple -type d -name '*.xcarchive' -print0
+          )
+          test "${#archives[@]}" -eq 1
+          mkdir -p target/mobile-beta/ios-handoff
+          COPYFILE_DISABLE=1 tar --format=ustar -chf \
+            target/mobile-beta/ios-handoff/MDReader.xcarchive.tar \
+            -C "$(dirname "${archives[0]}")" \
+            "$(basename "${archives[0]}")"
+          test "$(stat -f %z target/mobile-beta/ios-handoff/MDReader.xcarchive.tar)" -le 134217728
+          digest="$(shasum -a 256 target/mobile-beta/ios-handoff/MDReader.xcarchive.tar | awk '{print $1}')"
+          printf 'handoff_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned iOS handoff
+        id: upload-ios-handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-ios-unsigned-${{ steps.seal-ios-handoff.outputs.handoff_sha256 }}
+          path: target/mobile-beta/ios-handoff/MDReader.xcarchive.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  build-android-unsigned:
+    name: Build unsigned production Android bundle
+    needs: prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      handoff_sha256: ${{ steps.seal-android-handoff.outputs.handoff_sha256 }}
+    steps:
+      - name: Checkout authorized source
+        id: checkout-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        id: setup-node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Set up pinned Java
+        id: setup-java
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
+        with:
+          distribution: temurin
+          java-version: 17.0.16+8
+
+      - name: Set up pinned Rust and Android target
+        id: setup-rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.94.0
+          targets: aarch64-linux-android
+
+      - name: Install immutable JavaScript dependencies
+        id: install-dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Build production arm64 Android App Bundle
+        id: build-android-bundle
+        env:
+          MDREADER_RELEASE_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          grep -F 'applicationId = "dev.mdreader.app"' apps/mdreader/src-tauri/gen/android/app/build.gradle.kts
+          mkdir -p apps/mdreader/src-tauri/gen/android/app
+          {
+            printf 'tauri.android.versionCode=%s\n' '${{ needs.prepare.outputs.build_number }}'
+            printf 'tauri.android.versionName=%s\n' '${{ needs.prepare.outputs.version }}'
+          } > apps/mdreader/src-tauri/gen/android/app/tauri.properties
+          pnpm --filter "@mdreader/app..." run build
+          pnpm --filter @mdreader/app tauri android build \
+            --target aarch64 \
+            --aab \
+            --ci
+
+      - name: Seal exact unsigned Android handoff
+        id: seal-android-handoff
+        run: |
+          set -euo pipefail
+          bundles=()
+          while IFS= read -r -d '' path; do bundles+=("$path"); done < <(
+            find apps/mdreader/src-tauri/gen/android -type f -name '*.aab' -print0
+          )
+          test "${#bundles[@]}" -eq 1
+          if zipinfo -1 "${bundles[0]}" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then
+            echo 'unsigned Android handoff unexpectedly contains a JAR signature' >&2
+            exit 1
+          fi
+          mkdir -p target/mobile-beta/android-handoff
+          install -m 600 "${bundles[0]}" target/mobile-beta/android-handoff/MDReader-unsigned.aab
+          digest="$(sha256sum target/mobile-beta/android-handoff/MDReader-unsigned.aab | awk '{print $1}')"
+          printf 'handoff_sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned Android handoff
+        id: upload-android-handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-android-unsigned-${{ steps.seal-android-handoff.outputs.handoff_sha256 }}
+          path: target/mobile-beta/android-handoff/MDReader-unsigned.aab
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-ios-beta:
+    name: Sign, inspect, and upload TestFlight beta
+    needs: [prepare, build-ios-unsigned]
+    if: ${{ inputs.publish == true }}
+    environment: mdreader-mobile-beta
+    runs-on: macos-14
+    steps:
+      - name: Checkout authorized source
+        id: checkout-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        id: setup-node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Download exact unsigned iOS handoff
+        id: download-ios-handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-ios-unsigned-${{ needs.build-ios-unsigned.outputs.handoff_sha256 }}
+          path: target/mobile-beta/ios-handoff
+
+      - name: Verify unsigned iOS handoff digest
+        id: verify-ios-handoff
+        run: |
+          set -euo pipefail
+          test "$(shasum -a 256 target/mobile-beta/ios-handoff/MDReader.xcarchive.tar | awk '{print $1}')" = \
+            '${{ needs.build-ios-unsigned.outputs.handoff_sha256 }}'
+
+      - name: Sign with reviewed Apple distribution authority
+        id: sign-ios
+        env:
+          MDREADER_IOS_UNSIGNED_ARCHIVE_TAR: target/mobile-beta/ios-handoff/MDReader.xcarchive.tar
+          MDREADER_IOS_OUTPUT_DIRECTORY: target/mobile-beta/ios-signed
+          MDREADER_IOS_DISTRIBUTION_CERT_P12_B64: ${{ secrets.MDREADER_IOS_DISTRIBUTION_CERT_P12_B64 }}
+          MDREADER_IOS_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.MDREADER_IOS_DISTRIBUTION_CERT_PASSWORD }}
+          MDREADER_IOS_PROVISIONING_PROFILE_B64: ${{ secrets.MDREADER_IOS_PROVISIONING_PROFILE_B64 }}
+          MDREADER_APPLE_TEAM_ID: ${{ needs.prepare.outputs.apple_team_id }}
+          MDREADER_VERSION: ${{ needs.prepare.outputs.version }}
+          MDREADER_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+        run: scripts/release/sign-ios-beta.sh
+
+      - name: Inspect and retain the signed TestFlight candidate
+        id: inspect-ios
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm exec tsx scripts/release/mobile-beta-cli.ts inspect-ios \
+            --artifact "target/mobile-beta/ios-signed/MDReader-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build_number }}.ipa" \
+            --snapshot "target/mobile-beta/ios-signed/MDReader-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build_number }}.retained.ipa" \
+            --manifest target/mobile-beta/ios-signed/mobile-beta-manifest.json \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --build-number "${{ needs.prepare.outputs.build_number }}" \
+            --team-id "${{ needs.prepare.outputs.apple_team_id }}" \
+            --certificate-sha256 "${{ needs.prepare.outputs.ios_certificate_sha256 }}"
+
+      - name: Upload only the manifest-bound retained IPA
+        id: upload-testflight
+        env:
+          APPSTORE_API_PRIVATE_KEY_B64: ${{ secrets.MDREADER_APPSTORE_API_PRIVATE_KEY_B64 }}
+          APPSTORE_BETA_GROUP_ID: ${{ vars.MDREADER_APPSTORE_BETA_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          key_root="$(mktemp -d "$RUNNER_TEMP/mdreader-appstore-key.XXXXXX")"
+          trap '/bin/rm -rf -- "$key_root"' EXIT
+          key_path="$key_root/AuthKey_${{ needs.prepare.outputs.appstore_api_key_id }}.p8"
+          printf '%s' "$APPSTORE_API_PRIVATE_KEY_B64" | openssl base64 -d -A -out "$key_path"
+          chmod 600 "$key_path"
+          pnpm exec tsx scripts/release/mobile-beta-cli.ts upload-ios \
+            --manifest target/mobile-beta/ios-signed/mobile-beta-manifest.json \
+            --api-key-id "${{ needs.prepare.outputs.appstore_api_key_id }}" \
+            --issuer-id "${{ needs.prepare.outputs.appstore_api_issuer_id }}" \
+            --beta-group-id "$APPSTORE_BETA_GROUP_ID" \
+            --private-key "$key_path" \
+            --receipt target/mobile-beta/ios-signed/mobile-beta-receipt.json
+
+      - name: Retain signed iOS evidence
+        id: upload-ios-evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-testflight-${{ needs.prepare.outputs.source_commit }}-${{ needs.prepare.outputs.build_number }}
+          path: |
+            target/mobile-beta/ios-signed/*.retained.ipa
+            target/mobile-beta/ios-signed/mobile-beta-manifest.json
+            target/mobile-beta/ios-signed/mobile-beta-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-android-beta:
+    name: Sign, inspect, and upload closed Google Play beta
+    needs: [prepare, build-android-unsigned]
+    if: ${{ inputs.publish == true }}
+    environment: mdreader-mobile-beta
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout authorized source
+        id: checkout-source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Node
+        id: setup-node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.18.0
+
+      - name: Set up pinned Java
+        id: setup-java
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
+        with:
+          distribution: temurin
+          java-version: 17.0.16+8
+
+      - name: Download exact unsigned Android handoff
+        id: download-android-handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mdreader-android-unsigned-${{ needs.build-android-unsigned.outputs.handoff_sha256 }}
+          path: target/mobile-beta/android-handoff
+
+      - name: Verify unsigned Android handoff digest
+        id: verify-android-handoff
+        run: |
+          set -euo pipefail
+          test "$(sha256sum target/mobile-beta/android-handoff/MDReader-unsigned.aab | awk '{print $1}')" = \
+            '${{ needs.build-android-unsigned.outputs.handoff_sha256 }}'
+
+      - name: Install reviewed bundletool
+        id: install-bundletool
+        run: |
+          set -euo pipefail
+          mkdir -p target/mobile-beta/tools
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output target/mobile-beta/tools/bundletool-all-1.18.3.jar \
+            https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          test "$(wc -c < target/mobile-beta/tools/bundletool-all-1.18.3.jar | tr -d ' ')" = 32520401
+          test "$(sha256sum target/mobile-beta/tools/bundletool-all-1.18.3.jar | awk '{print $1}')" = \
+            a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
+
+      - name: Sign with reviewed Google Play upload authority
+        id: sign-android
+        env:
+          MDREADER_ANDROID_UNSIGNED_AAB: target/mobile-beta/android-handoff/MDReader-unsigned.aab
+          MDREADER_ANDROID_OUTPUT_DIRECTORY: target/mobile-beta/android-signed
+          MDREADER_ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.MDREADER_ANDROID_UPLOAD_KEYSTORE_B64 }}
+          MDREADER_ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.MDREADER_ANDROID_UPLOAD_STORE_PASSWORD }}
+          MDREADER_ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.MDREADER_ANDROID_UPLOAD_KEY_PASSWORD }}
+          MDREADER_ANDROID_UPLOAD_KEY_ALIAS: ${{ needs.prepare.outputs.android_key_alias }}
+          MDREADER_ANDROID_UPLOAD_CERT_SHA256: ${{ needs.prepare.outputs.android_certificate_sha256 }}
+          MDREADER_VERSION: ${{ needs.prepare.outputs.version }}
+          MDREADER_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+        run: scripts/release/sign-android-beta.sh
+
+      - name: Inspect and retain the signed Google Play candidate
+        id: inspect-android
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm exec tsx scripts/release/mobile-beta-cli.ts inspect-android \
+            --artifact "target/mobile-beta/android-signed/MDReader-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build_number }}.aab" \
+            --snapshot "target/mobile-beta/android-signed/MDReader-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.build_number }}.retained.aab" \
+            --manifest target/mobile-beta/android-signed/mobile-beta-manifest.json \
+            --source-commit "${{ needs.prepare.outputs.source_commit }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --build-number "${{ needs.prepare.outputs.build_number }}" \
+            --certificate-sha256 "${{ needs.prepare.outputs.android_certificate_sha256 }}" \
+            --bundletool target/mobile-beta/tools/bundletool-all-1.18.3.jar
+
+      - name: Upload only the manifest-bound retained AAB
+        id: upload-google-play
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.MDREADER_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          credential_root="$(mktemp -d "$RUNNER_TEMP/mdreader-play-key.XXXXXX")"
+          trap '/bin/rm -rf -- "$credential_root"' EXIT
+          credential_path="$credential_root/service-account.json"
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_B64" | openssl base64 -d -A -out "$credential_path"
+          chmod 600 "$credential_path"
+          pnpm exec tsx scripts/release/mobile-beta-cli.ts upload-android \
+            --manifest target/mobile-beta/android-signed/mobile-beta-manifest.json \
+            --service-account-file "$credential_path" \
+            --service-account-email "${{ needs.prepare.outputs.google_service_account_email }}" \
+            --closed-track "${{ needs.prepare.outputs.google_closed_track }}" \
+            --version-code "${{ needs.prepare.outputs.build_number }}" \
+            --release-name "MDReader ${{ needs.prepare.outputs.version }} (${{ needs.prepare.outputs.build_number }})" \
+            --receipt target/mobile-beta/android-signed/mobile-beta-receipt.json
+
+      - name: Retain signed Android evidence
+        id: upload-android-evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mdreader-google-play-closed-${{ needs.prepare.outputs.source_commit }}-${{ needs.prepare.outputs.build_number }}
+          path: |
+            target/mobile-beta/android-signed/*.retained.aab
+            target/mobile-beta/android-signed/mobile-beta-manifest.json
+            target/mobile-beta/android-signed/mobile-beta-receipt.json
+          if-no-files-found: error
+          retention-days: 30

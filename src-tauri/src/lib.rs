@@ -9,6 +9,24 @@
 #[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
 compile_error!("the direct updater cannot be compiled into the isolated E2E application");
 
+// Mobile targets link this shared library directly and never link the desktop
+// `main.rs`. Keep the production identity here so IPA/AAB verification can bind
+// the native bytes to the exact reviewed source in the same way desktop
+// packaging does.
+#[used]
+static MDREADER_SHARED_RELEASE_IDENTITY: &str = concat!(
+    "MDREADER_RELEASE_IDENTITY_V1\0",
+    "productName=MDReader\0",
+    "bundleIdentifier=dev.mdreader.app\0",
+    "sourceCommit=",
+    env!("MDREADER_RELEASE_SOURCE_COMMIT"),
+    "\0",
+);
+
+fn release_identity() -> &'static str {
+    MDREADER_SHARED_RELEASE_IDENTITY
+}
+
 #[cfg(feature = "e2e-build")]
 #[used]
 static E2E_BUILD_MANIFEST: &str = concat!(
@@ -259,6 +277,7 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
 /// Desktop (and, later, mobile) entry point.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    std::hint::black_box(release_identity());
     #[cfg(debug_assertions)]
     let builder = runtime_specta_builder(RuntimeTarget::current(), |builder| {
         // Desktop `tauri dev` refreshes the committed bindings on launch.
@@ -356,7 +375,9 @@ fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescrip
 mod tests {
     use std::cell::Cell;
 
-    use super::{export_bindings, runtime_specta_builder, specta_builder, RuntimeTarget};
+    use super::{
+        export_bindings, release_identity, runtime_specta_builder, specta_builder, RuntimeTarget,
+    };
 
     /// Regenerates `apps/mdreader/ui/src/bindings.ts` headlessly (no window, no
     /// webview). `scripts/check-bindings.sh` runs this then `git diff
@@ -425,6 +446,27 @@ mod tests {
             renderer.contains("events.mdreaderShowSettings.listen"),
             "the renderer must listen for the native Settings request"
         );
+    }
+
+    #[test]
+    fn shared_mobile_library_carries_the_production_release_identity() {
+        let identity = release_identity().as_bytes();
+        assert!(identity.starts_with(b"MDREADER_RELEASE_IDENTITY_V1\0"));
+        assert!(identity
+            .windows(b"bundleIdentifier=dev.mdreader.app\0".len())
+            .any(|window| window == b"bundleIdentifier=dev.mdreader.app\0"));
+        assert!(identity
+            .windows(b"sourceCommit=".len() + 40 + 1)
+            .any(|window| window
+                == concat!(
+                    "sourceCommit=",
+                    env!("MDREADER_RELEASE_SOURCE_COMMIT"),
+                    "\0"
+                )
+                .as_bytes()));
+        assert!(!identity
+            .windows(b"dev.mdreader.app.e2e".len())
+            .any(|window| window == b"dev.mdreader.app.e2e"));
     }
 
     #[test]
