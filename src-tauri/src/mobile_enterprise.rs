@@ -463,7 +463,7 @@ async fn execute_http(
     path: &str,
     body: Option<String>,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
-    validate_record(&record)?;
+    validate_record(record)?;
     validate_bearer(&token.0)?;
     let endpoint = exact_origin(&record.server_origin)?
         .join(path)
@@ -832,6 +832,23 @@ fn disconnect_connected_catdb_from(
     Ok(disconnected_state())
 }
 
+fn disconnect_connected_catdb_operation(
+    store: &crate::library::LibraryStore,
+    vault: &dyn BearerVault,
+    legacy_path: &Path,
+    connection_id: &str,
+) -> Result<ConnectedCatdbState, MobileEnterpriseError> {
+    #[cfg(test)]
+    if let Some(signal_path) = std::env::var_os("MDREADER_CONNECTED_CATDB_DISCONNECT_ENTRY_SIGNAL")
+    {
+        std::fs::write(signal_path, b"entered")
+            .map_err(|_| MobileEnterpriseError::PersistFailed)?;
+    }
+    with_legacy_migration_lock(legacy_path, || {
+        disconnect_connected_catdb_from(store, vault, connection_id)
+    })
+}
+
 fn pin_connected_query(
     source: &crate::library::ConnectedCatdbSourceRecord,
     request: &mut EntityQueryRequest,
@@ -1002,9 +1019,7 @@ pub(crate) async fn disconnect_connected_catdb(
         let vault = KeyringBearerVault::new(&app.config().identifier)?;
         let legacy_path = legacy_registry_path(&app)?;
         tokio::task::spawn_blocking(move || {
-            with_legacy_migration_lock(&legacy_path, || {
-                disconnect_connected_catdb_from(&store, &vault, &connection_id)
-            })
+            disconnect_connected_catdb_operation(&store, &vault, &legacy_path, &connection_id)
         })
         .await
         .map_err(|_| MobileEnterpriseError::PersistFailed)?
@@ -1146,8 +1161,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        disconnect_connected_catdb_from, discover_connected_catdb, execute_connected_query,
-        execute_request, migrate_legacy_connection, persist_connected_catdb, pin_connected_query,
+        disconnect_connected_catdb_from, disconnect_connected_catdb_operation,
+        discover_connected_catdb, execute_connected_query, execute_request,
+        migrate_legacy_connection, persist_connected_catdb, pin_connected_query,
         publish_legacy_migration, publish_legacy_migration_transaction_with_rename,
         publish_legacy_migration_with_rename, retire_matching_legacy_after_publication,
         with_legacy_migration_lock, BearerToken, BearerVault, ConnectedCatdbState,
@@ -1686,6 +1702,165 @@ mod tests {
             .expect("join observer")
             .expect("observer retirement");
         assert!(!legacy_path.exists());
+    }
+
+    fn wait_for_process_signal(path: &std::path::Path) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for subprocess signal {}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn spawn_race_participant(
+        role: &str,
+        root: &std::path::Path,
+        connection_id: Option<&str>,
+    ) -> std::process::Child {
+        let mut command = std::process::Command::new(
+            std::env::current_exe().expect("resolve current Rust test executable"),
+        );
+        command
+            .arg("--exact")
+            .arg(
+                "mobile_enterprise::tests::migration_publication_serializes_production_disconnect_across_processes",
+            )
+            .arg("--nocapture")
+            .env("MDREADER_CONNECTED_CATDB_RACE_ROLE", role)
+            .env("MDREADER_CONNECTED_CATDB_RACE_ROOT", root)
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+        if let Some(connection_id) = connection_id {
+            command.env("MDREADER_CONNECTED_CATDB_RACE_CONNECTION_ID", connection_id);
+        }
+        if role == "disconnect" {
+            command.env(
+                "MDREADER_CONNECTED_CATDB_DISCONNECT_ENTRY_SIGNAL",
+                root.join("disconnect-started"),
+            );
+        }
+        command.spawn().expect("spawn race participant")
+    }
+
+    #[test]
+    fn migration_publication_serializes_production_disconnect_across_processes() {
+        if let Ok(role) = std::env::var("MDREADER_CONNECTED_CATDB_RACE_ROLE") {
+            let root = std::path::PathBuf::from(
+                std::env::var_os("MDREADER_CONNECTED_CATDB_RACE_ROOT")
+                    .expect("race root is provided to subprocess"),
+            );
+            let store = LibraryStore::new(root.join("library.json"));
+            let legacy_path = root.join("mobile-enterprise.json");
+            match role.as_str() {
+                "publisher" => {
+                    let source = connected_source();
+                    let connection_id = source.id.clone();
+                    let ready_path = root.join("publisher-ready");
+                    let release_path = root.join("publisher-release");
+                    publish_legacy_migration_with_rename(
+                        &store,
+                        &legacy_path,
+                        source,
+                        |from, to| {
+                            std::fs::write(&ready_path, &connection_id)
+                                .expect("publish connection id signal");
+                            wait_for_process_signal(&release_path);
+                            std::fs::rename(from, to)
+                        },
+                    )
+                    .expect("publish legacy migration");
+                }
+                "disconnect" => {
+                    let connection_id =
+                        std::env::var("MDREADER_CONNECTED_CATDB_RACE_CONNECTION_ID")
+                            .expect("disconnect connection id");
+                    let vault = MemoryBearerVault::default();
+                    assert!(matches!(
+                        disconnect_connected_catdb_operation(
+                            &store,
+                            &vault,
+                            &legacy_path,
+                            &connection_id,
+                        ),
+                        Ok(ConnectedCatdbState::Disconnected { .. })
+                    ));
+                    std::fs::write(root.join("disconnect-finished"), b"finished")
+                        .expect("signal disconnect completion");
+                }
+                unexpected => panic!("unexpected race role {unexpected}"),
+            }
+            return;
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy_path = temp.path().join("mobile-enterprise.json");
+        let retired_path = temp.path().join("mobile-enterprise.json.migrated");
+        let source = connected_source();
+        std::fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "active_connection_id": "legacy-connection",
+                "connections": [{
+                    "id": "legacy-connection",
+                    "label": source.label,
+                    "server_origin": source.server_origin,
+                    "credential_reference": source.credential_reference
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write legacy registry");
+
+        let mut publisher = spawn_race_participant("publisher", temp.path(), None);
+        let ready_path = temp.path().join("publisher-ready");
+        wait_for_process_signal(&ready_path);
+        let connection_id =
+            std::fs::read_to_string(&ready_path).expect("read published connection id");
+
+        let mut disconnect =
+            spawn_race_participant("disconnect", temp.path(), Some(&connection_id));
+        wait_for_process_signal(&temp.path().join("disconnect-started"));
+        let observation_deadline = std::time::Instant::now() + Duration::from_millis(750);
+        while std::time::Instant::now() < observation_deadline {
+            assert!(
+                !temp.path().join("disconnect-finished").exists(),
+                "the production disconnect crossed the publisher's process lease"
+            );
+            assert!(
+                disconnect.try_wait().expect("poll disconnect").is_none(),
+                "the production disconnect exited instead of waiting for the publisher lease"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        disconnect
+            .kill()
+            .expect("stop the disconnect participant while it is lease-blocked");
+        disconnect.wait().expect("reap disconnect participant");
+        std::fs::write(temp.path().join("publisher-release"), b"release")
+            .expect("release publisher");
+        assert!(
+            publisher.wait().expect("wait for publisher").success(),
+            "publisher subprocess failed"
+        );
+
+        assert!(!legacy_path.exists(), "the legacy source is retired");
+        assert!(
+            retired_path.exists(),
+            "the legacy source is retained as history"
+        );
+        assert!(
+            LibraryStore::new(temp.path().join("library.json"))
+                .read_connected_catdb()
+                .expect("read final connected membership")
+                .is_some(),
+            "killing a blocked independent disconnect must not leave neither legacy nor unified authority"
+        );
     }
 
     #[test]
