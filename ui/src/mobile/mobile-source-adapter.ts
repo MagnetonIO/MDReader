@@ -205,6 +205,7 @@ function validQueryResponse(value: EntityQueryResponse): EntityQueryResponse | n
     !text(pins.catalog_resolver_id, 1_024) ||
     !text(pins.catalog_revision_id, 1_024) ||
     !text(pins.schema_version_id, 1_024) ||
+    !text(pins.provenance_rule_version_id, 1_024) ||
     !Array.isArray(pins.mapping_version_ids) ||
     !Array.isArray(pins.physical_schema_version_ids) ||
     !Array.isArray(pins.policy_version_ids) ||
@@ -235,12 +236,17 @@ type SelectedObservation = {
   observedAt: number | null;
 };
 
-function selectedObservation(row: EntityRow, field: string): SelectedObservation | null {
+function selectedObservation(
+  row: EntityRow,
+  field: string,
+  provenanceRuleVersionId: string,
+): SelectedObservation | null {
   const provenance = record(row.provenance[field]);
   const selected = provenance?.selected;
   const considered = provenance?.considered;
   if (
     provenance?.field !== field ||
+    provenance.provenance_rule_version_id !== provenanceRuleVersionId ||
     !Number.isInteger(selected) ||
     typeof selected !== 'number' ||
     !Array.isArray(considered) ||
@@ -301,9 +307,10 @@ function documentOf(
   const path = text(fields.path);
   const title = fields.title === null ? null : text(fields.title, 1_024);
   const size = nonNegativeNumber(fields.size);
-  const pathObservation = selectedObservation(row, 'path');
-  const titleObservation = selectedObservation(row, 'title');
-  const sizeObservation = selectedObservation(row, 'size');
+  const provenanceRuleVersionId = response.pins.provenance_rule_version_id;
+  const pathObservation = selectedObservation(row, 'path', provenanceRuleVersionId);
+  const titleObservation = selectedObservation(row, 'title', provenanceRuleVersionId);
+  const sizeObservation = selectedObservation(row, 'size', provenanceRuleVersionId);
   if (
     !path ||
     (fields.title !== null && !title) ||
@@ -564,7 +571,11 @@ export function createEnterpriseMobileSourceAdapter(
           typeof row.fields.body === 'string' && row.fields.body.length <= 2 * 1024 * 1024
             ? row.fields.body
             : null;
-        const bodyObservation = selectedObservation(row, 'body');
+        const bodyObservation = selectedObservation(
+          row,
+          'body',
+          response.pins.provenance_rule_version_id,
+        );
         if (
           !actual ||
           body === null ||

@@ -90,6 +90,7 @@ export function mobileProvenanceOf(
     !text(pins.catalog_resolver_id) ||
     !text(pins.catalog_revision_id) ||
     !text(pins.schema_version_id) ||
+    !text(pins.provenance_rule_version_id) ||
     !boundedStrings(pins.physical_schema_version_ids) ||
     !boundedStrings(pins.mapping_version_ids) ||
     !boundedStrings(pins.source_version_ids) ||
@@ -136,6 +137,7 @@ export function mobileProvenanceOf(
     if (
       !text(fieldName, 4_096) ||
       provenance?.field !== fieldName ||
+      provenance.provenance_rule_version_id !== pins.provenance_rule_version_id ||
       !Array.isArray(provenance.considered) ||
       provenance.considered.length !== candidate.sources.length ||
       provenance.considered.length > MAX_OBSERVATIONS_PER_FIELD

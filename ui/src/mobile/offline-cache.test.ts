@@ -81,6 +81,34 @@ const provenance = {
   ],
 };
 
+type ProvenanceMutation = {
+  label: string;
+  mutate(candidate: typeof provenance): void;
+};
+
+const invalidProvenanceRulePins: ProvenanceMutation[] = [
+  {
+    label: 'a missing top-level provenance rule pin',
+    mutate(candidate) {
+      delete (candidate.pins as unknown as Record<string, unknown>)
+        .provenance_rule_version_id;
+    },
+  },
+  {
+    label: 'a missing field provenance rule pin',
+    mutate(candidate) {
+      delete (candidate.fields.body as unknown as Record<string, unknown>)
+        .provenance_rule_version_id;
+    },
+  },
+  {
+    label: 'a field provenance rule pin that does not match the response pin',
+    mutate(candidate) {
+      candidate.fields.body.provenance_rule_version_id = 'different-provenance-rule';
+    },
+  },
+];
+
 function entry(
   sourceId: string,
   revision: string,
@@ -235,6 +263,25 @@ describe('bounded mobile offline cache', () => {
       status: 'corrupt',
     });
   });
+
+  for (const invalidPin of invalidProvenanceRulePins) {
+    test(`rejects cached provenance with ${invalidPin.label}`, async () => {
+      const invalid = structuredClone(provenance);
+      invalidPin.mutate(invalid);
+      persistence.raw = {
+        version: 3,
+        entries: [
+          entry('source-1', SAFE_REVISION, 1_000, {
+            provenance: invalid,
+          }),
+        ],
+      };
+
+      await expect(readOfflineDocument(identity('source-1'), 1_050)).resolves.toEqual({
+        status: 'corrupt',
+      });
+    });
+  }
 
   test('Enterprise cache identity includes the admitted connection and deployment', async () => {
     const enterpriseSource = {

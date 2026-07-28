@@ -102,6 +102,37 @@ function queryResponse(
   };
 }
 
+type QueryResponseMutation = {
+  label: string;
+  mutate(response: EntityQueryResponse): void;
+};
+
+const invalidProvenanceRulePins: QueryResponseMutation[] = [
+  {
+    label: 'a missing top-level provenance rule pin',
+    mutate(response) {
+      delete (response.pins as unknown as Record<string, unknown>)
+        .provenance_rule_version_id;
+    },
+  },
+  {
+    label: 'a missing field provenance rule pin',
+    mutate(response) {
+      const field = Object.values(response.rows[0]!.provenance)[0];
+      if (!field) throw new Error('fixture field provenance is missing');
+      delete (field as unknown as Record<string, unknown>).provenance_rule_version_id;
+    },
+  },
+  {
+    label: 'a field provenance rule pin that does not match the response pin',
+    mutate(response) {
+      const field = Object.values(response.rows[0]!.provenance)[0];
+      if (!field) throw new Error('fixture field provenance is missing');
+      field.provenance_rule_version_id = IDS.catalog;
+    },
+  },
+];
+
 function addSecondProvider(response: EntityQueryResponse): void {
   response.pins.physical_schema_version_ids.push(IDS.physical2);
   response.pins.mapping_version_ids.push(IDS.mapping2);
@@ -534,6 +565,26 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
     });
   });
 
+  for (const invalidPin of invalidProvenanceRulePins) {
+    test(`listing rejects ${invalidPin.label}`, async () => {
+      const listing = queryResponse({
+        path: 'papers/architecture.md',
+        title: 'Semantic architecture',
+        size: 128,
+      });
+      invalidPin.mutate(listing);
+      const adapter = createEnterpriseMobileSourceAdapter(
+        config,
+        sequence(response(session), response(listing)),
+      );
+
+      await expect(adapter.listDocuments()).resolves.toEqual({
+        status: 'invalid-response',
+        message: 'The Enterprise server returned an invalid semantic response.',
+      });
+    });
+  }
+
   test('listing retains exact provider order while different fields select different winners', async () => {
     const listing = queryResponse({
       path: 'papers/federated.md',
@@ -690,6 +741,35 @@ describe('authenticated read-only Enterprise mobile source adapter', () => {
       kind: 'invalid-response',
     });
   });
+
+  for (const invalidPin of invalidProvenanceRulePins) {
+    test(`document reads reject ${invalidPin.label}`, async () => {
+      const listing = queryResponse({
+        path: 'papers/architecture.md',
+        title: 'Semantic architecture',
+        size: 128,
+      });
+      const read = queryResponse({
+        path: 'papers/architecture.md',
+        title: 'Semantic architecture',
+        size: 128,
+        body: '# Semantic architecture',
+        modifiedAt: 1_234,
+      });
+      invalidPin.mutate(read);
+      const adapter = createEnterpriseMobileSourceAdapter(
+        config,
+        sequence(response(session), response(listing), response(read)),
+      );
+      const listed = await adapter.listDocuments();
+      if (listed.status !== 'ready') throw new Error('fixture listing was not ready');
+
+      await expect(adapter.readDocument(listed.documents[0]!)).rejects.toMatchObject({
+        name: MobileSourceReadError.name,
+        kind: 'invalid-response',
+      });
+    });
+  }
 
   test('preserves a titleless Markdown document and an empty body as valid data', async () => {
     const listing = queryResponse({
