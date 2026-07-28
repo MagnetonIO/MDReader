@@ -63,12 +63,22 @@ echo "==> Ensuring the e2e-native toolchain + appium-mac2-driver are installedâ€
 if [[ ! -d "$E2E_DIR/node_modules/webdriverio" ]]; then
   (cd "$E2E_DIR" && npm install)
 fi
-# Install the mac2 driver into the local APPIUM_HOME if it isn't already there.
-# `appium driver list` writes its inventory to STDERR, so the probe must read
-# both streams â€” reading stdout alone always looked empty and made every run
-# after the first attempt a reinstall, which errors out ("already installed")
-# and, under `set -e`, killed the smoke before it launched anything.
-if ! (cd "$E2E_DIR" && npx appium driver list --installed 2>&1 | grep -q 'mac2'); then
+# Install the mac2 driver into the local APPIUM_HOME if it is absent or its
+# Appium manifest points somewhere else. Worktree moves can leave the package
+# present while `extensions.yaml` names a stale relative location; `driver
+# list` still says "installed", but session creation then fails trying to read
+# that nonexistent path.
+MAC2_LIST="$(cd "$E2E_DIR" && npx appium driver list --installed 2>&1 || true)"
+MAC2_MANIFEST="$APPIUM_HOME/node_modules/.cache/appium/extensions.yaml"
+MAC2_PACKAGE="$APPIUM_HOME/node_modules/appium-mac2-driver/package.json"
+MAC2_INSTALL_PATH="$APPIUM_HOME/node_modules/appium-mac2-driver"
+if ! grep -q 'mac2' <<<"$MAC2_LIST" \
+  || [[ ! -f "$MAC2_PACKAGE" ]] \
+  || [[ ! -f "$MAC2_MANIFEST" ]] \
+  || ! grep -Fq "installPath: $MAC2_INSTALL_PATH" "$MAC2_MANIFEST"; then
+  if grep -q 'mac2' <<<"$MAC2_LIST"; then
+    (cd "$E2E_DIR" && npx appium driver uninstall mac2)
+  fi
   (cd "$E2E_DIR" && npx appium driver install mac2)
 fi
 
