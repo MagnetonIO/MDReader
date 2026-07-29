@@ -450,6 +450,81 @@ fn context(page_size: usize, row_budget: usize, byte_budget: usize) -> ReadConte
     )
 }
 
+#[tokio::test]
+async fn sync_metadata_uses_the_exact_drive_metadata_endpoint_without_a_body_read() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"sync-note",
+        "name":"sync.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"14",
+        "md5Checksum":"sync-checksum",
+        "parents":["provider-root"],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::new([response(200, metadata)]),
+        markdown_root_config(),
+    );
+
+    let row = source
+        .metadata_for_sync("sync-note", &context(10, 10, 64 * 1024))
+        .await
+        .expect("exact metadata");
+
+    assert_eq!(row.key, "sync-note");
+    assert_eq!(row.value["name"], "sync.md");
+    assert_eq!(row.value["checksum"], "sync-checksum");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .path()
+            .starts_with("/drive/v3/files/sync-note?fields="),
+        "sync metadata must use the exact file metadata endpoint"
+    );
+    assert!(
+        !requests[0].path().contains("alt=media"),
+        "metadata synchronization must not download a document body"
+    );
+}
+
+#[tokio::test]
+async fn sync_metadata_preserves_typed_drive_provider_failures() {
+    let cases = [
+        (404, None, "not-found"),
+        (401, None, "authentication"),
+        (429, Some("7"), "rate-limited"),
+        (500, None, "transport"),
+    ];
+    for (status, retry_after, expected) in cases {
+        let step = match retry_after {
+            Some(value) => response_with_headers(status, [("retry-after", value)], Vec::new()),
+            None => response(status, Vec::new()),
+        };
+        let (source, transport) = source(ScriptedTransport::new([step]), markdown_root_config());
+        let error = source
+            .metadata_for_sync("sync-note", &context(10, 10, 64 * 1024))
+            .await
+            .expect_err("provider failure must not become an empty metadata row");
+        assert!(matches!(
+            (expected, error),
+            ("not-found", SourceError::Read { .. })
+                | ("authentication", SourceError::Authentication { .. })
+                | (
+                    "rate-limited",
+                    SourceError::RateLimited {
+                        retry_after_ms: Some(7_000),
+                        ..
+                    }
+                )
+                | ("transport", SourceError::Transport { .. })
+        ));
+        assert_eq!(transport.requests().len(), 1, "one exact metadata request");
+    }
+}
+
 fn plan(source: &DriveSource, projected: &[&str]) -> catdb_connectors::SourcePlan {
     source
         .compile(

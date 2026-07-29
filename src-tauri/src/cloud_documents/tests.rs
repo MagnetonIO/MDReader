@@ -1,5 +1,9 @@
 use std::{
-    sync::{Arc, Mutex},
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -39,7 +43,9 @@ use super::source::{
     DocumentLifecycle, GuardedMarkdownDocumentOperations, GuardedMarkdownWriteReceipt,
 };
 use super::{
-    CloudDocumentError, CloudIoContext, MarkdownDocumentSource, ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, CloudSyncCoordinator, MarkdownChangePage,
+    MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, ProviderCursor,
+    ProviderRevision, SourceRecordKey,
 };
 use crate::cloud_accounts::{
     CloudAuthorizationProfile, CloudSourceError, NativeMarkdownWriteAcceptance,
@@ -161,6 +167,993 @@ fn expected_revision() -> ProviderRevision {
     ProviderRevision {
         opaque: "expected-revision".to_string(),
         content_hash: None,
+    }
+}
+
+struct SyncFakeProvider {
+    source_id: SourceId,
+    start_cursor: ProviderCursor,
+    list_pages: Mutex<VecDeque<Result<MarkdownMetadataPage, CloudDocumentError>>>,
+    change_pages: Mutex<VecDeque<Result<MarkdownChangePage, CloudDocumentError>>>,
+    start_error: Option<CloudDocumentError>,
+    starts: AtomicUsize,
+    list_calls: AtomicUsize,
+    change_calls: AtomicUsize,
+}
+
+impl SyncFakeProvider {
+    fn initial_list_race() -> Self {
+        Self::scripted(
+            "cloud-sync-test-source",
+            b"c0",
+            [
+                Ok(sync_page(&["a.md"], Some(b"p2"))),
+                Ok(sync_page(&["b.md"], None)),
+            ],
+            [Ok(MarkdownChangePage {
+                changes: vec![sync_deleted("a.md"), sync_metadata("c.md")],
+                next_cursor: ProviderCursor(b"c1".to_vec()),
+                has_more: false,
+                observed_at_ms: 3,
+            })],
+        )
+    }
+
+    fn scripted(
+        source_id: &str,
+        start_cursor: &[u8],
+        list_pages: impl IntoIterator<Item = Result<MarkdownMetadataPage, CloudDocumentError>>,
+        change_pages: impl IntoIterator<Item = Result<MarkdownChangePage, CloudDocumentError>>,
+    ) -> Self {
+        Self {
+            source_id: SourceId::new(source_id),
+            start_cursor: ProviderCursor(start_cursor.to_vec()),
+            list_pages: Mutex::new(list_pages.into_iter().collect()),
+            change_pages: Mutex::new(change_pages.into_iter().collect()),
+            start_error: None,
+            starts: AtomicUsize::new(0),
+            list_calls: AtomicUsize::new(0),
+            change_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn starts(&self) -> usize {
+        self.starts.load(Ordering::SeqCst)
+    }
+
+    fn failing_start(source_id: &str, error: CloudDocumentError) -> Self {
+        let mut provider = Self::scripted(source_id, b"c0", std::iter::empty(), std::iter::empty());
+        provider.start_error = Some(error);
+        provider
+    }
+}
+
+#[async_trait]
+impl MarkdownDocumentSource for SyncFakeProvider {
+    fn source_id(&self) -> &SourceId {
+        &self.source_id
+    }
+
+    async fn start_change_tracking(
+        &self,
+        _context: &CloudIoContext,
+    ) -> Result<ProviderCursor, CloudDocumentError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = &self.start_error {
+            return Err(error.clone());
+        }
+        Ok(self.start_cursor.clone())
+    }
+
+    async fn list_page(
+        &self,
+        _cursor: Option<&ProviderCursor>,
+        _context: &CloudIoContext,
+    ) -> Result<MarkdownMetadataPage, CloudDocumentError> {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
+        self.list_pages
+            .lock()
+            .expect("fake list pages")
+            .pop_front()
+            .unwrap_or(Err(CloudDocumentError::ProtocolFailed))
+    }
+
+    async fn read_document(
+        &self,
+        _key: &SourceRecordKey,
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownDocumentRevision, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn write_document(
+        &self,
+        _key: &SourceRecordKey,
+        _expected: &ProviderRevision,
+        _body: &[u8],
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownWriteReceipt, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn read_changes(
+        &self,
+        _cursor: &ProviderCursor,
+        _known: &[super::KnownMarkdownMetadata],
+        _context: &CloudIoContext,
+    ) -> Result<MarkdownChangePage, CloudDocumentError> {
+        self.change_calls.fetch_add(1, Ordering::SeqCst);
+        self.change_pages
+            .lock()
+            .expect("fake change pages")
+            .pop_front()
+            .unwrap_or(Err(CloudDocumentError::ProtocolFailed))
+    }
+}
+
+struct BlockingListSyncProvider {
+    source_id: SourceId,
+    entered_list: tokio::sync::Notify,
+    list_calls: AtomicUsize,
+}
+
+impl BlockingListSyncProvider {
+    fn new(source_id: &str) -> Self {
+        Self {
+            source_id: SourceId::new(source_id),
+            entered_list: tokio::sync::Notify::new(),
+            list_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl MarkdownDocumentSource for BlockingListSyncProvider {
+    fn source_id(&self) -> &SourceId {
+        &self.source_id
+    }
+
+    async fn start_change_tracking(
+        &self,
+        _context: &CloudIoContext,
+    ) -> Result<ProviderCursor, CloudDocumentError> {
+        Ok(ProviderCursor(b"c0".to_vec()))
+    }
+
+    async fn list_page(
+        &self,
+        _cursor: Option<&ProviderCursor>,
+        context: &CloudIoContext,
+    ) -> Result<MarkdownMetadataPage, CloudDocumentError> {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
+        self.entered_list.notify_waiters();
+        context.cancellation.cancelled().await;
+        Err(CloudDocumentError::Cancelled)
+    }
+
+    async fn read_document(
+        &self,
+        _key: &SourceRecordKey,
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownDocumentRevision, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn write_document(
+        &self,
+        _key: &SourceRecordKey,
+        _expected: &ProviderRevision,
+        _body: &[u8],
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownWriteReceipt, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn read_changes(
+        &self,
+        _cursor: &ProviderCursor,
+        _known: &[super::KnownMarkdownMetadata],
+        _context: &CloudIoContext,
+    ) -> Result<MarkdownChangePage, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+}
+
+struct BlockingChangeSyncProvider {
+    source_id: SourceId,
+    entered_changes: tokio::sync::Notify,
+}
+
+impl BlockingChangeSyncProvider {
+    fn new(source_id: &str) -> Self {
+        Self {
+            source_id: SourceId::new(source_id),
+            entered_changes: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl MarkdownDocumentSource for BlockingChangeSyncProvider {
+    fn source_id(&self) -> &SourceId {
+        &self.source_id
+    }
+
+    async fn start_change_tracking(
+        &self,
+        _context: &CloudIoContext,
+    ) -> Result<ProviderCursor, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn list_page(
+        &self,
+        _cursor: Option<&ProviderCursor>,
+        _context: &CloudIoContext,
+    ) -> Result<MarkdownMetadataPage, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn read_document(
+        &self,
+        _key: &SourceRecordKey,
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownDocumentRevision, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn write_document(
+        &self,
+        _key: &SourceRecordKey,
+        _expected: &ProviderRevision,
+        _body: &[u8],
+        _context: &CloudIoContext,
+    ) -> Result<super::MarkdownWriteReceipt, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn read_changes(
+        &self,
+        _cursor: &ProviderCursor,
+        _known: &[super::KnownMarkdownMetadata],
+        context: &CloudIoContext,
+    ) -> Result<MarkdownChangePage, CloudDocumentError> {
+        self.entered_changes.notify_waiters();
+        context.cancellation.cancelled().await;
+        Err(CloudDocumentError::Cancelled)
+    }
+}
+
+fn sync_metadata(name: &str) -> MarkdownMetadata {
+    MarkdownMetadata {
+        key: SourceRecordKey::new(name),
+        name: name.to_string(),
+        display_path: format!("/documents/{name}"),
+        media_type: Some("text/markdown".to_string()),
+        modified_at_ms: Some(1),
+        size_bytes: Some(1),
+        revision: ProviderRevision {
+            opaque: format!("revision-{name}"),
+            content_hash: None,
+        },
+        deleted: false,
+    }
+}
+
+fn sync_deleted(name: &str) -> MarkdownMetadata {
+    let mut metadata = sync_metadata(name);
+    metadata.deleted = true;
+    metadata
+}
+
+fn sync_page(names: &[&str], next_cursor: Option<&[u8]>) -> MarkdownMetadataPage {
+    MarkdownMetadataPage {
+        rows: names.iter().map(|name| sync_metadata(name)).collect(),
+        next_cursor: next_cursor.map(|cursor| ProviderCursor(cursor.to_vec())),
+        observed_at_ms: 1,
+    }
+}
+
+fn sync_pins() -> super::store::CloudDocumentVersionPins {
+    super::store::CloudDocumentVersionPins::new(b"schema-v1", b"mapping-v1", b"source-v1")
+        .expect("fixed sync pins")
+}
+
+#[tokio::test]
+async fn initial_sync_replays_changes_from_the_position_taken_before_listing() {
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let store = Arc::new(
+        super::store::CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+            .expect("open cloud store"),
+    );
+    let provider = Arc::new(SyncFakeProvider::initial_list_race());
+    let source_id = provider.source_id().clone();
+    let coordinator = CloudSyncCoordinator::new(Arc::clone(&store), sync_pins());
+
+    coordinator.activate(provider).await.expect("activate sync");
+    coordinator
+        .wait_until_idle(&source_id)
+        .await
+        .expect("initial sync completes");
+
+    let names = store
+        .list_published(&source_id)
+        .expect("published metadata")
+        .into_iter()
+        .filter(|document| !document.deleted)
+        .map(|document| document.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["b.md", "c.md"]);
+    assert_eq!(
+        store.load_change_cursor(&source_id).expect("change cursor"),
+        Some(ProviderCursor(b"c1".to_vec()))
+    );
+}
+
+mod sync {
+    use super::super::{store::CloudDocumentStore, CloudSyncCoordinator, CloudSyncPhase};
+    use super::*;
+
+    fn published_names(store: &CloudDocumentStore, source_id: &SourceId) -> Vec<String> {
+        store
+            .list_published(source_id)
+            .expect("published metadata")
+            .into_iter()
+            .filter(|document| !document.deleted)
+            .map(|document| document.name)
+            .collect()
+    }
+
+    fn publish_before_sync(store: &CloudDocumentStore, source_id: &SourceId, name: &str) {
+        let generation = store
+            .begin_initial_sync(
+                source_id,
+                &ProviderCursor(b"previous".to_vec()),
+                &sync_pins(),
+                1,
+            )
+            .expect("begin previous snapshot");
+        store
+            .stage_page(&generation, &sync_pins(), &sync_page(&[name], None))
+            .expect("stage previous snapshot");
+        store
+            .publish_initial_sync(&generation, &ProviderCursor(b"previous".to_vec()), 2)
+            .expect("publish previous snapshot");
+    }
+
+    fn coordinator(store: Arc<CloudDocumentStore>) -> CloudSyncCoordinator {
+        CloudSyncCoordinator::new(store, sync_pins())
+    }
+
+    #[tokio::test]
+    async fn provider_deadline_wins_when_a_provider_future_never_returns() {
+        let cancellation = CancellationToken::new();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            super::super::sync::provider_call(
+                &cancellation,
+                Instant::now() - Duration::from_millis(1),
+                std::future::pending::<Result<(), CloudDocumentError>>(),
+            ),
+        )
+        .await
+        .expect("the coordinator deadline must settle a non-cooperative provider");
+
+        assert_eq!(result, Err(CloudDocumentError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn failed_initial_listing_keeps_the_previous_snapshot_and_cursor_published() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "failed-list-source",
+            b"c0",
+            [Err(CloudDocumentError::ProtocolFailed)],
+            [Err(CloudDocumentError::ResetCursor)],
+        ));
+        let source_id = provider.source_id().clone();
+        publish_before_sync(&store, &source_id, "before.md");
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator.activate(provider).await.expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("failure settles");
+
+        assert_eq!(published_names(&store, &source_id), ["before.md"]);
+        assert_eq!(
+            store
+                .load_change_cursor(&source_id)
+                .expect("previous cursor"),
+            Some(ProviderCursor(b"previous".to_vec()))
+        );
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::ProtocolFailed,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn reset_cursor_discards_staging_and_runs_one_fresh_initial_generation() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "reset-source",
+            b"c0",
+            [
+                Ok(sync_page(&["first.md"], None)),
+                Ok(sync_page(&["replacement.md"], None)),
+            ],
+            [
+                Err(CloudDocumentError::ResetCursor),
+                Ok(MarkdownChangePage {
+                    changes: Vec::new(),
+                    next_cursor: ProviderCursor(b"c2".to_vec()),
+                    has_more: false,
+                    observed_at_ms: 4,
+                }),
+            ],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("reset rebuild completes");
+
+        assert_eq!(provider.starts(), 2);
+        assert_eq!(published_names(&store, &source_id), ["replacement.md"]);
+        assert_eq!(
+            store
+                .load_change_cursor(&source_id)
+                .expect("replacement cursor"),
+            Some(ProviderCursor(b"c2".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_cancels_an_in_flight_provider_call_without_publishing_or_calling_changes() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(BlockingListSyncProvider::new("paused-source"));
+        let source_id = provider.source_id().clone();
+        let entered = provider.entered_list.notified();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate sync");
+        entered.await;
+        coordinator.pause(&source_id).await.expect("pause sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("pause settles");
+
+        assert_eq!(provider.list_calls.load(Ordering::SeqCst), 1);
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Paused)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pause_serializes_with_the_post_provider_store_boundary_and_prevents_late_publication()
+    {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "store-boundary-source",
+            b"c0",
+            [Ok(sync_page(&["late.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"c1".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+        let barrier = coordinator.block_durable_effect(2);
+        let stage_entered = barrier.entered();
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate sync");
+        stage_entered.await;
+
+        let pausing = {
+            let coordinator = coordinator.clone();
+            let source_id = source_id.clone();
+            tokio::spawn(async move { coordinator.pause(&source_id).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Initializing { .. })
+        ));
+        assert!(
+            !pausing.is_finished(),
+            "pause must wait for the store boundary"
+        );
+
+        barrier.release();
+        pausing.await.expect("pause task").expect("pause sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("pause settles");
+
+        assert!(published_names(&store, &source_id).is_empty());
+        assert_eq!(provider.change_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Paused)
+        ));
+    }
+
+    #[tokio::test]
+    async fn replacement_epoch_cannot_publish_a_detached_initial_owner() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let old = Arc::new(BlockingListSyncProvider::new("replacement-source"));
+        let source_id = old.source_id().clone();
+        let replacement = Arc::new(SyncFakeProvider::scripted(
+            "replacement-source",
+            b"c1",
+            [Ok(sync_page(&["replacement.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"c2".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let entered = old.entered_list.notified();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&old) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate old owner");
+        entered.await;
+        coordinator
+            .activate(Arc::clone(&replacement) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate replacement owner");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("replacement settles");
+
+        assert_eq!(published_names(&store, &source_id), ["replacement.md"]);
+        assert_eq!(
+            store
+                .load_change_cursor(&source_id)
+                .expect("replacement cursor"),
+            Some(ProviderCursor(b"c2".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn retire_cancels_then_removes_only_the_disconnected_source_state() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let retiring = Arc::new(BlockingChangeSyncProvider::new("retiring-source"));
+        let retiring_id = retiring.source_id().clone();
+        let replacement_id = SourceId::new("replacement-source");
+        publish_before_sync(&store, &retiring_id, "retiring.md");
+        publish_before_sync(&store, &replacement_id, "replacement.md");
+        let entered = retiring.entered_changes.notified();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&retiring) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate retiring source");
+        entered.await;
+        coordinator
+            .retire(&retiring_id)
+            .await
+            .expect("retire source");
+        coordinator
+            .wait_until_idle(&retiring_id)
+            .await
+            .expect("retirement settles");
+
+        assert!(published_names(&store, &retiring_id).is_empty());
+        assert_eq!(published_names(&store, &replacement_id), ["replacement.md"]);
+        assert!(matches!(
+            coordinator.status(&retiring_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Retired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_repeated_list_cursor_enters_a_typed_backoff_without_publication() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "repeated-cursor-source",
+            b"c0",
+            [
+                Ok(sync_page(&["first.md"], Some(b"p1"))),
+                Ok(sync_page(&["second.md"], Some(b"p1"))),
+            ],
+            [],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator.activate(provider).await.expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("failure settles");
+
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::ProtocolFailed,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_oversized_provider_page_enters_a_typed_backoff_before_staging() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let names = (0..257)
+            .map(|index| format!("row-{index}.md"))
+            .collect::<Vec<_>>();
+        let rows = names
+            .iter()
+            .map(|name| sync_metadata(name))
+            .collect::<Vec<_>>();
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "budget-source",
+            b"c0",
+            [Ok(MarkdownMetadataPage {
+                rows,
+                next_cursor: None,
+                observed_at_ms: 1,
+            })],
+            [],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator.activate(provider).await.expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("budget failure settles");
+
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::TooLarge,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_metadata_page_over_one_mebibyte_is_rejected_even_below_the_row_limit() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let mut oversized = sync_metadata("byte-budget.md");
+        oversized.name = "m".repeat(1024 * 1024);
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "page-byte-budget-source",
+            b"c0",
+            [Ok(MarkdownMetadataPage {
+                rows: vec![oversized],
+                next_cursor: None,
+                observed_at_ms: 1,
+            })],
+            [],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator.activate(provider).await.expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("byte budget failure settles");
+
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::TooLarge,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn more_than_256_advancing_metadata_pages_fail_before_publication() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let pages = (0..256)
+            .map(|index| {
+                Ok(MarkdownMetadataPage {
+                    rows: Vec::new(),
+                    next_cursor: Some(ProviderCursor(format!("page-{index}").into_bytes())),
+                    observed_at_ms: 1,
+                })
+            })
+            .collect::<Vec<_>>();
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "page-count-budget-source",
+            b"c0",
+            pages,
+            [],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("page count failure settles");
+
+        assert_eq!(provider.list_calls.load(Ordering::SeqCst), 256);
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::TooLarge,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn individually_valid_pages_cannot_exceed_the_cumulative_sixteen_mebibyte_budget() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let large_name = "m".repeat(900 * 1024);
+        let pages = (0..19)
+            .map(|index| {
+                let mut metadata = sync_metadata("cumulative-byte-budget.md");
+                metadata.name = large_name.clone();
+                Ok(MarkdownMetadataPage {
+                    rows: vec![metadata],
+                    next_cursor: (index < 18)
+                        .then(|| ProviderCursor(format!("page-{index}").into_bytes())),
+                    observed_at_ms: 1,
+                })
+            })
+            .collect::<Vec<_>>();
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "cumulative-byte-budget-source",
+            b"c0",
+            pages,
+            [],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("cumulative byte failure settles");
+
+        assert_eq!(provider.list_calls.load(Ordering::SeqCst), 19);
+        assert!(published_names(&store, &source_id).is_empty());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::TooLarge,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn startup_repair_discards_staging_without_provider_io_or_losing_a_publication() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store = Arc::new(CloudDocumentStore::open(&path).expect("open cloud store"));
+        let source_id = SourceId::new("startup-source");
+        publish_before_sync(&store, &source_id, "published.md");
+        let abandoned = store
+            .begin_initial_sync(
+                &source_id,
+                &ProviderCursor(b"staging".to_vec()),
+                &sync_pins(),
+                3,
+            )
+            .expect("begin abandoned stage");
+        store
+            .stage_page(&abandoned, &sync_pins(), &sync_page(&["staged.md"], None))
+            .expect("stage abandoned row");
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .startup_repair(Vec::<Arc<dyn MarkdownDocumentSource>>::new())
+            .await
+            .expect("startup repair");
+
+        assert_eq!(published_names(&store, &source_id), ["published.md"]);
+        let connection = rusqlite::Connection::open(&path).expect("inspect SQLite state");
+        let staging: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mdreader_cloud_snapshot WHERE state = 'staging'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count staging snapshots");
+        assert_eq!(staging, 0);
+    }
+
+    #[tokio::test]
+    async fn retry_status_preserves_the_typed_provider_error_and_retry_after() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::failing_start(
+            "rate-limited-source",
+            CloudDocumentError::RateLimited {
+                retry_after_ms: Some(321),
+            },
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(store);
+        let before_ms = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("system clock")
+            .as_millis() as i64;
+
+        coordinator.activate(provider).await.expect("activate sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("rate limit settles");
+
+        assert!(matches!(
+            coordinator.status(&source_id).expect("status"),
+            Some(status) if matches!(status.phase(), CloudSyncPhase::Backoff {
+                error: CloudDocumentError::RateLimited { retry_after_ms: Some(321) },
+                retry_at_ms,
+            } if *retry_at_ms >= before_ms + 321)
+        ));
+    }
+
+    #[tokio::test]
+    async fn distinct_source_owners_publish_with_their_own_immutable_pins() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let first = Arc::new(SyncFakeProvider::scripted(
+            "pinned-first",
+            b"first-cursor",
+            [Ok(sync_page(&["first.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"first-next".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let second = Arc::new(SyncFakeProvider::scripted(
+            "pinned-second",
+            b"second-cursor",
+            [Ok(sync_page(&["second.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"second-next".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let first_pins = sync_pins();
+        let second_pins = super::super::store::CloudDocumentVersionPins::new(
+            b"schema-v2",
+            b"mapping-v2",
+            b"source-v2",
+        )
+        .expect("second fixed pins");
+        let first_id = first.source_id().clone();
+        let second_id = second.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&first) as Arc<dyn MarkdownDocumentSource>,
+                first_pins.clone(),
+            )
+            .await
+            .expect("activate first source");
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&second) as Arc<dyn MarkdownDocumentSource>,
+                second_pins.clone(),
+            )
+            .await
+            .expect("activate second source");
+        coordinator
+            .wait_until_idle(&first_id)
+            .await
+            .expect("first source settles");
+        coordinator
+            .wait_until_idle(&second_id)
+            .await
+            .expect("second source settles");
+
+        assert_eq!(
+            store.list_published(&first_id).expect("first row")[0].pins,
+            first_pins
+        );
+        assert_eq!(
+            store.list_published(&second_id).expect("second row")[0].pins,
+            second_pins
+        );
     }
 }
 
@@ -978,7 +1971,62 @@ mod store {
     }
 
     #[test]
-    fn version_one_schema_with_correct_columns_but_missing_load_bearing_shape_is_refused() {
+    fn cloud_tables_share_a_catalog_without_reading_or_replacing_its_schema_marker() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-library.catdb");
+        let connection = rusqlite::Connection::open(&path).expect("open catalog database");
+        connection
+            .execute_batch(
+                "CREATE TABLE catdb_catalog_sentinel (id INTEGER PRIMARY KEY);
+                 PRAGMA user_version = 73;",
+            )
+            .expect("seed foreign catalog schema marker");
+        drop(connection);
+
+        CloudDocumentStore::open(&path).expect("open cloud tables alongside catalog");
+
+        let connection = rusqlite::Connection::open(&path).expect("inspect shared database");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("catalog schema marker");
+        let cloud_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name GLOB 'mdreader_cloud_*'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cloud table count");
+        assert_eq!(version, 73, "cloud storage never owns the catalog marker");
+        assert_eq!(cloud_tables, 5);
+    }
+
+    #[test]
+    fn a_partial_cloud_schema_is_rejected_without_mutating_a_foreign_catalog_marker() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-library.catdb");
+        let connection = rusqlite::Connection::open(&path).expect("open partial database");
+        connection
+            .execute_batch(
+                "CREATE TABLE mdreader_cloud_snapshot (source_id BLOB NOT NULL);
+                 PRAGMA user_version = 73;",
+            )
+            .expect("manufacture interrupted cloud schema");
+        drop(connection);
+
+        assert!(matches!(
+            CloudDocumentStore::open(&path),
+            Err(CloudDocumentStoreError::MigrationInterrupted)
+        ));
+        let version: i64 = rusqlite::Connection::open(&path)
+            .expect("inspect shared database")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("catalog schema marker");
+        assert_eq!(version, 73, "refusal must not alter the catalog marker");
+    }
+
+    #[test]
+    fn cloud_schema_with_correct_columns_but_missing_load_bearing_shape_is_refused() {
         let directory = tempdir().expect("temporary SQLite directory");
         let path = directory.path().join("cloud.sqlite");
         let connection = rusqlite::Connection::open(&path).expect("open corrupt schema database");

@@ -92,6 +92,7 @@ async-trait = { workspace = true }
 # `time` for the model-load deadline (a never-finishing download must surface a
 # timeout, not hang the import forever).
 tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
+time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }

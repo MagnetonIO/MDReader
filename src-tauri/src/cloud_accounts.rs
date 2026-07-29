@@ -871,6 +871,11 @@ pub(crate) struct CloudAccountService<'a, V> {
     vault: &'a V,
 }
 
+struct CloudDisconnectPublication {
+    snapshot: CloudSourcesSnapshot,
+    retired_source_id: Option<catdb_connectors::SourceId>,
+}
+
 impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     pub(crate) fn new(registry: LibraryStore, vault: &'a V) -> Self {
         Self { registry, vault }
@@ -1060,6 +1065,15 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         &self,
         provider: CloudProvider,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
+        Ok(self.disconnect_with_id(provider)?.snapshot)
+    }
+
+    /// Removes one provider record and returns the exact source identity that
+    /// was committed as disconnected under the same lifecycle lease.
+    fn disconnect_with_id(
+        &self,
+        provider: CloudProvider,
+    ) -> Result<CloudDisconnectPublication, CloudSourceError> {
         let _lease = self.acquire_lifecycle_lease()?;
         self.recover_credential_cleanup(provider)?;
         let expected = self.registry.read_cloud(|sources| {
@@ -1069,8 +1083,12 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
                 .cloned())
         })?;
         let Some(expected) = expected else {
-            return self.snapshot_under_lease();
+            return Ok(CloudDisconnectPublication {
+                snapshot: self.snapshot_under_lease()?,
+                retired_source_id: None,
+            });
         };
+        let retired_source_id = catdb_connectors::SourceId::new(expected.id.clone());
         self.journal_credential_cleanup(provider, vec![expected.credential_reference.clone()])?;
         let expected_for_commit = expected.clone();
         let update = self.registry.update_cloud(|sources| {
@@ -1093,7 +1111,10 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             };
         }
         self.recover_credential_cleanup(provider)?;
-        self.snapshot_under_lease()
+        Ok(CloudDisconnectPublication {
+            snapshot: self.snapshot_under_lease()?,
+            retired_source_id: Some(retired_source_id),
+        })
     }
 
     fn acquire_lifecycle_lease(&self) -> Result<AdvisoryFileLock, CloudSourceError> {
@@ -1619,10 +1640,67 @@ struct RequestedCatalogPins {
     schema_version_id: Option<uuid::Uuid>,
 }
 
+/// Process-local owner of the cloud metadata tables within the Library's
+/// configured CatDB catalog. The account registry remains authoritative for
+/// source lifecycle; this runtime is created lazily so application setup never
+/// performs provider I/O.
+#[derive(Default)]
+struct CloudSyncRuntime {
+    location: Mutex<Option<PathBuf>>,
+    coordinator: tokio::sync::Mutex<Option<crate::cloud_documents::CloudSyncCoordinator>>,
+}
+
+impl CloudSyncRuntime {
+    fn configure(&self, location: PathBuf) -> Result<(), CloudSourceError> {
+        let mut configured = self
+            .location
+            .lock()
+            .map_err(|_| CloudSourceError::PersistFailed)?;
+        match configured.as_ref() {
+            Some(existing) if existing != &location => Err(CloudSourceError::PersistFailed),
+            Some(_) => Ok(()),
+            None => {
+                *configured = Some(location);
+                Ok(())
+            }
+        }
+    }
+
+    async fn coordinator(
+        &self,
+    ) -> Result<crate::cloud_documents::CloudSyncCoordinator, CloudSourceError> {
+        let mut cached = self.coordinator.lock().await;
+        if let Some(coordinator) = cached.as_ref() {
+            return Ok(coordinator.clone());
+        }
+        let path = self
+            .location
+            .lock()
+            .map_err(|_| CloudSourceError::PersistFailed)?
+            .clone()
+            .ok_or(CloudSourceError::QueryCatalogUnavailable)?;
+        let store = tauri::async_runtime::spawn_blocking(move || {
+            crate::cloud_documents::store::CloudDocumentStore::open(path)
+        })
+        .await
+        .map_err(|_| CloudSourceError::PersistFailed)?
+        .map_err(|_| CloudSourceError::PersistFailed)?;
+        let coordinator =
+            crate::cloud_documents::CloudSyncCoordinator::with_source_owned_pins(Arc::new(store));
+        *cached = Some(coordinator.clone());
+        Ok(coordinator)
+    }
+
+    async fn existing_coordinator(&self) -> Option<crate::cloud_documents::CloudSyncCoordinator> {
+        self.coordinator.lock().await.clone()
+    }
+}
+
 pub(crate) struct CloudAccountsState {
     lifecycle_commits: Arc<Mutex<()>>,
     catalog: tokio::sync::Mutex<Option<CloudCatalogAuthority>>,
     catalog_location: Mutex<Option<(PathBuf, uuid::Uuid)>>,
+    cloud_sync: Arc<CloudSyncRuntime>,
     active_connects: Arc<Mutex<HashMap<CloudProvider, ActiveCloudConnect>>>,
     active_queries: Mutex<HashMap<String, ActiveCloudQuery>>,
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1637,6 +1715,7 @@ impl Default for CloudAccountsState {
             lifecycle_commits: Arc::new(Mutex::new(())),
             catalog: tokio::sync::Mutex::new(None),
             catalog_location: Mutex::new(None),
+            cloud_sync: Arc::new(CloudSyncRuntime::default()),
             active_connects: Arc::new(Mutex::new(HashMap::new())),
             active_queries: Mutex::new(HashMap::new()),
             #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1663,8 +1742,9 @@ impl CloudAccountsState {
             .map_err(|_| CloudSourceError::PersistFailed)?;
         match configured.as_ref() {
             Some(existing) if existing != &location => Err(CloudSourceError::PersistFailed),
-            Some(_) => Ok(()),
+            Some(_) => self.cloud_sync.configure(location.0.clone()),
             None => {
+                self.cloud_sync.configure(location.0.clone())?;
                 *configured = Some(location);
                 Ok(())
             }
@@ -2229,9 +2309,15 @@ impl CloudCredentialResolver {
     }
 }
 
-/// Open a document source only from one freshly admitted source record and its
-/// vault-backed resolver. There is deliberately no renderer command at this
-/// boundary; later native commands consume this internal capability.
+/// One admitted source plus the exact catalog-derived pins carried into the
+/// local materialization. The foreground Library query path is never reused
+/// for synchronization.
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct AdmittedMarkdownSyncSource {
+    source: Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+    pins: crate::cloud_documents::store::CloudDocumentVersionPins,
+}
+
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn ensure_cloud_document_connector_available(
     provider: CloudProvider,
@@ -2262,125 +2348,161 @@ where
     remainder().await
 }
 
-#[allow(dead_code)]
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-pub(crate) async fn open_admitted_cloud_markdown_source(
+fn markdown_sync_pins(
+    authority: &CloudExecutionAuthority,
+) -> Result<crate::cloud_documents::store::CloudDocumentVersionPins, CloudSourceError> {
+    let schema = parse_pin(&authority.pins.schema_version)?;
+    let mapping = parse_pin(&authority.pins.mapping_version)?;
+    let source = parse_pin(&authority.pins.source_version)?;
+    crate::cloud_documents::store::CloudDocumentVersionPins::new(
+        schema.as_bytes(),
+        mapping.as_bytes(),
+        source.as_bytes(),
+    )
+    .map_err(|_| CloudSourceError::QueryCatalogInvalid)
+}
+
+/// Opens a native Markdown adapter only after validating the enabled account,
+/// resolving its catalog authority, and converting UUID pins to the store's
+/// opaque byte contract.
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+async fn open_admitted_cloud_markdown_sync_source(
     app: AppHandle,
     provider: CloudProvider,
-) -> Result<
-    Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
-    crate::cloud_documents::CloudDocumentError,
-> {
-    with_available_cloud_document_connector::<
-        Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
-        _,
-        _,
-    >(provider, || async move {
-        let admitted = blocking_cloud_operation(app, move |registry, vault| {
-            admit_cloud_read(registry, vault, provider)
-        })
-        .await
-        .map_err(crate::cloud_documents::map_lifecycle_error)?;
-        let AdmittedCloudRead {
-            record,
-            credential,
-            registry,
-            vault,
-            ..
-        } = admitted;
-        let profile = record.authorization_profile();
-        let resolver = Arc::new(CloudCredentialResolver::from_admitted(
-            record.clone(),
-            credential,
-            Arc::new(vault),
-            registry,
-        ));
-        match record.config {
-            #[cfg(feature = "google-drive-connector")]
-            CloudSourceConfig::GoogleDrive { selections } => {
-                let reference = catdb_connector_google_drive::DriveSecretReference::new(
-                    record.credential_reference,
+    state: &CloudAccountsState,
+) -> Result<AdmittedMarkdownSyncSource, CloudSourceError> {
+    let admitted = blocking_cloud_operation(app.clone(), move |registry, vault| {
+        admit_cloud_read(registry, vault, provider)
+    })
+    .await?;
+    let catalog = ensure_cloud_catalog(&app, state).await?;
+    let AdmittedCloudRead {
+        record,
+        credential,
+        read_authority,
+        registry,
+        vault,
+    } = admitted;
+    let profile = record.authorization_profile();
+    let source_id = record.id.clone();
+    let credential_reference = record.credential_reference.clone();
+    let configuration = record.config.clone();
+    let resolver = Arc::new(CloudCredentialResolver::from_admitted(
+        record.clone(),
+        credential,
+        Arc::new(vault),
+        registry,
+    ));
+    match configuration {
+        #[cfg(feature = "google-drive-connector")]
+        CloudSourceConfig::GoogleDrive { selections } => {
+            let reference =
+                catdb_connector_google_drive::DriveSecretReference::new(credential_reference)
+                    .map_err(|error| query_invalid(error.to_string()))?;
+            let config = catdb_connector_google_drive::DriveSourceConfig::new(
+                source_id,
+                "mdreader",
+                "Document",
+                drive_selections(selections)?,
+                reference,
+            )
+            .map_err(|error| query_invalid(error.to_string()))?
+            .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
+            let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
+                config,
+                &catalog.schema_version,
+            )
+            .map_err(|error| query_invalid(error.to_string()))?;
+            let source = Arc::new(
+                catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver.clone())
+                    .await
+                    .map_err(|error| query_failed(error.to_string()))?,
+            );
+            let authority_source = Arc::clone(&source);
+            let authority_catalog = catalog.clone();
+            let authority_read = read_authority.clone();
+            let authority = tauri::async_runtime::spawn_blocking(move || {
+                resolve_cloud_execution_authority(
+                    provider,
+                    authority_source.as_ref(),
+                    &authority_catalog,
+                    &authority_read,
+                    None,
                 )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-                let config = catdb_connector_google_drive::DriveSourceConfig::new(
-                    record.id,
-                    "mdreader",
-                    "Document",
-                    drive_selections(selections)
-                        .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?,
-                    reference,
-                )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
-                .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
-                let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
-                    config,
-                    "mdreader-cloud-markdown-v1",
-                )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-                let source =
-                    catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver.clone())
-                        .await
-                        .map_err(|_| {
-                            crate::cloud_documents::CloudDocumentError::CredentialUnavailable
-                        })?;
-                Ok(Arc::new(
+            })
+            .await
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)??;
+            state.advance_catalog(&authority, None).await;
+            Ok(AdmittedMarkdownSyncSource {
+                pins: markdown_sync_pins(&authority)?,
+                source: Arc::new(
                     crate::cloud_documents::source::DriveMarkdownDocumentSource::new(
-                        Arc::new(source),
+                        source,
                         resolver,
                         profile,
                         native_markdown_write_acceptance(CloudProvider::GoogleDrive),
                     ),
+                ),
+            })
+        }
+        #[cfg(feature = "dropbox-connector")]
+        CloudSourceConfig::Dropbox => {
+            let reference =
+                catdb_connector_dropbox::DropboxSecretReference::new(credential_reference)
+                    .map_err(|error| query_invalid(error.to_string()))?;
+            let config = catdb_connector_dropbox::DropboxSourceConfig::new(
+                source_id,
+                "mdreader",
+                "Document",
+                "",
+                catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
+                reference,
+            )
+            .map_err(|error| query_invalid(error.to_string()))?
+            .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
+            let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
+                config,
+                &catalog.schema_version,
+            )
+            .map_err(|error| query_invalid(error.to_string()))?;
+            let source = Arc::new(
+                catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
+                    .await
+                    .map_err(|error| query_failed(error.to_string()))?,
+            );
+            let authority_source = Arc::clone(&source);
+            let authority_catalog = catalog.clone();
+            let authority_read = read_authority.clone();
+            let authority = tauri::async_runtime::spawn_blocking(move || {
+                resolve_cloud_execution_authority(
+                    provider,
+                    authority_source.as_ref(),
+                    &authority_catalog,
+                    &authority_read,
+                    None,
                 )
-                    as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>)
-            }
-            #[cfg(feature = "dropbox-connector")]
-            CloudSourceConfig::Dropbox => {
-                let reference = catdb_connector_dropbox::DropboxSecretReference::new(
-                    record.credential_reference,
-                )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-                let config = catdb_connector_dropbox::DropboxSourceConfig::new(
-                    record.id,
-                    "mdreader",
-                    "Document",
-                    "",
-                    catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
-                    reference,
-                )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
-                .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
-                let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
-                    config,
-                    "mdreader-cloud-markdown-v1",
-                )
-                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-                let source =
-                    catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
-                        .await
-                        .map_err(|_| {
-                            crate::cloud_documents::CloudDocumentError::CredentialUnavailable
-                        })?;
-                Ok(Arc::new(
+            })
+            .await
+            .map_err(|_| CloudSourceError::QueryCatalogInvalid)??;
+            state.advance_catalog(&authority, None).await;
+            Ok(AdmittedMarkdownSyncSource {
+                pins: markdown_sync_pins(&authority)?,
+                source: Arc::new(
                     crate::cloud_documents::source::DropboxMarkdownDocumentSource::new(
-                        Arc::new(source),
+                        source,
                         resolver,
                         profile,
                         native_markdown_write_acceptance(CloudProvider::Dropbox),
                     ),
-                )
-                    as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>)
-            }
-            #[cfg(not(feature = "google-drive-connector"))]
-            CloudSourceConfig::GoogleDrive { .. } => {
-                Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
-            }
-            #[cfg(not(feature = "dropbox-connector"))]
-            CloudSourceConfig::Dropbox => {
-                Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
-            }
+                ),
+            })
         }
-    })
-    .await
+        #[cfg(not(feature = "google-drive-connector"))]
+        CloudSourceConfig::GoogleDrive { .. } => Err(CloudSourceError::ConnectorUnavailable),
+        #[cfg(not(feature = "dropbox-connector"))]
+        CloudSourceConfig::Dropbox => Err(CloudSourceError::ConnectorUnavailable),
+    }
 }
 
 #[cfg(feature = "google-drive-connector")]
@@ -4749,6 +4871,141 @@ pub(crate) async fn list_cloud_sources(
     .await
 }
 
+enum CloudSyncLifecycleAction {
+    Activate,
+    Pause(catdb_connectors::SourceId),
+    Retire(catdb_connectors::SourceId),
+}
+
+fn snapshot_source_id(
+    snapshot: &CloudSourcesSnapshot,
+    provider: CloudProvider,
+) -> Option<catdb_connectors::SourceId> {
+    snapshot
+        .sources
+        .iter()
+        .find(|source| source.provider == provider && !source.id.is_empty())
+        .map(|source| catdb_connectors::SourceId::new(source.id.clone()))
+}
+
+/// Applies an already-committed account lifecycle transition to the local
+/// synchronizer. Its result is intentionally non-authoritative: a scheduling
+/// failure cannot report a committed OAuth or account publication as rolled
+/// back.
+async fn reconcile_cloud_sync_after_commit(
+    app: AppHandle,
+    provider: CloudProvider,
+    state: &CloudAccountsState,
+    action: CloudSyncLifecycleAction,
+) -> Result<(), CloudSourceError> {
+    #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
+    {
+        let _ = (app, provider, state, action);
+        return Ok(());
+    }
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    match action {
+        CloudSyncLifecycleAction::Activate => {
+            let admitted = open_admitted_cloud_markdown_sync_source(app, provider, state).await?;
+            state
+                .cloud_sync
+                .coordinator()
+                .await?
+                .activate_with_pins(admitted.source, admitted.pins)
+                .await
+                .map_err(|_| CloudSourceError::PersistFailed)
+        }
+        action @ (CloudSyncLifecycleAction::Pause(_) | CloudSyncLifecycleAction::Retire(_)) => {
+            reconcile_inactive_cloud_sync_after_commit(state, action).await
+        }
+    }
+}
+
+/// Applies the non-activating half of a committed account transition. Keeping
+/// this separate makes the post-commit pause/retire ordering explicit and
+/// testable without constructing provider credentials.
+async fn reconcile_inactive_cloud_sync_after_commit(
+    state: &CloudAccountsState,
+    action: CloudSyncLifecycleAction,
+) -> Result<(), CloudSourceError> {
+    let source_id = match &action {
+        CloudSyncLifecycleAction::Pause(source_id) => source_id.clone(),
+        CloudSyncLifecycleAction::Retire(source_id) => source_id.clone(),
+        CloudSyncLifecycleAction::Activate => return Err(CloudSourceError::PersistFailed),
+    };
+    let result = match action {
+        CloudSyncLifecycleAction::Pause(_) => {
+            let Some(coordinator) = state.cloud_sync.existing_coordinator().await else {
+                return Ok(());
+            };
+            coordinator.pause(&source_id).await
+        }
+        CloudSyncLifecycleAction::Retire(_) => {
+            state
+                .cloud_sync
+                .coordinator()
+                .await?
+                .retire(&source_id)
+                .await
+        }
+        CloudSyncLifecycleAction::Activate => return Err(CloudSourceError::PersistFailed),
+    };
+    match result {
+        Ok(()) | Err(crate::cloud_documents::CloudSyncError::UnknownSource) => Ok(()),
+        Err(_) => Err(CloudSourceError::PersistFailed),
+    }
+}
+
+/// Schedules startup repair after window creation. All store opening, vault
+/// admission, and provider work remain on the background runtime.
+pub(crate) fn schedule_cloud_sync_startup(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let startup_app = app.clone();
+        let state = app.state::<CloudAccountsState>();
+        let _ = startup_cloud_sync(startup_app, &state).await;
+    });
+}
+
+async fn startup_cloud_sync(
+    app: AppHandle,
+    state: &CloudAccountsState,
+) -> Result<(), CloudSourceError> {
+    #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
+    {
+        let _ = (app, state);
+        return Ok(());
+    }
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    {
+        let providers = blocking_cloud_operation(app.clone(), |registry, _vault| {
+            registry.read_cloud(|sources| {
+                Ok(sources
+                    .iter()
+                    .filter(|source| source.enabled)
+                    .map(|source| source.provider)
+                    .collect::<Vec<_>>())
+            })
+        })
+        .await?;
+        let coordinator = state.cloud_sync.coordinator().await?;
+        coordinator
+            .startup_repair(Vec::<Arc<dyn crate::cloud_documents::MarkdownDocumentSource>>::new())
+            .await
+            .map_err(|_| CloudSourceError::PersistFailed)?;
+        for provider in providers {
+            let Ok(admitted) =
+                open_admitted_cloud_markdown_sync_source(app.clone(), provider, state).await
+            else {
+                continue;
+            };
+            let _ = coordinator
+                .activate_with_pins(admitted.source, admitted.pins)
+                .await;
+        }
+        Ok(())
+    }
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn set_cloud_source_enabled(
@@ -4759,11 +5016,31 @@ pub(crate) async fn set_cloud_source_enabled(
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     state.cancel_provider_activity(provider)?;
     let owner = CloudConnectOwner::begin(&state, provider)?;
-    commit_cloud_connect(&state, owner, move || {
-        cloud_operation(app, move |registry, vault| {
-            CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)
-        })
-    })
+    let commit_app = app.clone();
+    let post_app = app.clone();
+    let post_state: &CloudAccountsState = &state;
+    commit_cloud_connect_then(
+        &state,
+        owner,
+        move || {
+            cloud_operation(commit_app, move |registry, vault| {
+                let snapshot =
+                    CloudAccountService::new(registry, &vault).set_enabled(provider, enabled)?;
+                let action = if enabled {
+                    Some(CloudSyncLifecycleAction::Activate)
+                } else {
+                    snapshot_source_id(&snapshot, provider).map(CloudSyncLifecycleAction::Pause)
+                };
+                Ok((snapshot, action))
+            })
+        },
+        move |action| async move {
+            if let Some(action) = action {
+                let _ =
+                    reconcile_cloud_sync_after_commit(post_app, provider, post_state, action).await;
+            }
+        },
+    )
     .await
 }
 
@@ -4776,11 +5053,30 @@ pub(crate) async fn disconnect_cloud_source(
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     state.cancel_provider_activity(provider)?;
     let owner = CloudConnectOwner::begin(&state, provider)?;
-    commit_cloud_connect(&state, owner, move || {
-        cloud_operation(app, move |registry, vault| {
-            CloudAccountService::new(registry, &vault).disconnect(provider)
-        })
-    })
+    let commit_app = app.clone();
+    let post_app = app.clone();
+    let post_state: &CloudAccountsState = &state;
+    commit_cloud_connect_then(
+        &state,
+        owner,
+        move || {
+            cloud_operation(commit_app, move |registry, vault| {
+                let publication =
+                    CloudAccountService::new(registry, &vault).disconnect_with_id(provider)?;
+                let action = publication
+                    .retired_source_id
+                    .clone()
+                    .map(CloudSyncLifecycleAction::Retire);
+                Ok((publication.snapshot, action))
+            })
+        },
+        move |action| async move {
+            if let Some(action) = action {
+                let _ =
+                    reconcile_cloud_sync_after_commit(post_app, provider, post_state, action).await;
+            }
+        },
+    )
     .await
 }
 
@@ -4794,6 +5090,28 @@ where
     Install: FnOnce() -> Result<T, CloudSourceError> + Send + 'static,
 {
     commit_cloud_connect_observed(state, owner, || {}, install).await
+}
+
+/// Publishes one account lifecycle mutation, then performs its non-authoritative
+/// local sync effect. `install` derives the effect under the same commit lease
+/// as the registry mutation, so disconnect cleanup cannot target a stale
+/// source identity.
+async fn commit_cloud_connect_then<T, Action, Install, PostCommit, PostFuture>(
+    state: &CloudAccountsState,
+    owner: CloudConnectOwner<'_>,
+    install: Install,
+    post_commit: PostCommit,
+) -> Result<T, CloudSourceError>
+where
+    T: Send + 'static,
+    Action: Send + 'static,
+    Install: FnOnce() -> Result<(T, Action), CloudSourceError> + Send + 'static,
+    PostCommit: FnOnce(Action) -> PostFuture,
+    PostFuture: std::future::Future<Output = ()>,
+{
+    let (result, action) = commit_cloud_connect(state, owner, install).await?;
+    post_commit(action).await;
+    Ok(result)
 }
 
 async fn commit_cloud_connect_observed<T, Observe, Observation, Install>(
@@ -4881,16 +5199,27 @@ pub(crate) async fn connect_cloud_source(
         expires_at_unix_seconds(token.expires_in_seconds)?,
         new_cursor_key(),
     )?;
-    commit_cloud_connect(&state, owner, move || {
-        cloud_operation(app, move |registry, vault| {
-            CloudAccountService::new(registry, &vault).install_with_profile(
-                provider,
-                config,
-                secret,
-                requested_profile,
-            )
-        })
-    })
+    let commit_app = app.clone();
+    let post_app = app.clone();
+    let post_state: &CloudAccountsState = &state;
+    commit_cloud_connect_then(
+        &state,
+        owner,
+        move || {
+            cloud_operation(commit_app, move |registry, vault| {
+                let snapshot = CloudAccountService::new(registry, &vault).install_with_profile(
+                    provider,
+                    config,
+                    secret,
+                    requested_profile,
+                )?;
+                Ok((snapshot, CloudSyncLifecycleAction::Activate))
+            })
+        },
+        move |action| async move {
+            let _ = reconcile_cloud_sync_after_commit(post_app, provider, post_state, action).await;
+        },
+    )
     .await
 }
 
@@ -5697,15 +6026,16 @@ mod tests {
     use super::{
         admit_library_query, bind_identity_bound_local_sources, bind_library_cloud_source,
         bind_oauth_callback_listener, commit_cloud_connect, commit_cloud_connect_observed,
-        dropbox_redirect_configuration, execute_cloud_query, oauth_callback_configuration,
-        oauth_client_configuration_from, receive_oauth_callback, requested_scopes,
-        validate_authorization_token_response, validate_google_oauth_client_secret,
-        validate_oauth_client_id, validated_authorization_profile, AdmittedLibraryQuery,
-        CloudAccountService, CloudAccountsState, CloudAuthorizationProfile, CloudCompleteness,
-        CloudConnectOwner, CloudConnectionState, CloudCredentialResolver,
-        CloudDocumentQueryResponse, CloudEditingCapability, CloudExecutionMode, CloudProvider,
-        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
-        CloudSourceRecord, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        commit_cloud_connect_then, dropbox_redirect_configuration, execute_cloud_query,
+        oauth_callback_configuration, oauth_client_configuration_from, receive_oauth_callback,
+        requested_scopes, validate_authorization_token_response,
+        validate_google_oauth_client_secret, validate_oauth_client_id,
+        validated_authorization_profile, AdmittedLibraryQuery, CloudAccountService,
+        CloudAccountsState, CloudAuthorizationProfile, CloudCompleteness, CloudConnectOwner,
+        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
+        CloudEditingCapability, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CloudSourceRecord,
+        CloudSyncRuntime, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
         MemoryCredentialVault, OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
     };
     #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -5720,6 +6050,446 @@ mod tests {
     // test can win that port in the gap and make the exact-bind assertion fail
     // nondeterministically even though the production listener is correct.
     static OAUTH_CALLBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct LifecycleBlockingSyncSource {
+        source_id: SourceId,
+        entered: tokio::sync::Notify,
+    }
+
+    impl LifecycleBlockingSyncSource {
+        fn new(source_id: &str) -> Self {
+            Self {
+                source_id: SourceId::new(source_id),
+                entered: tokio::sync::Notify::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::cloud_documents::MarkdownDocumentSource for LifecycleBlockingSyncSource {
+        fn source_id(&self) -> &SourceId {
+            &self.source_id
+        }
+
+        async fn start_change_tracking(
+            &self,
+            context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::ProviderCursor,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            self.entered.notify_waiters();
+            context.cancellation.cancelled().await;
+            Err(crate::cloud_documents::CloudDocumentError::Cancelled)
+        }
+
+        async fn list_page(
+            &self,
+            _cursor: Option<&crate::cloud_documents::ProviderCursor>,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownMetadataPage,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn read_document(
+            &self,
+            _key: &crate::cloud_documents::SourceRecordKey,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownDocumentRevision,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn write_document(
+            &self,
+            _key: &crate::cloud_documents::SourceRecordKey,
+            _expected: &crate::cloud_documents::ProviderRevision,
+            _body: &[u8],
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownWriteReceipt,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn read_changes(
+            &self,
+            _cursor: &crate::cloud_documents::ProviderCursor,
+            _known: &[crate::cloud_documents::KnownMarkdownMetadata],
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownChangePage,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_materialization_uses_the_configured_catalog_file_without_replacing_its_version() {
+        let root = tempdir().expect("cloud catalog directory");
+        let catalog_path = root.path().join("cloud-library.catdb");
+        super::open_cloud_catalog(&catalog_path, uuid::Uuid::from_u128(0xc10d))
+            .expect("open CatDB catalog");
+        let before: i64 = rusqlite::Connection::open(&catalog_path)
+            .expect("inspect catalog version")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("catalog user version");
+        let runtime = CloudSyncRuntime::default();
+        runtime
+            .configure(catalog_path.clone())
+            .expect("configure shared catalog path");
+
+        runtime
+            .coordinator()
+            .await
+            .expect("open shared materialization");
+
+        assert_eq!(
+            runtime
+                .location
+                .lock()
+                .expect("configured path lock")
+                .as_deref(),
+            Some(catalog_path.as_path())
+        );
+        assert!(catalog_path.exists(), "the shared catalog remains present");
+        assert!(
+            !root.path().join("cloud-markdown.sqlite").exists(),
+            "startup must not create a parallel cloud materialization database"
+        );
+        let connection = rusqlite::Connection::open(&catalog_path).expect("inspect shared file");
+        let after: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("catalog user version after cloud tables");
+        let cloud_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name GLOB 'mdreader_cloud_*'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cloud table count");
+        assert_eq!(
+            after, before,
+            "cloud tables do not own CatDB's schema version"
+        );
+        assert_eq!(
+            cloud_tables, 5,
+            "all cloud materialization tables share the catalog file"
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_and_retire_reconcile_only_after_their_lifecycle_commits() {
+        let root = tempdir().expect("cloud catalog directory");
+        let state = CloudAccountsState::default();
+        state
+            .cloud_sync
+            .configure(root.path().join("cloud-library.catdb"))
+            .expect("configure shared catalog path");
+        let coordinator = state
+            .cloud_sync
+            .coordinator()
+            .await
+            .expect("open coordinator");
+        let source = Arc::new(LifecycleBlockingSyncSource::new("lifecycle-sync-source"));
+        let source_id = source.source_id.clone();
+        let entered = source.entered.notified();
+        let pins = crate::cloud_documents::store::CloudDocumentVersionPins::new(
+            b"schema-v1",
+            b"mapping-v1",
+            b"source-v1",
+        )
+        .expect("fixed test pins");
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&source) as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+                pins,
+            )
+            .await
+            .expect("activate source");
+        entered.await;
+
+        let pause_committed = Arc::new(AtomicBool::new(false));
+        let pause_flag = Arc::clone(&pause_committed);
+        let owner = CloudConnectOwner::begin(&state, CloudProvider::GoogleDrive)
+            .expect("begin pause transition");
+        commit_cloud_connect(&state, owner, move || {
+            pause_flag.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("commit disabled lifecycle");
+        assert!(pause_committed.load(Ordering::SeqCst));
+        super::reconcile_inactive_cloud_sync_after_commit(
+            &state,
+            super::CloudSyncLifecycleAction::Pause(source_id.clone()),
+        )
+        .await
+        .expect("pause only after lifecycle commit");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("pause settles");
+        assert!(matches!(
+            coordinator.status(&source_id).expect("pause status"),
+            Some(status) if matches!(status.phase(), crate::cloud_documents::CloudSyncPhase::Paused)
+        ));
+
+        let retire_committed = Arc::new(AtomicBool::new(false));
+        let retire_flag = Arc::clone(&retire_committed);
+        let owner = CloudConnectOwner::begin(&state, CloudProvider::GoogleDrive)
+            .expect("begin disconnect transition");
+        commit_cloud_connect(&state, owner, move || {
+            retire_flag.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .expect("commit disconnected lifecycle");
+        assert!(retire_committed.load(Ordering::SeqCst));
+        super::reconcile_inactive_cloud_sync_after_commit(
+            &state,
+            super::CloudSyncLifecycleAction::Retire(source_id.clone()),
+        )
+        .await
+        .expect("retire only after lifecycle commit");
+        assert!(matches!(
+            coordinator.status(&source_id).expect("retire status"),
+            Some(status) if matches!(status.phase(), crate::cloud_documents::CloudSyncPhase::Retired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_commit_sync_action_cannot_run_before_the_lifecycle_publication() {
+        let state = CloudAccountsState::default();
+        let owner = CloudConnectOwner::begin(&state, CloudProvider::Dropbox)
+            .expect("begin lifecycle transition");
+        let committed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicBool::new(false));
+        let committed_by_install = Arc::clone(&committed);
+        let committed_by_post = Arc::clone(&committed);
+        let observed_by_post = Arc::clone(&observed);
+
+        let result = commit_cloud_connect_then(
+            &state,
+            owner,
+            move || {
+                committed_by_install.store(true, Ordering::SeqCst);
+                Ok(("published", "post-commit-sync"))
+            },
+            move |_action| async move {
+                assert!(
+                    committed_by_post.load(Ordering::SeqCst),
+                    "a sync action must observe the completed lifecycle publication"
+                );
+                observed_by_post.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok("published"));
+        assert!(observed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cold_start_retire_removes_exact_disconnected_source_state() {
+        let root = tempdir().expect("cloud catalog directory");
+        let catalog_path = root.path().join("cloud-library.catdb");
+        crate::cloud_documents::store::CloudDocumentStore::open(&catalog_path)
+            .expect("create shared cloud tables");
+        let source_id = SourceId::new("cold-start-disconnect-source");
+        let generation = [4_u8; 16];
+        let connection = rusqlite::Connection::open(&catalog_path).expect("seed cloud state");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_snapshot
+                 (source_id, generation, state, observed_at_ms, schema_version_id, mapping_version_id, source_version_id)
+                 VALUES (?1, ?2, 'published', 1, ?3, ?4, ?5)",
+                rusqlite::params![
+                    source_id.as_str().as_bytes(),
+                    generation,
+                    b"schema-v1",
+                    b"mapping-v1",
+                    b"source-v1",
+                ],
+            )
+            .expect("seed snapshot");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_document
+                 (source_id, generation, record_key, name, display_path, media_type, modified_at_ms, size_bytes,
+                  revision, content_hash, deleted, schema_version_id, mapping_version_id, source_version_id, observed_at_ms)
+                 VALUES (?1, ?2, ?3, 'note.md', '/note.md', 'text/markdown', 1, 1, ?4, NULL, 0, ?5, ?6, ?7, 1)",
+                rusqlite::params![
+                    source_id.as_str().as_bytes(),
+                    generation,
+                    b"note.md",
+                    b"revision-1",
+                    b"schema-v1",
+                    b"mapping-v1",
+                    b"source-v1",
+                ],
+            )
+            .expect("seed metadata");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_sync_state
+                 (source_id, change_cursor, sync_state, last_success_ms, last_error_kind, retry_after_ms)
+                 VALUES (?1, ?2, 'published', 1, NULL, NULL)",
+                rusqlite::params![source_id.as_str().as_bytes(), b"cursor-1"],
+            )
+            .expect("seed cursor");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_body_cache
+                 (source_id, source_version_id, record_key, revision, body, body_hash, size_bytes, last_access_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 4, 1)",
+                rusqlite::params![
+                    source_id.as_str().as_bytes(),
+                    b"source-v1",
+                    b"note.md",
+                    b"revision-1",
+                    b"body",
+                    [8_u8; 32],
+                ],
+            )
+            .expect("seed cache");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_write_repair
+                 (operation_id, source_id, record_key, accepted_revision, body_hash, receipt_json, state, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'provider-accepted', 1)",
+                rusqlite::params![
+                    b"operation-1",
+                    source_id.as_str().as_bytes(),
+                    b"note.md",
+                    b"revision-1",
+                    [9_u8; 32],
+                    b"{}",
+                ],
+            )
+            .expect("seed repair");
+        let survivor = SourceId::new("cold-start-survivor-source");
+        let survivor_generation = [5_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_snapshot
+                 (source_id, generation, state, observed_at_ms, schema_version_id, mapping_version_id, source_version_id)
+                 VALUES (?1, ?2, 'published', 1, ?3, ?4, ?5)",
+                rusqlite::params![
+                    survivor.as_str().as_bytes(),
+                    survivor_generation,
+                    b"schema-v1",
+                    b"mapping-v1",
+                    b"source-v1",
+                ],
+            )
+            .expect("seed survivor snapshot");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_document
+                 (source_id, generation, record_key, name, display_path, media_type, modified_at_ms, size_bytes,
+                  revision, content_hash, deleted, schema_version_id, mapping_version_id, source_version_id, observed_at_ms)
+                 VALUES (?1, ?2, ?3, 'survivor.md', '/survivor.md', 'text/markdown', 1, 1, ?4, NULL, 0, ?5, ?6, ?7, 1)",
+                rusqlite::params![
+                    survivor.as_str().as_bytes(),
+                    survivor_generation,
+                    b"survivor.md",
+                    b"survivor-revision",
+                    b"schema-v1",
+                    b"mapping-v1",
+                    b"source-v1",
+                ],
+            )
+            .expect("seed survivor metadata");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_sync_state
+                 (source_id, change_cursor, sync_state, last_success_ms, last_error_kind, retry_after_ms)
+                 VALUES (?1, ?2, 'published', 1, NULL, NULL)",
+                rusqlite::params![survivor.as_str().as_bytes(), b"survivor-cursor"],
+            )
+            .expect("seed survivor cursor");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_body_cache
+                 (source_id, source_version_id, record_key, revision, body, body_hash, size_bytes, last_access_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 4, 1)",
+                rusqlite::params![
+                    survivor.as_str().as_bytes(),
+                    b"source-v1",
+                    b"survivor.md",
+                    b"survivor-revision",
+                    b"body",
+                    [10_u8; 32],
+                ],
+            )
+            .expect("seed survivor cache");
+        connection
+            .execute(
+                "INSERT INTO mdreader_cloud_write_repair
+                 (operation_id, source_id, record_key, accepted_revision, body_hash, receipt_json, state, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'provider-accepted', 2)",
+                rusqlite::params![
+                    b"survivor-operation",
+                    survivor.as_str().as_bytes(),
+                    b"survivor.md",
+                    b"survivor-revision",
+                    [11_u8; 32],
+                    b"{}",
+                ],
+            )
+            .expect("seed survivor repair");
+        drop(connection);
+
+        let state = CloudAccountsState::default();
+        state
+            .cloud_sync
+            .configure(catalog_path.clone())
+            .expect("configure shared catalog path");
+        super::reconcile_inactive_cloud_sync_after_commit(
+            &state,
+            super::CloudSyncLifecycleAction::Retire(source_id.clone()),
+        )
+        .await
+        .expect("cold-start retirement");
+
+        let connection = rusqlite::Connection::open(&catalog_path).expect("inspect cleaned state");
+        for table in [
+            "mdreader_cloud_snapshot",
+            "mdreader_cloud_document",
+            "mdreader_cloud_sync_state",
+            "mdreader_cloud_body_cache",
+            "mdreader_cloud_write_repair",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE source_id = ?1"),
+                    [source_id.as_str().as_bytes()],
+                    |row| row.get(0),
+                )
+                .expect("source-scoped cleanup count");
+            assert_eq!(count, 0, "cold-start retirement clears {table}");
+            let survivor_count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE source_id = ?1"),
+                    [survivor.as_str().as_bytes()],
+                    |row| row.get(0),
+                )
+                .expect("survivor count");
+            assert_eq!(
+                survivor_count, 1,
+                "retirement preserves other-source {table}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn library_application_continuation_expires_at_native_authority_boundary() {
@@ -7996,6 +8766,67 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_publication_uses_the_identity_removed_under_its_own_lifecycle_lease() {
+        let temp = tempdir().expect("temporary directory");
+        let vault = MemoryCredentialVault::default();
+        let service =
+            CloudAccountService::new(LibraryStore::new(temp.path().join("library.json")), &vault);
+        let first = service
+            .install(CloudProvider::GoogleDrive, google_config(), credentials())
+            .expect("initial connection");
+        let stale_id = first
+            .sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::GoogleDrive)
+            .expect("initial Drive source")
+            .id
+            .clone();
+        let replacement = service
+            .install(
+                CloudProvider::GoogleDrive,
+                google_config(),
+                SecretBundle::new(
+                    "replacement-access-token",
+                    "replacement-refresh-token",
+                    4_000_000_301,
+                    [61; 32],
+                )
+                .expect("replacement credential"),
+            )
+            .expect("replacement connection");
+        let replacement_id = replacement
+            .sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::GoogleDrive)
+            .expect("replacement Drive source")
+            .id
+            .clone();
+        assert_ne!(
+            replacement_id, stale_id,
+            "replacement owns a new source identity"
+        );
+
+        let publication = service
+            .disconnect_with_id(CloudProvider::GoogleDrive)
+            .expect("committed disconnect");
+
+        assert_eq!(
+            publication
+                .retired_source_id
+                .expect("committed retired source")
+                .as_str(),
+            replacement_id,
+            "cleanup must follow the record committed as removed, never a pre-commit observation"
+        );
+        assert!(publication
+            .snapshot
+            .sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::GoogleDrive)
+            .is_some_and(|source| source.id.is_empty()));
+    }
+
+    #[test]
     fn cloud_account_updates_preserve_existing_local_library_membership() {
         let temp = tempdir().expect("temporary directory");
         let local_root = temp.path().join("notes");
@@ -8345,23 +9176,28 @@ mod tests {
         let vault = Arc::new(MemoryCredentialVault::default());
         let service =
             CloudAccountService::new(LibraryStore::new(registry_path.clone()), vault.as_ref());
+        let (provider, config) = if cfg!(feature = "google-drive-connector") {
+            (CloudProvider::GoogleDrive, google_config())
+        } else {
+            (CloudProvider::Dropbox, CloudSourceConfig::Dropbox)
+        };
         service
-            .install(CloudProvider::GoogleDrive, google_config(), credentials())
-            .expect("install Drive");
-        let drive_membership = LibraryStore::new(registry_path.clone())
+            .install(provider, config, credentials())
+            .expect("install cloud source");
+        let cloud_membership = LibraryStore::new(registry_path.clone())
             .read_query_snapshot()
             .expect("read unified Library")
             .cloud_sources
             .iter()
-            .find(|source| source.provider == CloudProvider::GoogleDrive)
+            .find(|source| source.provider == provider)
             .map(|source| crate::library_query::membership_id(source.id()))
-            .expect("Drive membership");
+            .expect("cloud membership");
         vault.clear();
 
         let admitted = admit_library_query(
             LibraryStore::new(registry_path),
             vault.clone(),
-            Some(&[local_membership, drive_membership]),
+            Some(&[local_membership, cloud_membership]),
             None,
         )
         .expect("missing credential remains an admitted unavailable source");
@@ -8384,15 +9220,15 @@ mod tests {
                     &uuid::Uuid::new_v4().to_string(),
                 )
                 .await
-                .expect("bind declared unavailable Drive source"),
+                .expect("bind declared unavailable cloud source"),
             );
         }
         let unavailable_source_id = members
             .iter()
-            .find(|member| member.membership_id == drive_membership)
+            .find(|member| member.membership_id == cloud_membership)
             .and_then(|member| member.sources.first())
             .map(|source| source.source_id)
-            .expect("unavailable Drive source");
+            .expect("unavailable cloud source");
 
         let answer = crate::library_query::execute_registered_library_query(
             catdb_api_types::EntityQueryRequest {
@@ -8403,7 +9239,7 @@ mod tests {
                 select: vec!["path".to_string(), "body".to_string()],
                 filters: Vec::new(),
                 order_by: Vec::new(),
-                source_ids: Some(vec![local_membership, drive_membership]),
+                source_ids: Some(vec![local_membership, cloud_membership]),
                 max_staleness_ms: None,
                 require_complete: Some(false),
                 page_size: 100,
@@ -8433,7 +9269,7 @@ mod tests {
             .sources
             .iter()
             .find(|source| source.source_id == unavailable_source_id)
-            .expect("unavailable Drive report");
+            .expect("unavailable cloud report");
         assert_eq!(
             unavailable_report.outcome,
             catdb_api_types::SourceOutcome::Refused
@@ -8446,7 +9282,7 @@ mod tests {
                     })
                 })
             }),
-            "a missing credential cannot make Drive a considered provider for a local record"
+            "a missing credential cannot make cloud a considered provider for a local record"
         );
     }
 
@@ -8897,35 +9733,47 @@ mod tests {
 
     #[test]
     fn a_wrong_oauth_state_cannot_produce_a_verified_authorization() {
-        let attempt = OAuthAttempt::new(
-            CloudProvider::Dropbox,
-            "a".repeat(64),
-            "expected-state",
-            "http://127.0.0.1:53682/oauth/dropbox",
-        )
-        .expect("valid attempt");
+        let (provider, redirect) = if cfg!(feature = "google-drive-connector") {
+            (
+                CloudProvider::GoogleDrive,
+                "http://127.0.0.1:53681/oauth/google-drive",
+            )
+        } else {
+            (
+                CloudProvider::Dropbox,
+                "http://127.0.0.1:53682/oauth/dropbox",
+            )
+        };
+        let attempt = OAuthAttempt::new(provider, "a".repeat(64), "expected-state", redirect)
+            .expect("valid attempt");
 
-        let result = attempt.verify_callback(
-            "http://127.0.0.1:53682/oauth/dropbox?code=provider-code&state=wrong-state",
-        );
+        let callback = format!("{redirect}?code=provider-code&state=wrong-state");
+        let result = attempt.verify_callback(&callback);
 
         assert!(matches!(result, Err(CloudSourceError::OauthStateMismatch)));
     }
 
     #[test]
     fn oauth_callback_requires_the_exact_redirect_and_unique_parameters() {
-        let attempt = OAuthAttempt::new(
-            CloudProvider::GoogleDrive,
-            "a".repeat(64),
-            "expected-state",
-            "http://127.0.0.1:53681/oauth/google-drive",
-        )
-        .expect("valid attempt");
+        let (provider, redirect, wrong_redirect) = if cfg!(feature = "google-drive-connector") {
+            (
+                CloudProvider::GoogleDrive,
+                "http://127.0.0.1:53681/oauth/google-drive",
+                "http://127.0.0.1:53681/oauth/other",
+            )
+        } else {
+            (
+                CloudProvider::Dropbox,
+                "http://127.0.0.1:53682/oauth/dropbox",
+                "http://127.0.0.1:53682/oauth/other",
+            )
+        };
+        let attempt = OAuthAttempt::new(provider, "a".repeat(64), "expected-state", redirect)
+            .expect("valid attempt");
 
-        for callback in [
-            "http://127.0.0.1:53681/oauth/other?code=provider-code&state=expected-state&picked_file_ids=file_1",
-            "http://127.0.0.1:53681/oauth/google-drive?code=one&code=two&state=expected-state&picked_file_ids=file_1",
-        ] {
+        let wrong_callback = format!("{wrong_redirect}?code=provider-code&state=expected-state");
+        let duplicate_callback = format!("{redirect}?code=one&code=two&state=expected-state");
+        for callback in [wrong_callback.as_str(), duplicate_callback.as_str()] {
             assert!(matches!(
                 attempt.verify_callback(callback),
                 Err(CloudSourceError::OauthInvalidCallback)
@@ -8934,6 +9782,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "google-drive-connector")]
     fn readonly_drive_callback_defaults_to_the_drive_root_without_picker_parameters() {
         let attempt = OAuthAttempt::new(
             CloudProvider::GoogleDrive,

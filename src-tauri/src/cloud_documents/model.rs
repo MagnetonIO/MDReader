@@ -78,6 +78,21 @@ pub(crate) struct MarkdownChangePage {
     pub(crate) observed_at_ms: i64,
 }
 
+/// One published metadata revision supplied to a provider-native change
+/// classifier. It contains no body or credential material.
+#[derive(Clone)]
+pub(crate) struct KnownMarkdownMetadata {
+    pub(crate) key: SourceRecordKey,
+    pub(crate) name: String,
+    pub(crate) display_path: String,
+    pub(crate) media_type: Option<String>,
+    pub(crate) modified_at_ms: Option<i64>,
+    pub(crate) size_bytes: Option<u64>,
+    pub(crate) revision: ProviderRevision,
+    pub(crate) content_hash: Option<[u8; 32]>,
+    pub(crate) deleted: bool,
+}
+
 pub(crate) struct MarkdownDocumentRevision {
     pub(crate) key: SourceRecordKey,
     pub(crate) revision: ProviderRevision,
@@ -153,6 +168,7 @@ pub(crate) trait MarkdownDocumentSource: Send + Sync {
     async fn read_changes(
         &self,
         cursor: &ProviderCursor,
+        known: &[KnownMarkdownMetadata],
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError>;
 }

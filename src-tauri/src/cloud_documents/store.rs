@@ -17,7 +17,6 @@ use super::{
     SourceRecordKey,
 };
 
-const SCHEMA_VERSION: i64 = 1;
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_WRITE_REPAIR_PAGE_ROWS: usize = 256;
@@ -90,8 +89,7 @@ const SCHEMA_SQL: &str = "
         receipt_json BLOB NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('provider-accepted','published')),
         created_at_ms INTEGER NOT NULL
-    );
-    PRAGMA user_version = 1;";
+    );";
 
 /// Durable Cloud-document materialization errors. Variants deliberately do
 /// not contain provider values, document bodies, or receipt contents.
@@ -101,8 +99,6 @@ pub(crate) enum CloudDocumentStoreError {
     Persistence,
     /// A prior schema creation left controlled tables without a committed version.
     MigrationInterrupted,
-    /// The database is from a newer or incompatible store schema.
-    UnsupportedSchema,
     /// The expected store schema or a stored payload is malformed.
     CorruptStore,
     /// A cursor cannot safely be persisted as an opaque value.
@@ -134,7 +130,6 @@ impl fmt::Display for CloudDocumentStoreError {
         formatter.write_str(match self {
             Self::Persistence => "cloud-document-store-persistence-failed",
             Self::MigrationInterrupted => "cloud-document-store-migration-interrupted",
-            Self::UnsupportedSchema => "cloud-document-store-schema-unsupported",
             Self::CorruptStore => "cloud-document-store-corrupt",
             Self::InvalidCursor => "cloud-document-store-invalid-cursor",
             Self::InvalidRevision => "cloud-document-store-invalid-revision",
@@ -204,6 +199,13 @@ impl fmt::Debug for CloudDocumentVersionPins {
 pub(crate) struct CloudSnapshotGeneration {
     source_id: Vec<u8>,
     generation: [u8; 16],
+}
+
+impl CloudSnapshotGeneration {
+    /// Returns the opaque generation as a UUID for in-process sync status only.
+    pub(crate) fn id(&self) -> uuid::Uuid {
+        uuid::Uuid::from_bytes(self.generation)
+    }
 }
 
 impl fmt::Debug for CloudSnapshotGeneration {
@@ -754,6 +756,72 @@ impl CloudDocumentStore {
             .transpose()
     }
 
+    /// Discards incomplete staging snapshots for exactly one source without
+    /// touching its published snapshot, cursor, cache, or repair journal.
+    pub(crate) fn discard_staging(&self, source_id: &SourceId) -> StoreResult<()> {
+        let source_id = source_bytes(source_id)?;
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "DELETE FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND state = 'staging'",
+                params![source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        Ok(())
+    }
+
+    /// Removes staging generations left by a process that stopped before
+    /// publication. Published snapshots and all source state remain intact.
+    pub(crate) fn discard_unreferenced_staging(&self) -> StoreResult<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "DELETE FROM mdreader_cloud_snapshot WHERE state = 'staging'",
+                [],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        Ok(())
+    }
+
+    /// Retires durable metadata, cached bodies, cursors, and pending write
+    /// repairs for exactly one disconnected source. Callers must cancel that
+    /// source's owner before invoking this effect.
+    pub(crate) fn retire_source(&self, source_id: &SourceId) -> StoreResult<()> {
+        let source_id = source_bytes(source_id)?;
+        let connection = self.connection()?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "DELETE FROM mdreader_cloud_snapshot WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "DELETE FROM mdreader_cloud_body_cache WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "DELETE FROM mdreader_cloud_write_repair WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "DELETE FROM mdreader_cloud_sync_state WHERE source_id = ?1",
+                params![source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .commit()
+            .map_err(|_| CloudDocumentStoreError::Persistence)
+    }
+
     /// Caches one validated body by exact source version, record key, and
     /// provider revision, evicting the deterministic least-recently-used rows.
     pub(crate) fn put_body(
@@ -1076,14 +1144,9 @@ impl CloudDocumentStore {
 }
 
 fn initialize_schema(connection: &mut Connection) -> StoreResult<()> {
-    let version: i64 = connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|_| CloudDocumentStoreError::Persistence)?;
-    match version {
+    let controlled_tables = controlled_table_count(connection)?;
+    match controlled_tables {
         0 => {
-            if controlled_tables_exist(connection)? {
-                return Err(CloudDocumentStoreError::MigrationInterrupted);
-            }
             let transaction = connection
                 .transaction()
                 .map_err(|_| CloudDocumentStoreError::Persistence)?;
@@ -1094,21 +1157,20 @@ fn initialize_schema(connection: &mut Connection) -> StoreResult<()> {
                 .commit()
                 .map_err(|_| CloudDocumentStoreError::Persistence)
         }
-        SCHEMA_VERSION => validate_schema(connection),
-        _ => Err(CloudDocumentStoreError::UnsupportedSchema),
+        1..=4 => Err(CloudDocumentStoreError::MigrationInterrupted),
+        _ => validate_schema(connection),
     }
 }
 
-fn controlled_tables_exist(connection: &Connection) -> StoreResult<bool> {
-    let table_count: i64 = connection
+fn controlled_table_count(connection: &Connection) -> StoreResult<i64> {
+    connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master
              WHERE type = 'table' AND name GLOB 'mdreader_cloud_*'",
             [],
             |row| row.get(0),
         )
-        .map_err(|_| CloudDocumentStoreError::Persistence)?;
-    Ok(table_count > 0)
+        .map_err(|_| CloudDocumentStoreError::Persistence)
 }
 
 fn validate_schema(connection: &Connection) -> StoreResult<()> {

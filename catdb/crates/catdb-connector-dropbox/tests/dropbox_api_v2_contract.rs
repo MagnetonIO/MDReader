@@ -309,6 +309,71 @@ fn download_header(path: &str, name: &str, rev: &str, content_hash: &str) -> Str
 }
 
 #[tokio::test]
+async fn sync_metadata_uses_dropbox_metadata_without_a_content_download() {
+    let (source, transport) = open_source_with_config(
+        ScriptedTransport::new([response(
+            200,
+            file("/knowledge/sync.md", "sync.md", "r1", "hash-1").to_string(),
+        )]),
+        markdown_config(),
+    );
+
+    let row = source
+        .metadata_for_sync("/knowledge/sync.md", &context(10, 10, 64 * 1024))
+        .await
+        .expect("exact metadata");
+
+    assert_eq!(row.key, "/knowledge/sync.md");
+    assert_eq!(row.value["name"], "sync.md");
+    assert_eq!(row.value["rev"], "r1");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].endpoint(), DropboxEndpoint::Api);
+    assert_eq!(requests[0].path(), "/2/files/get_metadata");
+    assert_eq!(requests[0].json_body()["path"], "/knowledge/sync.md");
+}
+
+#[tokio::test]
+async fn sync_metadata_preserves_typed_dropbox_provider_failures() {
+    let cases = [
+        (404, None, "not-found"),
+        (401, None, "authentication"),
+        (429, Some("7".to_string()), "rate-limited"),
+        (500, None, "transport"),
+    ];
+    for (status, retry_after, expected) in cases {
+        let step = match retry_after {
+            Some(value) => response_with_headers(status, [("retry-after", value)], Vec::new()),
+            None => response(status, Vec::new()),
+        };
+        let (source, transport) =
+            open_source_with_config(ScriptedTransport::new([step]), markdown_config());
+        let error = source
+            .metadata_for_sync("/knowledge/sync.md", &context(10, 10, 64 * 1024))
+            .await
+            .expect_err("provider failure must not become an empty metadata row");
+        assert!(matches!(
+            (expected, error),
+            ("not-found", SourceError::Read { .. })
+                | ("authentication", SourceError::Authentication { .. })
+                | (
+                    "rate-limited",
+                    SourceError::RateLimited {
+                        retry_after_ms: Some(7_000),
+                        ..
+                    }
+                )
+                | ("transport", SourceError::Transport { .. })
+        ));
+        assert_eq!(
+            transport.requests().len(),
+            1,
+            "one metadata endpoint request"
+        );
+    }
+}
+
+#[tokio::test]
 async fn downloads_the_exact_markdown_record_and_revision() {
     let transport = ScriptedTransport::new([response_with_headers(
         200,

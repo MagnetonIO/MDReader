@@ -20,7 +20,7 @@ use catdb_connectors::{
     SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
 };
 use catdb_core::{BaseType, Schema};
-use catdb_query::EntityQuery;
+use catdb_query::{AttrOp, EntityFilterInput, EntityQuery, EntityTarget, EntityVocabulary};
 use catdb_storage::{ObjectFilterOp, ObjectValue};
 use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
@@ -1555,6 +1555,63 @@ impl DropboxSource {
             serde_json::from_slice(&response.body).map_err(|_| self.malformed("cursor"))?;
         validate_provider_cursor(&start.cursor)?;
         self.encode_change_cursor(&start.cursor)
+    }
+
+    /// Reads metadata for one exact Dropbox path without fetching its body.
+    /// The existing exact-path plan path owns containment, Markdown filtering,
+    /// identity validation, provider error mapping, and read-context budgets.
+    pub async fn metadata_for_sync(
+        &self,
+        path_lower: &str,
+        context: &ReadContext,
+    ) -> Result<SourceRow, SourceError> {
+        context.check()?;
+        let fields = [
+            "id",
+            "name",
+            "path",
+            "modifiedAt",
+            "size",
+            "rev",
+            "contentHash",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let entity = self
+            .model
+            .schema()
+            .entities
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let [entity] = entity.as_slice() else {
+            return Err(SourceError::InvalidPlan {
+                source_id: self.model.id().clone(),
+            });
+        };
+        let vocabulary = EntityVocabulary::derive(&[self.model.schema().clone()]);
+        let query = catdb_query::validate_entity_request(
+            EntityTarget::Entity(format!("{}.{}", self.model.schema().name, entity)),
+            &[EntityFilterInput {
+                field: "path".to_string(),
+                op: AttrOp::Eq,
+                value: path_lower.to_string(),
+            }],
+            &vocabulary,
+        )
+        .map_err(|_| SourceError::InvalidPlan {
+            source_id: self.model.id().clone(),
+        })?;
+        let plan = self.compile(&query, &fields)?;
+        let page = self.execute_page(&plan, None, context).await?;
+        let [row] = page.rows.as_slice() else {
+            return Err(self.malformed("sync metadata row"));
+        };
+        if row.source != *self.model.id() || row.key != path_lower || page.next_cursor.is_some() {
+            return Err(self.malformed("sync metadata identity"));
+        }
+        Ok(row.clone())
     }
 
     /// Read one incremental provider page without collapsing reset or deletion.

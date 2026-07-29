@@ -269,6 +269,7 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
                 cloud_accounts::seed_e2e_cloud_membership(app.handle())?;
                 mobile_enterprise::seed_e2e_connected_membership(app.handle())?;
             }
+            cloud_accounts::schedule_cloud_sync_startup(app.handle().clone());
             let diagnostics =
                 DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
             app.manage(diagnostics);

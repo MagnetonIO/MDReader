@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::{collections::BTreeMap, time::SystemTime};
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
@@ -7,8 +7,8 @@ use catdb_connectors::{DataSource, ReadContext, SourceCursor, SourceError, Sourc
 use catdb_query::{EntityQuery, EntityTarget};
 
 use super::model::{
-    CloudDocumentError, CloudIoContext, MarkdownWriteReceipt, ProviderCursor, ProviderRevision,
-    SourceRecordKey,
+    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownWriteReceipt,
+    ProviderCursor, ProviderRevision, SourceRecordKey,
 };
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use super::model::{
@@ -352,6 +352,45 @@ fn optional_u64(value: &serde_json::Value, field: &str) -> Option<u64> {
     value.get(field).and_then(serde_json::Value::as_u64)
 }
 
+#[cfg(feature = "google-drive-connector")]
+fn drive_timestamp(milliseconds: i64) -> Result<String, CloudDocumentError> {
+    use time::format_description::well_known::Rfc3339;
+
+    let nanos = i128::from(milliseconds)
+        .checked_mul(1_000_000)
+        .ok_or(CloudDocumentError::ProtocolFailed)?;
+    let timestamp = time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
+        .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+    timestamp
+        .format(&Rfc3339)
+        .map_err(|_| CloudDocumentError::ProtocolFailed)
+}
+
+#[cfg(feature = "dropbox-connector")]
+fn decode_hash(value: &str) -> Result<[u8; 32], CloudDocumentError> {
+    if value.len() != 64 {
+        return Err(CloudDocumentError::ProtocolFailed);
+    }
+    let mut hash = [0_u8; 32];
+    for (index, byte) in hash.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
+            .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+    }
+    Ok(hash)
+}
+
+#[cfg(feature = "dropbox-connector")]
+fn encode_hash(hash: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut value = String::with_capacity(64);
+    for byte in hash {
+        value.push(HEX[usize::from(byte >> 4)] as char);
+        value.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    value
+}
+
 /// Native Drive adapter. Its resolver retains the admitted credential and
 /// rechecks source identity before and after every provider effect.
 #[cfg(feature = "google-drive-connector")]
@@ -423,6 +462,44 @@ impl DriveMarkdownDocumentSource {
             },
             deleted: false,
         })
+    }
+
+    fn known_revisions(
+        known: &[KnownMarkdownMetadata],
+    ) -> Result<
+        BTreeMap<String, catdb_connector_google_drive::DriveKnownRevision>,
+        CloudDocumentError,
+    > {
+        known
+            .iter()
+            .filter(|metadata| !metadata.deleted && metadata.modified_at_ms.is_some())
+            .map(|metadata| {
+                let modified_time = drive_timestamp(
+                    metadata
+                        .modified_at_ms
+                        .ok_or(CloudDocumentError::ProtocolFailed)?,
+                )?;
+                let checksum = (metadata.revision.opaque != metadata.key.as_str())
+                    .then(|| metadata.revision.opaque.clone());
+                let revision =
+                    catdb_connector_google_drive::DriveKnownRevision::new(modified_time, checksum)
+                        .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+                Ok((metadata.key.as_str().to_string(), revision))
+            })
+            .collect()
+    }
+
+    fn deleted(known: &KnownMarkdownMetadata) -> MarkdownMetadata {
+        MarkdownMetadata {
+            key: known.key.clone(),
+            name: known.name.clone(),
+            display_path: known.display_path.clone(),
+            media_type: known.media_type.clone(),
+            modified_at_ms: known.modified_at_ms,
+            size_bytes: known.size_bytes,
+            revision: known.revision.clone(),
+            deleted: true,
+        }
     }
 }
 
@@ -516,13 +593,70 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
 
     async fn read_changes(
         &self,
-        _cursor: &ProviderCursor,
-        _context: &CloudIoContext,
+        cursor: &ProviderCursor,
+        known: &[KnownMarkdownMetadata],
+        context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
-        // Task 4 supplies the durable known-revision map required to classify
-        // Drive deletions without guessing. Until then a change read must not
-        // silently report an empty page.
-        Err(CloudDocumentError::SyncInProgress)
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        let cursor = catdb_connector_google_drive::DriveChangeCursor::from_bytes(cursor.0.clone())
+            .map_err(map_source_error)?;
+        let known_revisions = Self::known_revisions(known)?;
+        let known_metadata = known
+            .iter()
+            .filter(|metadata| !metadata.deleted)
+            .map(|metadata| (metadata.key.as_str().to_string(), metadata))
+            .collect::<BTreeMap<_, _>>();
+        let outcome = self
+            .source()?
+            .read_changes(&cursor, &known_revisions, &read_context(context)?)
+            .await
+            .map_err(map_source_error)?;
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        match outcome {
+            catdb_connector_google_drive::DriveChangeOutcome::RebuildRequired => {
+                Err(CloudDocumentError::ResetCursor)
+            }
+            catdb_connector_google_drive::DriveChangeOutcome::Page {
+                events,
+                next_cursor,
+                checkpoint,
+            } => {
+                let has_more = next_cursor.is_some();
+                let next_cursor = match (next_cursor, checkpoint) {
+                    (Some(next), None) => ProviderCursor(next.as_bytes().to_vec()),
+                    (None, Some(checkpoint)) => ProviderCursor(checkpoint.as_bytes().to_vec()),
+                    _ => return Err(CloudDocumentError::ProtocolFailed),
+                };
+                let mut changes = Vec::new();
+                for event in events {
+                    match event {
+                        catdb_connector_google_drive::DriveChangeEvent::Deleted { file_id } => {
+                            if let Some(metadata) = known_metadata.get(&file_id) {
+                                changes.push(Self::deleted(metadata));
+                            }
+                        }
+                        catdb_connector_google_drive::DriveChangeEvent::Unchanged { .. } => {}
+                        catdb_connector_google_drive::DriveChangeEvent::Upserted {
+                            file_id,
+                            ..
+                        } => {
+                            let row = self
+                                .source()?
+                                .metadata_for_sync(&file_id, &read_context(context)?)
+                                .await
+                                .map_err(map_source_error)?;
+                            changes.push(Self::metadata(row)?);
+                        }
+                    }
+                }
+                Ok(MarkdownChangePage {
+                    changes,
+                    next_cursor,
+                    has_more,
+                    observed_at_ms: now_ms(),
+                })
+            }
+        }
     }
 }
 
@@ -585,10 +719,49 @@ impl DropboxMarkdownDocumentSource {
             size_bytes: optional_u64(&row.value, "size"),
             revision: ProviderRevision {
                 opaque: string(&row.value, "rev")?,
-                content_hash: None,
+                content_hash: row
+                    .value
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str)
+                    .map(decode_hash)
+                    .transpose()?,
             },
             deleted: false,
         })
+    }
+
+    fn known_revisions(
+        known: &[KnownMarkdownMetadata],
+    ) -> Result<BTreeMap<String, catdb_connector_dropbox::DropboxKnownRevision>, CloudDocumentError>
+    {
+        known
+            .iter()
+            .filter(|metadata| !metadata.deleted && metadata.content_hash.is_some())
+            .map(|metadata| {
+                let content_hash = metadata
+                    .content_hash
+                    .ok_or(CloudDocumentError::ProtocolFailed)?;
+                let revision = catdb_connector_dropbox::DropboxKnownRevision::new(
+                    metadata.revision.opaque.clone(),
+                    encode_hash(content_hash),
+                )
+                .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+                Ok((metadata.key.as_str().to_string(), revision))
+            })
+            .collect()
+    }
+
+    fn deleted(known: &KnownMarkdownMetadata) -> MarkdownMetadata {
+        MarkdownMetadata {
+            key: known.key.clone(),
+            name: known.name.clone(),
+            display_path: known.display_path.clone(),
+            media_type: known.media_type.clone(),
+            modified_at_ms: known.modified_at_ms,
+            size_bytes: known.size_bytes,
+            revision: known.revision.clone(),
+            deleted: true,
+        }
     }
 }
 
@@ -690,9 +863,69 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
 
     async fn read_changes(
         &self,
-        _cursor: &ProviderCursor,
-        _context: &CloudIoContext,
+        cursor: &ProviderCursor,
+        known: &[KnownMarkdownMetadata],
+        context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
-        Err(CloudDocumentError::SyncInProgress)
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        let cursor = catdb_connector_dropbox::DropboxChangeCursor::from_bytes(cursor.0.clone())
+            .map_err(map_source_error)?;
+        let known_revisions = Self::known_revisions(known)?;
+        let known_metadata = known
+            .iter()
+            .filter(|metadata| !metadata.deleted)
+            .map(|metadata| (metadata.key.as_str().to_string(), metadata))
+            .collect::<BTreeMap<_, _>>();
+        let outcome = self
+            .source()?
+            .read_changes(&cursor, &known_revisions, &read_context(context)?)
+            .await
+            .map_err(map_source_error)?;
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        match outcome {
+            catdb_connector_dropbox::DropboxChangeOutcome::RebuildRequired => {
+                Err(CloudDocumentError::ResetCursor)
+            }
+            catdb_connector_dropbox::DropboxChangeOutcome::Page {
+                events,
+                next_cursor,
+                checkpoint,
+            } => {
+                let has_more = next_cursor.is_some();
+                let next_cursor = match (next_cursor, checkpoint) {
+                    (Some(next), None) => ProviderCursor(next.as_bytes().to_vec()),
+                    (None, Some(checkpoint)) => ProviderCursor(checkpoint.as_bytes().to_vec()),
+                    _ => return Err(CloudDocumentError::ProtocolFailed),
+                };
+                let mut changes = Vec::new();
+                for event in events {
+                    match event {
+                        catdb_connector_dropbox::DropboxChangeEvent::Deleted { path_lower } => {
+                            if let Some(metadata) = known_metadata.get(&path_lower) {
+                                changes.push(Self::deleted(metadata));
+                            }
+                        }
+                        catdb_connector_dropbox::DropboxChangeEvent::Unchanged { .. } => {}
+                        catdb_connector_dropbox::DropboxChangeEvent::Upserted {
+                            path_lower,
+                            ..
+                        } => {
+                            let row = self
+                                .source()?
+                                .metadata_for_sync(&path_lower, &read_context(context)?)
+                                .await
+                                .map_err(map_source_error)?;
+                            changes.push(Self::metadata(row)?);
+                        }
+                    }
+                }
+                Ok(MarkdownChangePage {
+                    changes,
+                    next_cursor,
+                    has_more,
+                    observed_at_ms: now_ms(),
+                })
+            }
+        }
     }
 }
