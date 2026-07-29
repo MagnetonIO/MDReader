@@ -27,11 +27,14 @@ struct ScriptedTransport {
 struct ScriptState {
     steps: VecDeque<ScriptStep>,
     requests: Vec<DriveHttpRequest>,
+    accepted_writes: usize,
 }
 
 enum ScriptStep {
     Response(DriveHttpResponse),
     Pending,
+    AcceptedWritePending,
+    TransportError(DriveTransportError),
 }
 
 impl ScriptedTransport {
@@ -40,6 +43,7 @@ impl ScriptedTransport {
             state: Arc::new(Mutex::new(ScriptState {
                 steps: steps.into_iter().collect(),
                 requests: Vec::new(),
+                accepted_writes: 0,
             })),
             auto_selected_folder_metadata: true,
         }
@@ -50,6 +54,7 @@ impl ScriptedTransport {
             state: Arc::new(Mutex::new(ScriptState {
                 steps: steps.into_iter().collect(),
                 requests: Vec::new(),
+                accepted_writes: 0,
             })),
             auto_selected_folder_metadata: false,
         }
@@ -57,6 +62,10 @@ impl ScriptedTransport {
 
     fn requests(&self) -> Vec<DriveHttpRequest> {
         self.state.lock().unwrap().requests.clone()
+    }
+
+    fn accepted_writes(&self) -> usize {
+        self.state.lock().unwrap().accepted_writes
     }
 }
 
@@ -74,7 +83,11 @@ impl DriveTransport for ScriptedTransport {
             if supplies_selected_folder_metadata {
                 None
             } else {
-                Some(state.steps.pop_front().expect("fixture script exhausted"))
+                let step = state.steps.pop_front().expect("fixture script exhausted");
+                if matches!(step, ScriptStep::AcceptedWritePending) {
+                    state.accepted_writes += 1;
+                }
+                Some(step)
             }
         };
         let Some(step) = step else {
@@ -95,7 +108,97 @@ impl DriveTransport for ScriptedTransport {
         match step {
             ScriptStep::Response(response) => Ok(response),
             ScriptStep::Pending => std::future::pending().await,
+            ScriptStep::AcceptedWritePending => std::future::pending().await,
+            ScriptStep::TransportError(error) => Err(error),
         }
+    }
+}
+
+#[derive(Clone)]
+struct DriveSelectionRaceTransport {
+    state: Arc<Mutex<DriveSelectionRaceState>>,
+}
+
+struct DriveSelectionRaceState {
+    requests: Vec<DriveHttpRequest>,
+    moved_after_preflight: bool,
+    accepted_writes: usize,
+}
+
+impl DriveSelectionRaceTransport {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(DriveSelectionRaceState {
+                requests: Vec::new(),
+                moved_after_preflight: false,
+                accepted_writes: 0,
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<DriveHttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
+    fn moved_after_preflight(&self) -> bool {
+        self.state.lock().unwrap().moved_after_preflight
+    }
+
+    fn accepted_writes(&self) -> usize {
+        self.state.lock().unwrap().accepted_writes
+    }
+}
+
+#[async_trait]
+impl DriveTransport for DriveSelectionRaceTransport {
+    async fn send(
+        &self,
+        request: DriveHttpRequest,
+    ) -> Result<DriveHttpResponse, DriveTransportError> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request.clone());
+        if request.method() == DriveHttpMethod::Patch {
+            if state.moved_after_preflight && request.header("If-Match") == Some("rev-1") {
+                return DriveHttpResponse::new(412, BTreeMap::new(), b"moved-and-revised".to_vec());
+            }
+            state.accepted_writes += 1;
+            return DriveHttpResponse::new(200, BTreeMap::new(), Vec::new());
+        }
+        if request
+            .path()
+            .starts_with("/drive/v3/files/record-1?fields=")
+        {
+            state.moved_after_preflight = true;
+            return DriveHttpResponse::new(
+                200,
+                BTreeMap::from([("etag".to_string(), "rev-1".to_string())]),
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "record-1",
+                    "name": "note.md",
+                    "mimeType": "text/markdown",
+                    "modifiedTime": "2026-07-20T12:34:56Z",
+                    "parents": ["selected-folder"],
+                    "trashed": false
+                }))
+                .unwrap(),
+            );
+        }
+        if is_selected_folder_metadata_request(&request) {
+            return DriveHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                serde_json::to_vec(&serde_json::json!({
+                    "id":"selected-folder",
+                    "name":"Selected",
+                    "mimeType":"application/vnd.google-apps.folder",
+                    "modifiedTime":"2026-07-20T12:34:55Z",
+                    "parents":[],
+                    "trashed":false
+                }))
+                .unwrap(),
+            );
+        }
+        panic!("unexpected Drive selection-race request: {:?}", request);
     }
 }
 
@@ -708,6 +811,206 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_drive_record() 
 }
 
 #[tokio::test]
+async fn guarded_drive_update_refuses_a_parent_and_revision_move_between_preflight_and_patch() {
+    let transport = DriveSelectionRaceTransport::new();
+    let source = DriveSource::open_with_transport(
+        PinnedDriveSourceSpec::new(
+            config().with_content_scope(DriveContentScope::Markdown),
+            "drive-schema-v1",
+        )
+        .unwrap(),
+        DriveRuntimeSecrets::new(
+            DriveAccessToken::new("fixture-access-token").unwrap(),
+            DriveCursorKey::new([0x41; 32]),
+        ),
+        Arc::new(transport.clone()),
+    )
+    .unwrap();
+
+    let error = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect_err("the conditional PATCH must reject the moved record");
+
+    assert!(matches!(error, DriveDocumentError::Conflict { .. }));
+    assert!(transport.moved_after_preflight());
+    let requests = transport.requests();
+    let patch = requests
+        .iter()
+        .find(|request| request.method() == DriveHttpMethod::Patch)
+        .expect("one guarded mutation attempt");
+    assert!(patch.path().starts_with("/upload/drive/v3/files/record-1?"));
+    assert_eq!(patch.header("If-Match"), Some("rev-1"));
+    assert_eq!(transport.accepted_writes(), 0);
+}
+
+#[tokio::test]
+async fn drive_write_after_provider_acceptance_returns_unknown_on_cancellation_or_deadline() {
+    let metadata = || {
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        )
+    };
+
+    let cancellation = CancellationToken::new();
+    let cancel_later = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel_later.cancel();
+    });
+    let cancellation_transport =
+        ScriptedTransport::new([metadata(), ScriptStep::AcceptedWritePending]);
+    let (cancellation_source, cancellation_transport) =
+        source(cancellation_transport, markdown_root_config());
+    let cancellation_error = cancellation_source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context_with_id(uuid::Uuid::new_v4(), 10, 10, 64 * 1024, cancellation),
+        )
+        .await
+        .expect_err("a cancellation after dispatch cannot prove the write failed");
+    let DriveDocumentError::WriteOutcomeUnknown { reconciliation } = cancellation_error else {
+        panic!("a post-dispatch cancellation must preserve an unknown outcome");
+    };
+    assert_eq!(reconciliation.record_fingerprint().len(), 43);
+    assert!(!format!("{reconciliation:?}").contains("record-1"));
+    assert_eq!(cancellation_transport.accepted_writes(), 1);
+
+    let deadline_transport = ScriptedTransport::new([metadata(), ScriptStep::AcceptedWritePending]);
+    let (deadline_source, deadline_transport) = source(deadline_transport, markdown_root_config());
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_millis(20),
+        10,
+        64 * 1024,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    let deadline_error = deadline_source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &deadline_context,
+        )
+        .await
+        .expect_err("a deadline after dispatch cannot prove the write failed");
+    assert!(matches!(
+        deadline_error,
+        DriveDocumentError::WriteOutcomeUnknown { .. }
+    ));
+    assert_eq!(deadline_transport.accepted_writes(), 1);
+}
+
+#[tokio::test]
+async fn drive_write_before_dispatch_keeps_cancellation_and_deadline_definite() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancellation_transport = ScriptedTransport::new([]);
+    let (cancellation_source, cancellation_transport) =
+        source(cancellation_transport, markdown_root_config());
+    assert_eq!(
+        cancellation_source
+            .update_markdown(
+                "record-1",
+                &DriveRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context_with_id(uuid::Uuid::new_v4(), 10, 10, 64 * 1024, cancellation),
+            )
+            .await,
+        Err(DriveDocumentError::Cancelled)
+    );
+    assert!(cancellation_transport.requests().is_empty());
+
+    let deadline_transport = ScriptedTransport::new([]);
+    let (deadline_source, deadline_transport) = source(deadline_transport, markdown_root_config());
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() - Duration::from_millis(1),
+        10,
+        64 * 1024,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        deadline_source
+            .update_markdown(
+                "record-1",
+                &DriveRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &deadline_context,
+            )
+            .await,
+        Err(DriveDocumentError::Timeout)
+    );
+    assert!(deadline_transport.requests().is_empty());
+}
+
+#[tokio::test]
+async fn drive_write_with_an_unusable_success_receipt_returns_unknown_without_a_retry() {
+    let metadata = || {
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        )
+    };
+
+    for receipt in [
+        response_with_headers(200, [("ETag", "rev-2")], Vec::new()),
+        ScriptStep::TransportError(DriveTransportError::ResponseTooLarge),
+    ] {
+        let transport = ScriptedTransport::new([metadata(), receipt]);
+        let (source, transport) = source(transport, markdown_root_config());
+        let error = source
+            .update_markdown(
+                "record-1",
+                &DriveRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("an unusable receipt leaves the accepted write unknown");
+        assert!(matches!(
+            error,
+            DriveDocumentError::WriteOutcomeUnknown { .. }
+        ));
+        assert_eq!(
+            transport.requests().len(),
+            2,
+            "a guarded write receipt must never trigger a second mutation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn update_refuses_a_record_outside_the_selected_drive_file_before_patching() {
     let transport = ScriptedTransport::new([response_with_headers(
         200,
@@ -832,7 +1135,10 @@ async fn guarded_drive_update_refuses_a_file_response_for_a_different_record() {
         .await
         .expect_err("a Drive update receipt must identify the requested record");
 
-    assert!(matches!(error, DriveDocumentError::IdentityMismatch { .. }));
+    assert!(matches!(
+        error,
+        DriveDocumentError::WriteOutcomeUnknown { .. }
+    ));
     assert_eq!(transport.requests().len(), 2);
     assert!(transport.requests()[1]
         .path()
@@ -882,7 +1188,65 @@ async fn guarded_drive_update_refuses_a_non_markdown_file_response() {
         .await
         .expect_err("a Drive update receipt must remain a Markdown file");
 
-    assert!(matches!(error, DriveDocumentError::Protocol { .. }));
+    assert!(matches!(
+        error,
+        DriveDocumentError::WriteOutcomeUnknown { .. }
+    ));
+}
+
+#[tokio::test]
+async fn guarded_drive_update_marks_an_out_of_selection_success_receipt_unknown_without_a_recheck()
+{
+    let metadata = response_with_headers(
+        200,
+        [("ETag", "rev-1")],
+        serde_json::to_vec(&serde_json::json!({
+            "id": "record-1",
+            "name": "note.md",
+            "mimeType": "text/markdown",
+            "modifiedTime": "2026-07-20T12:34:56Z",
+            "parents": ["selected-folder"],
+            "trashed": false
+        }))
+        .unwrap(),
+    );
+    let moved_receipt = response_with_headers(
+        200,
+        [("ETag", "rev-2")],
+        serde_json::to_vec(&serde_json::json!({
+            "id": "record-1",
+            "name": "note.md",
+            "mimeType": "text/markdown",
+            "modifiedTime": "2026-07-20T12:35:56Z",
+            "parents": ["outside-folder"],
+            "trashed": false
+        }))
+        .unwrap(),
+    );
+    let (source, transport) = source(
+        ScriptedTransport::new([metadata, moved_receipt]),
+        config().with_content_scope(DriveContentScope::Markdown),
+    );
+
+    let error = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect_err("a moved success receipt cannot be accepted cleanly");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::WriteOutcomeUnknown { .. }
+    ));
+    assert_eq!(
+        transport.requests().len(),
+        2,
+        "the response itself must be classified without a post-write metadata check"
+    );
 }
 
 #[tokio::test]

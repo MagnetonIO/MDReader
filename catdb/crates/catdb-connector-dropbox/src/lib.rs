@@ -52,6 +52,7 @@ const ACCESS_TOKEN_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const CURSOR_VERSION: u8 = 1;
 const QUERY_CURSOR_DOMAIN: &[u8] = b"catdb-dropbox-query-cursor\0";
 const CHANGE_CURSOR_DOMAIN: &[u8] = b"catdb-dropbox-change-cursor\0";
+const WRITE_RECONCILIATION_DOMAIN: &[u8] = b"catdb-dropbox-write-reconciliation\0";
 
 /// Runtime secret lookup key stored in a non-secret source specification.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -909,6 +910,42 @@ impl fmt::Debug for DropboxRevision {
     }
 }
 
+/// Safe identity for reconciling a Dropbox mutation whose provider outcome is unknown.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DropboxWriteReconciliation {
+    source_id: SourceId,
+    record_fingerprint: String,
+}
+
+impl DropboxWriteReconciliation {
+    fn new(source_id: SourceId, record_fingerprint: String) -> Self {
+        Self {
+            source_id,
+            record_fingerprint,
+        }
+    }
+
+    /// Source that owns the uncertain mutation.
+    pub fn source_id(&self) -> &SourceId {
+        &self.source_id
+    }
+
+    /// Stable non-secret fingerprint of the provider record to reconcile.
+    pub fn record_fingerprint(&self) -> &str {
+        self.record_fingerprint.as_str()
+    }
+}
+
+impl fmt::Debug for DropboxWriteReconciliation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DropboxWriteReconciliation")
+            .field("source_id", &self.source_id)
+            .field("record_fingerprint_bytes", &self.record_fingerprint.len())
+            .finish()
+    }
+}
+
 /// A provider-local document operation could not complete.
 #[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DropboxDocumentError {
@@ -967,6 +1004,12 @@ pub enum DropboxDocumentError {
         source_id: SourceId,
         /// Server-requested wait, when supplied.
         retry_after_ms: Option<u64>,
+    },
+    /// The guarded mutation may have been accepted, but no usable outcome was received.
+    #[error("Dropbox write outcome is unknown; reconcile the returned identity")]
+    WriteOutcomeUnknown {
+        /// Non-secret identity for a provider read/reconciliation pass.
+        reconciliation: DropboxWriteReconciliation,
     },
     /// A source failure that has no more-specific document-operation outcome.
     #[error("Dropbox document operation failed")]
@@ -1037,6 +1080,10 @@ impl fmt::Debug for DropboxDocumentError {
                 .debug_struct("DropboxDocumentError::RateLimited")
                 .field("source_id", source_id)
                 .field("retry_after_ms", retry_after_ms)
+                .finish(),
+            Self::WriteOutcomeUnknown { reconciliation } => formatter
+                .debug_struct("DropboxDocumentError::WriteOutcomeUnknown")
+                .field("reconciliation", reconciliation)
                 .finish(),
             Self::Source { .. } => formatter.write_str("DropboxDocumentError::Source([redacted])"),
         }
@@ -1414,11 +1461,13 @@ impl DropboxSource {
         if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
             return Err(self.malformed("document name").into());
         }
+        let reconciliation = self.write_reconciliation(record_key)?;
         let response = self
-            .send(
-                self.content_update_request(record_key, revision, body)?,
+            .send_guarded_document_update(
+                self.content_update_request(&file.path_lower, revision, body)?,
                 context,
                 &mut physical_bytes,
+                reconciliation.clone(),
             )
             .await?;
         if response.status == 409 {
@@ -1429,19 +1478,18 @@ impl DropboxSource {
         if response.status != 200 {
             return Err(self.map_document_http_failure(&response));
         }
-        let file: DropboxFile =
-            serde_json::from_slice(&response.body).map_err(|_| self.malformed("upload result"))?;
-        self.validate_file_scope(&file)?;
+        let file: DropboxFile = serde_json::from_slice(&response.body)
+            .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
+        self.validate_file_scope(&file)
+            .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
         if file.id != record_key {
-            return Err(DropboxDocumentError::IdentityMismatch {
-                source_id: self.model.id().clone(),
-            });
+            return Err(self.write_outcome_unknown(reconciliation));
         }
         if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
-            return Err(self.malformed("document name").into());
+            return Err(self.write_outcome_unknown(reconciliation));
         }
-        let revision =
-            DropboxRevision::new(file.rev).map_err(|_| self.malformed("document revision"))?;
+        let revision = DropboxRevision::new(file.rev)
+            .map_err(|_| self.write_outcome_unknown(reconciliation))?;
         Ok(DropboxWriteReceipt {
             record_key: record_key.to_string(),
             revision,
@@ -1668,15 +1716,13 @@ impl DropboxSource {
 
     fn content_update_request(
         &self,
-        record_key: &str,
+        selected_path: &str,
         revision: &DropboxRevision,
         body: &[u8],
     ) -> Result<DropboxHttpRequest, SourceError> {
-        if !valid_provider_atom(record_key, 1_024) {
-            return Err(self.malformed("document record key"));
-        }
+        self.validate_path_scope(selected_path)?;
         let argument = serde_json::to_string(&serde_json::json!({
-            "path": record_key,
+            "path": selected_path,
             "mode": { ".tag": "update", "update": revision.as_str() },
             "autorename": false,
             "mute": false,
@@ -1768,6 +1814,56 @@ impl DropboxSource {
             .await?;
         let retry = self.reauthorize_request(&request)?;
         self.send_once(retry, context, physical_bytes).await
+    }
+
+    async fn send_guarded_document_update(
+        &self,
+        mut request: DropboxHttpRequest,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+        reconciliation: DropboxWriteReconciliation,
+    ) -> Result<DropboxHttpResponse, DropboxDocumentError> {
+        context.check()?;
+        if self.access_token_expired()? {
+            self.refresh_credentials(request.credential_generation, false, context)
+                .await?;
+            request = self.reauthorize_request(&request)?;
+        }
+        self.dispatch_guarded_document_update(request, context, physical_bytes, reconciliation)
+            .await
+    }
+
+    async fn dispatch_guarded_document_update(
+        &self,
+        request: DropboxHttpRequest,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+        reconciliation: DropboxWriteReconciliation,
+    ) -> Result<DropboxHttpResponse, DropboxDocumentError> {
+        // This is the final pre-dispatch boundary. From the first poll of the
+        // transport future onward, an unavailable receipt is not proof that the
+        // provider rejected the mutation and must never trigger a retry.
+        context.check()?;
+        let deadline = tokio::time::Instant::from_std(context.deadline());
+        let result = tokio::select! {
+            biased;
+            _ = context.cancellation().cancelled() => {
+                return Err(self.write_outcome_unknown(reconciliation));
+            }
+            result = tokio::time::timeout_at(deadline, self.transport.send(request)) => result,
+        };
+        let response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) | Err(_) => return Err(self.write_outcome_unknown(reconciliation)),
+        };
+        *physical_bytes = match physical_bytes.checked_add(response.body.len()) {
+            Some(bytes) if bytes <= context.remaining_bytes() => bytes,
+            _ => return Err(self.write_outcome_unknown(reconciliation)),
+        };
+        if context.check().is_err() {
+            return Err(self.write_outcome_unknown(reconciliation));
+        }
+        Ok(response)
     }
 
     async fn send_once(
@@ -1919,6 +2015,30 @@ impl DropboxSource {
             };
         }
         self.map_http_failure(response).into()
+    }
+
+    fn write_reconciliation(
+        &self,
+        record_key: &str,
+    ) -> Result<DropboxWriteReconciliation, SourceError> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.cursor_key.as_bytes()).map_err(|_| {
+            SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            }
+        })?;
+        mac.update(WRITE_RECONCILIATION_DOMAIN);
+        mac.update(record_key.as_bytes());
+        Ok(DropboxWriteReconciliation::new(
+            self.model.id().clone(),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()),
+        ))
+    }
+
+    fn write_outcome_unknown(
+        &self,
+        reconciliation: DropboxWriteReconciliation,
+    ) -> DropboxDocumentError {
+        DropboxDocumentError::WriteOutcomeUnknown { reconciliation }
     }
 
     fn authentication(&self) -> SourceError {

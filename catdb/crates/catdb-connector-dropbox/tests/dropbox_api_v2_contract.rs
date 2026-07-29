@@ -27,11 +27,14 @@ struct ScriptedTransport {
 struct ScriptState {
     steps: VecDeque<ScriptStep>,
     requests: Vec<DropboxHttpRequest>,
+    accepted_writes: usize,
 }
 
 enum ScriptStep {
     Response(DropboxHttpResponse),
     Pending,
+    AcceptedWritePending,
+    TransportError(DropboxTransportError),
 }
 
 impl ScriptedTransport {
@@ -40,12 +43,17 @@ impl ScriptedTransport {
             state: Arc::new(Mutex::new(ScriptState {
                 steps: steps.into_iter().collect(),
                 requests: Vec::new(),
+                accepted_writes: 0,
             })),
         }
     }
 
     fn requests(&self) -> Vec<DropboxHttpRequest> {
         self.state.lock().unwrap().requests.clone()
+    }
+
+    fn accepted_writes(&self) -> usize {
+        self.state.lock().unwrap().accepted_writes
     }
 }
 
@@ -58,12 +66,95 @@ impl DropboxTransport for ScriptedTransport {
         let step = {
             let mut state = self.state.lock().unwrap();
             state.requests.push(request);
-            state.steps.pop_front().expect("fixture script exhausted")
+            let step = state.steps.pop_front().expect("fixture script exhausted");
+            if matches!(step, ScriptStep::AcceptedWritePending) {
+                state.accepted_writes += 1;
+            }
+            step
         };
         match step {
             ScriptStep::Response(response) => Ok(response),
             ScriptStep::Pending => std::future::pending().await,
+            ScriptStep::AcceptedWritePending => std::future::pending().await,
+            ScriptStep::TransportError(error) => Err(error),
         }
+    }
+}
+
+#[derive(Clone)]
+struct DropboxSelectionRaceTransport {
+    state: Arc<Mutex<DropboxSelectionRaceState>>,
+}
+
+struct DropboxSelectionRaceState {
+    requests: Vec<DropboxHttpRequest>,
+    rebound_after_preflight: bool,
+    accepted_writes: usize,
+}
+
+impl DropboxSelectionRaceTransport {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(DropboxSelectionRaceState {
+                requests: Vec::new(),
+                rebound_after_preflight: false,
+                accepted_writes: 0,
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<DropboxHttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+
+    fn rebound_after_preflight(&self) -> bool {
+        self.state.lock().unwrap().rebound_after_preflight
+    }
+
+    fn accepted_writes(&self) -> usize {
+        self.state.lock().unwrap().accepted_writes
+    }
+}
+
+#[async_trait]
+impl DropboxTransport for DropboxSelectionRaceTransport {
+    async fn send(
+        &self,
+        request: DropboxHttpRequest,
+    ) -> Result<DropboxHttpResponse, DropboxTransportError> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request.clone());
+        if request.path() == "/2/files/get_metadata" {
+            state.rebound_after_preflight = true;
+            return DropboxHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                file("/knowledge/note.md", "note.md", "rev-1", "hash-1")
+                    .to_string()
+                    .into_bytes(),
+            );
+        }
+        if request.path() == "/2/files/upload" {
+            let argument = serde_json::from_str::<serde_json::Value>(
+                request.header("Dropbox-API-Arg").expect("upload argument"),
+            )
+            .expect("valid upload argument");
+            if state.rebound_after_preflight
+                && argument["path"] == "/knowledge/note.md"
+                && argument["mode"] == serde_json::json!({".tag": "update", "update": "rev-1"})
+                && argument["strict_conflict"] == true
+                && argument["autorename"] == false
+            {
+                return DropboxHttpResponse::new(
+                    409,
+                    BTreeMap::new(),
+                    b"rebound-and-revised".to_vec(),
+                );
+            }
+            state.accepted_writes += 1;
+            return DropboxHttpResponse::new(200, BTreeMap::new(), Vec::new());
+        }
+        panic!("unexpected Dropbox selection-race request: {:?}", request);
     }
 }
 
@@ -482,7 +573,7 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record(
             .expect("upload argument"),
     )
     .unwrap();
-    assert_eq!(argument["path"], "id:note.md");
+    assert_eq!(argument["path"], "/knowledge/note.md");
     assert_eq!(
         argument["mode"],
         serde_json::json!({".tag": "update", "update": "rev-1"})
@@ -490,6 +581,193 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record(
     assert_eq!(argument["strict_conflict"], true);
     assert_eq!(argument["autorename"], false);
     assert_eq!(requests[1].body(), b"# edited");
+}
+
+#[tokio::test]
+async fn guarded_dropbox_update_refuses_a_rebind_outside_selection_between_preflight_and_upload() {
+    let transport = DropboxSelectionRaceTransport::new();
+    let source = DropboxSource::open_with_transport(
+        PinnedDropboxSourceSpec::new(markdown_config(), "dropbox-schema-v1").unwrap(),
+        DropboxRuntimeSecrets::new(
+            DropboxAccessToken::new("fixture-access-token").unwrap(),
+            DropboxCursorKey::new([0x51; 32]),
+        ),
+        Arc::new(transport.clone()),
+    )
+    .unwrap();
+
+    let error = source
+        .update_markdown(
+            "id:note.md",
+            &DropboxRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect_err("the guarded upload must reject the rebound record");
+
+    assert!(matches!(error, DropboxDocumentError::Conflict { .. }));
+    assert!(transport.rebound_after_preflight());
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    let upload = &requests[1];
+    let argument = serde_json::from_str::<serde_json::Value>(
+        upload.header("Dropbox-API-Arg").expect("upload argument"),
+    )
+    .unwrap();
+    assert_eq!(argument["path"], "/knowledge/note.md");
+    assert_eq!(
+        argument["mode"],
+        serde_json::json!({".tag": "update", "update": "rev-1"})
+    );
+    assert_eq!(argument["strict_conflict"], true);
+    assert_eq!(argument["autorename"], false);
+    assert_eq!(transport.accepted_writes(), 0);
+}
+
+#[tokio::test]
+async fn dropbox_write_after_provider_acceptance_returns_unknown_on_cancellation_or_deadline() {
+    let metadata = || {
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-1", "hash-1").to_string(),
+        )
+    };
+
+    let cancellation = CancellationToken::new();
+    let cancel_later = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel_later.cancel();
+    });
+    let cancellation_transport =
+        ScriptedTransport::new([metadata(), ScriptStep::AcceptedWritePending]);
+    let (cancellation_source, cancellation_transport) =
+        open_source_with_config(cancellation_transport, markdown_config());
+    let cancellation_error = cancellation_source
+        .update_markdown(
+            "id:note.md",
+            &DropboxRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context_with_id(uuid::Uuid::new_v4(), 10, 10, 64 * 1024, cancellation),
+        )
+        .await
+        .expect_err("a cancellation after dispatch cannot prove the write failed");
+    let DropboxDocumentError::WriteOutcomeUnknown { reconciliation } = cancellation_error else {
+        panic!("a post-dispatch cancellation must preserve an unknown outcome");
+    };
+    assert_eq!(reconciliation.record_fingerprint().len(), 43);
+    assert!(!format!("{reconciliation:?}").contains("id:note.md"));
+    assert_eq!(cancellation_transport.accepted_writes(), 1);
+
+    let deadline_transport = ScriptedTransport::new([metadata(), ScriptStep::AcceptedWritePending]);
+    let (deadline_source, deadline_transport) =
+        open_source_with_config(deadline_transport, markdown_config());
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_millis(20),
+        10,
+        64 * 1024,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    let deadline_error = deadline_source
+        .update_markdown(
+            "id:note.md",
+            &DropboxRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &deadline_context,
+        )
+        .await
+        .expect_err("a deadline after dispatch cannot prove the write failed");
+    assert!(matches!(
+        deadline_error,
+        DropboxDocumentError::WriteOutcomeUnknown { .. }
+    ));
+    assert_eq!(deadline_transport.accepted_writes(), 1);
+}
+
+#[tokio::test]
+async fn dropbox_write_before_dispatch_keeps_cancellation_and_deadline_definite() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancellation_transport = ScriptedTransport::new([]);
+    let (cancellation_source, cancellation_transport) =
+        open_source_with_config(cancellation_transport, markdown_config());
+    assert_eq!(
+        cancellation_source
+            .update_markdown(
+                "id:note.md",
+                &DropboxRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context_with_id(uuid::Uuid::new_v4(), 10, 10, 64 * 1024, cancellation),
+            )
+            .await,
+        Err(DropboxDocumentError::Cancelled)
+    );
+    assert!(cancellation_transport.requests().is_empty());
+
+    let deadline_transport = ScriptedTransport::new([]);
+    let (deadline_source, deadline_transport) =
+        open_source_with_config(deadline_transport, markdown_config());
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() - Duration::from_millis(1),
+        10,
+        64 * 1024,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        deadline_source
+            .update_markdown(
+                "id:note.md",
+                &DropboxRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &deadline_context,
+            )
+            .await,
+        Err(DropboxDocumentError::Timeout)
+    );
+    assert!(deadline_transport.requests().is_empty());
+}
+
+#[tokio::test]
+async fn dropbox_write_with_an_unusable_success_receipt_returns_unknown_without_a_retry() {
+    let metadata = || {
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-1", "hash-1").to_string(),
+        )
+    };
+
+    for receipt in [
+        response(200, Vec::new()),
+        ScriptStep::TransportError(DropboxTransportError::ResponseTooLarge),
+    ] {
+        let transport = ScriptedTransport::new([metadata(), receipt]);
+        let (source, transport) = open_source_with_config(transport, markdown_config());
+        let error = source
+            .update_markdown(
+                "id:note.md",
+                &DropboxRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("an unusable receipt leaves the accepted write unknown");
+        assert!(matches!(
+            error,
+            DropboxDocumentError::WriteOutcomeUnknown { .. }
+        ));
+        assert_eq!(
+            transport.requests().len(),
+            2,
+            "a guarded write receipt must never trigger a second mutation"
+        );
+    }
 }
 
 #[tokio::test]

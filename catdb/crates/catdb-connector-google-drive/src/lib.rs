@@ -51,6 +51,7 @@ const ACCESS_TOKEN_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const CURSOR_VERSION: u8 = 1;
 const QUERY_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-query-cursor\0";
 const CHANGE_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-change-cursor\0";
+const WRITE_RECONCILIATION_DOMAIN: &[u8] = b"catdb-google-drive-write-reconciliation\0";
 const GOOGLE_DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const GOOGLE_DRIVE_DOCUMENT_MIME: &str = "application/vnd.google-apps.document";
 
@@ -1003,6 +1004,42 @@ impl fmt::Debug for DriveRevision {
     }
 }
 
+/// Safe identity for reconciling a Drive mutation whose provider outcome is unknown.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DriveWriteReconciliation {
+    source_id: SourceId,
+    record_fingerprint: String,
+}
+
+impl DriveWriteReconciliation {
+    fn new(source_id: SourceId, record_fingerprint: String) -> Self {
+        Self {
+            source_id,
+            record_fingerprint,
+        }
+    }
+
+    /// Source that owns the uncertain mutation.
+    pub fn source_id(&self) -> &SourceId {
+        &self.source_id
+    }
+
+    /// Stable non-secret fingerprint of the provider record to reconcile.
+    pub fn record_fingerprint(&self) -> &str {
+        self.record_fingerprint.as_str()
+    }
+}
+
+impl fmt::Debug for DriveWriteReconciliation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveWriteReconciliation")
+            .field("source_id", &self.source_id)
+            .field("record_fingerprint_bytes", &self.record_fingerprint.len())
+            .finish()
+    }
+}
+
 /// A provider-local document operation could not complete.
 #[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DriveDocumentError {
@@ -1061,6 +1098,12 @@ pub enum DriveDocumentError {
         source_id: SourceId,
         /// Server-requested wait, when supplied.
         retry_after_ms: Option<u64>,
+    },
+    /// The guarded mutation may have been accepted, but no usable outcome was received.
+    #[error("Drive write outcome is unknown; reconcile the returned identity")]
+    WriteOutcomeUnknown {
+        /// Non-secret identity for a provider read/reconciliation pass.
+        reconciliation: DriveWriteReconciliation,
     },
     /// A source failure that has no more-specific document-operation outcome.
     #[error("Drive document operation failed")]
@@ -1131,6 +1174,10 @@ impl fmt::Debug for DriveDocumentError {
                 .debug_struct("DriveDocumentError::RateLimited")
                 .field("source_id", source_id)
                 .field("retry_after_ms", retry_after_ms)
+                .finish(),
+            Self::WriteOutcomeUnknown { reconciliation } => formatter
+                .debug_struct("DriveDocumentError::WriteOutcomeUnknown")
+                .field("reconciliation", reconciliation)
                 .finish(),
             Self::Source { .. } => formatter.write_str("DriveDocumentError::Source([redacted])"),
         }
@@ -1684,11 +1731,13 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
+        let reconciliation = self.write_reconciliation(record_key)?;
         let response = self
-            .send(
-                self.document_update_request(record_key, revision, body, &membership)?,
+            .send_guarded_document_update(
+                self.document_update_request(&file.id, revision, body, &membership)?,
                 context,
                 &mut physical_bytes,
+                reconciliation.clone(),
             )
             .await?;
         if response.status == 412 {
@@ -1699,23 +1748,26 @@ impl DriveSource {
         if response.status != 200 {
             return Err(self.map_document_http_failure(&response));
         }
-        let file: DriveFile =
-            serde_json::from_slice(&response.body).map_err(|_| self.malformed("update result"))?;
-        file.validate(self.model.id())?;
+        let file: DriveFile = serde_json::from_slice(&response.body)
+            .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
+        file.validate(self.model.id())
+            .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
         if file.id != record_key {
-            return Err(DriveDocumentError::IdentityMismatch {
-                source_id: self.model.id().clone(),
-            });
+            return Err(self.write_outcome_unknown(reconciliation));
         }
         if !is_markdown_name(&file.name) || file.trashed {
-            return Err(self.malformed("update result").into());
+            return Err(self.write_outcome_unknown(reconciliation));
+        }
+        if !self.write_receipt_is_directly_selected(&file) {
+            return Err(self.write_outcome_unknown(reconciliation));
         }
         let revision = response
             .headers
             .get("etag")
-            .ok_or_else(|| self.malformed("document revision"))
+            .ok_or_else(|| self.write_outcome_unknown(reconciliation.clone()))
             .and_then(|value| {
-                DriveRevision::new(value.clone()).map_err(|_| self.malformed("document revision"))
+                DriveRevision::new(value.clone())
+                    .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))
             })?;
         Ok(DriveWriteReceipt {
             record_key: record_key.to_string(),
@@ -1981,6 +2033,56 @@ impl DriveSource {
         self.send_once(retry, context, physical_bytes).await
     }
 
+    async fn send_guarded_document_update(
+        &self,
+        mut request: DriveHttpRequest,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+        reconciliation: DriveWriteReconciliation,
+    ) -> Result<DriveHttpResponse, DriveDocumentError> {
+        context.check()?;
+        if self.access_token_expired()? {
+            self.refresh_credentials(request.credential_generation, false, context)
+                .await?;
+            request = self.reauthorize_request(&request)?;
+        }
+        self.dispatch_guarded_document_update(request, context, physical_bytes, reconciliation)
+            .await
+    }
+
+    async fn dispatch_guarded_document_update(
+        &self,
+        request: DriveHttpRequest,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+        reconciliation: DriveWriteReconciliation,
+    ) -> Result<DriveHttpResponse, DriveDocumentError> {
+        // This is the final pre-dispatch boundary. From the first poll of the
+        // transport future onward, an unavailable receipt is not proof that the
+        // provider rejected the mutation and must never trigger a retry.
+        context.check()?;
+        let deadline = tokio::time::Instant::from_std(context.deadline());
+        let result = tokio::select! {
+            biased;
+            _ = context.cancellation().cancelled() => {
+                return Err(self.write_outcome_unknown(reconciliation));
+            }
+            result = tokio::time::timeout_at(deadline, self.transport.send(request)) => result,
+        };
+        let response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) | Err(_) => return Err(self.write_outcome_unknown(reconciliation)),
+        };
+        *physical_bytes = match physical_bytes.checked_add(response.body.len()) {
+            Some(bytes) if bytes <= context.remaining_bytes() => bytes,
+            _ => return Err(self.write_outcome_unknown(reconciliation)),
+        };
+        if context.check().is_err() {
+            return Err(self.write_outcome_unknown(reconciliation));
+        }
+        Ok(response)
+    }
+
     async fn send_once(
         &self,
         request: DriveHttpRequest,
@@ -2151,6 +2253,43 @@ impl DriveSource {
             };
         }
         self.map_http_failure(response).into()
+    }
+
+    fn write_reconciliation(
+        &self,
+        record_key: &str,
+    ) -> Result<DriveWriteReconciliation, SourceError> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.cursor_key.as_bytes()).map_err(|_| {
+            SourceError::Authentication {
+                source_id: self.model.id().clone(),
+            }
+        })?;
+        mac.update(WRITE_RECONCILIATION_DOMAIN);
+        mac.update(record_key.as_bytes());
+        Ok(DriveWriteReconciliation::new(
+            self.model.id().clone(),
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()),
+        ))
+    }
+
+    fn write_outcome_unknown(
+        &self,
+        reconciliation: DriveWriteReconciliation,
+    ) -> DriveDocumentError {
+        DriveDocumentError::WriteOutcomeUnknown { reconciliation }
+    }
+
+    fn write_receipt_is_directly_selected(&self, file: &DriveFile) -> bool {
+        self.spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| match selection {
+                DriveSelection::File { id, .. } => id == &file.id,
+                DriveSelection::Folder { id, .. } | DriveSelection::Root { id, .. } => {
+                    file.parents.iter().any(|parent| parent == id)
+                }
+            })
     }
 
     fn list_path(
