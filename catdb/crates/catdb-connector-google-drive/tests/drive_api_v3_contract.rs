@@ -811,6 +811,121 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_drive_record() 
 }
 
 #[tokio::test]
+async fn guarded_drive_update_treats_ambiguous_http_receipts_as_unknown_without_a_retry() {
+    let metadata = || {
+        response_with_headers(
+            200,
+            [("ETag", "metadata-rev")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        )
+    };
+
+    for status in [408, 504, 500, 503] {
+        let transport = ScriptedTransport::new([metadata(), response(status, Vec::new())]);
+        let (source, transport) = source(transport, markdown_root_config());
+
+        let error = source
+            .update_markdown(
+                "record-1",
+                &DriveRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("an ambiguous post-dispatch HTTP response cannot prove the write failed");
+
+        let DriveDocumentError::WriteOutcomeUnknown { reconciliation } = error else {
+            panic!("HTTP {status} after a Drive mutation must preserve an unknown outcome");
+        };
+        assert_eq!(reconciliation.record_fingerprint().len(), 43);
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2, "HTTP {status} must not trigger a retry");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method() == DriveHttpMethod::Patch)
+                .count(),
+            1,
+            "HTTP {status} must dispatch exactly one guarded mutation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn guarded_drive_update_keeps_definitive_post_dispatch_statuses_typed() {
+    let metadata = || {
+        response_with_headers(
+            200,
+            [("ETag", "metadata-rev")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        )
+    };
+
+    for status in [404, 401, 403, 429] {
+        let receipt = if status == 429 {
+            response_with_headers(status, [("retry-after", "7")], Vec::new())
+        } else {
+            response(status, Vec::new())
+        };
+        let (source, transport) = source(
+            ScriptedTransport::new([metadata(), receipt]),
+            markdown_root_config(),
+        );
+
+        let error = source
+            .update_markdown(
+                "record-1",
+                &DriveRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("a provider-declared rejected mutation remains definite");
+
+        assert!(
+            match status {
+                404 => matches!(error, DriveDocumentError::NotFound { .. }),
+                401 | 403 => matches!(error, DriveDocumentError::Authentication { .. }),
+                429 => matches!(
+                    error,
+                    DriveDocumentError::RateLimited {
+                        retry_after_ms: Some(7_000),
+                        ..
+                    }
+                ),
+                _ => unreachable!(),
+            },
+            "HTTP {status} must retain its definitive document outcome"
+        );
+        assert_eq!(
+            transport
+                .requests()
+                .iter()
+                .filter(|request| request.method() == DriveHttpMethod::Patch)
+                .count(),
+            1,
+            "HTTP {status} must not trigger a second mutation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn guarded_drive_update_refuses_a_parent_and_revision_move_between_preflight_and_patch() {
     let transport = DriveSelectionRaceTransport::new();
     let source = DriveSource::open_with_transport(
@@ -1246,6 +1361,83 @@ async fn guarded_drive_update_marks_an_out_of_selection_success_receipt_unknown_
         transport.requests().len(),
         2,
         "the response itself must be classified without a post-write metadata check"
+    );
+}
+
+#[tokio::test]
+async fn guarded_drive_update_accepts_a_nested_selected_folder_receipt_from_the_preflight_snapshot()
+{
+    let file = |id: &str, name: &str, mime_type: &str, parents: serde_json::Value| {
+        serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "name": name,
+            "mimeType": mime_type,
+            "modifiedTime": "2026-07-20T12:34:56Z",
+            "parents": parents,
+            "trashed": false
+        }))
+        .unwrap()
+    };
+    let transport = ScriptedTransport::without_selected_folder_metadata([
+        response_with_headers(
+            200,
+            [("ETag", "metadata-rev")],
+            file(
+                "record-1",
+                "note.md",
+                "text/markdown",
+                serde_json::json!(["nested-folder"]),
+            ),
+        ),
+        response(
+            200,
+            file(
+                "nested-folder",
+                "Nested",
+                "application/vnd.google-apps.folder",
+                serde_json::json!(["selected-folder"]),
+            ),
+        ),
+        response_with_headers(
+            200,
+            [("ETag", "rev-2")],
+            file(
+                "record-1",
+                "note.md",
+                "text/markdown",
+                serde_json::json!(["nested-folder"]),
+            ),
+        ),
+    ]);
+    let (source, transport) = source(
+        transport,
+        config().with_content_scope(DriveContentScope::Markdown),
+    );
+
+    let receipt = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect("a receipt with unchanged preflight parents remains authorized");
+
+    assert_eq!(receipt.record_key(), "record-1");
+    assert_eq!(receipt.revision().as_str(), "rev-2");
+    let requests = transport.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "receipt validation must not re-read Drive"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method() == DriveHttpMethod::Patch)
+            .count(),
+        1
     );
 }
 

@@ -1731,6 +1731,7 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
+        let authorized_parents = file.parents.iter().cloned().collect::<BTreeSet<_>>();
         let reconciliation = self.write_reconciliation(record_key)?;
         let response = self
             .send_guarded_document_update(
@@ -1746,7 +1747,7 @@ impl DriveSource {
             });
         }
         if response.status != 200 {
-            return Err(self.map_document_http_failure(&response));
+            return Err(self.map_document_write_http_failure(&response, reconciliation));
         }
         let file: DriveFile = serde_json::from_slice(&response.body)
             .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
@@ -1758,7 +1759,7 @@ impl DriveSource {
         if !is_markdown_name(&file.name) || file.trashed {
             return Err(self.write_outcome_unknown(reconciliation));
         }
-        if !self.write_receipt_is_directly_selected(&file) {
+        if file.parents.iter().cloned().collect::<BTreeSet<_>>() != authorized_parents {
             return Err(self.write_outcome_unknown(reconciliation));
         }
         let revision = response
@@ -2255,6 +2256,17 @@ impl DriveSource {
         self.map_http_failure(response).into()
     }
 
+    fn map_document_write_http_failure(
+        &self,
+        response: &DriveHttpResponse,
+        reconciliation: DriveWriteReconciliation,
+    ) -> DriveDocumentError {
+        if matches!(response.status, 408 | 500..=599) {
+            return self.write_outcome_unknown(reconciliation);
+        }
+        self.map_document_http_failure(response)
+    }
+
     fn write_reconciliation(
         &self,
         record_key: &str,
@@ -2277,19 +2289,6 @@ impl DriveSource {
         reconciliation: DriveWriteReconciliation,
     ) -> DriveDocumentError {
         DriveDocumentError::WriteOutcomeUnknown { reconciliation }
-    }
-
-    fn write_receipt_is_directly_selected(&self, file: &DriveFile) -> bool {
-        self.spec
-            .config
-            .selections
-            .iter()
-            .any(|selection| match selection {
-                DriveSelection::File { id, .. } => id == &file.id,
-                DriveSelection::Folder { id, .. } | DriveSelection::Root { id, .. } => {
-                    file.parents.iter().any(|parent| parent == id)
-                }
-            })
     }
 
     fn list_path(

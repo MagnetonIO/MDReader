@@ -1476,7 +1476,7 @@ impl DropboxSource {
             });
         }
         if response.status != 200 {
-            return Err(self.map_document_http_failure(&response));
+            return Err(self.map_document_write_http_failure(&response, reconciliation));
         }
         let file: DropboxFile = serde_json::from_slice(&response.body)
             .map_err(|_| self.write_outcome_unknown(reconciliation.clone()))?;
@@ -2015,6 +2015,17 @@ impl DropboxSource {
             };
         }
         self.map_http_failure(response).into()
+    }
+
+    fn map_document_write_http_failure(
+        &self,
+        response: &DropboxHttpResponse,
+        reconciliation: DropboxWriteReconciliation,
+    ) -> DropboxDocumentError {
+        if matches!(response.status, 408 | 500..=599) {
+            return self.write_outcome_unknown(reconciliation);
+        }
+        self.map_document_http_failure(response)
     }
 
     fn write_reconciliation(

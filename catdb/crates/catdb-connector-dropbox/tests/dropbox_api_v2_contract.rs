@@ -584,6 +584,103 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record(
 }
 
 #[tokio::test]
+async fn guarded_dropbox_update_treats_ambiguous_http_receipts_as_unknown_without_a_retry() {
+    let metadata = || {
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-1", "hash-1").to_string(),
+        )
+    };
+
+    for status in [408, 504, 500, 503] {
+        let transport = ScriptedTransport::new([metadata(), response(status, Vec::new())]);
+        let (source, transport) = open_source_with_config(transport, markdown_config());
+
+        let error = source
+            .update_markdown(
+                "id:note.md",
+                &DropboxRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("an ambiguous post-dispatch HTTP response cannot prove the write failed");
+
+        let DropboxDocumentError::WriteOutcomeUnknown { reconciliation } = error else {
+            panic!("HTTP {status} after a Dropbox mutation must preserve an unknown outcome");
+        };
+        assert_eq!(reconciliation.record_fingerprint().len(), 43);
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2, "HTTP {status} must not trigger a retry");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/2/files/upload")
+                .count(),
+            1,
+            "HTTP {status} must dispatch exactly one guarded mutation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn guarded_dropbox_update_keeps_definitive_post_dispatch_statuses_typed() {
+    let metadata = || {
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-1", "hash-1").to_string(),
+        )
+    };
+
+    for status in [404, 401, 403, 429] {
+        let receipt = if status == 429 {
+            response_with_headers(status, [("retry-after", "7".to_string())], Vec::new())
+        } else {
+            response(status, Vec::new())
+        };
+        let (source, transport) = open_source_with_config(
+            ScriptedTransport::new([metadata(), receipt]),
+            markdown_config(),
+        );
+
+        let error = source
+            .update_markdown(
+                "id:note.md",
+                &DropboxRevision::new("rev-1").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect_err("a provider-declared rejected mutation remains definite");
+
+        assert!(
+            match status {
+                404 => matches!(error, DropboxDocumentError::NotFound { .. }),
+                401 | 403 => matches!(error, DropboxDocumentError::Authentication { .. }),
+                429 => matches!(
+                    error,
+                    DropboxDocumentError::RateLimited {
+                        retry_after_ms: Some(7_000),
+                        ..
+                    }
+                ),
+                _ => unreachable!(),
+            },
+            "HTTP {status} must retain its definitive document outcome"
+        );
+        assert_eq!(
+            transport
+                .requests()
+                .iter()
+                .filter(|request| request.path() == "/2/files/upload")
+                .count(),
+            1,
+            "HTTP {status} must not trigger a second mutation"
+        );
+    }
+}
+
+#[tokio::test]
 async fn guarded_dropbox_update_refuses_a_rebind_outside_selection_between_preflight_and_upload() {
     let transport = DropboxSelectionRaceTransport::new();
     let source = DropboxSource::open_with_transport(
