@@ -187,18 +187,11 @@ fn validated_authorization_profile(
         .iter()
         .copied()
         .collect::<HashSet<_>>();
-    let allowed_provider_scopes = match provider {
-        CloudProvider::GoogleDrive => HashSet::new(),
-        // Dropbox scoped apps can return this mandatory account scope in
-        // addition to the explicitly requested file capabilities. MDReader
-        // does not use it and it must not widen the persisted profile.
-        CloudProvider::Dropbox => HashSet::from(["account_info.read"]),
-    };
-    if expected.is_subset(&returned)
-        && returned
-            .difference(&expected)
-            .all(|scope| allowed_provider_scopes.contains(scope))
-    {
+    // The provider may return other scopes already granted to this application.
+    // Those scopes never widen MDReader's persisted profile or connector
+    // capabilities. Reject only when the token is missing authority MDReader
+    // explicitly requested.
+    if expected.is_subset(&returned) {
         Ok(requested)
     } else {
         Err(CloudSourceError::OauthTokenRejected)
@@ -10771,7 +10764,7 @@ mod tests {
     }
 
     #[test]
-    fn dropbox_token_accepts_the_mandatory_account_scope_without_widening_authority() {
+    fn dropbox_token_accepts_provider_granted_extra_scopes_without_widening_authority() {
         let result = validate_authorization_token_response(
             CloudProvider::Dropbox,
             CloudAuthorizationProfile::MarkdownReadWriteV2,
@@ -10781,8 +10774,7 @@ mod tests {
                 expires_in: Some(3600),
                 token_type: "Bearer".to_string(),
                 scope: Some(
-                    "account_info.read files.metadata.read files.content.read files.content.write"
-                        .to_string(),
+                    "account_info.read files.metadata.write files.metadata.read files.content.read files.content.write".to_string(),
                 ),
             },
         );
