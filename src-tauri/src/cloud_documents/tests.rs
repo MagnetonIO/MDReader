@@ -21,7 +21,7 @@ use catdb_connector_google_drive::{
     DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
     PinnedDriveSourceSpec,
 };
-#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+#[cfg(feature = "google-drive-connector")]
 use catdb_connectors::SourceError;
 use catdb_connectors::{CancellationToken, ReadContext, SourceId};
 

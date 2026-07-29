@@ -2249,6 +2249,19 @@ fn ensure_cloud_document_connector_available(
     }
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+async fn with_available_cloud_document_connector<T, F, Fut>(
+    provider: CloudProvider,
+    remainder: F,
+) -> Result<T, crate::cloud_documents::CloudDocumentError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, crate::cloud_documents::CloudDocumentError>>,
+{
+    ensure_cloud_document_connector_available(provider)?;
+    remainder().await
+}
+
 #[allow(dead_code)]
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 pub(crate) async fn open_admitted_cloud_markdown_source(
@@ -2258,107 +2271,116 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
     Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
     crate::cloud_documents::CloudDocumentError,
 > {
-    ensure_cloud_document_connector_available(provider)?;
-    let admitted = blocking_cloud_operation(app, move |registry, vault| {
-        admit_cloud_read(registry, vault, provider)
+    with_available_cloud_document_connector::<
+        Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+        _,
+        _,
+    >(provider, || async move {
+        let admitted = blocking_cloud_operation(app, move |registry, vault| {
+            admit_cloud_read(registry, vault, provider)
+        })
+        .await
+        .map_err(crate::cloud_documents::map_lifecycle_error)?;
+        let AdmittedCloudRead {
+            record,
+            credential,
+            registry,
+            vault,
+            ..
+        } = admitted;
+        let profile = record.authorization_profile();
+        let resolver = Arc::new(CloudCredentialResolver::from_admitted(
+            record.clone(),
+            credential,
+            Arc::new(vault),
+            registry,
+        ));
+        match record.config {
+            #[cfg(feature = "google-drive-connector")]
+            CloudSourceConfig::GoogleDrive { selections } => {
+                let reference = catdb_connector_google_drive::DriveSecretReference::new(
+                    record.credential_reference,
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+                let config = catdb_connector_google_drive::DriveSourceConfig::new(
+                    record.id,
+                    "mdreader",
+                    "Document",
+                    drive_selections(selections)
+                        .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?,
+                    reference,
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+                .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
+                let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
+                    config,
+                    "mdreader-cloud-markdown-v1",
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+                let source =
+                    catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver.clone())
+                        .await
+                        .map_err(|_| {
+                            crate::cloud_documents::CloudDocumentError::CredentialUnavailable
+                        })?;
+                Ok(Arc::new(
+                    crate::cloud_documents::source::DriveMarkdownDocumentSource::new(
+                        Arc::new(source),
+                        resolver,
+                        profile,
+                        native_markdown_write_acceptance(CloudProvider::GoogleDrive),
+                    ),
+                )
+                    as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>)
+            }
+            #[cfg(feature = "dropbox-connector")]
+            CloudSourceConfig::Dropbox => {
+                let reference = catdb_connector_dropbox::DropboxSecretReference::new(
+                    record.credential_reference,
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+                let config = catdb_connector_dropbox::DropboxSourceConfig::new(
+                    record.id,
+                    "mdreader",
+                    "Document",
+                    "",
+                    catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
+                    reference,
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+                .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
+                let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
+                    config,
+                    "mdreader-cloud-markdown-v1",
+                )
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+                let source =
+                    catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
+                        .await
+                        .map_err(|_| {
+                            crate::cloud_documents::CloudDocumentError::CredentialUnavailable
+                        })?;
+                Ok(Arc::new(
+                    crate::cloud_documents::source::DropboxMarkdownDocumentSource::new(
+                        Arc::new(source),
+                        resolver,
+                        profile,
+                        native_markdown_write_acceptance(CloudProvider::Dropbox),
+                    ),
+                )
+                    as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>)
+            }
+            #[cfg(not(feature = "google-drive-connector"))]
+            CloudSourceConfig::GoogleDrive { .. } => {
+                Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
+            }
+            #[cfg(not(feature = "dropbox-connector"))]
+            CloudSourceConfig::Dropbox => {
+                Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
+            }
+        }
     })
     .await
-    .map_err(crate::cloud_documents::map_lifecycle_error)?;
-    let AdmittedCloudRead {
-        record,
-        credential,
-        registry,
-        vault,
-        ..
-    } = admitted;
-    let profile = record.authorization_profile();
-    let resolver = Arc::new(CloudCredentialResolver::from_admitted(
-        record.clone(),
-        credential,
-        Arc::new(vault),
-        registry,
-    ));
-    match record.config {
-        #[cfg(feature = "google-drive-connector")]
-        CloudSourceConfig::GoogleDrive { selections } => {
-            let reference = catdb_connector_google_drive::DriveSecretReference::new(
-                record.credential_reference,
-            )
-            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-            let config = catdb_connector_google_drive::DriveSourceConfig::new(
-                record.id,
-                "mdreader",
-                "Document",
-                drive_selections(selections)
-                    .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?,
-                reference,
-            )
-            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
-            .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
-            let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
-                config,
-                "mdreader-cloud-markdown-v1",
-            )
-            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-            let source =
-                catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver.clone())
-                    .await
-                    .map_err(|_| {
-                        crate::cloud_documents::CloudDocumentError::CredentialUnavailable
-                    })?;
-            Ok(Arc::new(
-                crate::cloud_documents::source::DriveMarkdownDocumentSource::new(
-                    Arc::new(source),
-                    resolver,
-                    profile,
-                    native_markdown_write_acceptance(CloudProvider::GoogleDrive),
-                ),
-            ))
-        }
-        #[cfg(feature = "dropbox-connector")]
-        CloudSourceConfig::Dropbox => {
-            let reference =
-                catdb_connector_dropbox::DropboxSecretReference::new(record.credential_reference)
-                    .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-            let config = catdb_connector_dropbox::DropboxSourceConfig::new(
-                record.id,
-                "mdreader",
-                "Document",
-                "",
-                catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
-                reference,
-            )
-            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
-            .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
-            let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
-                config,
-                "mdreader-cloud-markdown-v1",
-            )
-            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
-            let source =
-                catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
-                    .await
-                    .map_err(|_| {
-                        crate::cloud_documents::CloudDocumentError::CredentialUnavailable
-                    })?;
-            Ok(Arc::new(
-                crate::cloud_documents::source::DropboxMarkdownDocumentSource::new(
-                    Arc::new(source),
-                    resolver,
-                    profile,
-                    native_markdown_write_acceptance(CloudProvider::Dropbox),
-                ),
-            ))
-        }
-        #[cfg(not(feature = "google-drive-connector"))]
-        CloudSourceConfig::GoogleDrive { .. } => {
-            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
-        }
-        #[cfg(not(feature = "dropbox-connector"))]
-        CloudSourceConfig::Dropbox => {
-            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
-        }
-    }
 }
 
 #[cfg(feature = "google-drive-connector")]
@@ -6594,55 +6616,89 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-    #[test]
-    fn cloud_document_opener_checks_connector_availability_before_native_authorities() {
-        let opener = include_str!("cloud_accounts.rs")
-            .split_once("pub(crate) async fn open_admitted_cloud_markdown_source(")
-            .expect("native cloud document opener")
-            .1;
-        let availability_check = opener
-            .find("ensure_cloud_document_connector_available(provider)?;")
-            .expect("connector availability check");
-        let admission = opener
-            .find("let admitted = blocking_cloud_operation")
-            .expect("admitted cloud read");
-
-        assert!(
-            availability_check < admission,
-            "connector availability must precede native admission"
-        );
-        let before_admission = &opener[..admission];
-        assert!(
-            !before_admission.contains("admit_cloud_read("),
-            "connector availability cannot consult source admission"
-        );
-        assert!(
-            !before_admission.contains("CloudCredentialResolver::from_admitted"),
-            "connector availability cannot construct a vault-backed resolver"
-        );
-        assert!(
-            !before_admission.contains("SourceConfig::new("),
-            "connector availability cannot construct a provider source"
-        );
-    }
-
     #[cfg(all(feature = "google-drive-connector", not(feature = "dropbox-connector")))]
-    #[test]
-    fn disabled_dropbox_document_connector_refuses_before_native_authorities() {
+    #[tokio::test]
+    async fn disabled_dropbox_document_connector_refuses_before_native_authorities() {
+        let admission = Arc::new(AtomicUsize::new(0));
+        let vault = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(AtomicUsize::new(0));
+
+        let admission_in_remainder = Arc::clone(&admission);
+        let vault_in_remainder = Arc::clone(&vault);
+        let resolver_in_remainder = Arc::clone(&resolver);
+        let provider_in_remainder = Arc::clone(&provider);
         assert_eq!(
-            super::ensure_cloud_document_connector_available(CloudProvider::Dropbox),
+            super::with_available_cloud_document_connector(
+                CloudProvider::Dropbox,
+                move || async move {
+                    admission_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    vault_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    resolver_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    provider_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    Ok::<(), crate::cloud_documents::CloudDocumentError>(())
+                }
+            )
+            .await,
             Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
         );
+        assert_eq!(admission.load(Ordering::SeqCst), 0);
+        assert_eq!(vault.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(all(feature = "dropbox-connector", not(feature = "google-drive-connector")))]
-    #[test]
-    fn disabled_drive_document_connector_refuses_before_native_authorities() {
+    #[tokio::test]
+    async fn disabled_drive_document_connector_refuses_before_native_authorities() {
+        let admission = Arc::new(AtomicUsize::new(0));
+        let vault = Arc::new(AtomicUsize::new(0));
+        let resolver = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(AtomicUsize::new(0));
+
+        let admission_in_remainder = Arc::clone(&admission);
+        let vault_in_remainder = Arc::clone(&vault);
+        let resolver_in_remainder = Arc::clone(&resolver);
+        let provider_in_remainder = Arc::clone(&provider);
         assert_eq!(
-            super::ensure_cloud_document_connector_available(CloudProvider::GoogleDrive),
+            super::with_available_cloud_document_connector(
+                CloudProvider::GoogleDrive,
+                move || async move {
+                    admission_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    vault_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    resolver_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    provider_in_remainder.fetch_add(1, Ordering::SeqCst);
+                    Ok::<(), crate::cloud_documents::CloudDocumentError>(())
+                }
+            )
+            .await,
             Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
         );
+        assert_eq!(admission.load(Ordering::SeqCst), 0);
+        assert_eq!(vault.load(Ordering::SeqCst), 0);
+        assert_eq!(resolver.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    #[tokio::test]
+    async fn available_cloud_document_connector_runs_the_entire_remainder() {
+        #[cfg(feature = "google-drive-connector")]
+        let provider = CloudProvider::GoogleDrive;
+        #[cfg(all(not(feature = "google-drive-connector"), feature = "dropbox-connector"))]
+        let provider = CloudProvider::Dropbox;
+
+        let remainder_calls = Arc::new(AtomicUsize::new(0));
+        let remainder_calls_in_remainder = Arc::clone(&remainder_calls);
+        assert_eq!(
+            super::with_available_cloud_document_connector(provider, move || async move {
+                remainder_calls_in_remainder.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), crate::cloud_documents::CloudDocumentError>(())
+            })
+            .await,
+            Ok(())
+        );
+        assert_eq!(remainder_calls.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
