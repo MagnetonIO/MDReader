@@ -6107,10 +6107,22 @@ async fn exchange_authorization_code(
             retry_after_ms: retry_after_ms(response.headers()),
         });
     }
-    let bytes = bounded_oauth_token_response(response).await?;
+    let bytes = bounded_oauth_token_response(provider, "authorization-code", response).await?;
     let response: OAuthTokenResponse =
         serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::OauthTokenRejected)?;
     validate_authorization_token_response(provider, attempt.authorization_profile(), response)
+        .inspect_err(|error| {
+            let reason = match error {
+                CloudSourceError::OauthOfflineGrantMissing => "missing-refresh-token",
+                CloudSourceError::OauthTokenRejected => "invalid-token-response",
+                _ => "other",
+            };
+            eprintln!(
+                "MDReader OAuth token validation rejected provider={} phase=authorization-code reason={}",
+                provider.id(),
+                reason
+            );
+        })
 }
 
 fn authorization_code_token_form<'a>(
@@ -6167,7 +6179,7 @@ async fn exchange_refresh_token(
             retry_after_ms: retry_after_ms(response.headers()),
         });
     }
-    let bytes = bounded_oauth_token_response(response).await?;
+    let bytes = bounded_oauth_token_response(provider, "refresh", response).await?;
     let response: OAuthTokenResponse =
         serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::OauthTokenRejected)?;
     let expires_in_seconds = response
@@ -6246,15 +6258,62 @@ async fn bounded_provider_response(
     Ok(bytes)
 }
 
+fn safe_oauth_error_class(bytes: &[u8]) -> &'static str {
+    let error = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("error")?.as_str().map(str::to_owned));
+    match error.as_deref() {
+        Some("invalid_request") => "invalid_request",
+        Some("invalid_grant") => "invalid_grant",
+        Some("invalid_client") => "invalid_client",
+        Some("unsupported_grant_type") => "unsupported_grant_type",
+        _ => "other",
+    }
+}
+
 async fn bounded_oauth_token_response(
+    provider: CloudProvider,
+    phase: &'static str,
     response: reqwest::Response,
 ) -> Result<Vec<u8>, CloudSourceError> {
-    bounded_provider_response(response, MAX_TOKEN_RESPONSE_BYTES)
+    let status = response.status();
+    let bytes =
+        bounded_provider_response_allowing_error(response, MAX_TOKEN_RESPONSE_BYTES).await?;
+    if !status.is_success() {
+        eprintln!(
+            "MDReader OAuth token exchange rejected provider={} phase={} status={} error={}",
+            provider.id(),
+            phase,
+            status.as_u16(),
+            safe_oauth_error_class(&bytes)
+        );
+        return Err(CloudSourceError::OauthTokenRejected);
+    }
+    Ok(bytes)
+}
+
+async fn bounded_provider_response_allowing_error(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, CloudSourceError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(CloudSourceError::OauthTokenRejected);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| match error {
-            CloudSourceError::ProviderRejected => CloudSourceError::OauthTokenRejected,
-            other => other,
-        })
+        .map_err(|_| CloudSourceError::OauthTransport)?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(CloudSourceError::OauthTokenRejected);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 #[derive(Deserialize)]

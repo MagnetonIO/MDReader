@@ -126,6 +126,7 @@ export function Sidebar({
   onLoadMoreLibrary,
 }: SidebarProps) {
   const [libraryExpanded, setLibraryExpanded] = useState(false);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const search = librarySearch.trim().toLocaleLowerCase();
   const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
     evidence.memberships.some(
@@ -142,7 +143,7 @@ export function Sidebar({
     libraryAvailability.kind !== 'ready';
   return (
     <aside
-      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}${libraryExpanded ? ' sidebar--library-expanded' : ''}`}
+      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}${libraryExpanded ? ' sidebar--library-expanded' : ''}${libraryCollapsed ? ' sidebar--library-collapsed' : ''}`}
       aria-hidden={collapsed}
       inert={collapsed ? true : undefined}
     >
@@ -191,11 +192,24 @@ export function Sidebar({
               <button
                 type="button"
                 className="library-sources__refresh"
+                onClick={() => {
+                  setLibraryCollapsed((value) => !value);
+                  setLibraryExpanded(false);
+                }}
+                aria-expanded={!libraryCollapsed}
+              >
+                {libraryCollapsed ? 'Show' : 'Hide'}
+              </button>
+              {!libraryCollapsed ? (
+              <button
+                type="button"
+                className="library-sources__refresh"
                 onClick={() => setLibraryExpanded((expanded) => !expanded)}
                 aria-expanded={libraryExpanded}
               >
                 {libraryExpanded ? 'Restore' : 'Expand'}
               </button>
+              ) : null}
               {onRefreshLibrary ? (
               <button
                 type="button"
@@ -208,6 +222,8 @@ export function Sidebar({
               ) : null}
             </div>
           </div>
+          {!libraryCollapsed ? (
+          <>
           {onLibrarySearch ? (
             <input
               type="search"
@@ -279,6 +295,8 @@ export function Sidebar({
             >
               {libraryLoading ? 'Reading…' : 'Load more'}
             </button>
+          ) : null}
+          </>
           ) : null}
         </nav>
       ) : null}
