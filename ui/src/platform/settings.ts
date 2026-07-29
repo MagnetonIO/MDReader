@@ -38,6 +38,12 @@ import {
  * of every record in a large connected source.
  */
 export const LIBRARY_REFRESH_WINDOW = 1_000;
+export const LIBRARY_LOGICAL_LIMIT = 100_000;
+
+export interface LibraryQueryContinuation {
+  queryId: string;
+  cursor: string;
+}
 
 export type {
   CloudProvider,
@@ -155,6 +161,7 @@ export interface SettingsBackend {
     fields: string[],
     requestId: string,
     sourceIds?: string[],
+    continuation?: LibraryQueryContinuation,
   ) => Promise<LibraryEntityQueryResponse_Serialize>;
   queryConnectedCatdbDocuments?: (
     connectionId: string,
@@ -320,6 +327,7 @@ export async function queryLibraryDocuments(
   fields: string[],
   requestId: string,
   sourceIds?: string[],
+  continuation?: LibraryQueryContinuation,
 ): Promise<LibraryEntityQueryResponse_Serialize> {
   const request: EntityQueryRequest_Deserialize = {
     workspace_id: workspaceId,
@@ -337,8 +345,9 @@ export async function queryLibraryDocuments(
     max_staleness_ms: null,
     require_complete: false,
     page_size: LIBRARY_REFRESH_WINDOW,
-    limit: LIBRARY_REFRESH_WINDOW,
-    cursor: null,
+    limit: LIBRARY_LOGICAL_LIMIT,
+    query_id: continuation?.queryId ?? null,
+    cursor: continuation?.cursor ?? null,
   };
   const result = await commands.queryLibraryDocuments(requestId, request);
   if (result.status === 'error') return cloudFailure(result.error);

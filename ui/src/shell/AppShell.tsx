@@ -315,6 +315,7 @@ export function AppShell() {
       if (settingsBackend.cancelCloudDocumentQuery && libraryDocumentRequest.current) {
         await settingsBackend.cancelCloudDocumentQuery(libraryDocumentRequest.current);
       }
+      if (libraryDocumentGeneration.current !== generation) return;
       const requestId = `library-document:${globalThis.crypto.randomUUID()}`;
       libraryDocumentRequest.current = requestId;
       setLibraryDocument({ member, row, evidence });

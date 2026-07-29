@@ -454,6 +454,42 @@ describe('one hydrated Library answer', () => {
     ).toBeNull();
   });
 
+  it('does not report a bounded result window as a complete Library', () => {
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...evidence,
+            window_truncated: true,
+            answer: {
+              ...evidence.answer,
+              next_cursor: 'v1.library.application-cursor',
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('More Library documents are available from this result.');
+  });
+
+  it('names a bounded result that exhausted the application refresh limit', () => {
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...evidence,
+            window_truncated: true,
+            answer: {
+              ...evidence.answer,
+              next_cursor: null,
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('This Library is larger than the current refresh limit.');
+  });
+
   it('warns when a timed-out source makes an answer partial', () => {
     expect(
       libraryHydrationMessage({

@@ -86,14 +86,16 @@ pub enum DropboxAuthorizationMode {
 
 /// The physical records exposed by one immutable Dropbox source.
 ///
-/// The general connector keeps its existing readable-text contract by
-/// default. Reader applications may pin the narrower Markdown-only universe
-/// as part of the versioned source configuration.
+/// The general connector keeps its existing all-metadata contract by default.
+/// Reader applications may pin a narrower readable-text or Markdown-only
+/// universe as part of the versioned source configuration.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DropboxContentScope {
-    /// Expose Markdown and plain-text files.
+    /// Expose every file as metadata while downloading only readable text.
     #[default]
+    AllMetadata,
+    /// Expose Markdown and plain-text files.
     ReadableText,
     /// Expose Markdown files only.
     Markdown,
@@ -1507,7 +1509,7 @@ impl DropboxSource {
             .map(String::as_str)
             .chain(plan.residual_attrs())
             .any(|field| field == "body");
-        if needs_body {
+        if needs_body && is_readable_text_path(&file.name) {
             let response = self
                 .send(self.content_request(&file)?, context, physical_bytes)
                 .await?;
@@ -1814,7 +1816,7 @@ impl DataSource for DropboxSource {
                 .chain(plan.residual_attrs())
                 .any(|field| field == "body");
             let mut physical_bytes = 0usize;
-            let (file, body) = if needs_body {
+            let (file, body) = if needs_body && is_readable_text_path(expected_path) {
                 let response = self
                     .send(
                         self.content_request_path(expected_path)?,
@@ -2187,14 +2189,21 @@ fn validate_provider_cursor(cursor: &str) -> Result<(), SourceError> {
 }
 
 fn is_exposed_path(scope: DropboxContentScope, name: &str) -> bool {
+    match scope {
+        DropboxContentScope::AllMetadata => true,
+        DropboxContentScope::ReadableText => is_readable_text_path(name),
+        DropboxContentScope::Markdown => name.rsplit_once('.').is_some_and(|(_, extension)| {
+            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
+        }),
+    }
+}
+
+fn is_readable_text_path(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, extension)| {
-        let extension = extension.to_ascii_lowercase();
-        match scope {
-            DropboxContentScope::ReadableText => {
-                matches!(extension.as_str(), "md" | "markdown" | "txt")
-            }
-            DropboxContentScope::Markdown => matches!(extension.as_str(), "md" | "markdown"),
-        }
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "md" | "markdown" | "txt"
+        )
     })
 }
 

@@ -262,6 +262,16 @@ export function libraryHydrationMessage(result: HydratedLibrary): string | null 
     return 'CatDB could not prepare or complete the Library query.';
   }
   if (
+    result.evidence.some(
+      (answer) => answer.window_truncated && answer.answer.next_cursor === null,
+    )
+  ) {
+    return 'This Library is larger than the current refresh limit.';
+  }
+  if (result.evidence.some((answer) => answer.window_truncated)) {
+    return 'More Library documents are available from this result.';
+  }
+  if (
     result.failures.length === 0 &&
     result.evidence.every((answer) => answer.answer.completeness.state !== 'partial')
   ) {

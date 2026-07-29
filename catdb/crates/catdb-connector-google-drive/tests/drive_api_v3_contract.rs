@@ -903,9 +903,19 @@ async fn readable_root_exact_id_reads_only_that_document_and_its_body() {
         "trashed":false
     }))
     .unwrap();
+    let parent_metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"nested-folder",
+        "name":"Notes",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":["provider-root"],
+        "trashed":false
+    }))
+    .unwrap();
     let (source, transport) = source(
         ScriptedTransport::without_selected_folder_metadata([
             response(200, metadata),
+            response(200, parent_metadata),
             response(200, b"# Nested note\n".to_vec()),
         ]),
         readable_root_config(),
@@ -925,16 +935,71 @@ async fn readable_root_exact_id_reads_only_that_document_and_its_body() {
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0].value["body"], "# Nested note\n");
     let requests = transport.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0]
         .path()
         .starts_with("/drive/v3/files/nested-note?"));
     assert!(requests[1]
         .path()
+        .starts_with("/drive/v3/files/nested-folder?"));
+    assert!(requests[2]
+        .path()
         .contains("/drive/v3/files/nested-note?alt=media"));
     assert!(requests
         .iter()
         .all(|request| !request.path().contains("q=")));
+}
+
+#[tokio::test]
+async fn root_exact_id_rejects_an_accessible_file_outside_the_selected_root_before_body_read() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"outside-note",
+        "name":"outside.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"17",
+        "md5Checksum":"outside-checksum",
+        "parents":["foreign-folder"],
+        "trashed":false
+    }))
+    .unwrap();
+    let foreign_parent = serde_json::to_vec(&serde_json::json!({
+        "id":"foreign-folder",
+        "name":"Shared elsewhere",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, metadata),
+            response(200, foreign_parent),
+        ]),
+        readable_root_config(),
+    );
+    let plan = source
+        .compile(
+            &exact_id_query("outside-note"),
+            &["id".to_string(), "name".to_string(), "body".to_string()],
+        )
+        .expect("exact id plan");
+
+    let error = source
+        .execute_page(&plan, None, &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("a token-readable ID outside My Drive is not source authority");
+
+    assert!(matches!(error, SourceError::Read { .. }));
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]
+        .path()
+        .starts_with("/drive/v3/files/foreign-folder?"));
+    assert!(requests
+        .iter()
+        .all(|request| !request.path().contains("alt=media")));
 }
 
 #[tokio::test]

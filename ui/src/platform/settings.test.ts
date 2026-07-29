@@ -6,6 +6,7 @@ import {
   type LibraryEntityQueryResponse_Serialize,
 } from '../bindings';
 import {
+  LIBRARY_LOGICAL_LIMIT,
   LIBRARY_REFRESH_WINDOW,
   queryLibraryDocuments,
   recordDiagnosticEventNonBlocking,
@@ -51,7 +52,39 @@ describe('Library query transport', () => {
       'library-window',
       expect.objectContaining({
         page_size: LIBRARY_REFRESH_WINDOW,
-        limit: LIBRARY_REFRESH_WINDOW,
+        limit: LIBRARY_LOGICAL_LIMIT,
+        query_id: null,
+        cursor: null,
+      }),
+    );
+  });
+
+  it('passes only the typed application continuation back to the native Library', async () => {
+    const response = {} as LibraryEntityQueryResponse_Serialize;
+    const query = vi
+      .spyOn(commands, 'queryLibraryDocuments')
+      .mockResolvedValueOnce({ status: 'ok', data: response });
+
+    await queryLibraryDocuments(
+      '00000000-0000-0000-0000-000000000001',
+      [],
+      ['title', 'path'],
+      'library-page-2',
+      ['00000000-0000-0000-0000-000000000002'],
+      {
+        queryId: '00000000-0000-0000-0000-000000000003',
+        cursor: 'v1.library.application-cursor',
+      },
+    );
+
+    expect(query).toHaveBeenCalledWith(
+      'library-page-2',
+      expect.objectContaining({
+        source_ids: ['00000000-0000-0000-0000-000000000002'],
+        query_id: '00000000-0000-0000-0000-000000000003',
+        cursor: 'v1.library.application-cursor',
+        page_size: LIBRARY_REFRESH_WINDOW,
+        limit: LIBRARY_LOGICAL_LIMIT,
       }),
     );
   });

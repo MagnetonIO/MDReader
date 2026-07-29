@@ -34,6 +34,10 @@ const CLOUD_REGISTRY_VERSION: u32 = 1;
 const CLOUD_LIFECYCLE_LOCK_FILE: &str = "cloud-accounts.lock";
 const MAX_CLOUD_SOURCES: usize = 2;
 const MAX_PENDING_CREDENTIAL_CLEANUPS: usize = 16;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const MAX_LIBRARY_CONTINUATIONS: usize = 8;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+const LIBRARY_CONTINUATION_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 const MAX_CLOUD_REQUEST_ID_BYTES: usize = 128;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1262,6 +1266,15 @@ struct ActiveCloudQuery {
     cancellation: catdb_connectors::CancellationToken,
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct StoredLibraryContinuation {
+    continuation: crate::library_query::LibraryQueryContinuation,
+    local_records: Vec<crate::library::LocalFolderSource>,
+    cloud_records: Vec<CloudSourceRecord>,
+    registry: LibraryStore,
+    expires_at: Instant,
+}
+
 #[derive(Debug)]
 struct ActiveCloudConnect {
     serial: u64,
@@ -1443,6 +1456,8 @@ pub(crate) struct CloudAccountsState {
     catalog_location: Mutex<Option<(PathBuf, uuid::Uuid)>>,
     active_connects: Arc<Mutex<HashMap<CloudProvider, ActiveCloudConnect>>>,
     active_queries: Mutex<HashMap<String, ActiveCloudQuery>>,
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    library_continuations: Mutex<HashMap<String, StoredLibraryContinuation>>,
     next_connect_serial: AtomicU64,
     next_query_serial: AtomicU64,
 }
@@ -1455,6 +1470,8 @@ impl Default for CloudAccountsState {
             catalog_location: Mutex::new(None),
             active_connects: Arc::new(Mutex::new(HashMap::new())),
             active_queries: Mutex::new(HashMap::new()),
+            #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+            library_continuations: Mutex::new(HashMap::new()),
             next_connect_serial: AtomicU64::new(1),
             next_query_serial: AtomicU64::new(1),
         }
@@ -1570,6 +1587,11 @@ impl CloudAccountsState {
         for (_, query) in queries.drain() {
             query.cancellation.cancel();
         }
+        #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+        self.library_continuations
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?
+            .clear();
         Ok(())
     }
 
@@ -1602,6 +1624,51 @@ impl CloudAccountsState {
             serial,
             cancellation,
         })
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn store_library_continuation(
+        &self,
+        continuation: StoredLibraryContinuation,
+    ) -> Result<(), CloudSourceError> {
+        let token = continuation.continuation.token().as_str().to_string();
+        let now = Instant::now();
+        let mut stored = self
+            .library_continuations
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+        stored.retain(|_, entry| entry.expires_at > now);
+        if stored.contains_key(&token) {
+            return Err(CloudSourceError::QueryInvalidResponse);
+        }
+        while stored.len() >= MAX_LIBRARY_CONTINUATIONS {
+            let Some(oldest) = stored
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires_at)
+                .map(|(token, _)| token.clone())
+            else {
+                break;
+            };
+            stored.remove(&oldest);
+        }
+        stored.insert(token, continuation);
+        Ok(())
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn take_library_continuation(
+        &self,
+        cursor: &catdb_api_types::EntityCursor,
+    ) -> Result<StoredLibraryContinuation, CloudSourceError> {
+        let now = Instant::now();
+        let mut stored = self
+            .library_continuations
+            .lock()
+            .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
+        stored.retain(|_, entry| entry.expires_at > now);
+        stored
+            .remove(cursor.as_str())
+            .ok_or_else(|| query_invalid("Library continuation is invalid, expired, or replayed"))
     }
 
     fn finish_query(&self, query: &CloudQueryHandle) -> Result<(), CloudSourceError> {
@@ -2805,6 +2872,66 @@ impl catdb_connector_google_drive::DriveTransport for E2eDriveTransport {
 }
 
 /// Query all caller-selected Library memberships through one CatDB execution.
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn map_registered_library_query_error(
+    error: crate::library_query::LibraryQueryError,
+) -> CloudSourceError {
+    match error {
+        crate::library_query::LibraryQueryError::InvalidRequest
+        | crate::library_query::LibraryQueryError::NoEnabledSources
+        | crate::library_query::LibraryQueryError::UnknownSource => {
+            query_invalid(error.to_string())
+        }
+        crate::library_query::LibraryQueryError::InvalidCatalog => {
+            CloudSourceError::QueryCatalogInvalid
+        }
+        crate::library_query::LibraryQueryError::AuthorizationDenied => {
+            CloudSourceError::QueryAuthorizationDenied
+        }
+        crate::library_query::LibraryQueryError::Refused => {
+            CloudSourceError::QueryAllSourcesRefused
+        }
+        crate::library_query::LibraryQueryError::Incomplete { source_ids } => {
+            CloudSourceError::QueryIncompleteSources {
+                source_ids: source_ids
+                    .into_iter()
+                    .map(|source_id| source_id.to_string())
+                    .collect(),
+            }
+        }
+        crate::library_query::LibraryQueryError::Stale { source_ids } => {
+            CloudSourceError::QueryStaleSources {
+                source_ids: source_ids
+                    .into_iter()
+                    .map(|source_id| source_id.to_string())
+                    .collect(),
+            }
+        }
+        crate::library_query::LibraryQueryError::SourceFailed { source_id } => {
+            CloudSourceError::QueryReadFailed {
+                source_id: source_id.to_string(),
+            }
+        }
+        crate::library_query::LibraryQueryError::SourceProtocol { source_id } => {
+            CloudSourceError::QuerySourceProtocol {
+                source_id: source_id.to_string(),
+            }
+        }
+        crate::library_query::LibraryQueryError::InvalidResponse => {
+            CloudSourceError::QueryInvalidResponse
+        }
+        crate::library_query::LibraryQueryError::ExecutionFailed { sources } => {
+            CloudSourceError::QueryExecutionFailed { sources }
+        }
+        crate::library_query::LibraryQueryError::Cancelled => CloudSourceError::QueryCancelled,
+        crate::library_query::LibraryQueryError::Timeout => CloudSourceError::QueryDeadlineExceeded,
+        crate::library_query::LibraryQueryError::LimitExceeded => {
+            CloudSourceError::QueryLimitExceeded
+        }
+        crate::library_query::LibraryQueryError::QueryFailed => query_failed(error.to_string()),
+    }
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub(crate) async fn query_library_documents(
@@ -2829,6 +2956,51 @@ pub(crate) async fn query_library_documents(
         let result = async {
             if cancellation.is_cancelled() {
                 return Err(CloudSourceError::QueryCancelled);
+            }
+            if let Some(cursor) = request.cursor.as_ref() {
+                let stored = state.take_library_continuation(cursor)?;
+                let StoredLibraryContinuation {
+                    continuation,
+                    local_records,
+                    cloud_records,
+                    registry,
+                    ..
+                } = stored;
+                let pre_registry = registry.clone();
+                let pre_locals = local_records.clone();
+                let pre_clouds = cloud_records.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    validate_current_library_memberships(&pre_registry, &pre_locals, &pre_clouds)
+                })
+                .await
+                .map_err(|_| CloudSourceError::PersistFailed)??;
+                let page = crate::library_query::continue_registered_library_query(
+                    request,
+                    continuation,
+                    cancellation.clone(),
+                )
+                .await
+                .map_err(map_registered_library_query_error)?;
+                let post_registry = registry.clone();
+                let post_locals = local_records.clone();
+                let post_clouds = cloud_records.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    validate_current_library_memberships(&post_registry, &post_locals, &post_clouds)
+                })
+                .await
+                .map_err(|_| CloudSourceError::PersistFailed)??;
+                if let Some(continuation) = page.continuation {
+                    state.store_library_continuation(StoredLibraryContinuation {
+                        continuation,
+                        local_records,
+                        cloud_records,
+                        registry,
+                        expires_at: Instant::now()
+                            .checked_add(LIBRARY_CONTINUATION_TTL)
+                            .ok_or(CloudSourceError::QueryInvalidResponse)?,
+                    })?;
+                }
+                return Ok(page.response);
             }
             let selected = request.source_ids.clone();
             let active_root = crate::library::active_root(&workspace);
@@ -2865,78 +3037,37 @@ pub(crate) async fn query_library_documents(
                     .await?,
                 );
             }
-            let response = crate::library_query::execute_registered_library_query(
+            let page = crate::library_query::begin_registered_library_query(
                 request,
                 members,
                 cancellation.clone(),
             )
             .await
-            .map_err(|error| match error {
-                crate::library_query::LibraryQueryError::InvalidRequest
-                | crate::library_query::LibraryQueryError::NoEnabledSources
-                | crate::library_query::LibraryQueryError::UnknownSource => {
-                    query_invalid(error.to_string())
-                }
-                crate::library_query::LibraryQueryError::InvalidCatalog => {
-                    CloudSourceError::QueryCatalogInvalid
-                }
-                crate::library_query::LibraryQueryError::AuthorizationDenied => {
-                    CloudSourceError::QueryAuthorizationDenied
-                }
-                crate::library_query::LibraryQueryError::Refused => {
-                    CloudSourceError::QueryAllSourcesRefused
-                }
-                crate::library_query::LibraryQueryError::Incomplete { source_ids } => {
-                    CloudSourceError::QueryIncompleteSources {
-                        source_ids: source_ids
-                            .into_iter()
-                            .map(|source_id| source_id.to_string())
-                            .collect(),
-                    }
-                }
-                crate::library_query::LibraryQueryError::Stale { source_ids } => {
-                    CloudSourceError::QueryStaleSources {
-                        source_ids: source_ids
-                            .into_iter()
-                            .map(|source_id| source_id.to_string())
-                            .collect(),
-                    }
-                }
-                crate::library_query::LibraryQueryError::SourceFailed { source_id } => {
-                    CloudSourceError::QueryReadFailed {
-                        source_id: source_id.to_string(),
-                    }
-                }
-                crate::library_query::LibraryQueryError::SourceProtocol { source_id } => {
-                    CloudSourceError::QuerySourceProtocol {
-                        source_id: source_id.to_string(),
-                    }
-                }
-                crate::library_query::LibraryQueryError::InvalidResponse => {
-                    CloudSourceError::QueryInvalidResponse
-                }
-                crate::library_query::LibraryQueryError::ExecutionFailed { sources } => {
-                    CloudSourceError::QueryExecutionFailed { sources }
-                }
-                crate::library_query::LibraryQueryError::Cancelled => {
-                    CloudSourceError::QueryCancelled
-                }
-                crate::library_query::LibraryQueryError::Timeout => {
-                    CloudSourceError::QueryDeadlineExceeded
-                }
-                crate::library_query::LibraryQueryError::LimitExceeded => {
-                    CloudSourceError::QueryLimitExceeded
-                }
-                crate::library_query::LibraryQueryError::QueryFailed => {
-                    query_failed(error.to_string())
-                }
-            })?;
+            .map_err(map_registered_library_query_error)?;
+            let validation_registry = registry.clone();
+            let validation_locals = local_records.clone();
+            let validation_clouds = expected_clouds.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                validate_current_library_memberships(&registry, &local_records, &expected_clouds)
+                validate_current_library_memberships(
+                    &validation_registry,
+                    &validation_locals,
+                    &validation_clouds,
+                )
             })
             .await
             .map_err(|_| CloudSourceError::PersistFailed)??;
-            Ok(response)
+            if let Some(continuation) = page.continuation {
+                state.store_library_continuation(StoredLibraryContinuation {
+                    continuation,
+                    local_records,
+                    cloud_records: expected_clouds,
+                    registry,
+                    expires_at: Instant::now()
+                        .checked_add(LIBRARY_CONTINUATION_TTL)
+                        .ok_or(CloudSourceError::QueryInvalidResponse)?,
+                })?;
+            }
+            Ok(page.response)
         }
         .await;
         owner.finish()?;
@@ -6103,6 +6234,41 @@ mod tests {
                 .await,
             Err(DropboxConnectorError::InvalidSecret)
         ));
+    }
+
+    #[cfg(feature = "dropbox-connector")]
+    #[tokio::test]
+    async fn mdreader_library_pins_dropbox_to_markdown_even_without_a_live_credential() {
+        let temp = tempdir().expect("temporary directory");
+        let record = super::CloudSourceRecord {
+            id: "d".repeat(64),
+            provider: CloudProvider::Dropbox,
+            label: CloudProvider::Dropbox.label().to_string(),
+            enabled: true,
+            credential_reference: "mdreader-dropbox-test".to_string(),
+            config: CloudSourceConfig::Dropbox,
+            contract: Some(crate::library::LibrarySourceContract::cloud(
+                CloudProvider::Dropbox,
+            )),
+        };
+        let vault: Arc<dyn CredentialVault> = Arc::new(MemoryCredentialVault::default());
+        let member = bind_library_cloud_source(
+            record,
+            None,
+            vault,
+            LibraryStore::new(temp.path().join("library.json")),
+            "mdreader-library-schema-v1",
+        )
+        .await
+        .expect("declared MDReader Dropbox source");
+
+        assert_eq!(
+            member.sources[0]
+                .source
+                .source_spec()
+                .pointer("/source/config/content_scope"),
+            Some(&serde_json::json!("markdown"))
+        );
     }
 
     #[tokio::test]

@@ -76,6 +76,9 @@ const h = vi.hoisted(() => ({
   libraryQueryFails: false,
   libraryQueryQueue: [] as Promise<Record<string, unknown>>[],
   libraryQueryPhases: [] as Array<'pre-mark' | 'post-mark'>,
+  libraryQueryRecordKeys: [] as Array<string | null>,
+  libraryCancelGate: null as null | { promise: Promise<void>; resolve: () => void },
+  libraryCancelCalls: [] as string[],
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
   markStarted: false,
   markSucceeded: false,
@@ -264,12 +267,23 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       catalog_revision_id: '00000000-0000-4000-8000-000000000007',
       schema_version_id: '00000000-0000-4000-8000-000000000008',
     })),
-    queryLibraryDocuments: vi.fn(async () => {
+    queryLibraryDocuments: vi.fn(
+      async (
+        _workspaceId: string,
+        filters: Array<{ field: string; operator: string; value: string }>,
+      ) => {
+      h.libraryQueryRecordKeys.push(filters[0]?.value ?? null);
       h.libraryQueryPhases.push(h.markSucceeded ? 'post-mark' : 'pre-mark');
       const queued = h.libraryQueryQueue.shift();
       if (queued) return queued;
       if (h.libraryQueryFails) throw new Error('injected Library refresh failure');
       return h.libraryEvidence ?? emptyLibraryEvidence;
+      },
+    ),
+    cancelCloudDocumentQuery: vi.fn(async (requestId: string) => {
+      h.libraryCancelCalls.push(requestId);
+      if (h.libraryCancelGate) await h.libraryCancelGate.promise;
+      return true;
     }),
     resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
       h.editResolutions.push({ sourceId, relativePath });
@@ -456,6 +470,55 @@ function installSecondWorkspaceLibraryDocument() {
   h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'local-hash' });
 }
 
+function installRapidCloudLibraryDocuments() {
+  installSecondWorkspaceLibraryDocument();
+  const fixture = h.libraryEvidence as {
+    memberships: Array<{
+      registry_id: string;
+      name: string;
+      kind: string;
+      editable: boolean;
+    }>;
+    answer: {
+      rows: Array<{
+        record_key: string;
+        fields: Record<string, unknown>;
+        provenance: {
+          path: {
+            considered: Array<{
+              record_key: string;
+              state: { state: string; value: string };
+            }>;
+          };
+        };
+      }>;
+    };
+  };
+  Object.assign(fixture.memberships[0]!, {
+    registry_id: 'google-drive',
+    name: 'Google Drive',
+    kind: 'google-drive',
+    editable: false,
+  });
+  const template = fixture.answer.rows[0]!;
+  fixture.answer.rows = [
+    ['drive-first', 'First note'],
+    ['drive-second', 'Second note'],
+    ['drive-third', 'Third note'],
+  ].map(([recordKey, title]) => {
+    const row = structuredClone(template);
+    row.record_key = recordKey!;
+    row.fields = {
+      path: recordKey,
+      title,
+      body: `# ${title}`,
+    };
+    row.provenance.path.considered[0]!.record_key = recordKey!;
+    row.provenance.path.considered[0]!.state.value = recordKey!;
+    return row;
+  });
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -490,6 +553,9 @@ beforeEach(() => {
   h.libraryQueryFails = false;
   h.libraryQueryQueue.length = 0;
   h.libraryQueryPhases.length = 0;
+  h.libraryQueryRecordKeys.length = 0;
+  h.libraryCancelGate = null;
+  h.libraryCancelCalls.length = 0;
   h.markGate = null;
   h.markStarted = false;
   h.markSucceeded = false;
@@ -539,6 +605,40 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('starts only the newest document query after rapid selections share a pending cancellation', async () => {
+    installRapidCloudLibraryDocuments();
+    render(<App />);
+    const first = await screen.findByRole('button', {
+      name: 'Open First note from Google Drive',
+    });
+    const second = screen.getByRole('button', {
+      name: 'Open Second note from Google Drive',
+    });
+    const third = screen.getByRole('button', {
+      name: 'Open Third note from Google Drive',
+    });
+    h.libraryQueryRecordKeys.length = 0;
+    const firstBody = deferred<Record<string, unknown>>();
+    h.libraryQueryQueue.push(firstBody.promise);
+
+    fireEvent.click(first);
+    await waitFor(() => expect(h.libraryQueryRecordKeys).toEqual(['drive-first']));
+
+    h.libraryCancelGate = deferred();
+    fireEvent.click(second);
+    await waitFor(() => expect(h.libraryCancelCalls).toHaveLength(1));
+    fireEvent.click(third);
+    await waitFor(() => expect(h.libraryCancelCalls).toHaveLength(2));
+
+    await act(async () => {
+      h.libraryCancelGate!.resolve();
+      await h.libraryCancelGate!.promise;
+    });
+    await waitFor(() => expect(h.libraryQueryRecordKeys).toContain('drive-third'));
+
+    expect(h.libraryQueryRecordKeys).toEqual(['drive-first', 'drive-third']);
+  });
+
   it('publishes only the post-mark Library hydration after workspace activation', async () => {
     installSecondWorkspaceLibraryDocument();
     const preActivation = structuredClone(h.libraryEvidence!) as {

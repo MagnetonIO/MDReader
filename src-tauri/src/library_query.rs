@@ -6,11 +6,11 @@
 //! It never joins provider-specific responses in the application layer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use catdb_api_types::{EntityQueryRequest, EntityQueryResponse, SourceExecution, MAX_LIMIT};
+use catdb_api_types::{EntityCursor, EntityQueryRequest, EntityQueryResponse, SourceExecution};
 use catdb_connectors::{
     CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError,
     SourceFreshness, SourceModel, SourcePage, SourcePlan,
@@ -64,6 +64,130 @@ fn split_scoped_record_key(value: &str) -> Option<(Uuid, &str)> {
 struct MembershipScopedSource {
     membership_id: Uuid,
     source: Arc<dyn DataSource>,
+}
+
+#[derive(Debug, Clone)]
+enum LibraryPageResume {
+    Start,
+    Continue(SourceCursor),
+    Complete,
+    Failed(SourceError),
+}
+
+struct LibraryPageSource {
+    physical_source_id: Uuid,
+    source: Arc<dyn DataSource>,
+    resume: Mutex<Option<LibraryPageResume>>,
+    captured: Arc<Mutex<BTreeMap<Uuid, LibraryPageResume>>>,
+}
+
+impl std::fmt::Debug for LibraryPageSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LibraryPageSource")
+            .field("physical_source_id", &self.physical_source_id)
+            .field("source_id", self.source.id())
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl DataSource for LibraryPageSource {
+    fn id(&self) -> &catdb_connectors::SourceId {
+        self.source.id()
+    }
+
+    fn schema(&self) -> &catdb_core::Schema {
+        self.source.schema()
+    }
+
+    fn capabilities(&self) -> &SourceCapabilities {
+        self.source.capabilities()
+    }
+
+    fn source_spec(&self) -> serde_json::Value {
+        self.source.source_spec()
+    }
+
+    async fn freshness(&self, context: &ReadContext) -> Result<SourceFreshness, SourceError> {
+        self.source.freshness(context).await
+    }
+
+    fn compile(
+        &self,
+        query: &catdb_query::EntityQuery,
+        authorized_fields: &[String],
+    ) -> Result<SourcePlan, SourceError> {
+        self.source.compile(query, authorized_fields)
+    }
+
+    async fn execute_page(
+        &self,
+        plan: &SourcePlan,
+        cursor: Option<&SourceCursor>,
+        context: &ReadContext,
+    ) -> Result<SourcePage, SourceError> {
+        if cursor.is_some() {
+            return Err(SourceError::InvalidCursor);
+        }
+        let resume = self
+            .resume
+            .lock()
+            .map_err(|_| SourceError::Transport {
+                source_id: self.source.id().clone(),
+            })?
+            .take()
+            .ok_or(SourceError::InvalidCursor)?;
+        let page = match resume {
+            LibraryPageResume::Start => self.source.execute_page(plan, None, context).await,
+            LibraryPageResume::Continue(cursor) => {
+                self.source.execute_page(plan, Some(&cursor), context).await
+            }
+            LibraryPageResume::Complete => Ok(SourcePage {
+                source: self.source.id().clone(),
+                scanned: 0,
+                rows: Vec::new(),
+                next_cursor: None,
+                observed_at_ms: library_now_ms(),
+                freshness_ms: 0,
+            }),
+            LibraryPageResume::Failed(error) => Err(error),
+        };
+        let mut page = match page {
+            Ok(page) => page,
+            Err(error) => {
+                self.captured
+                    .lock()
+                    .map_err(|_| SourceError::Transport {
+                        source_id: self.source.id().clone(),
+                    })?
+                    .insert(
+                        self.physical_source_id,
+                        LibraryPageResume::Failed(error.clone()),
+                    );
+                return Err(error);
+            }
+        };
+        let next_resume = page
+            .next_cursor
+            .take()
+            .map_or(LibraryPageResume::Complete, LibraryPageResume::Continue);
+        self.captured
+            .lock()
+            .map_err(|_| SourceError::Transport {
+                source_id: self.source.id().clone(),
+            })?
+            .insert(self.physical_source_id, next_resume);
+        Ok(page)
+    }
+}
+
+fn library_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(1)
 }
 
 struct DeclaredUnavailableSource {
@@ -248,6 +372,35 @@ impl LibraryPhysicalSource {
     }
 }
 
+fn page_members(
+    members: &[LibraryQueryMember],
+    resumptions: Option<&BTreeMap<Uuid, LibraryPageResume>>,
+    captured: Arc<Mutex<BTreeMap<Uuid, LibraryPageResume>>>,
+) -> Result<Vec<LibraryQueryMember>, LibraryQueryError> {
+    members
+        .iter()
+        .cloned()
+        .map(|mut member| {
+            for physical in &mut member.sources {
+                let resume = match resumptions {
+                    None => LibraryPageResume::Start,
+                    Some(resumptions) => resumptions
+                        .get(&physical.source_id)
+                        .cloned()
+                        .ok_or(LibraryQueryError::InvalidRequest)?,
+                };
+                physical.source = Arc::new(LibraryPageSource {
+                    physical_source_id: physical.source_id,
+                    source: Arc::clone(&physical.source),
+                    resume: Mutex::new(Some(resume)),
+                    captured: Arc::clone(&captured),
+                });
+            }
+            Ok(member)
+        })
+        .collect()
+}
+
 /// How a returned physical source relates to the user-selected Library member.
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
 pub(crate) struct LibrarySourceExecution {
@@ -275,6 +428,36 @@ pub(crate) struct LibraryEntityQueryResponse {
     /// enumerated; callers must not interpret `false` source failures from a
     /// saturated window.
     pub window_truncated: bool,
+}
+
+struct CachedLibraryPage {
+    service: Arc<EntityQueryService>,
+    request: EntityQueryRequest,
+    memberships: Vec<LibrarySourceExecution>,
+}
+
+/// Native-only state required to resume one bounded Library query.
+pub(crate) struct LibraryQueryContinuation {
+    token: EntityCursor,
+    query_id: Uuid,
+    expected_request: EntityQueryRequest,
+    members: Vec<LibraryQueryMember>,
+    physical_resumptions: BTreeMap<Uuid, LibraryPageResume>,
+    remaining_limit: usize,
+    cached: Option<CachedLibraryPage>,
+}
+
+impl LibraryQueryContinuation {
+    /// Opaque application continuation exposed to the renderer.
+    pub(crate) fn token(&self) -> &EntityCursor {
+        &self.token
+    }
+}
+
+/// One application page and any native-only state needed for its successor.
+pub(crate) struct RegisteredLibraryQueryPage {
+    pub(crate) response: LibraryEntityQueryResponse,
+    pub(crate) continuation: Option<LibraryQueryContinuation>,
 }
 
 /// A Library query failed before it could return one exact answer.
@@ -755,30 +938,41 @@ fn restore_membership_provenance(
     Ok(())
 }
 
-/// Execute exactly one bounded query over one immutable Library snapshot.
-pub(crate) async fn execute_registered_library_query(
-    mut request: EntityQueryRequest,
+fn application_cursor() -> Result<EntityCursor, LibraryQueryError> {
+    EntityCursor::new(format!("v1.library.{}", Uuid::new_v4().simple()))
+        .map_err(|_| LibraryQueryError::QueryFailed)
+}
+
+fn normalize_continuation_shape(request: &EntityQueryRequest) -> EntityQueryRequest {
+    let mut normalized = request.clone();
+    normalized.query_id = None;
+    normalized.cursor = None;
+    normalized
+}
+
+fn provider_has_more(resumptions: &BTreeMap<Uuid, LibraryPageResume>) -> bool {
+    resumptions
+        .values()
+        .any(|resume| matches!(resume, LibraryPageResume::Continue(_)))
+}
+
+async fn execute_provider_batch(
+    expected_request: EntityQueryRequest,
     members: Vec<LibraryQueryMember>,
+    resumptions: Option<BTreeMap<Uuid, LibraryPageResume>>,
+    remaining_limit: usize,
+    query_id: Uuid,
     cancellation: CancellationToken,
-) -> Result<LibraryEntityQueryResponse, LibraryQueryError> {
-    request
-        .validate()
-        .map_err(|_| LibraryQueryError::InvalidRequest)?;
-    let result_window_limit =
-        usize::try_from(request.limit).map_err(|_| LibraryQueryError::LimitExceeded)?;
-    if request.entity != "document.Document"
-        || request.cursor.is_some()
-        || request.query_id.is_some()
-    {
-        return Err(LibraryQueryError::InvalidRequest);
-    }
-    let runtime = build_runtime(request.workspace_id, members)?;
+) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    let captured = Arc::new(Mutex::new(BTreeMap::new()));
+    let paged_members = page_members(&members, resumptions.as_ref(), Arc::clone(&captured))?;
+    let runtime = build_runtime(expected_request.workspace_id, paged_members)?;
     let by_membership = runtime
         .memberships
         .iter()
         .map(|member| (member.membership_id, member.source_ids.clone()))
         .collect::<BTreeMap<_, _>>();
-    let selected_memberships = request
+    let selected_memberships = expected_request
         .source_ids
         .clone()
         .unwrap_or_else(|| by_membership.keys().copied().collect());
@@ -792,50 +986,58 @@ pub(crate) async fn execute_registered_library_query(
         };
         selected_physical.extend(physical.iter().copied());
     }
-    if request
+    if expected_request
         .catalog_revision_id
         .is_some_and(|requested| requested != runtime.catalog.revision.revision_id)
-        || request
+        || expected_request
             .schema_version_id
             .is_some_and(|requested| requested != runtime.catalog.default_schema_version_id)
     {
         return Err(LibraryQueryError::InvalidCatalog);
     }
-    request.source_ids = Some(selected_physical);
+    let physical_page_size = usize::try_from(expected_request.page_size)
+        .map_err(|_| LibraryQueryError::LimitExceeded)?;
+    let batch_limit = selected_physical
+        .len()
+        .checked_mul(physical_page_size)
+        .map(|limit| limit.min(remaining_limit))
+        .filter(|limit| *limit > 0)
+        .ok_or(LibraryQueryError::LimitExceeded)?;
+    let mut request = expected_request.clone();
+    request.limit = u32::try_from(batch_limit).map_err(|_| LibraryQueryError::LimitExceeded)?;
+    request.source_ids = Some(selected_physical.clone());
     request.catalog_revision_id = Some(runtime.catalog.revision.revision_id);
     request.schema_version_id = Some(runtime.catalog.default_schema_version_id);
-    // Continuation authority remains native and bound to this immutable
-    // runtime. The renderer receives one bounded window plus an explicit
-    // `window_truncated` bit, never an authenticated CatDB cursor.
     let mut cursor_seed = Uuid::new_v4().as_bytes().to_vec();
     cursor_seed.extend_from_slice(Uuid::new_v4().as_bytes());
     let cursor_key = *blake3::hash(&cursor_seed).as_bytes();
-    let service = EntityQueryService::new(
-        LIBRARY_DEPLOYMENT_ID,
-        Arc::new(LibraryCatalogResolver {
-            catalog: runtime.catalog,
-        }),
-        runtime.bindings,
-        cursor_key,
-        QUERY_CONCURRENCY,
-    )
-    .map_err(|_| LibraryQueryError::InvalidCatalog)?
-    .with_continuation_limits(ContinuationLimits {
-        max_entries: 1,
-        max_rows_per_entry: usize::try_from(MAX_LIMIT)
-            .map_err(|_| LibraryQueryError::LimitExceeded)?,
-        max_bytes_per_entry: QUERY_BYTE_BUDGET,
-        ttl: QUERY_DEADLINE,
-    })
-    .map_err(|_| LibraryQueryError::InvalidCatalog)?;
+    let service = Arc::new(
+        EntityQueryService::new(
+            LIBRARY_DEPLOYMENT_ID,
+            Arc::new(LibraryCatalogResolver {
+                catalog: runtime.catalog,
+            }),
+            runtime.bindings,
+            cursor_key,
+            QUERY_CONCURRENCY,
+        )
+        .map_err(|_| LibraryQueryError::InvalidCatalog)?
+        .with_continuation_limits(ContinuationLimits {
+            max_entries: 1,
+            max_rows_per_entry: batch_limit,
+            max_bytes_per_entry: QUERY_BYTE_BUDGET,
+            ttl: QUERY_DEADLINE,
+        })
+        .map_err(|_| LibraryQueryError::InvalidCatalog)?,
+    );
     let context = ReadContext::new(
-        Uuid::new_v4(),
+        query_id,
         Instant::now()
             .checked_add(QUERY_DEADLINE)
             .ok_or(LibraryQueryError::QueryFailed)?,
         QUERY_WORK_BUDGET,
         QUERY_BYTE_BUDGET,
-        QUERY_PAGE_SIZE,
+        physical_page_size.min(QUERY_PAGE_SIZE),
         cancellation,
     )
     .map_err(|_| LibraryQueryError::QueryFailed)?;
@@ -847,25 +1049,205 @@ pub(crate) async fn execute_registered_library_query(
     let mut answer = service
         .query_with_correlation_fields(
             &principal,
-            request,
+            request.clone(),
             &context,
             &[LIBRARY_IDENTITY_FIELD.to_string()],
         )
         .await
         .map_err(map_entity_query_error)?;
     restore_membership_provenance(&mut answer, &runtime.memberships)?;
-    let window_truncated =
-        answer.next_cursor.take().is_some() || answer.rows.len() >= result_window_limit;
+    let cached_cursor = answer.next_cursor.take();
+    let returned = answer.rows.len();
+    let remaining_limit = remaining_limit.saturating_sub(returned);
+    let mut physical_resumptions = captured
+        .lock()
+        .map_err(|_| LibraryQueryError::QueryFailed)?
+        .clone();
+    for source_id in selected_physical {
+        physical_resumptions
+            .entry(source_id)
+            .or_insert(LibraryPageResume::Complete);
+    }
+    let window_truncated = cached_cursor.is_some() || provider_has_more(&physical_resumptions);
+    let can_continue = remaining_limit > 0 && window_truncated;
+    let cached = cached_cursor.map(|cursor| {
+        let mut continuation_request = request;
+        continuation_request.query_id = Some(query_id);
+        continuation_request.cursor = Some(cursor.clone());
+        CachedLibraryPage {
+            service,
+            request: continuation_request,
+            memberships: runtime.memberships.clone(),
+        }
+    });
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
-    Ok(LibraryEntityQueryResponse {
+    let memberships = runtime
+        .memberships
+        .into_iter()
+        .filter(|member| selected.contains(&member.membership_id))
+        .collect::<Vec<_>>();
+    let token = can_continue.then(application_cursor).transpose()?;
+    answer.next_cursor = token.clone();
+    let response = LibraryEntityQueryResponse {
         answer,
-        memberships: runtime
-            .memberships
-            .into_iter()
-            .filter(|member| selected.contains(&member.membership_id))
-            .collect(),
+        memberships,
         window_truncated,
+    };
+    let continuation = token.map(|token| LibraryQueryContinuation {
+        token,
+        query_id,
+        expected_request: normalize_continuation_shape(&expected_request),
+        members,
+        physical_resumptions,
+        remaining_limit,
+        cached,
+    });
+    Ok(RegisteredLibraryQueryPage {
+        response,
+        continuation,
     })
+}
+
+async fn serve_cached_library_page(
+    mut continuation: LibraryQueryContinuation,
+    cancellation: CancellationToken,
+) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    let cached = continuation
+        .cached
+        .take()
+        .ok_or(LibraryQueryError::InvalidRequest)?;
+    let context = ReadContext::new(
+        continuation.query_id,
+        Instant::now()
+            .checked_add(QUERY_DEADLINE)
+            .ok_or(LibraryQueryError::QueryFailed)?,
+        QUERY_WORK_BUDGET,
+        QUERY_BYTE_BUDGET,
+        usize::try_from(continuation.expected_request.page_size)
+            .map_err(|_| LibraryQueryError::LimitExceeded)?
+            .min(QUERY_PAGE_SIZE),
+        cancellation,
+    )
+    .map_err(|_| LibraryQueryError::QueryFailed)?;
+    let principal = Principal::service(
+        LIBRARY_SERVICE_ID,
+        LIBRARY_DEPLOYMENT_ID,
+        [continuation.expected_request.workspace_id],
+    );
+    let mut answer = cached
+        .service
+        .query_with_correlation_fields(
+            &principal,
+            cached.request.clone(),
+            &context,
+            &[LIBRARY_IDENTITY_FIELD.to_string()],
+        )
+        .await
+        .map_err(map_entity_query_error)?;
+    restore_membership_provenance(&mut answer, &cached.memberships)?;
+    continuation.remaining_limit = continuation
+        .remaining_limit
+        .saturating_sub(answer.rows.len());
+    let internal_cursor = answer.next_cursor.take();
+    continuation.cached = internal_cursor.map(|cursor| {
+        let mut request = cached.request;
+        request.cursor = Some(cursor.clone());
+        CachedLibraryPage {
+            service: cached.service,
+            request,
+            memberships: cached.memberships.clone(),
+        }
+    });
+    let window_truncated =
+        continuation.cached.is_some() || provider_has_more(&continuation.physical_resumptions);
+    let can_continue = continuation.remaining_limit > 0 && window_truncated;
+    let token = can_continue.then(application_cursor).transpose()?;
+    answer.next_cursor = token.clone();
+    let response = LibraryEntityQueryResponse {
+        answer,
+        memberships: cached.memberships,
+        window_truncated,
+    };
+    let continuation = token.map(|token| LibraryQueryContinuation {
+        token,
+        ..continuation
+    });
+    Ok(RegisteredLibraryQueryPage {
+        response,
+        continuation,
+    })
+}
+
+/// Start one bounded query over an immutable Library snapshot.
+pub(crate) async fn begin_registered_library_query(
+    request: EntityQueryRequest,
+    members: Vec<LibraryQueryMember>,
+    cancellation: CancellationToken,
+) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    request
+        .validate()
+        .map_err(|_| LibraryQueryError::InvalidRequest)?;
+    if request.entity != "document.Document"
+        || request.cursor.is_some()
+        || request.query_id.is_some()
+    {
+        return Err(LibraryQueryError::InvalidRequest);
+    }
+    let remaining_limit =
+        usize::try_from(request.limit).map_err(|_| LibraryQueryError::LimitExceeded)?;
+    execute_provider_batch(
+        request,
+        members,
+        None,
+        remaining_limit,
+        Uuid::new_v4(),
+        cancellation,
+    )
+    .await
+}
+
+/// Resume one native Library continuation without exposing provider cursors.
+pub(crate) async fn continue_registered_library_query(
+    request: EntityQueryRequest,
+    continuation: LibraryQueryContinuation,
+    cancellation: CancellationToken,
+) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    request
+        .validate()
+        .map_err(|_| LibraryQueryError::InvalidRequest)?;
+    if request.entity != "document.Document"
+        || request.query_id != Some(continuation.query_id)
+        || request.cursor.as_ref() != Some(&continuation.token)
+        || normalize_continuation_shape(&request) != continuation.expected_request
+    {
+        return Err(LibraryQueryError::InvalidRequest);
+    }
+    if continuation.cached.is_some() {
+        return serve_cached_library_page(continuation, cancellation).await;
+    }
+    execute_provider_batch(
+        continuation.expected_request,
+        continuation.members,
+        Some(continuation.physical_resumptions),
+        continuation.remaining_limit,
+        continuation.query_id,
+        cancellation,
+    )
+    .await
+}
+
+/// Execute the first bounded page for call sites that do not retain continuation state.
+#[cfg(test)]
+pub(crate) async fn execute_registered_library_query(
+    request: EntityQueryRequest,
+    members: Vec<LibraryQueryMember>,
+    cancellation: CancellationToken,
+) -> Result<LibraryEntityQueryResponse, LibraryQueryError> {
+    let mut response = begin_registered_library_query(request, members, cancellation)
+        .await?
+        .response;
+    response.answer.next_cursor = None;
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -891,6 +1273,7 @@ mod tests {
         model: SourceModel,
         rows: Mutex<Vec<SourceRow>>,
         spec: serde_json::Value,
+        failure: Option<SourceError>,
     }
 
     impl CloudFixture {
@@ -945,6 +1328,14 @@ mod tests {
             fixture
         }
 
+        fn failing_dropbox() -> Self {
+            let mut fixture = Self::dropbox();
+            fixture.failure = Some(SourceError::Transport {
+                source_id: fixture.model.id().clone(),
+            });
+            fixture
+        }
+
         fn new(id: &str, attrs: Vec<SourceAttr>, key: &str, value: serde_json::Value) -> Self {
             let model = SourceModel::new(SourceId::new(id), "document", "Document", attrs);
             Self {
@@ -956,6 +1347,7 @@ mod tests {
                 }]),
                 spec: json!({"kind":"fixture-cloud","connector_version":"v1","id":id}),
                 model,
+                failure: None,
             }
         }
     }
@@ -1002,6 +1394,9 @@ mod tests {
         ) -> Result<SourcePage, SourceError> {
             context.check()?;
             self.model.admit(plan)?;
+            if let Some(error) = &self.failure {
+                return Err(error.clone());
+            }
             let offset = cursor.map_or(Ok(0_usize), |cursor| {
                 let bytes: [u8; 8] = cursor
                     .as_bytes()
@@ -1214,7 +1609,7 @@ mod tests {
         let drive = Uuid::new_v4();
         let mut query = request(workspace, vec![drive]);
         query.page_size = 1_000;
-        query.limit = 1_001;
+        query.limit = 1_000;
         let answer = execute_registered_library_query(
             query,
             vec![cloud_member(
@@ -1234,7 +1629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn library_query_returns_a_bounded_window_from_a_larger_drive() {
+    async fn library_query_continuation_reaches_page_two_without_restarting_the_provider() {
         let workspace = Uuid::new_v4();
         let drive = Uuid::new_v4();
         let mut query = request(workspace, vec![drive]);
@@ -1249,10 +1644,10 @@ mod tests {
         .map(str::to_string)
         .to_vec();
         query.page_size = 1_000;
-        query.limit = 1_000;
+        query.limit = 2_306;
 
-        let answer = execute_registered_library_query(
-            query,
+        let first = begin_registered_library_query(
+            query.clone(),
             vec![cloud_member(
                 drive,
                 Arc::new(CloudFixture::drive_documents(2_306)),
@@ -1263,13 +1658,95 @@ mod tests {
         .await
         .expect("a large Drive must return one bounded Library window");
 
-        assert_eq!(answer.answer.rows.len(), 1_000);
-        assert_eq!(answer.answer.next_cursor, None);
-        assert_eq!(answer.answer.completeness, Completeness::Complete);
-        assert!(answer.window_truncated);
-        assert!(answer.answer.rows.iter().all(|row| {
+        assert_eq!(first.response.answer.rows.len(), 1_000);
+        assert!(first.response.answer.next_cursor.is_some());
+        assert_eq!(
+            first.response.answer.completeness,
+            Completeness::Complete,
+            "source completeness and result-window continuation are distinct"
+        );
+        assert!(first.response.window_truncated);
+        assert!(first.response.answer.rows.iter().all(|row| {
             row.provenance.contains_key("title") && row.provenance.contains_key("path")
         }));
+
+        query.query_id = Some(first.response.answer.query_id);
+        query.cursor = first.response.answer.next_cursor.clone();
+        let second = continue_registered_library_query(
+            query,
+            first.continuation.expect("native continuation state"),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("page two remains reachable");
+
+        assert_eq!(second.response.answer.rows.len(), 1_000);
+        assert_eq!(
+            second.response.answer.rows[0].record_key,
+            scope_record_key(drive, "drive-note-1000")
+        );
+        assert!(second.response.answer.next_cursor.is_some());
+        assert!(second.response.window_truncated);
+    }
+
+    #[tokio::test]
+    async fn library_query_continuation_preserves_a_page_one_source_failure() {
+        let workspace = Uuid::new_v4();
+        let drive = Uuid::new_v4();
+        let dropbox = Uuid::new_v4();
+        let failing_member = cloud_member(
+            dropbox,
+            Arc::new(CloudFixture::failing_dropbox()),
+            mdreader_domain::library::CloudDocumentSource::Dropbox,
+        );
+        let failing_source_id = failing_member.sources[0].source_id;
+        let mut query = request(workspace, vec![drive, dropbox]);
+        query.require_complete = Some(false);
+        query.page_size = 1_000;
+        query.limit = 2_001;
+
+        let first = begin_registered_library_query(
+            query.clone(),
+            vec![
+                cloud_member(
+                    drive,
+                    Arc::new(CloudFixture::drive_documents(2_001)),
+                    mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+                ),
+                failing_member,
+            ],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("healthy rows survive an unavailable source");
+        assert_eq!(
+            first.response.answer.completeness,
+            Completeness::Partial {
+                excluded_source_ids: vec![failing_source_id],
+            }
+        );
+
+        query.query_id = Some(first.response.answer.query_id);
+        query.cursor = first.response.answer.next_cursor.clone();
+        let second = continue_registered_library_query(
+            query,
+            first.continuation.expect("native continuation state"),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("page two preserves partial evidence");
+
+        assert_eq!(second.response.answer.rows.len(), 1_000);
+        assert_eq!(
+            second.response.answer.rows[0].record_key,
+            scope_record_key(drive, "drive-note-1000")
+        );
+        assert_eq!(
+            second.response.answer.completeness,
+            Completeness::Partial {
+                excluded_source_ids: vec![failing_source_id],
+            }
+        );
     }
 
     #[tokio::test]

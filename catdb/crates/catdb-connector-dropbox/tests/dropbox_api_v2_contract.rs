@@ -253,7 +253,7 @@ fn pkce_uses_exact_read_scopes_without_a_client_secret_or_fictional_folder_scope
 }
 
 #[tokio::test]
-async fn paginates_list_folder_then_continue_and_exposes_only_reader_content() {
+async fn default_scope_keeps_all_metadata_and_downloads_only_readable_text_content() {
     let first_markdown = file("/knowledge/one.md", "one.md", "r1", "hash-1");
     let binary = file("/knowledge/report.pdf", "report.pdf", "r2", "hash-2");
     let second_text = file("/knowledge/two.txt", "two.txt", "r3", "hash-3");
@@ -304,10 +304,12 @@ async fn paginates_list_folder_then_continue_and_exposes_only_reader_content() {
     .unwrap();
 
     assert_eq!(answer.scanned, 3);
-    assert_eq!(answer.rows.len(), 2);
+    assert_eq!(answer.rows.len(), 3);
     assert_eq!(answer.rows[0].key, "/knowledge/one.md");
     assert_eq!(answer.rows[0].value["body"], "# One\n\nMarkdown body\n");
-    assert_eq!(answer.rows[1].value["body"], "plain text body\n");
+    assert_eq!(answer.rows[1].key, "/knowledge/report.pdf");
+    assert!(answer.rows[1].value.get("body").is_none());
+    assert_eq!(answer.rows[2].value["body"], "plain text body\n");
 
     let requests = transport.requests();
     assert_eq!(requests.len(), 4);
@@ -361,7 +363,7 @@ async fn optional_metadata_on_an_unrelated_file_cannot_poison_markdown_listing()
             false,
         ),
     )]);
-    let (source, _) = open_source(transport);
+    let (source, _) = open_source_with_config(transport, markdown_config());
 
     let answer = read(
         &source,
@@ -416,6 +418,61 @@ async fn markdown_scope_excludes_plain_text_files_from_the_semantic_source() {
             .collect::<Vec<_>>(),
         ["/knowledge/one.md", "/knowledge/guide.markdown"]
     );
+}
+
+#[tokio::test]
+async fn markdown_scope_preserves_continuation_when_the_first_page_has_no_markdown() {
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            list_page(
+                serde_json::json!([file("/knowledge/report.pdf", "report.pdf", "r1", "hash-1")]),
+                "cursor-1",
+                true,
+            ),
+        ),
+        response(
+            200,
+            list_page(
+                serde_json::json!([file(
+                    "/knowledge/page-two.markdown",
+                    "page-two.markdown",
+                    "r2",
+                    "hash-2"
+                )]),
+                "cursor-2",
+                false,
+            ),
+        ),
+    ]);
+    let (source, transport) = open_source_with_config(transport, markdown_config());
+    let query_id = uuid::Uuid::new_v4();
+    let read_context = context_with_id(query_id, 1, 10, 64 * 1024, CancellationToken::new());
+    let source_plan = plan(&source, &["id", "name", "path"]);
+
+    let first = source
+        .execute_page(&source_plan, None, &read_context)
+        .await
+        .expect("a filtered first provider page");
+    assert_eq!(first.scanned, 1);
+    assert!(first.rows.is_empty());
+    let cursor = first
+        .next_cursor
+        .expect("the provider continuation survives local Markdown filtering");
+
+    let second = source
+        .execute_page(&source_plan, Some(&cursor), &read_context)
+        .await
+        .expect("the next provider page");
+    assert_eq!(second.scanned, 1);
+    assert_eq!(second.rows.len(), 1);
+    assert_eq!(second.rows[0].key, "/knowledge/page-two.markdown");
+    assert!(second.next_cursor.is_none());
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].path(), "/2/files/list_folder/continue");
+    assert_eq!(requests[1].json_body()["cursor"], "cursor-1");
 }
 
 #[tokio::test]

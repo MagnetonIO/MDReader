@@ -45,6 +45,7 @@ const MAX_CHANGE_EVENTS: usize = 1_000;
 const MAX_EMPTY_PROVIDER_PAGES: usize = 32;
 const MAX_RECURSION_DEPTH: usize = 32;
 const MAX_TRAVERSAL_ITEMS: usize = 100_000;
+const MAX_POINT_READ_ANCESTRY_ITEMS: usize = 256;
 const MAX_ACTIVE_TRAVERSALS: usize = 128;
 const ACCESS_TOKEN_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const CURSOR_VERSION: u8 = 1;
@@ -1883,6 +1884,92 @@ impl DriveSource {
         }
     }
 
+    async fn verify_root_point_read_authority(
+        &self,
+        file: &DriveFile,
+        membership: &mut DriveMembership,
+        context: &ReadContext,
+        physical_bytes: &mut usize,
+    ) -> Result<(), SourceError> {
+        let selected_roots = self
+            .spec
+            .config
+            .selections
+            .iter()
+            .filter_map(|selection| match selection {
+                DriveSelection::Root { id, .. } => Some(id.as_str()),
+                DriveSelection::File { .. } | DriveSelection::Folder { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if selected_roots.is_empty() {
+            return Err(SourceError::InvalidPlan {
+                source_id: self.model.id().clone(),
+            });
+        }
+
+        let mut pending = file
+            .parents
+            .iter()
+            .cloned()
+            .map(|parent| (parent, 0_usize))
+            .collect::<VecDeque<_>>();
+        let mut seen = BTreeSet::from([file.id.clone()]);
+        while let Some((candidate, depth)) = pending.pop_front() {
+            context.check()?;
+            if selected_roots.contains(candidate.as_str()) {
+                return Ok(());
+            }
+            if depth >= MAX_RECURSION_DEPTH || !seen.insert(candidate.clone()) {
+                continue;
+            }
+            if seen.len() > MAX_POINT_READ_ANCESTRY_ITEMS {
+                return Err(SourceError::ResourceLimit {
+                    source_id: self.model.id().clone(),
+                    resource: "Drive point-read ancestry",
+                });
+            }
+            let response = self
+                .send(
+                    self.request_with_membership(self.metadata_path(&candidate), membership)?,
+                    context,
+                    physical_bytes,
+                )
+                .await?;
+            if response.status == 404 {
+                continue;
+            }
+            if response.status != 200 {
+                return Err(self.map_http_failure(&response));
+            }
+            let parent: DriveFile = serde_json::from_slice(&response.body)
+                .map_err(|_| self.malformed("point-read parent"))?;
+            parent.validate(self.model.id())?;
+            if parent.id != candidate
+                || parent.trashed
+                || parent.mime_type != GOOGLE_DRIVE_FOLDER_MIME
+            {
+                return Err(self.malformed("point-read parent"));
+            }
+            membership.record_provider_file(&parent, true, self.model.id())?;
+            let next_depth = depth.checked_add(1).ok_or(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive point-read ancestry",
+            })?;
+            pending.extend(
+                parent
+                    .parents
+                    .iter()
+                    .cloned()
+                    .map(|ancestor| (ancestor, next_depth)),
+            );
+        }
+        Err(SourceError::Read {
+            source_id: self.model.id().clone(),
+            path: "selected Drive item".to_string(),
+            detail: "provider item is outside the configured Drive root".to_string(),
+        })
+    }
+
     fn encode_query_cursor(
         &self,
         plan: &SourcePlan,
@@ -2278,6 +2365,13 @@ impl DataSource for DriveSource {
             if file.mime_type == GOOGLE_DRIVE_FOLDER_MIME {
                 return Err(self.malformed("selected file kind"));
             }
+            self.verify_root_point_read_authority(
+                &file,
+                &mut membership,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
             membership.record_provider_file(&file, false, self.model.id())?;
             let row = self
                 .observe_file(file, &membership, plan, context, &mut physical_bytes)
