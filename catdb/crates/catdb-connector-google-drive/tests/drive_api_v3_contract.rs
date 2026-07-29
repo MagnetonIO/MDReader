@@ -6,11 +6,11 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use catdb_connector_google_drive::{
     DriveAccessGrant, DriveAccessToken, DriveAvailability, DriveChangeCursor, DriveChangeEvent,
-    DriveChangeOutcome, DriveConnectorError, DriveContentScope, DriveCursorKey, DriveHttpMethod,
-    DriveHttpRequest, DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce,
-    DriveRefreshCredential, DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver,
-    DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
-    PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
+    DriveChangeOutcome, DriveConnectorError, DriveContentScope, DriveCursorKey, DriveDocumentError,
+    DriveHttpMethod, DriveHttpRequest, DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce,
+    DriveRefreshCredential, DriveRevision, DriveRuntimeSecrets, DriveSecretReference,
+    DriveSecretResolver, DriveSelection, DriveSource, DriveSourceConfig, DriveTransport,
+    DriveTransportError, PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -369,6 +369,323 @@ fn listing(
         "incompleteSearch": incomplete_search
     }))
     .unwrap()
+}
+
+#[tokio::test]
+async fn downloads_the_exact_markdown_record_and_revision() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.MD",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, b"# one".to_vec()),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let document = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect("download");
+
+    assert_eq!(document.record_key(), "record-1");
+    assert_eq!(document.revision().as_str(), "rev-1");
+    assert_eq!(document.body(), b"# one");
+    assert_eq!(transport.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn download_refuses_a_metadata_identity_other_than_the_requested_record() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-2",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, b"# one".to_vec()),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("metadata identity must match the requested record");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::Malformed { .. })
+    ));
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn download_refuses_a_record_outside_the_pinned_drive_selection() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["other-folder"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(404, Vec::new()),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("the point read must remain inside the selected Drive root");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::Read { .. })
+    ));
+    assert_eq!(transport.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn download_refuses_a_non_markdown_name_before_requesting_the_body() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.txt",
+                "mimeType": "text/plain",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, b"plain text".to_vec()),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("only Markdown names are admitted");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::Malformed { .. })
+    ));
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn download_refuses_a_markdown_body_larger_than_two_mebibytes() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, vec![b'a'; 2 * 1024 * 1024 + 1]),
+    ]);
+    let (source, _) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 4 * 1024 * 1024))
+        .await
+        .expect_err("Markdown bodies are capped at two mebibytes");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::ResourceLimit { .. })
+    ));
+}
+
+#[tokio::test]
+async fn download_refuses_a_non_utf8_markdown_body() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.markdown",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, vec![0xff, 0xfe]),
+    ]);
+    let (source, _) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("Markdown bodies must be UTF-8");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::Malformed { .. })
+    ));
+}
+
+#[tokio::test]
+async fn download_refuses_a_success_without_revision_authority() {
+    let transport = ScriptedTransport::new([response(
+        200,
+        serde_json::to_vec(&serde_json::json!({
+            "id": "record-1",
+            "name": "note.md",
+            "mimeType": "text/markdown",
+            "modifiedTime": "2026-07-20T12:34:56Z",
+            "parents": ["provider-root"],
+            "trashed": false
+        }))
+        .unwrap(),
+    )]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let error = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect_err("a successful document response still needs revision authority");
+
+    assert!(matches!(
+        error,
+        DriveDocumentError::Source(SourceError::Malformed { .. })
+    ));
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn document_download_preserves_deadline_and_cancellation_as_typed_source_errors() {
+    let (deadline_source, _) = source(
+        ScriptedTransport::new([ScriptStep::Pending]),
+        markdown_root_config(),
+    );
+    let deadline_context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_millis(20),
+        10,
+        64 * 1024,
+        10,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        deadline_source
+            .download_markdown("record-1", &deadline_context)
+            .await,
+        Err(DriveDocumentError::Source(SourceError::DeadlineExceeded))
+    );
+
+    let (cancelled_source, _) = source(ScriptedTransport::new([]), markdown_root_config());
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled_context = context_with_id(uuid::Uuid::new_v4(), 10, 10, 64 * 1024, cancellation);
+    assert_eq!(
+        cancelled_source
+            .download_markdown("record-1", &cancelled_context)
+            .await,
+        Err(DriveDocumentError::Source(SourceError::Cancelled))
+    );
+}
+
+#[tokio::test]
+async fn stale_revision_is_a_conflict_and_never_creates_a_second_drive_record() {
+    let transport = ScriptedTransport::new([response(412, b"provider-conflict".to_vec())]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let error = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect_err("a stale revision must conflict");
+
+    assert!(matches!(error, DriveDocumentError::Conflict { .. }));
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method(), DriveHttpMethod::Patch);
+    assert!(requests[0]
+        .path()
+        .starts_with("/upload/drive/v3/files/record-1?"));
+    assert_eq!(requests[0].header("If-Match"), Some("rev-1"));
+    assert_eq!(requests[0].body(), b"# edited");
+    let rendered = format!("{:?}", requests[0]);
+    assert!(!rendered.contains("record-1"));
+    assert!(!rendered.contains("# edited"));
+}
+
+#[tokio::test]
+async fn guarded_drive_update_returns_the_provider_revision_authority() {
+    let transport =
+        ScriptedTransport::new([response_with_headers(200, [("ETag", "rev-2")], Vec::new())]);
+    let (source, _) = source(transport, markdown_root_config());
+
+    let receipt = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect("guarded update");
+
+    assert_eq!(receipt.record_key(), "record-1");
+    assert_eq!(receipt.revision().as_str(), "rev-2");
+}
+
+#[test]
+fn provider_response_debug_redacts_direct_urls_and_bodies() {
+    let response = DriveHttpResponse::new(
+        200,
+        BTreeMap::from([(
+            "location".to_string(),
+            "https://provider.example/private-document".to_string(),
+        )]),
+        b"# confidential Markdown".to_vec(),
+    )
+    .unwrap();
+
+    let rendered = format!("{response:?}");
+    assert!(!rendered.contains("https://provider.example/private-document"));
+    assert!(!rendered.contains("# confidential Markdown"));
 }
 
 #[test]

@@ -1,8 +1,7 @@
-//! Read-only Google Drive API v3 source for an MDReader Library.
+//! Google Drive API v3 source for an MDReader Library.
 //!
-//! The connector uses Google's read-only Drive scope and exposes no write
-//! request at all. The provider permission and the CatDB connector surface are
-//! therefore independently read-only.
+//! The semantic [`DataSource`] surface remains read-only. Provider-local
+//! document operations are separately typed and do not widen that trait.
 //! Interactive OAuth credentials and cursor-authentication keys are resolved
 //! at runtime and never enter the immutable source specification.
 
@@ -37,6 +36,7 @@ pub const GOOGLE_DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/d
 const API_BASE: &str = "https://www.googleapis.com";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const MAX_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MARKDOWN_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CONFIGURED_SELECTIONS: usize = 512;
 const MAX_SELECTION_ID_BYTES: usize = 256;
 const MAX_RESOURCE_KEY_BYTES: usize = 512;
@@ -697,11 +697,13 @@ impl fmt::Debug for DriveOAuthPkce {
     }
 }
 
-/// HTTP method emitted by this read-only connector.
+/// HTTP method emitted by this connector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveHttpMethod {
     /// Read/list/export/download.
     Get,
+    /// Guarded document content update.
+    Patch,
 }
 
 /// Bounded authenticated Drive API request.
@@ -710,12 +712,13 @@ pub struct DriveHttpRequest {
     method: DriveHttpMethod,
     path: String,
     headers: BTreeMap<String, String>,
+    body: Vec<u8>,
     bearer_token: Arc<str>,
     credential_generation: u64,
 }
 
 impl DriveHttpRequest {
-    /// Request method. Always GET for V1.
+    /// Request method.
     pub fn method(&self) -> DriveHttpMethod {
         self.method
     }
@@ -732,6 +735,11 @@ impl DriveHttpRequest {
             .map(String::as_str)
     }
 
+    /// Bounded document bytes supplied to the injected transport.
+    pub fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+
     /// Runtime credential generation used for bounded retry diagnostics.
     pub fn credential_generation(&self) -> u64 {
         self.credential_generation
@@ -745,6 +753,7 @@ impl fmt::Debug for DriveHttpRequest {
             .field("method", &self.method)
             .field("path", &redacted_path(&self.path))
             .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("body_bytes", &self.body.len())
             .field("bearer_token", &"[redacted]")
             .field("credential_generation", &self.credential_generation)
             .finish()
@@ -788,7 +797,7 @@ impl fmt::Debug for DriveHttpResponse {
         formatter
             .debug_struct("DriveHttpResponse")
             .field("status", &self.status)
-            .field("headers", &self.headers)
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
             .field("body_bytes", &self.body.len())
             .finish()
     }
@@ -848,10 +857,21 @@ impl DriveTransport for ReqwestDriveTransport {
         }
         let mut builder = self
             .client
-            .get(url)
+            .request(
+                match request.method {
+                    DriveHttpMethod::Get => reqwest::Method::GET,
+                    DriveHttpMethod::Patch => reqwest::Method::PATCH,
+                },
+                url,
+            )
             .bearer_auth(request.bearer_token.as_ref());
         for (name, value) in &request.headers {
             builder = builder.header(name, value);
+        }
+        if request.method == DriveHttpMethod::Patch {
+            builder = builder
+                .header("content-type", "text/markdown; charset=utf-8")
+                .body(request.body);
         }
         let response = builder
             .send()
@@ -951,6 +971,126 @@ impl DriveKnownRevision {
     fn matches(&self, file: &DriveFile) -> bool {
         self.modified_time == file.modified_time
             && self.checksum.as_deref() == file.md5_checksum.as_deref()
+    }
+}
+
+/// Opaque provider revision used to guard a single Drive document operation.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DriveRevision(String);
+
+impl DriveRevision {
+    /// Validate provider revision authority before it is used for a document operation.
+    pub fn new(revision: impl Into<String>) -> Result<Self, DriveConnectorError> {
+        let revision = revision.into();
+        if revision.is_empty() || revision.len() > 512 || revision.chars().any(char::is_control) {
+            return Err(DriveConnectorError::InvalidRevision);
+        }
+        Ok(Self(revision))
+    }
+
+    /// Return the opaque provider revision for an immediate guarded update.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for DriveRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveRevision")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
+
+/// A provider-local document operation could not complete.
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DriveDocumentError {
+    /// The provider rejected a guarded update because its revision changed.
+    #[error("Drive document changed before the guarded update for source `{source_id}`")]
+    Conflict {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// A read, authentication, timeout, cancellation, rate-limit, limit, or protocol failure.
+    #[error(transparent)]
+    Source(#[from] SourceError),
+}
+
+impl fmt::Debug for DriveDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict { source_id } => formatter
+                .debug_struct("DriveDocumentError::Conflict")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Source(_) => formatter.write_str("DriveDocumentError::Source([redacted])"),
+        }
+    }
+}
+
+/// One bounded Markdown document downloaded from Drive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DriveDownloadedDocument {
+    record_key: String,
+    revision: DriveRevision,
+    body: Vec<u8>,
+}
+
+impl DriveDownloadedDocument {
+    /// Stable provider record key requested for this document.
+    pub fn record_key(&self) -> &str {
+        self.record_key.as_str()
+    }
+
+    /// Provider revision authority captured with the downloaded body.
+    pub fn revision(&self) -> &DriveRevision {
+        &self.revision
+    }
+
+    /// Validated UTF-8 Markdown bytes.
+    pub fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+}
+
+impl fmt::Debug for DriveDownloadedDocument {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveDownloadedDocument")
+            .field("record_key", &self.record_key)
+            .field("revision", &self.revision)
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
+}
+
+/// Receipt for one guarded Drive Markdown update.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DriveWriteReceipt {
+    record_key: String,
+    revision: DriveRevision,
+}
+
+impl DriveWriteReceipt {
+    /// Stable provider record key updated by this operation.
+    pub fn record_key(&self) -> &str {
+        self.record_key.as_str()
+    }
+
+    /// Provider revision authority returned by the update.
+    pub fn revision(&self) -> &DriveRevision {
+        &self.revision
+    }
+}
+
+impl fmt::Debug for DriveWriteReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriveWriteReceipt")
+            .field("record_key", &self.record_key)
+            .field("revision", &self.revision)
+            .finish()
     }
 }
 
@@ -1313,6 +1453,124 @@ impl DriveSource {
         DriveRuntimeSecretEvidence
     }
 
+    /// Download one source-authorized Markdown document and its revision authority.
+    pub async fn download_markdown(
+        &self,
+        record_key: &str,
+        context: &ReadContext,
+    ) -> Result<DriveDownloadedDocument, DriveDocumentError> {
+        context.check()?;
+        validate_drive_id_source(self.model.id(), "record_key", record_key)?;
+        let mut physical_bytes = 0usize;
+        let mut membership = self.configured_membership.clone();
+        let metadata = self
+            .send(
+                self.request_with_membership(self.metadata_path(record_key), &membership)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if metadata.status != 200 {
+            return Err(self.map_http_failure(&metadata).into());
+        }
+        let file: DriveFile =
+            serde_json::from_slice(&metadata.body).map_err(|_| self.malformed("document"))?;
+        file.validate(self.model.id())?;
+        if file.id != record_key {
+            return Err(self.malformed("document identity").into());
+        }
+        if !is_markdown_name(&file.name) {
+            return Err(self.malformed("document name").into());
+        }
+        self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
+            .await?;
+        membership.record_provider_file(&file, false, self.model.id())?;
+        let revision = metadata
+            .headers
+            .get("etag")
+            .ok_or_else(|| self.malformed("document revision"))
+            .and_then(|value| {
+                DriveRevision::new(value.clone()).map_err(|_| self.malformed("document revision"))
+            })?;
+        let body_path = self
+            .body_path(&file)
+            .ok_or_else(|| self.malformed("document mime type"))?;
+        let body = self
+            .send(
+                self.request_with_membership(body_path, &membership)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if body.status != 200 {
+            return Err(self.map_http_failure(&body).into());
+        }
+        if body.body.len() > MAX_MARKDOWN_BODY_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive Markdown document",
+            }
+            .into());
+        }
+        if std::str::from_utf8(&body.body).is_err() {
+            return Err(self.malformed("document body encoding").into());
+        }
+        Ok(DriveDownloadedDocument {
+            record_key: record_key.to_string(),
+            revision,
+            body: body.body,
+        })
+    }
+
+    /// Update one Markdown document only when the provider revision still matches.
+    pub async fn update_markdown(
+        &self,
+        record_key: &str,
+        revision: &DriveRevision,
+        body: &[u8],
+        context: &ReadContext,
+    ) -> Result<DriveWriteReceipt, DriveDocumentError> {
+        context.check()?;
+        validate_drive_id_source(self.model.id(), "record_key", record_key)?;
+        if body.len() > MAX_MARKDOWN_BODY_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Drive Markdown document",
+            }
+            .into());
+        }
+        if std::str::from_utf8(body).is_err() {
+            return Err(self.malformed("document body encoding").into());
+        }
+        let mut physical_bytes = 0usize;
+        let response = self
+            .send(
+                self.document_update_request(record_key, revision, body)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if response.status == 412 {
+            return Err(DriveDocumentError::Conflict {
+                source_id: self.model.id().clone(),
+            });
+        }
+        if response.status != 200 {
+            return Err(self.map_http_failure(&response).into());
+        }
+        let revision = response
+            .headers
+            .get("etag")
+            .ok_or_else(|| self.malformed("document revision"))
+            .and_then(|value| {
+                DriveRevision::new(value.clone()).map_err(|_| self.malformed("document revision"))
+            })?;
+        Ok(DriveWriteReceipt {
+            record_key: record_key.to_string(),
+            revision,
+        })
+    }
+
     /// Obtain the provider's current incremental-change start token.
     pub async fn start_change_tracking(
         &self,
@@ -1465,6 +1723,46 @@ impl DriveSource {
         path: String,
         headers: BTreeMap<String, String>,
     ) -> Result<DriveHttpRequest, SourceError> {
+        self.request_with(DriveHttpMethod::Get, path, headers, Vec::new())
+    }
+
+    fn document_update_request(
+        &self,
+        record_key: &str,
+        revision: &DriveRevision,
+        body: &[u8],
+    ) -> Result<DriveHttpRequest, SourceError> {
+        let mut headers = self.resource_key_headers()?;
+        headers.insert("if-match".to_string(), revision.as_str().to_string());
+        self.request_with(
+            DriveHttpMethod::Patch,
+            encoded_path(
+                &format!("/upload/drive/v3/files/{}", encode_path_segment(record_key)),
+                vec![
+                    ("uploadType", "media".to_string()),
+                    ("supportsAllDrives", "true".to_string()),
+                ],
+            ),
+            headers,
+            body.to_vec(),
+        )
+    }
+
+    fn request_with(
+        &self,
+        method: DriveHttpMethod,
+        path: String,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> Result<DriveHttpRequest, SourceError> {
+        if headers
+            .iter()
+            .any(|(name, value)| contains_control(name) || contains_control(value))
+        {
+            return Err(SourceError::Transport {
+                source_id: self.model.id().clone(),
+            });
+        }
         let access = self
             .credentials
             .access
@@ -1473,9 +1771,10 @@ impl DriveSource {
                 source_id: self.model.id().clone(),
             })?;
         Ok(DriveHttpRequest {
-            method: DriveHttpMethod::Get,
+            method,
             path,
             headers,
+            body,
             bearer_token: Arc::from(access.grant.token.as_str()),
             credential_generation: access.generation,
         })
@@ -1496,6 +1795,7 @@ impl DriveSource {
             method: request.method,
             path: request.path.clone(),
             headers: request.headers.clone(),
+            body: request.body.clone(),
             bearer_token: Arc::from(access.grant.token.as_str()),
             credential_generation: access.generation,
         })
@@ -2924,6 +3224,10 @@ fn is_markdown_name(name: &str) -> bool {
     })
 }
 
+fn contains_control(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
 fn retry_after_ms(response: &DriveHttpResponse) -> Option<u64> {
     let value = response.headers.get("retry-after")?;
     if let Ok(seconds) = value.parse::<u64>() {
@@ -2950,12 +3254,21 @@ fn redacted_path(path: &str) -> String {
                 .collect::<Vec<_>>();
             url.set_query(None);
             url.query_pairs_mut().extend_pairs(pairs);
-            let path = if let Some(rest) = url.path().strip_prefix("/drive/v3/files/") {
+            let path = if let Some(rest) = url
+                .path()
+                .strip_prefix("/drive/v3/files/")
+                .or_else(|| url.path().strip_prefix("/upload/drive/v3/files/"))
+            {
                 let suffix = rest
                     .find('/')
                     .map(|index| &rest[index..])
                     .unwrap_or_default();
-                format!("/drive/v3/files/[redacted-id]{suffix}")
+                let prefix = if url.path().starts_with("/upload/") {
+                    "/upload/drive/v3/files"
+                } else {
+                    "/drive/v3/files"
+                };
+                format!("{prefix}/[redacted-id]{suffix}")
             } else {
                 url.path().to_string()
             };

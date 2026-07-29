@@ -1,8 +1,9 @@
-//! Read-only Dropbox API v2 source for a CatDB-backed MDReader Library.
+//! Dropbox API v2 source for a CatDB-backed MDReader Library.
 //!
 //! Dropbox remains authoritative for its files. This connector lists metadata,
 //! reads Markdown or plain-text content, and exposes authenticated incremental
-//! cursors. It has no provider mutation surface. OAuth material is resolved at
+//! cursors. Its semantic [`DataSource`] surface remains read-only; provider-local
+//! document operations are separately typed. OAuth material is resolved at
 //! runtime and never becomes part of the immutable source specification.
 
 #![deny(missing_docs)]
@@ -39,6 +40,7 @@ const AUTHORIZATION_ENDPOINT: &str = "https://www.dropbox.com/oauth2/authorize";
 const API_ORIGIN: &str = "https://api.dropboxapi.com/";
 const CONTENT_ORIGIN: &str = "https://content.dropboxapi.com/";
 const MAX_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MARKDOWN_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;
 const MAX_PROVIDER_CURSOR_BYTES: usize = 4 * 1024;
@@ -533,10 +535,10 @@ pub enum DropboxEndpoint {
     Content,
 }
 
-/// HTTP method emitted by the read-only connector.
+/// HTTP method emitted by this connector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropboxHttpMethod {
-    /// Dropbox API v2 RPC read.
+    /// Dropbox API v2 RPC request.
     Post,
 }
 
@@ -548,6 +550,7 @@ pub struct DropboxHttpRequest {
     path: String,
     json_body: serde_json::Value,
     headers: BTreeMap<String, String>,
+    body: Vec<u8>,
     bearer_token: Arc<str>,
     credential_generation: u64,
 }
@@ -580,6 +583,11 @@ impl DropboxHttpRequest {
             .map(String::as_str)
     }
 
+    /// Bounded document bytes supplied to the injected transport.
+    pub fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+
     /// Credential generation used for bounded refresh diagnostics.
     pub fn credential_generation(&self) -> u64 {
         self.credential_generation
@@ -595,6 +603,7 @@ impl fmt::Debug for DropboxHttpRequest {
             .field("path", &self.path)
             .field("body", &"[redacted-provider-arguments]")
             .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("body_bytes", &self.body.len())
             .field("bearer_token", &"[redacted]")
             .field("credential_generation", &self.credential_generation)
             .finish()
@@ -660,7 +669,7 @@ impl fmt::Debug for DropboxHttpResponse {
         formatter
             .debug_struct("DropboxHttpResponse")
             .field("status", &self.status)
-            .field("headers", &self.headers)
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
             .field("body_bytes", &self.body.len())
             .finish()
     }
@@ -762,6 +771,7 @@ impl DropboxTransport for ReqwestDropboxTransport {
                 for (name, value) in &request.headers {
                     builder = builder.header(name, value);
                 }
+                builder = builder.body(request.body);
             }
         }
         let response = builder
@@ -854,6 +864,126 @@ impl DropboxKnownRevision {
 
     fn matches(&self, file: &DropboxFile) -> bool {
         self.rev == file.rev && file.content_hash.as_deref() == Some(self.content_hash.as_str())
+    }
+}
+
+/// Opaque provider revision used to guard a single Dropbox document operation.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DropboxRevision(String);
+
+impl DropboxRevision {
+    /// Validate provider revision authority before it is used for a document operation.
+    pub fn new(revision: impl Into<String>) -> Result<Self, DropboxConnectorError> {
+        let revision = revision.into();
+        if !valid_provider_atom(&revision, 512) {
+            return Err(DropboxConnectorError::InvalidRevision);
+        }
+        Ok(Self(revision))
+    }
+
+    /// Return the opaque provider revision for an immediate guarded update.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for DropboxRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DropboxRevision")
+            .field("bytes", &self.0.len())
+            .finish()
+    }
+}
+
+/// A provider-local document operation could not complete.
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DropboxDocumentError {
+    /// The provider rejected a guarded update because its revision changed.
+    #[error("Dropbox document changed before the guarded update for source `{source_id}`")]
+    Conflict {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// A read, authentication, timeout, cancellation, rate-limit, limit, or protocol failure.
+    #[error(transparent)]
+    Source(#[from] SourceError),
+}
+
+impl fmt::Debug for DropboxDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict { source_id } => formatter
+                .debug_struct("DropboxDocumentError::Conflict")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Source(_) => formatter.write_str("DropboxDocumentError::Source([redacted])"),
+        }
+    }
+}
+
+/// One bounded Markdown document downloaded from Dropbox.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DropboxDownloadedDocument {
+    record_key: String,
+    revision: DropboxRevision,
+    body: Vec<u8>,
+}
+
+impl DropboxDownloadedDocument {
+    /// Stable provider record key requested for this document.
+    pub fn record_key(&self) -> &str {
+        self.record_key.as_str()
+    }
+
+    /// Provider revision authority captured with the downloaded body.
+    pub fn revision(&self) -> &DropboxRevision {
+        &self.revision
+    }
+
+    /// Validated UTF-8 Markdown bytes.
+    pub fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+}
+
+impl fmt::Debug for DropboxDownloadedDocument {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DropboxDownloadedDocument")
+            .field("record_key", &self.record_key)
+            .field("revision", &self.revision)
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
+}
+
+/// Receipt for one guarded Dropbox Markdown update.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DropboxWriteReceipt {
+    record_key: String,
+    revision: DropboxRevision,
+}
+
+impl DropboxWriteReceipt {
+    /// Stable provider record key updated by this operation.
+    pub fn record_key(&self) -> &str {
+        self.record_key.as_str()
+    }
+
+    /// Provider revision authority returned by the update.
+    pub fn revision(&self) -> &DropboxRevision {
+        &self.revision
+    }
+}
+
+impl fmt::Debug for DropboxWriteReceipt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DropboxWriteReceipt")
+            .field("record_key", &self.record_key)
+            .field("revision", &self.revision)
+            .finish()
     }
 }
 
@@ -1064,6 +1194,108 @@ impl DropboxSource {
         DropboxAvailability::FixtureValidated
     }
 
+    /// Download one source-authorized Markdown document and its revision authority.
+    pub async fn download_markdown(
+        &self,
+        record_key: &str,
+        context: &ReadContext,
+    ) -> Result<DropboxDownloadedDocument, DropboxDocumentError> {
+        context.check()?;
+        let mut physical_bytes = 0usize;
+        let response = self
+            .send(
+                self.content_request_record(record_key)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if response.status != 200 {
+            return Err(self.map_http_failure(&response).into());
+        }
+        let header = response
+            .headers
+            .get("dropbox-api-result")
+            .ok_or_else(|| self.malformed("Dropbox-API-Result"))?;
+        let file: DropboxFile =
+            serde_json::from_str(header).map_err(|_| self.malformed("Dropbox-API-Result"))?;
+        self.validate_file_scope(&file)?;
+        if file.id != record_key {
+            return Err(self.malformed("document identity").into());
+        }
+        if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
+            return Err(self.malformed("document name").into());
+        }
+        let revision = DropboxRevision::new(file.rev.clone())
+            .map_err(|_| self.malformed("document revision"))?;
+        if response.body.len() > MAX_MARKDOWN_BODY_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Dropbox Markdown document",
+            }
+            .into());
+        }
+        if std::str::from_utf8(&response.body).is_err() {
+            return Err(self.malformed("document body encoding").into());
+        }
+        Ok(DropboxDownloadedDocument {
+            record_key: record_key.to_string(),
+            revision,
+            body: response.body,
+        })
+    }
+
+    /// Update one Markdown document only when the provider revision still matches.
+    pub async fn update_markdown(
+        &self,
+        record_key: &str,
+        revision: &DropboxRevision,
+        body: &[u8],
+        context: &ReadContext,
+    ) -> Result<DropboxWriteReceipt, DropboxDocumentError> {
+        context.check()?;
+        if body.len() > MAX_MARKDOWN_BODY_BYTES {
+            return Err(SourceError::ResourceLimit {
+                source_id: self.model.id().clone(),
+                resource: "Dropbox Markdown document",
+            }
+            .into());
+        }
+        if std::str::from_utf8(body).is_err() {
+            return Err(self.malformed("document body encoding").into());
+        }
+        let mut physical_bytes = 0usize;
+        let response = self
+            .send(
+                self.content_update_request(record_key, revision, body)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if response.status == 409 {
+            return Err(DropboxDocumentError::Conflict {
+                source_id: self.model.id().clone(),
+            });
+        }
+        if response.status != 200 {
+            return Err(self.map_http_failure(&response).into());
+        }
+        let file: DropboxFile =
+            serde_json::from_slice(&response.body).map_err(|_| self.malformed("upload result"))?;
+        self.validate_file_scope(&file)?;
+        if file.id != record_key {
+            return Err(self.malformed("upload identity").into());
+        }
+        if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
+            return Err(self.malformed("document name").into());
+        }
+        let revision =
+            DropboxRevision::new(file.rev).map_err(|_| self.malformed("document revision"))?;
+        Ok(DropboxWriteReceipt {
+            record_key: record_key.to_string(),
+            revision,
+        })
+    }
+
     /// Obtain the provider's current incremental-change cursor.
     pub async fn start_change_tracking(
         &self,
@@ -1253,6 +1485,47 @@ impl DropboxSource {
         )
     }
 
+    fn content_request_record(&self, record_key: &str) -> Result<DropboxHttpRequest, SourceError> {
+        if !valid_provider_atom(record_key, 1_024) {
+            return Err(self.malformed("document record key"));
+        }
+        let argument = serde_json::to_string(&serde_json::json!({ "path": record_key }))
+            .map_err(|_| self.malformed("download argument"))?;
+        self.request(
+            DropboxEndpoint::Content,
+            "/2/files/download",
+            serde_json::json!({}),
+            BTreeMap::from([("dropbox-api-arg".to_string(), argument)]),
+        )
+    }
+
+    fn content_update_request(
+        &self,
+        record_key: &str,
+        revision: &DropboxRevision,
+        body: &[u8],
+    ) -> Result<DropboxHttpRequest, SourceError> {
+        if !valid_provider_atom(record_key, 1_024) {
+            return Err(self.malformed("document record key"));
+        }
+        let argument = serde_json::to_string(&serde_json::json!({
+            "path": record_key,
+            "mode": { ".tag": "update", "update": revision.as_str() },
+            "autorename": false,
+            "mute": false,
+            "strict_conflict": true,
+        }))
+        .map_err(|_| self.malformed("upload argument"))?;
+        let mut request = self.request(
+            DropboxEndpoint::Content,
+            "/2/files/upload",
+            serde_json::json!({}),
+            BTreeMap::from([("dropbox-api-arg".to_string(), argument)]),
+        )?;
+        request.body = body.to_vec();
+        Ok(request)
+    }
+
     fn request(
         &self,
         endpoint: DropboxEndpoint,
@@ -1280,6 +1553,7 @@ impl DropboxSource {
             path: path.to_string(),
             json_body,
             headers,
+            body: Vec::new(),
             bearer_token: Arc::from(access.grant.token.as_str()),
             credential_generation: access.generation,
         })
@@ -1300,6 +1574,7 @@ impl DropboxSource {
             path: request.path.clone(),
             json_body: request.json_body.clone(),
             headers: request.headers.clone(),
+            body: request.body.clone(),
             bearer_token: Arc::from(access.grant.token.as_str()),
             credential_generation: access.generation,
         })
@@ -2133,6 +2408,7 @@ fn allowed_request(endpoint: DropboxEndpoint, path: &str) -> bool {
                 "/2/files/list_folder/get_latest_cursor"
             )
             | (DropboxEndpoint::Content, "/2/files/download")
+            | (DropboxEndpoint::Content, "/2/files/upload")
     )
 }
 
