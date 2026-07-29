@@ -1006,25 +1006,133 @@ impl fmt::Debug for DriveRevision {
 /// A provider-local document operation could not complete.
 #[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DriveDocumentError {
+    /// The requested provider record no longer exists.
+    #[error("Drive document was not found")]
+    NotFound {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
     /// The provider rejected a guarded update because its revision changed.
     #[error("Drive document changed before the guarded update for source `{source_id}`")]
     Conflict {
         /// Non-secret source identity.
         source_id: SourceId,
     },
-    /// A read, authentication, timeout, cancellation, rate-limit, limit, or protocol failure.
-    #[error(transparent)]
-    Source(#[from] SourceError),
+    /// The document exceeded a fixed document-operation bound.
+    #[error("Drive document exceeded a fixed bound")]
+    TooLarge {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider returned document bytes that were not valid UTF-8.
+    #[error("Drive document body was not valid UTF-8")]
+    InvalidUtf8 {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider returned a record other than the requested record.
+    #[error("Drive document identity did not match the request")]
+    IdentityMismatch {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider response did not meet the pinned document protocol.
+    #[error("Drive document response did not meet the pinned protocol")]
+    Protocol {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider rejected the runtime credential.
+    #[error("Drive document authentication failed")]
+    Authentication {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The document operation exceeded its deadline.
+    #[error("Drive document operation timed out")]
+    Timeout,
+    /// The document operation was cooperatively cancelled.
+    #[error("Drive document operation was cancelled")]
+    Cancelled,
+    /// The provider rate-limited the document operation.
+    #[error("Drive document operation was rate limited")]
+    RateLimited {
+        /// Non-secret source identity.
+        source_id: SourceId,
+        /// Server-requested wait, when supplied.
+        retry_after_ms: Option<u64>,
+    },
+    /// A source failure that has no more-specific document-operation outcome.
+    #[error("Drive document operation failed")]
+    Source {
+        /// Typed source failure preserved without exposing it through `Debug`.
+        #[source]
+        error: SourceError,
+    },
+}
+
+impl From<SourceError> for DriveDocumentError {
+    fn from(error: SourceError) -> Self {
+        match error {
+            SourceError::Cancelled | SourceError::SourceCancelled { .. } => Self::Cancelled,
+            SourceError::DeadlineExceeded | SourceError::StatementTimeout { .. } => Self::Timeout,
+            SourceError::Authentication { source_id } => Self::Authentication { source_id },
+            SourceError::RateLimited {
+                source_id,
+                retry_after_ms,
+            } => Self::RateLimited {
+                source_id,
+                retry_after_ms,
+            },
+            SourceError::ResourceLimit { source_id, .. } => Self::TooLarge { source_id },
+            SourceError::Malformed { source_id, .. } => Self::Protocol { source_id },
+            error => Self::Source { error },
+        }
+    }
 }
 
 impl fmt::Debug for DriveDocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotFound { source_id } => formatter
+                .debug_struct("DriveDocumentError::NotFound")
+                .field("source_id", source_id)
+                .finish(),
             Self::Conflict { source_id } => formatter
                 .debug_struct("DriveDocumentError::Conflict")
                 .field("source_id", source_id)
                 .finish(),
-            Self::Source(_) => formatter.write_str("DriveDocumentError::Source([redacted])"),
+            Self::TooLarge { source_id } => formatter
+                .debug_struct("DriveDocumentError::TooLarge")
+                .field("source_id", source_id)
+                .finish(),
+            Self::InvalidUtf8 { source_id } => formatter
+                .debug_struct("DriveDocumentError::InvalidUtf8")
+                .field("source_id", source_id)
+                .finish(),
+            Self::IdentityMismatch { source_id } => formatter
+                .debug_struct("DriveDocumentError::IdentityMismatch")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Protocol { source_id } => formatter
+                .debug_struct("DriveDocumentError::Protocol")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Authentication { source_id } => formatter
+                .debug_struct("DriveDocumentError::Authentication")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Timeout => formatter.write_str("DriveDocumentError::Timeout"),
+            Self::Cancelled => formatter.write_str("DriveDocumentError::Cancelled"),
+            Self::RateLimited {
+                source_id,
+                retry_after_ms,
+            } => formatter
+                .debug_struct("DriveDocumentError::RateLimited")
+                .field("source_id", source_id)
+                .field("retry_after_ms", retry_after_ms)
+                .finish(),
+            Self::Source { .. } => formatter.write_str("DriveDocumentError::Source([redacted])"),
         }
     }
 }
@@ -1058,9 +1166,10 @@ impl fmt::Debug for DriveDownloadedDocument {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DriveDownloadedDocument")
-            .field("record_key", &self.record_key)
-            .field("revision", &self.revision)
+            .field("record_key_bytes", &self.record_key.len())
+            .field("revision_bytes", &self.revision.0.len())
             .field("body_bytes", &self.body.len())
+            .field("body_encoding", &"utf-8")
             .finish()
     }
 }
@@ -1088,8 +1197,9 @@ impl fmt::Debug for DriveWriteReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DriveWriteReceipt")
-            .field("record_key", &self.record_key)
-            .field("revision", &self.revision)
+            .field("record_key_bytes", &self.record_key.len())
+            .field("revision_bytes", &self.revision.0.len())
+            .field("provider_response", &"File")
             .finish()
     }
 }
@@ -1471,13 +1581,15 @@ impl DriveSource {
             )
             .await?;
         if metadata.status != 200 {
-            return Err(self.map_http_failure(&metadata).into());
+            return Err(self.map_document_http_failure(&metadata));
         }
         let file: DriveFile =
             serde_json::from_slice(&metadata.body).map_err(|_| self.malformed("document"))?;
         file.validate(self.model.id())?;
         if file.id != record_key {
-            return Err(self.malformed("document identity").into());
+            return Err(DriveDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
         }
         if !is_markdown_name(&file.name) {
             return Err(self.malformed("document name").into());
@@ -1503,7 +1615,7 @@ impl DriveSource {
             )
             .await?;
         if body.status != 200 {
-            return Err(self.map_http_failure(&body).into());
+            return Err(self.map_document_http_failure(&body));
         }
         if body.body.len() > MAX_MARKDOWN_BODY_BYTES {
             return Err(SourceError::ResourceLimit {
@@ -1513,7 +1625,9 @@ impl DriveSource {
             .into());
         }
         if std::str::from_utf8(&body.body).is_err() {
-            return Err(self.malformed("document body encoding").into());
+            return Err(DriveDocumentError::InvalidUtf8 {
+                source_id: self.model.id().clone(),
+            });
         }
         Ok(DriveDownloadedDocument {
             record_key: record_key.to_string(),
@@ -1540,12 +1654,39 @@ impl DriveSource {
             .into());
         }
         if std::str::from_utf8(body).is_err() {
-            return Err(self.malformed("document body encoding").into());
+            return Err(DriveDocumentError::InvalidUtf8 {
+                source_id: self.model.id().clone(),
+            });
         }
         let mut physical_bytes = 0usize;
+        let mut membership = self.configured_membership.clone();
+        let metadata = self
+            .send(
+                self.request_with_membership(self.metadata_path(record_key), &membership)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if metadata.status != 200 {
+            return Err(self.map_document_http_failure(&metadata));
+        }
+        let file: DriveFile =
+            serde_json::from_slice(&metadata.body).map_err(|_| self.malformed("document"))?;
+        file.validate(self.model.id())?;
+        if file.id != record_key {
+            return Err(DriveDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
+        }
+        if !is_markdown_name(&file.name) || file.trashed {
+            return Err(self.malformed("document name").into());
+        }
+        self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
+            .await?;
+        membership.record_provider_file(&file, false, self.model.id())?;
         let response = self
             .send(
-                self.document_update_request(record_key, revision, body)?,
+                self.document_update_request(record_key, revision, body, &membership)?,
                 context,
                 &mut physical_bytes,
             )
@@ -1556,7 +1697,18 @@ impl DriveSource {
             });
         }
         if response.status != 200 {
-            return Err(self.map_http_failure(&response).into());
+            return Err(self.map_document_http_failure(&response));
+        }
+        let file: DriveFile =
+            serde_json::from_slice(&response.body).map_err(|_| self.malformed("update result"))?;
+        file.validate(self.model.id())?;
+        if file.id != record_key {
+            return Err(DriveDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
+        }
+        if !is_markdown_name(&file.name) || file.trashed {
+            return Err(self.malformed("update result").into());
         }
         let revision = response
             .headers
@@ -1731,8 +1883,9 @@ impl DriveSource {
         record_key: &str,
         revision: &DriveRevision,
         body: &[u8],
+        membership: &DriveMembership,
     ) -> Result<DriveHttpRequest, SourceError> {
-        let mut headers = self.resource_key_headers()?;
+        let mut headers = membership.resource_key_headers(self.model.id())?;
         headers.insert("if-match".to_string(), revision.as_str().to_string());
         self.request_with(
             DriveHttpMethod::Patch,
@@ -1741,6 +1894,10 @@ impl DriveSource {
                 vec![
                     ("uploadType", "media".to_string()),
                     ("supportsAllDrives", "true".to_string()),
+                    (
+                        "fields",
+                        "id,name,mimeType,modifiedTime,parents,trashed".to_string(),
+                    ),
                 ],
             ),
             headers,
@@ -1985,6 +2142,15 @@ impl DriveSource {
                 source_id: self.model.id().clone(),
             },
         }
+    }
+
+    fn map_document_http_failure(&self, response: &DriveHttpResponse) -> DriveDocumentError {
+        if response.status == 404 {
+            return DriveDocumentError::NotFound {
+                source_id: self.model.id().clone(),
+            };
+        }
+        self.map_http_failure(response).into()
     }
 
     fn list_path(

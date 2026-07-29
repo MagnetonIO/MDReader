@@ -268,7 +268,7 @@ async fn download_refuses_a_response_identity_other_than_the_requested_record() 
 
     assert!(matches!(
         error,
-        DropboxDocumentError::Source(SourceError::Malformed { .. })
+        DropboxDocumentError::IdentityMismatch { .. }
     ));
     assert_eq!(transport.requests().len(), 1);
 }
@@ -290,10 +290,7 @@ async fn download_refuses_a_non_markdown_name() {
         .await
         .expect_err("only Markdown names are admitted");
 
-    assert!(matches!(
-        error,
-        DropboxDocumentError::Source(SourceError::Malformed { .. })
-    ));
+    assert!(matches!(error, DropboxDocumentError::Protocol { .. }));
     assert_eq!(transport.requests().len(), 1);
 }
 
@@ -314,10 +311,7 @@ async fn download_refuses_a_markdown_body_larger_than_two_mebibytes() {
         .await
         .expect_err("Markdown bodies are capped at two mebibytes");
 
-    assert!(matches!(
-        error,
-        DropboxDocumentError::Source(SourceError::ResourceLimit { .. })
-    ));
+    assert!(matches!(error, DropboxDocumentError::TooLarge { .. }));
 }
 
 #[tokio::test]
@@ -342,10 +336,7 @@ async fn download_refuses_a_non_utf8_markdown_body() {
         .await
         .expect_err("Markdown bodies must be UTF-8");
 
-    assert!(matches!(
-        error,
-        DropboxDocumentError::Source(SourceError::Malformed { .. })
-    ));
+    assert!(matches!(error, DropboxDocumentError::InvalidUtf8 { .. }));
 }
 
 #[tokio::test]
@@ -364,10 +355,7 @@ async fn download_refuses_a_success_without_revision_authority() {
         .await
         .expect_err("a successful document response still needs revision authority");
 
-    assert!(matches!(
-        error,
-        DropboxDocumentError::Source(SourceError::Malformed { .. })
-    ));
+    assert!(matches!(error, DropboxDocumentError::Protocol { .. }));
     assert_eq!(transport.requests().len(), 1);
 }
 
@@ -390,7 +378,7 @@ async fn document_download_preserves_deadline_and_cancellation_as_typed_source_e
         deadline_source
             .download_markdown("id:note.md", &deadline_context)
             .await,
-        Err(DropboxDocumentError::Source(SourceError::DeadlineExceeded))
+        Err(DropboxDocumentError::Timeout)
     );
 
     let (cancelled_source, _) =
@@ -402,13 +390,73 @@ async fn document_download_preserves_deadline_and_cancellation_as_typed_source_e
         cancelled_source
             .download_markdown("id:note.md", &cancelled_context)
             .await,
-        Err(DropboxDocumentError::Source(SourceError::Cancelled))
+        Err(DropboxDocumentError::Cancelled)
     );
 }
 
 #[tokio::test]
+async fn document_http_failures_remain_structurally_mappable() {
+    let (not_found_source, _) = open_source_with_config(
+        ScriptedTransport::new([response(404, Vec::new())]),
+        markdown_config(),
+    );
+    assert!(matches!(
+        not_found_source
+            .download_markdown("id:note.md", &context(10, 10, 64 * 1024))
+            .await,
+        Err(DropboxDocumentError::NotFound { .. })
+    ));
+
+    let (authentication_source, _) = open_source_with_config(
+        ScriptedTransport::new([response(401, Vec::new())]),
+        markdown_config(),
+    );
+    assert!(matches!(
+        authentication_source
+            .download_markdown("id:note.md", &context(10, 10, 64 * 1024))
+            .await,
+        Err(DropboxDocumentError::Authentication { .. })
+    ));
+
+    let (timeout_source, _) = open_source_with_config(
+        ScriptedTransport::new([response(408, Vec::new())]),
+        markdown_config(),
+    );
+    assert!(matches!(
+        timeout_source
+            .download_markdown("id:note.md", &context(10, 10, 64 * 1024))
+            .await,
+        Err(DropboxDocumentError::Timeout)
+    ));
+
+    let (rate_limited_source, _) = open_source_with_config(
+        ScriptedTransport::new([response_with_headers(
+            429,
+            [("retry-after", "13".to_string())],
+            Vec::new(),
+        )]),
+        markdown_config(),
+    );
+    assert!(matches!(
+        rate_limited_source
+            .download_markdown("id:note.md", &context(10, 10, 64 * 1024))
+            .await,
+        Err(DropboxDocumentError::RateLimited {
+            retry_after_ms: Some(13_000),
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record() {
-    let transport = ScriptedTransport::new([response(409, b"provider-conflict".to_vec())]);
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-2", "hash-2").to_string(),
+        ),
+        response(409, b"provider-conflict".to_vec()),
+    ]);
     let (source, transport) = open_source_with_config(transport, markdown_config());
 
     let error = source
@@ -423,11 +471,13 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record(
 
     assert!(matches!(error, DropboxDocumentError::Conflict { .. }));
     let requests = transport.requests();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].endpoint(), DropboxEndpoint::Content);
-    assert_eq!(requests[0].path(), "/2/files/upload");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].endpoint(), DropboxEndpoint::Api);
+    assert_eq!(requests[0].path(), "/2/files/get_metadata");
+    assert_eq!(requests[1].endpoint(), DropboxEndpoint::Content);
+    assert_eq!(requests[1].path(), "/2/files/upload");
     let argument = serde_json::from_str::<serde_json::Value>(
-        requests[0]
+        requests[1]
             .header("Dropbox-API-Arg")
             .expect("upload argument"),
     )
@@ -439,15 +489,55 @@ async fn stale_revision_is_a_conflict_and_never_creates_a_second_dropbox_record(
     );
     assert_eq!(argument["strict_conflict"], true);
     assert_eq!(argument["autorename"], false);
-    assert_eq!(requests[0].body(), b"# edited");
+    assert_eq!(requests[1].body(), b"# edited");
+}
+
+#[tokio::test]
+async fn update_refuses_a_record_outside_the_selected_dropbox_path_before_uploading() {
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            file("/outside/note.md", "note.md", "rev-2", "hash-2").to_string(),
+        ),
+        response(
+            200,
+            file("/outside/note.md", "note.md", "rev-3", "hash-3").to_string(),
+        ),
+    ]);
+    let (source, transport) = open_source_with_config(transport, markdown_config());
+
+    let result = source
+        .update_markdown(
+            "id:note.md",
+            &DropboxRevision::new("rev-1").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await;
+
+    assert!(result.is_err(), "an out-of-selection write must be refused");
+    assert!(
+        transport
+            .requests()
+            .iter()
+            .all(|request| request.path() != "/2/files/upload"),
+        "source authorization must complete before the provider mutation"
+    );
+    assert_eq!(transport.requests().len(), 1);
 }
 
 #[tokio::test]
 async fn guarded_dropbox_update_returns_the_provider_revision_authority() {
-    let transport = ScriptedTransport::new([response(
-        200,
-        file("/knowledge/note.md", "note.md", "rev-2", "hash-2").to_string(),
-    )]);
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-1", "hash-1").to_string(),
+        ),
+        response(
+            200,
+            file("/knowledge/note.md", "note.md", "rev-2", "hash-2").to_string(),
+        ),
+    ]);
     let (source, _) = open_source_with_config(transport, markdown_config());
 
     let receipt = source
@@ -462,6 +552,59 @@ async fn guarded_dropbox_update_returns_the_provider_revision_authority() {
 
     assert_eq!(receipt.record_key(), "id:note.md");
     assert_eq!(receipt.revision().as_str(), "rev-2");
+}
+
+#[test]
+fn downloaded_document_and_write_receipt_debug_redact_provider_record_keys() {
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    runtime.block_on(async {
+        let mut downloaded_metadata = file(
+            "/knowledge/note.md",
+            "note.md",
+            "download-revision",
+            "hash-1",
+        );
+        downloaded_metadata["id"] = serde_json::json!("id:sensitive-record-key");
+        let download_transport = ScriptedTransport::new([response_with_headers(
+            200,
+            [("Dropbox-API-Result", downloaded_metadata.to_string())],
+            b"# sensitive body".to_vec(),
+        )]);
+        let (download_source, _) = open_source_with_config(download_transport, markdown_config());
+        let document = download_source
+            .download_markdown("id:sensitive-record-key", &context(10, 10, 64 * 1024))
+            .await
+            .expect("download");
+        let rendered_document = format!("{document:?}");
+        assert!(!rendered_document.contains("id:sensitive-record-key"));
+        assert!(!rendered_document.contains("download-revision"));
+        assert!(!rendered_document.contains("# sensitive body"));
+
+        let mut updated_metadata = file(
+            "/knowledge/note.md",
+            "note.md",
+            "updated-revision",
+            "hash-2",
+        );
+        updated_metadata["id"] = serde_json::json!("id:sensitive-record-key");
+        let update_transport = ScriptedTransport::new([
+            response(200, updated_metadata.clone().to_string()),
+            response(200, updated_metadata.to_string()),
+        ]);
+        let (update_source, _) = open_source_with_config(update_transport, markdown_config());
+        let receipt = update_source
+            .update_markdown(
+                "id:sensitive-record-key",
+                &DropboxRevision::new("expected-revision").unwrap(),
+                b"# edited",
+                &context(10, 10, 64 * 1024),
+            )
+            .await
+            .expect("update");
+        let rendered_receipt = format!("{receipt:?}");
+        assert!(!rendered_receipt.contains("id:sensitive-record-key"));
+        assert!(!rendered_receipt.contains("updated-revision"));
+    });
 }
 
 #[test]

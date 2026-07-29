@@ -735,14 +735,11 @@ impl ReqwestDropboxTransport {
     pub fn follows_redirects(&self) -> bool {
         false
     }
-}
 
-#[async_trait]
-impl DropboxTransport for ReqwestDropboxTransport {
-    async fn send(
+    fn build_http_request(
         &self,
-        request: DropboxHttpRequest,
-    ) -> Result<DropboxHttpResponse, DropboxTransportError> {
+        request: &DropboxHttpRequest,
+    ) -> Result<reqwest::Request, DropboxTransportError> {
         let base = match request.endpoint {
             DropboxEndpoint::Api => &self.api_origin,
             DropboxEndpoint::Content => &self.content_origin,
@@ -771,11 +768,27 @@ impl DropboxTransport for ReqwestDropboxTransport {
                 for (name, value) in &request.headers {
                     builder = builder.header(name, value);
                 }
-                builder = builder.body(request.body);
+                if request.path == "/2/files/upload" {
+                    builder = builder.header("content-type", "application/octet-stream");
+                }
+                builder = builder.body(request.body.clone());
             }
         }
-        let response = builder
-            .send()
+        builder
+            .build()
+            .map_err(|_| DropboxTransportError::InvalidResponse)
+    }
+}
+
+#[async_trait]
+impl DropboxTransport for ReqwestDropboxTransport {
+    async fn send(
+        &self,
+        request: DropboxHttpRequest,
+    ) -> Result<DropboxHttpResponse, DropboxTransportError> {
+        let response = self
+            .client
+            .execute(self.build_http_request(&request)?)
             .await
             .map_err(|_| DropboxTransportError::Failed)?;
         let status = response.status().as_u16();
@@ -899,25 +912,133 @@ impl fmt::Debug for DropboxRevision {
 /// A provider-local document operation could not complete.
 #[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DropboxDocumentError {
+    /// The requested provider record no longer exists.
+    #[error("Dropbox document was not found")]
+    NotFound {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
     /// The provider rejected a guarded update because its revision changed.
     #[error("Dropbox document changed before the guarded update for source `{source_id}`")]
     Conflict {
         /// Non-secret source identity.
         source_id: SourceId,
     },
-    /// A read, authentication, timeout, cancellation, rate-limit, limit, or protocol failure.
-    #[error(transparent)]
-    Source(#[from] SourceError),
+    /// The document exceeded a fixed document-operation bound.
+    #[error("Dropbox document exceeded a fixed bound")]
+    TooLarge {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider returned document bytes that were not valid UTF-8.
+    #[error("Dropbox document body was not valid UTF-8")]
+    InvalidUtf8 {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider returned a record other than the requested record.
+    #[error("Dropbox document identity did not match the request")]
+    IdentityMismatch {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider response did not meet the pinned document protocol.
+    #[error("Dropbox document response did not meet the pinned protocol")]
+    Protocol {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The provider rejected the runtime credential.
+    #[error("Dropbox document authentication failed")]
+    Authentication {
+        /// Non-secret source identity.
+        source_id: SourceId,
+    },
+    /// The document operation exceeded its deadline.
+    #[error("Dropbox document operation timed out")]
+    Timeout,
+    /// The document operation was cooperatively cancelled.
+    #[error("Dropbox document operation was cancelled")]
+    Cancelled,
+    /// The provider rate-limited the document operation.
+    #[error("Dropbox document operation was rate limited")]
+    RateLimited {
+        /// Non-secret source identity.
+        source_id: SourceId,
+        /// Server-requested wait, when supplied.
+        retry_after_ms: Option<u64>,
+    },
+    /// A source failure that has no more-specific document-operation outcome.
+    #[error("Dropbox document operation failed")]
+    Source {
+        /// Typed source failure preserved without exposing it through `Debug`.
+        #[source]
+        error: SourceError,
+    },
+}
+
+impl From<SourceError> for DropboxDocumentError {
+    fn from(error: SourceError) -> Self {
+        match error {
+            SourceError::Cancelled | SourceError::SourceCancelled { .. } => Self::Cancelled,
+            SourceError::DeadlineExceeded | SourceError::StatementTimeout { .. } => Self::Timeout,
+            SourceError::Authentication { source_id } => Self::Authentication { source_id },
+            SourceError::RateLimited {
+                source_id,
+                retry_after_ms,
+            } => Self::RateLimited {
+                source_id,
+                retry_after_ms,
+            },
+            SourceError::ResourceLimit { source_id, .. } => Self::TooLarge { source_id },
+            SourceError::Malformed { source_id, .. } => Self::Protocol { source_id },
+            error => Self::Source { error },
+        }
+    }
 }
 
 impl fmt::Debug for DropboxDocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotFound { source_id } => formatter
+                .debug_struct("DropboxDocumentError::NotFound")
+                .field("source_id", source_id)
+                .finish(),
             Self::Conflict { source_id } => formatter
                 .debug_struct("DropboxDocumentError::Conflict")
                 .field("source_id", source_id)
                 .finish(),
-            Self::Source(_) => formatter.write_str("DropboxDocumentError::Source([redacted])"),
+            Self::TooLarge { source_id } => formatter
+                .debug_struct("DropboxDocumentError::TooLarge")
+                .field("source_id", source_id)
+                .finish(),
+            Self::InvalidUtf8 { source_id } => formatter
+                .debug_struct("DropboxDocumentError::InvalidUtf8")
+                .field("source_id", source_id)
+                .finish(),
+            Self::IdentityMismatch { source_id } => formatter
+                .debug_struct("DropboxDocumentError::IdentityMismatch")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Protocol { source_id } => formatter
+                .debug_struct("DropboxDocumentError::Protocol")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Authentication { source_id } => formatter
+                .debug_struct("DropboxDocumentError::Authentication")
+                .field("source_id", source_id)
+                .finish(),
+            Self::Timeout => formatter.write_str("DropboxDocumentError::Timeout"),
+            Self::Cancelled => formatter.write_str("DropboxDocumentError::Cancelled"),
+            Self::RateLimited {
+                source_id,
+                retry_after_ms,
+            } => formatter
+                .debug_struct("DropboxDocumentError::RateLimited")
+                .field("source_id", source_id)
+                .field("retry_after_ms", retry_after_ms)
+                .finish(),
+            Self::Source { .. } => formatter.write_str("DropboxDocumentError::Source([redacted])"),
         }
     }
 }
@@ -951,9 +1072,10 @@ impl fmt::Debug for DropboxDownloadedDocument {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DropboxDownloadedDocument")
-            .field("record_key", &self.record_key)
-            .field("revision", &self.revision)
+            .field("record_key_bytes", &self.record_key.len())
+            .field("revision_bytes", &self.revision.0.len())
             .field("body_bytes", &self.body.len())
+            .field("body_encoding", &"utf-8")
             .finish()
     }
 }
@@ -981,8 +1103,9 @@ impl fmt::Debug for DropboxWriteReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DropboxWriteReceipt")
-            .field("record_key", &self.record_key)
-            .field("revision", &self.revision)
+            .field("record_key_bytes", &self.record_key.len())
+            .field("revision_bytes", &self.revision.0.len())
+            .field("provider_response", &"file metadata")
             .finish()
     }
 }
@@ -1210,7 +1333,7 @@ impl DropboxSource {
             )
             .await?;
         if response.status != 200 {
-            return Err(self.map_http_failure(&response).into());
+            return Err(self.map_document_http_failure(&response));
         }
         let header = response
             .headers
@@ -1220,7 +1343,9 @@ impl DropboxSource {
             serde_json::from_str(header).map_err(|_| self.malformed("Dropbox-API-Result"))?;
         self.validate_file_scope(&file)?;
         if file.id != record_key {
-            return Err(self.malformed("document identity").into());
+            return Err(DropboxDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
         }
         if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
             return Err(self.malformed("document name").into());
@@ -1235,7 +1360,9 @@ impl DropboxSource {
             .into());
         }
         if std::str::from_utf8(&response.body).is_err() {
-            return Err(self.malformed("document body encoding").into());
+            return Err(DropboxDocumentError::InvalidUtf8 {
+                source_id: self.model.id().clone(),
+            });
         }
         Ok(DropboxDownloadedDocument {
             record_key: record_key.to_string(),
@@ -1261,9 +1388,32 @@ impl DropboxSource {
             .into());
         }
         if std::str::from_utf8(body).is_err() {
-            return Err(self.malformed("document body encoding").into());
+            return Err(DropboxDocumentError::InvalidUtf8 {
+                source_id: self.model.id().clone(),
+            });
         }
         let mut physical_bytes = 0usize;
+        let metadata = self
+            .send(
+                self.metadata_request_record(record_key)?,
+                context,
+                &mut physical_bytes,
+            )
+            .await?;
+        if metadata.status != 200 {
+            return Err(self.map_document_http_failure(&metadata));
+        }
+        let file: DropboxFile = serde_json::from_slice(&metadata.body)
+            .map_err(|_| self.malformed("metadata result"))?;
+        self.validate_file_scope(&file)?;
+        if file.id != record_key {
+            return Err(DropboxDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
+        }
+        if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
+            return Err(self.malformed("document name").into());
+        }
         let response = self
             .send(
                 self.content_update_request(record_key, revision, body)?,
@@ -1277,13 +1427,15 @@ impl DropboxSource {
             });
         }
         if response.status != 200 {
-            return Err(self.map_http_failure(&response).into());
+            return Err(self.map_document_http_failure(&response));
         }
         let file: DropboxFile =
             serde_json::from_slice(&response.body).map_err(|_| self.malformed("upload result"))?;
         self.validate_file_scope(&file)?;
         if file.id != record_key {
-            return Err(self.malformed("upload identity").into());
+            return Err(DropboxDocumentError::IdentityMismatch {
+                source_id: self.model.id().clone(),
+            });
         }
         if !is_exposed_path(DropboxContentScope::Markdown, &file.name) {
             return Err(self.malformed("document name").into());
@@ -1496,6 +1648,21 @@ impl DropboxSource {
             "/2/files/download",
             serde_json::json!({}),
             BTreeMap::from([("dropbox-api-arg".to_string(), argument)]),
+        )
+    }
+
+    fn metadata_request_record(&self, record_key: &str) -> Result<DropboxHttpRequest, SourceError> {
+        if !valid_provider_atom(record_key, 1_024) {
+            return Err(self.malformed("document record key"));
+        }
+        self.api_request(
+            "/2/files/get_metadata",
+            serde_json::json!({
+                "path": record_key,
+                "include_deleted": false,
+                "include_media_info": false,
+                "include_has_explicit_shared_members": false,
+            }),
         )
     }
 
@@ -1743,6 +1910,15 @@ impl DropboxSource {
                 source_id: self.model.id().clone(),
             },
         }
+    }
+
+    fn map_document_http_failure(&self, response: &DropboxHttpResponse) -> DropboxDocumentError {
+        if response.status == 404 {
+            return DropboxDocumentError::NotFound {
+                source_id: self.model.id().clone(),
+            };
+        }
+        self.map_http_failure(response).into()
     }
 
     fn authentication(&self) -> SourceError {
@@ -2548,5 +2724,42 @@ fn malformed_source(source_id: &SourceId, attr: &'static str) -> SourceError {
         path: "dropbox-response".to_string(),
         attr: attr.to_string(),
         detail: "provider response did not match the pinned Dropbox API v2 contract".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn reqwest_content_upload_builds_an_octet_stream_request() {
+        let transport = ReqwestDropboxTransport::new().expect("transport");
+        let request = DropboxHttpRequest {
+            endpoint: DropboxEndpoint::Content,
+            method: DropboxHttpMethod::Post,
+            path: "/2/files/upload".to_string(),
+            json_body: serde_json::json!({}),
+            headers: BTreeMap::from([(
+                "dropbox-api-arg".to_string(),
+                r#"{"path":"id:record","mode":{".tag":"update","update":"rev-1"},"strict_conflict":true,"autorename":false}"#.to_string(),
+            )]),
+            body: b"# Markdown".to_vec(),
+            bearer_token: Arc::from("fixture-access-token"),
+            credential_generation: 0,
+        };
+
+        let built = transport
+            .build_http_request(&request)
+            .expect("bounded upload request");
+
+        assert_eq!(built.method(), reqwest::Method::POST);
+        assert_eq!(
+            built.headers().get(reqwest::header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            built.body().and_then(reqwest::Body::as_bytes),
+            Some(&b"# Markdown"[..])
+        );
     }
 }
