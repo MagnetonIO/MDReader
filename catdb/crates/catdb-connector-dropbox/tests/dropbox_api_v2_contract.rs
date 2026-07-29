@@ -8,10 +8,10 @@ use catdb_connector_dropbox::{
     DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAuthorizationProfile,
     DropboxAvailability, DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError,
     DropboxContentScope, DropboxCursorKey, DropboxDocumentError, DropboxEndpoint,
-    DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse, DropboxKnownRevision,
-    DropboxOAuthPkce, DropboxRefreshCredential, DropboxRevision, DropboxRuntimeSecrets,
-    DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxSourceConfig,
-    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
+    DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse, DropboxOAuthPkce,
+    DropboxRefreshCredential, DropboxRevision, DropboxRuntimeSecrets, DropboxSecretReference,
+    DropboxSecretResolver, DropboxSource, DropboxSourceConfig, DropboxTransport,
+    DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
     DROPBOX_METADATA_READ_SCOPE,
 };
 use catdb_connectors::{
@@ -1635,20 +1635,7 @@ async fn incremental_changes_distinguish_unchanged_upsert_delete_and_reset() {
     let (source, transport) = open_source(transport);
     let read_context = context(10, 20, 64 * 1024);
     let start = source.start_change_tracking(&read_context).await.unwrap();
-    let known = BTreeMap::from([
-        (
-            "/knowledge/same.md".to_string(),
-            DropboxKnownRevision::new("r1", "hash-1").unwrap(),
-        ),
-        (
-            "/knowledge/gone.md".to_string(),
-            DropboxKnownRevision::new("old", "old-hash").unwrap(),
-        ),
-    ]);
-    let page = source
-        .read_changes(&start, &known, &read_context)
-        .await
-        .unwrap();
+    let page = source.read_changes(&start, &read_context).await.unwrap();
     let checkpoint = match page {
         DropboxChangeOutcome::Page {
             events,
@@ -1658,13 +1645,11 @@ async fn incremental_changes_distinguish_unchanged_upsert_delete_and_reset() {
             assert_eq!(
                 events,
                 vec![
-                    DropboxChangeEvent::Unchanged {
+                    DropboxChangeEvent::Upserted {
                         path_lower: "/knowledge/same.md".to_string()
                     },
                     DropboxChangeEvent::Upserted {
                         path_lower: "/knowledge/new.md".to_string(),
-                        rev: "r2".to_string(),
-                        content_hash: "hash-2".to_string(),
                     },
                     DropboxChangeEvent::Deleted {
                         path_lower: "/knowledge/gone.md".to_string()
@@ -1679,7 +1664,7 @@ async fn incremental_changes_distinguish_unchanged_upsert_delete_and_reset() {
 
     assert_eq!(
         source
-            .read_changes(&checkpoint, &known, &read_context)
+            .read_changes(&checkpoint, &read_context)
             .await
             .unwrap(),
         DropboxChangeOutcome::RebuildRequired

@@ -975,40 +975,6 @@ impl fmt::Debug for DriveChangeCursor {
     }
 }
 
-/// Revision material used to distinguish unchanged content from an update.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DriveKnownRevision {
-    modified_time: String,
-    checksum: Option<String>,
-}
-
-impl DriveKnownRevision {
-    /// Validate a known remote revision.
-    pub fn new(
-        modified_time: impl Into<String>,
-        checksum: Option<impl Into<String>>,
-    ) -> Result<Self, DriveConnectorError> {
-        let modified_time = modified_time.into();
-        parse_timestamp_ms(&modified_time).map_err(|_| DriveConnectorError::InvalidRevision)?;
-        let checksum = checksum.map(Into::into);
-        if checksum
-            .as_ref()
-            .is_some_and(|value| value.is_empty() || value.len() > 512)
-        {
-            return Err(DriveConnectorError::InvalidRevision);
-        }
-        Ok(Self {
-            modified_time,
-            checksum,
-        })
-    }
-
-    fn matches(&self, file: &DriveFile) -> bool {
-        self.modified_time == file.modified_time
-            && self.checksum.as_deref() == file.md5_checksum.as_deref()
-    }
-}
-
 /// Opaque provider revision used to guard a single Drive document operation.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DriveRevision(String);
@@ -1285,7 +1251,7 @@ impl fmt::Debug for DriveWriteReceipt {
     }
 }
 
-/// Provider change classified against the Library's known revision.
+/// One provider-native incremental change identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveChangeEvent {
     /// A tracked file was removed or trashed.
@@ -1293,19 +1259,10 @@ pub enum DriveChangeEvent {
         /// Stable Drive file id.
         file_id: String,
     },
-    /// Provider revision is byte-equivalent to the known materialization.
-    Unchanged {
-        /// Stable Drive file id.
-        file_id: String,
-    },
-    /// A tracked file is new or changed.
+    /// A tracked file is present in the provider change page.
     Upserted {
         /// Stable Drive file id.
         file_id: String,
-        /// Provider modified time.
-        modified_time: String,
-        /// Provider checksum when Drive supplies one.
-        checksum: Option<String>,
     },
 }
 
@@ -1887,16 +1844,9 @@ impl DriveSource {
     pub async fn read_changes(
         &self,
         cursor: &DriveChangeCursor,
-        known: &BTreeMap<String, DriveKnownRevision>,
         context: &ReadContext,
     ) -> Result<DriveChangeOutcome, SourceError> {
         context.check()?;
-        if known.len() > MAX_CHANGE_EVENTS {
-            return Err(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "known revisions",
-            });
-        }
         let token = self.decode_change_cursor(cursor)?;
         let mut physical_bytes = 0usize;
         let response = self
@@ -1930,11 +1880,9 @@ impl DriveSource {
                 if self.is_tracked_folder_id(&change.file_id)? {
                     return Ok(DriveChangeOutcome::RebuildRequired);
                 }
-                if known.contains_key(&change.file_id) {
-                    events.push(DriveChangeEvent::Deleted {
-                        file_id: change.file_id,
-                    });
-                }
+                events.push(DriveChangeEvent::Deleted {
+                    file_id: change.file_id,
+                });
                 continue;
             }
             let file = change.file.ok_or_else(|| self.malformed("change.file"))?;
@@ -1946,25 +1894,10 @@ impl DriveSource {
                 return Ok(DriveChangeOutcome::RebuildRequired);
             }
             let tracked = self.is_tracked(&file)?;
-            if file.trashed {
-                if known.contains_key(&file.id) {
-                    events.push(DriveChangeEvent::Deleted { file_id: file.id });
-                }
-            } else if known.contains_key(&file.id) && !tracked {
+            if file.trashed || !tracked {
                 events.push(DriveChangeEvent::Deleted { file_id: file.id });
-            } else if tracked {
-                if known
-                    .get(&file.id)
-                    .is_some_and(|revision| revision.matches(&file))
-                {
-                    events.push(DriveChangeEvent::Unchanged { file_id: file.id });
-                } else {
-                    events.push(DriveChangeEvent::Upserted {
-                        file_id: file.id,
-                        modified_time: file.modified_time,
-                        checksum: file.md5_checksum,
-                    });
-                }
+            } else {
+                events.push(DriveChangeEvent::Upserted { file_id: file.id });
             }
         }
         let next_cursor = body

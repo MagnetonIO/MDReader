@@ -10,9 +10,9 @@ mod tests;
 
 #[allow(unused_imports)]
 pub(crate) use model::{
-    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangePage,
-    MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage,
-    MarkdownWriteReceipt, ProviderCursor, ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangeEvent,
+    MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata,
+    MarkdownMetadataPage, MarkdownWriteReceipt, ProviderCursor, ProviderRevision, SourceRecordKey,
 };
 #[cfg(all(test, feature = "google-drive-connector"))]
 pub(crate) use source::map_drive_document_error;
@@ -21,4 +21,6 @@ pub(crate) use source::map_dropbox_document_error;
 #[cfg(test)]
 pub(crate) use source::map_lifecycle_error;
 #[allow(unused_imports)]
-pub(crate) use sync::{CloudSyncCoordinator, CloudSyncError, CloudSyncPhase};
+pub(crate) use sync::{
+    CloudSyncCoordinator, CloudSyncError, CloudSyncPhase, CloudWriteRepairExecutor,
+};

@@ -6,7 +6,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -17,9 +20,13 @@ use catdb_connectors::{CancellationToken, SourceId};
 use tokio::sync::Notify;
 
 use super::{
-    store::{CloudDocumentStore, CloudDocumentStoreError, CloudDocumentVersionPins},
-    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangePage,
-    MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, ProviderCursor,
+    store::{
+        CloudDocumentStore, CloudDocumentStoreError, CloudDocumentVersionPins,
+        PersistedCloudWriteRepair, RepairContinuation,
+    },
+    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangeEvent,
+    MarkdownChangePage, MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage,
+    ProviderCursor,
 };
 
 const SYNC_DEADLINE: Duration = Duration::from_secs(30);
@@ -29,6 +36,9 @@ const SYNC_MAX_PAGES: usize = 256;
 const SYNC_MAX_ROWS: usize = SYNC_PAGE_ROWS * SYNC_MAX_PAGES;
 const SYNC_MAX_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_RETRY_AFTER_MS: u64 = 1_000;
+const STARTUP_REPAIR_PAGE_ROWS: usize = 64;
+const STARTUP_REPAIR_MAX_PAGES: usize = 16;
+const STARTUP_REPAIR_EXECUTOR_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Closed state of one cloud-source metadata synchronizer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,17 +63,21 @@ pub(crate) enum CloudSyncPhase {
 }
 
 /// Typed in-process status for one source's synchronization owner.
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CloudSyncStatus {
     phase: CloudSyncPhase,
+    startup_repair_error: Option<CloudDocumentError>,
 }
 
-#[cfg(test)]
 impl CloudSyncStatus {
     /// Returns the owner's current closed phase.
     pub(crate) fn phase(&self) -> &CloudSyncPhase {
         &self.phase
+    }
+
+    /// Returns an unresolved startup local-publication outcome, if any.
+    pub(crate) fn startup_repair_error(&self) -> Option<&CloudDocumentError> {
+        self.startup_repair_error.as_ref()
     }
 }
 
@@ -84,6 +98,18 @@ pub(crate) enum CloudSyncError {
     MissingVersionPins,
 }
 
+/// Application-owned local-publication executor for a provider-accepted
+/// receipt. It receives no provider handle, so restart repair cannot replay a
+/// remote mutation.
+#[async_trait::async_trait]
+pub(crate) trait CloudWriteRepairExecutor: Send + Sync {
+    /// Publishes the derived local state represented by one durable receipt.
+    async fn resume_local_publication(
+        &self,
+        repair: &PersistedCloudWriteRepair,
+    ) -> Result<(), CloudDocumentError>;
+}
+
 impl From<CloudDocumentStoreError> for CloudSyncError {
     fn from(error: CloudDocumentStoreError) -> Self {
         Self::Store(error)
@@ -97,6 +123,9 @@ pub(crate) struct CloudSyncCoordinator {
     default_pins: Option<CloudDocumentVersionPins>,
     owners: Arc<Mutex<HashMap<String, SyncOwner>>>,
     durable_effects: Arc<tokio::sync::Mutex<()>>,
+    startup_repair_errors: Arc<Mutex<HashMap<String, CloudDocumentError>>>,
+    startup_repair_owners: Arc<Mutex<HashMap<String, StartupRepairOwner>>>,
+    next_startup_repair_epoch: Arc<AtomicU64>,
     #[cfg(test)]
     effect_gate: Arc<Mutex<Option<DurableEffectGate>>>,
 }
@@ -109,6 +138,12 @@ struct SyncOwner {
     phase: CloudSyncPhase,
     running: bool,
     idle: Arc<Notify>,
+}
+
+#[derive(Clone)]
+struct StartupRepairOwner {
+    epoch: u64,
+    cancellation: CancellationToken,
 }
 
 struct SyncOperation<'a> {
@@ -153,6 +188,9 @@ impl CloudSyncCoordinator {
             default_pins: Some(pins),
             owners: Arc::new(Mutex::new(HashMap::new())),
             durable_effects: Arc::new(tokio::sync::Mutex::new(())),
+            startup_repair_errors: Arc::new(Mutex::new(HashMap::new())),
+            startup_repair_owners: Arc::new(Mutex::new(HashMap::new())),
+            next_startup_repair_epoch: Arc::new(AtomicU64::new(1)),
             #[cfg(test)]
             effect_gate: Arc::new(Mutex::new(None)),
         }
@@ -166,6 +204,9 @@ impl CloudSyncCoordinator {
             default_pins: None,
             owners: Arc::new(Mutex::new(HashMap::new())),
             durable_effects: Arc::new(tokio::sync::Mutex::new(())),
+            startup_repair_errors: Arc::new(Mutex::new(HashMap::new())),
+            startup_repair_owners: Arc::new(Mutex::new(HashMap::new())),
+            next_startup_repair_epoch: Arc::new(AtomicU64::new(1)),
             #[cfg(test)]
             effect_gate: Arc::new(Mutex::new(None)),
         }
@@ -250,10 +291,41 @@ impl CloudSyncCoordinator {
         Ok(())
     }
 
+    /// Schedules one incremental pass for an idle owner. Repeated refresh
+    /// requests while that source already has provider work are idempotent so
+    /// no second owner can replay the same committed cursor.
+    pub(crate) async fn refresh(&self, source_id: &SourceId) -> Result<(), CloudSyncError> {
+        let _effects = self.durable_effects.lock().await;
+        let scheduled = {
+            let mut owners = self.owners()?;
+            let owner = owners
+                .get_mut(source_id.as_str())
+                .ok_or(CloudSyncError::UnknownSource)?;
+            if matches!(owner.phase, CloudSyncPhase::Retired) {
+                return Err(CloudSyncError::Retired);
+            }
+            if matches!(owner.phase, CloudSyncPhase::Paused) || owner.running {
+                None
+            } else {
+                owner.running = true;
+                Some((
+                    Arc::clone(&owner.source),
+                    owner.epoch,
+                    owner.cancellation.clone(),
+                ))
+            }
+        };
+        if let Some((source, epoch, cancellation)) = scheduled {
+            self.spawn_owner(source, source_id.clone(), epoch, cancellation);
+        }
+        Ok(())
+    }
+
     /// Cancels in-flight and future source calls without removing the last
     /// durable publication or its body cache.
     pub(crate) async fn pause(&self, source_id: &SourceId) -> Result<(), CloudSyncError> {
         let _effects = self.durable_effects.lock().await;
+        self.cancel_startup_repair(source_id)?;
         let idle = {
             let mut owners = self.owners()?;
             let owner = owners
@@ -276,6 +348,7 @@ impl CloudSyncCoordinator {
     /// caller invokes it after the credential lifecycle commit has succeeded.
     pub(crate) async fn retire(&self, source_id: &SourceId) -> Result<(), CloudSyncError> {
         let _effects = self.durable_effects.lock().await;
+        self.cancel_startup_repair(source_id)?;
         let idle = {
             let mut owners = self.owners()?;
             owners.get_mut(source_id.as_str()).map(|owner| {
@@ -295,15 +368,31 @@ impl CloudSyncCoordinator {
     }
 
     /// Returns the current typed status, if this source has an owner.
-    #[cfg(test)]
     pub(crate) fn status(
         &self,
         source_id: &SourceId,
     ) -> Result<Option<CloudSyncStatus>, CloudSyncError> {
-        let owners = self.owners()?;
-        Ok(owners.get(source_id.as_str()).map(|owner| CloudSyncStatus {
-            phase: owner.phase.clone(),
-        }))
+        let owner_phase = self
+            .owners()?
+            .get(source_id.as_str())
+            .map(|owner| owner.phase.clone());
+        let startup_repair_error = self
+            .startup_repair_errors
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?
+            .get(source_id.as_str())
+            .cloned();
+        Ok(match (owner_phase, startup_repair_error) {
+            (Some(phase), startup_repair_error) => Some(CloudSyncStatus {
+                phase,
+                startup_repair_error,
+            }),
+            (None, Some(startup_repair_error)) => Some(CloudSyncStatus {
+                phase: CloudSyncPhase::NeverSynced,
+                startup_repair_error: Some(startup_repair_error),
+            }),
+            (None, None) => None,
+        })
     }
 
     /// Waits until the current owner has no scheduled provider work. A
@@ -326,20 +415,184 @@ impl CloudSyncCoordinator {
         }
     }
 
-    /// Performs process-start repair without provider I/O, then schedules the
-    /// caller-supplied enabled, credential-backed sources in the background.
+    /// Performs bounded process-start cleanup and source-scoped local repair
+    /// without provider I/O. Source activation remains a separate lifecycle
+    /// effect so a pending repair never delays window creation or replays a
+    /// remote write.
     pub(crate) async fn startup_repair(
         &self,
-        sources: impl IntoIterator<Item = Arc<dyn MarkdownDocumentSource>>,
+        source_ids: impl IntoIterator<Item = SourceId>,
+        executor: &dyn CloudWriteRepairExecutor,
     ) -> Result<(), CloudSyncError> {
         {
             let _effects = self.durable_effects.lock().await;
             let store = Arc::clone(&self.store);
             blocking_store(store, |store| store.discard_unreferenced_staging()).await?;
         }
-        for source in sources {
-            self.activate(source).await?;
+        for source_id in source_ids {
+            let repair_owner = self.begin_startup_repair(&source_id)?;
+            let result = self
+                .resume_startup_repairs(
+                    &source_id,
+                    repair_owner.epoch,
+                    &repair_owner.cancellation,
+                    executor,
+                )
+                .await;
+            self.finish_startup_repair(&source_id, repair_owner.epoch)?;
+            result?;
         }
+        Ok(())
+    }
+
+    async fn resume_startup_repairs(
+        &self,
+        source_id: &SourceId,
+        epoch: u64,
+        cancellation: &CancellationToken,
+        executor: &dyn CloudWriteRepairExecutor,
+    ) -> Result<(), CloudSyncError> {
+        let mut continuation: Option<RepairContinuation> = None;
+        for _ in 0..STARTUP_REPAIR_MAX_PAGES {
+            let source_id_for_store = source_id.clone();
+            let after = continuation.clone();
+            let store = Arc::clone(&self.store);
+            let page = blocking_store(store, move |store| {
+                store.pending_write_repairs_page(
+                    &source_id_for_store,
+                    after.as_ref(),
+                    STARTUP_REPAIR_PAGE_ROWS,
+                )
+            })
+            .await?;
+            for repair in page.repairs() {
+                match self
+                    .run_startup_repair_executor(cancellation, executor, repair)
+                    .await
+                {
+                    Ok(()) => {
+                        if cancellation.is_cancelled() {
+                            self.record_startup_repair_error(
+                                source_id,
+                                epoch,
+                                CloudDocumentError::SourcePaused,
+                            )?;
+                            return Ok(());
+                        }
+                        let source_id_for_store = source_id.clone();
+                        let operation_id = repair.operation_id().to_vec();
+                        let store = Arc::clone(&self.store);
+                        blocking_store(store, move |store| {
+                            store.mark_write_published(&source_id_for_store, &operation_id)
+                        })
+                        .await?;
+                    }
+                    Err(error) => self.record_startup_repair_error(source_id, epoch, error)?,
+                }
+            }
+            let Some(next) = page.next_continuation().cloned() else {
+                return Ok(());
+            };
+            continuation = Some(next);
+        }
+        self.record_startup_repair_error(
+            source_id,
+            epoch,
+            CloudDocumentError::LocalPublicationPending,
+        )?;
+        Ok(())
+    }
+
+    async fn run_startup_repair_executor(
+        &self,
+        cancellation: &CancellationToken,
+        executor: &dyn CloudWriteRepairExecutor,
+        repair: &PersistedCloudWriteRepair,
+    ) -> Result<(), CloudDocumentError> {
+        let deadline = tokio::time::sleep(STARTUP_REPAIR_EXECUTOR_DEADLINE);
+        tokio::pin!(deadline);
+        tokio::select! {
+            _ = cancellation.cancelled() => Err(CloudDocumentError::SourcePaused),
+            _ = &mut deadline => Err(CloudDocumentError::Timeout),
+            result = executor.resume_local_publication(repair) => result,
+        }
+    }
+
+    fn begin_startup_repair(
+        &self,
+        source_id: &SourceId,
+    ) -> Result<StartupRepairOwner, CloudSyncError> {
+        let repair_owner = StartupRepairOwner {
+            epoch: self
+                .next_startup_repair_epoch
+                .fetch_add(1, Ordering::Relaxed),
+            cancellation: CancellationToken::new(),
+        };
+        let previous = self
+            .startup_repair_owners
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?
+            .insert(source_id.as_str().to_owned(), repair_owner.clone());
+        if let Some(previous) = previous {
+            previous.cancellation.cancel();
+        }
+        self.startup_repair_errors
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?
+            .remove(source_id.as_str());
+        Ok(repair_owner)
+    }
+
+    fn finish_startup_repair(
+        &self,
+        source_id: &SourceId,
+        completed_epoch: u64,
+    ) -> Result<(), CloudSyncError> {
+        let mut repair_owners = self
+            .startup_repair_owners
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?;
+        if repair_owners
+            .get(source_id.as_str())
+            .is_some_and(|owner| owner.epoch == completed_epoch)
+        {
+            repair_owners.remove(source_id.as_str());
+        }
+        Ok(())
+    }
+
+    fn cancel_startup_repair(&self, source_id: &SourceId) -> Result<(), CloudSyncError> {
+        if let Some(cancellation) = self
+            .startup_repair_owners
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?
+            .get(source_id.as_str())
+        {
+            cancellation.cancellation.cancel();
+        }
+        Ok(())
+    }
+
+    fn record_startup_repair_error(
+        &self,
+        source_id: &SourceId,
+        epoch: u64,
+        error: CloudDocumentError,
+    ) -> Result<(), CloudSyncError> {
+        let repair_owners = self
+            .startup_repair_owners
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?;
+        if repair_owners
+            .get(source_id.as_str())
+            .is_none_or(|owner| owner.epoch != epoch)
+        {
+            return Ok(());
+        }
+        self.startup_repair_errors
+            .lock()
+            .map_err(|_| CloudSyncError::StateUnavailable)?
+            .insert(source_id.as_str().to_owned(), error);
         Ok(())
     }
 
@@ -541,10 +794,23 @@ impl CloudSyncCoordinator {
         loop {
             budget.start_page()?;
             self.check_current(operation.source_id, operation.epoch, operation.cancellation)?;
+            let page = provider_changes(
+                operation.source.as_ref(),
+                &cursor,
+                operation.cancellation,
+                operation.deadline,
+            )
+            .await?;
+            budget.charge_change_events(&page.changes)?;
+            let keys = page
+                .changes
+                .iter()
+                .map(|event| event.key().clone())
+                .collect::<Vec<_>>();
             let source_id_for_store = operation.source_id.clone();
             let store = Arc::clone(&self.store);
             let known = blocking_store(store, move |store| {
-                store.list_published(&source_id_for_store)
+                store.published_for_keys(&source_id_for_store, &keys)
             })
             .await
             .map_err(store_error)?
@@ -557,19 +823,21 @@ impl CloudSyncCoordinator {
                 modified_at_ms: document.modified_at_ms,
                 size_bytes: document.size_bytes,
                 revision: document.revision,
-                content_hash: document.content_hash,
                 deleted: document.deleted,
             })
             .collect::<Vec<_>>();
-            let page = provider_changes(
+            let changes = provider_materialize_changes(
                 operation.source.as_ref(),
-                &cursor,
+                &page.changes,
                 &known,
                 operation.cancellation,
                 operation.deadline,
             )
             .await?;
-            budget.charge_metadata(&page.changes)?;
+            if changes.len() > page.changes.len() {
+                return Err(CloudDocumentError::ProtocolFailed);
+            }
+            budget.charge_metadata(&changes)?;
             if page.has_more
                 && (!seen.insert(page.next_cursor.0.clone()) || page.next_cursor == cursor)
             {
@@ -578,7 +846,7 @@ impl CloudSyncCoordinator {
             let observed_at_ms = page.observed_at_ms;
             let has_more = page.has_more;
             let metadata = MarkdownMetadataPage {
-                rows: page.changes,
+                rows: changes,
                 next_cursor: None,
                 observed_at_ms,
             };
@@ -807,6 +1075,24 @@ impl PageBudget {
         }
         Ok(())
     }
+
+    fn charge_change_events(
+        &mut self,
+        events: &[MarkdownChangeEvent],
+    ) -> Result<(), CloudDocumentError> {
+        if events.len() > SYNC_PAGE_ROWS {
+            return Err(CloudDocumentError::TooLarge);
+        }
+        let page_bytes = events.iter().try_fold(0_usize, |total, event| {
+            total
+                .checked_add(event.key().as_str().len())
+                .ok_or(CloudDocumentError::TooLarge)
+        })?;
+        if page_bytes > SYNC_PAGE_BYTES {
+            return Err(CloudDocumentError::TooLarge);
+        }
+        Ok(())
+    }
 }
 
 fn metadata_bytes(row: &MarkdownMetadata) -> usize {
@@ -883,7 +1169,6 @@ async fn provider_list(
 async fn provider_changes(
     source: &dyn MarkdownDocumentSource,
     cursor: &ProviderCursor,
-    known: &[KnownMarkdownMetadata],
     cancellation: &CancellationToken,
     deadline: Instant,
 ) -> Result<MarkdownChangePage, CloudDocumentError> {
@@ -891,7 +1176,23 @@ async fn provider_changes(
     provider_call(
         cancellation,
         context.deadline,
-        source.read_changes(cursor, known, &context),
+        source.read_changes(cursor, &context),
+    )
+    .await
+}
+
+async fn provider_materialize_changes(
+    source: &dyn MarkdownDocumentSource,
+    changes: &[MarkdownChangeEvent],
+    known: &[KnownMarkdownMetadata],
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+    let context = context(cancellation, deadline);
+    provider_call(
+        cancellation,
+        context.deadline,
+        source.materialize_changes(changes, known, &context),
     )
     .await
 }

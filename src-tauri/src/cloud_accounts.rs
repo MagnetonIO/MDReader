@@ -55,6 +55,7 @@ const CLOUD_QUERY_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const CLOUD_QUERY_PAGE_SIZE: usize = 100;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
+const CLOUD_SYNC_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[cfg(feature = "e2e-build")]
 const E2E_DRIVE_RECORD_ID: &str =
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -876,6 +877,16 @@ struct CloudDisconnectPublication {
     retired_source_id: Option<catdb_connectors::SourceId>,
 }
 
+/// One committed credential replacement and the exact source identities on
+/// either side of it. The post-commit sync fence consumes these identities
+/// before it opens a provider source, so an old scheduler cannot outlive a
+/// newly published credential/source version.
+struct CloudInstallPublication {
+    snapshot: CloudSourcesSnapshot,
+    retired_source_id: Option<catdb_connectors::SourceId>,
+    activated_source_id: catdb_connectors::SourceId,
+}
+
 impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
     pub(crate) fn new(registry: LibraryStore, vault: &'a V) -> Self {
         Self { registry, vault }
@@ -969,6 +980,18 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         secret: SecretBundle,
         authorization_profile: CloudAuthorizationProfile,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
+        Ok(self
+            .install_with_profile_publication(provider, config, secret, authorization_profile)?
+            .snapshot)
+    }
+
+    fn install_with_profile_publication(
+        &self,
+        provider: CloudProvider,
+        config: CloudSourceConfig,
+        secret: SecretBundle,
+        authorization_profile: CloudAuthorizationProfile,
+    ) -> Result<CloudInstallPublication, CloudSourceError> {
         config.validate()?;
         if config.provider() != provider {
             return Err(CloudSourceError::InvalidConfiguration);
@@ -1037,7 +1060,13 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             };
         }
         self.recover_credential_cleanup(provider)?;
-        self.snapshot_under_lease()
+        Ok(CloudInstallPublication {
+            snapshot: self.snapshot_under_lease()?,
+            retired_source_id: expected
+                .as_ref()
+                .map(|source| catdb_connectors::SourceId::new(source.id.clone())),
+            activated_source_id: catdb_connectors::SourceId::new(record.id.clone()),
+        })
     }
 
     pub(crate) fn set_enabled(
@@ -1059,13 +1088,6 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             Ok(())
         })?;
         self.snapshot_under_lease()
-    }
-
-    pub(crate) fn disconnect(
-        &self,
-        provider: CloudProvider,
-    ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
-        Ok(self.disconnect_with_id(provider)?.snapshot)
     }
 
     /// Removes one provider record and returns the exact source identity that
@@ -1648,6 +1670,12 @@ struct RequestedCatalogPins {
 struct CloudSyncRuntime {
     location: Mutex<Option<PathBuf>>,
     coordinator: tokio::sync::Mutex<Option<crate::cloud_documents::CloudSyncCoordinator>>,
+    refresh_schedules: Mutex<HashMap<String, CloudRefreshSchedule>>,
+}
+
+#[derive(Clone)]
+struct CloudRefreshSchedule {
+    cancellation: catdb_connectors::CancellationToken,
 }
 
 impl CloudSyncRuntime {
@@ -1693,6 +1721,110 @@ impl CloudSyncRuntime {
 
     async fn existing_coordinator(&self) -> Option<crate::cloud_documents::CloudSyncCoordinator> {
         self.coordinator.lock().await.clone()
+    }
+
+    /// Replaces the source's recurring metadata refresh task. The source must
+    /// already have an activated coordinator owner; lifecycle callers cancel
+    /// this task before pausing, retiring, or replacing that owner.
+    fn schedule_background_refresh(
+        &self,
+        coordinator: crate::cloud_documents::CloudSyncCoordinator,
+        source_id: catdb_connectors::SourceId,
+    ) -> Result<(), CloudSourceError> {
+        self.schedule_background_refresh_with_interval(
+            coordinator,
+            source_id,
+            CLOUD_SYNC_REFRESH_INTERVAL,
+        )
+    }
+
+    #[cfg(test)]
+    fn schedule_background_refresh_for_test(
+        &self,
+        coordinator: crate::cloud_documents::CloudSyncCoordinator,
+        source_id: catdb_connectors::SourceId,
+        interval: Duration,
+    ) -> Result<(), CloudSourceError> {
+        self.schedule_background_refresh_with_interval(coordinator, source_id, interval)
+    }
+
+    fn schedule_background_refresh_with_interval(
+        &self,
+        coordinator: crate::cloud_documents::CloudSyncCoordinator,
+        source_id: catdb_connectors::SourceId,
+        interval: Duration,
+    ) -> Result<(), CloudSourceError> {
+        let schedule = CloudRefreshSchedule {
+            cancellation: catdb_connectors::CancellationToken::new(),
+        };
+        let previous = self
+            .refresh_schedules
+            .lock()
+            .map_err(|_| CloudSourceError::PersistFailed)?
+            .insert(source_id.as_str().to_owned(), schedule.clone());
+        if let Some(previous) = previous {
+            previous.cancellation.cancel();
+        }
+        Self::spawn_background_refresh(coordinator, source_id, schedule.cancellation, interval);
+        Ok(())
+    }
+
+    /// Cancels and removes the exact source's recurring task. It intentionally
+    /// happens before the coordinator lifecycle fence so a late wake cannot
+    /// reclaim a paused, retired, or replacement owner.
+    fn cancel_background_refresh(
+        &self,
+        source_id: &catdb_connectors::SourceId,
+    ) -> Result<(), CloudSourceError> {
+        if let Some(schedule) = self
+            .refresh_schedules
+            .lock()
+            .map_err(|_| CloudSourceError::PersistFailed)?
+            .remove(source_id.as_str())
+        {
+            schedule.cancellation.cancel();
+        }
+        Ok(())
+    }
+
+    fn spawn_background_refresh(
+        coordinator: crate::cloud_documents::CloudSyncCoordinator,
+        source_id: catdb_connectors::SourceId,
+        cancellation: catdb_connectors::CancellationToken,
+        interval: Duration,
+    ) {
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    _ = tokio::time::sleep(interval) => {}
+                }
+                if cancellation.is_cancelled() {
+                    return;
+                }
+                match coordinator.refresh(&source_id).await {
+                    Ok(()) => {}
+                    Err(crate::cloud_documents::CloudSyncError::UnknownSource)
+                    | Err(crate::cloud_documents::CloudSyncError::Retired) => return,
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+}
+
+/// Task 8 owns reconstruction of derived document state from a provider
+/// receipt. Until that executor is available, startup explicitly records the
+/// pending local-publication outcome and retains the journal row.
+struct PendingCloudWriteRepairExecutor;
+
+#[async_trait::async_trait]
+impl crate::cloud_documents::CloudWriteRepairExecutor for PendingCloudWriteRepairExecutor {
+    async fn resume_local_publication(
+        &self,
+        _repair: &crate::cloud_documents::store::PersistedCloudWriteRepair,
+    ) -> Result<(), crate::cloud_documents::CloudDocumentError> {
+        Err(crate::cloud_documents::CloudDocumentError::LocalPublicationPending)
     }
 }
 
@@ -4873,6 +5005,10 @@ pub(crate) async fn list_cloud_sources(
 
 enum CloudSyncLifecycleAction {
     Activate,
+    Replace {
+        retired_source_id: Option<catdb_connectors::SourceId>,
+        activated_source_id: catdb_connectors::SourceId,
+    },
     Pause(catdb_connectors::SourceId),
     Retire(catdb_connectors::SourceId),
 }
@@ -4907,13 +5043,42 @@ async fn reconcile_cloud_sync_after_commit(
     match action {
         CloudSyncLifecycleAction::Activate => {
             let admitted = open_admitted_cloud_markdown_sync_source(app, provider, state).await?;
-            state
-                .cloud_sync
-                .coordinator()
-                .await?
+            let source_id = admitted.source.source_id().clone();
+            state.cloud_sync.cancel_background_refresh(&source_id)?;
+            let coordinator = state.cloud_sync.coordinator().await?;
+            coordinator
                 .activate_with_pins(admitted.source, admitted.pins)
                 .await
-                .map_err(|_| CloudSourceError::PersistFailed)
+                .map_err(|_| CloudSourceError::PersistFailed)?;
+            state
+                .cloud_sync
+                .schedule_background_refresh(coordinator, source_id)
+        }
+        CloudSyncLifecycleAction::Replace {
+            retired_source_id,
+            activated_source_id,
+        } => {
+            if let Some(retired_source_id) = retired_source_id {
+                reconcile_inactive_cloud_sync_after_commit(
+                    state,
+                    CloudSyncLifecycleAction::Retire(retired_source_id),
+                )
+                .await?;
+            }
+            let admitted = open_admitted_cloud_markdown_sync_source(app, provider, state).await?;
+            let source_id = admitted.source.source_id().clone();
+            if source_id != activated_source_id {
+                return Err(CloudSourceError::PersistFailed);
+            }
+            state.cloud_sync.cancel_background_refresh(&source_id)?;
+            let coordinator = state.cloud_sync.coordinator().await?;
+            coordinator
+                .activate_with_pins(admitted.source, admitted.pins)
+                .await
+                .map_err(|_| CloudSourceError::PersistFailed)?;
+            state
+                .cloud_sync
+                .schedule_background_refresh(coordinator, source_id)
         }
         action @ (CloudSyncLifecycleAction::Pause(_) | CloudSyncLifecycleAction::Retire(_)) => {
             reconcile_inactive_cloud_sync_after_commit(state, action).await
@@ -4931,8 +5096,11 @@ async fn reconcile_inactive_cloud_sync_after_commit(
     let source_id = match &action {
         CloudSyncLifecycleAction::Pause(source_id) => source_id.clone(),
         CloudSyncLifecycleAction::Retire(source_id) => source_id.clone(),
-        CloudSyncLifecycleAction::Activate => return Err(CloudSourceError::PersistFailed),
+        CloudSyncLifecycleAction::Activate | CloudSyncLifecycleAction::Replace { .. } => {
+            return Err(CloudSourceError::PersistFailed)
+        }
     };
+    state.cloud_sync.cancel_background_refresh(&source_id)?;
     let result = match action {
         CloudSyncLifecycleAction::Pause(_) => {
             let Some(coordinator) = state.cloud_sync.existing_coordinator().await else {
@@ -4948,7 +5116,9 @@ async fn reconcile_inactive_cloud_sync_after_commit(
                 .retire(&source_id)
                 .await
         }
-        CloudSyncLifecycleAction::Activate => return Err(CloudSourceError::PersistFailed),
+        CloudSyncLifecycleAction::Activate | CloudSyncLifecycleAction::Replace { .. } => {
+            return Err(CloudSourceError::PersistFailed)
+        }
     };
     match result {
         Ok(()) | Err(crate::cloud_documents::CloudSyncError::UnknownSource) => Ok(()),
@@ -4977,30 +5147,47 @@ async fn startup_cloud_sync(
     }
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     {
-        let providers = blocking_cloud_operation(app.clone(), |registry, _vault| {
+        let sources = blocking_cloud_operation(app.clone(), |registry, _vault| {
             registry.read_cloud(|sources| {
                 Ok(sources
                     .iter()
                     .filter(|source| source.enabled)
-                    .map(|source| source.provider)
+                    .map(|source| {
+                        (
+                            source.provider,
+                            catdb_connectors::SourceId::new(source.id.clone()),
+                        )
+                    })
                     .collect::<Vec<_>>())
             })
         })
         .await?;
         let coordinator = state.cloud_sync.coordinator().await?;
+        let repair_source_ids = sources
+            .iter()
+            .map(|(_, source_id)| source_id.clone())
+            .collect::<Vec<_>>();
         coordinator
-            .startup_repair(Vec::<Arc<dyn crate::cloud_documents::MarkdownDocumentSource>>::new())
+            .startup_repair(repair_source_ids, &PendingCloudWriteRepairExecutor)
             .await
             .map_err(|_| CloudSourceError::PersistFailed)?;
-        for provider in providers {
+        for (provider, _) in sources {
             let Ok(admitted) =
                 open_admitted_cloud_markdown_sync_source(app.clone(), provider, state).await
             else {
                 continue;
             };
-            let _ = coordinator
+            let source_id = admitted.source.source_id().clone();
+            state.cloud_sync.cancel_background_refresh(&source_id)?;
+            if coordinator
                 .activate_with_pins(admitted.source, admitted.pins)
-                .await;
+                .await
+                .is_ok()
+            {
+                state
+                    .cloud_sync
+                    .schedule_background_refresh(coordinator.clone(), source_id)?;
+            }
         }
         Ok(())
     }
@@ -5207,13 +5394,20 @@ pub(crate) async fn connect_cloud_source(
         owner,
         move || {
             cloud_operation(commit_app, move |registry, vault| {
-                let snapshot = CloudAccountService::new(registry, &vault).install_with_profile(
-                    provider,
-                    config,
-                    secret,
-                    requested_profile,
-                )?;
-                Ok((snapshot, CloudSyncLifecycleAction::Activate))
+                let publication = CloudAccountService::new(registry, &vault)
+                    .install_with_profile_publication(
+                        provider,
+                        config,
+                        secret,
+                        requested_profile,
+                    )?;
+                Ok((
+                    publication.snapshot,
+                    CloudSyncLifecycleAction::Replace {
+                        retired_source_id: publication.retired_source_id,
+                        activated_source_id: publication.activated_source_id,
+                    },
+                ))
             })
         },
         move |action| async move {
@@ -6121,13 +6315,129 @@ mod tests {
         async fn read_changes(
             &self,
             _cursor: &crate::cloud_documents::ProviderCursor,
-            _known: &[crate::cloud_documents::KnownMarkdownMetadata],
             _context: &crate::cloud_documents::CloudIoContext,
         ) -> Result<
             crate::cloud_documents::MarkdownChangePage,
             crate::cloud_documents::CloudDocumentError,
         > {
             Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn materialize_changes(
+            &self,
+            _changes: &[crate::cloud_documents::MarkdownChangeEvent],
+            _known: &[crate::cloud_documents::KnownMarkdownMetadata],
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            Vec<crate::cloud_documents::MarkdownMetadata>,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+    }
+
+    struct SchedulerSyncSource {
+        source_id: SourceId,
+        change_calls: AtomicUsize,
+    }
+
+    impl SchedulerSyncSource {
+        fn new(source_id: &str) -> Self {
+            Self {
+                source_id: SourceId::new(source_id),
+                change_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn change_calls(&self) -> usize {
+            self.change_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::cloud_documents::MarkdownDocumentSource for SchedulerSyncSource {
+        fn source_id(&self) -> &SourceId {
+            &self.source_id
+        }
+
+        async fn start_change_tracking(
+            &self,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::ProviderCursor,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Ok(crate::cloud_documents::ProviderCursor::new(
+                b"scheduler-c0".to_vec(),
+            ))
+        }
+
+        async fn list_page(
+            &self,
+            _cursor: Option<&crate::cloud_documents::ProviderCursor>,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownMetadataPage,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Ok(crate::cloud_documents::MarkdownMetadataPage {
+                rows: Vec::new(),
+                next_cursor: None,
+                observed_at_ms: 1,
+            })
+        }
+
+        async fn read_document(
+            &self,
+            _key: &crate::cloud_documents::SourceRecordKey,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownDocumentRevision,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn write_document(
+            &self,
+            _key: &crate::cloud_documents::SourceRecordKey,
+            _expected: &crate::cloud_documents::ProviderRevision,
+            _body: &[u8],
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownWriteReceipt,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn read_changes(
+            &self,
+            cursor: &crate::cloud_documents::ProviderCursor,
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            crate::cloud_documents::MarkdownChangePage,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            self.change_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::cloud_documents::MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: cursor.clone(),
+                has_more: false,
+                observed_at_ms: 2,
+            })
+        }
+
+        async fn materialize_changes(
+            &self,
+            _changes: &[crate::cloud_documents::MarkdownChangeEvent],
+            _known: &[crate::cloud_documents::KnownMarkdownMetadata],
+            _context: &crate::cloud_documents::CloudIoContext,
+        ) -> Result<
+            Vec<crate::cloud_documents::MarkdownMetadata>,
+            crate::cloud_documents::CloudDocumentError,
+        > {
+            Ok(Vec::new())
         }
     }
 
@@ -6184,6 +6494,164 @@ mod tests {
             cloud_tables, 5,
             "all cloud materialization tables share the catalog file"
         );
+    }
+
+    #[tokio::test]
+    async fn periodic_refresh_is_cancelled_before_pause_and_cannot_reclaim_the_owner() {
+        let root = tempdir().expect("cloud catalog directory");
+        let runtime = CloudSyncRuntime::default();
+        runtime
+            .configure(root.path().join("cloud-library.catdb"))
+            .expect("configure shared catalog path");
+        let coordinator = runtime.coordinator().await.expect("open coordinator");
+        let source = Arc::new(SchedulerSyncSource::new("scheduled-sync-source"));
+        let source_id = source.source_id.clone();
+        let pins = crate::cloud_documents::store::CloudDocumentVersionPins::new(
+            b"schema-v1",
+            b"mapping-v1",
+            b"source-v1",
+        )
+        .expect("fixed test pins");
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&source) as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+                pins,
+            )
+            .await
+            .expect("activate source");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("initial sync settles");
+        let initial_calls = source.change_calls();
+
+        runtime
+            .schedule_background_refresh_for_test(
+                coordinator.clone(),
+                source_id.clone(),
+                Duration::from_millis(5),
+            )
+            .expect("schedule periodic refresh");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while source.change_calls() == initial_calls {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("periodic refresh runs");
+
+        runtime
+            .cancel_background_refresh(&source_id)
+            .expect("cancel periodic refresh before pause");
+        coordinator.pause(&source_id).await.expect("pause source");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("pause settles");
+        let calls_after_pause = source.change_calls();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert_eq!(source.change_calls(), calls_after_pause);
+        assert!(matches!(
+            coordinator.status(&source_id).expect("pause status"),
+            Some(status) if matches!(status.phase(), crate::cloud_documents::CloudSyncPhase::Paused)
+        ));
+    }
+
+    #[tokio::test]
+    async fn replacement_cancels_and_retires_the_old_scheduler_before_activating_the_new_source() {
+        let root = tempdir().expect("cloud catalog directory");
+        let runtime = CloudSyncRuntime::default();
+        runtime
+            .configure(root.path().join("cloud-library.catdb"))
+            .expect("configure shared catalog path");
+        let coordinator = runtime.coordinator().await.expect("open coordinator");
+        let pins = crate::cloud_documents::store::CloudDocumentVersionPins::new(
+            b"schema-v1",
+            b"mapping-v1",
+            b"source-v1",
+        )
+        .expect("fixed test pins");
+        let old_source = Arc::new(SchedulerSyncSource::new("replacement-old-source"));
+        let old_source_id = old_source.source_id.clone();
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&old_source) as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+                pins.clone(),
+            )
+            .await
+            .expect("activate old source");
+        coordinator
+            .wait_until_idle(&old_source_id)
+            .await
+            .expect("old initial sync settles");
+        let old_initial_calls = old_source.change_calls();
+        runtime
+            .schedule_background_refresh_for_test(
+                coordinator.clone(),
+                old_source_id.clone(),
+                Duration::from_millis(5),
+            )
+            .expect("schedule old refresh");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while old_source.change_calls() == old_initial_calls {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("old refresh runs");
+
+        runtime
+            .cancel_background_refresh(&old_source_id)
+            .expect("cancel old scheduler before retirement");
+        coordinator
+            .retire(&old_source_id)
+            .await
+            .expect("retire old source before replacement");
+        coordinator
+            .wait_until_idle(&old_source_id)
+            .await
+            .expect("old source settles retired");
+        let old_calls_after_retire = old_source.change_calls();
+
+        let new_source = Arc::new(SchedulerSyncSource::new("replacement-new-source"));
+        let new_source_id = new_source.source_id.clone();
+        coordinator
+            .activate_with_pins(
+                Arc::clone(&new_source) as Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+                pins,
+            )
+            .await
+            .expect("activate new source only after old retirement");
+        coordinator
+            .wait_until_idle(&new_source_id)
+            .await
+            .expect("new initial sync settles");
+        let new_initial_calls = new_source.change_calls();
+        runtime
+            .schedule_background_refresh_for_test(
+                coordinator.clone(),
+                new_source_id.clone(),
+                Duration::from_millis(5),
+            )
+            .expect("schedule replacement refresh");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while new_source.change_calls() == new_initial_calls {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("replacement refresh runs");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert_eq!(old_source.change_calls(), old_calls_after_retire);
+        assert!(matches!(
+            coordinator.status(&old_source_id).expect("old source status"),
+            Some(status) if matches!(status.phase(), crate::cloud_documents::CloudSyncPhase::Retired)
+        ));
+        runtime
+            .cancel_background_refresh(&new_source_id)
+            .expect("stop replacement scheduler");
     }
 
     #[tokio::test]
@@ -8285,8 +8753,8 @@ mod tests {
             })
             .expect("old source");
 
-        service
-            .install(
+        let publication = service
+            .install_with_profile_publication(
                 CloudProvider::Dropbox,
                 CloudSourceConfig::Dropbox,
                 SecretBundle::new(
@@ -8296,8 +8764,9 @@ mod tests {
                     [41; 32],
                 )
                 .expect("replacement credential"),
+                CloudAuthorizationProfile::ReadOnlyV1,
             )
-            .expect("reconnect");
+            .expect("reconnect publication");
         let new_record = LibraryStore::new(registry_path)
             .read_cloud(|sources| {
                 sources
@@ -8309,6 +8778,16 @@ mod tests {
             .expect("new source");
 
         assert_ne!(new_record.id, old_record.id);
+        assert_eq!(
+            publication.retired_source_id,
+            Some(SourceId::new(old_record.id.clone())),
+            "the post-commit synchronizer retires exactly the superseded source"
+        );
+        assert_eq!(
+            publication.activated_source_id,
+            SourceId::new(new_record.id.clone()),
+            "the post-commit synchronizer activates exactly the committed replacement"
+        );
         assert_ne!(
             new_record.credential_reference,
             old_record.credential_reference
@@ -8746,7 +9225,7 @@ mod tests {
         assert_eq!(vault.entry_count(), 1, "pause must retain the credential");
 
         service
-            .disconnect(CloudProvider::GoogleDrive)
+            .disconnect_with_id(CloudProvider::GoogleDrive)
             .expect("disconnect source");
 
         let disconnected = service.snapshot().expect("disconnected snapshot");
@@ -9714,7 +10193,9 @@ mod tests {
         registry.fail_next_cloud_persist();
 
         assert_eq!(
-            service.disconnect(CloudProvider::Dropbox),
+            service
+                .disconnect_with_id(CloudProvider::Dropbox)
+                .map(|publication| publication.snapshot),
             Err(CloudSourceError::PersistFailed)
         );
         assert_eq!(

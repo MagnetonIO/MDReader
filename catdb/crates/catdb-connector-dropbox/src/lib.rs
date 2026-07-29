@@ -890,32 +890,6 @@ impl fmt::Debug for DropboxChangeCursor {
     }
 }
 
-/// Provider revision material used to classify an incremental change.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DropboxKnownRevision {
-    rev: String,
-    content_hash: String,
-}
-
-impl DropboxKnownRevision {
-    /// Validate a known Dropbox file revision.
-    pub fn new(
-        rev: impl Into<String>,
-        content_hash: impl Into<String>,
-    ) -> Result<Self, DropboxConnectorError> {
-        let rev = rev.into();
-        let content_hash = content_hash.into();
-        if !valid_provider_atom(&rev, 512) || !valid_provider_atom(&content_hash, 512) {
-            return Err(DropboxConnectorError::InvalidRevision);
-        }
-        Ok(Self { rev, content_hash })
-    }
-
-    fn matches(&self, file: &DropboxFile) -> bool {
-        self.rev == file.rev && file.content_hash.as_deref() == Some(self.content_hash.as_str())
-    }
-}
-
 /// Opaque provider revision used to guard a single Dropbox document operation.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DropboxRevision(String);
@@ -1192,24 +1166,15 @@ impl fmt::Debug for DropboxWriteReceipt {
     }
 }
 
-/// One Dropbox incremental-change classification.
+/// One Dropbox incremental change identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DropboxChangeEvent {
-    /// Provider revision is unchanged.
-    Unchanged {
-        /// Provider-normalized path.
-        path_lower: String,
-    },
-    /// File is new or changed.
+    /// File remains in the configured Markdown source scope.
     Upserted {
         /// Provider-normalized path.
         path_lower: String,
-        /// Dropbox revision.
-        rev: String,
-        /// Dropbox content hash.
-        content_hash: String,
     },
-    /// Known file was removed.
+    /// File was removed or left the configured Markdown source scope.
     Deleted {
         /// Provider-normalized path.
         path_lower: String,
@@ -1618,16 +1583,9 @@ impl DropboxSource {
     pub async fn read_changes(
         &self,
         cursor: &DropboxChangeCursor,
-        known: &BTreeMap<String, DropboxKnownRevision>,
         context: &ReadContext,
     ) -> Result<DropboxChangeOutcome, SourceError> {
         context.check()?;
-        if known.len() > MAX_CHANGE_EVENTS {
-            return Err(SourceError::ResourceLimit {
-                source_id: self.model.id().clone(),
-                resource: "Dropbox known revisions",
-            });
-        }
         let provider_cursor = self.decode_change_cursor(cursor)?;
         let mut physical_bytes = 0usize;
         let response = self
@@ -1668,39 +1626,21 @@ impl DropboxSource {
                 DropboxEntry::File(file) => {
                     self.validate_file_scope(&file)?;
                     if !is_exposed_path(self.spec.config.content_scope, &file.name) {
-                        if known.contains_key(&file.path_lower) {
-                            events.push(DropboxChangeEvent::Deleted {
-                                path_lower: file.path_lower,
-                            });
-                        }
+                        events.push(DropboxChangeEvent::Deleted {
+                            path_lower: file.path_lower,
+                        });
                         continue;
                     }
-                    let content_hash = file
-                        .content_hash
-                        .clone()
-                        .ok_or_else(|| self.malformed("file content hash"))?;
-                    let event = match known.get(&file.path_lower) {
-                        Some(revision) if revision.matches(&file) => {
-                            DropboxChangeEvent::Unchanged {
-                                path_lower: file.path_lower,
-                            }
-                        }
-                        _ => DropboxChangeEvent::Upserted {
-                            path_lower: file.path_lower,
-                            rev: file.rev,
-                            content_hash,
-                        },
-                    };
-                    events.push(event);
+                    events.push(DropboxChangeEvent::Upserted {
+                        path_lower: file.path_lower,
+                    });
                 }
                 DropboxEntry::Deleted(deleted) => {
                     validate_deleted(&deleted, self.model.id())?;
                     self.validate_path_scope(&deleted.path_lower)?;
-                    if known.contains_key(&deleted.path_lower) {
-                        events.push(DropboxChangeEvent::Deleted {
-                            path_lower: deleted.path_lower,
-                        });
-                    }
+                    events.push(DropboxChangeEvent::Deleted {
+                        path_lower: deleted.path_lower,
+                    });
                 }
                 DropboxEntry::Folder(_) => {
                     return Ok(DropboxChangeOutcome::RebuildRequired);

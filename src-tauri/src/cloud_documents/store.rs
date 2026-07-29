@@ -20,6 +20,7 @@ use super::{
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_WRITE_REPAIR_PAGE_ROWS: usize = 256;
+const MAX_CHANGE_LOOKUP_KEYS: usize = 256;
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 const SCHEMA_SQL: &str = "
     CREATE TABLE mdreader_cloud_snapshot (
@@ -471,6 +472,8 @@ pub(crate) struct CloudDocumentStore {
     cache_limit_bytes: u64,
     #[cfg(test)]
     fail_next_change_commit: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_full_published_listing: std::sync::atomic::AtomicBool,
 }
 
 impl CloudDocumentStore {
@@ -479,6 +482,9 @@ impl CloudDocumentStore {
 
     /// Largest permitted pending write-repair recovery page.
     pub(crate) const MAX_WRITE_REPAIR_PAGE_ROWS: usize = MAX_WRITE_REPAIR_PAGE_ROWS;
+
+    /// Largest bounded source-scoped lookup following one provider change page.
+    pub(crate) const MAX_CHANGE_LOOKUP_ROWS: usize = MAX_CHANGE_LOOKUP_KEYS;
 
     /// Opens (or creates) the durable materialization database at `path`.
     pub(crate) fn open(path: impl AsRef<Path>) -> StoreResult<Self> {
@@ -505,6 +511,8 @@ impl CloudDocumentStore {
             cache_limit_bytes,
             #[cfg(test)]
             fail_next_change_commit: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_full_published_listing: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -710,6 +718,13 @@ impl CloudDocumentStore {
         &self,
         source_id: &SourceId,
     ) -> StoreResult<Vec<PublishedCloudDocument>> {
+        #[cfg(test)]
+        if self
+            .fail_next_full_published_listing
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CloudDocumentStoreError::InjectedCommitFailure);
+        }
         let source_id = source_bytes(source_id)?;
         let connection = self.connection()?;
         let mut statement = connection
@@ -729,6 +744,48 @@ impl CloudDocumentStore {
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|_| CloudDocumentStoreError::CorruptStore)
+    }
+
+    /// Resolves only the published rows named by one bounded provider event
+    /// page. This remains local SQLite work and never spans provider I/O.
+    pub(crate) fn published_for_keys(
+        &self,
+        source_id: &SourceId,
+        keys: &[SourceRecordKey],
+    ) -> StoreResult<Vec<PublishedCloudDocument>> {
+        if keys.len() > Self::MAX_CHANGE_LOOKUP_ROWS {
+            return Err(CloudDocumentStoreError::InvalidIdentifier);
+        }
+        let source_id = source_bytes(source_id)?;
+        for key in keys {
+            validate_record_key(key)?;
+        }
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT d.record_key, d.name, d.display_path, d.media_type, d.modified_at_ms,
+                    d.size_bytes, d.revision, d.content_hash, d.deleted, d.schema_version_id,
+                    d.mapping_version_id, d.source_version_id, d.observed_at_ms
+                 FROM mdreader_cloud_document d
+                 INNER JOIN mdreader_cloud_snapshot s
+                   ON s.source_id = d.source_id AND s.generation = d.generation
+                 WHERE d.source_id = ?1 AND d.record_key = ?2 AND s.state = 'published'",
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let mut documents = Vec::with_capacity(keys.len());
+        for key in keys {
+            let document = statement
+                .query_row(
+                    params![source_id, key.0.as_bytes()],
+                    decode_published_document,
+                )
+                .optional()
+                .map_err(|_| CloudDocumentStoreError::Persistence)?;
+            if let Some(document) = document {
+                documents.push(document);
+            }
+        }
+        Ok(documents)
     }
 
     /// Loads the last atomically committed provider change cursor for `source_id`.
@@ -1133,6 +1190,12 @@ impl CloudDocumentStore {
     #[cfg(test)]
     pub(crate) fn inject_commit_failure_after_rows(&self) {
         self.fail_next_change_commit
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_next_full_published_listing(&self) {
+        self.fail_next_full_published_listing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 

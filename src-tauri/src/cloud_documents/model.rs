@@ -28,6 +28,14 @@ impl fmt::Debug for SourceRecordKey {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ProviderCursor(pub(super) Vec<u8>);
 
+impl ProviderCursor {
+    /// Creates an opaque cursor from source-owned bytes.
+    #[cfg(test)]
+    pub(crate) fn new(value: impl Into<Vec<u8>>) -> Self {
+        Self(value.into())
+    }
+}
+
 impl fmt::Debug for ProviderCursor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -71,8 +79,27 @@ pub(crate) struct MarkdownMetadataPage {
     pub(crate) observed_at_ms: i64,
 }
 
+/// One provider-native change identity. Provider polling returns these opaque
+/// bounded events before SQLite resolves only the matching published rows.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum MarkdownChangeEvent {
+    /// A record remains or became eligible for the Markdown materialization.
+    Upsert { key: SourceRecordKey },
+    /// A record was deleted or left the provider's configured source scope.
+    Deleted { key: SourceRecordKey },
+}
+
+impl MarkdownChangeEvent {
+    pub(crate) fn key(&self) -> &SourceRecordKey {
+        match self {
+            Self::Upsert { key } | Self::Deleted { key } => key,
+        }
+    }
+}
+
+/// A bounded provider change page before application-side metadata resolution.
 pub(crate) struct MarkdownChangePage {
-    pub(crate) changes: Vec<MarkdownMetadata>,
+    pub(crate) changes: Vec<MarkdownChangeEvent>,
     pub(crate) next_cursor: ProviderCursor,
     pub(crate) has_more: bool,
     pub(crate) observed_at_ms: i64,
@@ -89,7 +116,6 @@ pub(crate) struct KnownMarkdownMetadata {
     pub(crate) modified_at_ms: Option<i64>,
     pub(crate) size_bytes: Option<u64>,
     pub(crate) revision: ProviderRevision,
-    pub(crate) content_hash: Option<[u8; 32]>,
     pub(crate) deleted: bool,
 }
 
@@ -168,7 +194,12 @@ pub(crate) trait MarkdownDocumentSource: Send + Sync {
     async fn read_changes(
         &self,
         cursor: &ProviderCursor,
-        known: &[KnownMarkdownMetadata],
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError>;
+    async fn materialize_changes(
+        &self,
+        changes: &[MarkdownChangeEvent],
+        known: &[KnownMarkdownMetadata],
+        context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError>;
 }

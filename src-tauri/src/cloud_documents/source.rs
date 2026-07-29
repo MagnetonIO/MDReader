@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::SystemTime};
+use std::time::SystemTime;
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
@@ -7,8 +7,8 @@ use catdb_connectors::{DataSource, ReadContext, SourceCursor, SourceError, Sourc
 use catdb_query::{EntityQuery, EntityTarget};
 
 use super::model::{
-    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownWriteReceipt,
-    ProviderCursor, ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangeEvent,
+    MarkdownWriteReceipt, ProviderCursor, ProviderRevision, SourceRecordKey,
 };
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use super::model::{
@@ -352,20 +352,6 @@ fn optional_u64(value: &serde_json::Value, field: &str) -> Option<u64> {
     value.get(field).and_then(serde_json::Value::as_u64)
 }
 
-#[cfg(feature = "google-drive-connector")]
-fn drive_timestamp(milliseconds: i64) -> Result<String, CloudDocumentError> {
-    use time::format_description::well_known::Rfc3339;
-
-    let nanos = i128::from(milliseconds)
-        .checked_mul(1_000_000)
-        .ok_or(CloudDocumentError::ProtocolFailed)?;
-    let timestamp = time::OffsetDateTime::from_unix_timestamp_nanos(nanos)
-        .map_err(|_| CloudDocumentError::ProtocolFailed)?;
-    timestamp
-        .format(&Rfc3339)
-        .map_err(|_| CloudDocumentError::ProtocolFailed)
-}
-
 #[cfg(feature = "dropbox-connector")]
 fn decode_hash(value: &str) -> Result<[u8; 32], CloudDocumentError> {
     if value.len() != 64 {
@@ -378,17 +364,6 @@ fn decode_hash(value: &str) -> Result<[u8; 32], CloudDocumentError> {
             .map_err(|_| CloudDocumentError::ProtocolFailed)?;
     }
     Ok(hash)
-}
-
-#[cfg(feature = "dropbox-connector")]
-fn encode_hash(hash: [u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(64);
-    for byte in hash {
-        value.push(HEX[usize::from(byte >> 4)] as char);
-        value.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    value
 }
 
 /// Native Drive adapter. Its resolver retains the admitted credential and
@@ -462,31 +437,6 @@ impl DriveMarkdownDocumentSource {
             },
             deleted: false,
         })
-    }
-
-    fn known_revisions(
-        known: &[KnownMarkdownMetadata],
-    ) -> Result<
-        BTreeMap<String, catdb_connector_google_drive::DriveKnownRevision>,
-        CloudDocumentError,
-    > {
-        known
-            .iter()
-            .filter(|metadata| !metadata.deleted && metadata.modified_at_ms.is_some())
-            .map(|metadata| {
-                let modified_time = drive_timestamp(
-                    metadata
-                        .modified_at_ms
-                        .ok_or(CloudDocumentError::ProtocolFailed)?,
-                )?;
-                let checksum = (metadata.revision.opaque != metadata.key.as_str())
-                    .then(|| metadata.revision.opaque.clone());
-                let revision =
-                    catdb_connector_google_drive::DriveKnownRevision::new(modified_time, checksum)
-                        .map_err(|_| CloudDocumentError::ProtocolFailed)?;
-                Ok((metadata.key.as_str().to_string(), revision))
-            })
-            .collect()
     }
 
     fn deleted(known: &KnownMarkdownMetadata) -> MarkdownMetadata {
@@ -594,21 +544,14 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
     async fn read_changes(
         &self,
         cursor: &ProviderCursor,
-        known: &[KnownMarkdownMetadata],
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         check_lifecycle(self.lifecycle.as_ref()).await?;
         let cursor = catdb_connector_google_drive::DriveChangeCursor::from_bytes(cursor.0.clone())
             .map_err(map_source_error)?;
-        let known_revisions = Self::known_revisions(known)?;
-        let known_metadata = known
-            .iter()
-            .filter(|metadata| !metadata.deleted)
-            .map(|metadata| (metadata.key.as_str().to_string(), metadata))
-            .collect::<BTreeMap<_, _>>();
         let outcome = self
             .source()?
-            .read_changes(&cursor, &known_revisions, &read_context(context)?)
+            .read_changes(&cursor, &read_context(context)?)
             .await
             .map_err(map_source_error)?;
         check_lifecycle(self.lifecycle.as_ref()).await?;
@@ -627,36 +570,60 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
                     (None, Some(checkpoint)) => ProviderCursor(checkpoint.as_bytes().to_vec()),
                     _ => return Err(CloudDocumentError::ProtocolFailed),
                 };
-                let mut changes = Vec::new();
-                for event in events {
-                    match event {
-                        catdb_connector_google_drive::DriveChangeEvent::Deleted { file_id } => {
-                            if let Some(metadata) = known_metadata.get(&file_id) {
-                                changes.push(Self::deleted(metadata));
-                            }
-                        }
-                        catdb_connector_google_drive::DriveChangeEvent::Unchanged { .. } => {}
-                        catdb_connector_google_drive::DriveChangeEvent::Upserted {
-                            file_id,
-                            ..
-                        } => {
-                            let row = self
-                                .source()?
-                                .metadata_for_sync(&file_id, &read_context(context)?)
-                                .await
-                                .map_err(map_source_error)?;
-                            changes.push(Self::metadata(row)?);
-                        }
-                    }
-                }
                 Ok(MarkdownChangePage {
-                    changes,
+                    changes: events
+                        .into_iter()
+                        .map(|event| match event {
+                            catdb_connector_google_drive::DriveChangeEvent::Deleted { file_id } => {
+                                MarkdownChangeEvent::Deleted {
+                                    key: SourceRecordKey::new(file_id),
+                                }
+                            }
+                            catdb_connector_google_drive::DriveChangeEvent::Upserted {
+                                file_id,
+                            } => MarkdownChangeEvent::Upsert {
+                                key: SourceRecordKey::new(file_id),
+                            },
+                        })
+                        .collect(),
                     next_cursor,
                     has_more,
                     observed_at_ms: now_ms(),
                 })
             }
         }
+    }
+
+    async fn materialize_changes(
+        &self,
+        changes: &[MarkdownChangeEvent],
+        known: &[KnownMarkdownMetadata],
+        context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        let mut materialized = Vec::with_capacity(changes.len());
+        for change in changes {
+            match change {
+                MarkdownChangeEvent::Deleted { key } => {
+                    if let Some(metadata) = known
+                        .iter()
+                        .find(|metadata| !metadata.deleted && &metadata.key == key)
+                    {
+                        materialized.push(Self::deleted(metadata));
+                    }
+                }
+                MarkdownChangeEvent::Upsert { key } => {
+                    let row = self
+                        .source()?
+                        .metadata_for_sync(key.as_str(), &read_context(context)?)
+                        .await
+                        .map_err(map_source_error)?;
+                    materialized.push(Self::metadata(row)?);
+                }
+            }
+        }
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        Ok(materialized)
     }
 }
 
@@ -728,27 +695,6 @@ impl DropboxMarkdownDocumentSource {
             },
             deleted: false,
         })
-    }
-
-    fn known_revisions(
-        known: &[KnownMarkdownMetadata],
-    ) -> Result<BTreeMap<String, catdb_connector_dropbox::DropboxKnownRevision>, CloudDocumentError>
-    {
-        known
-            .iter()
-            .filter(|metadata| !metadata.deleted && metadata.content_hash.is_some())
-            .map(|metadata| {
-                let content_hash = metadata
-                    .content_hash
-                    .ok_or(CloudDocumentError::ProtocolFailed)?;
-                let revision = catdb_connector_dropbox::DropboxKnownRevision::new(
-                    metadata.revision.opaque.clone(),
-                    encode_hash(content_hash),
-                )
-                .map_err(|_| CloudDocumentError::ProtocolFailed)?;
-                Ok((metadata.key.as_str().to_string(), revision))
-            })
-            .collect()
     }
 
     fn deleted(known: &KnownMarkdownMetadata) -> MarkdownMetadata {
@@ -864,21 +810,14 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
     async fn read_changes(
         &self,
         cursor: &ProviderCursor,
-        known: &[KnownMarkdownMetadata],
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         check_lifecycle(self.lifecycle.as_ref()).await?;
         let cursor = catdb_connector_dropbox::DropboxChangeCursor::from_bytes(cursor.0.clone())
             .map_err(map_source_error)?;
-        let known_revisions = Self::known_revisions(known)?;
-        let known_metadata = known
-            .iter()
-            .filter(|metadata| !metadata.deleted)
-            .map(|metadata| (metadata.key.as_str().to_string(), metadata))
-            .collect::<BTreeMap<_, _>>();
         let outcome = self
             .source()?
-            .read_changes(&cursor, &known_revisions, &read_context(context)?)
+            .read_changes(&cursor, &read_context(context)?)
             .await
             .map_err(map_source_error)?;
         check_lifecycle(self.lifecycle.as_ref()).await?;
@@ -897,35 +836,59 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
                     (None, Some(checkpoint)) => ProviderCursor(checkpoint.as_bytes().to_vec()),
                     _ => return Err(CloudDocumentError::ProtocolFailed),
                 };
-                let mut changes = Vec::new();
-                for event in events {
-                    match event {
-                        catdb_connector_dropbox::DropboxChangeEvent::Deleted { path_lower } => {
-                            if let Some(metadata) = known_metadata.get(&path_lower) {
-                                changes.push(Self::deleted(metadata));
-                            }
-                        }
-                        catdb_connector_dropbox::DropboxChangeEvent::Unchanged { .. } => {}
-                        catdb_connector_dropbox::DropboxChangeEvent::Upserted {
-                            path_lower,
-                            ..
-                        } => {
-                            let row = self
-                                .source()?
-                                .metadata_for_sync(&path_lower, &read_context(context)?)
-                                .await
-                                .map_err(map_source_error)?;
-                            changes.push(Self::metadata(row)?);
-                        }
-                    }
-                }
                 Ok(MarkdownChangePage {
-                    changes,
+                    changes: events
+                        .into_iter()
+                        .map(|event| match event {
+                            catdb_connector_dropbox::DropboxChangeEvent::Deleted { path_lower } => {
+                                MarkdownChangeEvent::Deleted {
+                                    key: SourceRecordKey::new(path_lower),
+                                }
+                            }
+                            catdb_connector_dropbox::DropboxChangeEvent::Upserted {
+                                path_lower,
+                            } => MarkdownChangeEvent::Upsert {
+                                key: SourceRecordKey::new(path_lower),
+                            },
+                        })
+                        .collect(),
                     next_cursor,
                     has_more,
                     observed_at_ms: now_ms(),
                 })
             }
         }
+    }
+
+    async fn materialize_changes(
+        &self,
+        changes: &[MarkdownChangeEvent],
+        known: &[KnownMarkdownMetadata],
+        context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        let mut materialized = Vec::with_capacity(changes.len());
+        for change in changes {
+            match change {
+                MarkdownChangeEvent::Deleted { key } => {
+                    if let Some(metadata) = known
+                        .iter()
+                        .find(|metadata| !metadata.deleted && &metadata.key == key)
+                    {
+                        materialized.push(Self::deleted(metadata));
+                    }
+                }
+                MarkdownChangeEvent::Upsert { key } => {
+                    let row = self
+                        .source()?
+                        .metadata_for_sync(key.as_str(), &read_context(context)?)
+                        .await
+                        .map_err(map_source_error)?;
+                    materialized.push(Self::metadata(row)?);
+                }
+            }
+        }
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        Ok(materialized)
     }
 }

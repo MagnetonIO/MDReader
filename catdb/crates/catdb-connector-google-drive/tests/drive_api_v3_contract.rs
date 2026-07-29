@@ -8,10 +8,9 @@ use catdb_connector_google_drive::{
     DriveAccessGrant, DriveAccessToken, DriveAuthorizationProfile, DriveAvailability,
     DriveChangeCursor, DriveChangeEvent, DriveChangeOutcome, DriveConnectorError,
     DriveContentScope, DriveCursorKey, DriveDocumentError, DriveHttpMethod, DriveHttpRequest,
-    DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce, DriveRefreshCredential, DriveRevision,
-    DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource,
-    DriveSourceConfig, DriveTransport, DriveTransportError, PinnedDriveSourceSpec,
-    GOOGLE_DRIVE_READONLY_SCOPE,
+    DriveHttpResponse, DriveOAuthPkce, DriveRefreshCredential, DriveRevision, DriveRuntimeSecrets,
+    DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource, DriveSourceConfig,
+    DriveTransport, DriveTransportError, PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -2433,7 +2432,7 @@ async fn root_exact_id_rejects_an_accessible_file_outside_the_selected_root_befo
 }
 
 #[tokio::test]
-async fn readable_root_change_tracking_keeps_nested_text_and_ignores_other_content() {
+async fn readable_root_change_tracking_keeps_nested_text_and_tombstones_other_content() {
     let changed = serde_json::to_vec(&serde_json::json!({
         "changes": [
             {
@@ -2480,7 +2479,7 @@ async fn readable_root_change_tracking_keeps_nested_text_and_ignores_other_conte
         .await
         .expect("start changes");
     let outcome = source
-        .read_changes(&cursor, &BTreeMap::new(), &context(20, 20, 64 * 1024))
+        .read_changes(&cursor, &context(20, 20, 64 * 1024))
         .await
         .expect("read changes");
     let DriveChangeOutcome::Page { events, .. } = outcome else {
@@ -2488,11 +2487,14 @@ async fn readable_root_change_tracking_keeps_nested_text_and_ignores_other_conte
     };
     assert_eq!(
         events,
-        vec![DriveChangeEvent::Upserted {
-            file_id: "nested-note".to_string(),
-            modified_time: "2026-07-20T12:34:56Z".to_string(),
-            checksum: Some("note-checksum".to_string()),
-        }]
+        vec![
+            DriveChangeEvent::Upserted {
+                file_id: "nested-note".to_string(),
+            },
+            DriveChangeEvent::Deleted {
+                file_id: "nested-pdf".to_string(),
+            },
+        ]
     );
 }
 
@@ -3038,12 +3040,8 @@ async fn recursive_membership_classifies_moved_out_and_moved_in_children() {
         .start_change_tracking(&context(10, 10, 64 * 1024))
         .await
         .unwrap();
-    let known = BTreeMap::from([(
-        "moved-out".to_string(),
-        DriveKnownRevision::new("2026-07-20T00:00:00Z", Some("old")).unwrap(),
-    )]);
     let DriveChangeOutcome::Page { events, .. } = source
-        .read_changes(&cursor, &known, &context(10, 10, 64 * 1024))
+        .read_changes(&cursor, &context(10, 10, 64 * 1024))
         .await
         .unwrap()
     else {
@@ -3057,8 +3055,6 @@ async fn recursive_membership_classifies_moved_out_and_moved_in_children() {
             },
             DriveChangeEvent::Upserted {
                 file_id: "moved-in".to_string(),
-                modified_time: "2026-07-21T00:00:01Z".to_string(),
-                checksum: None,
             }
         ]
     );
@@ -3501,7 +3497,6 @@ async fn query_cursor_is_authenticated_and_bound_to_query_plan_spec_and_query_id
         same_source
             .read_changes(
                 &cross_kind,
-                &BTreeMap::new(),
                 &context_with_id(query_id, 1, 4, 64 * 1024, CancellationToken::new()),
             )
             .await,
@@ -3787,18 +3782,8 @@ async fn changes_page_preserves_deletion_unchanged_and_new_checkpoint_semantics(
         .start_change_tracking(&context(20, 20, 64 * 1024))
         .await
         .unwrap();
-    let known = BTreeMap::from([
-        (
-            "gone".to_string(),
-            DriveKnownRevision::new("2026-07-19T00:00:00Z", Some("gone-checksum")).unwrap(),
-        ),
-        (
-            "same".to_string(),
-            DriveKnownRevision::new("2026-07-20T12:34:56Z", Some("same-checksum")).unwrap(),
-        ),
-    ]);
     let first = source
-        .read_changes(&initial, &known, &context(20, 20, 64 * 1024))
+        .read_changes(&initial, &context(20, 20, 64 * 1024))
         .await
         .unwrap();
     let DriveChangeOutcome::Page {
@@ -3815,7 +3800,7 @@ async fn changes_page_preserves_deletion_unchanged_and_new_checkpoint_semantics(
             DriveChangeEvent::Deleted {
                 file_id: "gone".to_string()
             },
-            DriveChangeEvent::Unchanged {
+            DriveChangeEvent::Upserted {
                 file_id: "same".to_string()
             }
         ]
@@ -3823,7 +3808,7 @@ async fn changes_page_preserves_deletion_unchanged_and_new_checkpoint_semantics(
     assert!(checkpoint.is_none());
     let second_cursor = next_cursor.expect("provider returned another page");
     let second = source
-        .read_changes(&second_cursor, &known, &context(20, 20, 64 * 1024))
+        .read_changes(&second_cursor, &context(20, 20, 64 * 1024))
         .await
         .unwrap();
     let DriveChangeOutcome::Page {
@@ -3891,9 +3876,7 @@ async fn change_cursor_is_bound_to_source_selection_schema_domain_and_authentica
         )
         .unwrap();
         assert_eq!(
-            different
-                .read_changes(&cursor, &BTreeMap::new(), &context(2, 2, 4_096))
-                .await,
+            different.read_changes(&cursor, &context(2, 2, 4_096)).await,
             Err(SourceError::InvalidCursor)
         );
     }
@@ -3903,9 +3886,7 @@ async fn change_cursor_is_bound_to_source_selection_schema_domain_and_authentica
     tampered[index] ^= 0x01;
     let tampered = DriveChangeCursor::from_bytes(tampered).unwrap();
     assert_eq!(
-        tracker
-            .read_changes(&tampered, &BTreeMap::new(), &context(2, 2, 4_096))
-            .await,
+        tracker.read_changes(&tampered, &context(2, 2, 4_096)).await,
         Err(SourceError::InvalidCursor)
     );
 
@@ -3942,7 +3923,7 @@ async fn change_cursor_is_bound_to_source_selection_schema_domain_and_authentica
     let cross_kind = DriveChangeCursor::from_bytes(query_cursor.as_bytes().to_vec()).unwrap();
     assert_eq!(
         tracker
-            .read_changes(&cross_kind, &BTreeMap::new(), &context(2, 2, 4_096))
+            .read_changes(&cross_kind, &context(2, 2, 4_096))
             .await,
         Err(SourceError::InvalidCursor)
     );
@@ -3974,9 +3955,7 @@ async fn malformed_change_continuation_never_crosses_into_a_followup_request() {
         .await
         .unwrap();
     assert_eq!(
-        source
-            .read_changes(&cursor, &BTreeMap::new(), &context(2, 2, 4_096))
-            .await,
+        source.read_changes(&cursor, &context(2, 2, 4_096)).await,
         Err(SourceError::InvalidCursor)
     );
     assert_eq!(transport.requests().len(), 2);
@@ -3998,7 +3977,7 @@ async fn expired_change_token_requires_rebuild_instead_of_empty_success() {
         .unwrap();
     assert_eq!(
         source
-            .read_changes(&cursor, &BTreeMap::new(), &context(2, 2, 4096))
+            .read_changes(&cursor, &context(2, 2, 4096))
             .await
             .unwrap(),
         DriveChangeOutcome::RebuildRequired

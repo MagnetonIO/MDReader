@@ -43,9 +43,9 @@ use super::source::{
     DocumentLifecycle, GuardedMarkdownDocumentOperations, GuardedMarkdownWriteReceipt,
 };
 use super::{
-    CloudDocumentError, CloudIoContext, CloudSyncCoordinator, MarkdownChangePage,
-    MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, ProviderCursor,
-    ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, CloudSyncCoordinator, MarkdownChangeEvent,
+    MarkdownChangePage, MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage,
+    ProviderCursor, ProviderRevision, SourceRecordKey,
 };
 use crate::cloud_accounts::{
     CloudAuthorizationProfile, CloudSourceError, NativeMarkdownWriteAcceptance,
@@ -179,6 +179,8 @@ struct SyncFakeProvider {
     starts: AtomicUsize,
     list_calls: AtomicUsize,
     change_calls: AtomicUsize,
+    block_next_change: std::sync::atomic::AtomicBool,
+    entered_change: tokio::sync::Notify,
 }
 
 impl SyncFakeProvider {
@@ -191,7 +193,7 @@ impl SyncFakeProvider {
                 Ok(sync_page(&["b.md"], None)),
             ],
             [Ok(MarkdownChangePage {
-                changes: vec![sync_deleted("a.md"), sync_metadata("c.md")],
+                changes: vec![sync_deleted_change("a.md"), sync_upsert_change("c.md")],
                 next_cursor: ProviderCursor(b"c1".to_vec()),
                 has_more: false,
                 observed_at_ms: 3,
@@ -214,11 +216,25 @@ impl SyncFakeProvider {
             starts: AtomicUsize::new(0),
             list_calls: AtomicUsize::new(0),
             change_calls: AtomicUsize::new(0),
+            block_next_change: std::sync::atomic::AtomicBool::new(false),
+            entered_change: tokio::sync::Notify::new(),
         }
     }
 
     fn starts(&self) -> usize {
         self.starts.load(Ordering::SeqCst)
+    }
+
+    fn enqueue_change(&self, page: Result<MarkdownChangePage, CloudDocumentError>) {
+        self.change_pages
+            .lock()
+            .expect("fake change pages")
+            .push_back(page);
+    }
+
+    fn block_next_change(&self) -> impl std::future::Future<Output = ()> + '_ {
+        self.block_next_change.store(true, Ordering::SeqCst);
+        self.entered_change.notified()
     }
 
     fn failing_start(source_id: &str, error: CloudDocumentError) -> Self {
@@ -279,15 +295,37 @@ impl MarkdownDocumentSource for SyncFakeProvider {
     async fn read_changes(
         &self,
         _cursor: &ProviderCursor,
-        _known: &[super::KnownMarkdownMetadata],
-        _context: &CloudIoContext,
+        context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         self.change_calls.fetch_add(1, Ordering::SeqCst);
+        if self.block_next_change.swap(false, Ordering::SeqCst) {
+            self.entered_change.notify_waiters();
+            context.cancellation.cancelled().await;
+            return Err(CloudDocumentError::Cancelled);
+        }
         self.change_pages
             .lock()
             .expect("fake change pages")
             .pop_front()
             .unwrap_or(Err(CloudDocumentError::ProtocolFailed))
+    }
+
+    async fn materialize_changes(
+        &self,
+        changes: &[MarkdownChangeEvent],
+        known: &[super::KnownMarkdownMetadata],
+        _context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+        Ok(changes
+            .iter()
+            .filter_map(|change| match change {
+                MarkdownChangeEvent::Upsert { key } => Some(sync_metadata(key.as_str())),
+                MarkdownChangeEvent::Deleted { key } => known
+                    .iter()
+                    .find(|metadata| metadata.key.as_str() == key.as_str())
+                    .map(|_| sync_deleted(key.as_str())),
+            })
+            .collect())
     }
 }
 
@@ -352,9 +390,17 @@ impl MarkdownDocumentSource for BlockingListSyncProvider {
     async fn read_changes(
         &self,
         _cursor: &ProviderCursor,
-        _known: &[super::KnownMarkdownMetadata],
         _context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
+    }
+
+    async fn materialize_changes(
+        &self,
+        _changes: &[MarkdownChangeEvent],
+        _known: &[super::KnownMarkdownMetadata],
+        _context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
         Err(CloudDocumentError::ProtocolFailed)
     }
 }
@@ -415,12 +461,20 @@ impl MarkdownDocumentSource for BlockingChangeSyncProvider {
     async fn read_changes(
         &self,
         _cursor: &ProviderCursor,
-        _known: &[super::KnownMarkdownMetadata],
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         self.entered_changes.notify_waiters();
         context.cancellation.cancelled().await;
         Err(CloudDocumentError::Cancelled)
+    }
+
+    async fn materialize_changes(
+        &self,
+        _changes: &[MarkdownChangeEvent],
+        _known: &[super::KnownMarkdownMetadata],
+        _context: &CloudIoContext,
+    ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+        Err(CloudDocumentError::ProtocolFailed)
     }
 }
 
@@ -444,6 +498,18 @@ fn sync_deleted(name: &str) -> MarkdownMetadata {
     let mut metadata = sync_metadata(name);
     metadata.deleted = true;
     metadata
+}
+
+fn sync_upsert_change(name: &str) -> MarkdownChangeEvent {
+    MarkdownChangeEvent::Upsert {
+        key: SourceRecordKey::new(name),
+    }
+}
+
+fn sync_deleted_change(name: &str) -> MarkdownChangeEvent {
+    MarkdownChangeEvent::Deleted {
+        key: SourceRecordKey::new(name),
+    }
 }
 
 fn sync_page(names: &[&str], next_cursor: Option<&[u8]>) -> MarkdownMetadataPage {
@@ -491,8 +557,82 @@ async fn initial_sync_replays_changes_from_the_position_taken_before_listing() {
 }
 
 mod sync {
-    use super::super::{store::CloudDocumentStore, CloudSyncCoordinator, CloudSyncPhase};
+    use super::super::{
+        store::{CloudDocumentStore, PersistedCloudWriteRepair},
+        CloudSyncCoordinator, CloudSyncPhase, CloudWriteRepairExecutor,
+    };
     use super::*;
+
+    struct RecordingRepairExecutor {
+        local_publications: AtomicUsize,
+        provider_mutations: AtomicUsize,
+    }
+
+    impl RecordingRepairExecutor {
+        fn new() -> Self {
+            Self {
+                local_publications: AtomicUsize::new(0),
+                provider_mutations: AtomicUsize::new(0),
+            }
+        }
+
+        fn local_publications(&self) -> usize {
+            self.local_publications.load(Ordering::SeqCst)
+        }
+
+        fn provider_mutations(&self) -> usize {
+            self.provider_mutations.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl CloudWriteRepairExecutor for RecordingRepairExecutor {
+        async fn resume_local_publication(
+            &self,
+            _repair: &PersistedCloudWriteRepair,
+        ) -> Result<(), CloudDocumentError> {
+            self.local_publications.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct PendingRepairExecutor;
+
+    #[async_trait]
+    impl CloudWriteRepairExecutor for PendingRepairExecutor {
+        async fn resume_local_publication(
+            &self,
+            _repair: &PersistedCloudWriteRepair,
+        ) -> Result<(), CloudDocumentError> {
+            Err(CloudDocumentError::LocalPublicationPending)
+        }
+    }
+
+    struct BlockingRepairExecutor {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl BlockingRepairExecutor {
+        fn new() -> Self {
+            Self {
+                entered: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl CloudWriteRepairExecutor for BlockingRepairExecutor {
+        async fn resume_local_publication(
+            &self,
+            _repair: &PersistedCloudWriteRepair,
+        ) -> Result<(), CloudDocumentError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
 
     fn published_names(store: &CloudDocumentStore, source_id: &SourceId) -> Vec<String> {
         store
@@ -521,8 +661,203 @@ mod sync {
             .expect("publish previous snapshot");
     }
 
+    fn publish_many_before_sync(store: &CloudDocumentStore, source_id: &SourceId, rows: usize) {
+        let generation = store
+            .begin_initial_sync(
+                source_id,
+                &ProviderCursor(b"previous".to_vec()),
+                &sync_pins(),
+                1,
+            )
+            .expect("begin previous snapshot");
+        for offset in (0..rows).step_by(256) {
+            let end = (offset + 256).min(rows);
+            store
+                .stage_page(
+                    &generation,
+                    &sync_pins(),
+                    &MarkdownMetadataPage {
+                        rows: (offset..end)
+                            .map(|index| sync_metadata(&format!("existing-{index:04}.md")))
+                            .collect(),
+                        next_cursor: None,
+                        observed_at_ms: 1,
+                    },
+                )
+                .expect("stage bounded published rows");
+        }
+        store
+            .publish_initial_sync(&generation, &ProviderCursor(b"previous".to_vec()), 2)
+            .expect("publish previous snapshot");
+    }
+
     fn coordinator(store: Arc<CloudDocumentStore>) -> CloudSyncCoordinator {
         CloudSyncCoordinator::new(store, sync_pins())
+    }
+
+    #[tokio::test]
+    async fn refresh_after_idle_applies_a_later_change_and_advances_the_committed_cursor() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "refresh-source",
+            b"c0",
+            [Ok(sync_page(&["before.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"c1".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate initial sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("initial sync settles");
+        provider.enqueue_change(Ok(MarkdownChangePage {
+            changes: vec![sync_upsert_change("later.md")],
+            next_cursor: ProviderCursor(b"c2".to_vec()),
+            has_more: false,
+            observed_at_ms: 3,
+        }));
+
+        coordinator
+            .refresh(&source_id)
+            .await
+            .expect("schedule later refresh");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("later refresh settles");
+
+        assert_eq!(
+            published_names(&store, &source_id),
+            ["before.md", "later.md"]
+        );
+        assert_eq!(
+            store
+                .load_change_cursor(&source_id)
+                .expect("advanced cursor"),
+            Some(ProviderCursor(b"c2".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_refresh_requests_keep_one_incremental_owner() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            "overlapping-refresh-source",
+            b"c0",
+            [Ok(sync_page(&["before.md"], None))],
+            [Ok(MarkdownChangePage {
+                changes: Vec::new(),
+                next_cursor: ProviderCursor(b"c1".to_vec()),
+                has_more: false,
+                observed_at_ms: 2,
+            })],
+        ));
+        let source_id = provider.source_id().clone();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate initial sync");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("initial sync settles");
+        let entered_refresh = provider.block_next_change();
+
+        coordinator
+            .refresh(&source_id)
+            .await
+            .expect("start first refresh");
+        entered_refresh.await;
+        coordinator
+            .refresh(&source_id)
+            .await
+            .expect("coalesce overlapping refresh");
+        coordinator.pause(&source_id).await.expect("cancel refresh");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("cancelled refresh settles");
+
+        assert_eq!(
+            provider.change_calls.load(Ordering::SeqCst),
+            2,
+            "initial replay plus exactly one refresh provider call"
+        );
+    }
+
+    async fn bounded_incremental_replay_never_reads_the_whole_published_snapshot(source: &str) {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+                .expect("open cloud store"),
+        );
+        let provider = Arc::new(SyncFakeProvider::scripted(
+            source,
+            b"unused",
+            [],
+            [Ok(MarkdownChangePage {
+                changes: vec![sync_upsert_change("replayed.md")],
+                next_cursor: ProviderCursor(b"advanced".to_vec()),
+                has_more: false,
+                observed_at_ms: 3,
+            })],
+        ));
+        let source_id = provider.source_id().clone();
+        publish_many_before_sync(&store, &source_id, 1_001);
+        store.reject_next_full_published_listing();
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .activate(Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>)
+            .await
+            .expect("activate committed-cursor replay");
+        coordinator
+            .wait_until_idle(&source_id)
+            .await
+            .expect("bounded replay settles");
+
+        let replayed = store
+            .published_for_keys(&source_id, &[SourceRecordKey::new("replayed.md")])
+            .expect("bounded replay result");
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].name, "replayed.md");
+        assert_eq!(
+            store
+                .load_change_cursor(&source_id)
+                .expect("advanced cursor"),
+            Some(ProviderCursor(b"advanced".to_vec()))
+        );
+    }
+
+    #[tokio::test]
+    async fn google_drive_incremental_replay_over_one_thousand_rows_stays_bounded() {
+        bounded_incremental_replay_never_reads_the_whole_published_snapshot("google-drive-replay")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn dropbox_incremental_replay_over_one_thousand_rows_stays_bounded() {
+        bounded_incremental_replay_never_reads_the_whole_published_snapshot("dropbox-replay").await;
     }
 
     #[tokio::test]
@@ -1032,7 +1367,7 @@ mod sync {
         let coordinator = coordinator(Arc::clone(&store));
 
         coordinator
-            .startup_repair(Vec::<Arc<dyn MarkdownDocumentSource>>::new())
+            .startup_repair(Vec::<SourceId>::new(), &PendingRepairExecutor)
             .await
             .expect("startup repair");
 
@@ -1046,6 +1381,226 @@ mod sync {
             )
             .expect("count staging snapshots");
         assert_eq!(staging, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_repair_resumes_a_provider_accepted_receipt_once_without_a_provider_mutation() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let source_id = SourceId::new("restart-repair-source");
+        let repair = super::super::store::CloudWriteRepair::new(
+            b"restart-operation",
+            &source_id,
+            SourceRecordKey::new("repaired.md"),
+            ProviderRevision {
+                opaque: "provider-r2".to_string(),
+                content_hash: None,
+            },
+            [7; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            4,
+        )
+        .expect("valid provider receipt");
+        let store = CloudDocumentStore::open(&path).expect("open initial store");
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist provider acceptance");
+        drop(store);
+
+        let reopened = Arc::new(CloudDocumentStore::open(&path).expect("reopen after restart"));
+        let coordinator = coordinator(Arc::clone(&reopened));
+        let executor = RecordingRepairExecutor::new();
+
+        coordinator
+            .startup_repair([source_id.clone()], &executor)
+            .await
+            .expect("resume local publication");
+        coordinator
+            .startup_repair([source_id.clone()], &executor)
+            .await
+            .expect("second startup is idempotent");
+
+        assert_eq!(executor.local_publications(), 1);
+        assert_eq!(executor.provider_mutations(), 0);
+        assert!(reopened
+            .load_write_repair(&source_id, repair.operation_id())
+            .expect("load repaired receipt")
+            .expect("durable receipt")
+            .is_published());
+    }
+
+    #[tokio::test]
+    async fn startup_repair_keeps_a_deferred_receipt_and_exposes_its_typed_status() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let source_id = SourceId::new("pending-repair-source");
+        let repair = super::super::store::CloudWriteRepair::new(
+            b"pending-operation",
+            &source_id,
+            SourceRecordKey::new("pending.md"),
+            ProviderRevision {
+                opaque: "provider-r2".to_string(),
+                content_hash: None,
+            },
+            [8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            4,
+        )
+        .expect("valid provider receipt");
+        let store = Arc::new(CloudDocumentStore::open(&path).expect("open cloud store"));
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist provider acceptance");
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .startup_repair([source_id.clone()], &PendingRepairExecutor)
+            .await
+            .expect("bounded pending repair");
+
+        assert!(store
+            .load_write_repair(&source_id, repair.operation_id())
+            .expect("load pending receipt")
+            .expect("durable receipt")
+            .is_provider_accepted());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("typed status"),
+            Some(status)
+                if matches!(status.phase(), CloudSyncPhase::NeverSynced)
+                    && matches!(
+                        status.startup_repair_error(),
+                        Some(CloudDocumentError::LocalPublicationPending)
+                    )
+        ));
+    }
+
+    #[tokio::test]
+    async fn successful_startup_repair_clears_an_older_pending_status_for_the_same_source() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let source_id = SourceId::new("cleared-pending-repair-source");
+        let repair = super::super::store::CloudWriteRepair::new(
+            b"cleared-pending-operation",
+            &source_id,
+            SourceRecordKey::new("cleared-pending.md"),
+            ProviderRevision {
+                opaque: "provider-r2".to_string(),
+                content_hash: None,
+            },
+            [10; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            4,
+        )
+        .expect("valid provider receipt");
+        let store = Arc::new(CloudDocumentStore::open(&path).expect("open cloud store"));
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist provider acceptance");
+        let coordinator = coordinator(Arc::clone(&store));
+
+        coordinator
+            .startup_repair([source_id.clone()], &PendingRepairExecutor)
+            .await
+            .expect("record pending repair status");
+        assert!(matches!(
+            coordinator.status(&source_id).expect("pending status"),
+            Some(status)
+                if matches!(
+                    status.startup_repair_error(),
+                    Some(CloudDocumentError::LocalPublicationPending)
+                )
+        ));
+
+        let executor = RecordingRepairExecutor::new();
+        coordinator
+            .startup_repair([source_id.clone()], &executor)
+            .await
+            .expect("resolve the same durable receipt");
+
+        assert_eq!(executor.local_publications(), 1);
+        assert!(store
+            .load_write_repair(&source_id, repair.operation_id())
+            .expect("load repaired receipt")
+            .expect("durable receipt")
+            .is_published());
+        assert_eq!(
+            coordinator.status(&source_id).expect("cleared status"),
+            None,
+            "a later successful repair must not leave stale pending status"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_older_startup_repair_cannot_clear_a_newer_source_cancellation_owner() {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let source_id = SourceId::new("overlapping-repair-source");
+        let repair = super::super::store::CloudWriteRepair::new(
+            b"overlapping-operation",
+            &source_id,
+            SourceRecordKey::new("overlapping.md"),
+            ProviderRevision {
+                opaque: "provider-r2".to_string(),
+                content_hash: None,
+            },
+            [9; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            4,
+        )
+        .expect("valid provider receipt");
+        let store = Arc::new(CloudDocumentStore::open(&path).expect("open cloud store"));
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist provider acceptance");
+        let coordinator = coordinator(Arc::clone(&store));
+        let executor = Arc::new(BlockingRepairExecutor::new());
+
+        let first_entered = executor.entered.notified();
+        let first_coordinator = coordinator.clone();
+        let first_source_id = source_id.clone();
+        let first_executor = Arc::clone(&executor);
+        let first = tokio::spawn(async move {
+            first_coordinator
+                .startup_repair([first_source_id], first_executor.as_ref())
+                .await
+        });
+        first_entered.await;
+
+        let second_entered = executor.entered.notified();
+        let second_coordinator = coordinator.clone();
+        let second_source_id = source_id.clone();
+        let second_executor = Arc::clone(&executor);
+        let second = tokio::spawn(async move {
+            second_coordinator
+                .startup_repair([second_source_id], second_executor.as_ref())
+                .await
+        });
+        second_entered.await;
+        first
+            .await
+            .expect("first startup task joins")
+            .expect("first startup cancellation is retained as a typed status");
+
+        assert!(matches!(
+            coordinator.pause(&source_id).await,
+            Err(super::super::CloudSyncError::UnknownSource)
+        ));
+        executor.release.notify_waiters();
+        second
+            .await
+            .expect("second startup task joins")
+            .expect("second startup cancellation is retained as a typed status");
+
+        assert!(store
+            .load_write_repair(&source_id, repair.operation_id())
+            .expect("load unresolved receipt")
+            .expect("durable receipt")
+            .is_provider_accepted());
+        assert!(matches!(
+            coordinator.status(&source_id).expect("typed status"),
+            Some(status)
+                if matches!(status.startup_repair_error(), Some(CloudDocumentError::SourcePaused))
+        ));
     }
 
     #[tokio::test]
