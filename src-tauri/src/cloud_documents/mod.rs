@@ -1,5 +1,6 @@
 //! Provider-neutral, native-only Markdown document capability.
 
+pub(crate) mod materialized;
 mod model;
 pub(crate) mod source;
 pub(crate) mod store;

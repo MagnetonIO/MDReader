@@ -3283,8 +3283,10 @@ fn admit_library_query(
         .into_iter()
         .filter(|source| selected(crate::library_query::membership_id(source.id())))
     {
-        let credential = vault.get(&record.credential_reference)?;
-        clouds.push((record, credential));
+        // Foreground Library queries only bind the last locally published
+        // metadata. Credential resolution and provider refresh are owned by
+        // the background synchronizer.
+        clouds.push((record, None));
     }
     if members.is_empty() && clouds.is_empty() {
         return Err(query_invalid("Library has no selected enabled sources"));
@@ -3295,6 +3297,77 @@ fn admit_library_query(
         clouds,
         registry,
         vault,
+    })
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn bind_materialized_library_cloud_source(
+    record: CloudSourceRecord,
+    store: Arc<crate::cloud_documents::store::CloudDocumentStore>,
+) -> Result<crate::library_query::LibraryQueryMember, CloudSourceError> {
+    use catdb_connectors::DataSource;
+
+    let provider = record.provider;
+    let membership_id = crate::library_query::membership_id(record.id());
+    let registry_id = record.id().to_string();
+    let source_id = catdb_connectors::SourceId::new(record.id.clone());
+    let materialized = match provider {
+        CloudProvider::GoogleDrive => {
+            crate::cloud_documents::materialized::MaterializedMarkdownSource::google_drive(
+                store, source_id,
+            )
+        }
+        CloudProvider::Dropbox => {
+            crate::cloud_documents::materialized::MaterializedMarkdownSource::dropbox(
+                store, source_id,
+            )
+        }
+    };
+    let pins = materialized
+        .published_version_pins()
+        .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+    let source: Arc<dyn DataSource> = Arc::new(materialized);
+    let mapping = mdreader_domain::library::cloud_document_mapping(
+        source.as_ref(),
+        domain_provider(provider),
+    )
+    .map_err(|_| CloudSourceError::QueryCatalogInvalid)?;
+    let physical = match pins {
+        Some(pins) => crate::library_query::LibraryPhysicalSource::new_as_published(
+            membership_id,
+            source,
+            mapping,
+            catdb_connectors::SourceId::new(match provider {
+                CloudProvider::GoogleDrive => "google-drive",
+                CloudProvider::Dropbox => "dropbox",
+            }),
+            crate::library_query::PublishedLibraryVersionPins {
+                source_schema_version_id: pins.schema_version_id,
+                mapping_version_id: pins.mapping_version_id,
+                source_version_id: pins.source_version_id,
+            },
+        ),
+        None => crate::library_query::LibraryPhysicalSource::new_as(
+            membership_id,
+            source,
+            mapping,
+            catdb_connectors::SourceId::new(match provider {
+                CloudProvider::GoogleDrive => "google-drive",
+                CloudProvider::Dropbox => "dropbox",
+            }),
+        ),
+    };
+    Ok(crate::library_query::LibraryQueryMember {
+        membership_id,
+        registry_id,
+        name: record.label,
+        kind: match provider {
+            CloudProvider::GoogleDrive => crate::library_query::LibraryQueryMemberKind::GoogleDrive,
+            CloudProvider::Dropbox => crate::library_query::LibraryQueryMemberKind::Dropbox,
+        },
+        editable: false,
+        active: false,
+        sources: vec![physical],
     })
 }
 
@@ -3626,30 +3699,33 @@ pub(crate) async fn query_library_documents(
                 )
             })
             .await?;
-            let catalog = ensure_cloud_catalog(&app, &state).await?;
+            let _catalog = ensure_cloud_catalog(&app, &state).await?;
+            let materialized_store = state.cloud_sync.coordinator().await?.store();
             let AdmittedLibraryQuery {
                 mut members,
                 local_records,
                 clouds,
                 registry,
-                vault,
+                vault: _,
             } = admitted;
             let expected_clouds = clouds
                 .iter()
                 .map(|(record, _)| record.clone())
                 .collect::<Vec<_>>();
-            for (record, credential) in clouds {
-                members.push(
-                    bind_library_cloud_source(
-                        record,
-                        credential,
-                        vault.clone(),
-                        registry.clone(),
-                        &catalog.schema_version,
-                    )
-                    .await?,
-                );
-            }
+            let materialized_members = tauri::async_runtime::spawn_blocking(move || {
+                clouds
+                    .into_iter()
+                    .map(|(record, _credential)| {
+                        bind_materialized_library_cloud_source(
+                            record,
+                            Arc::clone(&materialized_store),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await
+            .map_err(|_| CloudSourceError::PersistFailed)??;
+            members.extend(materialized_members);
             let page = crate::library_query::begin_registered_library_query(
                 request,
                 members,
@@ -6189,6 +6265,39 @@ impl CredentialVault for MemoryCredentialVault {
             cleanup.insert(provider, references.to_vec());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+struct PanicCredentialVault;
+
+#[cfg(test)]
+impl CredentialVault for PanicCredentialVault {
+    fn get(&self, _reference: &str) -> Result<Option<SecretBundle>, CloudSourceError> {
+        panic!("foreground Library admission must not resolve a cloud credential")
+    }
+
+    fn set(&self, _reference: &str, _secret: &SecretBundle) -> Result<(), CloudSourceError> {
+        panic!("foreground Library admission must not write a cloud credential")
+    }
+
+    fn delete(&self, _reference: &str) -> Result<(), CloudSourceError> {
+        panic!("foreground Library admission must not delete a cloud credential")
+    }
+
+    fn cleanup_references(
+        &self,
+        _provider: CloudProvider,
+    ) -> Result<Vec<String>, CloudSourceError> {
+        panic!("foreground Library admission must not read credential cleanup state")
+    }
+
+    fn set_cleanup_references(
+        &self,
+        _provider: CloudProvider,
+        _references: &[String],
+    ) -> Result<(), CloudSourceError> {
+        panic!("foreground Library admission must not write credential cleanup state")
     }
 }
 
@@ -9632,6 +9741,36 @@ mod tests {
                 .map(|source| source.outcome),
             Some(catdb_api_types::SourceOutcome::SourceFailed)
         );
+    }
+
+    #[test]
+    fn foreground_library_admission_never_resolves_a_cloud_credential() {
+        let temp = tempdir().expect("temporary Library registry");
+        let registry_path = temp.path().join("library.json");
+        let install_vault = MemoryCredentialVault::default();
+        let service =
+            CloudAccountService::new(LibraryStore::new(registry_path.clone()), &install_vault);
+        let (provider, config) = if cfg!(feature = "google-drive-connector") {
+            (CloudProvider::GoogleDrive, google_config())
+        } else {
+            (CloudProvider::Dropbox, CloudSourceConfig::Dropbox)
+        };
+        service
+            .install(provider, config, credentials())
+            .expect("publish cloud Library membership");
+
+        let admitted = admit_library_query(
+            LibraryStore::new(registry_path),
+            Arc::new(super::PanicCredentialVault),
+            None,
+            None,
+        )
+        .expect("foreground admission reads only the registry snapshot");
+
+        assert_eq!(admitted.members.len(), 0);
+        assert_eq!(admitted.clouds.len(), 1);
+        assert_eq!(admitted.clouds[0].0.provider, provider);
+        assert!(admitted.clouds[0].1.is_none());
     }
 
     #[tokio::test]

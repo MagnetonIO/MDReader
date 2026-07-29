@@ -25,9 +25,8 @@ use catdb_connector_google_drive::{
     DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
     PinnedDriveSourceSpec,
 };
-#[cfg(feature = "google-drive-connector")]
-use catdb_connectors::SourceError;
-use catdb_connectors::{CancellationToken, ReadContext, SourceId};
+use catdb_connectors::{CancellationToken, DataSource, ReadContext, SourceError, SourceId};
+use catdb_query::{EntityQuery, EntityTarget};
 
 #[cfg(feature = "google-drive-connector")]
 use super::map_drive_document_error;
@@ -523,6 +522,137 @@ fn sync_page(names: &[&str], next_cursor: Option<&[u8]>) -> MarkdownMetadataPage
 fn sync_pins() -> super::store::CloudDocumentVersionPins {
     super::store::CloudDocumentVersionPins::new(b"schema-v1", b"mapping-v1", b"source-v1")
         .expect("fixed sync pins")
+}
+
+#[tokio::test]
+async fn large_materialized_library_returns_a_bounded_page_without_full_snapshot_loading() {
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let store = Arc::new(
+        super::store::CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+            .expect("open cloud store"),
+    );
+    let source_id = SourceId::new("published-drive-source");
+    let generation = store
+        .begin_initial_sync(
+            &source_id,
+            &ProviderCursor(b"initial".to_vec()),
+            &sync_pins(),
+            1,
+        )
+        .expect("begin published snapshot");
+    for offset in (0..100_000).step_by(256) {
+        let end = (offset + 256).min(100_000);
+        store
+            .stage_page(
+                &generation,
+                &sync_pins(),
+                &MarkdownMetadataPage {
+                    rows: (offset..end)
+                        .map(|index| sync_metadata(&format!("row-{index:06}.md")))
+                        .collect(),
+                    next_cursor: None,
+                    observed_at_ms: 1,
+                },
+            )
+            .expect("stage bounded metadata page");
+    }
+    store
+        .publish_initial_sync(&generation, &ProviderCursor(b"published".to_vec()), 2)
+        .expect("publish materialization");
+    store.reject_next_full_published_listing();
+
+    let source = super::materialized::MaterializedMarkdownSource::google_drive(
+        Arc::clone(&store),
+        source_id,
+    );
+    let plan = source
+        .compile(
+            &EntityQuery {
+                target: EntityTarget::Entity("mdreader.Document".to_string()),
+                filters: Vec::new(),
+            },
+            &["id".to_string(), "name".to_string()],
+        )
+        .expect("compile local SQLite page");
+    let context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_secs(5),
+        1_000,
+        1024 * 1024,
+        50,
+        CancellationToken::new(),
+    )
+    .expect("bounded read context");
+    let first = source
+        .execute_page(&plan, None, &context)
+        .await
+        .expect("first materialized page");
+
+    assert_eq!(first.rows.len(), 50);
+    assert_eq!(first.rows[0].key, "row-000000.md");
+    let cursor = first
+        .next_cursor
+        .expect("continuation for the next local page");
+    let second = source
+        .execute_page(&plan, Some(&cursor), &context)
+        .await
+        .expect("second materialized page");
+    assert_eq!(second.rows.len(), 50);
+    assert_eq!(second.rows[0].key, "row-000050.md");
+}
+
+#[test]
+fn materialized_metadata_refuses_body_projection_until_the_on_demand_read_exists() {
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let store = Arc::new(
+        super::store::CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+            .expect("open cloud store"),
+    );
+    let source = super::materialized::MaterializedMarkdownSource::google_drive(
+        store,
+        SourceId::new("metadata-only-drive-source"),
+    );
+
+    let error = source
+        .compile(
+            &EntityQuery {
+                target: EntityTarget::Entity("mdreader.Document".to_string()),
+                filters: Vec::new(),
+            },
+            &["body".to_string()],
+        )
+        .expect_err("metadata materialization must not invent a provider body");
+    assert!(matches!(
+        error,
+        SourceError::UnsupportedFilter { attr, .. } if attr == "body"
+    ));
+}
+
+#[tokio::test]
+async fn materialized_source_without_a_published_snapshot_is_a_typed_unavailable_source() {
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let store = Arc::new(
+        super::store::CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+            .expect("open cloud store"),
+    );
+    let source = super::materialized::MaterializedMarkdownSource::google_drive(
+        store,
+        SourceId::new("not-yet-published-drive-source"),
+    );
+    let context = ReadContext::new(
+        uuid::Uuid::new_v4(),
+        Instant::now() + Duration::from_secs(1),
+        50,
+        1024,
+        50,
+        CancellationToken::new(),
+    )
+    .expect("bounded read context");
+
+    assert!(matches!(
+        source.freshness(&context).await,
+        Err(SourceError::Unavailable { .. })
+    ));
 }
 
 #[tokio::test]

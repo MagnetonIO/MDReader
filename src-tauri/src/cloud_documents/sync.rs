@@ -179,6 +179,11 @@ struct DurableEffectGate {
 }
 
 impl CloudSyncCoordinator {
+    /// Returns the local-only store read by foreground materialized sources.
+    pub(crate) fn store(&self) -> Arc<CloudDocumentStore> {
+        Arc::clone(&self.store)
+    }
+
     /// Creates a coordinator whose durable rows carry the supplied immutable
     /// semantic pins.
     #[cfg(test)]

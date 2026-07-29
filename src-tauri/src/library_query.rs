@@ -40,7 +40,9 @@ const VERSION_NAMESPACE: Uuid = Uuid::from_u128(0x7e60a029_b565_47a8_907e_820caf
 pub(crate) const LIBRARY_CONTINUATION_LIFETIME: Duration = Duration::from_secs(30);
 const QUERY_WORK_BUDGET: usize = 100_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
-const QUERY_PAGE_SIZE: usize = 1_000;
+/// Foreground Library reads are intentionally small; continuations retain the
+/// native source cursor instead of draining a cloud materialization.
+const QUERY_PAGE_SIZE: usize = 50;
 const QUERY_CONCURRENCY: usize = 4;
 const SCOPED_KEY_PREFIX: &str = "library:";
 const LIBRARY_IDENTITY_FIELD: &str = "path";
@@ -342,6 +344,16 @@ pub(crate) struct LibraryPhysicalSource {
     pub mapping: Mapping,
     /// Stable source family used by the declared semantic precedence.
     precedence_source_id: catdb_connectors::SourceId,
+    /// Immutable semantic identities published with a local cloud snapshot.
+    published_version_pins: Option<PublishedLibraryVersionPins>,
+}
+
+/// Exact semantic versions carried by one published cloud materialization.
+#[derive(Clone, Copy)]
+pub(crate) struct PublishedLibraryVersionPins {
+    pub(crate) source_schema_version_id: Uuid,
+    pub(crate) mapping_version_id: Uuid,
+    pub(crate) source_version_id: Uuid,
 }
 
 impl LibraryPhysicalSource {
@@ -368,7 +380,23 @@ impl LibraryPhysicalSource {
             }),
             mapping,
             precedence_source_id,
+            published_version_pins: None,
         }
+    }
+
+    /// Binds a local materialization to the immutable versions that produced
+    /// its published metadata. These are never recomputed from a foreground
+    /// source wrapper.
+    pub(crate) fn new_as_published(
+        membership_id: Uuid,
+        source: Arc<dyn DataSource>,
+        mapping: Mapping,
+        precedence_source_id: catdb_connectors::SourceId,
+        pins: PublishedLibraryVersionPins,
+    ) -> Self {
+        let mut physical = Self::new_as(membership_id, source, mapping, precedence_source_id);
+        physical.published_version_pins = Some(pins);
+        physical
     }
 }
 
@@ -648,8 +676,12 @@ fn build_runtime(
                 serde_json::to_value(physical.source.schema())
                     .map_err(|_| LibraryQueryError::InvalidCatalog)?,
             );
-            let source_schema_version_id =
-                version_id("physical-schema", Uuid::nil(), &schema_content.checksum);
+            let source_schema_version_id = physical
+                .published_version_pins
+                .map(|pins| pins.source_schema_version_id)
+                .unwrap_or_else(|| {
+                    version_id("physical-schema", Uuid::nil(), &schema_content.checksum)
+                });
             let source_schema_version = SchemaVersion {
                 schema_version_id: source_schema_version_id,
                 name: physical.source.schema().name.to_string(),
@@ -659,7 +691,10 @@ fn build_runtime(
             let mapping_spec = serde_json::to_value(&physical.mapping)
                 .map_err(|_| LibraryQueryError::InvalidCatalog)?;
             let mapping_checksum = catalog_content_checksum(&mapping_spec);
-            let mapping_version_id = version_id("mapping", physical.source_id, &mapping_checksum);
+            let mapping_version_id = physical
+                .published_version_pins
+                .map(|pins| pins.mapping_version_id)
+                .unwrap_or_else(|| version_id("mapping", physical.source_id, &mapping_checksum));
             let mapping_version = MappingVersion {
                 mapping_version_id,
                 name: format!("mdreader.Document.{}", physical.source.id()),
@@ -671,7 +706,10 @@ fn build_runtime(
             };
             let source_spec = physical.source.source_spec();
             let source_checksum = catalog_content_checksum(&source_spec);
-            let source_version_id = version_id("source", physical.source_id, &source_checksum);
+            let source_version_id = physical
+                .published_version_pins
+                .map(|pins| pins.source_version_id)
+                .unwrap_or_else(|| version_id("source", physical.source_id, &source_checksum));
             let source_version = SourceVersion {
                 source_version_id,
                 source_id: physical.source_id,
@@ -1005,7 +1043,8 @@ async fn execute_provider_batch(
         return Err(LibraryQueryError::InvalidCatalog);
     }
     let physical_page_size = usize::try_from(expected_request.page_size)
-        .map_err(|_| LibraryQueryError::LimitExceeded)?;
+        .map_err(|_| LibraryQueryError::LimitExceeded)?
+        .min(QUERY_PAGE_SIZE);
     let batch_limit = selected_physical
         .len()
         .checked_mul(physical_page_size)
@@ -1014,6 +1053,8 @@ async fn execute_provider_batch(
         .ok_or(LibraryQueryError::LimitExceeded)?;
     let mut request = expected_request.clone();
     request.limit = u32::try_from(batch_limit).map_err(|_| LibraryQueryError::LimitExceeded)?;
+    request.page_size =
+        u32::try_from(physical_page_size).map_err(|_| LibraryQueryError::LimitExceeded)?;
     request.source_ids = Some(selected_physical.clone());
     request.catalog_revision_id = Some(runtime.catalog.revision.revision_id);
     request.schema_version_id = Some(runtime.catalog.default_schema_version_id);
@@ -1633,7 +1674,7 @@ mod tests {
         .await
         .expect("bounded Library query");
 
-        assert_eq!(answer.answer.rows.len(), 1_000);
+        assert_eq!(answer.answer.rows.len(), QUERY_PAGE_SIZE);
         assert_eq!(answer.answer.next_cursor, None);
         assert_eq!(answer.answer.completeness, Completeness::Complete);
         assert!(answer.window_truncated);
@@ -1669,7 +1710,7 @@ mod tests {
         .await
         .expect("a large Drive must return one bounded Library window");
 
-        assert_eq!(first.response.answer.rows.len(), 1_000);
+        assert_eq!(first.response.answer.rows.len(), QUERY_PAGE_SIZE);
         assert!(first.response.answer.next_cursor.is_some());
         assert_eq!(
             first.response.answer.completeness,
@@ -1691,10 +1732,10 @@ mod tests {
         .await
         .expect("page two remains reachable");
 
-        assert_eq!(second.response.answer.rows.len(), 1_000);
+        assert_eq!(second.response.answer.rows.len(), QUERY_PAGE_SIZE);
         assert_eq!(
             second.response.answer.rows[0].record_key,
-            scope_record_key(drive, "drive-note-1000")
+            scope_record_key(drive, "drive-note-0050")
         );
         assert!(second.response.answer.next_cursor.is_some());
         assert!(second.response.window_truncated);
@@ -1800,10 +1841,10 @@ mod tests {
         .await
         .expect("page two preserves partial evidence");
 
-        assert_eq!(second.response.answer.rows.len(), 1_000);
+        assert_eq!(second.response.answer.rows.len(), QUERY_PAGE_SIZE);
         assert_eq!(
             second.response.answer.rows[0].record_key,
-            scope_record_key(drive, "drive-note-1000")
+            scope_record_key(drive, "drive-note-0050")
         );
         assert_eq!(
             second.response.answer.completeness,

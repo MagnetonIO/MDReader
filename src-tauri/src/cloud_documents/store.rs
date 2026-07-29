@@ -9,8 +9,11 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use catdb_connectors::SourceId;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use catdb_connectors::{SourceId, SourceOrderDirection};
+use catdb_storage::{ObjectFilterOp, ObjectValue};
+use rusqlite::{
+    params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, Transaction,
+};
 
 use super::{
     MarkdownDocumentRevision, MarkdownMetadataPage, ProviderCursor, ProviderRevision,
@@ -182,6 +185,21 @@ impl CloudDocumentVersionPins {
         validate_identifier(&self.mapping_version_id)?;
         validate_identifier(&self.source_version_id)
     }
+
+    /// Returns the pinned source-schema identity as opaque bytes.
+    pub(crate) fn schema_version_id(&self) -> &[u8] {
+        &self.schema_version_id
+    }
+
+    /// Returns the pinned mapping identity as opaque bytes.
+    pub(crate) fn mapping_version_id(&self) -> &[u8] {
+        &self.mapping_version_id
+    }
+
+    /// Returns the pinned source identity as opaque bytes.
+    pub(crate) fn source_version_id(&self) -> &[u8] {
+        &self.source_version_id
+    }
 }
 
 impl fmt::Debug for CloudDocumentVersionPins {
@@ -244,6 +262,83 @@ pub(crate) struct PublishedCloudDocument {
     pub(crate) pins: CloudDocumentVersionPins,
     /// Materialization observation time.
     pub(crate) observed_at_ms: i64,
+}
+
+/// Immutable published snapshot used by one foreground materialized read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublishedCloudSnapshot {
+    /// SQLite generation identity retained in source-local continuations.
+    pub(crate) generation: [u8; 16],
+    /// Exact semantic pins attached to this publication.
+    pub(crate) pins: CloudDocumentVersionPins,
+    /// Publication observation time.
+    pub(crate) observed_at_ms: i64,
+}
+
+/// One column that a materialized Markdown source may safely expose to SQLite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MaterializedMetadataField {
+    /// Provider-native record key.
+    RecordKey,
+    /// Provider display name.
+    Name,
+    /// Provider display path.
+    DisplayPath,
+    /// Provider media type.
+    MediaType,
+    /// Provider modification time in epoch milliseconds.
+    ModifiedAt,
+    /// Provider size in bytes.
+    Size,
+    /// Provider revision.
+    Revision,
+    /// Provider content hash, normalized to lowercase hexadecimal.
+    ContentHash,
+}
+
+/// One typed, parameterized predicate for a published SQLite snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MaterializedMetadataFilter {
+    /// Controlled physical column selected by the source model.
+    pub(crate) field: MaterializedMetadataField,
+    /// Exact CatDB comparison operation declared by the source.
+    pub(crate) op: ObjectFilterOp,
+    /// Typed operand bound through rusqlite, never interpolated into SQL.
+    pub(crate) value: ObjectValue,
+}
+
+/// One exact local ordering key for a materialized source page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MaterializedMetadataOrder {
+    /// Controlled physical column selected by the source model.
+    pub(crate) field: MaterializedMetadataField,
+    /// CatDB canonical ordering direction.
+    pub(crate) direction: SourceOrderDirection,
+}
+
+/// A bounded page request over one immutable published snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MaterializedMetadataPageQuery {
+    /// Pushed, source-declared filters.
+    pub(crate) filters: Vec<MaterializedMetadataFilter>,
+    /// Exact pushed ordering. An empty vector orders by record key.
+    pub(crate) order: Vec<MaterializedMetadataOrder>,
+    /// Opaque source-local row offset within the pinned generation.
+    pub(crate) offset: u64,
+    /// Requested page capacity, excluding the one look-ahead row.
+    pub(crate) limit: usize,
+}
+
+/// One bounded page from a published SQLite generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MaterializedMetadataPage {
+    /// Rows in the exact requested local order.
+    pub(crate) rows: Vec<PublishedCloudDocument>,
+    /// Whether the immutable generation has another matching row.
+    pub(crate) has_more: bool,
+    /// Whether the generation contained an unfiltered candidate after `offset`.
+    /// This preserves examined-zero versus examined-but-no-match outcomes.
+    pub(crate) examined_candidate: bool,
 }
 
 /// A provider-accepted write receipt that must outlive process restart until
@@ -711,6 +806,136 @@ impl CloudDocumentStore {
         transaction
             .commit()
             .map_err(|_| CloudDocumentStoreError::Persistence)
+    }
+
+    /// Returns the one published generation and its immutable semantic pins.
+    pub(crate) fn published_snapshot(
+        &self,
+        source_id: &SourceId,
+    ) -> StoreResult<Option<PublishedCloudSnapshot>> {
+        let source_id = source_bytes(source_id)?;
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT generation, schema_version_id, mapping_version_id, source_version_id, observed_at_ms
+                 FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND state = 'published'",
+                params![source_id],
+                |row| {
+                    let generation: Vec<u8> = row.get(0)?;
+                    let generation = generation
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    let pins = CloudDocumentVersionPins::new(
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    Ok(PublishedCloudSnapshot {
+                        generation,
+                        pins,
+                        observed_at_ms: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)
+    }
+
+    /// Reads one bounded SQLite page from the exact published generation.
+    ///
+    /// The request contains only controlled columns and typed values. Values
+    /// are always bound with rusqlite; no provider value becomes SQL text.
+    pub(crate) fn materialized_page(
+        &self,
+        source_id: &SourceId,
+        snapshot: &PublishedCloudSnapshot,
+        query: &MaterializedMetadataPageQuery,
+    ) -> StoreResult<MaterializedMetadataPage> {
+        if query.limit == 0 || query.limit > 1_000 {
+            return Err(CloudDocumentStoreError::InvalidIdentifier);
+        }
+        let offset =
+            i64::try_from(query.offset).map_err(|_| CloudDocumentStoreError::InvalidIdentifier)?;
+        let requested = i64::try_from(
+            query
+                .limit
+                .checked_add(1)
+                .ok_or(CloudDocumentStoreError::InvalidIdentifier)?,
+        )
+        .map_err(|_| CloudDocumentStoreError::InvalidIdentifier)?;
+        let source_id = source_bytes(source_id)?;
+        let connection = self.connection()?;
+
+        let published: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND generation = ?2 AND state = 'published'",
+                params![source_id, snapshot.generation],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        if published.is_none() {
+            return Err(CloudDocumentStoreError::UnknownGeneration);
+        }
+
+        let mut sql = String::from(
+            "SELECT d.record_key, d.name, d.display_path, d.media_type, d.modified_at_ms,
+                    d.size_bytes, d.revision, d.content_hash, d.deleted, d.schema_version_id,
+                    d.mapping_version_id, d.source_version_id, d.observed_at_ms
+             FROM mdreader_cloud_document d
+             INNER JOIN mdreader_cloud_snapshot s
+               ON s.source_id = d.source_id AND s.generation = d.generation
+             WHERE d.source_id = ? AND d.generation = ? AND s.state = 'published' AND d.deleted = 0",
+        );
+        let mut parameters = vec![
+            SqlValue::Blob(source_id.to_vec()),
+            SqlValue::Blob(snapshot.generation.to_vec()),
+        ];
+        for filter in &query.filters {
+            append_materialized_filter(&mut sql, &mut parameters, filter)?;
+        }
+        append_materialized_order(&mut sql, &query.order);
+        sql.push_str(" LIMIT ? OFFSET ?");
+        parameters.push(SqlValue::Integer(requested));
+        parameters.push(SqlValue::Integer(offset));
+
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let rows = statement
+            .query_map(
+                params_from_iter(parameters.iter()),
+                decode_published_document,
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let mut rows = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        let has_more = rows.len() > query.limit;
+        rows.truncate(query.limit);
+
+        let examined_candidate: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM mdreader_cloud_document d
+                 INNER JOIN mdreader_cloud_snapshot s
+                   ON s.source_id = d.source_id AND s.generation = d.generation
+                 WHERE d.source_id = ?1 AND d.generation = ?2 AND s.state = 'published'
+                   AND d.deleted = 0
+                 LIMIT 1 OFFSET ?3",
+                params![source_id, snapshot.generation, offset],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        Ok(MaterializedMetadataPage {
+            rows,
+            has_more,
+            examined_candidate: examined_candidate.is_some(),
+        })
     }
 
     /// Lists metadata from the sole published snapshot, never staging rows.
@@ -1486,6 +1711,86 @@ fn upsert_sync_state(
         )
         .map_err(|_| CloudDocumentStoreError::Persistence)?;
     Ok(())
+}
+
+fn materialized_column(field: MaterializedMetadataField) -> &'static str {
+    match field {
+        MaterializedMetadataField::RecordKey => "d.record_key",
+        MaterializedMetadataField::Name => "d.name",
+        MaterializedMetadataField::DisplayPath => "d.display_path",
+        MaterializedMetadataField::MediaType => "d.media_type",
+        MaterializedMetadataField::ModifiedAt => "d.modified_at_ms",
+        MaterializedMetadataField::Size => "d.size_bytes",
+        MaterializedMetadataField::Revision => "d.revision",
+        MaterializedMetadataField::ContentHash => "lower(hex(d.content_hash))",
+    }
+}
+
+fn append_materialized_filter(
+    sql: &mut String,
+    parameters: &mut Vec<SqlValue>,
+    filter: &MaterializedMetadataFilter,
+) -> StoreResult<()> {
+    let column = materialized_column(filter.field);
+    let value = match &filter.value {
+        ObjectValue::Text(value) => SqlValue::Text(value.clone()),
+        ObjectValue::Int(value) => SqlValue::Integer(*value),
+        ObjectValue::Float(value) => SqlValue::Real(*value),
+        ObjectValue::Bool(value) => SqlValue::Integer(i64::from(*value)),
+    };
+    if matches!(filter.op, ObjectFilterOp::Prefix) {
+        if !matches!(filter.value, ObjectValue::Text(_)) {
+            return Err(CloudDocumentStoreError::InvalidIdentifier);
+        }
+        sql.push_str(" AND substr(");
+        sql.push_str(column);
+        sql.push_str(", 1, length(?)) = ? COLLATE BINARY");
+        parameters.push(value.clone());
+        parameters.push(value);
+        return Ok(());
+    }
+    let operator = match filter.op {
+        ObjectFilterOp::Eq => "=",
+        ObjectFilterOp::Lt => "<",
+        ObjectFilterOp::Le => "<=",
+        ObjectFilterOp::Gt => ">",
+        ObjectFilterOp::Ge => ">=",
+        ObjectFilterOp::Prefix => unreachable!("handled above"),
+    };
+    sql.push_str(" AND ");
+    sql.push_str(column);
+    sql.push(' ');
+    sql.push_str(operator);
+    sql.push_str(" ? COLLATE BINARY");
+    parameters.push(value);
+    Ok(())
+}
+
+fn append_materialized_order(sql: &mut String, order: &[MaterializedMetadataOrder]) {
+    sql.push_str(" ORDER BY ");
+    if order.is_empty() {
+        sql.push_str("d.record_key COLLATE BINARY ASC");
+        return;
+    }
+    for (index, ordering) in order.iter().enumerate() {
+        if index != 0 {
+            sql.push_str(", ");
+        }
+        let column = materialized_column(ordering.field);
+        let direction = match ordering.direction {
+            SourceOrderDirection::Ascending => "ASC",
+            SourceOrderDirection::Descending => "DESC",
+        };
+        sql.push('(');
+        sql.push_str(column);
+        sql.push_str(" IS NULL) ");
+        sql.push_str(direction);
+        sql.push_str(", ");
+        sql.push_str(column);
+        sql.push_str(" COLLATE BINARY ");
+        sql.push_str(direction);
+    }
+    sql.push_str(", d.record_key COLLATE BINARY ASC");
 }
 
 fn evict_bodies(transaction: &Transaction<'_>, cache_limit_bytes: u64) -> StoreResult<()> {
