@@ -194,6 +194,13 @@ fn validated_authorization_profile(
     if expected.is_subset(&returned) {
         Ok(requested)
     } else {
+        let mut missing = expected.difference(&returned).copied().collect::<Vec<_>>();
+        missing.sort_unstable();
+        eprintln!(
+            "MDReader OAuth scope validation rejected provider={} missing={}",
+            provider.id(),
+            missing.join(",")
+        );
         Err(CloudSourceError::OauthTokenRejected)
     }
 }
