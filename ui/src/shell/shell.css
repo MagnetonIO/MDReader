@@ -1126,6 +1126,27 @@ body {
   gap: var(--space-2);
 }
 
+.library-sources__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar--library-expanded .filetree {
+  flex: 0 1 24%;
+  min-height: 96px;
+}
+
+.sidebar--library-expanded .library-sources {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.sidebar--library-expanded .recent {
+  display: none;
+}
+
 .library-sources__source > div {
   justify-content: flex-start;
 }

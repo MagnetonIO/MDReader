@@ -37,7 +37,10 @@ const LIBRARY_SERVICE_ID: Uuid = Uuid::from_u128(0xa4d862e5_1efe_457b_9488_0db41
 const LIBRARY_RESOLVER_ID: Uuid = Uuid::from_u128(0x5ab56e98_b720_4913_86f7_84c646cc6e84);
 const PHYSICAL_SOURCE_NAMESPACE: Uuid = Uuid::from_u128(0x6d7c4005_f53a_41af_9b6c_7c6ff1ca9b4e);
 const VERSION_NAMESPACE: Uuid = Uuid::from_u128(0x7e60a029_b565_47a8_907e_820caf6e4d8a);
-pub(crate) const LIBRARY_CONTINUATION_LIFETIME: Duration = Duration::from_secs(30);
+// This cursor is retained only in the bounded native registry (maximum eight
+// entries), never exposed to the renderer or persisted. Thirty seconds was too
+// short for a person reading the first page before choosing “Load more.”
+pub(crate) const LIBRARY_CONTINUATION_LIFETIME: Duration = Duration::from_secs(30 * 60);
 const QUERY_WORK_BUDGET: usize = 100_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 /// Foreground Library reads are intentionally small; continuations retain the

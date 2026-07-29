@@ -2,6 +2,7 @@
  * A quiet rail — muted surface, thin borders — that never competes with the
  * reading column. */
 
+import { useState } from 'react';
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type {
   EntityRow,
@@ -124,6 +125,7 @@ export function Sidebar({
   onRefreshLibrary,
   onLoadMoreLibrary,
 }: SidebarProps) {
+  const [libraryExpanded, setLibraryExpanded] = useState(false);
   const search = librarySearch.trim().toLocaleLowerCase();
   const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
     evidence.memberships.some(
@@ -140,7 +142,7 @@ export function Sidebar({
     libraryAvailability.kind !== 'ready';
   return (
     <aside
-      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
+      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}${libraryExpanded ? ' sidebar--library-expanded' : ''}`}
       aria-hidden={collapsed}
       inert={collapsed ? true : undefined}
     >
@@ -185,7 +187,16 @@ export function Sidebar({
         <nav className="library-sources" aria-label="Library sources">
           <div className="library-sources__heading">
             <span>Library</span>
-            {onRefreshLibrary ? (
+            <div className="library-sources__actions">
+              <button
+                type="button"
+                className="library-sources__refresh"
+                onClick={() => setLibraryExpanded((expanded) => !expanded)}
+                aria-expanded={libraryExpanded}
+              >
+                {libraryExpanded ? 'Restore' : 'Expand'}
+              </button>
+              {onRefreshLibrary ? (
               <button
                 type="button"
                 className="library-sources__refresh"
@@ -194,7 +205,8 @@ export function Sidebar({
               >
                 {libraryLoading ? 'Reading…' : 'Refresh'}
               </button>
-            ) : null}
+              ) : null}
+            </div>
           </div>
           {onLibrarySearch ? (
             <input
