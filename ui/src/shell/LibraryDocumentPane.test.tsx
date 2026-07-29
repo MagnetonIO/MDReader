@@ -119,8 +119,8 @@ it('reads and inspects one hydrated provider response without a second query', a
 
   expect(await screen.findByText('Cloud note')).toBeTruthy();
   expect(screen.getByText('Provider-owned body.')).toBeTruthy();
-  expect(screen.getByText(/Read-only/)).toBeTruthy();
-  expect(screen.getByText(/Changes remain in the source/i)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Source view' })).toBeTruthy();
+  expect(screen.queryByText(/Changes remain in the source/i)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toContain(
     'drive-file-1',
   );

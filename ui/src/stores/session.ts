@@ -8,15 +8,15 @@
 
 import { DEFAULT_TEXT_SCALE_INDEX, TEXT_SCALE_STEPS } from './settings.js';
 import type { ReadingFont, SettingsSnapshot, Theme } from './settings.js';
-import type { DocRef, RecentDoc, ScrollPos, TabState } from './types.js';
+import type { DocumentRef, RecentDoc, ScrollPos, TabState } from './types.js';
 
 export const SESSION_VERSION = 1;
 
 /** The persisted form of a tab (identical to TabState today; versioned apart). */
 export interface SerializedTab {
   id: string;
-  docRef: DocRef;
-  history: DocRef[];
+  docRef: DocumentRef;
+  history: DocumentRef[];
   historyIndex: number;
   scroll: ScrollPos;
   pinned: boolean;
@@ -52,7 +52,9 @@ export function serializeSession(input: SessionInput): SessionData {
     root: input.root,
     activeTabId: input.activeTabId,
     recent: input.recent.map(cloneRecent),
-    tabs: input.tabs.map((tab) => ({
+    // Cloud bodies and edit authorities are transient native-issued state. Do
+    // not revive a cloud tab without a fresh point read and fresh authority.
+    tabs: input.tabs.filter((tab) => tab.docRef.kind !== 'cloud').map((tab) => ({
       id: tab.id,
       docRef: cloneRef(tab.docRef),
       history: tab.history.map(cloneRef),
@@ -127,15 +129,30 @@ function parseTab(candidate: unknown): TabState | null {
   };
 }
 
-function parseRef(candidate: unknown): DocRef | null {
+function parseRef(candidate: unknown): DocumentRef | null {
   if (!isRecord(candidate)) return null;
-  if (typeof candidate.path !== 'string' || typeof candidate.name !== 'string') return null;
+  if (typeof candidate.name !== 'string') return null;
+  if (candidate.kind === 'cloud') {
+    if (
+      typeof candidate.sourceId !== 'string' ||
+      typeof candidate.recordKey !== 'string' ||
+      typeof candidate.documentKey !== 'string'
+    ) return null;
+    return {
+      kind: 'cloud',
+      sourceId: candidate.sourceId,
+      recordKey: candidate.recordKey,
+      documentKey: candidate.documentKey,
+      name: candidate.name,
+    };
+  }
+  if (typeof candidate.path !== 'string') return null;
   return { path: candidate.path, name: candidate.name };
 }
 
-function parseRefArray(candidate: unknown): DocRef[] {
+function parseRefArray(candidate: unknown): DocumentRef[] {
   if (!Array.isArray(candidate)) return [];
-  const refs: DocRef[] = [];
+  const refs: DocumentRef[] = [];
   for (const entry of candidate) {
     const ref = parseRef(entry);
     if (ref) refs.push(ref);
@@ -148,7 +165,7 @@ function parseRecentArray(candidate: unknown, fallbackRoot: string | null): Rece
   const recents: RecentDoc[] = [];
   for (const entry of candidate) {
     const ref = parseRef(entry);
-    if (!ref) continue;
+    if (!ref || ref.kind === 'cloud') continue;
     const root =
       isRecord(entry) && typeof entry.root === 'string' ? entry.root : fallbackRoot;
     recents.push({ path: ref.path, name: ref.name, root });
@@ -230,8 +247,16 @@ export const DEFAULT_SETTINGS: SettingsSnapshot = {
 
 // --- helpers ---
 
-function cloneRef(ref: DocRef): DocRef {
-  return { path: ref.path, name: ref.name };
+function cloneRef(ref: DocumentRef): DocumentRef {
+  return ref.kind === 'cloud'
+    ? {
+        kind: 'cloud',
+        sourceId: ref.sourceId,
+        recordKey: ref.recordKey,
+        documentKey: ref.documentKey,
+        name: ref.name,
+      }
+    : { path: ref.path, name: ref.name };
 }
 
 function cloneRecent(ref: RecentDoc): RecentDoc {

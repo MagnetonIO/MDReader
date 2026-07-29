@@ -38,7 +38,7 @@ import { ConflictBanner } from './ConflictBanner.js';
 import { useEditorStore } from '../stores/editor.js';
 import type { EditorMode } from '../stores/editor.js';
 import type { ReadingFont } from '../stores/settings.js';
-import type { DocRef, ScrollPos, TabState } from '../stores/types.js';
+import { isLocalDocument, type DocRef, type ScrollPos, type TabState } from '../stores/types.js';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -159,7 +159,8 @@ export function ReaderPane({
   const pulseTimer = useRef<number | undefined>(undefined);
   const consumedJump = useRef(0);
 
-  const path = tab?.docRef.path ?? null;
+  const localRef = tab && isLocalDocument(tab.docRef) ? tab.docRef : null;
+  const path = localRef?.path ?? null;
   const tabId = tab?.id ?? null;
   // The active (tab, document)'s editing state (undefined ⇒ plain read mode).
   // Keyed by BOTH tab and path, so a tab that has navigated to another document
@@ -434,7 +435,7 @@ export function ReaderPane({
   return (
     <div className="reader-region">
       <ReaderToolbar
-        docRef={tab.docRef}
+        docRef={localRef}
         root={root}
         outlineVisible={outlineVisible}
         onToggleOutline={onToggleOutline}

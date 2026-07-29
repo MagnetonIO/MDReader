@@ -25,7 +25,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { CloseIcon, PinIcon } from './icons.js';
 import { useTabsStore } from '../stores/tabs.js';
 import { useEditorStore } from '../stores/editor.js';
-import type { TabState } from '../stores/types.js';
+import { isLocalDocument, type TabState } from '../stores/types.js';
 
 function SortableTab({
   tab,
@@ -65,7 +65,7 @@ function SortableTab({
       {...listeners}
       role="tab"
       aria-selected={active}
-      title={tab.docRef.path}
+      title={isLocalDocument(tab.docRef) ? tab.docRef.path : tab.docRef.name}
       onClick={() => {
         onLocalIntent();
         setActiveTab(tab.id);

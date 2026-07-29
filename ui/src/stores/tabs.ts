@@ -11,7 +11,7 @@
 
 import { create } from 'zustand';
 
-import type { ClosedTab, DocRef, ScrollPos, TabState } from './types.js';
+import { documentKey, type ClosedTab, type DocumentRef, type ScrollPos, type TabState } from './types.js';
 
 const DEFAULT_SCROLL: ScrollPos = { block: 0, offset: 0 };
 const MAX_CLOSED = 20;
@@ -57,9 +57,9 @@ export interface TabsState {
   /** Open (or focus, if already open) a document in its own tab. `originRoot`
    *  tags a NEW tab with the workspace it was opened under (ignored when the tab
    *  already exists — its origin is fixed at first open). */
-  openTab: (docRef: DocRef, opts?: { activate?: boolean; originRoot?: string | null }) => string;
+  openTab: (docRef: DocumentRef, opts?: { activate?: boolean; originRoot?: string | null }) => string;
   /** Replace the active document of `tabId`, pushing a history entry. */
-  navigateInTab: (tabId: string, docRef: DocRef) => void;
+  navigateInTab: (tabId: string, docRef: DocumentRef) => void;
   back: (tabId: string) => void;
   forward: (tabId: string) => void;
   closeTab: (tabId: string) => void;
@@ -73,7 +73,7 @@ export interface TabsState {
    * in tab order, so the caller can record them in Recent. Clears the reopen
    * stack too — those tabs belong to the previous workspace.
    */
-  closeAll: () => DocRef[];
+  closeAll: () => DocumentRef[];
   /**
    * Retire (close) every tab whose `originRoot` differs from `currentRoot` —
    * the tabs that belong to a workspace we are switching away from — returning
@@ -82,7 +82,7 @@ export interface TabsState {
    * root, so overlapping switches attribute tabs correctly. Same-origin tabs
    * (originRoot === currentRoot) are kept, so a same-root re-open retires none.
    */
-  retireForeign: (currentRoot: string | null) => { docRef: DocRef; originRoot: string | null }[];
+  retireForeign: (currentRoot: string | null) => { docRef: DocumentRef; originRoot: string | null }[];
   setScroll: (tabId: string, scroll: ScrollPos) => void;
   /** Advance the Ctrl+Tab MRU cycle by `step` (typically +1 / -1). */
   cycleMru: (step: number) => void;
@@ -118,7 +118,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
     const activate = opts?.activate ?? true;
     const state = get();
 
-    const existing = state.tabs.find((tab) => tab.docRef.path === docRef.path);
+    const existing = state.tabs.find((tab) => documentKey(tab.docRef) === documentKey(docRef));
     if (existing) {
       if (activate) get().setActiveTab(existing.id);
       return existing.id;
@@ -156,7 +156,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
     set((state) => ({
       tabs: state.tabs.map((tab) => {
         if (tab.id !== tabId) return tab;
-        if (tab.docRef.path === docRef.path) return tab;
+        if (documentKey(tab.docRef) === documentKey(docRef)) return tab;
         const history = [...tab.history.slice(0, tab.historyIndex + 1), docRef];
         return {
           ...tab,

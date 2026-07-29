@@ -12,6 +12,8 @@ import type {
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { LibrarySemanticInspector } from './LibrarySemanticInspector.js';
 import { libraryDocumentTitle, physicalRecordKey } from './library-documents.js';
+import { SourcePane } from './SourcePane.js';
+import { useEditorStore } from '../stores/editor.js';
 
 export interface LibraryDocumentPaneProps {
   member: LibrarySourceExecution;
@@ -21,6 +23,12 @@ export interface LibraryDocumentPaneProps {
   loading?: boolean;
   error?: string | null;
   onEdit?: () => void;
+  cloudEditor?: {
+    tabId: string;
+    documentKey: string;
+    onSave: () => void;
+    onReload: () => void;
+  };
   onRetry?: () => void;
 }
 
@@ -60,6 +68,7 @@ export function LibraryDocumentPane({
   loading = false,
   error = null,
   onEdit,
+  cloudEditor,
   onRetry,
 }: LibraryDocumentPaneProps) {
   const values = fieldsOf(row);
@@ -71,6 +80,10 @@ export function LibraryDocumentPane({
   const platform = useMemo(() => createReaderPlatform(null), []);
   const recordKey = physicalRecordKey(row);
   const providerUrl = recordKey === null ? null : originalUrl(member, recordKey);
+  const editorEntry = useEditorStore((store) =>
+    cloudEditor ? store.entry(cloudEditor.tabId, cloudEditor.documentKey) : undefined,
+  );
+  const editable = member.editable || cloudDocument?.edit_token !== null;
 
   useEffect(() => {
     let current = true;
@@ -98,9 +111,9 @@ export function LibraryDocumentPane({
             <span className="breadcrumb__sep">/</span>
             <span className="breadcrumb__leaf">{title}</span>
           </nav>
-          {member.editable ? (
+          {editable ? (
             <button type="button" onClick={onEdit} disabled={!onEdit}>
-              Edit local file
+              {member.editable ? 'Edit local file' : 'Source view'}
             </button>
           ) : (
             <span className="library-reader__state">Read-only</span>
@@ -138,13 +151,47 @@ export function LibraryDocumentPane({
             Download
           </button>
         </div>
-        {!member.editable ? (
+        {!member.editable && cloudDocument?.edit_token === null ? (
           <p className="library-reader__policy">
             Read from {member.name}. Changes remain in the source.
           </p>
         ) : null}
         <div className="reader-body">
           <div className="reader-host">
+            {cloudEditor && editorEntry?.mode !== 'read' ? (
+              <div className="source-region">
+                <SourcePane
+                  value={editorEntry!.buffer}
+                  onChange={(value) =>
+                    useEditorStore.getState().edit(cloudEditor.tabId, cloudEditor.documentKey, value)
+                  }
+                  onSave={cloudEditor.onSave}
+                  onToggleMode={() =>
+                    useEditorStore.getState().setMode(cloudEditor.tabId, cloudEditor.documentKey, 'read')
+                  }
+                />
+                {editorEntry!.conflict ? (
+                  <div className="conflict-banner" role="alert">
+                    <strong>Cloud revision changed</strong>
+                    <button type="button" onClick={cloudEditor.onReload}>Reload</button>
+                    <button type="button" onClick={() => saveCopy(title, editorEntry!.buffer)}>
+                      Copy edited text
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        useEditorStore.getState().clearConflict(
+                          cloudEditor.tabId,
+                          cloudEditor.documentKey,
+                        )
+                      }
+                    >
+                      Keep my unsaved text
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {body === null ? (
               <div className="reader-empty">
                 <p className="reader-empty__hint">

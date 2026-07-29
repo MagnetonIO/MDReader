@@ -11,7 +11,7 @@
  *     overlapping switches attribute tabs to the workspace they came from.
  */
 import { retireTabsAfterSwitch } from './switch-retire.js';
-import type { DocRef } from '../stores/types.js';
+import { isLocalDocument, type DocumentRef, type DocRef } from '../stores/types.js';
 
 export interface SwitchDeps {
   /** Open (or supersede) the workspace; resolves whether it committed as current. */
@@ -21,7 +21,7 @@ export interface SwitchDeps {
   /** The current workspace root, read AFTER the open commits (authoritative target). */
   currentRoot: () => string | null;
   /** Close every tab foreign to a root, returning each with its origin. */
-  retireForeign: (currentRoot: string | null) => { docRef: DocRef; originRoot: string | null }[];
+  retireForeign: (currentRoot: string | null) => { docRef: DocumentRef; originRoot: string | null }[];
   /** Record a retired ref under a workspace. */
   addRecent: (ref: DocRef, root: string) => void;
 }
@@ -35,8 +35,13 @@ export async function performSwitch(folder: string, deps: SwitchDeps): Promise<b
     committed,
     targetRoot: committed ? deps.currentRoot() : null,
     fallbackRoot: deps.previousRoot,
-    retireForeign: deps.retireForeign,
-    addRecent: deps.addRecent,
+    retireForeign: (root) => deps.retireForeign(root).filter(
+      (retired): retired is { docRef: DocRef; originRoot: string | null } =>
+        isLocalDocument(retired.docRef),
+    ),
+    addRecent: (ref, root) => {
+      if (isLocalDocument(ref)) deps.addRecent(ref, root);
+    },
   });
   return committed;
 }

@@ -1,10 +1,40 @@
 /** Shared shapes for the shell's zustand stores. */
 
-/** Identifies an openable document by its absolute path plus a display name. */
-export interface DocRef {
+/** A filesystem-backed document. Its path is only valid local-file authority. */
+export interface LocalDocumentRef {
+  kind?: 'local';
   path: string;
   name: string;
 }
+
+/** A provider-owned document. Keys and edit authority remain native-issued. */
+export interface CloudDocumentRef {
+  kind: 'cloud';
+  /** Deliberately uninhabitable: cloud references cannot supply path authority. */
+  path?: never;
+  sourceId: string;
+  recordKey: string;
+  documentKey: string;
+  name: string;
+}
+
+/** Identifies a document without confusing provider keys for filesystem paths. */
+export type DocumentRef = LocalDocumentRef | CloudDocumentRef;
+
+/** The stable, non-filesystem key used by tabs and transient editor buffers. */
+export function documentKey(ref: DocumentRef): string {
+  return ref.kind === 'cloud'
+    ? `cloud:${ref.sourceId}:${ref.documentKey}`
+    : `local:${ref.path}`;
+}
+
+/** Narrows a reference before it crosses a filesystem-only boundary. */
+export function isLocalDocument(ref: DocumentRef): ref is LocalDocumentRef {
+  return ref.kind !== 'cloud';
+}
+
+/** @deprecated Use {@link DocumentRef}; retained for local-only callers. */
+export type DocRef = LocalDocumentRef;
 
 /**
  * A recently-opened document, tagged with the workspace root it belongs to.
@@ -12,7 +42,7 @@ export interface DocRef {
  * is active, so a document retired from workspace A can never be reopened under
  * workspace B's grant (which would escape the root and produce an error tab).
  */
-export interface RecentDoc extends DocRef {
+export interface RecentDoc extends LocalDocumentRef {
   /** The granted workspace root this document was opened under (`null` if it was
    *  opened before any workspace grant existed — e.g. a legacy persisted entry). */
   root: string | null;
@@ -29,10 +59,10 @@ export interface ScrollPos {
 /** One open tab. `docRef` always mirrors `history[historyIndex]`. */
 export interface TabState {
   id: string;
-  docRef: DocRef;
+  docRef: DocumentRef;
   scroll: ScrollPos;
   /** Back/forward stack of documents visited in this tab (wikilink nav). */
-  history: DocRef[];
+  history: DocumentRef[];
   historyIndex: number;
   pinned: boolean;
   /**
@@ -47,8 +77,8 @@ export interface TabState {
 
 /** A closed tab retained for reopen (Cmd+Shift+T). */
 export interface ClosedTab {
-  docRef: DocRef;
-  history: DocRef[];
+  docRef: DocumentRef;
+  history: DocumentRef[];
   historyIndex: number;
   scroll: ScrollPos;
   pinned: boolean;

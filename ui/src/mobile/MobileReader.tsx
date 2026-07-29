@@ -6,6 +6,7 @@ import type { ParsedDoc } from '@mdreader/markdown';
 import { readDoc } from '../platform/fs';
 import { createReaderPlatform } from '../platform/reader-platform';
 import type { TabState } from '../stores/types';
+import { isLocalDocument } from '../stores/types';
 import {
   MobileSourceReadError,
   type MobileDocumentPayload,
@@ -58,6 +59,10 @@ export function MobileReader({
   onBack,
   onModeChange,
 }: MobileReaderProps) {
+  const localRef = isLocalDocument(tab.docRef) ? tab.docRef : null;
+  if (!localRef) {
+    throw new MobileSourceReadError('identity-mismatch', 'Cloud documents require the cloud reader.');
+  }
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [error, setError] = useState<{ kind: string; message: string } | null>(null);
   const [offline, setOffline] = useState<OfflineCacheRead | null>(null);
@@ -68,8 +73,8 @@ export function MobileReader({
   } | null>(null);
   const requestEpoch = useRef(0);
   const readerPlatform = useMemo(
-    () => createReaderPlatform(dirname(tab.docRef.path)),
-    [tab.docRef.path],
+    () => createReaderPlatform(dirname(localRef.path)),
+    [localRef.path],
   );
 
   useEffect(() => {
@@ -81,7 +86,7 @@ export function MobileReader({
     setEvidence(null);
     const liveRead = loadDocument
       ? loadDocument()
-      : readDoc(tab.docRef.path).then((payload) => ({
+      : readDoc(localRef.path).then((payload) => ({
           ...sourceIdentity,
           content: payload.content,
           revision: payload.hash,

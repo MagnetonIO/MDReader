@@ -35,7 +35,7 @@ import {
   useSettingsStore,
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
-import type { DocRef, ScrollPos } from '../stores/types.js';
+import { documentKey, isLocalDocument, type DocRef, type ScrollPos } from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
@@ -52,7 +52,6 @@ import {
 } from '../platform/settings.js';
 import type {
   EntityRow,
-  LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
 } from '../bindings.js';
 import { events } from '../bindings.js';
@@ -78,6 +77,7 @@ import {
   hydrateLibrary,
   hydrateLibraryDocument,
   libraryAvailability as availabilityForLibrary,
+  physicalRecordKey,
   type LibraryAvailability,
   type HydratedLibrary,
   type HydratedLibrarySelection,
@@ -170,6 +170,7 @@ export function AppShell() {
   }, []);
   const [libraryDocument, setLibraryDocument] =
     useState<HydratedLibrarySelection | null>(null);
+  const [cloudDocuments, setCloudDocuments] = useState<Record<string, HydratedLibrarySelection>>({});
   const [libraryHydration, setLibraryHydration] = useState<HydratedLibrary>({
     evidence: [],
     failures: [],
@@ -380,7 +381,26 @@ export function AppShell() {
           requestId,
         );
         if (libraryDocumentGeneration.current === generation) {
-          setLibraryDocument(hydratedDocument);
+          if (
+            (hydratedDocument.member.kind === 'google-drive' ||
+              hydratedDocument.member.kind === 'dropbox') &&
+            hydratedDocument.cloudDocument
+          ) {
+            const recordKey = physicalRecordKey(hydratedDocument.row);
+            if (!recordKey) throw new Error('Cloud document lost its provider identity.');
+            const ref = {
+              kind: 'cloud' as const,
+              sourceId: hydratedDocument.member.registry_id,
+              recordKey,
+              documentKey: hydratedDocument.cloudDocument.document_key,
+              name: hydratedDocument.cloudDocument.title,
+            };
+            setCloudDocuments((current) => ({ ...current, [documentKey(ref)]: hydratedDocument }));
+            useTabsStore.getState().openTab(ref, { originRoot: null });
+            setLibraryDocument(null);
+          } else {
+            setLibraryDocument(hydratedDocument);
+          }
         }
       } catch {
         if (libraryDocumentGeneration.current === generation) {
@@ -396,8 +416,10 @@ export function AppShell() {
     [libraryEvidence],
   );
 
+  const activeCloudDocument =
+    activeTab?.docRef.kind === 'cloud' ? cloudDocuments[documentKey(activeTab.docRef)] ?? null : null;
   const activePathRef = useRef<string | null>(null);
-  activePathRef.current = activeTab?.docRef.path ?? null;
+  activePathRef.current = activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null;
   const activeTabIdRef = useRef<string | null>(null);
   activeTabIdRef.current = activeTabId;
   // Late-bound so the close-guard's `performQuit` (declared before `flushSession`)
@@ -951,6 +973,7 @@ export function AppShell() {
     const tab = selectActiveTab(useTabsStore.getState());
     if (!tab) return;
     const tabId = tab.id;
+    if (!isLocalDocument(tab.docRef)) return;
     const docPath = tab.docRef.path;
     const editor = useEditorStore.getState();
     if (mode === 'read') {
@@ -967,7 +990,7 @@ export function AppShell() {
       // The active tab may have changed (or navigated) during the read — seed only
       // if it still stands on the same document.
       const landed = selectActiveTab(useTabsStore.getState());
-      if (!landed || landed.id !== tabId || landed.docRef.path !== docPath) return;
+      if (!landed || !isLocalDocument(landed.docRef) || landed.id !== tabId || landed.docRef.path !== docPath) return;
       useEditorStore.getState().seed(tabId, docPath, doc.content, doc.hash, mode);
     } catch (cause) {
       if (sourceIntentIsCurrent()) {
@@ -1220,7 +1243,7 @@ export function AppShell() {
 
   // A passage belongs to the document it was selected in; switching documents
   // clears it rather than showing another file's claims under this file's lines.
-  const activeDocPath = activeTab?.docRef.path ?? null;
+  const activeDocPath = activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null;
   useEffect(() => {
     setInspected((current) => (current && current.path === activeDocPath ? current : null));
   }, [activeDocPath]);
@@ -1237,7 +1260,7 @@ export function AppShell() {
   const toggleSourceMode = useCallback(() => {
     const tab = selectActiveTab(useTabsStore.getState());
     if (!tab) return;
-    const current = useEditorStore.getState().mode(tab.id, tab.docRef.path);
+    const current = useEditorStore.getState().mode(tab.id, documentKey(tab.docRef));
     void setEditorMode(current === 'read' ? 'source' : 'read');
   }, [setEditorMode]);
 
@@ -1285,10 +1308,79 @@ export function AppShell() {
     (force: boolean) => {
       const tab = selectActiveTab(useTabsStore.getState());
       if (!tab) return Promise.resolve('noop' as const);
+      if (!isLocalDocument(tab.docRef)) return Promise.resolve('noop' as const);
       return saveDocEntry(tab.id, tab.docRef.path, force);
     },
     [saveDocEntry],
   );
+
+  const beginCloudEdit = useCallback(() => {
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab || tab.docRef.kind !== 'cloud') return;
+    const selection = cloudDocuments[documentKey(tab.docRef)];
+    const document = selection?.cloudDocument;
+    if (!document?.edit_token) return;
+    const key = documentKey(tab.docRef);
+    const existing = useEditorStore.getState().entry(tab.id, key);
+    if (existing) {
+      useEditorStore.getState().setMode(tab.id, key, 'source');
+      return;
+    }
+    useEditorStore.getState().seed(tab.id, key, document.content, document.edit_token, 'source');
+  }, [cloudDocuments]);
+
+  const saveActiveCloud = useCallback(async () => {
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab || tab.docRef.kind !== 'cloud') return;
+    const key = documentKey(tab.docRef);
+    const entry = useEditorStore.getState().entry(tab.id, key);
+    if (!entry || !entry.dirty) return;
+    const snapshot = entry.buffer;
+    try {
+      const outcome = await settingsBackend.saveCloudMarkdown?.(entry.baseHash, snapshot);
+      if (!outcome) throw new Error('Cloud editing is unavailable.');
+      if (outcome.kind === 'conflict') {
+        useEditorStore.getState().raiseConflict(tab.id, key, entry.baseHash, 'save');
+        return;
+      }
+      useEditorStore.getState().markSaved(tab.id, key, snapshot, outcome.edit_token);
+      setCloudDocuments((current) => {
+        const selection = current[key];
+        if (!selection?.cloudDocument) return current;
+        return {
+          ...current,
+          [key]: {
+            ...selection,
+            cloudDocument: {
+              ...selection.cloudDocument,
+              content: snapshot,
+              edit_token: outcome.edit_token,
+              modified_at_ms: outcome.modified_at_ms,
+            },
+          },
+        };
+      });
+    } catch {
+      toast('Could not save this cloud document.');
+    }
+  }, []);
+
+  const reloadActiveCloud = useCallback(async () => {
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab || tab.docRef.kind !== 'cloud') return;
+    const key = documentKey(tab.docRef);
+    try {
+      const document = await settingsBackend.readCloudMarkdown?.(tab.docRef.sourceId, tab.docRef.recordKey);
+      if (!document) throw new Error('Cloud reads are unavailable.');
+      useEditorStore.getState().seed(tab.id, key, document.content, document.edit_token ?? '', 'source');
+      setCloudDocuments((current) => {
+        const selection = current[key];
+        return selection ? { ...current, [key]: { ...selection, cloudDocument: document } } : current;
+      });
+    } catch {
+      toast('Could not reload this cloud document.');
+    }
+  }, []);
 
   // Conflict banner "Reload": discard the local buffer and adopt the on-disk
   // version (re-seeding the anchor), and refresh the reader view too.
@@ -1296,6 +1388,7 @@ export function AppShell() {
     const tab = selectActiveTab(useTabsStore.getState());
     if (!tab) return;
     const tabId = tab.id;
+    if (!isLocalDocument(tab.docRef)) return;
     const docPath = tab.docRef.path;
     try {
       const doc = await readDoc(docPath);
@@ -1457,7 +1550,7 @@ export function AppShell() {
   // evicts clean buffers for docs a tab has navigated away from — so a long-lived
   // tab that has viewed many docs in source mode does not grow unbounded.
   useEffect(() => {
-    const activePathByTab = new Map(tabs.map((tab) => [tab.id, tab.docRef.path]));
+    const activePathByTab = new Map(tabs.map((tab) => [tab.id, documentKey(tab.docRef)]));
     useEditorStore
       .getState()
       .retain((tabId, path, dirty) => dirty || activePathByTab.get(tabId) === path);
@@ -2084,7 +2177,7 @@ export function AppShell() {
     [files],
   );
   const activeDoc = useMemo(
-    () => (activeTab ? { path: activeTab.docRef.path, name: activeTab.docRef.name } : null),
+    () => (activeTab && isLocalDocument(activeTab.docRef) ? { path: activeTab.docRef.path, name: activeTab.docRef.name } : null),
     [activeTab],
   );
   // The search/related transport, closed over the live watcher generation so
@@ -2114,7 +2207,7 @@ export function AppShell() {
           root={root}
           files={files}
           recent={visibleRecent}
-          activePath={activeTab?.docRef.path ?? null}
+          activePath={activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null}
           loading={loading}
           listingError={listingError}
           onPickFolder={onPickFolder}
@@ -2144,7 +2237,7 @@ export function AppShell() {
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
-            }${libraryDocument ? ' shell__reader-row--library-open' : ''
+            }${libraryDocument || activeCloudDocument ? ' shell__reader-row--library-open' : ''
             }`}
           >
             {libraryDocument ? (
@@ -2168,6 +2261,30 @@ export function AppShell() {
                           libraryDocument.member,
                           libraryDocument.row,
                         )
+                    : undefined
+                }
+              />
+            ) : activeCloudDocument ? (
+              <LibraryDocumentPane
+                member={activeCloudDocument.member}
+                row={activeCloudDocument.row}
+                evidence={activeCloudDocument.evidence}
+                cloudDocument={activeCloudDocument.cloudDocument}
+                onRetry={() =>
+                  void openLibraryDocument(
+                    activeCloudDocument.member,
+                    activeCloudDocument.row,
+                  )
+                }
+                onEdit={beginCloudEdit}
+                cloudEditor={
+                  activeTab && activeTab.docRef.kind === 'cloud'
+                    ? {
+                        tabId: activeTab.id,
+                        documentKey: documentKey(activeTab.docRef),
+                        onSave: () => void saveActiveCloud(),
+                        onReload: () => void reloadActiveCloud(),
+                      }
                     : undefined
                 }
               />
@@ -2217,7 +2334,7 @@ export function AppShell() {
                 onCite={onCite}
                 workspaceKey={root}
                 workspaceGeneration={semanticWorkspaceGeneration}
-                documentPath={activeTab.docRef.path}
+                documentPath={isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : ''}
                 queryDocument={semantics.queryFederatedDocument}
                 cancelDocument={semantics.cancelFederatedDocument}
               />

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { useEditorStore } from './editor.js';
+import { documentKey, type DocumentRef } from './types.js';
 
 function store() {
   return useEditorStore.getState();
@@ -92,6 +93,35 @@ describe('editor store — navigation NEVER drops an unsaved buffer', () => {
     expect(store().entry('tab-1', B)).toBeUndefined();
     // The A entry is still there, dirty — preserved, not saved to B.
     expect(store().isDirty('tab-1', A)).toBe(true);
+  });
+});
+
+describe('editor store — cloud identities', () => {
+  it('keeps buffers separate for cloud documents that share a display path', () => {
+    const drive: DocumentRef = {
+      kind: 'cloud',
+      sourceId: 'drive-source',
+      recordKey: '/notes/shared.md',
+      documentKey: 'drive-document',
+      name: 'shared.md',
+    };
+    const dropbox: DocumentRef = {
+      kind: 'cloud',
+      sourceId: 'dropbox-source',
+      recordKey: '/notes/shared.md',
+      documentKey: 'dropbox-document',
+      name: 'shared.md',
+    };
+    const driveKey = documentKey(drive);
+    const dropboxKey = documentKey(dropbox);
+
+    store().seed('tab-1', driveKey, 'Drive body', 'drive-anchor', 'source');
+    store().seed('tab-1', dropboxKey, 'Dropbox body', 'dropbox-anchor', 'source');
+    store().edit('tab-1', driveKey, 'Drive edit');
+
+    expect(driveKey).not.toBe(dropboxKey);
+    expect(store().entry('tab-1', driveKey)?.buffer).toBe('Drive edit');
+    expect(store().entry('tab-1', dropboxKey)?.buffer).toBe('Dropbox body');
   });
 });
 
