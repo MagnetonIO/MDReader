@@ -738,6 +738,12 @@ mod store {
         }
     }
 
+    fn tombstone_page(name: &str, revision: &str) -> MarkdownMetadataPage {
+        let mut page = page_with_revisions(&[(name, revision)]);
+        page.rows[0].deleted = true;
+        page
+    }
+
     fn publish_page(
         store: &CloudDocumentStore,
         source: &SourceId,
@@ -966,6 +972,84 @@ mod store {
         assert!(matches!(
             CloudDocumentStore::open(&path),
             Err(CloudDocumentStoreError::MigrationInterrupted)
+        ));
+    }
+
+    #[test]
+    fn version_one_schema_with_correct_columns_but_missing_load_bearing_shape_is_refused() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let connection = rusqlite::Connection::open(&path).expect("open corrupt schema database");
+        connection
+            .execute_batch(
+                "CREATE TABLE mdreader_cloud_snapshot (
+                    source_id TEXT,
+                    generation BLOB,
+                    state TEXT,
+                    observed_at_ms INTEGER,
+                    schema_version_id BLOB,
+                    mapping_version_id BLOB,
+                    source_version_id BLOB
+                 );
+                 CREATE INDEX mdreader_cloud_one_published_snapshot
+                    ON mdreader_cloud_snapshot (source_id);
+                 CREATE TABLE mdreader_cloud_document (
+                    source_id BLOB,
+                    generation BLOB,
+                    record_key BLOB,
+                    name TEXT,
+                    display_path TEXT,
+                    media_type TEXT,
+                    modified_at_ms INTEGER,
+                    size_bytes INTEGER,
+                    revision BLOB,
+                    content_hash BLOB,
+                    deleted INTEGER,
+                    schema_version_id BLOB,
+                    mapping_version_id BLOB,
+                    source_version_id BLOB,
+                    observed_at_ms INTEGER
+                 );
+                 CREATE INDEX mdreader_cloud_document_published
+                    ON mdreader_cloud_document (source_id, generation, display_path, record_key);
+                 CREATE TABLE mdreader_cloud_sync_state (
+                    source_id BLOB,
+                    change_cursor BLOB,
+                    sync_state TEXT,
+                    last_success_ms INTEGER,
+                    last_error_kind TEXT,
+                    retry_after_ms INTEGER
+                 );
+                 CREATE TABLE mdreader_cloud_body_cache (
+                    source_id BLOB,
+                    source_version_id BLOB,
+                    record_key BLOB,
+                    revision BLOB,
+                    body BLOB,
+                    body_hash BLOB,
+                    size_bytes INTEGER,
+                    last_access_ms INTEGER
+                 );
+                 CREATE INDEX mdreader_cloud_body_cache_lru
+                    ON mdreader_cloud_body_cache (body_hash);
+                 CREATE TABLE mdreader_cloud_write_repair (
+                    operation_id BLOB,
+                    source_id BLOB,
+                    record_key BLOB,
+                    accepted_revision BLOB,
+                    body_hash BLOB,
+                    receipt_json BLOB,
+                    state TEXT,
+                    created_at_ms INTEGER
+                 );
+                 PRAGMA user_version = 1;",
+            )
+            .expect("manufacture version-one schema with correct column names only");
+        drop(connection);
+
+        assert!(matches!(
+            CloudDocumentStore::open(&path),
+            Err(CloudDocumentStoreError::CorruptStore)
         ));
     }
 
@@ -1231,6 +1315,84 @@ mod store {
     }
 
     #[test]
+    fn tombstoned_metadata_never_returns_or_admits_a_cached_body() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("removed.md", "r1")]),
+            b"cursor",
+        );
+        store
+            .put_body(&source, &pins(), &document("removed.md", "r1", b"body", 1))
+            .expect("cache body before deletion");
+        store
+            .apply_change_page(
+                &source,
+                &pins(),
+                &tombstone_page("removed.md", "r1"),
+                &cursor(b"after-tombstone"),
+                2,
+            )
+            .expect("apply tombstone");
+
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("removed.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    3,
+                )
+                .expect("tombstoned cache lookup"),
+            None
+        );
+        assert!(matches!(
+            store.put_body(&source, &pins(), &document("removed.md", "r1", b"new", 4)),
+            Err(CloudDocumentStoreError::ForeignSource)
+        ));
+    }
+
+    #[test]
+    fn negative_cached_size_cannot_offset_an_oversized_physical_cache() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store =
+            CloudDocumentStore::open_with_cache_limit_for_tests(&path, 4).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("corrupt.md", "r1"), ("new.md", "r1")]),
+            b"cursor",
+        );
+        store
+            .put_body(&source, &pins(), &document("corrupt.md", "r1", b"aaa", 1))
+            .expect("cache first body");
+        let connection = rusqlite::Connection::open(&path).expect("open database for corruption");
+        connection
+            .execute_batch(
+                "PRAGMA ignore_check_constraints = ON;
+                 UPDATE mdreader_cloud_body_cache SET size_bytes = -2;
+                 PRAGMA ignore_check_constraints = OFF;",
+            )
+            .expect("manufacture a negative stored size");
+        drop(connection);
+
+        assert!(matches!(
+            store.put_body(&source, &pins(), &document("new.md", "r1", b"bbb", 2)),
+            Err(CloudDocumentStoreError::CorruptStore)
+        ));
+    }
+
+    #[test]
     fn provider_acceptance_receipt_survives_restart_until_publication_is_marked_durable() {
         let directory = tempdir().expect("temporary SQLite directory");
         let path = directory.path().join("cloud.sqlite");
@@ -1256,18 +1418,143 @@ mod store {
 
         let reopened = CloudDocumentStore::open(&path).expect("reopen store");
         let pending = reopened
-            .load_write_repair(repair.operation_id())
+            .load_write_repair(&source, repair.operation_id())
             .expect("load persisted receipt")
             .expect("receipt remains pending");
         assert!(pending.is_provider_accepted());
         reopened
-            .mark_write_published(repair.operation_id())
+            .mark_write_published(&source, repair.operation_id())
             .expect("mark derived publication durable");
         let durable = reopened
-            .load_write_repair(repair.operation_id())
+            .load_write_repair(&source, repair.operation_id())
             .expect("load durable receipt")
             .expect("receipt is retained after marking publication");
         assert!(durable.is_published());
         assert_eq!(durable.receipt_json(), br#"{\"provider\":\"accepted\"}"#);
+    }
+
+    #[test]
+    fn repeated_provider_acceptance_is_idempotent_and_rejects_a_conflicting_operation() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        let accepted = CloudWriteRepair::new(
+            b"operation-duplicate",
+            &source,
+            SourceRecordKey::new("note.md"),
+            ProviderRevision {
+                opaque: "accepted-r2".to_owned(),
+                content_hash: None,
+            },
+            [7_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid accepted repair");
+        let conflicting = CloudWriteRepair::new(
+            b"operation-duplicate",
+            &source,
+            SourceRecordKey::new("other.md"),
+            ProviderRevision {
+                opaque: "accepted-r2".to_owned(),
+                content_hash: None,
+            },
+            [7_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid conflicting repair");
+
+        store
+            .record_provider_acceptance(&accepted)
+            .expect("record first provider acceptance");
+        store
+            .record_provider_acceptance(&accepted)
+            .expect("repeat identical provider acceptance");
+        assert!(matches!(
+            store.record_provider_acceptance(&conflicting),
+            Err(CloudDocumentStoreError::WriteRepairCollision)
+        ));
+        drop(store);
+
+        let reopened = CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
+            .expect("reopen durable journal");
+        let pending = reopened
+            .pending_write_repairs(&source)
+            .expect("enumerate source pending repairs");
+        assert_eq!(pending.len(), 1);
+        let pending = &pending[0];
+        assert_eq!(pending.operation_id(), accepted.operation_id());
+        assert_eq!(pending.source_id_bytes(), source.as_str().as_bytes());
+        assert_eq!(pending.record_key().as_str(), "note.md");
+        assert_eq!(pending.accepted_revision().opaque, "accepted-r2");
+        assert_eq!(pending.body_hash(), &[7_u8; 32]);
+        assert_eq!(pending.receipt_json(), br#"{\"provider\":\"accepted\"}"#);
+        assert_eq!(pending.created_at_ms(), 9);
+    }
+
+    #[test]
+    fn repair_reads_enumeration_and_publication_marking_are_source_scoped() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        let foreign = SourceId::new("other-cloud-store-source");
+        let repair = CloudWriteRepair::new(
+            b"operation-source-scope",
+            &source,
+            SourceRecordKey::new("note.md"),
+            ProviderRevision {
+                opaque: "accepted-r2".to_owned(),
+                content_hash: None,
+            },
+            [7_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid repair");
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist owned repair");
+        let connection = rusqlite::Connection::open(&path).expect("inspect repair state");
+        let before: (i64, String) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(state) FROM mdreader_cloud_write_repair",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read counter and state before foreign access");
+        drop(connection);
+
+        assert_eq!(
+            store
+                .load_write_repair(&foreign, repair.operation_id())
+                .expect("foreign repair lookup"),
+            None
+        );
+        assert!(store
+            .pending_write_repairs(&foreign)
+            .expect("foreign repair enumeration")
+            .is_empty());
+        assert!(matches!(
+            store.mark_write_published(&foreign, repair.operation_id()),
+            Err(CloudDocumentStoreError::WriteRepairNotFound)
+        ));
+
+        let connection = rusqlite::Connection::open(&path).expect("inspect unchanged repair state");
+        let after: (i64, String) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(state) FROM mdreader_cloud_write_repair",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read counter and state after foreign access");
+        assert_eq!(after, before);
+        assert!(store
+            .load_write_repair(&source, repair.operation_id())
+            .expect("owner repair lookup")
+            .expect("owner receipt remains present")
+            .is_provider_accepted());
     }
 }

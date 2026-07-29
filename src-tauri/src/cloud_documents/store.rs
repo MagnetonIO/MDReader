@@ -21,7 +21,76 @@ const SCHEMA_VERSION: i64 = 1;
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
-const BODY_CACHE_INDEX: &str = "mdreader_cloud_body_cache_lru";
+const SCHEMA_SQL: &str = "
+    CREATE TABLE mdreader_cloud_snapshot (
+        source_id BLOB NOT NULL,
+        generation BLOB NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('staging','published','retired')),
+        observed_at_ms INTEGER NOT NULL,
+        schema_version_id BLOB NOT NULL,
+        mapping_version_id BLOB NOT NULL,
+        source_version_id BLOB NOT NULL,
+        PRIMARY KEY (source_id, generation)
+    );
+    CREATE UNIQUE INDEX mdreader_cloud_one_published_snapshot
+        ON mdreader_cloud_snapshot (source_id) WHERE state = 'published';
+    CREATE TABLE mdreader_cloud_document (
+        source_id BLOB NOT NULL,
+        generation BLOB NOT NULL,
+        record_key BLOB NOT NULL,
+        name TEXT NOT NULL,
+        display_path TEXT NOT NULL,
+        media_type TEXT,
+        modified_at_ms INTEGER,
+        size_bytes INTEGER,
+        revision BLOB NOT NULL,
+        content_hash BLOB,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0,1)),
+        schema_version_id BLOB NOT NULL,
+        mapping_version_id BLOB NOT NULL,
+        source_version_id BLOB NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (source_id, generation, record_key),
+        FOREIGN KEY (source_id, generation)
+            REFERENCES mdreader_cloud_snapshot (source_id, generation)
+            ON DELETE CASCADE
+    );
+    CREATE INDEX mdreader_cloud_document_published
+        ON mdreader_cloud_document (source_id, generation, display_path, record_key);
+    CREATE TABLE mdreader_cloud_sync_state (
+        source_id BLOB PRIMARY KEY,
+        change_cursor BLOB,
+        sync_state TEXT NOT NULL,
+        last_success_ms INTEGER,
+        last_error_kind TEXT,
+        retry_after_ms INTEGER
+    );
+    CREATE TABLE mdreader_cloud_body_cache (
+        source_id BLOB NOT NULL,
+        source_version_id BLOB NOT NULL,
+        record_key BLOB NOT NULL,
+        revision BLOB NOT NULL,
+        body BLOB NOT NULL,
+        body_hash BLOB NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+        last_access_ms INTEGER NOT NULL,
+        PRIMARY KEY (source_id, source_version_id, record_key, revision)
+    );
+    CREATE INDEX mdreader_cloud_body_cache_lru
+        ON mdreader_cloud_body_cache (
+            last_access_ms, source_id, source_version_id, record_key, revision
+        );
+    CREATE TABLE mdreader_cloud_write_repair (
+        operation_id BLOB PRIMARY KEY,
+        source_id BLOB NOT NULL,
+        record_key BLOB NOT NULL,
+        accepted_revision BLOB NOT NULL,
+        body_hash BLOB NOT NULL,
+        receipt_json BLOB NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('provider-accepted','published')),
+        created_at_ms INTEGER NOT NULL
+    );
+    PRAGMA user_version = 1;";
 
 /// Durable Cloud-document materialization errors. Variants deliberately do
 /// not contain provider values, document bodies, or receipt contents.
@@ -51,6 +120,8 @@ pub(crate) enum CloudDocumentStoreError {
     BodyTooLarge,
     /// The requested write repair does not exist.
     WriteRepairNotFound,
+    /// A reused operation identifier has different provider-authoritative data.
+    WriteRepairCollision,
     /// A test-only failpoint aborted a transaction before commit.
     InjectedCommitFailure,
 }
@@ -70,6 +141,7 @@ impl fmt::Display for CloudDocumentStoreError {
             Self::ForeignSource => "cloud-document-store-foreign-source",
             Self::BodyTooLarge => "cloud-document-store-body-too-large",
             Self::WriteRepairNotFound => "cloud-document-store-write-repair-not-found",
+            Self::WriteRepairCollision => "cloud-document-store-write-repair-collision",
             Self::InjectedCommitFailure => "cloud-document-store-commit-failure",
         })
     }
@@ -232,11 +304,41 @@ impl fmt::Debug for CloudWriteRepair {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PersistedCloudWriteRepair {
     operation_id: Vec<u8>,
+    source_id: Vec<u8>,
+    record_key: SourceRecordKey,
+    accepted_revision: ProviderRevision,
+    body_hash: [u8; 32],
     receipt_json: Vec<u8>,
     state: WriteRepairState,
+    created_at_ms: i64,
 }
 
 impl PersistedCloudWriteRepair {
+    /// Returns the opaque operation identifier for a source-scoped repair operation.
+    pub(crate) fn operation_id(&self) -> &[u8] {
+        &self.operation_id
+    }
+
+    /// Returns the opaque source identifier without formatting it for display.
+    pub(crate) fn source_id_bytes(&self) -> &[u8] {
+        &self.source_id
+    }
+
+    /// Returns the provider-owned record key for recovery publication.
+    pub(crate) fn record_key(&self) -> &SourceRecordKey {
+        &self.record_key
+    }
+
+    /// Returns the provider revision accepted by the source.
+    pub(crate) fn accepted_revision(&self) -> &ProviderRevision {
+        &self.accepted_revision
+    }
+
+    /// Returns the body hash accepted by the source.
+    pub(crate) fn body_hash(&self) -> &[u8; 32] {
+        &self.body_hash
+    }
+
     /// Whether provider acceptance is durable but derived publication remains pending.
     pub(crate) fn is_provider_accepted(&self) -> bool {
         self.state == WriteRepairState::ProviderAccepted
@@ -250,6 +352,11 @@ impl PersistedCloudWriteRepair {
     /// Returns opaque receipt bytes only to the recovery path that owns them.
     pub(crate) fn receipt_json(&self) -> &[u8] {
         &self.receipt_json
+    }
+
+    /// Returns the durable provider-acceptance observation time.
+    pub(crate) fn created_at_ms(&self) -> i64 {
+        self.created_at_ms
     }
 }
 
@@ -593,7 +700,7 @@ impl CloudDocumentStore {
                  INNER JOIN mdreader_cloud_snapshot s
                    ON s.source_id = d.source_id AND s.generation = d.generation
                  WHERE d.source_id = ?1 AND d.source_version_id = ?2 AND d.record_key = ?3
-                   AND s.state = 'published'",
+                   AND d.deleted = 0 AND s.state = 'published'",
                 params![
                     source_id,
                     &pins.source_version_id,
@@ -663,7 +770,7 @@ impl CloudDocumentStore {
                  INNER JOIN mdreader_cloud_snapshot s
                    ON s.source_id = d.source_id AND s.generation = d.generation
                  WHERE b.source_id = ?1 AND b.source_version_id = ?2 AND b.record_key = ?3
-                   AND b.revision = ?4 AND s.state = 'published'",
+                   AND b.revision = ?4 AND d.deleted = 0 AND s.state = 'published'",
                 params![
                     source_id,
                     &pins.source_version_id,
@@ -716,6 +823,29 @@ impl CloudDocumentStore {
     /// attempted. No receipt is removed by this store operation.
     pub(crate) fn record_provider_acceptance(&self, repair: &CloudWriteRepair) -> StoreResult<()> {
         let connection = self.connection()?;
+        let existing = connection
+            .query_row(
+                "SELECT operation_id, source_id, record_key, accepted_revision, body_hash,
+                    receipt_json, state, created_at_ms
+                 FROM mdreader_cloud_write_repair WHERE operation_id = ?1",
+                params![&repair.operation_id],
+                decode_write_repair_row,
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        if let Some(existing) = existing {
+            if existing.source_id == repair.source_id
+                && existing.record_key.0.as_bytes() == repair.record_key.0.as_bytes()
+                && existing.accepted_revision.opaque.as_bytes()
+                    == repair.accepted_revision.opaque.as_bytes()
+                && existing.body_hash == repair.body_hash
+                && existing.receipt_json == repair.receipt_json
+                && existing.created_at_ms == repair.created_at_ms
+            {
+                return Ok(());
+            }
+            return Err(CloudDocumentStoreError::WriteRepairCollision);
+        }
         connection
             .execute(
                 "INSERT INTO mdreader_cloud_write_repair (
@@ -739,14 +869,19 @@ impl CloudDocumentStore {
 
     /// Records that all derived publication is durable without deleting the
     /// provider receipt. Repeating a successful mark is idempotent.
-    pub(crate) fn mark_write_published(&self, operation_id: &[u8]) -> StoreResult<()> {
+    pub(crate) fn mark_write_published(
+        &self,
+        source_id: &SourceId,
+        operation_id: &[u8],
+    ) -> StoreResult<()> {
+        let source_id = source_bytes(source_id)?;
         validate_identifier(operation_id)?;
         let connection = self.connection()?;
         let changed = connection
             .execute(
                 "UPDATE mdreader_cloud_write_repair SET state = 'published'
-                 WHERE operation_id = ?1 AND state = 'provider-accepted'",
-                params![operation_id],
+                 WHERE source_id = ?1 AND operation_id = ?2 AND state = 'provider-accepted'",
+                params![source_id, operation_id],
             )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         if changed == 1 {
@@ -754,8 +889,9 @@ impl CloudDocumentStore {
         }
         let exists: Option<i64> = connection
             .query_row(
-                "SELECT 1 FROM mdreader_cloud_write_repair WHERE operation_id = ?1",
-                params![operation_id],
+                "SELECT 1 FROM mdreader_cloud_write_repair
+                 WHERE source_id = ?1 AND operation_id = ?2",
+                params![source_id, operation_id],
                 |row| row.get(0),
             )
             .optional()
@@ -770,27 +906,45 @@ impl CloudDocumentStore {
     /// Loads a retained repair receipt for restart recovery.
     pub(crate) fn load_write_repair(
         &self,
+        source_id: &SourceId,
         operation_id: &[u8],
     ) -> StoreResult<Option<PersistedCloudWriteRepair>> {
+        let source_id = source_bytes(source_id)?;
         validate_identifier(operation_id)?;
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT operation_id, receipt_json, state
-                 FROM mdreader_cloud_write_repair WHERE operation_id = ?1",
-                params![operation_id],
-                |row| {
-                    let state: String = row.get(2)?;
-                    let state = WriteRepairState::from_sql(&state)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                    Ok(PersistedCloudWriteRepair {
-                        operation_id: row.get(0)?,
-                        receipt_json: row.get(1)?,
-                        state,
-                    })
-                },
+                "SELECT operation_id, source_id, record_key, accepted_revision, body_hash,
+                    receipt_json, state, created_at_ms
+                 FROM mdreader_cloud_write_repair WHERE source_id = ?1 AND operation_id = ?2",
+                params![source_id, operation_id],
+                decode_write_repair_row,
             )
             .optional()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)
+    }
+
+    /// Enumerates provider-accepted repairs for exactly one source after restart.
+    pub(crate) fn pending_write_repairs(
+        &self,
+        source_id: &SourceId,
+    ) -> StoreResult<Vec<PersistedCloudWriteRepair>> {
+        let source_id = source_bytes(source_id)?;
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT operation_id, source_id, record_key, accepted_revision, body_hash,
+                    receipt_json, state, created_at_ms
+                 FROM mdreader_cloud_write_repair
+                 WHERE source_id = ?1 AND state = 'provider-accepted'
+                 ORDER BY created_at_ms, operation_id",
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let repairs = statement
+            .query_map(params![source_id], decode_write_repair_row)
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        repairs
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|_| CloudDocumentStoreError::CorruptStore)
     }
 
@@ -820,77 +974,7 @@ fn initialize_schema(connection: &mut Connection) -> StoreResult<()> {
                 .transaction()
                 .map_err(|_| CloudDocumentStoreError::Persistence)?;
             transaction
-                .execute_batch(
-                    "CREATE TABLE mdreader_cloud_snapshot (
-                        source_id BLOB NOT NULL,
-                        generation BLOB NOT NULL,
-                        state TEXT NOT NULL CHECK (state IN ('staging','published','retired')),
-                        observed_at_ms INTEGER NOT NULL,
-                        schema_version_id BLOB NOT NULL,
-                        mapping_version_id BLOB NOT NULL,
-                        source_version_id BLOB NOT NULL,
-                        PRIMARY KEY (source_id, generation)
-                    );
-                    CREATE UNIQUE INDEX mdreader_cloud_one_published_snapshot
-                        ON mdreader_cloud_snapshot (source_id) WHERE state = 'published';
-                    CREATE TABLE mdreader_cloud_document (
-                        source_id BLOB NOT NULL,
-                        generation BLOB NOT NULL,
-                        record_key BLOB NOT NULL,
-                        name TEXT NOT NULL,
-                        display_path TEXT NOT NULL,
-                        media_type TEXT,
-                        modified_at_ms INTEGER,
-                        size_bytes INTEGER,
-                        revision BLOB NOT NULL,
-                        content_hash BLOB,
-                        deleted INTEGER NOT NULL CHECK (deleted IN (0,1)),
-                        schema_version_id BLOB NOT NULL,
-                        mapping_version_id BLOB NOT NULL,
-                        source_version_id BLOB NOT NULL,
-                        observed_at_ms INTEGER NOT NULL,
-                        PRIMARY KEY (source_id, generation, record_key),
-                        FOREIGN KEY (source_id, generation)
-                            REFERENCES mdreader_cloud_snapshot (source_id, generation)
-                            ON DELETE CASCADE
-                    );
-                    CREATE INDEX mdreader_cloud_document_published
-                        ON mdreader_cloud_document (source_id, generation, display_path, record_key);
-                    CREATE TABLE mdreader_cloud_sync_state (
-                        source_id BLOB PRIMARY KEY,
-                        change_cursor BLOB,
-                        sync_state TEXT NOT NULL,
-                        last_success_ms INTEGER,
-                        last_error_kind TEXT,
-                        retry_after_ms INTEGER
-                    );
-                    CREATE TABLE mdreader_cloud_body_cache (
-                        source_id BLOB NOT NULL,
-                        source_version_id BLOB NOT NULL,
-                        record_key BLOB NOT NULL,
-                        revision BLOB NOT NULL,
-                        body BLOB NOT NULL,
-                        body_hash BLOB NOT NULL,
-                        size_bytes INTEGER NOT NULL,
-                        last_access_ms INTEGER NOT NULL,
-                        PRIMARY KEY (source_id, source_version_id, record_key, revision)
-                    );
-                    CREATE INDEX mdreader_cloud_body_cache_lru
-                        ON mdreader_cloud_body_cache (
-                            last_access_ms, source_id, source_version_id, record_key, revision
-                        );
-                    CREATE TABLE mdreader_cloud_write_repair (
-                        operation_id BLOB PRIMARY KEY,
-                        source_id BLOB NOT NULL,
-                        record_key BLOB NOT NULL,
-                        accepted_revision BLOB NOT NULL,
-                        body_hash BLOB NOT NULL,
-                        receipt_json BLOB NOT NULL,
-                        state TEXT NOT NULL CHECK (state IN ('provider-accepted','published')),
-                        created_at_ms INTEGER NOT NULL
-                    );
-                    PRAGMA user_version = 1;",
-                )
+                .execute_batch(SCHEMA_SQL)
                 .map_err(|_| CloudDocumentStoreError::Persistence)?;
             transaction
                 .commit()
@@ -914,105 +998,33 @@ fn controlled_tables_exist(connection: &Connection) -> StoreResult<bool> {
 }
 
 fn validate_schema(connection: &Connection) -> StoreResult<()> {
-    const TABLES: [(&str, &[&str]); 5] = [
-        (
-            "mdreader_cloud_snapshot",
-            &[
-                "source_id",
-                "generation",
-                "state",
-                "observed_at_ms",
-                "schema_version_id",
-                "mapping_version_id",
-                "source_version_id",
-            ],
-        ),
-        (
-            "mdreader_cloud_document",
-            &[
-                "source_id",
-                "generation",
-                "record_key",
-                "name",
-                "display_path",
-                "media_type",
-                "modified_at_ms",
-                "size_bytes",
-                "revision",
-                "content_hash",
-                "deleted",
-                "schema_version_id",
-                "mapping_version_id",
-                "source_version_id",
-                "observed_at_ms",
-            ],
-        ),
-        (
-            "mdreader_cloud_sync_state",
-            &[
-                "source_id",
-                "change_cursor",
-                "sync_state",
-                "last_success_ms",
-                "last_error_kind",
-                "retry_after_ms",
-            ],
-        ),
-        (
-            "mdreader_cloud_body_cache",
-            &[
-                "source_id",
-                "source_version_id",
-                "record_key",
-                "revision",
-                "body",
-                "body_hash",
-                "size_bytes",
-                "last_access_ms",
-            ],
-        ),
-        (
-            "mdreader_cloud_write_repair",
-            &[
-                "operation_id",
-                "source_id",
-                "record_key",
-                "accepted_revision",
-                "body_hash",
-                "receipt_json",
-                "state",
-                "created_at_ms",
-            ],
-        ),
-    ];
-    for (table, required_columns) in TABLES {
-        let mut statement = connection
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        let names = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|_| CloudDocumentStoreError::Persistence)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        if required_columns
-            .iter()
-            .any(|column| !names.iter().any(|name| name == column))
-        {
-            return Err(CloudDocumentStoreError::CorruptStore);
-        }
-    }
-    let has_lru_index: Option<String> = connection
-        .query_row(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1",
-            params![BODY_CACHE_INDEX],
-            |row| row.get(0),
-        )
-        .optional()
+    let expected =
+        Connection::open_in_memory().map_err(|_| CloudDocumentStoreError::Persistence)?;
+    expected
+        .execute_batch(SCHEMA_SQL)
         .map_err(|_| CloudDocumentStoreError::Persistence)?;
-    if has_lru_index.is_none() {
+    if controlled_schema_signature(connection)? != controlled_schema_signature(&expected)? {
         return Err(CloudDocumentStoreError::CorruptStore);
     }
     Ok(())
+}
+
+fn controlled_schema_signature(
+    connection: &Connection,
+) -> StoreResult<Vec<(String, String, String)>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, sql FROM sqlite_master
+             WHERE name GLOB 'mdreader_cloud_*' AND type IN ('table', 'index')
+             ORDER BY type, name",
+        )
+        .map_err(|_| CloudDocumentStoreError::Persistence)?;
+    let signature = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|_| CloudDocumentStoreError::Persistence)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CloudDocumentStoreError::Persistence)?;
+    Ok(signature)
 }
 
 fn source_bytes(source_id: &SourceId) -> StoreResult<&[u8]> {
@@ -1047,6 +1059,44 @@ fn validate_revision(revision: &ProviderRevision) -> StoreResult<()> {
     } else {
         Ok(())
     }
+}
+
+fn decode_write_repair_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedCloudWriteRepair> {
+    let operation_id: Vec<u8> = row.get(0)?;
+    let source_id: Vec<u8> = row.get(1)?;
+    let record_key =
+        String::from_utf8(row.get::<_, Vec<u8>>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let revision =
+        String::from_utf8(row.get::<_, Vec<u8>>(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let body_hash: [u8; 32] = row
+        .get::<_, Vec<u8>>(4)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let receipt_json: Vec<u8> = row.get(5)?;
+    let state: String = row.get(6)?;
+    let state = WriteRepairState::from_sql(&state).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let repair = PersistedCloudWriteRepair {
+        operation_id,
+        source_id,
+        record_key: SourceRecordKey::new(record_key),
+        accepted_revision: ProviderRevision {
+            opaque: revision,
+            content_hash: None,
+        },
+        body_hash,
+        receipt_json,
+        state,
+        created_at_ms: row.get(7)?,
+    };
+    validate_identifier(&repair.operation_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    validate_identifier(&repair.source_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    validate_record_key(&repair.record_key).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    validate_revision(&repair.accepted_revision).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if repair.receipt_json.is_empty() || repair.receipt_json.len() > MAX_RECEIPT_BYTES {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(repair)
 }
 
 fn validate_page(page: &MarkdownMetadataPage) -> StoreResult<()> {
@@ -1200,16 +1250,40 @@ fn upsert_sync_state(
 }
 
 fn evict_bodies(transaction: &Transaction<'_>, cache_limit_bytes: u64) -> StoreResult<()> {
-    let mut total_bytes: i64 = transaction
-        .query_row(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM mdreader_cloud_body_cache",
-            [],
-            |row| row.get(0),
-        )
+    let mut total_bytes = 0_i64;
+    let mut statement = transaction
+        .prepare("SELECT body, body_hash, size_bytes FROM mdreader_cloud_body_cache")
         .map_err(|_| CloudDocumentStoreError::Persistence)?;
-    if total_bytes < 0 {
-        return Err(CloudDocumentStoreError::CorruptStore);
+    let mut rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|_| CloudDocumentStoreError::Persistence)?;
+    for row in &mut rows {
+        let (body, body_hash, stored_size) =
+            row.map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let body_hash: [u8; 32] = body_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        let physical_size =
+            i64::try_from(body.len()).map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        if stored_size < 0
+            || stored_size != physical_size
+            || body_hash != *blake3::hash(&body).as_bytes()
+        {
+            return Err(CloudDocumentStoreError::CorruptStore);
+        }
+        total_bytes = total_bytes
+            .checked_add(physical_size)
+            .ok_or(CloudDocumentStoreError::CorruptStore)?;
     }
+    drop(rows);
+    drop(statement);
     let cache_limit =
         i64::try_from(cache_limit_bytes).map_err(|_| CloudDocumentStoreError::Persistence)?;
     while total_bytes > cache_limit {
