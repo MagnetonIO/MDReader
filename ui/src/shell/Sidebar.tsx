@@ -31,9 +31,11 @@ export interface SidebarProps {
   librarySearch?: string;
   libraryLoading?: boolean;
   libraryError?: string | null;
+  libraryHasMore?: boolean;
   onLibrarySearch?: (value: string) => void;
   onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
   onRefreshLibrary?: () => void;
+  onLoadMoreLibrary?: () => void;
 }
 
 function basename(path: string): string {
@@ -94,9 +96,11 @@ export function Sidebar({
   librarySearch = '',
   libraryLoading = false,
   libraryError = null,
+  libraryHasMore = false,
   onLibrarySearch,
   onOpenLibrary,
   onRefreshLibrary,
+  onLoadMoreLibrary,
 }: SidebarProps) {
   const search = librarySearch.trim().toLocaleLowerCase();
   const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
@@ -109,6 +113,7 @@ export function Sidebar({
     hasFilterableActiveWorkspace ||
     hasSupplementalMemberships ||
     libraryLoading ||
+    libraryHasMore ||
     Boolean(libraryError);
   return (
     <aside
@@ -225,6 +230,16 @@ export function Sidebar({
               }),
           )}
           {libraryEvidence.length === 0 && libraryLoading ? <p>Reading Library…</p> : null}
+          {libraryHasMore && onLoadMoreLibrary ? (
+            <button
+              type="button"
+              className="library-sources__refresh"
+              onClick={onLoadMoreLibrary}
+              disabled={libraryLoading}
+            >
+              {libraryLoading ? 'Reading…' : 'Load more'}
+            </button>
+          ) : null}
         </nav>
       ) : null}
 

@@ -1884,24 +1884,35 @@ impl DriveSource {
         }
     }
 
-    async fn verify_root_point_read_authority(
+    async fn verify_point_read_authority(
         &self,
         file: &DriveFile,
         membership: &mut DriveMembership,
         context: &ReadContext,
         physical_bytes: &mut usize,
     ) -> Result<(), SourceError> {
-        let selected_roots = self
+        if self
+            .spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| matches!(selection, DriveSelection::File { id, .. } if id == &file.id))
+        {
+            return Ok(());
+        }
+        let selected_ancestors = self
             .spec
             .config
             .selections
             .iter()
             .filter_map(|selection| match selection {
-                DriveSelection::Root { id, .. } => Some(id.as_str()),
-                DriveSelection::File { .. } | DriveSelection::Folder { .. } => None,
+                DriveSelection::Folder { id, .. } | DriveSelection::Root { id, .. } => {
+                    Some(id.as_str())
+                }
+                DriveSelection::File { .. } => None,
             })
             .collect::<BTreeSet<_>>();
-        if selected_roots.is_empty() {
+        if selected_ancestors.is_empty() {
             return Err(SourceError::InvalidPlan {
                 source_id: self.model.id().clone(),
             });
@@ -1916,7 +1927,7 @@ impl DriveSource {
         let mut seen = BTreeSet::from([file.id.clone()]);
         while let Some((candidate, depth)) = pending.pop_front() {
             context.check()?;
-            if selected_roots.contains(candidate.as_str()) {
+            if selected_ancestors.contains(candidate.as_str()) {
                 return Ok(());
             }
             if depth >= MAX_RECURSION_DEPTH || !seen.insert(candidate.clone()) {
@@ -1966,7 +1977,7 @@ impl DriveSource {
         Err(SourceError::Read {
             source_id: self.model.id().clone(),
             path: "selected Drive item".to_string(),
-            detail: "provider item is outside the configured Drive root".to_string(),
+            detail: "provider item is outside the configured Drive selections".to_string(),
         })
     }
 
@@ -2365,13 +2376,8 @@ impl DataSource for DriveSource {
             if file.mime_type == GOOGLE_DRIVE_FOLDER_MIME {
                 return Err(self.malformed("selected file kind"));
             }
-            self.verify_root_point_read_authority(
-                &file,
-                &mut membership,
-                context,
-                &mut physical_bytes,
-            )
-            .await?;
+            self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
+                .await?;
             membership.record_provider_file(&file, false, self.model.id())?;
             let row = self
                 .observe_file(file, &membership, plan, context, &mut physical_bytes)

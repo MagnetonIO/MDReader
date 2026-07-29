@@ -3,6 +3,7 @@ import type {
   LibraryEntityQueryResponse_Serialize,
   LibrarySnapshot,
   LibrarySourceExecution,
+  SourceExecution,
 } from '../bindings.js';
 import { SettingsCommandError, type SettingsBackend } from '../platform/settings.js';
 
@@ -51,6 +52,16 @@ export interface HydratedLibrary {
   evidence: LibraryEntityQueryResponse_Serialize[];
   /** Catalog authorities that failed without suppressing healthy answers. */
   failures: LibraryHydrationFailure[];
+  /** Native application continuation for the embedded answer, when available. */
+  continuation?: HydratedLibraryContinuation;
+}
+
+export interface HydratedLibraryContinuation {
+  workspaceId: string;
+  fields: string[];
+  queryId: string;
+  /** Opaque application cursor; provider continuations never enter the UI. */
+  cursor: string;
 }
 
 export interface LibraryHydrationFailure {
@@ -117,6 +128,10 @@ export async function hydrateLibrary(
   requestId: string,
 ): Promise<HydratedLibrary> {
   const snapshot = await backend.listSources();
+  let embeddedContext: Pick<
+    HydratedLibraryContinuation,
+    'workspaceId' | 'fields'
+  > | null = null;
   const reads: Array<{
     authority: LibraryHydrationFailure['authority'];
     execute: () => Promise<LibraryEntityQueryResponse_Serialize>;
@@ -130,6 +145,10 @@ export async function hydrateLibrary(
           throw new Error('Embedded Library queries are unavailable.');
         }
         const catalog = await backend.prepareCloudCatalog();
+        embeddedContext = {
+          workspaceId: catalog.workspace_id,
+          fields: [...embeddedFields],
+        };
         return backend.queryLibraryDocuments(
           catalog.workspace_id,
           [],
@@ -157,6 +176,13 @@ export async function hydrateLibrary(
     });
   }
   const settled = await Promise.allSettled(reads.map(({ execute }) => execute()));
+  const embeddedIndex = reads.findIndex(({ authority }) => authority === 'embedded');
+  const embedded =
+    embeddedIndex >= 0 ? settled[embeddedIndex] : undefined;
+  const continuation =
+    embedded?.status === 'fulfilled' && embeddedContext !== null
+      ? nextLibraryContinuation(embedded.value, embeddedContext)
+      : null;
   return {
     evidence: settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
     failures: settled.flatMap((result, index) =>
@@ -164,6 +190,128 @@ export async function hydrateLibrary(
         ? [{ authority: reads[index]!.authority, reason: result.reason }]
         : [],
     ),
+    ...(continuation === null ? {} : { continuation }),
+  };
+}
+
+function nextLibraryContinuation(
+  response: LibraryEntityQueryResponse_Serialize,
+  context: Pick<HydratedLibraryContinuation, 'workspaceId' | 'fields'>,
+): HydratedLibraryContinuation | null {
+  const cursor = response.answer.next_cursor;
+  if (!response.window_truncated || cursor === null) return null;
+  return {
+    ...context,
+    queryId: response.answer.query_id,
+    cursor,
+  };
+}
+
+function mergeSourceEvidence(
+  previous: SourceExecution[],
+  next: SourceExecution[],
+): SourceExecution[] {
+  const merged = new Map(previous.map((source) => [source.source_id, source]));
+  for (const source of next) {
+    const earlier = merged.get(source.source_id);
+    if (!earlier || source.outcome !== 'ran' || earlier.outcome === 'ran') {
+      merged.set(source.source_id, source);
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeLibraryPages(
+  previous: LibraryEntityQueryResponse_Serialize,
+  next: LibraryEntityQueryResponse_Serialize,
+): LibraryEntityQueryResponse_Serialize {
+  if (
+    previous.answer.query_id !== next.answer.query_id ||
+    JSON.stringify(previous.answer.pins) !== JSON.stringify(next.answer.pins)
+  ) {
+    throw new Error('Library continuation changed immutable query authority.');
+  }
+  const rows = new Map(previous.answer.rows.map((row) => [row.record_key, row]));
+  next.answer.rows.forEach((row) => rows.set(row.record_key, row));
+  const memberships = new Map(
+    previous.memberships.map((membership) => [
+      membership.membership_id,
+      membership,
+    ]),
+  );
+  next.memberships.forEach((membership) =>
+    memberships.set(membership.membership_id, membership),
+  );
+  const excluded = new Set<string>();
+  for (const completeness of [
+    previous.answer.completeness,
+    next.answer.completeness,
+  ]) {
+    if (completeness.state === 'partial') {
+      completeness.excluded_source_ids.forEach((sourceId) =>
+        excluded.add(sourceId),
+      );
+    }
+  }
+  return {
+    answer: {
+      ...next.answer,
+      rows: [...rows.values()],
+      sources: mergeSourceEvidence(
+        previous.answer.sources,
+        next.answer.sources,
+      ),
+      completeness:
+        excluded.size === 0
+          ? { state: 'complete' }
+          : {
+              state: 'partial',
+              excluded_source_ids: [...excluded].sort(),
+            },
+    },
+    memberships: [...memberships.values()],
+    window_truncated: next.window_truncated,
+  };
+}
+
+/**
+ * Advance exactly one native application page and retain prior rows and source
+ * evidence. Provider cursors remain inside the native continuation registry.
+ */
+export async function continueHydratedLibrary(
+  backend: Pick<SettingsBackend, 'queryLibraryDocuments'>,
+  current: HydratedLibrary,
+  requestId: string,
+): Promise<HydratedLibrary> {
+  const continuation = current.continuation;
+  if (!continuation || !backend.queryLibraryDocuments) {
+    throw new Error('Library continuation is unavailable.');
+  }
+  const evidenceIndex = current.evidence.findIndex(
+    (answer) => answer.answer.query_id === continuation.queryId,
+  );
+  if (evidenceIndex < 0) {
+    throw new Error('Library continuation has no matching evidence.');
+  }
+  const page = await backend.queryLibraryDocuments(
+    continuation.workspaceId,
+    [],
+    continuation.fields,
+    requestId,
+    undefined,
+    {
+      queryId: continuation.queryId,
+      cursor: continuation.cursor,
+    },
+  );
+  const merged = mergeLibraryPages(current.evidence[evidenceIndex]!, page);
+  const evidence = [...current.evidence];
+  evidence[evidenceIndex] = merged;
+  const next = nextLibraryContinuation(page, continuation);
+  return {
+    evidence,
+    failures: current.failures,
+    ...(next === null ? {} : { continuation: next }),
   };
 }
 

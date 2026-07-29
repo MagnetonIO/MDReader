@@ -37,7 +37,7 @@ const LIBRARY_SERVICE_ID: Uuid = Uuid::from_u128(0xa4d862e5_1efe_457b_9488_0db41
 const LIBRARY_RESOLVER_ID: Uuid = Uuid::from_u128(0x5ab56e98_b720_4913_86f7_84c646cc6e84);
 const PHYSICAL_SOURCE_NAMESPACE: Uuid = Uuid::from_u128(0x6d7c4005_f53a_41af_9b6c_7c6ff1ca9b4e);
 const VERSION_NAMESPACE: Uuid = Uuid::from_u128(0x7e60a029_b565_47a8_907e_820caf6e4d8a);
-const QUERY_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const LIBRARY_CONTINUATION_LIFETIME: Duration = Duration::from_secs(30);
 const QUERY_WORK_BUDGET: usize = 100_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
 const QUERY_PAGE_SIZE: usize = 1_000;
@@ -440,6 +440,7 @@ struct CachedLibraryPage {
 pub(crate) struct LibraryQueryContinuation {
     token: EntityCursor,
     query_id: Uuid,
+    expires_at: Instant,
     expected_request: EntityQueryRequest,
     members: Vec<LibraryQueryMember>,
     physical_resumptions: BTreeMap<Uuid, LibraryPageResume>,
@@ -451,6 +452,11 @@ impl LibraryQueryContinuation {
     /// Opaque application continuation exposed to the renderer.
     pub(crate) fn token(&self) -> &EntityCursor {
         &self.token
+    }
+
+    /// Absolute outer bound shared with the native application registry.
+    pub(crate) fn expires_at(&self) -> Instant {
+        self.expires_at
     }
 }
 
@@ -964,6 +970,9 @@ async fn execute_provider_batch(
     query_id: Uuid,
     cancellation: CancellationToken,
 ) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    let continuation_expires_at = Instant::now()
+        .checked_add(LIBRARY_CONTINUATION_LIFETIME)
+        .ok_or(LibraryQueryError::QueryFailed)?;
     let captured = Arc::new(Mutex::new(BTreeMap::new()));
     let paged_members = page_members(&members, resumptions.as_ref(), Arc::clone(&captured))?;
     let runtime = build_runtime(expected_request.workspace_id, paged_members)?;
@@ -1026,15 +1035,13 @@ async fn execute_provider_batch(
             max_entries: 1,
             max_rows_per_entry: batch_limit,
             max_bytes_per_entry: QUERY_BYTE_BUDGET,
-            ttl: QUERY_DEADLINE,
+            ttl: LIBRARY_CONTINUATION_LIFETIME,
         })
         .map_err(|_| LibraryQueryError::InvalidCatalog)?,
     );
     let context = ReadContext::new(
         query_id,
-        Instant::now()
-            .checked_add(QUERY_DEADLINE)
-            .ok_or(LibraryQueryError::QueryFailed)?,
+        continuation_expires_at,
         QUERY_WORK_BUDGET,
         QUERY_BYTE_BUDGET,
         physical_page_size.min(QUERY_PAGE_SIZE),
@@ -1096,6 +1103,7 @@ async fn execute_provider_batch(
     let continuation = token.map(|token| LibraryQueryContinuation {
         token,
         query_id,
+        expires_at: continuation_expires_at,
         expected_request: normalize_continuation_shape(&expected_request),
         members,
         physical_resumptions,
@@ -1112,15 +1120,20 @@ async fn serve_cached_library_page(
     mut continuation: LibraryQueryContinuation,
     cancellation: CancellationToken,
 ) -> Result<RegisteredLibraryQueryPage, LibraryQueryError> {
+    let now = Instant::now();
+    if continuation.expires_at <= now {
+        return Err(LibraryQueryError::InvalidRequest);
+    }
+    let next_expires_at = now
+        .checked_add(LIBRARY_CONTINUATION_LIFETIME)
+        .ok_or(LibraryQueryError::QueryFailed)?;
     let cached = continuation
         .cached
         .take()
         .ok_or(LibraryQueryError::InvalidRequest)?;
     let context = ReadContext::new(
         continuation.query_id,
-        Instant::now()
-            .checked_add(QUERY_DEADLINE)
-            .ok_or(LibraryQueryError::QueryFailed)?,
+        continuation.expires_at,
         QUERY_WORK_BUDGET,
         QUERY_BYTE_BUDGET,
         usize::try_from(continuation.expected_request.page_size)
@@ -1170,6 +1183,7 @@ async fn serve_cached_library_page(
     };
     let continuation = token.map(|token| LibraryQueryContinuation {
         token,
+        expires_at: next_expires_at,
         ..continuation
     });
     Ok(RegisteredLibraryQueryPage {
@@ -1219,6 +1233,7 @@ pub(crate) async fn continue_registered_library_query(
         || request.query_id != Some(continuation.query_id)
         || request.cursor.as_ref() != Some(&continuation.token)
         || normalize_continuation_shape(&request) != continuation.expected_request
+        || continuation.expires_at <= Instant::now()
     {
         return Err(LibraryQueryError::InvalidRequest);
     }

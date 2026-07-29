@@ -36,8 +36,6 @@ const MAX_CLOUD_SOURCES: usize = 2;
 const MAX_PENDING_CREDENTIAL_CLEANUPS: usize = 16;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const MAX_LIBRARY_CONTINUATIONS: usize = 8;
-#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
-const LIBRARY_CONTINUATION_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 const MAX_CLOUD_REQUEST_ID_BYTES: usize = 128;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1272,7 +1270,6 @@ struct StoredLibraryContinuation {
     local_records: Vec<crate::library::LocalFolderSource>,
     cloud_records: Vec<CloudSourceRecord>,
     registry: LibraryStore,
-    expires_at: Instant,
 }
 
 #[derive(Debug)]
@@ -1637,14 +1634,14 @@ impl CloudAccountsState {
             .library_continuations
             .lock()
             .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
-        stored.retain(|_, entry| entry.expires_at > now);
+        stored.retain(|_, entry| entry.continuation.expires_at() > now);
         if stored.contains_key(&token) {
             return Err(CloudSourceError::QueryInvalidResponse);
         }
         while stored.len() >= MAX_LIBRARY_CONTINUATIONS {
             let Some(oldest) = stored
                 .iter()
-                .min_by_key(|(_, entry)| entry.expires_at)
+                .min_by_key(|(_, entry)| entry.continuation.expires_at())
                 .map(|(token, _)| token.clone())
             else {
                 break;
@@ -1660,12 +1657,20 @@ impl CloudAccountsState {
         &self,
         cursor: &catdb_api_types::EntityCursor,
     ) -> Result<StoredLibraryContinuation, CloudSourceError> {
-        let now = Instant::now();
+        self.take_library_continuation_at(cursor, Instant::now())
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    fn take_library_continuation_at(
+        &self,
+        cursor: &catdb_api_types::EntityCursor,
+        now: Instant,
+    ) -> Result<StoredLibraryContinuation, CloudSourceError> {
         let mut stored = self
             .library_continuations
             .lock()
             .map_err(|_| CloudSourceError::QueryInvalidResponse)?;
-        stored.retain(|_, entry| entry.expires_at > now);
+        stored.retain(|_, entry| entry.continuation.expires_at() > now);
         stored
             .remove(cursor.as_str())
             .ok_or_else(|| query_invalid("Library continuation is invalid, expired, or replayed"))
@@ -2995,9 +3000,6 @@ pub(crate) async fn query_library_documents(
                         local_records,
                         cloud_records,
                         registry,
-                        expires_at: Instant::now()
-                            .checked_add(LIBRARY_CONTINUATION_TTL)
-                            .ok_or(CloudSourceError::QueryInvalidResponse)?,
                     })?;
                 }
                 return Ok(page.response);
@@ -3062,9 +3064,6 @@ pub(crate) async fn query_library_documents(
                     local_records,
                     cloud_records: expected_clouds,
                     registry,
-                    expires_at: Instant::now()
-                        .checked_add(LIBRARY_CONTINUATION_TTL)
-                        .ok_or(CloudSourceError::QueryInvalidResponse)?,
                 })?;
             }
             Ok(page.response)
@@ -5373,6 +5372,76 @@ mod tests {
     // test can win that port in the gap and make the exact-bind assertion fail
     // nondeterministically even though the production listener is correct.
     static OAUTH_CALLBACK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn library_application_continuation_expires_at_native_authority_boundary() {
+        let temp = tempdir().expect("temporary directory");
+        let local_root = temp.path().join("notes");
+        fs::create_dir(&local_root).expect("local source");
+        fs::write(local_root.join("one.md"), "# One").expect("first document");
+        fs::write(local_root.join("two.md"), "# Two").expect("second document");
+        let registry_path = temp.path().join("library.json");
+        let mut registry = LibraryRegistry::empty();
+        let local = registry.add_root(&local_root).expect("admit local source");
+        let membership_id = local.engine_source_id();
+        registry
+            .save_to(&registry_path)
+            .expect("persist local source");
+        let admitted = admit_library_query(
+            LibraryStore::new(registry_path),
+            Arc::new(MemoryCredentialVault::default()),
+            Some(&[membership_id]),
+            None,
+        )
+        .expect("admit local Library");
+        let AdmittedLibraryQuery {
+            members,
+            local_records,
+            clouds,
+            registry,
+            vault: _,
+        } = admitted;
+        assert!(clouds.is_empty());
+        let page = crate::library_query::begin_registered_library_query(
+            catdb_api_types::EntityQueryRequest {
+                workspace_id: uuid::Uuid::new_v4(),
+                catalog_revision_id: None,
+                schema_version_id: None,
+                entity: "document.Document".to_string(),
+                select: vec!["path".to_string()],
+                filters: Vec::new(),
+                order_by: Vec::new(),
+                source_ids: Some(vec![membership_id]),
+                max_staleness_ms: None,
+                require_complete: Some(false),
+                page_size: 1,
+                limit: 10,
+                query_id: None,
+                cursor: None,
+            },
+            members,
+            catdb_connectors::CancellationToken::new(),
+        )
+        .await
+        .expect("first bounded Library page");
+        let continuation = page.continuation.expect("native continuation");
+        let cursor = continuation.token().clone();
+        let expires_at = continuation.expires_at();
+        let state = CloudAccountsState::default();
+        state
+            .store_library_continuation(super::StoredLibraryContinuation {
+                continuation,
+                local_records,
+                cloud_records: Vec::new(),
+                registry,
+            })
+            .expect("store application continuation");
+
+        assert!(matches!(
+            state.take_library_continuation_at(&cursor, expires_at),
+            Err(CloudSourceError::QueryInvalid { .. })
+        ));
+    }
 
     #[cfg(feature = "e2e-build")]
     #[test]

@@ -74,9 +74,11 @@ import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
 import {
+  continueHydratedLibrary,
   hydrateLibrary,
   hydrateLibraryDocument,
   libraryHydrationMessage,
+  type HydratedLibrary,
 } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
@@ -169,8 +171,11 @@ export function AppShell() {
     row: EntityRow;
     evidence: LibraryEntityQueryResponse_Serialize;
   } | null>(null);
-  const [libraryEvidence, setLibraryEvidence] =
-    useState<LibraryEntityQueryResponse_Serialize[]>([]);
+  const [libraryHydration, setLibraryHydration] = useState<HydratedLibrary>({
+    evidence: [],
+    failures: [],
+  });
+  const libraryEvidence = libraryHydration.evidence;
   const [librarySearch, setLibrarySearch] = useState('');
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
@@ -255,7 +260,7 @@ export function AppShell() {
       );
       const { evidence: answers } = hydration;
       if (libraryRefreshGeneration.current !== generation) return;
-      setLibraryEvidence(answers);
+      setLibraryHydration(hydration);
       setLibraryDocument((current) => {
         if (!current) return null;
         for (const evidence of answers) {
@@ -272,7 +277,7 @@ export function AppShell() {
       setLibraryError(libraryHydrationMessage(hydration));
     } catch {
       if (libraryRefreshGeneration.current === generation) {
-        setLibraryEvidence([]);
+        setLibraryHydration({ evidence: [], failures: [] });
         setLibraryDocument(null);
         setLibraryError('Library sources could not be read.');
       }
@@ -283,6 +288,41 @@ export function AppShell() {
       }
     }
   }, []);
+
+  const loadMoreLibrary = useCallback(async () => {
+    if (!libraryHydration.continuation) return;
+    const generation = libraryRefreshGeneration.current + 1;
+    libraryRefreshGeneration.current = generation;
+    if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
+      await settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
+    }
+    if (libraryRefreshGeneration.current !== generation) return;
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      const requestId = `library:${globalThis.crypto.randomUUID()}`;
+      libraryRefreshRequest.current = requestId;
+      const hydration = await continueHydratedLibrary(
+        settingsBackend,
+        libraryHydration,
+        requestId,
+      );
+      if (libraryRefreshGeneration.current !== generation) return;
+      setLibraryHydration(hydration);
+      setLibraryError(libraryHydrationMessage(hydration));
+    } catch {
+      if (libraryRefreshGeneration.current === generation) {
+        setLibraryError(
+          'More Library documents could not be loaded. Refresh the Library.',
+        );
+      }
+    } finally {
+      if (libraryRefreshGeneration.current === generation) {
+        libraryRefreshRequest.current = null;
+        setLibraryLoading(false);
+      }
+    }
+  }, [libraryHydration]);
 
   useEffect(() => {
     if (!hydrated || !isTauri()) return;
@@ -779,7 +819,7 @@ export function AppShell() {
         setSemanticWorkspaceGeneration(outcome.workspace_generation);
         libraryRefreshGeneration.current += 1;
         setLibraryDocument(null);
-        setLibraryEvidence([]);
+        setLibraryHydration({ evidence: [], failures: [] });
         setLibrarySearch('');
         useTabsStore.getState().closeAll();
         useEditorStore.getState().reset();
@@ -2073,12 +2113,14 @@ export function AppShell() {
           librarySearch={librarySearch}
           libraryLoading={libraryLoading}
           libraryError={libraryError}
+          libraryHasMore={Boolean(libraryHydration.continuation)}
           onLibrarySearch={setLibrarySearch}
           onOpenLibrary={(member, row) => {
             setLibraryError(null);
             void openLibraryDocument(member, row);
           }}
           onRefreshLibrary={() => void refreshLibrary()}
+          onLoadMoreLibrary={() => void loadMoreLibrary()}
         />
 
         <main className="shell__main">

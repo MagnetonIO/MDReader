@@ -77,6 +77,9 @@ const h = vi.hoisted(() => ({
   libraryQueryQueue: [] as Promise<Record<string, unknown>>[],
   libraryQueryPhases: [] as Array<'pre-mark' | 'post-mark'>,
   libraryQueryRecordKeys: [] as Array<string | null>,
+  libraryQueryContinuations: [] as Array<
+    { queryId: string; cursor: string } | undefined
+  >,
   libraryCancelGate: null as null | { promise: Promise<void>; resolve: () => void },
   libraryCancelCalls: [] as string[],
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
@@ -271,8 +274,13 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       async (
         _workspaceId: string,
         filters: Array<{ field: string; operator: string; value: string }>,
+        _fields: string[],
+        _requestId: string,
+        _sourceIds?: string[],
+        continuation?: { queryId: string; cursor: string },
       ) => {
       h.libraryQueryRecordKeys.push(filters[0]?.value ?? null);
+      h.libraryQueryContinuations.push(continuation);
       h.libraryQueryPhases.push(h.markSucceeded ? 'post-mark' : 'pre-mark');
       const queued = h.libraryQueryQueue.shift();
       if (queued) return queued;
@@ -519,6 +527,78 @@ function installRapidCloudLibraryDocuments() {
   });
 }
 
+function installDropboxContinuationPages() {
+  installSecondWorkspaceLibraryDocument();
+  const pageOne = structuredClone(h.libraryEvidence!) as {
+    window_truncated?: boolean;
+    memberships: Array<{
+      registry_id: string;
+      name: string;
+      kind: string;
+      editable: boolean;
+      source_ids: string[];
+    }>;
+    answer: {
+      query_id: string;
+      rows: Array<{
+        record_key: string;
+        fields: Record<string, unknown>;
+        provenance: {
+          path: {
+            considered: Array<{
+              record_key: string;
+              state: { state: string; value: string };
+            }>;
+          };
+        };
+      }>;
+      next_cursor: string | null;
+      sources: Array<{
+        source_id: string;
+        outcome: string;
+      }>;
+      completeness:
+        | { state: 'complete' }
+        | { state: 'partial'; excluded_source_ids: string[] };
+    };
+  };
+  Object.assign(pageOne.memberships[0]!, {
+    registry_id: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+  });
+  const pageTwo = structuredClone(pageOne);
+  const unavailableSourceId = '00000000-0000-4000-8000-000000000099';
+  pageOne.memberships[0]!.source_ids.push(unavailableSourceId);
+  pageOne.answer.sources.push({
+    ...pageOne.answer.sources[0]!,
+    source_id: unavailableSourceId,
+    outcome: 'source_failed',
+  });
+  pageOne.answer.completeness = {
+    state: 'partial',
+    excluded_source_ids: [unavailableSourceId],
+  };
+  pageOne.answer.rows = [];
+  pageOne.answer.next_cursor = 'opaque-application-page-2';
+  pageOne.window_truncated = true;
+  pageTwo.answer.rows[0]!.record_key = '/notes/later.md';
+  pageTwo.answer.rows[0]!.fields = {
+    path: '/notes/later.md',
+    title: 'Later Dropbox note.md',
+  };
+  pageTwo.answer.rows[0]!.provenance.path.considered[0]!.record_key =
+    '/notes/later.md';
+  pageTwo.answer.rows[0]!.provenance.path.considered[0]!.state.value =
+    '/notes/later.md';
+  pageTwo.answer.next_cursor = null;
+  pageTwo.answer.sources = pageTwo.answer.sources.slice(0, 1);
+  pageTwo.answer.completeness = { state: 'complete' };
+  pageTwo.window_truncated = false;
+  h.libraryQueryQueue.push(Promise.resolve(pageOne), Promise.resolve(pageTwo));
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -554,6 +634,7 @@ beforeEach(() => {
   h.libraryQueryQueue.length = 0;
   h.libraryQueryPhases.length = 0;
   h.libraryQueryRecordKeys.length = 0;
+  h.libraryQueryContinuations.length = 0;
   h.libraryCancelGate = null;
   h.libraryCancelCalls.length = 0;
   h.markGate = null;
@@ -605,6 +686,30 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('loads a later Dropbox Markdown page after an empty first provider page', async () => {
+    installDropboxContinuationPages();
+    render(<App />);
+
+    await screen.findByText('No documents found.');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open Later Dropbox note.md from Dropbox',
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Some Library sources could not answer this query.'),
+    ).toBeTruthy();
+    expect(h.libraryQueryContinuations).toEqual([
+      undefined,
+      {
+        queryId: '00000000-0000-4000-8000-000000000014',
+        cursor: 'opaque-application-page-2',
+      },
+    ]);
+  });
+
   it('starts only the newest document query after rapid selections share a pending cancellation', async () => {
     installRapidCloudLibraryDocuments();
     render(<App />);

@@ -240,6 +240,36 @@ fn readable_root_config() -> DriveSourceConfig {
     .with_content_scope(DriveContentScope::ReadableText)
 }
 
+fn readable_root_and_file_config() -> DriveSourceConfig {
+    DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![
+            DriveSelection::root("provider-root"),
+            DriveSelection::file("selected-file"),
+        ],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap()
+    .with_content_scope(DriveContentScope::ReadableText)
+}
+
+fn readable_root_and_folder_config() -> DriveSourceConfig {
+    DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![
+            DriveSelection::root("provider-root"),
+            DriveSelection::folder("selected-folder"),
+        ],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap()
+    .with_content_scope(DriveContentScope::ReadableText)
+}
+
 fn markdown_root_config() -> DriveSourceConfig {
     DriveSourceConfig::new(
         "drive-library",
@@ -948,6 +978,102 @@ async fn readable_root_exact_id_reads_only_that_document_and_its_body() {
     assert!(requests
         .iter()
         .all(|request| !request.path().contains("q=")));
+}
+
+#[tokio::test]
+async fn root_and_file_exact_id_accepts_the_selected_file_outside_the_root() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-file",
+        "name":"selected.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"16",
+        "md5Checksum":"selected-checksum",
+        "parents":["foreign-folder"],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, metadata),
+            response(200, b"# Selected note\n".to_vec()),
+        ]),
+        readable_root_and_file_config(),
+    );
+    let plan = source
+        .compile(
+            &exact_id_query("selected-file"),
+            &["id".to_string(), "name".to_string(), "body".to_string()],
+        )
+        .expect("exact id plan");
+
+    let page = source
+        .execute_page(&plan, None, &context(10, 10, 64 * 1024))
+        .await
+        .expect("the selected File remains exact-read authority");
+
+    assert_eq!(page.rows[0].value["body"], "# Selected note\n");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]
+        .path()
+        .contains("/drive/v3/files/selected-file?alt=media"));
+    assert!(requests
+        .iter()
+        .all(|request| !request.path().contains("foreign-folder")));
+}
+
+#[tokio::test]
+async fn root_and_folder_exact_id_accepts_a_nested_file_beneath_the_folder() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"folder-note",
+        "name":"folder-note.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"14",
+        "md5Checksum":"folder-checksum",
+        "parents":["nested-selected-folder"],
+        "trashed":false
+    }))
+    .unwrap();
+    let parent_metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"nested-selected-folder",
+        "name":"Nested",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":["selected-folder"],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, metadata),
+            response(200, parent_metadata),
+            response(200, b"# Folder note\n".to_vec()),
+        ]),
+        readable_root_and_folder_config(),
+    );
+    let plan = source
+        .compile(
+            &exact_id_query("folder-note"),
+            &["id".to_string(), "name".to_string(), "body".to_string()],
+        )
+        .expect("exact id plan");
+
+    let page = source
+        .execute_page(&plan, None, &context(10, 10, 64 * 1024))
+        .await
+        .expect("the selected Folder remains exact-read authority");
+
+    assert_eq!(page.rows[0].value["body"], "# Folder note\n");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1]
+        .path()
+        .starts_with("/drive/v3/files/nested-selected-folder?"));
+    assert!(requests[2]
+        .path()
+        .contains("/drive/v3/files/folder-note?alt=media"));
 }
 
 #[tokio::test]
