@@ -21,7 +21,7 @@ use super::{
 };
 
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
-const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+const MAX_RECEIPT_BYTES: usize = (2 * 1024 * 1024) + (64 * 1024);
 const MAX_WRITE_REPAIR_PAGE_ROWS: usize = 256;
 const MAX_CHANGE_LOOKUP_KEYS: usize = 256;
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
@@ -461,6 +461,27 @@ impl PersistedCloudWriteRepair {
     /// Returns the durable provider-acceptance observation time.
     pub(crate) fn created_at_ms(&self) -> i64 {
         self.created_at_ms
+    }
+
+    /// Reconstructs the validated provider-acceptance value needed by the
+    /// local-only publisher. Intentional clones remain opaque and never enter
+    /// diagnostics.
+    pub(crate) fn provider_acceptance(&self) -> StoreResult<CloudWriteRepair> {
+        if !self.is_provider_accepted() {
+            return Err(CloudDocumentStoreError::WriteRepairCollision);
+        }
+        CloudWriteRepair::new(
+            &self.operation_id,
+            &SourceId::new(
+                String::from_utf8(self.source_id.clone())
+                    .map_err(|_| CloudDocumentStoreError::CorruptStore)?,
+            ),
+            self.record_key.clone(),
+            self.accepted_revision.clone(),
+            self.body_hash,
+            &self.receipt_json,
+            self.created_at_ms,
+        )
     }
 }
 
@@ -1302,6 +1323,143 @@ impl CloudDocumentStore {
             )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         Ok(())
+    }
+
+    /// Publishes the local cache, metadata index, physical provenance, and
+    /// retained repair audit for one already-journaled provider acceptance.
+    ///
+    /// Repeating this operation after a crash is idempotent. It never has a
+    /// provider handle and therefore cannot replay the remote mutation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_provider_acceptance(
+        &self,
+        source_id: &SourceId,
+        pins: &CloudDocumentVersionPins,
+        repair: &CloudWriteRepair,
+        expected_revision: &ProviderRevision,
+        body: &[u8],
+        modified_at_ms: Option<i64>,
+        observed_at_ms: i64,
+    ) -> StoreResult<()> {
+        let source_id = source_bytes(source_id)?;
+        pins.validate()?;
+        validate_record_key(&repair.record_key)?;
+        validate_revision(expected_revision)?;
+        validate_revision(&repair.accepted_revision)?;
+        if repair.source_id.as_slice() != source_id
+            || body.len() > Self::MAX_BODY_BYTES
+            || repair.body_hash != *blake3::hash(body).as_bytes()
+        {
+            return Err(CloudDocumentStoreError::WriteRepairCollision);
+        }
+        let body_size =
+            i64::try_from(body.len()).map_err(|_| CloudDocumentStoreError::BodyTooLarge)?;
+        let connection = self.connection()?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let journaled: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM mdreader_cloud_write_repair
+                 WHERE operation_id = ?1 AND source_id = ?2 AND record_key = ?3
+                   AND accepted_revision = ?4 AND body_hash = ?5
+                   AND state IN ('provider-accepted','published')",
+                params![
+                    &repair.operation_id,
+                    source_id,
+                    repair.record_key.0.as_bytes(),
+                    repair.accepted_revision.opaque.as_bytes(),
+                    repair.body_hash.as_slice(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        if journaled.is_none() {
+            return Err(CloudDocumentStoreError::WriteRepairNotFound);
+        }
+        let current_revision: Option<Vec<u8>> = transaction
+            .query_row(
+                "SELECT d.revision
+                 FROM mdreader_cloud_document d
+                 INNER JOIN mdreader_cloud_snapshot s
+                   ON s.source_id = d.source_id AND s.generation = d.generation
+                 WHERE d.source_id = ?1 AND d.record_key = ?2 AND d.deleted = 0
+                   AND d.schema_version_id = ?3 AND d.mapping_version_id = ?4
+                   AND d.source_version_id = ?5 AND s.state = 'published'",
+                params![
+                    source_id,
+                    repair.record_key.0.as_bytes(),
+                    &pins.schema_version_id,
+                    &pins.mapping_version_id,
+                    &pins.source_version_id,
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let Some(current_revision) = current_revision else {
+            return Err(CloudDocumentStoreError::ForeignSource);
+        };
+        if current_revision.as_slice() != expected_revision.opaque.as_bytes()
+            && current_revision.as_slice() != repair.accepted_revision.opaque.as_bytes()
+        {
+            return Err(CloudDocumentStoreError::WriteRepairCollision);
+        }
+        let updated = transaction
+            .execute(
+                "UPDATE mdreader_cloud_document
+                 SET revision = ?6, content_hash = ?7, modified_at_ms = ?8,
+                     size_bytes = ?9, observed_at_ms = ?10
+                 WHERE source_id = ?1 AND record_key = ?2 AND deleted = 0
+                   AND schema_version_id = ?3 AND mapping_version_id = ?4
+                   AND source_version_id = ?5
+                   AND generation = (
+                       SELECT generation FROM mdreader_cloud_snapshot
+                       WHERE source_id = ?1 AND state = 'published'
+                   )",
+                params![
+                    source_id,
+                    repair.record_key.0.as_bytes(),
+                    &pins.schema_version_id,
+                    &pins.mapping_version_id,
+                    &pins.source_version_id,
+                    repair.accepted_revision.opaque.as_bytes(),
+                    repair.body_hash.as_slice(),
+                    modified_at_ms,
+                    body_size,
+                    observed_at_ms,
+                ],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        if updated != 1 {
+            return Err(CloudDocumentStoreError::ForeignSource);
+        }
+        transaction
+            .execute(
+                "INSERT INTO mdreader_cloud_body_cache (
+                    source_id, source_version_id, record_key, revision, body, body_hash,
+                    size_bytes, last_access_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(source_id, source_version_id, record_key, revision) DO UPDATE SET
+                    body = excluded.body, body_hash = excluded.body_hash,
+                    size_bytes = excluded.size_bytes, last_access_ms = excluded.last_access_ms",
+                params![
+                    source_id,
+                    &pins.source_version_id,
+                    repair.record_key.0.as_bytes(),
+                    repair.accepted_revision.opaque.as_bytes(),
+                    body,
+                    repair.body_hash.as_slice(),
+                    body_size,
+                    observed_at_ms,
+                ],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        evict_bodies(&transaction, self.cache_limit_bytes)?;
+        transaction
+            .commit()
+            .map_err(|_| CloudDocumentStoreError::Persistence)
     }
 
     /// Records that all derived publication is durable without deleting the

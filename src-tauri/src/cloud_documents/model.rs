@@ -204,6 +204,23 @@ pub(crate) struct CloudMarkdownDocument {
     pub(crate) modified_at_ms: Option<i64>,
 }
 
+/// Closed renderer-visible result of one guarded cloud Markdown save.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum CloudMarkdownSaveOutcome {
+    /// The provider accepted the guarded revision and local receipt durability
+    /// was established.
+    Saved {
+        /// Fresh authority anchored to the accepted provider revision.
+        edit_token: String,
+        /// Provider modification time, when the provider supplies one.
+        #[specta(type = Option<f64>)]
+        modified_at_ms: Option<i64>,
+    },
+    /// The provider record no longer has the revision that was opened.
+    Conflict {},
+}
+
 #[async_trait::async_trait]
 pub(crate) trait MarkdownDocumentSource: Send + Sync {
     fn source_id(&self) -> &catdb_connectors::SourceId;

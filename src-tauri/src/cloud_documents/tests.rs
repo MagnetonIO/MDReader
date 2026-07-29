@@ -179,17 +179,24 @@ mod read {
     use catdb_connectors::SourceId;
 
     use super::super::{
-        service::{CloudDocumentReadAuthority, CloudDocumentService, CloudEditAuthorityCodec},
-        store::{CloudDocumentStore, CloudDocumentVersionPins},
-        CloudCacheState, CloudDocumentError, CloudIoContext, MarkdownChangeEvent,
-        MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata,
-        MarkdownMetadataPage, MarkdownWriteReceipt, ProviderCursor, ProviderRevision,
-        SourceRecordKey,
+        service::{
+            CloudDocumentLocalPublisher, CloudDocumentReadAuthority, CloudDocumentService,
+            CloudEditAuthorityCodec,
+        },
+        store::{CloudDocumentStore, CloudDocumentVersionPins, CloudWriteRepair},
+        CloudCacheState, CloudDocumentError, CloudIoContext, CloudSyncCoordinator,
+        MarkdownChangeEvent, MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource,
+        MarkdownMetadata, MarkdownMetadataPage, MarkdownWriteReceipt, ProviderCursor,
+        ProviderRevision, SourceRecordKey,
     };
 
     struct PointReadProvider {
         source_id: SourceId,
         read_keys: Mutex<Vec<String>>,
+        writes: Mutex<Vec<(String, String, Vec<u8>)>>,
+        current: Mutex<(String, Vec<u8>)>,
+        next_write_error: Mutex<Option<CloudDocumentError>>,
+        invalid_receipt: AtomicBool,
         offline: AtomicBool,
     }
 
@@ -231,6 +238,10 @@ mod read {
             Self {
                 source_id: SourceId::new(source_id),
                 read_keys: Mutex::new(Vec::new()),
+                writes: Mutex::new(Vec::new()),
+                current: Mutex::new(("r1".to_string(), b"# seven".to_vec())),
+                next_write_error: Mutex::new(None),
+                invalid_receipt: AtomicBool::new(false),
                 offline: AtomicBool::new(false),
             }
         }
@@ -241,6 +252,23 @@ mod read {
 
         fn mark_offline(&self) {
             self.offline.store(true, Ordering::SeqCst);
+        }
+
+        fn writes(&self) -> Vec<(String, String, Vec<u8>)> {
+            self.writes.lock().expect("provider writes").clone()
+        }
+
+        fn externally_replace(&self, revision: &str, body: &[u8]) {
+            *self.current.lock().expect("provider current document") =
+                (revision.to_string(), body.to_vec());
+        }
+
+        fn fail_next_write_after_acceptance(&self, error: CloudDocumentError) {
+            *self.next_write_error.lock().expect("next write error") = Some(error);
+        }
+
+        fn return_invalid_receipt(&self) {
+            self.invalid_receipt.store(true, Ordering::SeqCst);
         }
     }
 
@@ -277,25 +305,57 @@ mod read {
             if self.offline.load(Ordering::SeqCst) {
                 return Err(CloudDocumentError::OfflineUncached);
             }
+            let (revision, body) = self.current.lock().expect("provider current").clone();
             Ok(MarkdownDocumentRevision {
                 key: key.clone(),
                 revision: ProviderRevision {
-                    opaque: "r1".to_string(),
+                    opaque: revision,
                     content_hash: None,
                 },
-                body: b"# seven".to_vec(),
+                body,
                 observed_at_ms: 11,
             })
         }
 
         async fn write_document(
             &self,
-            _key: &SourceRecordKey,
-            _expected: &ProviderRevision,
-            _body: &[u8],
+            key: &SourceRecordKey,
+            expected: &ProviderRevision,
+            body: &[u8],
             _context: &CloudIoContext,
         ) -> Result<MarkdownWriteReceipt, CloudDocumentError> {
-            Err(CloudDocumentError::ProtocolFailed)
+            self.writes.lock().expect("provider writes").push((
+                key.as_str().to_string(),
+                expected.opaque.clone(),
+                body.to_vec(),
+            ));
+            let mut current = self.current.lock().expect("provider current document");
+            if current.0 != expected.opaque {
+                return Err(CloudDocumentError::Conflict);
+            }
+            *current = ("r2".to_string(), body.to_vec());
+            drop(current);
+            if let Some(error) = self
+                .next_write_error
+                .lock()
+                .expect("next write error")
+                .take()
+            {
+                return Err(error);
+            }
+            Ok(MarkdownWriteReceipt {
+                key: if self.invalid_receipt.load(Ordering::SeqCst) {
+                    SourceRecordKey::new("other-record")
+                } else {
+                    key.clone()
+                },
+                revision: ProviderRevision {
+                    opaque: "r2".to_string(),
+                    content_hash: None,
+                },
+                modified_at_ms: Some(12),
+                size_bytes: body.len() as u64,
+            })
         }
 
         async fn read_changes(
@@ -388,6 +448,349 @@ mod read {
         assert_eq!(second.cache_state, CloudCacheState::Cached);
         assert!(second.edit_token.is_some());
         assert_eq!(provider.read_keys(), ["record-7"]);
+    }
+
+    #[tokio::test]
+    async fn dropbox_save_targets_the_opened_record_and_expected_revision() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("dropbox-save-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open cloud Markdown");
+
+        service
+            .save_cloud_markdown(
+                opened.edit_token.as_deref().expect("edit authority"),
+                "# edited",
+            )
+            .await
+            .expect("guarded save");
+
+        assert_eq!(
+            provider.writes(),
+            [(
+                "record-7".to_string(),
+                "r1".to_string(),
+                b"# edited".to_vec(),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_dropbox_revision_returns_conflict_without_overwrite() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("dropbox-stale-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open Dropbox Markdown");
+        provider.externally_replace("r2", b"# other");
+
+        let outcome = service
+            .save_cloud_markdown(
+                opened.edit_token.as_deref().expect("edit authority"),
+                "# mine",
+            )
+            .await
+            .expect("typed stale outcome");
+
+        assert!(matches!(
+            outcome,
+            super::super::CloudMarkdownSaveOutcome::Conflict {}
+        ));
+        assert!(provider.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_drive_revision_returns_conflict_without_overwrite() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("drive-stale-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open Drive Markdown");
+        provider.externally_replace("r2", b"# other");
+
+        let outcome = service
+            .save_cloud_markdown(
+                opened.edit_token.as_deref().expect("edit authority"),
+                "# mine",
+            )
+            .await
+            .expect("typed stale outcome");
+
+        assert!(matches!(
+            outcome,
+            super::super::CloudMarkdownSaveOutcome::Conflict {}
+        ));
+        assert!(provider.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_save_publishes_the_new_body_and_revision_locally() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("local-publication-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open cloud Markdown");
+
+        service
+            .save_cloud_markdown(
+                opened.edit_token.as_deref().expect("edit authority"),
+                "# edited",
+            )
+            .await
+            .expect("guarded save");
+
+        let published = store
+            .published_for_keys(&source_id, &[SourceRecordKey::new("record-7")])
+            .expect("published row");
+        assert_eq!(published[0].revision.opaque, "r2");
+        assert_eq!(
+            published[0].content_hash,
+            Some(*blake3::hash(b"# edited").as_bytes())
+        );
+        let reopened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("read accepted revision");
+        assert_eq!(reopened.content, "# edited");
+    }
+
+    #[tokio::test]
+    async fn repeated_same_token_and_body_resumes_receipt_without_a_second_provider_write() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("idempotent-save-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open cloud Markdown");
+        let token = opened.edit_token.as_deref().expect("edit authority");
+
+        service
+            .save_cloud_markdown(token, "# edited")
+            .await
+            .expect("first guarded save");
+        let resumed = service
+            .save_cloud_markdown(token, "# edited")
+            .await
+            .expect("resume durable receipt");
+
+        assert!(matches!(
+            resumed,
+            super::super::CloudMarkdownSaveOutcome::Saved { .. }
+        ));
+        assert_eq!(provider.writes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_accepted_write_is_not_repeated_after_restart() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("cloud.catdb");
+        let source_id = SourceId::new("restart-local-publication-source");
+        let store = Arc::new(CloudDocumentStore::open(&path).expect("store"));
+        let pins = publish_record(&store, &source_id, "r1");
+        let content = "# edited";
+        let repair = CloudWriteRepair::new(
+            b"restart-save-operation",
+            &source_id,
+            SourceRecordKey::new("record-7"),
+            ProviderRevision {
+                opaque: "r2".to_string(),
+                content_hash: None,
+            },
+            *blake3::hash(content.as_bytes()).as_bytes(),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "expected_revision": "r1",
+                "opened_body_hash": blake3::hash(b"# seven").as_bytes(),
+                "content": content,
+                "modified_at_ms": 12,
+                "size_bytes": content.len(),
+            }))
+            .expect("durable receipt payload"),
+            12,
+        )
+        .expect("valid repair");
+        store
+            .record_provider_acceptance(&repair)
+            .expect("journal provider acceptance");
+        drop(store);
+
+        let reopened = Arc::new(CloudDocumentStore::open(&path).expect("reopen store"));
+        let coordinator = CloudSyncCoordinator::new(Arc::clone(&reopened), pins.clone());
+        let publisher = CloudDocumentLocalPublisher::new(Arc::clone(&reopened), pins.clone());
+        coordinator
+            .startup_repair([source_id.clone()], &publisher)
+            .await
+            .expect("resume local-only publication");
+
+        let published = reopened
+            .published_for_keys(&source_id, &[SourceRecordKey::new("record-7")])
+            .expect("published metadata");
+        assert_eq!(published[0].revision.opaque, "r2");
+        assert_eq!(
+            reopened
+                .get_body(
+                    &source_id,
+                    &pins,
+                    &SourceRecordKey::new("record-7"),
+                    &ProviderRevision {
+                        opaque: "r2".to_string(),
+                        content_hash: None,
+                    },
+                    13,
+                )
+                .expect("accepted body cache"),
+            Some(content.as_bytes().to_vec())
+        );
+        assert!(reopened
+            .load_write_repair(&source_id, repair.operation_id())
+            .expect("load repair")
+            .expect("retained repair")
+            .is_published());
+    }
+
+    #[tokio::test]
+    async fn unusable_success_receipt_is_outcome_unknown_after_one_write() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("invalid-receipt-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        provider.return_invalid_receipt();
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open cloud Markdown");
+
+        assert_eq!(
+            service
+                .save_cloud_markdown(
+                    opened.edit_token.as_deref().expect("edit authority"),
+                    "# edited",
+                )
+                .await,
+            Err(CloudDocumentError::WriteOutcomeUnknown)
+        );
+        assert_eq!(provider.writes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn post_dispatch_unknown_reconciles_without_a_second_provider_write() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("unknown-outcome-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        provider.fail_next_write_after_acceptance(CloudDocumentError::WriteOutcomeUnknown);
+        let service = CloudDocumentService::new(
+            store,
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        let opened = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("open cloud Markdown");
+        let token = opened.edit_token.as_deref().expect("edit authority");
+
+        assert_eq!(
+            service.save_cloud_markdown(token, "# edited").await,
+            Err(CloudDocumentError::WriteOutcomeUnknown)
+        );
+        let reconciled = service
+            .save_cloud_markdown(token, "# edited")
+            .await
+            .expect("reconcile accepted body");
+
+        assert!(matches!(
+            reconciled,
+            super::super::CloudMarkdownSaveOutcome::Saved { .. }
+        ));
+        assert_eq!(provider.writes().len(), 1);
     }
 
     #[tokio::test]

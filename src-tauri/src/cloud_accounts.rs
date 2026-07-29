@@ -1849,21 +1849,6 @@ impl CloudSyncRuntime {
     }
 }
 
-/// Task 8 owns reconstruction of derived document state from a provider
-/// receipt. Until that executor is available, startup explicitly records the
-/// pending local-publication outcome and retains the journal row.
-struct PendingCloudWriteRepairExecutor;
-
-#[async_trait::async_trait]
-impl crate::cloud_documents::CloudWriteRepairExecutor for PendingCloudWriteRepairExecutor {
-    async fn resume_local_publication(
-        &self,
-        _repair: &crate::cloud_documents::store::PersistedCloudWriteRepair,
-    ) -> Result<(), crate::cloud_documents::CloudDocumentError> {
-        Err(crate::cloud_documents::CloudDocumentError::LocalPublicationPending)
-    }
-}
-
 pub(crate) struct CloudAccountsState {
     lifecycle_commits: Arc<Mutex<()>>,
     catalog: tokio::sync::Mutex<Option<CloudCatalogAuthority>>,
@@ -2014,6 +1999,81 @@ impl CloudAccountsState {
             )
             .read_cloud_markdown(&source_id, &record_key)
             .await
+        }
+    }
+
+    pub(crate) async fn save_cloud_markdown(
+        &self,
+        app: AppHandle,
+        edit_token: String,
+        content: String,
+    ) -> Result<
+        crate::cloud_documents::CloudMarkdownSaveOutcome,
+        crate::cloud_documents::CloudDocumentError,
+    > {
+        #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
+        {
+            let _ = (app, edit_token, content);
+            return Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable);
+        }
+        #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+        {
+            let admissions = blocking_cloud_operation(app, move |registry, vault| {
+                registry.read_cloud(|sources| {
+                    sources
+                        .iter()
+                        .filter(|source| source.enabled())
+                        .map(|expected| {
+                            let credential = vault
+                                .get(&expected.credential_reference)?
+                                .ok_or(CloudSourceError::CredentialMissing)?;
+                            Ok(CloudPointReadAdmission {
+                                expected: expected.clone(),
+                                registry: registry.clone(),
+                                cursor_key: credential.cursor_key,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, CloudSourceError>>()
+                })
+            })
+            .await
+            .map_err(map_cloud_point_read_error)?;
+            let library_id = self
+                .catalog_location
+                .lock()
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+                .as_ref()
+                .map(|(_, workspace_id)| *workspace_id.as_bytes())
+                .ok_or(crate::cloud_documents::CloudDocumentError::SyncInProgress)?;
+            let coordinator = self
+                .cloud_sync
+                .coordinator()
+                .await
+                .map_err(map_cloud_point_read_error)?;
+            for admission in admissions {
+                let source_id =
+                    catdb_connectors::SourceId::new(admission.expected.id().to_string());
+                let Ok((source, pins)) = coordinator.point_read_owner(&source_id) else {
+                    continue;
+                };
+                let authority = Arc::new(CurrentCloudDocumentAuthority {
+                    expected: admission.expected,
+                    registry: admission.registry,
+                });
+                let service = crate::cloud_documents::service::CloudDocumentService::new(
+                    coordinator.store(),
+                    source,
+                    pins,
+                    library_id,
+                    admission.cursor_key,
+                    authority,
+                );
+                match service.save_cloud_markdown(&edit_token, &content).await {
+                    Err(crate::cloud_documents::CloudDocumentError::Unauthorized) => continue,
+                    outcome => return outcome,
+                }
+            }
+            Err(crate::cloud_documents::CloudDocumentError::Unauthorized)
         }
     }
 
@@ -5373,21 +5433,24 @@ async fn startup_cloud_sync(
         })
         .await?;
         let coordinator = state.cloud_sync.coordinator().await?;
-        let repair_source_ids = sources
-            .iter()
-            .map(|(_, source_id)| source_id.clone())
-            .collect::<Vec<_>>();
-        coordinator
-            .startup_repair(repair_source_ids, &PendingCloudWriteRepairExecutor)
-            .await
-            .map_err(|_| CloudSourceError::PersistFailed)?;
-        for (provider, _) in sources {
+        for (provider, expected_source_id) in sources {
             let Ok(admitted) =
                 open_admitted_cloud_markdown_sync_source(app.clone(), provider, state).await
             else {
                 continue;
             };
             let source_id = admitted.source.source_id().clone();
+            if source_id != expected_source_id {
+                continue;
+            }
+            let repair_executor = crate::cloud_documents::service::CloudDocumentLocalPublisher::new(
+                coordinator.store(),
+                admitted.pins.clone(),
+            );
+            coordinator
+                .startup_repair([source_id.clone()], &repair_executor)
+                .await
+                .map_err(|_| CloudSourceError::PersistFailed)?;
             state.cloud_sync.cancel_background_refresh(&source_id)?;
             if coordinator
                 .activate_with_pins(admitted.source, admitted.pins)

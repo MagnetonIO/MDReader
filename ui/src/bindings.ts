@@ -52,6 +52,8 @@ export const commands = {
 	cancelCloudDocumentQuery: (requestId: string) => typedError<boolean, CloudSourceError>(__TAURI_INVOKE("cancel_cloud_document_query", { requestId })),
 	/**  Reads one published cloud Markdown record through the admitted native owner. */
 	readCloudMarkdown: (sourceId: string, recordKey: string) => typedError<CloudMarkdownDocument, CloudDocumentError>(__TAURI_INVOKE("read_cloud_markdown", { sourceId, recordKey })),
+	/**  Saves one cloud Markdown body through its signed native edit authority. */
+	saveCloudMarkdown: (editToken: string, content: string) => typedError<CloudMarkdownSaveOutcome, CloudDocumentError>(__TAURI_INVOKE("save_cloud_markdown", { editToken, content })),
 	connectedCatdbState: () => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_state")),
 	enrollConnectedCatdb: (serverOrigin: string, bearerToken: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("enroll_connected_catdb", { serverOrigin, bearerToken })),
 	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),
@@ -526,6 +528,20 @@ export type CloudMarkdownDocument = {
 	/**  Provider modification timestamp retained from published metadata. */
 	modified_at_ms: number | null,
 };
+
+/**  Closed renderer-visible result of one guarded cloud Markdown save. */
+export type CloudMarkdownSaveOutcome =
+/**
+ *  The provider accepted the guarded revision and local receipt durability
+ *  was established.
+ */
+{ kind: "saved";
+/**  Fresh authority anchored to the accepted provider revision. */
+edit_token: string;
+/**  Provider modification time, when the provider supplies one. */
+modified_at_ms: number | null } |
+/**  The provider record no longer has the revision that was opened. */
+{ kind: "conflict" };
 
 export type CloudObservation = { kind: "observed-value"; value: unknown } | { kind: "observed-null" } | { kind: "observed-nothing"; reason: string } | { kind: "unobservable"; reason: string };
 

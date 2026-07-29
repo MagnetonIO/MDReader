@@ -13,6 +13,7 @@ import {
   type CloudCatalogReady,
   type CloudDocumentError,
   type CloudMarkdownDocument,
+  type CloudMarkdownSaveOutcome,
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
@@ -183,6 +184,10 @@ export interface SettingsBackend {
     sourceId: string,
     recordKey: string,
   ) => Promise<CloudMarkdownDocument>;
+  saveCloudMarkdown?: (
+    editToken: string,
+    content: string,
+  ) => Promise<CloudMarkdownSaveOutcome>;
   connectedCatdbState?: () => Promise<ConnectedCatdbState>;
   enrollConnectedCatdb?: (
     serverOrigin: string,
@@ -343,6 +348,16 @@ export async function readCloudMarkdown(
   return result.data;
 }
 
+/** Save one provider record through its short-lived native edit authority. */
+export async function saveCloudMarkdown(
+  editToken: string,
+  content: string,
+): Promise<CloudMarkdownSaveOutcome> {
+  const result = await commands.saveCloudMarkdown(editToken, content);
+  if (result.status === 'error') return cloudDocumentFailure(result.error);
+  return result.data;
+}
+
 /** Execute one immutable CatDB query over the selected Library memberships. */
 export async function queryLibraryDocuments(
   workspaceId: string,
@@ -444,6 +459,7 @@ export const settingsBackend: SettingsBackend = {
   queryConnectedCatdbDocuments,
   cancelCloudDocumentQuery,
   readCloudMarkdown,
+  saveCloudMarkdown,
   connectedCatdbState,
   enrollConnectedCatdb,
   setConnectedCatdbSourceEnabled,
