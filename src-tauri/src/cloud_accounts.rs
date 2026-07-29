@@ -101,6 +101,73 @@ pub(crate) enum CloudProvider {
     Dropbox,
 }
 
+/// Versioned native OAuth authority retained with each cloud source record.
+///
+/// Legacy records intentionally default to V1 so a persisted account never
+/// gains document-write authority merely by loading an older registry.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudAuthorizationProfile {
+    /// The original read-only connection capability.
+    #[default]
+    ReadOnlyV1,
+    /// The explicit Markdown read/write consent capability.
+    MarkdownReadWriteV2,
+}
+
+/// Editing readiness derived from the persisted authorization profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CloudEditingCapability {
+    /// The connected account must reconnect with the V2 OAuth profile.
+    ReconnectRequired,
+    /// Provider mutation is deliberately held pending the Task 9 live gate.
+    WriteCapabilityPendingAcceptance,
+}
+
+fn requested_scopes(
+    provider: CloudProvider,
+    profile: CloudAuthorizationProfile,
+) -> &'static [&'static str] {
+    match (provider, profile) {
+        (CloudProvider::GoogleDrive, CloudAuthorizationProfile::ReadOnlyV1) => {
+            &["https://www.googleapis.com/auth/drive.readonly"]
+        }
+        (CloudProvider::GoogleDrive, CloudAuthorizationProfile::MarkdownReadWriteV2) => {
+            &["https://www.googleapis.com/auth/drive"]
+        }
+        (CloudProvider::Dropbox, CloudAuthorizationProfile::ReadOnlyV1) => {
+            &["files.metadata.read", "files.content.read"]
+        }
+        (CloudProvider::Dropbox, CloudAuthorizationProfile::MarkdownReadWriteV2) => &[
+            "files.metadata.read",
+            "files.content.read",
+            "files.content.write",
+        ],
+    }
+}
+
+fn validated_authorization_profile(
+    provider: CloudProvider,
+    requested: CloudAuthorizationProfile,
+    returned_scope: Option<&str>,
+) -> Result<CloudAuthorizationProfile, CloudSourceError> {
+    let Some(returned_scope) = returned_scope else {
+        // Providers may omit unchanged scope. Authority remains exactly the
+        // native request profile; omission can never upgrade a V1 record.
+        return Ok(requested);
+    };
+    let returned = returned_scope.split_whitespace().collect::<HashSet<_>>();
+    let expected = requested_scopes(provider, requested)
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if returned == expected {
+        Ok(requested)
+    } else {
+        Err(CloudSourceError::OauthTokenRejected)
+    }
+}
+
 impl CloudProvider {
     #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
     fn id(self) -> &'static str {
@@ -695,6 +762,8 @@ pub(crate) struct CloudSourceRecord {
     credential_reference: String,
     config: CloudSourceConfig,
     #[serde(default)]
+    authorization_profile: CloudAuthorizationProfile,
+    #[serde(default)]
     contract: Option<crate::library::LibrarySourceContract>,
 }
 
@@ -713,6 +782,19 @@ impl CloudSourceRecord {
 
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub(crate) fn authorization_profile(&self) -> CloudAuthorizationProfile {
+        self.authorization_profile
+    }
+
+    pub(crate) fn editing_capability(&self) -> CloudEditingCapability {
+        match self.authorization_profile {
+            CloudAuthorizationProfile::ReadOnlyV1 => CloudEditingCapability::ReconnectRequired,
+            CloudAuthorizationProfile::MarkdownReadWriteV2 => {
+                CloudEditingCapability::WriteCapabilityPendingAcceptance
+            }
+        }
     }
 
     pub(crate) fn contract(&self) -> Option<&crate::library::LibrarySourceContract> {
@@ -842,6 +924,21 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
         config: CloudSourceConfig,
         secret: SecretBundle,
     ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
+        self.install_with_profile(
+            provider,
+            config,
+            secret,
+            CloudAuthorizationProfile::ReadOnlyV1,
+        )
+    }
+
+    pub(crate) fn install_with_profile(
+        &self,
+        provider: CloudProvider,
+        config: CloudSourceConfig,
+        secret: SecretBundle,
+        authorization_profile: CloudAuthorizationProfile,
+    ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
         config.validate()?;
         if config.provider() != provider {
             return Err(CloudSourceError::InvalidConfiguration);
@@ -866,6 +963,7 @@ impl<'a, V: CredentialVault> CloudAccountService<'a, V> {
             enabled: true,
             credential_reference: credential_reference.clone(),
             config,
+            authorization_profile,
             contract: Some(crate::library::LibrarySourceContract::cloud(provider)),
         };
         let mut cleanup_references = vec![credential_reference.clone()];
@@ -1031,6 +1129,7 @@ fn new_source_id() -> String {
 
 pub(crate) struct OAuthAttempt {
     provider: CloudProvider,
+    authorization_profile: CloudAuthorizationProfile,
     redirect_uri: String,
     pkce: OAuthPkce,
 }
@@ -1053,9 +1152,31 @@ impl OAuthAttempt {
         state: impl Into<String>,
         redirect_uri: impl Into<String>,
     ) -> Result<Self, CloudSourceError> {
+        Self::with_profile(
+            provider,
+            CloudAuthorizationProfile::ReadOnlyV1,
+            verifier,
+            state,
+            redirect_uri,
+        )
+    }
+
+    pub(crate) fn with_profile(
+        provider: CloudProvider,
+        authorization_profile: CloudAuthorizationProfile,
+        verifier: impl Into<String>,
+        state: impl Into<String>,
+        redirect_uri: impl Into<String>,
+    ) -> Result<Self, CloudSourceError> {
         #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
         {
-            let _ = (provider, verifier.into(), state.into(), redirect_uri.into());
+            let _ = (
+                provider,
+                authorization_profile,
+                verifier.into(),
+                state.into(),
+                redirect_uri.into(),
+            );
             Err(CloudSourceError::ConnectorUnavailable)
         }
         #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
@@ -1089,6 +1210,7 @@ impl OAuthAttempt {
             };
             Ok(Self {
                 provider,
+                authorization_profile,
                 redirect_uri,
                 pkce,
             })
@@ -1105,11 +1227,31 @@ impl OAuthAttempt {
         match &self.pkce {
             #[cfg(feature = "google-drive-connector")]
             OAuthPkce::GoogleDrive(pkce) => pkce
-                .authorization_url(client_id)
+                .authorization_url_for_profile(
+                    client_id,
+                    match self.authorization_profile {
+                        CloudAuthorizationProfile::ReadOnlyV1 => {
+                            catdb_connector_google_drive::DriveAuthorizationProfile::ReadOnly
+                        }
+                        CloudAuthorizationProfile::MarkdownReadWriteV2 => {
+                            catdb_connector_google_drive::DriveAuthorizationProfile::MarkdownReadWrite
+                        }
+                    },
+                )
                 .map_err(|_| CloudSourceError::InvalidConfiguration),
             #[cfg(feature = "dropbox-connector")]
             OAuthPkce::Dropbox(pkce) => pkce
-                .authorization_url(client_id)
+                .authorization_url_for_profile(
+                    client_id,
+                    match self.authorization_profile {
+                        CloudAuthorizationProfile::ReadOnlyV1 => {
+                            catdb_connector_dropbox::DropboxAuthorizationProfile::ReadOnly
+                        }
+                        CloudAuthorizationProfile::MarkdownReadWriteV2 => {
+                            catdb_connector_dropbox::DropboxAuthorizationProfile::MarkdownReadWrite
+                        }
+                    },
+                )
                 .map_err(|_| CloudSourceError::InvalidConfiguration),
         }
     }
@@ -1127,6 +1269,10 @@ impl OAuthAttempt {
             #[cfg(feature = "dropbox-connector")]
             OAuthPkce::Dropbox(pkce) => Ok(pkce.verifier()),
         }
+    }
+
+    fn authorization_profile(&self) -> CloudAuthorizationProfile {
+        self.authorization_profile
     }
 
     fn redirect_uri(&self) -> &str {
@@ -1227,6 +1373,7 @@ impl fmt::Debug for OAuthAttempt {
         formatter
             .debug_struct("OAuthAttempt")
             .field("provider", &self.provider)
+            .field("authorization_profile", &self.authorization_profile)
             .field("redirect_uri", &self.redirect_uri)
             .field("pkce", &"[redacted]")
             .finish()
@@ -1882,6 +2029,7 @@ fn e2e_drive_record() -> CloudSourceRecord {
                 root: false,
             }],
         },
+        authorization_profile: CloudAuthorizationProfile::ReadOnlyV1,
         contract: Some(crate::library::LibrarySourceContract::cloud(
             CloudProvider::GoogleDrive,
         )),
@@ -1920,7 +2068,7 @@ struct CloudCredentialAuthority {
 
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Clone)]
-struct CloudCredentialResolver {
+pub(crate) struct CloudCredentialResolver {
     provider: CloudProvider,
     reference: String,
     vault: Arc<dyn CredentialVault>,
@@ -1941,7 +2089,7 @@ impl CloudCredentialResolver {
         }
     }
 
-    fn from_admitted(
+    pub(crate) fn from_admitted(
         record: CloudSourceRecord,
         credential: SecretBundle,
         vault: Arc<dyn CredentialVault>,
@@ -1959,7 +2107,7 @@ impl CloudCredentialResolver {
         }
     }
 
-    async fn validate_authority(&self) -> Result<(), CloudSourceError> {
+    pub(crate) async fn validate_authority(&self) -> Result<(), CloudSourceError> {
         let Some(authority) = self.authority.clone() else {
             return Ok(());
         };
@@ -1967,6 +2115,31 @@ impl CloudCredentialResolver {
             authority
                 .registry
                 .read_cloud(|sources| validate_current_cloud_record(sources, &authority.expected))
+        })
+        .await
+        .map_err(|_| CloudSourceError::PersistFailed)?
+    }
+
+    pub(crate) async fn validate_document_authority(&self) -> Result<(), CloudSourceError> {
+        let Some(authority) = self.authority.clone() else {
+            return Ok(());
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            authority.registry.read_cloud(|sources| {
+                let Some(current) = sources
+                    .iter()
+                    .find(|source| source.provider == authority.expected.provider)
+                else {
+                    return Err(CloudSourceError::SourceNotFound);
+                };
+                if !current.enabled {
+                    return Err(CloudSourceError::SourcePaused);
+                }
+                if current != &authority.expected {
+                    return Err(CloudSourceError::QueryRetired);
+                }
+                Ok(())
+            })
         })
         .await
         .map_err(|_| CloudSourceError::PersistFailed)?
@@ -2017,12 +2190,129 @@ impl CloudCredentialResolver {
         if secret.refresh_token != refresh_credential {
             return Err(CloudSourceError::CredentialMissing);
         }
-        let refreshed = exchange_refresh_token(self.provider, refresh_credential).await?;
+        let profile = self
+            .authority
+            .as_ref()
+            .map(|authority| authority.expected.authorization_profile)
+            .unwrap_or_default();
+        let refreshed = exchange_refresh_token(self.provider, profile, refresh_credential).await?;
         secret.access_token = refreshed.access_token.to_string();
         secret.expires_at_unix_seconds = refreshed.expires_at_unix_seconds;
         secret.validate()?;
         self.store(secret.clone()).await?;
         Ok(secret)
+    }
+}
+
+/// Open a document source only from one freshly admitted source record and its
+/// vault-backed resolver. There is deliberately no renderer command at this
+/// boundary; later native commands consume this internal capability.
+#[allow(dead_code)]
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+pub(crate) async fn open_admitted_cloud_markdown_source(
+    app: AppHandle,
+    provider: CloudProvider,
+) -> Result<
+    Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
+    crate::cloud_documents::CloudDocumentError,
+> {
+    let admitted = blocking_cloud_operation(app, move |registry, vault| {
+        admit_cloud_read(registry, vault, provider)
+    })
+    .await
+    .map_err(crate::cloud_documents::map_lifecycle_error)?;
+    let AdmittedCloudRead {
+        record,
+        credential,
+        registry,
+        vault,
+        ..
+    } = admitted;
+    let profile = record.authorization_profile();
+    let resolver = Arc::new(CloudCredentialResolver::from_admitted(
+        record.clone(),
+        credential,
+        Arc::new(vault),
+        registry,
+    ));
+    match record.config {
+        #[cfg(feature = "google-drive-connector")]
+        CloudSourceConfig::GoogleDrive { selections } => {
+            let reference = catdb_connector_google_drive::DriveSecretReference::new(
+                record.credential_reference,
+            )
+            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+            let config = catdb_connector_google_drive::DriveSourceConfig::new(
+                record.id,
+                "mdreader",
+                "Document",
+                drive_selections(selections)
+                    .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?,
+                reference,
+            )
+            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+            .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
+            let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
+                config,
+                "mdreader-cloud-markdown-v1",
+            )
+            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+            let source =
+                catdb_connector_google_drive::DriveSource::open_pinned(spec, resolver.clone())
+                    .await
+                    .map_err(|_| {
+                        crate::cloud_documents::CloudDocumentError::CredentialUnavailable
+                    })?;
+            Ok(Arc::new(
+                crate::cloud_documents::source::DriveMarkdownDocumentSource::new(
+                    Arc::new(source),
+                    resolver,
+                    profile,
+                ),
+            ))
+        }
+        #[cfg(feature = "dropbox-connector")]
+        CloudSourceConfig::Dropbox => {
+            let reference =
+                catdb_connector_dropbox::DropboxSecretReference::new(record.credential_reference)
+                    .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+            let config = catdb_connector_dropbox::DropboxSourceConfig::new(
+                record.id,
+                "mdreader",
+                "Document",
+                "",
+                catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
+                reference,
+            )
+            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+            .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
+            let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
+                config,
+                "mdreader-cloud-markdown-v1",
+            )
+            .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?;
+            let source =
+                catdb_connector_dropbox::DropboxSource::open_pinned(spec, resolver.clone())
+                    .await
+                    .map_err(|_| {
+                        crate::cloud_documents::CloudDocumentError::CredentialUnavailable
+                    })?;
+            Ok(Arc::new(
+                crate::cloud_documents::source::DropboxMarkdownDocumentSource::new(
+                    Arc::new(source),
+                    resolver,
+                    profile,
+                ),
+            ))
+        }
+        #[cfg(not(feature = "google-drive-connector"))]
+        CloudSourceConfig::GoogleDrive { .. } => {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
+        #[cfg(not(feature = "dropbox-connector"))]
+        CloudSourceConfig::Dropbox => {
+            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+        }
     }
 }
 
@@ -4478,6 +4768,7 @@ pub(crate) async fn connect_cloud_source(
     state: tauri::State<'_, CloudAccountsState>,
 ) -> Result<CloudSourcesSnapshot, CloudSourceError> {
     let owner = CloudConnectOwner::begin(&state, provider)?;
+    let requested_profile = CloudAuthorizationProfile::MarkdownReadWriteV2;
     let cancellation = owner.cancellation();
     let oauth_client = oauth_client_configuration(provider)?;
     let callback_configuration = oauth_callback_configuration(
@@ -4489,7 +4780,13 @@ pub(crate) async fn connect_cloud_source(
     )?;
     let (listener, redirect_uri) = bind_oauth_callback_listener(callback_configuration).await?;
     let (verifier, oauth_state) = new_pkce_material();
-    let attempt = OAuthAttempt::new(provider, verifier, oauth_state, redirect_uri.clone())?;
+    let attempt = OAuthAttempt::with_profile(
+        provider,
+        requested_profile,
+        verifier,
+        oauth_state,
+        redirect_uri.clone(),
+    )?;
     let authorization_url = attempt.authorization_url(oauth_client.client_id)?;
     tauri::async_runtime::spawn_blocking(move || {
         tauri_plugin_opener::open_url(authorization_url, None::<&str>)
@@ -4519,7 +4816,12 @@ pub(crate) async fn connect_cloud_source(
     )?;
     commit_cloud_connect(&state, owner, move || {
         cloud_operation(app, move |registry, vault| {
-            CloudAccountService::new(registry, &vault).install(provider, config, secret)
+            CloudAccountService::new(registry, &vault).install_with_profile(
+                provider,
+                config,
+                secret,
+                requested_profile,
+            )
         })
     })
     .await
@@ -4826,6 +5128,7 @@ struct OAuthToken {
 
 fn validate_authorization_token_response(
     provider: CloudProvider,
+    authorization_profile: CloudAuthorizationProfile,
     response: OAuthTokenResponse,
 ) -> Result<OAuthToken, CloudSourceError> {
     let refresh_token = response
@@ -4837,7 +5140,12 @@ fn validate_authorization_token_response(
         .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
         .ok_or(CloudSourceError::OauthTokenRejected)?;
     if !response.token_type.eq_ignore_ascii_case("bearer")
-        || !oauth_token_scope_is_acceptable(provider, response.scope.as_deref())
+        || validated_authorization_profile(
+            provider,
+            authorization_profile,
+            response.scope.as_deref(),
+        )
+        .is_err()
     {
         return Err(CloudSourceError::OauthTokenRejected);
     }
@@ -4898,7 +5206,7 @@ async fn exchange_authorization_code(
     let bytes = bounded_oauth_token_response(response).await?;
     let response: OAuthTokenResponse =
         serde_json::from_slice(&bytes).map_err(|_| CloudSourceError::OauthTokenRejected)?;
-    validate_authorization_token_response(provider, response)
+    validate_authorization_token_response(provider, attempt.authorization_profile(), response)
 }
 
 fn authorization_code_token_form<'a>(
@@ -4923,6 +5231,7 @@ fn authorization_code_token_form<'a>(
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 async fn exchange_refresh_token(
     provider: CloudProvider,
+    authorization_profile: CloudAuthorizationProfile,
     refresh_token: &str,
 ) -> Result<RefreshedOAuthToken, CloudSourceError> {
     let oauth_client = oauth_client_configuration(provider)?;
@@ -4965,10 +5274,12 @@ async fn exchange_refresh_token(
         || response.access_token.len() > 16 * 1024
         || response.access_token.chars().any(char::is_control)
         || !response.token_type.eq_ignore_ascii_case("bearer")
-        || response
-            .scope
-            .as_deref()
-            .is_some_and(|scope| !oauth_token_scope_is_acceptable(provider, Some(scope)))
+        || validated_authorization_profile(
+            provider,
+            authorization_profile,
+            response.scope.as_deref(),
+        )
+        .is_err()
     {
         return Err(CloudSourceError::OauthTokenRejected);
     }
@@ -4991,40 +5302,6 @@ fn refresh_token_form<'a>(
         form.push(("client_secret", client_secret));
     }
     form
-}
-
-fn oauth_token_scope_is_acceptable(provider: CloudProvider, scope: Option<&str>) -> bool {
-    let Some(scope) = scope else {
-        // OAuth token responses may omit `scope` when the granted scope is
-        // unchanged from the authorization request.
-        return true;
-    };
-    let scopes = scope.split_whitespace().collect::<HashSet<_>>();
-    #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
-    let _ = &scopes;
-    match provider {
-        CloudProvider::GoogleDrive => {
-            #[cfg(feature = "google-drive-connector")]
-            {
-                scopes.contains(catdb_connector_google_drive::GOOGLE_DRIVE_READONLY_SCOPE)
-            }
-            #[cfg(not(feature = "google-drive-connector"))]
-            {
-                false
-            }
-        }
-        CloudProvider::Dropbox => {
-            #[cfg(feature = "dropbox-connector")]
-            {
-                scopes.contains(catdb_connector_dropbox::DROPBOX_METADATA_READ_SCOPE)
-                    && scopes.contains(catdb_connector_dropbox::DROPBOX_CONTENT_READ_SCOPE)
-            }
-            #[cfg(not(feature = "dropbox-connector"))]
-            {
-                false
-            }
-        }
-    }
 }
 
 fn retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u32> {
@@ -5354,13 +5631,15 @@ mod tests {
         bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
         commit_cloud_connect_observed, dropbox_redirect_configuration, execute_cloud_query,
         oauth_callback_configuration, oauth_client_configuration_from, receive_oauth_callback,
-        refresh_token_form, validate_authorization_token_response,
-        validate_google_oauth_client_secret, validate_oauth_client_id, AdmittedLibraryQuery,
-        CloudAccountService, CloudAccountsState, CloudCompleteness, CloudConnectOwner,
+        refresh_token_form, requested_scopes, validate_authorization_token_response,
+        validate_google_oauth_client_secret, validate_oauth_client_id,
+        validated_authorization_profile, AdmittedLibraryQuery, CloudAccountService,
+        CloudAccountsState, CloudAuthorizationProfile, CloudCompleteness, CloudConnectOwner,
         CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudExecutionMode, CloudProvider, CloudQueryRefusal, CloudSourceConfig, CloudSourceError,
-        CloudSourceOutcome, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
-        MemoryCredentialVault, OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
+        CloudEditingCapability, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
+        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CloudSourceRecord,
+        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
+        OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
     };
     use crate::{
         file_lock::AdvisoryFileLock,
@@ -5448,6 +5727,89 @@ mod tests {
     fn e2e_cloud_membership_record_satisfies_the_registry_contract() {
         super::validate_cloud_source_records(&[super::e2e_drive_record()])
             .expect("the exact E2E Drive seed must be admissible by the production Library");
+    }
+
+    #[test]
+    fn legacy_records_deserialize_as_read_only_v1() {
+        let record: CloudSourceRecord = serde_json::from_value(serde_json::json!({
+            "id": "a6d8390b9c71bf145c8d8c3999f0e1b6a1ddcb834c7a7c7523f235e3178af620",
+            "provider": "dropbox",
+            "label": "Dropbox",
+            "enabled": true,
+            "credential_reference": "cloud-credential-legacy",
+            "config": { "kind": "dropbox" }
+        }))
+        .expect("legacy source record");
+
+        assert_eq!(
+            record.authorization_profile,
+            CloudAuthorizationProfile::ReadOnlyV1
+        );
+    }
+
+    #[test]
+    fn markdown_write_v2_requires_the_exact_provider_scopes() {
+        assert_eq!(
+            requested_scopes(
+                CloudProvider::Dropbox,
+                CloudAuthorizationProfile::MarkdownReadWriteV2,
+            ),
+            [
+                "files.metadata.read",
+                "files.content.read",
+                "files.content.write",
+            ]
+        );
+        assert_eq!(
+            requested_scopes(
+                CloudProvider::GoogleDrive,
+                CloudAuthorizationProfile::MarkdownReadWriteV2,
+            ),
+            ["https://www.googleapis.com/auth/drive"]
+        );
+    }
+
+    #[test]
+    fn omitted_token_scope_does_not_upgrade_read_only_authority() {
+        assert_eq!(
+            validated_authorization_profile(
+                CloudProvider::GoogleDrive,
+                CloudAuthorizationProfile::ReadOnlyV1,
+                None,
+            ),
+            Ok(CloudAuthorizationProfile::ReadOnlyV1)
+        );
+    }
+
+    #[test]
+    fn a_connected_read_only_account_requires_reconnect_for_editing() {
+        let temp = tempdir().expect("temporary directory");
+        let vault = MemoryCredentialVault::default();
+        let registry = LibraryStore::new(temp.path().join("library.json"));
+        let service = CloudAccountService::new(registry.clone(), &vault);
+        service
+            .install(
+                CloudProvider::Dropbox,
+                CloudSourceConfig::Dropbox,
+                credentials(),
+            )
+            .expect("install legacy read-only source");
+
+        let snapshot = service.snapshot().expect("connected for reads");
+        let dropbox = snapshot
+            .sources
+            .iter()
+            .find(|source| source.provider == CloudProvider::Dropbox)
+            .expect("Dropbox source");
+        assert_eq!(dropbox.connection, CloudConnectionState::Connected);
+
+        let record = registry
+            .read_cloud(|sources| Ok(sources[0].clone()))
+            .expect("stored source");
+        assert_eq!(
+            record.editing_capability(),
+            CloudEditingCapability::ReconnectRequired
+        );
     }
 
     fn park_lifecycle_commit(
@@ -6316,6 +6678,7 @@ mod tests {
             enabled: true,
             credential_reference: "mdreader-dropbox-test".to_string(),
             config: CloudSourceConfig::Dropbox,
+            authorization_profile: CloudAuthorizationProfile::ReadOnlyV1,
             contract: Some(crate::library::LibrarySourceContract::cloud(
                 CloudProvider::Dropbox,
             )),
@@ -8439,6 +8802,7 @@ mod tests {
     fn authorization_token_response_accepts_omitted_unchanged_scope() {
         let result = validate_authorization_token_response(
             CloudProvider::GoogleDrive,
+            CloudAuthorizationProfile::ReadOnlyV1,
             OAuthTokenResponse {
                 access_token: "access-token".to_string(),
                 refresh_token: Some("refresh-token".to_string()),
@@ -8455,6 +8819,7 @@ mod tests {
     fn authorization_token_response_rejects_an_explicit_reduced_scope() {
         let result = validate_authorization_token_response(
             CloudProvider::GoogleDrive,
+            CloudAuthorizationProfile::ReadOnlyV1,
             OAuthTokenResponse {
                 access_token: "access-token".to_string(),
                 refresh_token: Some("refresh-token".to_string()),
@@ -8471,6 +8836,7 @@ mod tests {
     fn authorization_token_response_names_a_missing_offline_grant() {
         let result = validate_authorization_token_response(
             CloudProvider::GoogleDrive,
+            CloudAuthorizationProfile::ReadOnlyV1,
             OAuthTokenResponse {
                 access_token: "access-token".to_string(),
                 refresh_token: None,

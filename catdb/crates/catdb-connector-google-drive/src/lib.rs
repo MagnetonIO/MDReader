@@ -32,6 +32,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 /// Google's read-only scope for browsing and downloading user-readable files.
 pub const GOOGLE_DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+/// Google's full Drive scope required for guarded Markdown updates.
+pub const GOOGLE_DRIVE_FULL_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
 const API_BASE: &str = "https://www.googleapis.com";
 const AUTHORIZATION_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -71,6 +73,29 @@ pub enum DriveContentScope {
     ReadableText,
     /// Expose Markdown files only.
     Markdown,
+}
+
+/// The fixed OAuth capability requested by a native Drive authorization flow.
+///
+/// The default remains read-only so existing applications cannot accidentally
+/// widen a consent request. Markdown editing must request the explicit V2
+/// profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DriveAuthorizationProfile {
+    /// Read and download Drive content without mutation authority.
+    #[default]
+    ReadOnly,
+    /// Read and guarded-update Markdown content.
+    MarkdownReadWrite,
+}
+
+impl DriveAuthorizationProfile {
+    fn scope(self) -> &'static str {
+        match self {
+            Self::ReadOnly => GOOGLE_DRIVE_READONLY_SCOPE,
+            Self::MarkdownReadWrite => GOOGLE_DRIVE_FULL_SCOPE,
+        }
+    }
 }
 
 /// Runtime secret lookup key stored in the immutable source specification.
@@ -656,6 +681,15 @@ impl DriveOAuthPkce {
 
     /// Build the native-app authorization URL without a client secret.
     pub fn authorization_url(&self, client_id: &str) -> Result<String, DriveConnectorError> {
+        self.authorization_url_for_profile(client_id, DriveAuthorizationProfile::ReadOnly)
+    }
+
+    /// Build the native-app authorization URL for one fixed capability profile.
+    pub fn authorization_url_for_profile(
+        &self,
+        client_id: &str,
+        profile: DriveAuthorizationProfile,
+    ) -> Result<String, DriveConnectorError> {
         if client_id.is_empty() || client_id.len() > 512 || client_id.chars().any(char::is_control)
         {
             return Err(DriveConnectorError::InvalidPkce);
@@ -666,7 +700,7 @@ impl DriveOAuthPkce {
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &self.redirect_uri)
             .append_pair("response_type", "code")
-            .append_pair("scope", GOOGLE_DRIVE_READONLY_SCOPE)
+            .append_pair("scope", profile.scope())
             .append_pair("code_challenge", &self.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &self.state)

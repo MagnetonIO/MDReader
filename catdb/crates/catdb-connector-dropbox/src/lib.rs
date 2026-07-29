@@ -35,6 +35,8 @@ use zeroize::{Zeroize, Zeroizing};
 pub const DROPBOX_METADATA_READ_SCOPE: &str = "files.metadata.read";
 /// Dropbox content permission required by V1.
 pub const DROPBOX_CONTENT_READ_SCOPE: &str = "files.content.read";
+/// Dropbox content permission required for guarded Markdown updates.
+pub const DROPBOX_CONTENT_WRITE_SCOPE: &str = "files.content.write";
 
 const AUTHORIZATION_ENDPOINT: &str = "https://www.dropbox.com/oauth2/authorize";
 const API_ORIGIN: &str = "https://api.dropboxapi.com/";
@@ -102,6 +104,33 @@ pub enum DropboxContentScope {
     ReadableText,
     /// Expose Markdown files only.
     Markdown,
+}
+
+/// The fixed OAuth capability requested by a native Dropbox authorization flow.
+///
+/// The default remains read-only so existing applications cannot accidentally
+/// widen a consent request. Markdown editing must request the explicit V2
+/// profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DropboxAuthorizationProfile {
+    /// Read metadata and file content without mutation authority.
+    #[default]
+    ReadOnly,
+    /// Read and guarded-update Markdown content.
+    MarkdownReadWrite,
+}
+
+impl DropboxAuthorizationProfile {
+    fn scopes(self) -> &'static [&'static str] {
+        match self {
+            Self::ReadOnly => &[DROPBOX_METADATA_READ_SCOPE, DROPBOX_CONTENT_READ_SCOPE],
+            Self::MarkdownReadWrite => &[
+                DROPBOX_METADATA_READ_SCOPE,
+                DROPBOX_CONTENT_READ_SCOPE,
+                DROPBOX_CONTENT_WRITE_SCOPE,
+            ],
+        }
+    }
 }
 
 /// Immutable, non-secret Dropbox source configuration.
@@ -484,6 +513,15 @@ impl DropboxOAuthPkce {
 
     /// Construct the Dropbox authorization URL without a client secret.
     pub fn authorization_url(&self, client_id: &str) -> Result<String, DropboxConnectorError> {
+        self.authorization_url_for_profile(client_id, DropboxAuthorizationProfile::ReadOnly)
+    }
+
+    /// Construct the Dropbox authorization URL for one fixed capability profile.
+    pub fn authorization_url_for_profile(
+        &self,
+        client_id: &str,
+        profile: DropboxAuthorizationProfile,
+    ) -> Result<String, DropboxConnectorError> {
         if client_id.is_empty() || client_id.len() > 512 || contains_control(client_id) {
             return Err(DropboxConnectorError::InvalidPkce);
         }
@@ -493,10 +531,7 @@ impl DropboxOAuthPkce {
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &self.redirect_uri)
             .append_pair("response_type", "code")
-            .append_pair(
-                "scope",
-                &format!("{DROPBOX_METADATA_READ_SCOPE} {DROPBOX_CONTENT_READ_SCOPE}"),
-            )
+            .append_pair("scope", &profile.scopes().join(" "))
             .append_pair("code_challenge", &self.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("token_access_type", "offline")

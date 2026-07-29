@@ -5,12 +5,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use catdb_connector_google_drive::{
-    DriveAccessGrant, DriveAccessToken, DriveAvailability, DriveChangeCursor, DriveChangeEvent,
-    DriveChangeOutcome, DriveConnectorError, DriveContentScope, DriveCursorKey, DriveDocumentError,
-    DriveHttpMethod, DriveHttpRequest, DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce,
-    DriveRefreshCredential, DriveRevision, DriveRuntimeSecrets, DriveSecretReference,
-    DriveSecretResolver, DriveSelection, DriveSource, DriveSourceConfig, DriveTransport,
-    DriveTransportError, PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
+    DriveAccessGrant, DriveAccessToken, DriveAuthorizationProfile, DriveAvailability,
+    DriveChangeCursor, DriveChangeEvent, DriveChangeOutcome, DriveConnectorError,
+    DriveContentScope, DriveCursorKey, DriveDocumentError, DriveHttpMethod, DriveHttpRequest,
+    DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce, DriveRefreshCredential, DriveRevision,
+    DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource,
+    DriveSourceConfig, DriveTransport, DriveTransportError, PinnedDriveSourceSpec,
+    GOOGLE_DRIVE_READONLY_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -1606,6 +1607,27 @@ fn native_pkce_requests_the_exact_read_only_scope_without_a_client_secret() {
         GOOGLE_DRIVE_READONLY_SCOPE,
         "https://www.googleapis.com/auth/drive.readonly"
     );
+}
+
+#[test]
+fn native_pkce_requests_the_exact_markdown_write_scope() {
+    let pkce = DriveOAuthPkce::new(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "state-123",
+        "http://127.0.0.1:41003/oauth/callback",
+    )
+    .unwrap();
+
+    let authorization = pkce
+        .authorization_url_for_profile(
+            "desktop-client.apps.googleusercontent.com",
+            DriveAuthorizationProfile::MarkdownReadWrite,
+        )
+        .unwrap();
+
+    assert!(authorization.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive"));
+    assert!(!authorization.contains("drive.readonly"));
+    assert!(!authorization.contains("client_secret"));
 }
 
 #[derive(Clone)]

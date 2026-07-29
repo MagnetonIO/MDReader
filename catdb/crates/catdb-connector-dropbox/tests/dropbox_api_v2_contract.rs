@@ -5,13 +5,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use catdb_connector_dropbox::{
-    DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAvailability,
-    DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError, DropboxContentScope,
-    DropboxCursorKey, DropboxDocumentError, DropboxEndpoint, DropboxHttpMethod, DropboxHttpRequest,
-    DropboxHttpResponse, DropboxKnownRevision, DropboxOAuthPkce, DropboxRefreshCredential,
-    DropboxRevision, DropboxRuntimeSecrets, DropboxSecretReference, DropboxSecretResolver,
-    DropboxSource, DropboxSourceConfig, DropboxTransport, DropboxTransportError,
-    PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE, DROPBOX_METADATA_READ_SCOPE,
+    DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAuthorizationProfile,
+    DropboxAvailability, DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError,
+    DropboxContentScope, DropboxCursorKey, DropboxDocumentError, DropboxEndpoint,
+    DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse, DropboxKnownRevision,
+    DropboxOAuthPkce, DropboxRefreshCredential, DropboxRevision, DropboxRuntimeSecrets,
+    DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxSourceConfig,
+    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
+    DROPBOX_METADATA_READ_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
@@ -1033,6 +1034,29 @@ fn pkce_uses_exact_read_scopes_without_a_client_secret_or_fictional_folder_scope
     )
     .unwrap();
     assert_eq!(app_folder.oauth_scopes(), config().oauth_scopes());
+}
+
+#[test]
+fn pkce_uses_exact_markdown_write_scopes_without_metadata_write() {
+    let pkce = DropboxOAuthPkce::new(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "state-123",
+        "http://127.0.0.1:41004/oauth/callback",
+    )
+    .unwrap();
+
+    let authorization = pkce
+        .authorization_url_for_profile(
+            "desktop-client",
+            DropboxAuthorizationProfile::MarkdownReadWrite,
+        )
+        .unwrap();
+
+    assert!(
+        authorization.contains("scope=files.metadata.read+files.content.read+files.content.write")
+    );
+    assert!(!authorization.contains("files.metadata.write"));
+    assert!(!authorization.contains("client_secret"));
 }
 
 #[tokio::test]

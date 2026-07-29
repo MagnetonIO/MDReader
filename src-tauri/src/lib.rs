@@ -38,6 +38,8 @@ static E2E_BUILD_MANIFEST: &str = concat!(
 );
 
 mod cloud_accounts;
+#[allow(dead_code)]
+mod cloud_documents;
 mod commands;
 mod diagnostics;
 mod engine;
