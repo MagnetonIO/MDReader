@@ -115,6 +115,31 @@ pub(crate) enum CloudAuthorizationProfile {
     MarkdownReadWriteV2,
 }
 
+/// Native-only declaration of a provider's completed Markdown write gate.
+///
+/// A write-capable OAuth profile does not imply that the provider's guarded
+/// mutation path has passed its live acceptance gate. Task 9 changes only the
+/// matching provider declaration after that gate succeeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeMarkdownWriteAcceptance {
+    /// The provider mutation remains unavailable until its live gate passes.
+    Pending,
+    /// The provider mutation has passed its provider-specific live gate.
+    Accepted,
+}
+
+const GOOGLE_DRIVE_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
+    NativeMarkdownWriteAcceptance::Pending;
+const DROPBOX_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
+    NativeMarkdownWriteAcceptance::Pending;
+
+fn native_markdown_write_acceptance(provider: CloudProvider) -> NativeMarkdownWriteAcceptance {
+    match provider {
+        CloudProvider::GoogleDrive => GOOGLE_DRIVE_MARKDOWN_WRITE_ACCEPTANCE,
+        CloudProvider::Dropbox => DROPBOX_MARKDOWN_WRITE_ACCEPTANCE,
+    }
+}
+
 /// Editing readiness derived from the persisted authorization profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloudEditingCapability {
@@ -2268,6 +2293,7 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
                     Arc::new(source),
                     resolver,
                     profile,
+                    native_markdown_write_acceptance(CloudProvider::GoogleDrive),
                 ),
             ))
         }
@@ -2302,6 +2328,7 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
                     Arc::new(source),
                     resolver,
                     profile,
+                    native_markdown_write_acceptance(CloudProvider::Dropbox),
                 ),
             ))
         }

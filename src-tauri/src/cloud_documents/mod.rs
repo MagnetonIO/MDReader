@@ -14,5 +14,4 @@ pub(crate) use model::{
 };
 pub(crate) use source::{
     map_drive_document_error, map_dropbox_document_error, map_lifecycle_error,
-    MarkdownWriteCapability,
 };
