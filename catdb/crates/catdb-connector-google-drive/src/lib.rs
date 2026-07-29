@@ -2428,7 +2428,7 @@ impl DriveSource {
             .iter()
             .any(|selection| matches!(selection, DriveSelection::File { id, .. } if id == &file.id))
         {
-            return Ok(true);
+            return Ok(self.exposes_file(file));
         }
         if self
             .spec
@@ -2445,7 +2445,8 @@ impl DriveSource {
         Ok(file
             .parents
             .iter()
-            .any(|parent| membership.current.tracked_folders.contains(parent)))
+            .any(|parent| membership.current.tracked_folders.contains(parent))
+            && self.exposes_file(file))
     }
 
     fn exposes_file(&self, file: &DriveFile) -> bool {

@@ -2499,6 +2499,135 @@ async fn readable_root_change_tracking_keeps_nested_text_and_tombstones_other_co
 }
 
 #[tokio::test]
+async fn markdown_selected_file_change_leaving_content_scope_emits_tombstone() {
+    let materialized = serde_json::to_vec(&serde_json::json!({
+        "id":"selected-file",
+        "name":"selected.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let changed = serde_json::to_vec(&serde_json::json!({
+        "changes": [{
+            "changeType":"file",
+            "removed":false,
+            "fileId":"selected-file",
+            "file":{
+                "id":"selected-file",
+                "name":"selected.txt",
+                "mimeType":"text/plain",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "parents":[],
+                "trashed":false
+            }
+        }],
+        "newStartPageToken":"changes-2"
+    }))
+    .unwrap();
+    let (source, _) = source(
+        ScriptedTransport::new([
+            response(200, materialized),
+            response(200, br#"{"startPageToken":"changes-1"}"#),
+            response(200, changed),
+        ]),
+        selected_file_config().with_content_scope(DriveContentScope::Markdown),
+    );
+
+    source
+        .execute_page(&plan(&source, &["id"]), None, &context(20, 20, 64 * 1024))
+        .await
+        .expect("materialize the selected Markdown record");
+    let cursor = source
+        .start_change_tracking(&context(20, 20, 64 * 1024))
+        .await
+        .expect("start changes");
+    let DriveChangeOutcome::Page { events, .. } = source
+        .read_changes(&cursor, &context(20, 20, 64 * 1024))
+        .await
+        .expect("read changes")
+    else {
+        panic!("expected change page");
+    };
+
+    assert_eq!(
+        events,
+        vec![DriveChangeEvent::Deleted {
+            file_id: "selected-file".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn markdown_tracked_folder_child_leaving_content_scope_emits_tombstone() {
+    let materialized = listing(
+        serde_json::json!([{
+            "id":"renamed-note",
+            "name":"renamed-note.md",
+            "mimeType":"text/markdown",
+            "modifiedTime":"2026-07-20T12:34:55Z",
+            "parents":["selected-folder"],
+            "trashed":false
+        }]),
+        None,
+        false,
+    );
+    let changed = serde_json::to_vec(&serde_json::json!({
+        "changes": [{
+            "changeType":"file",
+            "removed":false,
+            "fileId":"renamed-note",
+            "file":{
+                "id":"renamed-note",
+                "name":"renamed-note.txt",
+                "mimeType":"text/plain",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "parents":["selected-folder"],
+                "trashed":false
+            }
+        }],
+        "newStartPageToken":"changes-2"
+    }))
+    .unwrap();
+    let (source, _) = source(
+        ScriptedTransport::new([
+            response(200, materialized),
+            response(200, br#"{"startPageToken":"changes-1"}"#),
+            response(200, changed),
+        ]),
+        config().with_content_scope(DriveContentScope::Markdown),
+    );
+
+    read(
+        &source,
+        &query(),
+        &["id".to_string()],
+        &context(20, 20, 64 * 1024),
+    )
+    .await
+    .expect("materialize the tracked Markdown record");
+    let cursor = source
+        .start_change_tracking(&context(20, 20, 64 * 1024))
+        .await
+        .expect("start changes");
+    let DriveChangeOutcome::Page { events, .. } = source
+        .read_changes(&cursor, &context(20, 20, 64 * 1024))
+        .await
+        .expect("read changes")
+    else {
+        panic!("expected change page");
+    };
+
+    assert_eq!(
+        events,
+        vec![DriveChangeEvent::Deleted {
+            file_id: "renamed-note".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
 async fn read_follows_every_page_and_preserves_examined_zero_as_success() {
     let first = listing(
         serde_json::json!([{
