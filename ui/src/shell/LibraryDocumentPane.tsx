@@ -27,6 +27,7 @@ export interface LibraryDocumentPaneProps {
   cloudEditor?: {
     tabId: string;
     documentKey: string;
+    saving: boolean;
     onSave: () => void;
     onReload: () => void;
   };
@@ -146,6 +147,15 @@ export function LibraryDocumentPane({
           ) : (
             <span className="library-reader__state">Read-only</span>
           )}
+          {editing && cloudEditor && editorEntry ? (
+            <button
+              type="button"
+              onClick={cloudEditor.onSave}
+              disabled={!editorEntry.dirty || cloudEditor.saving}
+            >
+              {cloudEditor.saving ? 'Saving…' : editorEntry.dirty ? 'Save' : 'Saved'}
+            </button>
+          ) : null}
           {body !== null ? (
             <button
               type="button"

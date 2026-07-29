@@ -185,6 +185,7 @@ export function AppShell() {
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [libraryDocumentLoading, setLibraryDocumentLoading] = useState(false);
   const [libraryDocumentError, setLibraryDocumentError] = useState<string | null>(null);
+  const [cloudSaving, setCloudSaving] = useState(false);
   const libraryRefreshGeneration = useRef(0);
   const libraryRefreshRequest = useRef<string | null>(null);
   const libraryDocumentGeneration = useRef(0);
@@ -1340,21 +1341,22 @@ export function AppShell() {
     useEditorStore.getState().seed(tab.id, key, document.content, document.edit_token, 'source');
   }, [cloudDocuments]);
 
-  const saveActiveCloud = useCallback(async () => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab || tab.docRef.kind !== 'cloud') return;
-    const key = documentKey(tab.docRef);
-    const entry = useEditorStore.getState().entry(tab.id, key);
-    if (!entry || !entry.dirty) return;
+  const saveCloudEntry = useCallback(async (
+    tabId: string,
+    key: string,
+  ): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
+    const entry = useEditorStore.getState().entry(tabId, key);
+    if (!entry || !entry.dirty) return 'noop';
     const snapshot = entry.buffer;
+    setCloudSaving(true);
     try {
       const outcome = await settingsBackend.saveCloudMarkdown?.(entry.baseHash, snapshot);
       if (!outcome) throw new Error('Cloud editing is unavailable.');
       if (outcome.kind === 'conflict') {
-        useEditorStore.getState().raiseConflict(tab.id, key, entry.baseHash, 'save');
-        return;
+        useEditorStore.getState().raiseConflict(tabId, key, entry.baseHash, 'save');
+        return 'conflict';
       }
-      useEditorStore.getState().markSaved(tab.id, key, snapshot, outcome.edit_token);
+      useEditorStore.getState().markSaved(tabId, key, snapshot, outcome.edit_token);
       setCloudDocuments((current) => {
         const selection = current[key];
         if (!selection?.cloudDocument) return current;
@@ -1371,10 +1373,20 @@ export function AppShell() {
           },
         };
       });
+      return 'saved';
     } catch {
       toast('Could not save this cloud document.');
+      return 'error';
+    } finally {
+      setCloudSaving(false);
     }
   }, []);
+
+  const saveActiveCloud = useCallback(async () => {
+    const tab = selectActiveTab(useTabsStore.getState());
+    if (!tab || tab.docRef.kind !== 'cloud' || cloudSaving) return;
+    await saveCloudEntry(tab.id, documentKey(tab.docRef));
+  }, [cloudSaving, saveCloudEntry]);
 
   const reloadActiveCloud = useCallback(async () => {
     const tab = selectActiveTab(useTabsStore.getState());
@@ -1437,23 +1449,27 @@ export function AppShell() {
     async (tabId: string): Promise<boolean> => {
       let allClean = true;
       for (const entry of useEditorStore.getState().allDirtyEntries().filter((e) => e.tabId === tabId)) {
-        const kind = await saveDocEntry(entry.tabId, entry.path, false);
+        const kind = entry.path.startsWith('cloud:')
+          ? await saveCloudEntry(entry.tabId, entry.path)
+          : await saveDocEntry(entry.tabId, entry.path, false);
         if (kind !== 'saved' && kind !== 'noop') allClean = false;
       }
       return allClean;
     },
-    [saveDocEntry],
+    [saveCloudEntry, saveDocEntry],
   );
 
   // Save every dirty document across all tabs (Save on the quit / switch guard).
   const saveAllDirty = useCallback(async (): Promise<boolean> => {
     let allClean = true;
     for (const entry of useEditorStore.getState().allDirtyEntries()) {
-      const kind = await saveDocEntry(entry.tabId, entry.path, false);
+      const kind = entry.path.startsWith('cloud:')
+        ? await saveCloudEntry(entry.tabId, entry.path)
+        : await saveDocEntry(entry.tabId, entry.path, false);
       if (kind !== 'saved' && kind !== 'noop') allClean = false;
     }
     return allClean;
-  }, [saveDocEntry]);
+  }, [saveCloudEntry, saveDocEntry]);
 
   // Complete a quit the guard approved (Save-then-close or Discard). The session
   // was already drained in the close handler before the prompt; here we clear any
@@ -2293,6 +2309,7 @@ export function AppShell() {
                     ? {
                         tabId: activeTab.id,
                         documentKey: documentKey(activeTab.docRef),
+                        saving: cloudSaving,
                         onSave: () => void saveActiveCloud(),
                         onReload: () => void reloadActiveCloud(),
                       }
