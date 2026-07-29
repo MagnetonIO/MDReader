@@ -668,6 +668,8 @@ fn lifecycle_connector_unavailability_stays_distinct_at_the_adapter_boundary() {
 }
 
 mod store {
+    use std::collections::HashSet;
+
     use tempfile::tempdir;
 
     use super::super::store::{
@@ -1434,6 +1436,315 @@ mod store {
     }
 
     #[test]
+    fn pending_write_repairs_page_bounds_equal_timestamp_recovery_without_duplicates() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        let page_limit = CloudDocumentStore::MAX_WRITE_REPAIR_PAGE_ROWS;
+        let mut expected = Vec::new();
+
+        for index in 0..=page_limit {
+            let operation_id = format!("operation-{index:03}");
+            expected.push(operation_id.clone().into_bytes());
+            let repair = CloudWriteRepair::new(
+                operation_id.as_bytes(),
+                &source,
+                SourceRecordKey::new(format!("record-{index}")),
+                ProviderRevision {
+                    opaque: format!("revision-{index}"),
+                    content_hash: None,
+                },
+                [(index % 251) as u8; 32],
+                br#"{\"provider\":\"accepted\"}"#,
+                9,
+            )
+            .expect("valid accepted repair");
+            store
+                .record_provider_acceptance(&repair)
+                .expect("persist provider acceptance");
+        }
+
+        let first = store
+            .pending_write_repairs_page(&source, None, page_limit)
+            .expect("load first bounded repair page");
+        assert_eq!(first.repairs().len(), page_limit);
+        let after = first
+            .next_continuation()
+            .cloned()
+            .expect("a full page with another row has a continuation");
+        let second = store
+            .pending_write_repairs_page(&source, Some(&after), page_limit)
+            .expect("load second bounded repair page");
+        assert_eq!(second.repairs().len(), 1);
+        assert!(second.next_continuation().is_none());
+
+        let observed = first
+            .repairs()
+            .iter()
+            .chain(second.repairs())
+            .map(|repair| repair.operation_id().to_vec())
+            .collect::<Vec<_>>();
+        let unique = observed.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(unique.len(), expected.len());
+        assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn pending_write_repairs_page_rejects_invalid_limits_before_sql() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        let connection = rusqlite::Connection::open(&path).expect("open external connection");
+        connection
+            .execute_batch(
+                "ALTER TABLE mdreader_cloud_write_repair RENAME TO unavailable_write_repairs;",
+            )
+            .expect("make any repair-page query fail");
+        drop(connection);
+
+        assert!(matches!(
+            store.pending_write_repairs_page(&source, None, 0),
+            Err(CloudDocumentStoreError::InvalidWriteRepairPageLimit)
+        ));
+        assert!(matches!(
+            store.pending_write_repairs_page(
+                &source,
+                None,
+                CloudDocumentStore::MAX_WRITE_REPAIR_PAGE_ROWS + 1
+            ),
+            Err(CloudDocumentStoreError::InvalidWriteRepairPageLimit)
+        ));
+        assert!(matches!(
+            store.pending_write_repairs_page(&source, None, 1),
+            Err(CloudDocumentStoreError::Persistence | CloudDocumentStoreError::CorruptStore)
+        ));
+    }
+
+    #[test]
+    fn pending_write_repairs_page_is_source_scoped() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        let foreign = SourceId::new("other-cloud-store-source");
+        let owner_repair = CloudWriteRepair::new(
+            b"owner-operation",
+            &source,
+            SourceRecordKey::new("owner.md"),
+            ProviderRevision {
+                opaque: "owner-revision".to_owned(),
+                content_hash: None,
+            },
+            [1_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid owner repair");
+        let foreign_repair = CloudWriteRepair::new(
+            b"foreign-operation",
+            &foreign,
+            SourceRecordKey::new("foreign.md"),
+            ProviderRevision {
+                opaque: "foreign-revision".to_owned(),
+                content_hash: None,
+            },
+            [2_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid foreign repair");
+        store
+            .record_provider_acceptance(&owner_repair)
+            .expect("persist owner repair");
+        store
+            .record_provider_acceptance(&foreign_repair)
+            .expect("persist foreign repair");
+
+        let page = store
+            .pending_write_repairs_page(&source, None, 1)
+            .expect("load owner repair page");
+        assert_eq!(page.repairs().len(), 1);
+        assert_eq!(
+            page.repairs()[0].operation_id(),
+            owner_repair.operation_id()
+        );
+        assert!(page.next_continuation().is_none());
+    }
+
+    #[test]
+    fn pending_write_repairs_page_rejects_a_foreign_source_continuation() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        let foreign = SourceId::new("other-cloud-store-source");
+
+        for operation_id in [b"owner-operation-1".as_slice(), b"owner-operation-2"] {
+            let repair = CloudWriteRepair::new(
+                operation_id,
+                &source,
+                SourceRecordKey::new("owner.md"),
+                ProviderRevision {
+                    opaque: "owner-revision".to_owned(),
+                    content_hash: None,
+                },
+                [1_u8; 32],
+                br#"{\"provider\":\"accepted\"}"#,
+                9,
+            )
+            .expect("valid owner repair");
+            store
+                .record_provider_acceptance(&repair)
+                .expect("persist owner repair");
+        }
+        let foreign_repair = CloudWriteRepair::new(
+            b"foreign-operation",
+            &foreign,
+            SourceRecordKey::new("foreign.md"),
+            ProviderRevision {
+                opaque: "foreign-revision".to_owned(),
+                content_hash: None,
+            },
+            [2_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid foreign repair");
+        store
+            .record_provider_acceptance(&foreign_repair)
+            .expect("persist foreign repair");
+
+        let owner_page = store
+            .pending_write_repairs_page(&source, None, 1)
+            .expect("load owner repair page");
+        let owner_continuation = owner_page
+            .next_continuation()
+            .cloned()
+            .expect("owner page has a continuation");
+        assert!(matches!(
+            store.pending_write_repairs_page(&foreign, Some(&owner_continuation), 1),
+            Err(CloudDocumentStoreError::ForeignSource)
+        ));
+    }
+
+    #[test]
+    fn persisted_write_repair_debug_redacts_opaque_values() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = SourceId::new("source-sentinel");
+        let body_hash_sentinel = [0xA5_u8; 32];
+        let first_repair = CloudWriteRepair::new(
+            b"operation-sentinel",
+            &source,
+            SourceRecordKey::new("record-sentinel"),
+            ProviderRevision {
+                opaque: "revision-sentinel".to_owned(),
+                content_hash: None,
+            },
+            body_hash_sentinel,
+            b"receipt-sentinel",
+            9,
+        )
+        .expect("valid sentinel repair");
+        store
+            .record_provider_acceptance(&first_repair)
+            .expect("persist first sentinel repair");
+
+        let persisted = store
+            .load_write_repair(&source, first_repair.operation_id())
+            .expect("load sentinel repair")
+            .expect("persisted sentinel repair");
+        let rendered = format!("{persisted:?}");
+        let body_hash_debug = format!("{body_hash_sentinel:?}");
+
+        for sentinel in [
+            "operation-sentinel",
+            "source-sentinel",
+            "record-sentinel",
+            "revision-sentinel",
+            "receipt-sentinel",
+            body_hash_debug.as_str(),
+        ] {
+            assert!(
+                !rendered.contains(sentinel),
+                "Debug output exposed opaque sentinel {sentinel:?}: {rendered}"
+            );
+        }
+        assert!(rendered.contains("PersistedCloudWriteRepair"));
+        assert!(rendered.contains("operation_bytes"));
+        assert!(rendered.contains("body_hash_bytes"));
+        assert!(rendered.contains("receipt_bytes"));
+    }
+
+    #[test]
+    fn repair_page_debug_redacts_opaque_values() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = SourceId::new("source-sentinel");
+        let first_repair = CloudWriteRepair::new(
+            b"operation-sentinel",
+            &source,
+            SourceRecordKey::new("record-sentinel"),
+            ProviderRevision {
+                opaque: "revision-sentinel".to_owned(),
+                content_hash: None,
+            },
+            [0xA5_u8; 32],
+            b"receipt-sentinel",
+            9,
+        )
+        .expect("valid sentinel repair");
+        let second_repair = CloudWriteRepair::new(
+            b"operation-sentinel-second",
+            &source,
+            SourceRecordKey::new("record-sentinel-second"),
+            ProviderRevision {
+                opaque: "revision-sentinel-second".to_owned(),
+                content_hash: None,
+            },
+            [0x5A_u8; 32],
+            b"receipt-sentinel-second",
+            10,
+        )
+        .expect("valid second sentinel repair");
+        store
+            .record_provider_acceptance(&first_repair)
+            .expect("persist first sentinel repair");
+        store
+            .record_provider_acceptance(&second_repair)
+            .expect("persist second sentinel repair");
+
+        let page = store
+            .pending_write_repairs_page(&source, None, 1)
+            .expect("load bounded sentinel page");
+        let continuation = page
+            .next_continuation()
+            .expect("the first sentinel page has a continuation");
+        let rendered = format!("{page:?}\n{continuation:?}");
+
+        for sentinel in [
+            "operation-sentinel",
+            "source-sentinel",
+            "record-sentinel",
+            "revision-sentinel",
+            "receipt-sentinel",
+        ] {
+            assert!(
+                !rendered.contains(sentinel),
+                "Debug output exposed opaque sentinel {sentinel:?}: {rendered}"
+            );
+        }
+        assert!(rendered.contains("RepairPage"));
+        assert!(rendered.contains("repair_count"));
+        assert!(rendered.contains("RepairContinuation"));
+        assert!(rendered.contains("created_at_ms"));
+    }
+
+    #[test]
     fn repeated_provider_acceptance_is_idempotent_and_rejects_a_conflicting_operation() {
         let directory = tempdir().expect("temporary SQLite directory");
         let store =
@@ -1481,10 +1792,10 @@ mod store {
         let reopened = CloudDocumentStore::open(directory.path().join("cloud.sqlite"))
             .expect("reopen durable journal");
         let pending = reopened
-            .pending_write_repairs(&source)
+            .pending_write_repairs_page(&source, None, 1)
             .expect("enumerate source pending repairs");
-        assert_eq!(pending.len(), 1);
-        let pending = &pending[0];
+        assert_eq!(pending.repairs().len(), 1);
+        let pending = &pending.repairs()[0];
         assert_eq!(pending.operation_id(), accepted.operation_id());
         assert_eq!(pending.source_id_bytes(), source.as_str().as_bytes());
         assert_eq!(pending.record_key().as_str(), "note.md");
@@ -1534,8 +1845,9 @@ mod store {
             None
         );
         assert!(store
-            .pending_write_repairs(&foreign)
+            .pending_write_repairs_page(&foreign, None, 1)
             .expect("foreign repair enumeration")
+            .repairs()
             .is_empty());
         assert!(matches!(
             store.mark_write_published(&foreign, repair.operation_id()),

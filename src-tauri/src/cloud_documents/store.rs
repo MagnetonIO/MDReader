@@ -20,6 +20,7 @@ use super::{
 const SCHEMA_VERSION: i64 = 1;
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+const MAX_WRITE_REPAIR_PAGE_ROWS: usize = 256;
 const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 const SCHEMA_SQL: &str = "
     CREATE TABLE mdreader_cloud_snapshot (
@@ -122,6 +123,8 @@ pub(crate) enum CloudDocumentStoreError {
     WriteRepairNotFound,
     /// A reused operation identifier has different provider-authoritative data.
     WriteRepairCollision,
+    /// A write-repair recovery page limit is zero or exceeds the fixed bound.
+    InvalidWriteRepairPageLimit,
     /// A test-only failpoint aborted a transaction before commit.
     InjectedCommitFailure,
 }
@@ -142,6 +145,9 @@ impl fmt::Display for CloudDocumentStoreError {
             Self::BodyTooLarge => "cloud-document-store-body-too-large",
             Self::WriteRepairNotFound => "cloud-document-store-write-repair-not-found",
             Self::WriteRepairCollision => "cloud-document-store-write-repair-collision",
+            Self::InvalidWriteRepairPageLimit => {
+                "cloud-document-store-invalid-write-repair-page-limit"
+            }
             Self::InjectedCommitFailure => "cloud-document-store-commit-failure",
         })
     }
@@ -301,7 +307,7 @@ impl fmt::Debug for CloudWriteRepair {
 }
 
 /// Persisted state of a provider-accepted write repair.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PersistedCloudWriteRepair {
     operation_id: Vec<u8>,
     source_id: Vec<u8>,
@@ -360,6 +366,79 @@ impl PersistedCloudWriteRepair {
     }
 }
 
+impl fmt::Debug for PersistedCloudWriteRepair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistedCloudWriteRepair")
+            .field("operation_bytes", &self.operation_id.len())
+            .field("source_bytes", &self.source_id.len())
+            .field("record_key_bytes", &self.record_key.0.len())
+            .field("revision_bytes", &self.accepted_revision.opaque.len())
+            .field("body_hash_bytes", &self.body_hash.len())
+            .field("receipt_bytes", &self.receipt_json.len())
+            .field("state", &self.state)
+            .field("created_at_ms", &self.created_at_ms)
+            .finish()
+    }
+}
+
+/// Opaque position after one repair in source-scoped recovery ordering.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RepairContinuation {
+    source_id: Vec<u8>,
+    created_at_ms: i64,
+    operation_id: Vec<u8>,
+}
+
+impl RepairContinuation {
+    fn after(repair: &PersistedCloudWriteRepair) -> Self {
+        Self {
+            source_id: repair.source_id.clone(),
+            created_at_ms: repair.created_at_ms,
+            operation_id: repair.operation_id.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for RepairContinuation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RepairContinuation")
+            .field("source_bytes", &self.source_id.len())
+            .field("created_at_ms", &self.created_at_ms)
+            .field("operation_bytes", &self.operation_id.len())
+            .finish()
+    }
+}
+
+/// One bounded source-scoped page of pending write repairs.
+pub(crate) struct RepairPage {
+    repairs: Vec<PersistedCloudWriteRepair>,
+    next: Option<RepairContinuation>,
+}
+
+impl RepairPage {
+    /// Returns the repairs in deterministic recovery order.
+    pub(crate) fn repairs(&self) -> &[PersistedCloudWriteRepair] {
+        &self.repairs
+    }
+
+    /// Returns the opaque continuation after the final repair in this page.
+    pub(crate) fn next_continuation(&self) -> Option<&RepairContinuation> {
+        self.next.as_ref()
+    }
+}
+
+impl fmt::Debug for RepairPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RepairPage")
+            .field("repair_count", &self.repairs.len())
+            .field("has_next", &self.next.is_some())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WriteRepairState {
     ProviderAccepted,
@@ -395,6 +474,9 @@ pub(crate) struct CloudDocumentStore {
 impl CloudDocumentStore {
     /// Maximum body size permitted for one cached Markdown document.
     pub(crate) const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+    /// Largest permitted pending write-repair recovery page.
+    pub(crate) const MAX_WRITE_REPAIR_PAGE_ROWS: usize = MAX_WRITE_REPAIR_PAGE_ROWS;
 
     /// Opens (or creates) the durable materialization database at `path`.
     pub(crate) fn open(path: impl AsRef<Path>) -> StoreResult<Self> {
@@ -924,12 +1006,26 @@ impl CloudDocumentStore {
             .map_err(|_| CloudDocumentStoreError::CorruptStore)
     }
 
-    /// Enumerates provider-accepted repairs for exactly one source after restart.
-    pub(crate) fn pending_write_repairs(
+    /// Loads one bounded provider-accepted repair page for exactly one source.
+    ///
+    /// The continuation is exclusive and includes both deterministic ordering
+    /// fields, so rows sharing an observation time are neither repeated nor
+    /// skipped across pages.
+    pub(crate) fn pending_write_repairs_page(
         &self,
         source_id: &SourceId,
-    ) -> StoreResult<Vec<PersistedCloudWriteRepair>> {
+        after: Option<&RepairContinuation>,
+        limit: usize,
+    ) -> StoreResult<RepairPage> {
+        if limit == 0 || limit > Self::MAX_WRITE_REPAIR_PAGE_ROWS {
+            return Err(CloudDocumentStoreError::InvalidWriteRepairPageLimit);
+        }
         let source_id = source_bytes(source_id)?;
+        if after.is_some_and(|continuation| continuation.source_id.as_slice() != source_id) {
+            return Err(CloudDocumentStoreError::ForeignSource);
+        }
+        let query_limit = i64::try_from(limit + 1)
+            .map_err(|_| CloudDocumentStoreError::InvalidWriteRepairPageLimit)?;
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
@@ -937,15 +1033,33 @@ impl CloudDocumentStore {
                     receipt_json, state, created_at_ms
                  FROM mdreader_cloud_write_repair
                  WHERE source_id = ?1 AND state = 'provider-accepted'
-                 ORDER BY created_at_ms, operation_id",
+                   AND (?2 IS NULL OR created_at_ms > ?2
+                        OR (created_at_ms = ?2 AND operation_id > ?3))
+                 ORDER BY created_at_ms, operation_id
+                 LIMIT ?4",
             )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         let repairs = statement
-            .query_map(params![source_id], decode_write_repair_row)
+            .query_map(
+                params![
+                    source_id,
+                    after.map(|continuation| continuation.created_at_ms),
+                    after.map(|continuation| continuation.operation_id.as_slice()),
+                    query_limit,
+                ],
+                decode_write_repair_row,
+            )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        repairs
+        let mut repairs = repairs
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| CloudDocumentStoreError::CorruptStore)
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        let next = if repairs.len() > limit {
+            repairs.pop();
+            repairs.last().map(RepairContinuation::after)
+        } else {
+            None
+        };
+        Ok(RepairPage { repairs, next })
     }
 
     #[cfg(test)]
