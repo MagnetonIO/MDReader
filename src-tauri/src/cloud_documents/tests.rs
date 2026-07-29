@@ -1,31 +1,45 @@
 use std::{
-    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use catdb_connector_dropbox::{
     DropboxAccessToken, DropboxAuthorizationMode, DropboxContentScope, DropboxCursorKey,
     DropboxDocumentError, DropboxHttpRequest, DropboxHttpResponse, DropboxRevision,
     DropboxRuntimeSecrets, DropboxSecretReference, DropboxSource, DropboxSourceConfig,
     DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec,
 };
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use catdb_connector_google_drive::{
     DriveAccessToken, DriveContentScope, DriveCursorKey, DriveDocumentError, DriveHttpMethod,
     DriveHttpRequest, DriveHttpResponse, DriveRevision, DriveRuntimeSecrets, DriveSecretReference,
     DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
     PinnedDriveSourceSpec,
 };
-use catdb_connectors::{CancellationToken, ReadContext, SourceError, SourceId};
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use catdb_connectors::SourceError;
+use catdb_connectors::{CancellationToken, ReadContext, SourceId};
 
+#[cfg(feature = "google-drive-connector")]
+use super::map_drive_document_error;
+#[cfg(feature = "dropbox-connector")]
+use super::map_dropbox_document_error;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use super::map_lifecycle_error;
+#[cfg(feature = "google-drive-connector")]
+use super::source::DriveMarkdownDocumentSource;
+#[cfg(feature = "dropbox-connector")]
+use super::source::DropboxMarkdownDocumentSource;
 use super::source::{
-    DocumentLifecycle, DriveMarkdownDocumentSource, DropboxMarkdownDocumentSource,
-    GuardedMarkdownDocumentOperations, GuardedMarkdownWriteReceipt,
+    DocumentLifecycle, GuardedMarkdownDocumentOperations, GuardedMarkdownWriteReceipt,
 };
 use super::{
-    map_drive_document_error, map_dropbox_document_error, map_lifecycle_error, CloudDocumentError,
-    CloudIoContext, MarkdownDocumentSource, ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, MarkdownDocumentSource, ProviderRevision, SourceRecordKey,
 };
 use crate::cloud_accounts::{
     CloudAuthorizationProfile, CloudSourceError, NativeMarkdownWriteAcceptance,
@@ -150,6 +164,7 @@ fn expected_revision() -> ProviderRevision {
     }
 }
 
+#[cfg(feature = "google-drive-connector")]
 #[tokio::test]
 async fn read_only_v1_refuses_even_with_accepted_native_provider_state() {
     let lifecycle = TestDocumentLifecycle::active();
@@ -174,6 +189,7 @@ async fn read_only_v1_refuses_even_with_accepted_native_provider_state() {
     assert!(operations.mutations().is_empty());
 }
 
+#[cfg(feature = "google-drive-connector")]
 #[tokio::test]
 async fn drive_v2_pending_and_accepted_states_have_distinct_provider_effects() {
     let pending_operations = Arc::new(TestDocumentOperations::new("drive-pending"));
@@ -227,6 +243,7 @@ async fn drive_v2_pending_and_accepted_states_have_distinct_provider_effects() {
     );
 }
 
+#[cfg(feature = "dropbox-connector")]
 #[tokio::test]
 async fn dropbox_v2_pending_and_accepted_states_have_distinct_provider_effects() {
     let pending_operations = Arc::new(TestDocumentOperations::new("dropbox-pending"));
@@ -280,6 +297,7 @@ async fn dropbox_v2_pending_and_accepted_states_have_distinct_provider_effects()
     );
 }
 
+#[cfg(feature = "google-drive-connector")]
 #[tokio::test]
 async fn adapter_refuses_before_the_provider_effect_when_lifecycle_authority_is_lost() {
     let lifecycle = TestDocumentLifecycle::active();
@@ -306,6 +324,7 @@ async fn adapter_refuses_before_the_provider_effect_when_lifecycle_authority_is_
     assert!(operations.mutations().is_empty());
 }
 
+#[cfg(feature = "dropbox-connector")]
 #[tokio::test]
 async fn adapter_loses_authority_after_effect_without_publishing_a_receipt() {
     let lifecycle = TestDocumentLifecycle::active();
@@ -344,12 +363,14 @@ async fn adapter_loses_authority_after_effect_without_publishing_a_receipt() {
     );
 }
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Clone)]
 struct DriveUnknownWriteTransport {
     calls: Arc<Mutex<usize>>,
     mutation_dispatches: Arc<Mutex<usize>>,
 }
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[async_trait]
 impl DriveTransport for DriveUnknownWriteTransport {
     async fn send(
@@ -388,12 +409,14 @@ impl DriveTransport for DriveUnknownWriteTransport {
     }
 }
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[derive(Clone)]
 struct DropboxUnknownWriteTransport {
     calls: Arc<Mutex<usize>>,
     mutation_dispatches: Arc<Mutex<usize>>,
 }
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[async_trait]
 impl DropboxTransport for DropboxUnknownWriteTransport {
     async fn send(
@@ -436,6 +459,7 @@ impl DropboxTransport for DropboxUnknownWriteTransport {
     }
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn provider_context() -> ReadContext {
     ReadContext::new(
         uuid::Uuid::new_v4(),
@@ -448,6 +472,7 @@ fn provider_context() -> ReadContext {
     .expect("valid test context")
 }
 
+#[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[tokio::test]
 async fn provider_write_outcome_unknowns_map_to_the_closed_adapter_error() {
     let drive_calls = Arc::new(Mutex::new(0));
@@ -556,6 +581,7 @@ async fn provider_write_outcome_unknowns_map_to_the_closed_adapter_error() {
     );
 }
 
+#[cfg(feature = "google-drive-connector")]
 #[test]
 fn drive_adapter_maps_closed_document_failures_without_provider_detail() {
     let source_id = SourceId::new("drive-source");
@@ -588,6 +614,7 @@ fn drive_adapter_maps_closed_document_failures_without_provider_detail() {
     );
 }
 
+#[cfg(feature = "dropbox-connector")]
 #[test]
 fn dropbox_adapter_maps_closed_document_failures_without_provider_detail() {
     let source_id = SourceId::new("dropbox-source");
@@ -615,6 +642,7 @@ fn dropbox_adapter_maps_closed_document_failures_without_provider_detail() {
     );
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 #[test]
 fn lifecycle_pause_and_replacement_fail_closed_at_the_adapter_boundary() {
     assert_eq!(
@@ -624,5 +652,17 @@ fn lifecycle_pause_and_replacement_fail_closed_at_the_adapter_boundary() {
     assert_eq!(
         map_lifecycle_error(CloudSourceError::QueryRetired),
         CloudDocumentError::SourceDisconnected
+    );
+}
+
+#[cfg(any(
+    all(feature = "google-drive-connector", not(feature = "dropbox-connector")),
+    all(feature = "dropbox-connector", not(feature = "google-drive-connector"))
+))]
+#[test]
+fn lifecycle_connector_unavailability_stays_distinct_at_the_adapter_boundary() {
+    assert_eq!(
+        map_lifecycle_error(CloudSourceError::ConnectorUnavailable),
+        CloudDocumentError::ConnectorUnavailable
     );
 }

@@ -119,6 +119,7 @@ pub(crate) enum CloudDocumentError {
     TooLarge,
     InvalidUtf8,
     IdentityMismatch,
+    ConnectorUnavailable,
     ProtocolFailed,
     WriteCapabilityPendingAcceptance,
     WriteOutcomeUnknown,

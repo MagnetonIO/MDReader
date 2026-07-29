@@ -2232,6 +2232,23 @@ impl CloudCredentialResolver {
 /// Open a document source only from one freshly admitted source record and its
 /// vault-backed resolver. There is deliberately no renderer command at this
 /// boundary; later native commands consume this internal capability.
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+fn ensure_cloud_document_connector_available(
+    provider: CloudProvider,
+) -> Result<(), crate::cloud_documents::CloudDocumentError> {
+    match provider {
+        #[cfg(not(feature = "google-drive-connector"))]
+        CloudProvider::GoogleDrive => {
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
+        }
+        #[cfg(not(feature = "dropbox-connector"))]
+        CloudProvider::Dropbox => {
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
+        }
+        _ => Ok(()),
+    }
+}
+
 #[allow(dead_code)]
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 pub(crate) async fn open_admitted_cloud_markdown_source(
@@ -2241,17 +2258,7 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
     Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
     crate::cloud_documents::CloudDocumentError,
 > {
-    match provider {
-        #[cfg(not(feature = "google-drive-connector"))]
-        CloudProvider::GoogleDrive => {
-            return Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed);
-        }
-        #[cfg(not(feature = "dropbox-connector"))]
-        CloudProvider::Dropbox => {
-            return Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed);
-        }
-        _ => {}
-    }
+    ensure_cloud_document_connector_available(provider)?;
     let admitted = blocking_cloud_operation(app, move |registry, vault| {
         admit_cloud_read(registry, vault, provider)
     })
@@ -2345,11 +2352,11 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
         }
         #[cfg(not(feature = "google-drive-connector"))]
         CloudSourceConfig::GoogleDrive { .. } => {
-            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
         }
         #[cfg(not(feature = "dropbox-connector"))]
         CloudSourceConfig::Dropbox => {
-            Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed)
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
         }
     }
 }
@@ -5662,23 +5669,25 @@ mod tests {
         io::AsyncWriteExt as _,
         net::{TcpListener, TcpStream},
     };
+    #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
     use url::Url;
 
     use super::{
-        admit_library_query, authorization_code_token_form, bind_identity_bound_local_sources,
-        bind_library_cloud_source, bind_oauth_callback_listener, commit_cloud_connect,
-        commit_cloud_connect_observed, dropbox_redirect_configuration, execute_cloud_query,
-        oauth_callback_configuration, oauth_client_configuration_from, receive_oauth_callback,
-        refresh_token_form, requested_scopes, validate_authorization_token_response,
-        validate_google_oauth_client_secret, validate_oauth_client_id,
-        validated_authorization_profile, AdmittedLibraryQuery, CloudAccountService,
-        CloudAccountsState, CloudAuthorizationProfile, CloudCompleteness, CloudConnectOwner,
-        CloudConnectionState, CloudCredentialResolver, CloudDocumentQueryResponse,
-        CloudEditingCapability, CloudExecutionMode, CloudProvider, CloudQueryRefusal,
-        CloudSourceConfig, CloudSourceError, CloudSourceOutcome, CloudSourceRecord,
-        CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault, MemoryCredentialVault,
-        OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
+        admit_library_query, bind_identity_bound_local_sources, bind_library_cloud_source,
+        bind_oauth_callback_listener, commit_cloud_connect, commit_cloud_connect_observed,
+        dropbox_redirect_configuration, execute_cloud_query, oauth_callback_configuration,
+        oauth_client_configuration_from, receive_oauth_callback, requested_scopes,
+        validate_authorization_token_response, validate_google_oauth_client_secret,
+        validate_oauth_client_id, validated_authorization_profile, AdmittedLibraryQuery,
+        CloudAccountService, CloudAccountsState, CloudAuthorizationProfile, CloudCompleteness,
+        CloudConnectOwner, CloudConnectionState, CloudCredentialResolver,
+        CloudDocumentQueryResponse, CloudEditingCapability, CloudExecutionMode, CloudProvider,
+        CloudQueryRefusal, CloudSourceConfig, CloudSourceError, CloudSourceOutcome,
+        CloudSourceRecord, CredentialVault, IdentityBoundLocalSource, KeyringCredentialVault,
+        MemoryCredentialVault, OAuthAttempt, OAuthTokenResponse, SecretBundle, MAX_CALLBACK_BYTES,
     };
+    #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    use super::{authorization_code_token_form, refresh_token_form};
     use crate::{
         file_lock::AdvisoryFileLock,
         library::{LibraryRegistry, LibraryStore},
@@ -6582,6 +6591,57 @@ mod tests {
         assert!(
             !entry.contains("CloudCredentialResolver::from_admitted"),
             "credential snapshot construction belongs to the admitted boundary, not a bypass in the command"
+        );
+    }
+
+    #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+    #[test]
+    fn cloud_document_opener_checks_connector_availability_before_native_authorities() {
+        let opener = include_str!("cloud_accounts.rs")
+            .split_once("pub(crate) async fn open_admitted_cloud_markdown_source(")
+            .expect("native cloud document opener")
+            .1;
+        let availability_check = opener
+            .find("ensure_cloud_document_connector_available(provider)?;")
+            .expect("connector availability check");
+        let admission = opener
+            .find("let admitted = blocking_cloud_operation")
+            .expect("admitted cloud read");
+
+        assert!(
+            availability_check < admission,
+            "connector availability must precede native admission"
+        );
+        let before_admission = &opener[..admission];
+        assert!(
+            !before_admission.contains("admit_cloud_read("),
+            "connector availability cannot consult source admission"
+        );
+        assert!(
+            !before_admission.contains("CloudCredentialResolver::from_admitted"),
+            "connector availability cannot construct a vault-backed resolver"
+        );
+        assert!(
+            !before_admission.contains("SourceConfig::new("),
+            "connector availability cannot construct a provider source"
+        );
+    }
+
+    #[cfg(all(feature = "google-drive-connector", not(feature = "dropbox-connector")))]
+    #[test]
+    fn disabled_dropbox_document_connector_refuses_before_native_authorities() {
+        assert_eq!(
+            super::ensure_cloud_document_connector_available(CloudProvider::Dropbox),
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
+        );
+    }
+
+    #[cfg(all(feature = "dropbox-connector", not(feature = "google-drive-connector")))]
+    #[test]
+    fn disabled_drive_document_connector_refuses_before_native_authorities() {
+        assert_eq!(
+            super::ensure_cloud_document_connector_available(CloudProvider::GoogleDrive),
+            Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable)
         );
     }
 
@@ -8870,6 +8930,7 @@ mod tests {
         assert!(matches!(result, Err(CloudSourceError::OauthTokenRejected)));
     }
 
+    #[cfg(feature = "google-drive-connector")]
     #[test]
     fn authorization_token_response_names_a_missing_offline_grant() {
         let result = validate_authorization_token_response(
@@ -9100,6 +9161,7 @@ mod tests {
         assert_eq!(result, Err(CloudSourceError::OauthInvalidCallback));
     }
 
+    #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
     #[test]
     fn oauth_authorization_urls_and_token_forms_emit_required_fields_once() {
         for provider in [CloudProvider::GoogleDrive, CloudProvider::Dropbox] {

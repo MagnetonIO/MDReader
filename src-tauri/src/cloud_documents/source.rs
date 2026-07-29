@@ -175,6 +175,11 @@ pub(crate) fn map_lifecycle_error(error: CloudSourceError) -> CloudDocumentError
         CloudSourceError::OauthRateLimited { retry_after_ms } => CloudDocumentError::RateLimited {
             retry_after_ms: retry_after_ms.map(u64::from),
         },
+        #[cfg(any(
+            not(feature = "google-drive-connector"),
+            not(feature = "dropbox-connector")
+        ))]
+        CloudSourceError::ConnectorUnavailable => CloudDocumentError::ConnectorUnavailable,
         _ => CloudDocumentError::ProtocolFailed,
     }
 }
