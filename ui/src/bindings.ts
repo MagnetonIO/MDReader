@@ -54,6 +54,10 @@ export const commands = {
 	readCloudMarkdown: (sourceId: string, recordKey: string) => typedError<CloudMarkdownDocument, CloudDocumentError>(__TAURI_INVOKE("read_cloud_markdown", { sourceId, recordKey })),
 	/**  Saves one cloud Markdown body through its signed native edit authority. */
 	saveCloudMarkdown: (editToken: string, content: string) => typedError<CloudMarkdownSaveOutcome, CloudDocumentError>(__TAURI_INVOKE("save_cloud_markdown", { editToken, content })),
+	/**  Open one allowlisted provider URL with the operating system's browser. */
+	openCloudOriginal: (url: string) => typedError<null, CloudDocumentError>(__TAURI_INVOKE("open_cloud_original", { url })),
+	/**  Ask for a destination and save one bounded Markdown copy outside the cache. */
+	exportMarkdownCopy: (suggestedName: string, content: string) => typedError<boolean, CloudDocumentError>(__TAURI_INVOKE("export_markdown_copy", { suggestedName, content })),
 	connectedCatdbState: () => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_state")),
 	enrollConnectedCatdb: (serverOrigin: string, bearerToken: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("enroll_connected_catdb", { serverOrigin, bearerToken })),
 	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),

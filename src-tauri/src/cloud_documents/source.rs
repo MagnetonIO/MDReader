@@ -256,7 +256,7 @@ pub(crate) fn map_dropbox_document_error(
 
 fn read_context(context: &CloudIoContext) -> Result<ReadContext, CloudDocumentError> {
     ReadContext::new(
-        uuid::Uuid::new_v4(),
+        context.query_id,
         context.deadline,
         context.page_rows,
         context.byte_limit,

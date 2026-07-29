@@ -91,7 +91,7 @@ const CLOUD_CATALOG_RESOLVER_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x6d_64_72_5f_63_6c_6f_75_64_5f_72_73_6c_5f_01_00);
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
-const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropboxapi.com/oauth2/token";
+const DROPBOX_TOKEN_ENDPOINT: &str = "https://api.dropbox.com/oauth2/token";
 const GOOGLE_DRIVE_FILES_ENDPOINT: &str = "https://www.googleapis.com/drive/v3/files/";
 const GOOGLE_DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 
@@ -130,7 +130,7 @@ pub(crate) enum NativeMarkdownWriteAcceptance {
 }
 
 const GOOGLE_DRIVE_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
-    NativeMarkdownWriteAcceptance::Pending;
+    NativeMarkdownWriteAcceptance::Accepted;
 const DROPBOX_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
     NativeMarkdownWriteAcceptance::Pending;
 
@@ -3502,6 +3502,8 @@ fn bind_materialized_library_cloud_source(
     use catdb_connectors::DataSource;
 
     let provider = record.provider;
+    let editable = record.authorization_profile() == CloudAuthorizationProfile::MarkdownReadWriteV2
+        && native_markdown_write_acceptance(provider) == NativeMarkdownWriteAcceptance::Accepted;
     let membership_id = crate::library_query::membership_id(record.id());
     let registry_id = record.id().to_string();
     let source_id = catdb_connectors::SourceId::new(record.id.clone());
@@ -3559,7 +3561,7 @@ fn bind_materialized_library_cloud_source(
             CloudProvider::GoogleDrive => crate::library_query::LibraryQueryMemberKind::GoogleDrive,
             CloudProvider::Dropbox => crate::library_query::LibraryQueryMemberKind::Dropbox,
         },
-        editable: false,
+        editable,
         active: false,
         sources: vec![physical],
     })
@@ -5402,7 +5404,18 @@ pub(crate) fn schedule_cloud_sync_startup(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let startup_app = app.clone();
         let state = app.state::<CloudAccountsState>();
-        let _ = startup_cloud_sync(startup_app, &state).await;
+        if let Err(error) = startup_cloud_sync(startup_app, &state).await {
+            let kind = serde_json::to_value(error)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "unknown".to_owned());
+            eprintln!("MDReader cloud startup failed: {kind}");
+        }
     });
 }
 
@@ -5434,10 +5447,27 @@ async fn startup_cloud_sync(
         .await?;
         let coordinator = state.cloud_sync.coordinator().await?;
         for (provider, expected_source_id) in sources {
-            let Ok(admitted) =
-                open_admitted_cloud_markdown_sync_source(app.clone(), provider, state).await
-            else {
-                continue;
+            let admitted = match open_admitted_cloud_markdown_sync_source(
+                app.clone(),
+                provider,
+                state,
+            )
+            .await
+            {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    let kind = serde_json::to_value(error)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("kind")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    eprintln!("MDReader cloud source admission failed for {provider:?}: {kind}");
+                    continue;
+                }
             };
             let source_id = admitted.source.source_id().clone();
             if source_id != expected_source_id {

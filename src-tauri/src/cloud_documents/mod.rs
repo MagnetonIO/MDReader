@@ -1,5 +1,10 @@
 //! Provider-neutral, native-only Markdown document capability.
 
+use std::path::Path;
+
+use tauri_plugin_dialog::DialogExt;
+use url::Url;
+
 pub(crate) mod materialized;
 mod model;
 pub(crate) mod service;
@@ -50,4 +55,53 @@ pub(crate) async fn save_cloud_markdown(
     state: tauri::State<'_, crate::cloud_accounts::CloudAccountsState>,
 ) -> Result<CloudMarkdownSaveOutcome, CloudDocumentError> {
     state.save_cloud_markdown(app, edit_token, content).await
+}
+
+/// Open one allowlisted provider URL with the operating system's browser.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn open_cloud_original(url: String) -> Result<(), CloudDocumentError> {
+    let parsed = Url::parse(&url).map_err(|_| CloudDocumentError::ProtocolFailed)?;
+    let allowed = parsed.scheme() == "https"
+        && matches!(
+            parsed.host_str(),
+            Some("drive.google.com" | "www.dropbox.com")
+        );
+    if !allowed || parsed.username() != "" || parsed.password().is_some() {
+        return Err(CloudDocumentError::ProtocolFailed);
+    }
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|_| CloudDocumentError::ProtocolFailed)
+}
+
+/// Ask for a destination and save one bounded Markdown copy outside the cache.
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn export_markdown_copy(
+    app: tauri::AppHandle,
+    suggested_name: String,
+    content: String,
+) -> Result<bool, CloudDocumentError> {
+    if content.len() > store::CloudDocumentStore::MAX_BODY_BYTES
+        || suggested_name.is_empty()
+        || suggested_name.len() > 240
+        || Path::new(&suggested_name).components().count() != 1
+        || suggested_name.chars().any(char::is_control)
+    {
+        return Err(CloudDocumentError::ProtocolFailed);
+    }
+    let Some(destination) = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown"])
+        .set_file_name(&suggested_name)
+        .blocking_save_file()
+        .and_then(|path| path.into_path().ok())
+    else {
+        return Ok(false);
+    };
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(destination, content))
+        .await
+        .map_err(|_| CloudDocumentError::ProtocolFailed)?
+        .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+    Ok(true)
 }

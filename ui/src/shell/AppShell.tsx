@@ -48,6 +48,7 @@ import {
   recordDiagnosticEventNonBlocking,
   settingsBackend,
   watchLibrarySource,
+  SettingsCommandError,
   type LibrarySourceDto,
 } from '../platform/settings.js';
 import type {
@@ -279,13 +280,23 @@ export function AppShell() {
         return null;
       });
       setLibraryAvailability(availabilityForLibrary(hydration));
-    } catch {
+    } catch (error) {
       if (libraryRefreshGeneration.current === generation) {
         setLibraryHydration({ evidence: [], failures: [] });
         setLibraryDocument(null);
+        const detail =
+          error instanceof SettingsCommandError &&
+          typeof error.detail === 'object' &&
+          error.detail !== null &&
+          'kind' in error.detail &&
+          typeof error.detail.kind === 'string'
+            ? ` (${error.detail.kind})`
+            : error instanceof Error
+              ? ` (${error.message})`
+              : '';
         setLibraryAvailability({
           kind: 'failed',
-          message: 'Library sources could not be read.',
+          message: `Library sources could not be read${detail}.`,
         });
       }
     } finally {
@@ -297,7 +308,7 @@ export function AppShell() {
   }, []);
 
   const loadMoreLibrary = useCallback(async () => {
-    if (!libraryHydration.continuation) return;
+    if (!libraryHydration.continuations?.length) return;
     const generation = libraryRefreshGeneration.current + 1;
     libraryRefreshGeneration.current = generation;
     if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
@@ -2219,7 +2230,7 @@ export function AppShell() {
           libraryLoading={libraryLoading}
           libraryError={libraryError}
           libraryAvailability={libraryAvailability}
-          libraryHasMore={Boolean(libraryHydration.continuation)}
+          libraryHasMore={Boolean(libraryHydration.continuations?.length)}
           onLibrarySearch={setLibrarySearch}
           onOpenLibrary={(member, row) => {
             setLibraryError(null);

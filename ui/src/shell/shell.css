@@ -1480,7 +1480,16 @@ body {
 .reader-host {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   position: relative;
+  height: 100%;
+}
+
+.library-reader .reader-host {
+  overflow: auto;
+}
+
+.library-reader .source-region {
   height: 100%;
 }
 

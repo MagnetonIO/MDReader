@@ -138,6 +138,7 @@ pub(crate) struct MarkdownWriteReceipt {
 
 /// The bounded, cancellation-aware source I/O context.
 pub(crate) struct CloudIoContext {
+    pub(crate) query_id: uuid::Uuid,
     pub(crate) deadline: Instant,
     pub(crate) page_rows: usize,
     pub(crate) byte_limit: usize,

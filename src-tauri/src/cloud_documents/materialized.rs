@@ -331,7 +331,8 @@ impl DataSource for MaterializedMarkdownSource {
                 .iter()
                 .map(|document| source.row(document, &plan.projected))
                 .collect::<Result<Vec<_>, _>>()?;
-            let next_cursor = (page.has_more && plan.pushed.limit.is_none())
+            let next_cursor = page
+                .has_more
                 .then(|| {
                     let next = offset
                         .checked_add(

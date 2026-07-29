@@ -1635,9 +1635,10 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
-        let revision = metadata
-            .headers
-            .get("etag")
+        let revision = file
+            .md5_checksum
+            .as_ref()
+            .or_else(|| metadata.headers.get("etag"))
             .ok_or_else(|| self.malformed("document revision"))
             .and_then(|value| {
                 DriveRevision::new(value.clone()).map_err(|_| self.malformed("document revision"))
@@ -1722,6 +1723,11 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
+        if file.md5_checksum.as_deref() != Some(revision.as_str()) {
+            return Err(DriveDocumentError::Conflict {
+                source_id: self.model.id().clone(),
+            });
+        }
         let authorized_parents = file.parents.iter().cloned().collect::<BTreeSet<_>>();
         let reconciliation = self.write_reconciliation(record_key)?;
         let response = self
@@ -1753,9 +1759,10 @@ impl DriveSource {
         if file.parents.iter().cloned().collect::<BTreeSet<_>>() != authorized_parents {
             return Err(self.write_outcome_unknown(reconciliation));
         }
-        let revision = response
-            .headers
-            .get("etag")
+        let revision = file
+            .md5_checksum
+            .as_ref()
+            .or_else(|| response.headers.get("etag"))
             .ok_or_else(|| self.write_outcome_unknown(reconciliation.clone()))
             .and_then(|value| {
                 DriveRevision::new(value.clone())
@@ -1966,7 +1973,8 @@ impl DriveSource {
                     ("supportsAllDrives", "true".to_string()),
                     (
                         "fields",
-                        "id,name,mimeType,modifiedTime,parents,trashed".to_string(),
+                        "id,name,mimeType,modifiedTime,size,md5Checksum,resourceKey,parents,trashed"
+                            .to_string(),
                     ),
                 ],
             ),

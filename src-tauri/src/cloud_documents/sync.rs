@@ -29,7 +29,7 @@ use super::{
     ProviderCursor,
 };
 
-const SYNC_DEADLINE: Duration = Duration::from_secs(30);
+const SYNC_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const SYNC_PAGE_ROWS: usize = 256;
 const SYNC_PAGE_BYTES: usize = 1024 * 1024;
 const SYNC_MAX_PAGES: usize = 256;
@@ -152,6 +152,7 @@ struct SyncOperation<'a> {
     epoch: u64,
     cancellation: &'a CancellationToken,
     pins: &'a CloudDocumentVersionPins,
+    query_id: uuid::Uuid,
     deadline: Instant,
 }
 
@@ -687,6 +688,7 @@ impl CloudSyncCoordinator {
                             epoch,
                             cancellation,
                             pins: &pins,
+                            query_id: uuid::Uuid::new_v4(),
                             deadline,
                         },
                         cursor,
@@ -724,7 +726,9 @@ impl CloudSyncCoordinator {
         pins: &CloudDocumentVersionPins,
     ) -> Result<i64, CloudDocumentError> {
         let deadline = Instant::now() + SYNC_DEADLINE;
-        let start_cursor = provider_start(source.as_ref(), cancellation, deadline).await?;
+        let query_id = uuid::Uuid::new_v4();
+        let start_cursor =
+            provider_start(source.as_ref(), cancellation, query_id, deadline).await?;
         self.check_current(source_id, epoch, cancellation)?;
         let pins = pins.clone();
         let pins_for_begin = pins.clone();
@@ -753,6 +757,7 @@ impl CloudSyncCoordinator {
             epoch,
             cancellation,
             pins: &pins,
+            query_id,
             deadline,
         };
 
@@ -788,6 +793,7 @@ impl CloudSyncCoordinator {
                 operation.source.as_ref(),
                 cursor.as_ref(),
                 operation.cancellation,
+                operation.query_id,
                 operation.deadline,
             )
             .await?;
@@ -827,6 +833,7 @@ impl CloudSyncCoordinator {
                 operation.source.as_ref(),
                 &cursor,
                 operation.cancellation,
+                operation.query_id,
                 operation.deadline,
             )
             .await?;
@@ -860,6 +867,7 @@ impl CloudSyncCoordinator {
                 &page.changes,
                 &known,
                 operation.cancellation,
+                operation.query_id,
                 operation.deadline,
             )
             .await?;
@@ -1044,6 +1052,16 @@ impl CloudSyncCoordinator {
             Err(CloudDocumentError::SourceDisconnected)
                 if matches!(owner.phase, CloudSyncPhase::Retired) => {}
             Err(error) => {
+                let kind = serde_json::to_value(&error)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("kind")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| "unknown".to_owned());
+                eprintln!("MDReader cloud sync failed: {kind}");
                 owner.phase = CloudSyncPhase::Backoff {
                     retry_at_ms: retry_at_ms(&error),
                     error,
@@ -1157,8 +1175,13 @@ async fn blocking_store<T: Send + 'static>(
         .map_err(CloudSyncError::Store)
 }
 
-fn context(cancellation: &CancellationToken, deadline: Instant) -> CloudIoContext {
+fn context(
+    cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
+    deadline: Instant,
+) -> CloudIoContext {
     CloudIoContext {
+        query_id,
         deadline,
         page_rows: SYNC_PAGE_ROWS,
         byte_limit: SYNC_PAGE_BYTES,
@@ -1169,9 +1192,10 @@ fn context(cancellation: &CancellationToken, deadline: Instant) -> CloudIoContex
 async fn provider_start(
     source: &dyn MarkdownDocumentSource,
     cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
     deadline: Instant,
 ) -> Result<ProviderCursor, CloudDocumentError> {
-    let context = context(cancellation, deadline);
+    let context = context(cancellation, query_id, deadline);
     provider_call(
         cancellation,
         context.deadline,
@@ -1184,9 +1208,10 @@ async fn provider_list(
     source: &dyn MarkdownDocumentSource,
     cursor: Option<&ProviderCursor>,
     cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
     deadline: Instant,
 ) -> Result<MarkdownMetadataPage, CloudDocumentError> {
-    let context = context(cancellation, deadline);
+    let context = context(cancellation, query_id, deadline);
     provider_call(
         cancellation,
         context.deadline,
@@ -1199,9 +1224,10 @@ async fn provider_changes(
     source: &dyn MarkdownDocumentSource,
     cursor: &ProviderCursor,
     cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
     deadline: Instant,
 ) -> Result<MarkdownChangePage, CloudDocumentError> {
-    let context = context(cancellation, deadline);
+    let context = context(cancellation, query_id, deadline);
     provider_call(
         cancellation,
         context.deadline,
@@ -1215,9 +1241,10 @@ async fn provider_materialize_changes(
     changes: &[MarkdownChangeEvent],
     known: &[KnownMarkdownMetadata],
     cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
     deadline: Instant,
 ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
-    let context = context(cancellation, deadline);
+    let context = context(cancellation, query_id, deadline);
     provider_call(
         cancellation,
         context.deadline,

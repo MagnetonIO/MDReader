@@ -331,6 +331,7 @@ impl CloudDocumentService {
         }
 
         let context = CloudIoContext {
+            query_id: uuid::Uuid::new_v4(),
             deadline: Instant::now() + READ_DEADLINE,
             page_rows: 1,
             byte_limit: CloudDocumentStore::MAX_BODY_BYTES,
@@ -494,6 +495,7 @@ impl CloudDocumentService {
         };
 
         let context = CloudIoContext {
+            query_id: uuid::Uuid::new_v4(),
             deadline: Instant::now() + WRITE_DEADLINE,
             page_rows: 1,
             byte_limit: CloudDocumentStore::MAX_BODY_BYTES,

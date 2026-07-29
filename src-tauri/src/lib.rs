@@ -96,6 +96,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             cloud_accounts::cancel_cloud_document_query,
             cloud_documents::read_cloud_markdown,
             cloud_documents::save_cloud_markdown,
+            cloud_documents::open_cloud_original,
+            cloud_documents::export_markdown_copy,
             mobile_enterprise::connected_catdb_state,
             mobile_enterprise::enroll_connected_catdb,
             mobile_enterprise::set_connected_catdb_source_enabled,

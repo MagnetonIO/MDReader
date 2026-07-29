@@ -9,6 +9,7 @@ import type {
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
 } from '../bindings.js';
+import { commands } from '../bindings.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
 import { LibrarySemanticInspector } from './LibrarySemanticInspector.js';
 import { libraryDocumentTitle, physicalRecordKey } from './library-documents.js';
@@ -50,14 +51,8 @@ function originalUrl(member: LibrarySourceExecution, recordKey: string): string 
   return null;
 }
 
-function saveCopy(name: string, body: string): void {
-  const safeName = name.replaceAll(/[/\\:\0]/g, '-').slice(0, 240) || 'document.md';
-  const url = URL.createObjectURL(new Blob([body], { type: 'text/markdown;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = safeName;
-  link.click();
-  URL.revokeObjectURL(url);
+function safeCopyName(name: string): string {
+  return name.replaceAll(/[/\\:\0]/g, '-').slice(0, 240) || 'document.md';
 }
 
 export function LibraryDocumentPane({
@@ -77,6 +72,7 @@ export function LibraryDocumentPane({
     cloudDocument?.content ?? (typeof values.body === 'string' ? values.body : null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const platform = useMemo(() => createReaderPlatform(null), []);
   const recordKey = physicalRecordKey(row);
   const providerUrl = recordKey === null ? null : originalUrl(member, recordKey);
@@ -84,6 +80,34 @@ export function LibraryDocumentPane({
     cloudEditor ? store.entry(cloudEditor.tabId, cloudEditor.documentKey) : undefined,
   );
   const editable = member.editable || cloudDocument?.edit_token !== null;
+  const editing = Boolean(cloudEditor && editorEntry && editorEntry.mode !== 'read');
+
+  const toggleEdit = () => {
+    if (editing && cloudEditor) {
+      useEditorStore
+        .getState()
+        .setMode(cloudEditor.tabId, cloudEditor.documentKey, 'read');
+      return;
+    }
+    onEdit?.();
+  };
+
+  const openOriginal = async () => {
+    if (!providerUrl) return;
+    setActionError(null);
+    const result = await commands.openCloudOriginal(providerUrl);
+    if (result.status === 'error') {
+      setActionError('Could not open the provider document.');
+    }
+  };
+
+  const exportCopy = async (content: string) => {
+    setActionError(null);
+    const result = await commands.exportMarkdownCopy(safeCopyName(title), content);
+    if (result.status === 'error') {
+      setActionError('Could not save a Markdown copy.');
+    }
+  };
 
   useEffect(() => {
     let current = true;
@@ -112,8 +136,12 @@ export function LibraryDocumentPane({
             <span className="breadcrumb__leaf">{title}</span>
           </nav>
           {editable ? (
-            <button type="button" onClick={onEdit} disabled={!onEdit}>
-              {member.editable ? 'Edit local file' : 'Source view'}
+            <button type="button" onClick={toggleEdit} disabled={!onEdit && !editing}>
+              {editing
+                ? 'Reading view'
+                : member.kind === 'local-folder'
+                  ? 'Edit local file'
+                  : 'Source view'}
             </button>
           ) : (
             <span className="library-reader__state">Read-only</span>
@@ -139,18 +167,19 @@ export function LibraryDocumentPane({
             </button>
           ) : null}
           {providerUrl ? (
-            <a href={providerUrl} target="_blank" rel="noreferrer">
+            <button type="button" onClick={() => void openOriginal()}>
               Open original
-            </a>
+            </button>
           ) : null}
           <button
             type="button"
             disabled={body === null}
-            onClick={() => body && saveCopy(title, body)}
+            onClick={() => body && void exportCopy(body)}
           >
             Download
           </button>
         </div>
+        {actionError ? <p className="library-reader__policy">{actionError}</p> : null}
         {!member.editable && cloudDocument?.edit_token === null ? (
           <p className="library-reader__policy">
             Read from {member.name}. Changes remain in the source.
@@ -158,10 +187,10 @@ export function LibraryDocumentPane({
         ) : null}
         <div className="reader-body">
           <div className="reader-host">
-            {cloudEditor && editorEntry?.mode !== 'read' ? (
+            {editing && cloudEditor && editorEntry ? (
               <div className="source-region">
                 <SourcePane
-                  value={editorEntry!.buffer}
+                  value={editorEntry.buffer}
                   onChange={(value) =>
                     useEditorStore.getState().edit(cloudEditor.tabId, cloudEditor.documentKey, value)
                   }
@@ -170,11 +199,11 @@ export function LibraryDocumentPane({
                     useEditorStore.getState().setMode(cloudEditor.tabId, cloudEditor.documentKey, 'read')
                   }
                 />
-                {editorEntry!.conflict ? (
+                {editorEntry.conflict ? (
                   <div className="conflict-banner" role="alert">
                     <strong>Cloud revision changed</strong>
                     <button type="button" onClick={cloudEditor.onReload}>Reload</button>
-                    <button type="button" onClick={() => saveCopy(title, editorEntry!.buffer)}>
+                    <button type="button" onClick={() => void exportCopy(editorEntry.buffer)}>
                       Copy edited text
                     </button>
                     <button
@@ -192,7 +221,7 @@ export function LibraryDocumentPane({
                 ) : null}
               </div>
             ) : null}
-            {body === null ? (
+            {editing ? null : body === null ? (
               <div className="reader-empty">
                 <p className="reader-empty__hint">
                   {loading

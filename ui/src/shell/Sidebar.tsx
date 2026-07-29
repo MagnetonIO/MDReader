@@ -221,11 +221,15 @@ export function Sidebar({
                       {sourceIcon(member.kind)}
                       <strong>{member.name}</strong>
                       <small>
-                        {member.editable
-                          ? member.active
-                            ? 'Local · editable'
-                            : 'Local · open to edit'
-                          : 'Read-only'}
+                        {member.kind === 'local-folder'
+                          ? member.editable
+                            ? member.active
+                              ? 'Local · editable'
+                              : 'Local · open to edit'
+                            : 'Read-only'
+                          : member.editable
+                            ? 'Read & write'
+                            : 'Read-only'}
                       </small>
                     </div>
                     {rows.length > 0 ? (

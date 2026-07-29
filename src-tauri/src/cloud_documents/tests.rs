@@ -155,6 +155,7 @@ impl GuardedMarkdownDocumentOperations for TestDocumentOperations {
 
 fn cloud_context() -> CloudIoContext {
     CloudIoContext {
+        query_id: uuid::Uuid::new_v4(),
         deadline: Instant::now() + Duration::from_secs(1),
         page_rows: 8,
         byte_limit: 8 * 1024,
@@ -1393,7 +1394,7 @@ async fn large_materialized_library_returns_a_bounded_page_without_full_snapshot
         Arc::clone(&store),
         source_id,
     );
-    let plan = source
+    let mut plan = source
         .compile(
             &EntityQuery {
                 target: EntityTarget::Entity("mdreader.Document".to_string()),
@@ -1402,6 +1403,9 @@ async fn large_materialized_library_returns_a_bounded_page_without_full_snapshot
             &["id".to_string(), "name".to_string()],
         )
         .expect("compile local SQLite page");
+    // The Library executor injects its bounded transport page size as a
+    // pushed limit. That must not erase the materialization's next cursor.
+    plan.pushed.limit = Some(50);
     let context = ReadContext::new(
         uuid::Uuid::new_v4(),
         Instant::now() + Duration::from_secs(5),

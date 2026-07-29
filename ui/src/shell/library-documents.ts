@@ -54,13 +54,14 @@ export interface HydratedLibrary {
   evidence: LibraryEntityQueryResponse_Serialize[];
   /** Catalog authorities that failed without suppressing healthy answers. */
   failures: LibraryHydrationFailure[];
-  /** Native application continuation for the embedded answer, when available. */
-  continuation?: HydratedLibraryContinuation;
+  /** Native continuations retained independently for each embedded membership. */
+  continuations?: HydratedLibraryContinuation[];
 }
 
 export interface HydratedLibraryContinuation {
   workspaceId: string;
   fields: string[];
+  sourceIds: string[];
   queryId: string;
   /** Opaque application cursor; provider continuations never enter the UI. */
   cursor: string;
@@ -231,6 +232,19 @@ export function queryableLibraryFields(snapshot: LibrarySnapshot): string[] {
   return localQueryableLibraryFields(snapshot);
 }
 
+function fieldsForMember(member: LibrarySourceExecution): string[] {
+  switch (member.kind) {
+    case 'local-folder':
+      return [...LOCAL_DOCUMENT_FIELDS];
+    case 'google-drive':
+      return [...DRIVE_DOCUMENT_FIELDS];
+    case 'dropbox':
+      return [...DROPBOX_DOCUMENT_FIELDS];
+    case 'connected-catdb':
+      return [...LIBRARY_DOCUMENT_FIELDS];
+  }
+}
+
 /**
  * Resolve one Library snapshot and hydrate each catalog authority. Local and
  * cloud memberships share one embedded answer. A Connected CatDB stays a
@@ -248,35 +262,44 @@ export async function hydrateLibrary(
   requestId: string,
 ): Promise<HydratedLibrary> {
   const snapshot = await backend.listSources();
-  let embeddedContext: Pick<
-    HydratedLibraryContinuation,
-    'workspaceId' | 'fields'
-  > | null = null;
   const reads: Array<{
     authority: LibraryHydrationFailure['authority'];
     execute: () => Promise<LibraryEntityQueryResponse_Serialize>;
   }> = [];
+  let embeddedWorkspaceId: string | null = null;
   const embeddedFields = localQueryableLibraryFields(snapshot);
   if (embeddedFields.length > 0) {
-    reads.push({
-      authority: 'embedded',
-      execute: async () => {
-        if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
+    if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
+      reads.push({
+        authority: 'embedded',
+        execute: async () => {
           throw new Error('Embedded Library queries are unavailable.');
-        }
-        const catalog = await backend.prepareCloudCatalog();
-        embeddedContext = {
-          workspaceId: catalog.workspace_id,
-          fields: [...embeddedFields],
-        };
-        return backend.queryLibraryDocuments(
-          catalog.workspace_id,
-          [],
-          embeddedFields,
-          requestId,
-        );
-      },
-    });
+        },
+      });
+    } else {
+      const catalog = await backend.prepareCloudCatalog();
+      embeddedWorkspaceId = catalog.workspace_id;
+      const membershipSnapshot = await backend.queryLibraryDocuments(
+        catalog.workspace_id,
+        [],
+        embeddedFields,
+        `${requestId}:memberships`,
+      );
+      for (const member of membershipSnapshot.memberships) {
+        const memberFields = fieldsForMember(member);
+        reads.push({
+          authority: 'embedded',
+          execute: () =>
+            backend.queryLibraryDocuments!(
+              catalog.workspace_id,
+              [],
+              memberFields,
+              `${requestId}:${member.membership_id}`,
+              [member.membership_id],
+            ),
+        });
+      }
+    }
   }
   if (snapshot.connected_catdb && snapshot.connected_catdb.selected_source_ids.length > 0) {
     const connectionId = snapshot.connected_catdb.connection_id;
@@ -296,27 +319,40 @@ export async function hydrateLibrary(
     });
   }
   const settled = await Promise.allSettled(reads.map(({ execute }) => execute()));
-  const embeddedIndex = reads.findIndex(({ authority }) => authority === 'embedded');
-  const embedded =
-    embeddedIndex >= 0 ? settled[embeddedIndex] : undefined;
-  const continuation =
-    embedded?.status === 'fulfilled' && embeddedContext !== null
-      ? nextLibraryContinuation(embedded.value, embeddedContext)
-      : null;
+  const evidence = settled.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value] : [],
+  );
+  const continuations = settled.flatMap((result, index) => {
+    if (
+      result.status !== 'fulfilled' ||
+      reads[index]?.authority !== 'embedded' ||
+      embeddedWorkspaceId === null
+    ) {
+      return [];
+    }
+    const member = result.value.memberships[0];
+    if (!member) return [];
+    const continuation = nextLibraryContinuation(result.value, {
+      workspaceId: embeddedWorkspaceId,
+      fields: fieldsForMember(member),
+      sourceIds: [member.membership_id],
+    });
+    return continuation === null ? [] : [continuation];
+  });
   return {
-    evidence: settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
+    evidence,
     failures: settled.flatMap((result, index) =>
       result.status === 'rejected'
         ? [{ authority: reads[index]!.authority, reason: result.reason }]
         : [],
     ),
-    ...(continuation === null ? {} : { continuation }),
+    ...(continuations.length === 0 ? {} : { continuations }),
   };
 }
 
 function nextLibraryContinuation(
   response: LibraryEntityQueryResponse_Serialize,
-  context: Pick<HydratedLibraryContinuation, 'workspaceId' | 'fields'>,
+  context: Pick<HydratedLibraryContinuation, 'workspaceId' | 'fields' | 'sourceIds'>,
 ): HydratedLibraryContinuation | null {
   const cursor = response.answer.next_cursor;
   if (!response.window_truncated || cursor === null) return null;
@@ -403,35 +439,42 @@ export async function continueHydratedLibrary(
   current: HydratedLibrary,
   requestId: string,
 ): Promise<HydratedLibrary> {
-  const continuation = current.continuation;
-  if (!continuation || !backend.queryLibraryDocuments) {
+  const continuations = current.continuations;
+  if (!continuations || continuations.length === 0 || !backend.queryLibraryDocuments) {
     throw new Error('Library continuation is unavailable.');
   }
-  const evidenceIndex = current.evidence.findIndex(
-    (answer) => answer.answer.query_id === continuation.queryId,
-  );
-  if (evidenceIndex < 0) {
-    throw new Error('Library continuation has no matching evidence.');
-  }
-  const page = await backend.queryLibraryDocuments(
-    continuation.workspaceId,
-    [],
-    continuation.fields,
-    requestId,
-    undefined,
-    {
-      queryId: continuation.queryId,
-      cursor: continuation.cursor,
-    },
-  );
-  const merged = mergeLibraryPages(current.evidence[evidenceIndex]!, page);
   const evidence = [...current.evidence];
-  evidence[evidenceIndex] = merged;
-  const next = nextLibraryContinuation(page, continuation);
+  const pages = await Promise.all(
+    continuations.map(async (continuation, index) => {
+      const evidenceIndex = current.evidence.findIndex(
+        (answer) => answer.answer.query_id === continuation.queryId,
+      );
+      if (evidenceIndex < 0) {
+        throw new Error('Library continuation has no matching evidence.');
+      }
+      const page = await backend.queryLibraryDocuments!(
+        continuation.workspaceId,
+        [],
+        continuation.fields,
+        `${requestId}:${index}`,
+        continuation.sourceIds,
+        {
+          queryId: continuation.queryId,
+          cursor: continuation.cursor,
+        },
+      );
+      return { continuation, evidenceIndex, page };
+    }),
+  );
+  const next = pages.flatMap(({ continuation, evidenceIndex, page }) => {
+    evidence[evidenceIndex] = mergeLibraryPages(evidence[evidenceIndex]!, page);
+    const nextContinuation = nextLibraryContinuation(page, continuation);
+    return nextContinuation === null ? [] : [nextContinuation];
+  });
   return {
     evidence,
     failures: current.failures,
-    ...(next === null ? {} : { continuation: next }),
+    ...(next.length === 0 ? {} : { continuations: next }),
   };
 }
 
