@@ -1,10 +1,11 @@
 //! Opt-in Dropbox provider acceptance.
 //!
-//! The ignored test is intentionally not a fixture: selecting it requires a
-//! pinned, non-secret source contract plus runtime-only credentials and reads
-//! the configured provider record through the production connector.
+//! The ignored tests require a pinned, non-secret source contract plus
+//! runtime-only credentials. The read-only gate never mutates provider data;
+//! the guarded-write gate addresses only an explicitly opted-in dedicated
+//! fixture and attempts hash-verified restoration before asserting outcomes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,10 +13,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use catdb_connector_dropbox::{
     DropboxAccessToken, DropboxChangeCursor, DropboxChangeOutcome, DropboxConnectorError,
-    DropboxCursorKey, DropboxHttpRequest, DropboxHttpResponse, DropboxRuntimeSecrets,
-    DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxTransport,
-    DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
-    DROPBOX_METADATA_READ_SCOPE,
+    DropboxCursorKey, DropboxDocumentError, DropboxHttpRequest, DropboxHttpResponse,
+    DropboxRuntimeSecrets, DropboxSecretReference, DropboxSecretResolver, DropboxSource,
+    DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
+    DROPBOX_CONTENT_WRITE_SCOPE, DROPBOX_METADATA_READ_SCOPE,
 };
 use catdb_connectors::{read, CancellationToken, ReadContext, SourceError};
 use catdb_query::{EntityQuery, EntityTarget};
@@ -34,6 +35,17 @@ const MAX_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const MAX_DEADLINE_SECONDS: u64 = 120;
 const MAX_ATTESTATION_LIFETIME_SECONDS: u64 = 15 * 60;
 const ATTESTATION_CLOCK_SKEW_SECONDS: u64 = 60;
+const GUARDED_WRITE_BODY: &[u8] =
+    b"# CatDB guarded-write acceptance\n\nTemporary Dropbox fixture content.\n";
+const STALE_WRITE_BODY: &[u8] =
+    b"# CatDB stale-write probe\n\nThis body must never survive the gate.\n";
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ScopeProfile {
+    ReadOnly,
+    MarkdownWrite,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +57,11 @@ struct RawLiveConfig {
     entity: String,
     fields: Vec<String>,
     expected: RawExpectedRecord,
+    scope_profile: ScopeProfile,
+    #[serde(default)]
+    guarded_write_fixture_id: Option<String>,
+    #[serde(default)]
+    allow_guarded_write_test: bool,
     #[serde(default = "default_deadline_seconds")]
     deadline_seconds: u64,
     #[serde(default = "default_work_budget")]
@@ -85,6 +102,8 @@ struct LiveConfig {
     entity: String,
     fields: Vec<String>,
     expected: ExpectedRecord,
+    scope_profile: ScopeProfile,
+    guarded_write_fixture_id: Option<String>,
     deadline: Duration,
     work_budget: usize,
     byte_budget: usize,
@@ -101,6 +120,7 @@ struct EnvironmentResolver {
     expected_reference: DropboxSecretReference,
     expected_audience: String,
     scope_attestation_public_key: [u8; 32],
+    expected_scope_profile: ScopeProfile,
 }
 
 struct BlockingDropboxTransport {
@@ -148,6 +168,7 @@ impl DropboxSecretResolver for EnvironmentResolver {
             &token,
             &self.expected_audience,
             &self.scope_attestation_public_key,
+            self.expected_scope_profile,
             unix_seconds()?,
         )?;
         Ok(DropboxRuntimeSecrets::new(
@@ -170,6 +191,7 @@ async fn provisioned_read_only_account_returns_the_pinned_record_and_change_curs
             expected_reference: config.credential_reference,
             expected_audience: config.oauth_audience,
             scope_attestation_public_key: config.scope_attestation_public_key,
+            expected_scope_profile: config.scope_profile,
         }),
     )
     .await
@@ -234,12 +256,179 @@ async fn provisioned_read_only_account_returns_the_pinned_record_and_change_curs
     assert!(
         matches!(
             source
-                .read_changes(&restored, &BTreeMap::new(), &change_context)
+                .read_changes(&restored, &change_context)
                 .await
                 .expect("read one bounded Dropbox change page"),
             DropboxChangeOutcome::Page { .. }
         ),
         "a freshly issued Dropbox cursor must produce a typed change page"
+    );
+}
+
+#[tokio::test]
+#[ignore = "destructive-but-restoring; Task 9 must explicitly run this against a dedicated Dropbox fixture"]
+async fn guarded_markdown_write_rejects_a_stale_revision_and_restores_fixture() {
+    let config_json = std::env::var(CONFIG_ENV)
+        .unwrap_or_else(|_| panic!("set non-secret {CONFIG_ENV} for the live provider gate"));
+    let config = parse_live_config_json(&config_json)
+        .unwrap_or_else(|error| panic!("{CONFIG_ENV} is invalid: {error}"));
+    let fixture_id = config
+        .guarded_write_fixture_id
+        .clone()
+        .expect("guarded-write parsing requires one dedicated fixture ID");
+    let deadline = config.deadline;
+    let work_budget = config.work_budget;
+    let byte_budget = config.byte_budget;
+    let page_size = config.page_size;
+    let source = DropboxSource::open_pinned(
+        config.pinned_spec,
+        Arc::new(EnvironmentResolver {
+            expected_reference: config.credential_reference,
+            expected_audience: config.oauth_audience,
+            scope_attestation_public_key: config.scope_attestation_public_key,
+            expected_scope_profile: config.scope_profile,
+        }),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!("open the configured Dropbox source with runtime-only credentials: {error}")
+    });
+    let operation_context = || read_context(deadline, work_budget, byte_budget, page_size);
+
+    let original = source
+        .download_markdown(&fixture_id, &operation_context())
+        .await
+        .expect("download the dedicated Dropbox fixture before mutation");
+    assert_ne!(
+        original.body(),
+        GUARDED_WRITE_BODY,
+        "the dedicated fixture must not start with the controlled test body"
+    );
+    assert_ne!(
+        original.body(),
+        STALE_WRITE_BODY,
+        "the dedicated fixture must not start with the stale-write probe body"
+    );
+    let original_body = original.body().to_vec();
+    let original_hash = blake3::hash(&original_body);
+    let original_revision = original.revision().clone();
+
+    // After the first mutation is dispatched, do not panic until restoration
+    // has been attempted and independently verified.
+    let first_update = source
+        .update_markdown(
+            &fixture_id,
+            &original_revision,
+            GUARDED_WRITE_BODY,
+            &operation_context(),
+        )
+        .await;
+    let after_first = source
+        .download_markdown(&fixture_id, &operation_context())
+        .await;
+    let first_bytes_accepted = after_first
+        .as_ref()
+        .is_ok_and(|document| document.body() == GUARDED_WRITE_BODY);
+
+    let stale_update = if first_bytes_accepted {
+        Some(
+            source
+                .update_markdown(
+                    &fixture_id,
+                    &original_revision,
+                    STALE_WRITE_BODY,
+                    &operation_context(),
+                )
+                .await,
+        )
+    } else {
+        None
+    };
+    let after_stale = if stale_update.is_some() {
+        Some(
+            source
+                .download_markdown(&fixture_id, &operation_context())
+                .await,
+        )
+    } else {
+        None
+    };
+    let accepted_bytes_remain = after_stale
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .is_some_and(|document| document.body() == GUARDED_WRITE_BODY);
+
+    let restore_revision = stale_update
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .map(|receipt| receipt.revision().clone())
+        .or_else(|| {
+            after_stale
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map(|document| document.revision().clone())
+        })
+        .or_else(|| {
+            after_first
+                .as_ref()
+                .ok()
+                .map(|document| document.revision().clone())
+        })
+        .or_else(|| {
+            first_update
+                .as_ref()
+                .ok()
+                .map(|receipt| receipt.revision().clone())
+        });
+    let provider_body_may_need_restore = stale_update.as_ref().is_some_and(|result| result.is_ok())
+        || after_stale
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .is_some_and(|document| {
+                document.body() == GUARDED_WRITE_BODY || document.body() == STALE_WRITE_BODY
+            })
+        || first_bytes_accepted;
+    let restore_update = if provider_body_may_need_restore {
+        match restore_revision.as_ref() {
+            Some(revision) => Some(
+                source
+                    .update_markdown(&fixture_id, revision, &original_body, &operation_context())
+                    .await,
+            ),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let restored = source
+        .download_markdown(&fixture_id, &operation_context())
+        .await;
+    let original_restored = restored.as_ref().is_ok_and(|document| {
+        document.body() == original_body && blake3::hash(document.body()) == original_hash
+    });
+
+    assert!(
+        original_restored,
+        "the dedicated Dropbox fixture must be hash-verified as restored before the gate exits"
+    );
+    assert!(
+        restore_update.as_ref().is_some_and(|result| result.is_ok()),
+        "restoration must return an accepted Dropbox receipt"
+    );
+    assert!(
+        first_update.is_ok(),
+        "the first guarded Dropbox update must return an accepted receipt"
+    );
+    assert!(
+        matches!(
+            stale_update,
+            Some(Err(DropboxDocumentError::Conflict { .. }))
+        ),
+        "Dropbox must atomically reject the stale original revision"
+    );
+    assert!(
+        accepted_bytes_remain,
+        "the accepted controlled Dropbox bytes must remain after the stale write"
     );
 }
 
@@ -272,6 +461,29 @@ fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
         );
     }
     let value_blake3 = validate_blake3(&raw.expected.value_blake3)?;
+    let guarded_write_fixture_id = match raw.scope_profile {
+        ScopeProfile::ReadOnly => {
+            if raw.allow_guarded_write_test || raw.guarded_write_fixture_id.is_some() {
+                return Err(
+                    "read-only scope_profile must not opt in to the guarded-write test".to_string(),
+                );
+            }
+            None
+        }
+        ScopeProfile::MarkdownWrite => {
+            if !raw.allow_guarded_write_test {
+                return Err(
+                    "markdown-write scope_profile requires allow_guarded_write_test true"
+                        .to_string(),
+                );
+            }
+            let fixture_id = raw.guarded_write_fixture_id.ok_or_else(|| {
+                "markdown-write scope_profile requires guarded_write_fixture_id".to_string()
+            })?;
+            validate_dropbox_fixture_id(&fixture_id)?;
+            Some(fixture_id)
+        }
+    };
     if !(1..=MAX_DEADLINE_SECONDS).contains(&raw.deadline_seconds) {
         return Err(format!(
             "deadline_seconds must be between 1 and {MAX_DEADLINE_SECONDS}"
@@ -314,6 +526,8 @@ fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
             field: raw.expected.field,
             value_blake3,
         },
+        scope_profile: raw.scope_profile,
+        guarded_write_fixture_id,
         deadline: Duration::from_secs(raw.deadline_seconds),
         work_budget: raw.work_budget,
         byte_budget: raw.byte_budget,
@@ -354,16 +568,39 @@ fn validate_blake3(value: &str) -> Result<String, String> {
     Ok(value.to_ascii_lowercase())
 }
 
+fn validate_dropbox_fixture_id(value: &str) -> Result<(), String> {
+    let Some(provider_id) = value.strip_prefix("id:") else {
+        return Err("guarded_write_fixture_id must be one immutable Dropbox file ID".to_string());
+    };
+    if provider_id.is_empty()
+        || value.len() > 1_024
+        || !provider_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("guarded_write_fixture_id must be one immutable Dropbox file ID".to_string());
+    }
+    Ok(())
+}
+
 fn verify_scope_attestation(
     input: &str,
     token: &str,
     expected_audience: &str,
     public_key: &[u8; 32],
+    scope_profile: ScopeProfile,
     now: u64,
 ) -> Result<(), DropboxConnectorError> {
     let attestation: RawScopeAttestation =
         serde_json::from_str(input).map_err(|_| DropboxConnectorError::InvalidSecret)?;
-    let expected_scopes = [DROPBOX_METADATA_READ_SCOPE, DROPBOX_CONTENT_READ_SCOPE];
+    let expected_scopes: &[&str] = match scope_profile {
+        ScopeProfile::ReadOnly => &[DROPBOX_METADATA_READ_SCOPE, DROPBOX_CONTENT_READ_SCOPE],
+        ScopeProfile::MarkdownWrite => &[
+            DROPBOX_METADATA_READ_SCOPE,
+            DROPBOX_CONTENT_READ_SCOPE,
+            DROPBOX_CONTENT_WRITE_SCOPE,
+        ],
+    };
     if attestation.version != "catdb-live-scope-attestation/v1"
         || attestation.provider != "dropbox"
         || attestation.issuer != "https://www.dropbox.com"
@@ -372,7 +609,7 @@ fn verify_scope_attestation(
         || !attestation
             .scopes
             .iter()
-            .zip(expected_scopes)
+            .zip(expected_scopes.iter().copied())
             .all(|(actual, expected)| actual == expected)
         || attestation.token_sha256 != format!("{:x}", Sha256::digest(token.as_bytes()))
         || attestation.issued_at_unix_seconds > now.saturating_add(ATTESTATION_CLOCK_SKEW_SECONDS)
@@ -473,6 +710,7 @@ fn valid_config_value() -> serde_json::Value {
         "credential_reference": "env://dropbox-live",
         "oauth_audience": "dropbox-live-client",
         "scope_attestation_public_key_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+        "scope_profile": "read-only",
         "entity": "dropbox.Document",
         "fields": ["id", "body"],
         "expected": {
@@ -481,6 +719,69 @@ fn valid_config_value() -> serde_json::Value {
             "value_blake3": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }
     })
+}
+
+#[cfg(test)]
+fn guarded_write_config_value() -> serde_json::Value {
+    let mut value = valid_config_value();
+    let object = value.as_object_mut().expect("object fixture");
+    object.insert(
+        "scope_profile".to_string(),
+        serde_json::Value::String("markdown-write".to_string()),
+    );
+    object.insert(
+        "guarded_write_fixture_id".to_string(),
+        serde_json::Value::String("id:dedicated-guarded-write-fixture".to_string()),
+    );
+    object.insert(
+        "allow_guarded_write_test".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    value
+}
+
+#[test]
+fn guarded_write_config_accepts_an_explicit_markdown_write_fixture_opt_in() {
+    parse_live_config_json(&guarded_write_config_value().to_string())
+        .expect("the explicit guarded-write fixture contract must parse");
+}
+
+#[test]
+fn guarded_write_config_fails_closed_without_every_explicit_safety_gate() {
+    let mut missing_profile = guarded_write_config_value();
+    missing_profile
+        .as_object_mut()
+        .expect("object fixture")
+        .remove("scope_profile");
+
+    let mut missing_fixture = guarded_write_config_value();
+    missing_fixture
+        .as_object_mut()
+        .expect("object fixture")
+        .remove("guarded_write_fixture_id");
+
+    let mut disabled = guarded_write_config_value();
+    disabled["allow_guarded_write_test"] = serde_json::Value::Bool(false);
+
+    let mut path_instead_of_id = guarded_write_config_value();
+    path_instead_of_id["guarded_write_fixture_id"] =
+        serde_json::Value::String("/catdb-live/fixture.md".to_string());
+
+    let mut read_only_opt_in = guarded_write_config_value();
+    read_only_opt_in["scope_profile"] = serde_json::Value::String("read-only".to_string());
+
+    for rejected in [
+        missing_profile,
+        missing_fixture,
+        disabled,
+        path_instead_of_id,
+        read_only_opt_in,
+    ] {
+        assert!(
+            parse_live_config_json(&rejected.to_string()).is_err(),
+            "every guarded-write safety gate must fail closed"
+        );
+    }
 }
 
 #[test]
@@ -565,7 +866,15 @@ fn scope_attestation_is_bound_to_the_exact_read_only_grant() {
         &signing_seed,
     );
 
-    assert!(verify_scope_attestation(&valid, token, audience, &public_key, now).is_ok());
+    assert!(verify_scope_attestation(
+        &valid,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::ReadOnly,
+        now
+    )
+    .is_ok());
 
     let (overprivileged, _) = sign_scope_attestation_for_test(
         token,
@@ -579,11 +888,89 @@ fn scope_attestation_is_bound_to_the_exact_read_only_grant() {
         now + 300,
         &signing_seed,
     );
-    assert!(verify_scope_attestation(&overprivileged, token, audience, &public_key, now).is_err());
-    assert!(
-        verify_scope_attestation(&valid, "different-token", audience, &public_key, now).is_err()
+    assert!(verify_scope_attestation(
+        &overprivileged,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::ReadOnly,
+        now
+    )
+    .is_err());
+    assert!(verify_scope_attestation(
+        &valid,
+        "different-token",
+        audience,
+        &public_key,
+        ScopeProfile::ReadOnly,
+        now
+    )
+    .is_err());
+    assert!(verify_scope_attestation(
+        &valid,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::ReadOnly,
+        now + 301
+    )
+    .is_err());
+}
+
+#[test]
+fn markdown_write_scope_attestation_is_bound_to_the_exact_dropbox_grant() {
+    let token = "dropbox-write-token-for-attestation-test";
+    let audience = "dropbox-live-client";
+    let signing_seed = [0x58; 32];
+    let now = 1_700_000_000;
+    let (write, public_key) = sign_scope_attestation_for_test(
+        token,
+        audience,
+        &[
+            DROPBOX_METADATA_READ_SCOPE,
+            DROPBOX_CONTENT_READ_SCOPE,
+            DROPBOX_CONTENT_WRITE_SCOPE,
+        ],
+        now - 10,
+        now + 300,
+        &signing_seed,
     );
-    assert!(verify_scope_attestation(&valid, token, audience, &public_key, now + 301).is_err());
+    let (read_only, _) = sign_scope_attestation_for_test(
+        token,
+        audience,
+        &[DROPBOX_METADATA_READ_SCOPE, DROPBOX_CONTENT_READ_SCOPE],
+        now - 10,
+        now + 300,
+        &signing_seed,
+    );
+
+    assert!(verify_scope_attestation(
+        &write,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::MarkdownWrite,
+        now
+    )
+    .is_ok());
+    assert!(verify_scope_attestation(
+        &read_only,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::MarkdownWrite,
+        now
+    )
+    .is_err());
+    assert!(verify_scope_attestation(
+        &write,
+        token,
+        audience,
+        &public_key,
+        ScopeProfile::ReadOnly,
+        now
+    )
+    .is_err());
 }
 
 #[tokio::test]
@@ -671,6 +1058,7 @@ fn live_config_and_resolver_debug_never_contain_secret_material() {
         expected_reference: config.credential_reference,
         expected_audience: config.oauth_audience,
         scope_attestation_public_key: config.scope_attestation_public_key,
+        expected_scope_profile: config.scope_profile,
     };
     let debug = format!("{resolver:?}");
 
@@ -685,6 +1073,7 @@ async fn live_resolver_rejects_a_different_credential_reference_before_env_looku
         expected_reference: DropboxSecretReference::new("env://dropbox-live").expect("reference"),
         expected_audience: "dropbox-live-client".to_string(),
         scope_attestation_public_key: [0x22; 32],
+        expected_scope_profile: ScopeProfile::ReadOnly,
     };
 
     assert!(matches!(
