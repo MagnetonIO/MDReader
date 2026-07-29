@@ -47,10 +47,11 @@ export const commands = {
 	prepareCloudCatalog: () => typedError<CloudCatalogReady, CloudSourceError>(__TAURI_INVOKE("prepare_cloud_catalog")),
 	/**  Run a cloud Library read through CatDB's shared typed entity-query contract. */
 	entityQuery: (requestId: string, provider: CloudProvider, request: EntityQueryRequest_Deserialize) => typedError<EntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("entity_query", { requestId, provider, request })),
-	/**  Query all caller-selected Library memberships through one CatDB execution. */
 	queryLibraryDocuments: (requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("query_library_documents", { requestId, request })),
 	queryCloudDocuments: (requestId: string, provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { requestId, provider, filters, fields })),
 	cancelCloudDocumentQuery: (requestId: string) => typedError<boolean, CloudSourceError>(__TAURI_INVOKE("cancel_cloud_document_query", { requestId })),
+	/**  Reads one published cloud Markdown record through the admitted native owner. */
+	readCloudMarkdown: (sourceId: string, recordKey: string) => typedError<CloudMarkdownDocument, CloudDocumentError>(__TAURI_INVOKE("read_cloud_markdown", { sourceId, recordKey })),
 	connectedCatdbState: () => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_state")),
 	enrollConnectedCatdb: (serverOrigin: string, bearerToken: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("enroll_connected_catdb", { serverOrigin, bearerToken })),
 	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),
@@ -441,6 +442,15 @@ export type CloseAndForgetStatus =
 /**  The workspace is closed, but membership remains available for retry. */
 { kind: "inactive"; error: LibraryError };
 
+/**  Provenance of the body returned by one cloud Markdown point read. */
+export type CloudCacheState =
+/**  The provider returned and the native cache published this exact revision. */
+"provider-fresh" |
+/**  The presently published revision was already present in the native cache. */
+"cached" |
+/**  The presently published revision was served from cache while offline. */
+"cached-offline";
+
 /**  Explicit readiness proof for the Library-owned cloud CatDB catalog. */
 export type CloudCatalogReady = {
 	workspace_id: string,
@@ -462,6 +472,9 @@ export type CloudConsideredProvider = {
 	observation: CloudObservation,
 	observed_at_ms: number | null,
 };
+
+/**  Closed application-level outcomes for cloud document operations. */
+export type CloudDocumentError = { kind: "unauthorized" } | { kind: "reconnect-required" } | { kind: "credential-unavailable" } | { kind: "source-paused" } | { kind: "source-disconnected" } | { kind: "sync-in-progress" } | { kind: "offline-uncached" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "rate-limited"; retry_after_ms: number | null } | { kind: "reset-cursor" } | { kind: "not-found" } | { kind: "conflict" } | { kind: "too-large" } | { kind: "invalid-utf8" } | { kind: "identity-mismatch" } | { kind: "connector-unavailable" } | { kind: "protocol-failed" } | { kind: "write-capability-pending-acceptance" } | { kind: "write-outcome-unknown" } | { kind: "local-publication-pending" };
 
 export type CloudDocumentQueryResponse = {
 	query_id: string,
@@ -497,6 +510,22 @@ export type CloudFilterInput = {
 };
 
 export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
+
+/**  One validated Markdown body returned through the native desktop boundary. */
+export type CloudMarkdownDocument = {
+	/**  Opaque renderer identity derived from Library, source, and record identity. */
+	document_key: string,
+	/**  Published display title. */
+	title: string,
+	/**  Validated UTF-8 Markdown content. */
+	content: string,
+	/**  Short-lived opaque authority for guarded editing. */
+	edit_token: string | null,
+	/**  Whether this exact revision came from the provider or native cache. */
+	cache_state: CloudCacheState,
+	/**  Provider modification timestamp retained from published metadata. */
+	modified_at_ms: number | null,
+};
 
 export type CloudObservation = { kind: "observed-value"; value: unknown } | { kind: "observed-null" } | { kind: "observed-nothing"; reason: string } | { kind: "unobservable"; reason: string };
 

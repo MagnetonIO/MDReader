@@ -169,6 +169,431 @@ fn expected_revision() -> ProviderRevision {
     }
 }
 
+mod read {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    use async_trait::async_trait;
+    use catdb_connectors::SourceId;
+
+    use super::super::{
+        service::{CloudDocumentReadAuthority, CloudDocumentService, CloudEditAuthorityCodec},
+        store::{CloudDocumentStore, CloudDocumentVersionPins},
+        CloudCacheState, CloudDocumentError, CloudIoContext, MarkdownChangeEvent,
+        MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata,
+        MarkdownMetadataPage, MarkdownWriteReceipt, ProviderCursor, ProviderRevision,
+        SourceRecordKey,
+    };
+
+    struct PointReadProvider {
+        source_id: SourceId,
+        read_keys: Mutex<Vec<String>>,
+        offline: AtomicBool,
+    }
+
+    struct TestReadAuthority {
+        validations: AtomicUsize,
+        reject_at: Option<usize>,
+    }
+
+    impl TestReadAuthority {
+        fn active() -> Arc<Self> {
+            Arc::new(Self {
+                validations: AtomicUsize::new(0),
+                reject_at: None,
+            })
+        }
+
+        fn retiring_after_provider_read() -> Arc<Self> {
+            Arc::new(Self {
+                validations: AtomicUsize::new(0),
+                reject_at: Some(2),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CloudDocumentReadAuthority for TestReadAuthority {
+        async fn revalidate(&self) -> Result<(), CloudDocumentError> {
+            let ordinal = self.validations.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.reject_at.is_some_and(|reject_at| ordinal >= reject_at) {
+                Err(CloudDocumentError::Unauthorized)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl PointReadProvider {
+        fn new(source_id: &str) -> Self {
+            Self {
+                source_id: SourceId::new(source_id),
+                read_keys: Mutex::new(Vec::new()),
+                offline: AtomicBool::new(false),
+            }
+        }
+
+        fn read_keys(&self) -> Vec<String> {
+            self.read_keys.lock().expect("read keys").clone()
+        }
+
+        fn mark_offline(&self) {
+            self.offline.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl MarkdownDocumentSource for PointReadProvider {
+        fn source_id(&self) -> &SourceId {
+            &self.source_id
+        }
+
+        async fn start_change_tracking(
+            &self,
+            _context: &CloudIoContext,
+        ) -> Result<ProviderCursor, CloudDocumentError> {
+            Err(CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn list_page(
+            &self,
+            _cursor: Option<&ProviderCursor>,
+            _context: &CloudIoContext,
+        ) -> Result<MarkdownMetadataPage, CloudDocumentError> {
+            Err(CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn read_document(
+            &self,
+            key: &SourceRecordKey,
+            _context: &CloudIoContext,
+        ) -> Result<MarkdownDocumentRevision, CloudDocumentError> {
+            self.read_keys
+                .lock()
+                .expect("read keys")
+                .push(key.as_str().to_string());
+            if self.offline.load(Ordering::SeqCst) {
+                return Err(CloudDocumentError::OfflineUncached);
+            }
+            Ok(MarkdownDocumentRevision {
+                key: key.clone(),
+                revision: ProviderRevision {
+                    opaque: "r1".to_string(),
+                    content_hash: None,
+                },
+                body: b"# seven".to_vec(),
+                observed_at_ms: 11,
+            })
+        }
+
+        async fn write_document(
+            &self,
+            _key: &SourceRecordKey,
+            _expected: &ProviderRevision,
+            _body: &[u8],
+            _context: &CloudIoContext,
+        ) -> Result<MarkdownWriteReceipt, CloudDocumentError> {
+            Err(CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn read_changes(
+            &self,
+            _cursor: &ProviderCursor,
+            _context: &CloudIoContext,
+        ) -> Result<MarkdownChangePage, CloudDocumentError> {
+            Err(CloudDocumentError::ProtocolFailed)
+        }
+
+        async fn materialize_changes(
+            &self,
+            _changes: &[MarkdownChangeEvent],
+            _known: &[super::super::KnownMarkdownMetadata],
+            _context: &CloudIoContext,
+        ) -> Result<Vec<MarkdownMetadata>, CloudDocumentError> {
+            Err(CloudDocumentError::ProtocolFailed)
+        }
+    }
+
+    fn publish_record(
+        store: &CloudDocumentStore,
+        source_id: &SourceId,
+        revision: &str,
+    ) -> CloudDocumentVersionPins {
+        let pins =
+            CloudDocumentVersionPins::new([1; 16], [2; 16], [3; 16]).expect("valid version pins");
+        let generation = store
+            .begin_initial_sync(source_id, &ProviderCursor::new(b"start"), &pins, 1)
+            .expect("begin initial sync");
+        store
+            .stage_page(
+                &generation,
+                &pins,
+                &MarkdownMetadataPage {
+                    rows: vec![MarkdownMetadata {
+                        key: SourceRecordKey::new("record-7"),
+                        name: "seven.md".to_string(),
+                        display_path: "/seven.md".to_string(),
+                        media_type: Some("text/markdown".to_string()),
+                        modified_at_ms: Some(7),
+                        size_bytes: Some(7),
+                        revision: ProviderRevision {
+                            opaque: revision.to_string(),
+                            content_hash: None,
+                        },
+                        deleted: false,
+                    }],
+                    next_cursor: None,
+                    observed_at_ms: 2,
+                },
+            )
+            .expect("stage metadata");
+        store
+            .publish_initial_sync(&generation, &ProviderCursor::new(b"published"), 2)
+            .expect("publish metadata");
+        pins
+    }
+
+    #[tokio::test]
+    async fn opening_a_published_row_downloads_only_that_record_and_caches_its_revision() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("point-read-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins,
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+
+        let first = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("provider read");
+        let second = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("cached read");
+
+        assert_eq!(first.content, "# seven");
+        assert_eq!(first.cache_state, CloudCacheState::ProviderFresh);
+        assert!(first.edit_token.is_some());
+        assert_eq!(second.cache_state, CloudCacheState::Cached);
+        assert!(second.edit_token.is_some());
+        assert_eq!(provider.read_keys(), ["record-7"]);
+    }
+
+    #[tokio::test]
+    async fn offline_read_uses_only_an_exact_revision_cache_hit() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("offline-point-read-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins.clone(),
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::active(),
+        );
+        service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("seed exact revision cache");
+        provider.mark_offline();
+
+        let cached = service
+            .read_cloud_markdown(&source_id, "record-7")
+            .await
+            .expect("exact revision cache hit");
+        assert_eq!(cached.content, "# seven");
+        assert_eq!(provider.read_keys(), ["record-7"]);
+
+        publish_record(&store, &source_id, "r2");
+        assert_eq!(
+            service.read_cloud_markdown(&source_id, "record-7").await,
+            Err(CloudDocumentError::OfflineUncached)
+        );
+        assert_eq!(provider.read_keys(), ["record-7", "record-7"]);
+    }
+
+    #[tokio::test]
+    async fn source_replacement_during_provider_read_neither_caches_nor_returns_the_body() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = Arc::new(
+            CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store"),
+        );
+        let source_id = SourceId::new("retiring-point-read-source");
+        let pins = publish_record(&store, &source_id, "r1");
+        let provider = Arc::new(PointReadProvider::new(source_id.as_str()));
+        let service = CloudDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&provider) as Arc<dyn MarkdownDocumentSource>,
+            pins.clone(),
+            [4; 16],
+            [5; 32],
+            TestReadAuthority::retiring_after_provider_read(),
+        );
+
+        assert_eq!(
+            service.read_cloud_markdown(&source_id, "record-7").await,
+            Err(CloudDocumentError::Unauthorized)
+        );
+        assert_eq!(provider.read_keys(), ["record-7"]);
+        assert!(store
+            .get_body(
+                &source_id,
+                &pins,
+                &SourceRecordKey::new("record-7"),
+                &ProviderRevision {
+                    opaque: "r1".to_string(),
+                    content_hash: None,
+                },
+                20,
+            )
+            .expect("inspect body cache")
+            .is_none());
+    }
+
+    #[test]
+    fn edit_authority_rejects_forgery_expiry_and_anchor_mismatches() {
+        let codec = CloudEditAuthorityCodec::new([9; 32]);
+        let library_id = [8; 16];
+        let source_id = SourceId::new("authority-source");
+        let source_version = [7; 16];
+        let record_key = SourceRecordKey::new("record-7");
+        let revision = ProviderRevision {
+            opaque: "r1".to_string(),
+            content_hash: None,
+        };
+        let body = b"# seven";
+        let token = codec
+            .issue(
+                1_000,
+                &library_id,
+                &source_id,
+                &source_version,
+                &record_key,
+                &revision,
+                body,
+            )
+            .expect("issue authority");
+
+        codec
+            .verify(
+                &token,
+                1_000 + 30 * 60 * 1_000,
+                &library_id,
+                &source_id,
+                &source_version,
+                &record_key,
+                &revision,
+                body,
+            )
+            .expect("authority remains valid through its exact expiry");
+        assert_eq!(
+            codec.verify(
+                &format!("{token}A"),
+                1_001,
+                &library_id,
+                &source_id,
+                &source_version,
+                &record_key,
+                &revision,
+                body,
+            ),
+            Err(CloudDocumentError::Unauthorized)
+        );
+        assert_eq!(
+            codec.verify(
+                &token,
+                1_000 + 30 * 60 * 1_000 + 1,
+                &library_id,
+                &source_id,
+                &source_version,
+                &record_key,
+                &revision,
+                body,
+            ),
+            Err(CloudDocumentError::Unauthorized)
+        );
+        assert_eq!(
+            codec.verify(
+                &token,
+                1_001,
+                &library_id,
+                &source_id,
+                &[6; 16],
+                &record_key,
+                &revision,
+                body,
+            ),
+            Err(CloudDocumentError::Unauthorized)
+        );
+        assert_eq!(
+            codec.verify(
+                &token,
+                1_001,
+                &library_id,
+                &source_id,
+                &source_version,
+                &SourceRecordKey::new("record-8"),
+                &revision,
+                body,
+            ),
+            Err(CloudDocumentError::Unauthorized)
+        );
+        assert_eq!(
+            codec.verify(
+                &token,
+                1_001,
+                &library_id,
+                &source_id,
+                &source_version,
+                &record_key,
+                &revision,
+                b"# changed",
+            ),
+            Err(CloudDocumentError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn cache_publication_refuses_a_revision_retired_during_the_provider_read() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let store = CloudDocumentStore::open(directory.path().join("cloud.catdb")).expect("store");
+        let source_id = SourceId::new("revision-race-source");
+        let pins = publish_record(&store, &source_id, "r2");
+
+        assert!(store
+            .put_body(
+                &source_id,
+                &pins,
+                &MarkdownDocumentRevision {
+                    key: SourceRecordKey::new("record-7"),
+                    revision: ProviderRevision {
+                        opaque: "r1".to_string(),
+                        content_hash: None,
+                    },
+                    body: b"# stale".to_vec(),
+                    observed_at_ms: 9,
+                },
+            )
+            .is_err());
+    }
+}
+
 struct SyncFakeProvider {
     source_id: SourceId,
     start_cursor: ProviderCursor,

@@ -1,5 +1,8 @@
 use std::{fmt, time::Instant};
 
+use serde::Serialize;
+use specta::Type;
+
 /// Opaque source-owned document key. It is never suitable for renderer output
 /// or diagnostic text.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -142,7 +145,8 @@ pub(crate) struct CloudIoContext {
 }
 
 /// Closed application-level outcomes for cloud document operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum CloudDocumentError {
     Unauthorized,
     ReconnectRequired,
@@ -153,7 +157,10 @@ pub(crate) enum CloudDocumentError {
     OfflineUncached,
     Timeout,
     Cancelled,
-    RateLimited { retry_after_ms: Option<u64> },
+    RateLimited {
+        #[specta(type = Option<f64>)]
+        retry_after_ms: Option<u64>,
+    },
     ResetCursor,
     NotFound,
     Conflict,
@@ -165,6 +172,36 @@ pub(crate) enum CloudDocumentError {
     WriteCapabilityPendingAcceptance,
     WriteOutcomeUnknown,
     LocalPublicationPending,
+}
+
+/// Provenance of the body returned by one cloud Markdown point read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CloudCacheState {
+    /// The provider returned and the native cache published this exact revision.
+    ProviderFresh,
+    /// The presently published revision was already present in the native cache.
+    Cached,
+    /// The presently published revision was served from cache while offline.
+    CachedOffline,
+}
+
+/// One validated Markdown body returned through the native desktop boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Type)]
+pub(crate) struct CloudMarkdownDocument {
+    /// Opaque renderer identity derived from Library, source, and record identity.
+    pub(crate) document_key: String,
+    /// Published display title.
+    pub(crate) title: String,
+    /// Validated UTF-8 Markdown content.
+    pub(crate) content: String,
+    /// Short-lived opaque authority for guarded editing.
+    pub(crate) edit_token: Option<String>,
+    /// Whether this exact revision came from the provider or native cache.
+    pub(crate) cache_state: CloudCacheState,
+    /// Provider modification timestamp retained from published metadata.
+    #[specta(type = Option<f64>)]
+    pub(crate) modified_at_ms: Option<i64>,
 }
 
 #[async_trait::async_trait]

@@ -2,6 +2,7 @@
 
 pub(crate) mod materialized;
 mod model;
+pub(crate) mod service;
 pub(crate) mod source;
 pub(crate) mod store;
 pub(crate) mod sync;
@@ -11,9 +12,10 @@ mod tests;
 
 #[allow(unused_imports)]
 pub(crate) use model::{
-    CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangeEvent,
-    MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata,
-    MarkdownMetadataPage, MarkdownWriteReceipt, ProviderCursor, ProviderRevision, SourceRecordKey,
+    CloudCacheState, CloudDocumentError, CloudIoContext, CloudMarkdownDocument,
+    KnownMarkdownMetadata, MarkdownChangeEvent, MarkdownChangePage, MarkdownDocumentRevision,
+    MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, MarkdownWriteReceipt,
+    ProviderCursor, ProviderRevision, SourceRecordKey,
 };
 #[cfg(all(test, feature = "google-drive-connector"))]
 pub(crate) use source::map_drive_document_error;
@@ -25,3 +27,15 @@ pub(crate) use source::map_lifecycle_error;
 pub(crate) use sync::{
     CloudSyncCoordinator, CloudSyncError, CloudSyncPhase, CloudWriteRepairExecutor,
 };
+
+/// Reads one published cloud Markdown record through the admitted native owner.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) async fn read_cloud_markdown(
+    app: tauri::AppHandle,
+    source_id: String,
+    record_key: String,
+    state: tauri::State<'_, crate::cloud_accounts::CloudAccountsState>,
+) -> Result<CloudMarkdownDocument, CloudDocumentError> {
+    state.read_cloud_markdown(app, source_id, record_key).await
+}

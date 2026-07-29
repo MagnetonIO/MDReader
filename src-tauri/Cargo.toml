@@ -46,6 +46,10 @@ url = "2"
 zeroize = { version = "1", features = ["derive"] }
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
 regex = "1"
 tempfile = "3"
 # Advisory `flock` on the save target so the hash-check → temp-write → rename

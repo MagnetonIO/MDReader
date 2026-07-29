@@ -184,6 +184,30 @@ impl CloudSyncCoordinator {
         Arc::clone(&self.store)
     }
 
+    /// Pins the currently admitted provider adapter and semantic source
+    /// version for one foreground point read.
+    pub(crate) fn point_read_owner(
+        &self,
+        source_id: &SourceId,
+    ) -> Result<(Arc<dyn MarkdownDocumentSource>, CloudDocumentVersionPins), CloudDocumentError>
+    {
+        let owners = self
+            .owners()
+            .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+        let owner = owners
+            .get(source_id.as_str())
+            .ok_or(CloudDocumentError::SourceDisconnected)?;
+        match owner.phase {
+            CloudSyncPhase::Paused => return Err(CloudDocumentError::SourcePaused),
+            CloudSyncPhase::Retired => return Err(CloudDocumentError::SourceDisconnected),
+            _ if owner.cancellation.is_cancelled() => {
+                return Err(CloudDocumentError::Cancelled);
+            }
+            _ => {}
+        }
+        Ok((Arc::clone(&owner.source), owner.pins.clone()))
+    }
+
     /// Creates a coordinator whose durable rows carry the supplied immutable
     /// semantic pins.
     #[cfg(test)]

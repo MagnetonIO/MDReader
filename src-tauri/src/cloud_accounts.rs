@@ -754,6 +754,42 @@ fn validate_current_cloud_record(
     Ok(())
 }
 
+fn map_cloud_point_read_error(
+    error: CloudSourceError,
+) -> crate::cloud_documents::CloudDocumentError {
+    match error {
+        CloudSourceError::SourcePaused => crate::cloud_documents::CloudDocumentError::SourcePaused,
+        CloudSourceError::CredentialUnavailable | CloudSourceError::CredentialMissing => {
+            crate::cloud_documents::CloudDocumentError::CredentialUnavailable
+        }
+        CloudSourceError::QueryDeadlineExceeded | CloudSourceError::QueryTimeout { .. } => {
+            crate::cloud_documents::CloudDocumentError::Timeout
+        }
+        CloudSourceError::QueryCancelled | CloudSourceError::QuerySourceCancelled { .. } => {
+            crate::cloud_documents::CloudDocumentError::Cancelled
+        }
+        CloudSourceError::QueryRateLimited { retry_after_ms, .. } => {
+            crate::cloud_documents::CloudDocumentError::RateLimited {
+                retry_after_ms: retry_after_ms.map(u64::from),
+            }
+        }
+        CloudSourceError::SourceNotFound
+        | CloudSourceError::QueryRetired
+        | CloudSourceError::QueryAuthorizationDenied
+        | CloudSourceError::QueryCatalogInvalid => {
+            crate::cloud_documents::CloudDocumentError::Unauthorized
+        }
+        #[cfg(any(
+            not(feature = "google-drive-connector"),
+            not(feature = "dropbox-connector")
+        ))]
+        CloudSourceError::ConnectorUnavailable => {
+            crate::cloud_documents::CloudDocumentError::ConnectorUnavailable
+        }
+        _ => crate::cloud_documents::CloudDocumentError::ProtocolFailed,
+    }
+}
+
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 fn validate_current_library_memberships(
     registry: &LibraryStore,
@@ -1841,6 +1877,34 @@ pub(crate) struct CloudAccountsState {
     next_query_serial: AtomicU64,
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct CloudPointReadAdmission {
+    expected: CloudSourceRecord,
+    registry: LibraryStore,
+    cursor_key: [u8; 32],
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+struct CurrentCloudDocumentAuthority {
+    expected: CloudSourceRecord,
+    registry: LibraryStore,
+}
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+#[async_trait::async_trait]
+impl crate::cloud_documents::service::CloudDocumentReadAuthority for CurrentCloudDocumentAuthority {
+    async fn revalidate(&self) -> Result<(), crate::cloud_documents::CloudDocumentError> {
+        let expected = self.expected.clone();
+        let registry = self.registry.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            registry.read_cloud(|sources| validate_current_cloud_record(sources, &expected))
+        })
+        .await
+        .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+        .map_err(map_cloud_point_read_error)
+    }
+}
+
 impl Default for CloudAccountsState {
     fn default() -> Self {
         Self {
@@ -1880,6 +1944,76 @@ impl CloudAccountsState {
                 *configured = Some(location);
                 Ok(())
             }
+        }
+    }
+
+    pub(crate) async fn read_cloud_markdown(
+        &self,
+        app: AppHandle,
+        source_id: String,
+        record_key: String,
+    ) -> Result<
+        crate::cloud_documents::CloudMarkdownDocument,
+        crate::cloud_documents::CloudDocumentError,
+    > {
+        #[cfg(not(any(feature = "google-drive-connector", feature = "dropbox-connector")))]
+        {
+            let _ = (app, source_id, record_key);
+            return Err(crate::cloud_documents::CloudDocumentError::ConnectorUnavailable);
+        }
+        #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+        {
+            let admitted_source_id = source_id.clone();
+            let admission = blocking_cloud_operation(app, move |registry, vault| {
+                let expected = registry.read_cloud(|sources| {
+                    sources
+                        .iter()
+                        .find(|source| source.id() == admitted_source_id)
+                        .cloned()
+                        .ok_or(CloudSourceError::SourceNotFound)
+                })?;
+                if !expected.enabled() {
+                    return Err(CloudSourceError::SourcePaused);
+                }
+                let credential = vault
+                    .get(&expected.credential_reference)?
+                    .ok_or(CloudSourceError::CredentialMissing)?;
+                Ok(CloudPointReadAdmission {
+                    expected,
+                    registry,
+                    cursor_key: credential.cursor_key,
+                })
+            })
+            .await
+            .map_err(map_cloud_point_read_error)?;
+            let library_id = self
+                .catalog_location
+                .lock()
+                .map_err(|_| crate::cloud_documents::CloudDocumentError::ProtocolFailed)?
+                .as_ref()
+                .map(|(_, workspace_id)| *workspace_id.as_bytes())
+                .ok_or(crate::cloud_documents::CloudDocumentError::SyncInProgress)?;
+            let coordinator = self
+                .cloud_sync
+                .coordinator()
+                .await
+                .map_err(map_cloud_point_read_error)?;
+            let source_id = catdb_connectors::SourceId::new(source_id);
+            let (source, pins) = coordinator.point_read_owner(&source_id)?;
+            let authority = Arc::new(CurrentCloudDocumentAuthority {
+                expected: admission.expected,
+                registry: admission.registry,
+            });
+            crate::cloud_documents::service::CloudDocumentService::new(
+                coordinator.store(),
+                source,
+                pins,
+                library_id,
+                admission.cursor_key,
+                authority,
+            )
+            .read_cloud_markdown(&source_id, &record_key)
+            .await
         }
     }
 

@@ -1131,12 +1131,17 @@ impl CloudDocumentStore {
                 "SELECT 1 FROM mdreader_cloud_document d
                  INNER JOIN mdreader_cloud_snapshot s
                    ON s.source_id = d.source_id AND s.generation = d.generation
-                 WHERE d.source_id = ?1 AND d.source_version_id = ?2 AND d.record_key = ?3
+                 WHERE d.source_id = ?1 AND d.schema_version_id = ?2
+                   AND d.mapping_version_id = ?3 AND d.source_version_id = ?4
+                   AND d.record_key = ?5 AND d.revision = ?6
                    AND d.deleted = 0 AND s.state = 'published'",
                 params![
                     source_id,
+                    &pins.schema_version_id,
+                    &pins.mapping_version_id,
                     &pins.source_version_id,
-                    document.key.0.as_bytes()
+                    document.key.0.as_bytes(),
+                    document.revision.opaque.as_bytes(),
                 ],
                 |row| row.get(0),
             )

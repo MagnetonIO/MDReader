@@ -11,6 +11,8 @@ import {
   type CloudFilterInput,
   type CloudProvider,
   type CloudCatalogReady,
+  type CloudDocumentError,
+  type CloudMarkdownDocument,
   type CloudSourceDto,
   type CloudSourceError,
   type CloudSourcesSnapshot,
@@ -69,7 +71,10 @@ export type CloudSourcesView = CloudSourcesSnapshot;
 export class SettingsCommandError<T> extends Error {
   readonly detail: T;
 
-  constructor(area: 'library' | 'diagnostics' | 'cloud' | 'connected-catdb', detail: T) {
+  constructor(
+    area: 'library' | 'diagnostics' | 'cloud' | 'cloud-document' | 'connected-catdb',
+    detail: T,
+  ) {
     super(`${area} command failed`);
     this.name = 'SettingsCommandError';
     this.detail = detail;
@@ -86,6 +91,10 @@ function diagnosticFailure(error: DiagnosticError): never {
 
 function cloudFailure(error: CloudSourceError): never {
   throw new SettingsCommandError('cloud', error);
+}
+
+function cloudDocumentFailure(error: CloudDocumentError): never {
+  throw new SettingsCommandError('cloud-document', error);
 }
 
 function connectedCatdbFailure(error: MobileEnterpriseError): never {
@@ -170,6 +179,10 @@ export interface SettingsBackend {
     requestId: string,
   ) => Promise<LibraryEntityQueryResponse_Serialize>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
+  readCloudMarkdown?: (
+    sourceId: string,
+    recordKey: string,
+  ) => Promise<CloudMarkdownDocument>;
   connectedCatdbState?: () => Promise<ConnectedCatdbState>;
   enrollConnectedCatdb?: (
     serverOrigin: string,
@@ -320,6 +333,16 @@ export async function disconnectCloudSource(
   return result.data;
 }
 
+/** Read one published provider record through the native revision cache. */
+export async function readCloudMarkdown(
+  sourceId: string,
+  recordKey: string,
+): Promise<CloudMarkdownDocument> {
+  const result = await commands.readCloudMarkdown(sourceId, recordKey);
+  if (result.status === 'error') return cloudDocumentFailure(result.error);
+  return result.data;
+}
+
 /** Execute one immutable CatDB query over the selected Library memberships. */
 export async function queryLibraryDocuments(
   workspaceId: string,
@@ -420,6 +443,7 @@ export const settingsBackend: SettingsBackend = {
   queryLibraryDocuments,
   queryConnectedCatdbDocuments,
   cancelCloudDocumentQuery,
+  readCloudMarkdown,
   connectedCatdbState,
   enrollConnectedCatdb,
   setConnectedCatdbSourceEnabled,
