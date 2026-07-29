@@ -2241,6 +2241,17 @@ pub(crate) async fn open_admitted_cloud_markdown_source(
     Arc<dyn crate::cloud_documents::MarkdownDocumentSource>,
     crate::cloud_documents::CloudDocumentError,
 > {
+    match provider {
+        #[cfg(not(feature = "google-drive-connector"))]
+        CloudProvider::GoogleDrive => {
+            return Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed);
+        }
+        #[cfg(not(feature = "dropbox-connector"))]
+        CloudProvider::Dropbox => {
+            return Err(crate::cloud_documents::CloudDocumentError::ProtocolFailed);
+        }
+        _ => {}
+    }
     let admitted = blocking_cloud_operation(app, move |registry, vault| {
         admit_cloud_read(registry, vault, provider)
     })

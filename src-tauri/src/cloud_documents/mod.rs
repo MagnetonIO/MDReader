@@ -12,6 +12,9 @@ pub(crate) use model::{
     MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, MarkdownWriteReceipt,
     ProviderCursor, ProviderRevision, SourceRecordKey,
 };
-pub(crate) use source::{
-    map_drive_document_error, map_dropbox_document_error, map_lifecycle_error,
-};
+#[cfg(all(test, feature = "google-drive-connector"))]
+pub(crate) use source::map_drive_document_error;
+#[cfg(all(test, feature = "dropbox-connector"))]
+pub(crate) use source::map_dropbox_document_error;
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+pub(crate) use source::map_lifecycle_error;

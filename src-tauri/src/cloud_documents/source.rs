@@ -1,17 +1,23 @@
-use std::{sync::Arc, time::SystemTime};
+use std::time::SystemTime;
+
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use std::sync::Arc;
 
 use catdb_connectors::{DataSource, ReadContext, SourceCursor, SourceError, SourceId, SourcePage};
 use catdb_query::{EntityQuery, EntityTarget};
 
 use super::model::{
-    CloudDocumentError, CloudIoContext, MarkdownChangePage, MarkdownDocumentRevision,
-    MarkdownDocumentSource, MarkdownMetadata, MarkdownMetadataPage, MarkdownWriteReceipt,
-    ProviderCursor, ProviderRevision, SourceRecordKey,
+    CloudDocumentError, CloudIoContext, MarkdownWriteReceipt, ProviderCursor, ProviderRevision,
+    SourceRecordKey,
 };
-use crate::cloud_accounts::{
-    CloudAuthorizationProfile, CloudCredentialResolver, CloudSourceError,
-    NativeMarkdownWriteAcceptance,
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use super::model::{
+    MarkdownChangePage, MarkdownDocumentRevision, MarkdownDocumentSource, MarkdownMetadata,
+    MarkdownMetadataPage,
 };
+use crate::cloud_accounts::{CloudAuthorizationProfile, NativeMarkdownWriteAcceptance};
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
+use crate::cloud_accounts::{CloudCredentialResolver, CloudSourceError};
 
 const CLOUD_DOCUMENT_ENTITY: &str = "mdreader.Document";
 
@@ -55,6 +61,7 @@ pub(super) trait DocumentLifecycle: Send + Sync {
 }
 
 #[async_trait::async_trait]
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 impl DocumentLifecycle for CloudCredentialResolver {
     async fn validate_document_authority(&self) -> Result<(), CloudDocumentError> {
         CloudCredentialResolver::validate_document_authority(self)
@@ -96,6 +103,7 @@ impl GuardedMarkdownWriteReceipt {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "google-drive-connector")]
 impl GuardedMarkdownDocumentOperations for catdb_connector_google_drive::DriveSource {
     fn source_id(&self) -> &SourceId {
         self.id()
@@ -122,6 +130,7 @@ impl GuardedMarkdownDocumentOperations for catdb_connector_google_drive::DriveSo
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "dropbox-connector")]
 impl GuardedMarkdownDocumentOperations for catdb_connector_dropbox::DropboxSource {
     fn source_id(&self) -> &SourceId {
         self.id()
@@ -147,6 +156,7 @@ impl GuardedMarkdownDocumentOperations for catdb_connector_dropbox::DropboxSourc
     }
 }
 
+#[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 pub(crate) fn map_lifecycle_error(error: CloudSourceError) -> CloudDocumentError {
     match error {
         CloudSourceError::SourcePaused => CloudDocumentError::SourcePaused,
@@ -191,6 +201,7 @@ fn map_source_error(error: SourceError) -> CloudDocumentError {
     }
 }
 
+#[cfg(feature = "google-drive-connector")]
 pub(crate) fn map_drive_document_error(
     error: catdb_connector_google_drive::DriveDocumentError,
 ) -> CloudDocumentError {
@@ -214,6 +225,7 @@ pub(crate) fn map_drive_document_error(
     }
 }
 
+#[cfg(feature = "dropbox-connector")]
 pub(crate) fn map_dropbox_document_error(
     error: catdb_connector_dropbox::DropboxDocumentError,
 ) -> CloudDocumentError {
@@ -337,6 +349,7 @@ fn optional_u64(value: &serde_json::Value, field: &str) -> Option<u64> {
 
 /// Native Drive adapter. Its resolver retains the admitted credential and
 /// rechecks source identity before and after every provider effect.
+#[cfg(feature = "google-drive-connector")]
 pub(crate) struct DriveMarkdownDocumentSource {
     source: Option<Arc<catdb_connector_google_drive::DriveSource>>,
     lifecycle: Arc<dyn DocumentLifecycle>,
@@ -344,6 +357,7 @@ pub(crate) struct DriveMarkdownDocumentSource {
     write_capability: MarkdownWriteCapability,
 }
 
+#[cfg(feature = "google-drive-connector")]
 impl DriveMarkdownDocumentSource {
     pub(crate) fn new(
         source: Arc<catdb_connector_google_drive::DriveSource>,
@@ -408,6 +422,7 @@ impl DriveMarkdownDocumentSource {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "google-drive-connector")]
 impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
     fn source_id(&self) -> &SourceId {
         self.write_operations.source_id()
@@ -508,6 +523,7 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
 
 /// Native Dropbox adapter. See [`DriveMarkdownDocumentSource`] for lifecycle
 /// and guarded-write invariants shared by both provider implementations.
+#[cfg(feature = "dropbox-connector")]
 pub(crate) struct DropboxMarkdownDocumentSource {
     source: Option<Arc<catdb_connector_dropbox::DropboxSource>>,
     lifecycle: Arc<dyn DocumentLifecycle>,
@@ -515,6 +531,7 @@ pub(crate) struct DropboxMarkdownDocumentSource {
     write_capability: MarkdownWriteCapability,
 }
 
+#[cfg(feature = "dropbox-connector")]
 impl DropboxMarkdownDocumentSource {
     pub(crate) fn new(
         source: Arc<catdb_connector_dropbox::DropboxSource>,
@@ -571,6 +588,7 @@ impl DropboxMarkdownDocumentSource {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "dropbox-connector")]
 impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
     fn source_id(&self) -> &SourceId {
         self.write_operations.source_id()
