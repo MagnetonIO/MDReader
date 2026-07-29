@@ -94,11 +94,26 @@ const response: LibraryEntityQueryResponse_Serialize = {
 afterEach(cleanup);
 
 it('reads and inspects one hydrated provider response without a second query', async () => {
+  const metadataRow: EntityRow = {
+    ...row,
+    fields: {
+      path: 'drive-file-1',
+      title: 'Cloud note.md',
+    },
+  };
   render(
     <LibraryDocumentPane
       member={member}
-      row={row}
+      row={metadataRow}
       evidence={response}
+      cloudDocument={{
+        document_key: 'opaque-cloud-document',
+        title: 'Cloud note.md',
+        content: '# Cloud note\n\nProvider-owned body.',
+        edit_token: 'opaque-edit-authority',
+        cache_state: 'provider-fresh',
+        modified_at_ms: 1_800_000_000_000,
+      }}
     />,
   );
 

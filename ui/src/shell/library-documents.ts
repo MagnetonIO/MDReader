@@ -1,4 +1,5 @@
 import type {
+  CloudMarkdownDocument,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
   LibrarySnapshot,
@@ -563,6 +564,8 @@ export interface HydratedLibrarySelection {
   member: LibrarySourceExecution;
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
+  /** Provider-owned body returned by the native point-read command. */
+  cloudDocument?: CloudMarkdownDocument;
 }
 
 /**
@@ -574,7 +577,10 @@ export interface HydratedLibrarySelection {
 export async function hydrateLibraryDocument(
   backend: Pick<
     SettingsBackend,
-    'prepareCloudCatalog' | 'queryLibraryDocuments' | 'queryConnectedCatdbDocuments'
+    | 'prepareCloudCatalog'
+    | 'queryLibraryDocuments'
+    | 'queryConnectedCatdbDocuments'
+    | 'readCloudMarkdown'
   >,
   selection: HydratedLibrarySelection,
   requestId: string,
@@ -582,6 +588,16 @@ export async function hydrateLibraryDocument(
   const recordKey = physicalRecordKey(selection.row);
   if (recordKey === null) {
     throw new Error('The selected Library document has no provider identity.');
+  }
+  if (selection.member.kind === 'google-drive' || selection.member.kind === 'dropbox') {
+    if (!backend.readCloudMarkdown) {
+      throw new Error('Cloud document reads are unavailable.');
+    }
+    const cloudDocument = await backend.readCloudMarkdown(
+      selection.member.registry_id,
+      recordKey,
+    );
+    return { ...selection, cloudDocument };
   }
   const filters = [{ field: 'path', operator: 'eq' as const, value: recordKey }];
   let evidence: LibraryEntityQueryResponse_Serialize;

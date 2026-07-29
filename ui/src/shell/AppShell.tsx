@@ -80,6 +80,7 @@ import {
   libraryAvailability as availabilityForLibrary,
   type LibraryAvailability,
   type HydratedLibrary,
+  type HydratedLibrarySelection,
 } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
@@ -167,11 +168,8 @@ export function AppShell() {
       unlisten?.();
     };
   }, []);
-  const [libraryDocument, setLibraryDocument] = useState<{
-    member: LibrarySourceExecution;
-    row: EntityRow;
-    evidence: LibraryEntityQueryResponse_Serialize;
-  } | null>(null);
+  const [libraryDocument, setLibraryDocument] =
+    useState<HydratedLibrarySelection | null>(null);
   const [libraryHydration, setLibraryHydration] = useState<HydratedLibrary>({
     evidence: [],
     failures: [],
@@ -2154,6 +2152,7 @@ export function AppShell() {
                 member={libraryDocument.member}
                 row={libraryDocument.row}
                 evidence={libraryDocument.evidence}
+                cloudDocument={libraryDocument.cloudDocument}
                 loading={libraryDocumentLoading}
                 error={libraryDocumentError}
                 onRetry={() =>

@@ -245,37 +245,40 @@ describe('one hydrated Library answer', () => {
     expect(member.editable).toBe(false);
   });
 
-  it('hydrates only the selected Drive document body through its CatDB source', async () => {
+  it('reads only the selected Drive record through the native point-read command', async () => {
     const metadataRow: EntityRow = {
       ...row,
       fields: { path: 'drive-file', title: 'One answer.md' },
     };
     const queryLibraryDocuments = vi.fn(async () => evidence);
+    const readCloudMarkdown = vi.fn(async () => ({
+      document_key: 'opaque-drive-document',
+      title: 'One answer.md',
+      content: '# One answer',
+      edit_token: 'opaque-edit-authority',
+      cache_state: 'provider-fresh' as const,
+      modified_at_ms: 1_800_000_000_000,
+    }));
     const hydrated = await hydrateLibraryDocument(
       {
-        prepareCloudCatalog: vi.fn(async () => ({
-          workspace_id: '00000000-0000-4000-8000-000000000020',
-          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
-          schema_version_id: '00000000-0000-4000-8000-000000000022',
-        })),
+        readCloudMarkdown,
         queryLibraryDocuments,
       },
       { member, row: metadataRow, evidence },
       'document-request-1',
     );
 
-    expect(queryLibraryDocuments).toHaveBeenCalledWith(
-      '00000000-0000-4000-8000-000000000020',
-      [{ field: 'path', operator: 'eq', value: 'drive-file' }],
-      ['body'],
-      'document-request-1',
-      [MEMBERSHIP_ID],
+    expect(readCloudMarkdown).toHaveBeenCalledOnce();
+    expect(readCloudMarkdown).toHaveBeenCalledWith(
+      member.registry_id,
+      'drive-file',
     );
-    expect(hydrated.row.fields.body).toBe('# One answer');
+    expect(queryLibraryDocuments).not.toHaveBeenCalled();
+    expect(hydrated.cloudDocument?.content).toBe('# One answer');
     expect(hydrated.member.membership_id).toBe(MEMBERSHIP_ID);
   });
 
-  it('hydrates only the selected Dropbox document body through its CatDB source', async () => {
+  it('reads only the selected Dropbox record through the native point-read command', async () => {
     const dropboxPath = '/notes/one-answer.md';
     const dropboxMember: LibrarySourceExecution = {
       ...member,
@@ -309,27 +312,30 @@ describe('one hydrated Library answer', () => {
       fields: { path: dropboxPath, title: 'One answer.md' },
     };
     const queryLibraryDocuments = vi.fn(async () => dropboxEvidence);
+    const readCloudMarkdown = vi.fn(async () => ({
+      document_key: 'opaque-dropbox-document',
+      title: 'One answer.md',
+      content: '# One answer',
+      edit_token: 'opaque-edit-authority',
+      cache_state: 'cached' as const,
+      modified_at_ms: 1_800_000_000_000,
+    }));
     const hydrated = await hydrateLibraryDocument(
       {
-        prepareCloudCatalog: vi.fn(async () => ({
-          workspace_id: '00000000-0000-4000-8000-000000000020',
-          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
-          schema_version_id: '00000000-0000-4000-8000-000000000022',
-        })),
+        readCloudMarkdown,
         queryLibraryDocuments,
       },
       { member: dropboxMember, row: metadataRow, evidence: dropboxEvidence },
       'document-request-dropbox',
     );
 
-    expect(queryLibraryDocuments).toHaveBeenCalledWith(
-      '00000000-0000-4000-8000-000000000020',
-      [{ field: 'path', operator: 'eq', value: dropboxPath }],
-      ['body'],
-      'document-request-dropbox',
-      [MEMBERSHIP_ID],
+    expect(readCloudMarkdown).toHaveBeenCalledOnce();
+    expect(readCloudMarkdown).toHaveBeenCalledWith(
+      dropboxMember.registry_id,
+      dropboxPath,
     );
-    expect(hydrated.row.fields.body).toBe('# One answer');
+    expect(queryLibraryDocuments).not.toHaveBeenCalled();
+    expect(hydrated.cloudDocument?.content).toBe('# One answer');
     expect(hydrated.member.kind).toBe('dropbox');
   });
 

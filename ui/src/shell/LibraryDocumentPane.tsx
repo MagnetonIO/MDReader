@@ -4,6 +4,7 @@ import { parseMarkdownAuto } from '@mdreader/markdown/worker';
 import type { ParsedDoc } from '@mdreader/markdown';
 
 import type {
+  CloudMarkdownDocument,
   EntityRow,
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
@@ -16,6 +17,7 @@ export interface LibraryDocumentPaneProps {
   member: LibrarySourceExecution;
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
+  cloudDocument?: CloudMarkdownDocument;
   loading?: boolean;
   error?: string | null;
   onEdit?: () => void;
@@ -54,15 +56,16 @@ export function LibraryDocumentPane({
   member,
   row,
   evidence,
+  cloudDocument,
   loading = false,
   error = null,
   onEdit,
   onRetry,
 }: LibraryDocumentPaneProps) {
   const values = fieldsOf(row);
-  const title = libraryDocumentTitle(row);
+  const title = cloudDocument?.title ?? libraryDocumentTitle(row);
   const body =
-    typeof values.body === 'string' ? values.body : null;
+    cloudDocument?.content ?? (typeof values.body === 'string' ? values.body : null);
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const platform = useMemo(() => createReaderPlatform(null), []);
