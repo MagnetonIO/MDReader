@@ -2,7 +2,7 @@
  * A quiet rail — muted surface, thin borders — that never competes with the
  * reading column. */
 
-import { useState } from 'react';
+import { useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type {
   EntityRow,
@@ -127,6 +127,31 @@ export function Sidebar({
 }: SidebarProps) {
   const [libraryExpanded, setLibraryExpanded] = useState(false);
   const [libraryCollapsed, setLibraryCollapsed] = useState(false);
+  const [libraryHeight, setLibraryHeight] = useState<number | null>(null);
+  const beginLibraryResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rail = event.currentTarget.nextElementSibling as HTMLElement | null;
+    const sidebar = event.currentTarget.closest('.sidebar') as HTMLElement | null;
+    if (!rail || !sidebar) return;
+    const startY = event.clientY;
+    const startHeight = rail.getBoundingClientRect().height;
+    const minimum = 54;
+    const maximum = Math.max(minimum, sidebar.getBoundingClientRect().height * 0.6);
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+    const move = (moveEvent: PointerEvent) => {
+      setLibraryHeight(
+        Math.min(maximum, Math.max(minimum, startHeight + startY - moveEvent.clientY)),
+      );
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish, { once: true });
+    window.addEventListener('pointercancel', finish, { once: true });
+  };
   const search = librarySearch.trim().toLocaleLowerCase();
   const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
     evidence.memberships.some(
@@ -185,7 +210,25 @@ export function Sidebar({
       )}
 
       {showLibraryRail ? (
-        <nav className="library-sources" aria-label="Library sources">
+        <>
+        {!libraryCollapsed && !libraryExpanded ? (
+          <div
+            className="library-sources__resize"
+            role="separator"
+            aria-label="Resize Library"
+            aria-orientation="horizontal"
+            onPointerDown={beginLibraryResize}
+          />
+        ) : null}
+        <nav
+          className="library-sources"
+          aria-label="Library sources"
+          style={
+            libraryHeight === null || libraryCollapsed || libraryExpanded
+              ? undefined
+              : { height: `${libraryHeight}px`, maxHeight: 'none' }
+          }
+        >
           <div className="library-sources__heading">
             <span>Library</span>
             <div className="library-sources__actions">
@@ -195,6 +238,7 @@ export function Sidebar({
                 onClick={() => {
                   setLibraryCollapsed((value) => !value);
                   setLibraryExpanded(false);
+                  setLibraryHeight(null);
                 }}
                 aria-expanded={!libraryCollapsed}
               >
@@ -204,7 +248,10 @@ export function Sidebar({
               <button
                 type="button"
                 className="library-sources__refresh"
-                onClick={() => setLibraryExpanded((expanded) => !expanded)}
+                onClick={() => {
+                  setLibraryExpanded((expanded) => !expanded);
+                  setLibraryHeight(null);
+                }}
                 aria-expanded={libraryExpanded}
               >
                 {libraryExpanded ? 'Restore' : 'Expand'}
@@ -299,6 +346,7 @@ export function Sidebar({
           </>
           ) : null}
         </nav>
+        </>
       ) : null}
 
       {recent.length > 0 ? (

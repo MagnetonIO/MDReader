@@ -6039,18 +6039,30 @@ fn validate_authorization_token_response(
         .refresh_token
         .filter(|token| !token.is_empty())
         .ok_or(CloudSourceError::OauthOfflineGrantMissing)?;
-    let expires_in_seconds = response
+    let Some(expires_in_seconds) = response
         .expires_in
         .filter(|seconds| *seconds > 0 && *seconds <= 365 * 24 * 60 * 60)
-        .ok_or(CloudSourceError::OauthTokenRejected)?;
-    if !response.token_type.eq_ignore_ascii_case("bearer")
-        || validated_authorization_profile(
-            provider,
-            authorization_profile,
-            response.scope.as_deref(),
-        )
+    else {
+        eprintln!(
+            "MDReader OAuth token validation rejected provider={} phase=authorization-code reason=invalid-expiry",
+            provider.id()
+        );
+        return Err(CloudSourceError::OauthTokenRejected);
+    };
+    if !response.token_type.eq_ignore_ascii_case("bearer") {
+        eprintln!(
+            "MDReader OAuth token validation rejected provider={} phase=authorization-code reason=invalid-token-type",
+            provider.id()
+        );
+        return Err(CloudSourceError::OauthTokenRejected);
+    }
+    if validated_authorization_profile(provider, authorization_profile, response.scope.as_deref())
         .is_err()
     {
+        eprintln!(
+            "MDReader OAuth token validation rejected provider={} phase=authorization-code reason=scope-mismatch",
+            provider.id()
+        );
         return Err(CloudSourceError::OauthTokenRejected);
     }
     SecretBundle::new(
@@ -6059,7 +6071,13 @@ fn validate_authorization_token_response(
         expires_at_unix_seconds(expires_in_seconds)?,
         [1; 32],
     )
-    .map_err(|_| CloudSourceError::OauthTokenRejected)?;
+    .map_err(|_| {
+        eprintln!(
+            "MDReader OAuth token validation rejected provider={} phase=authorization-code reason=invalid-token-shape",
+            provider.id()
+        );
+        CloudSourceError::OauthTokenRejected
+    })?;
     Ok(OAuthToken {
         access_token: Zeroizing::new(response.access_token),
         refresh_token: Zeroizing::new(refresh_token),
