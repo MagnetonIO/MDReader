@@ -8,6 +8,7 @@ import type {
 } from '../bindings.js';
 import { SettingsCommandError } from '../platform/settings.js';
 import {
+  hydrateLibraryDocument,
   hydrateLibrary,
   LIBRARY_DOCUMENT_FIELDS,
   libraryDocumentTitle,
@@ -81,6 +82,7 @@ const member: LibrarySourceExecution = {
 };
 
 const evidence: LibraryEntityQueryResponse_Serialize = {
+  window_truncated: false,
   answer: {
     query_id: '00000000-0000-4000-8000-000000000001',
     pins: {
@@ -185,7 +187,6 @@ describe('one hydrated Library answer', () => {
         'modifiedAt',
         'size',
         'checksum',
-        'body',
       ],
       'request-1',
     );
@@ -208,7 +209,7 @@ describe('one hydrated Library answer', () => {
     expect(queryLibraryDocuments).toHaveBeenCalledWith(
       '00000000-0000-4000-8000-000000000020',
       [],
-      ['title', 'author', 'path', 'modifiedAt', 'size', 'body'],
+      ['title', 'author', 'path', 'modifiedAt', 'size'],
       'request-local',
     );
   });
@@ -242,6 +243,94 @@ describe('one hydrated Library answer', () => {
     expect(rowsForMember(evidence, member)).toEqual([row]);
     expect(physicalRecordKey(row)).toBe('drive-file');
     expect(member.editable).toBe(false);
+  });
+
+  it('hydrates only the selected Drive document body through its CatDB source', async () => {
+    const metadataRow: EntityRow = {
+      ...row,
+      fields: { path: 'drive-file', title: 'One answer.md' },
+    };
+    const queryLibraryDocuments = vi.fn(async () => evidence);
+    const hydrated = await hydrateLibraryDocument(
+      {
+        prepareCloudCatalog: vi.fn(async () => ({
+          workspace_id: '00000000-0000-4000-8000-000000000020',
+          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
+          schema_version_id: '00000000-0000-4000-8000-000000000022',
+        })),
+        queryLibraryDocuments,
+      },
+      { member, row: metadataRow, evidence },
+      'document-request-1',
+    );
+
+    expect(queryLibraryDocuments).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000020',
+      [{ field: 'path', operator: 'eq', value: 'drive-file' }],
+      [...LIBRARY_DOCUMENT_FIELDS],
+      'document-request-1',
+      [MEMBERSHIP_ID],
+    );
+    expect(hydrated.row.fields.body).toBe('# One answer');
+    expect(hydrated.member.membership_id).toBe(MEMBERSHIP_ID);
+  });
+
+  it('hydrates only the selected Dropbox document body through its CatDB source', async () => {
+    const dropboxPath = '/notes/one-answer.md';
+    const dropboxMember: LibrarySourceExecution = {
+      ...member,
+      registry_id: 'dropbox',
+      name: 'Dropbox',
+      kind: 'dropbox',
+    };
+    const dropboxRow: EntityRow = {
+      ...row,
+      record_key: dropboxPath,
+      fields: { path: dropboxPath, title: 'One answer.md', body: '# One answer' },
+      provenance: {
+        ...row.provenance,
+        path: {
+          ...row.provenance.path!,
+          considered: row.provenance.path!.considered.map((provider) => ({
+            ...provider,
+            record_key: dropboxPath,
+            state: { state: 'observed_value', value: dropboxPath },
+          })),
+        },
+      },
+    };
+    const dropboxEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      answer: { ...evidence.answer, rows: [dropboxRow] },
+      memberships: [dropboxMember],
+    };
+    const metadataRow: EntityRow = {
+      ...dropboxRow,
+      fields: { path: dropboxPath, title: 'One answer.md' },
+    };
+    const queryLibraryDocuments = vi.fn(async () => dropboxEvidence);
+    const hydrated = await hydrateLibraryDocument(
+      {
+        prepareCloudCatalog: vi.fn(async () => ({
+          workspace_id: '00000000-0000-4000-8000-000000000020',
+          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
+          schema_version_id: '00000000-0000-4000-8000-000000000022',
+        })),
+        queryLibraryDocuments,
+      },
+      { member: dropboxMember, row: metadataRow, evidence: dropboxEvidence },
+      'document-request-dropbox',
+    );
+
+    expect(queryLibraryDocuments).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000020',
+      [{ field: 'path', operator: 'eq', value: dropboxPath }],
+      [...LIBRARY_DOCUMENT_FIELDS],
+      'document-request-dropbox',
+      [MEMBERSHIP_ID],
+    );
+    expect(hydrated.row.fields.body).toBe('# One answer');
+    expect(hydrated.member.kind).toBe('dropbox');
   });
 
   it('hydrates an authenticated Connected CatDB membership into the same Library result', async () => {
@@ -356,7 +445,62 @@ describe('one hydrated Library answer', () => {
     expect(result.failures[0]?.reason).toBeInstanceOf(Error);
   });
 
-  it('omits the primary message only when usable local rows survive metadata-only exclusions', () => {
+  it('does not warn when a healthy complete result contains rows', () => {
+    expect(
+      libraryHydrationMessage({
+        evidence: [evidence],
+        failures: [],
+      }),
+    ).toBeNull();
+  });
+
+  it('warns when a timed-out source makes an answer partial', () => {
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...evidence,
+            answer: {
+              ...evidence.answer,
+              rows: [],
+              sources: [
+                {
+                  ...evidence.answer.sources[0]!,
+                  outcome: 'timed_out',
+                  freshness_ms: null,
+                  scanned: 0,
+                  returned: 0,
+                },
+              ],
+              completeness: {
+                state: 'partial',
+                excluded_source_ids: [PHYSICAL_SOURCE_ID],
+              },
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBe('Some Library sources could not answer this query.');
+  });
+
+  it('names a command timeout instead of reporting a generic source failure', () => {
+    expect(
+      libraryHydrationMessage({
+        evidence: [],
+        failures: [
+          {
+            authority: 'embedded',
+            reason: new SettingsCommandError('cloud', {
+              kind: 'query-deadline-exceeded' as const,
+            }),
+          },
+        ],
+      }),
+    ).toBe('Library refresh timed out while reading a source. Try Refresh again.');
+  });
+
+  it('omits the warning when only an active local folder auxiliary source failed', () => {
     const frontmatterSourceId = '00000000-0000-4000-8000-000000000099';
     const cloudSourceId = '00000000-0000-4000-8000-000000000097';
     const partialLocalEvidence: LibraryEntityQueryResponse_Serialize = {
@@ -409,6 +553,21 @@ describe('one hydrated Library answer', () => {
               ...partialLocalEvidence.answer,
               rows: [],
             },
+          },
+        ],
+        failures: [],
+      }),
+    ).toBeNull();
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [
+          {
+            ...partialLocalEvidence,
+            memberships: partialLocalEvidence.memberships.map((membership) => ({
+              ...membership,
+              active: false,
+            })),
           },
         ],
         failures: [],
@@ -526,6 +685,21 @@ describe('one hydrated Library answer', () => {
         ],
       }),
     ).toBe('Library sources could not be read.');
+
+    expect(
+      libraryHydrationMessage({
+        evidence: [],
+        failures: [
+          {
+            authority: 'embedded',
+            reason: new SettingsCommandError('cloud', {
+              kind: 'query-read-failed' as const,
+              source_id: PHYSICAL_SOURCE_ID,
+            }),
+          },
+        ],
+      }),
+    ).toBe('A Library source failed while CatDB was reading it.');
   });
 
   it('preserves identity and permission failures for distinct recovery copy', async () => {

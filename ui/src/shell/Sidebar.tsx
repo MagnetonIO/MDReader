@@ -8,7 +8,7 @@ import type {
   LibraryEntityQueryResponse_Serialize,
   LibrarySourceExecution,
 } from '../bindings.js';
-import { FolderIcon } from './icons.js';
+import { DropboxIcon, FolderIcon, GoogleDriveIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
 import { libraryDocumentTitle, rowsForMember } from './library-documents.js';
@@ -38,6 +38,17 @@ export interface SidebarProps {
 
 function basename(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? path;
+}
+
+function sourceIcon(kind: LibrarySourceExecution['kind']) {
+  switch (kind) {
+    case 'google-drive':
+      return <GoogleDriveIcon className="library-sources__provider-icon" />;
+    case 'dropbox':
+      return <DropboxIcon className="library-sources__provider-icon" />;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -178,6 +189,7 @@ export function Sidebar({
                 return (
                   <section className="library-sources__source" key={member.membership_id}>
                     <div>
+                      {sourceIcon(member.kind)}
                       <strong>{member.name}</strong>
                       <small>
                         {member.editable

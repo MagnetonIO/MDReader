@@ -3718,14 +3718,15 @@ mod tests {
     #[test]
     fn refusing_to_forget_an_active_source_preserves_user_and_managed_state() {
         let temp = tempdir().expect("tempdir");
-        let root = mkdir(temp.path(), "notes");
-        let user_file = root.join("keep.md");
+        let source_root = mkdir(temp.path(), "notes");
+        let user_file = source_root.join("kept.md");
         fs::write(&user_file, "# keep").expect("write user file");
         let index_file = temp.path().join("catdb.db");
         fs::write(&index_file, b"index stays").expect("write index marker");
         let mut registry = LibraryRegistry::empty();
-        let source = registry.add_root(&root).expect("add root");
-        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let source = registry.add_root(&source_root).expect("add root");
+        let forgotten_id = source.id.clone();
+        let canonical = fs::canonicalize(&source_root).expect("canonical root");
         let active = bound_root(&canonical);
 
         assert_eq!(
@@ -3739,7 +3740,17 @@ mod tests {
         registry
             .forget(&source.id, None)
             .expect("inactive membership can be forgotten");
-        assert!(registry.sources().is_empty());
+        let after_forget = registry
+            .snapshot(temp.path(), None)
+            .expect("post-forget snapshot");
+        assert!(after_forget
+            .sources
+            .iter()
+            .all(|source| source.id != forgotten_id));
+        assert!(
+            source_root.join("kept.md").exists(),
+            "Forget must not delete user bytes"
+        );
         assert_eq!(
             fs::read_to_string(user_file).expect("user file remains"),
             "# keep"

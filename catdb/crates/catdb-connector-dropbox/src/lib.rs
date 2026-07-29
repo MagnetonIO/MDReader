@@ -20,6 +20,7 @@ use catdb_connectors::{
 };
 use catdb_core::{BaseType, Schema};
 use catdb_query::EntityQuery;
+use catdb_storage::{ObjectFilterOp, ObjectValue};
 use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -40,7 +41,7 @@ const CONTENT_ORIGIN: &str = "https://content.dropboxapi.com/";
 const MAX_HTTP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_HEADERS: usize = 128;
-const MAX_PROVIDER_CURSOR_BYTES: usize = 1_024;
+const MAX_PROVIDER_CURSOR_BYTES: usize = 4 * 1024;
 const MAX_CHANGE_EVENTS: usize = 1_000;
 const MAX_EMPTY_PROVIDER_PAGES: usize = 32;
 const MAX_ACTIVE_QUERY_IDS: usize = 128;
@@ -83,6 +84,21 @@ pub enum DropboxAuthorizationMode {
     AppFolder,
 }
 
+/// The physical records exposed by one immutable Dropbox source.
+///
+/// The general connector keeps its existing readable-text contract by
+/// default. Reader applications may pin the narrower Markdown-only universe
+/// as part of the versioned source configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DropboxContentScope {
+    /// Expose Markdown and plain-text files.
+    #[default]
+    ReadableText,
+    /// Expose Markdown files only.
+    Markdown,
+}
+
 /// Immutable, non-secret Dropbox source configuration.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DropboxSourceConfig {
@@ -92,6 +108,8 @@ pub struct DropboxSourceConfig {
     selected_path: String,
     authorization_mode: DropboxAuthorizationMode,
     credential_reference: DropboxSecretReference,
+    #[serde(default)]
+    content_scope: DropboxContentScope,
 }
 
 impl DropboxSourceConfig {
@@ -111,9 +129,16 @@ impl DropboxSourceConfig {
             selected_path: normalize_selected_path(selected_path.into())?,
             authorization_mode,
             credential_reference,
+            content_scope: DropboxContentScope::default(),
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Pin the physical file universe exposed by this source.
+    pub fn with_content_scope(mut self, scope: DropboxContentScope) -> Self {
+        self.content_scope = scope;
+        self
     }
 
     /// Exact OAuth scopes required by both Dropbox authorization modes.
@@ -145,6 +170,7 @@ impl fmt::Debug for DropboxSourceConfig {
             .field("selected_path", &self.selected_path)
             .field("authorization_mode", &self.authorization_mode)
             .field("credential_reference", &self.credential_reference)
+            .field("content_scope", &self.content_scope)
             .finish()
     }
 }
@@ -825,7 +851,7 @@ impl DropboxKnownRevision {
     }
 
     fn matches(&self, file: &DropboxFile) -> bool {
-        self.rev == file.rev && self.content_hash == file.content_hash
+        self.rev == file.rev && file.content_hash.as_deref() == Some(self.content_hash.as_str())
     }
 }
 
@@ -941,7 +967,7 @@ impl DropboxSource {
         vec![
             catdb_connectors::SourceAttr::text("id"),
             catdb_connectors::SourceAttr::text("name"),
-            catdb_connectors::SourceAttr::text("path"),
+            catdb_connectors::SourceAttr::text("path").pushes([ObjectFilterOp::Eq]),
             catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
             catdb_connectors::SourceAttr::parsed("size", BaseType::Int),
             catdb_connectors::SourceAttr::text("rev"),
@@ -1115,6 +1141,18 @@ impl DropboxSource {
             match parse_entry(entry, self.model.id())? {
                 DropboxEntry::File(file) => {
                     self.validate_file_scope(&file)?;
+                    if !is_exposed_path(self.spec.config.content_scope, &file.name) {
+                        if known.contains_key(&file.path_lower) {
+                            events.push(DropboxChangeEvent::Deleted {
+                                path_lower: file.path_lower,
+                            });
+                        }
+                        continue;
+                    }
+                    let content_hash = file
+                        .content_hash
+                        .clone()
+                        .ok_or_else(|| self.malformed("file content hash"))?;
                     let event = match known.get(&file.path_lower) {
                         Some(revision) if revision.matches(&file) => {
                             DropboxChangeEvent::Unchanged {
@@ -1124,7 +1162,7 @@ impl DropboxSource {
                         _ => DropboxChangeEvent::Upserted {
                             path_lower: file.path_lower,
                             rev: file.rev,
-                            content_hash: file.content_hash,
+                            content_hash,
                         },
                     };
                     events.push(event);
@@ -1161,12 +1199,25 @@ impl DropboxSource {
 
     fn validate_plan(&self, plan: &SourcePlan) -> Result<(), SourceError> {
         self.model.admit(plan)?;
-        if !plan.pushed.filters.is_empty() {
+        if self.exact_path_filter(plan).is_err() {
             return Err(SourceError::InvalidPlan {
                 source_id: self.model.id().clone(),
             });
         }
         Ok(())
+    }
+
+    fn exact_path_filter<'a>(&self, plan: &'a SourcePlan) -> Result<Option<&'a str>, ()> {
+        match plan.pushed.filters.as_slice() {
+            [] => Ok(None),
+            [filter] if filter.attr == "path" && filter.op == ObjectFilterOp::Eq => {
+                match &filter.value {
+                    ObjectValue::Text(path) => Ok(Some(path.as_str())),
+                    _ => Err(()),
+                }
+            }
+            _ => Err(()),
+        }
     }
 
     fn api_request(
@@ -1179,6 +1230,18 @@ impl DropboxSource {
 
     fn content_request(&self, file: &DropboxFile) -> Result<DropboxHttpRequest, SourceError> {
         let argument = serde_json::to_string(&serde_json::json!({ "path": file.id }))
+            .map_err(|_| self.malformed("download argument"))?;
+        self.request(
+            DropboxEndpoint::Content,
+            "/2/files/download",
+            serde_json::json!({}),
+            BTreeMap::from([("dropbox-api-arg".to_string(), argument)]),
+        )
+    }
+
+    fn content_request_path(&self, path: &str) -> Result<DropboxHttpRequest, SourceError> {
+        self.validate_path_scope(path)?;
+        let argument = serde_json::to_string(&serde_json::json!({ "path": path }))
             .map_err(|_| self.malformed("download argument"))?;
         self.request(
             DropboxEndpoint::Content,
@@ -1435,14 +1498,16 @@ impl DropboxSource {
         physical_bytes: &mut usize,
     ) -> Result<Option<SourceRow>, SourceError> {
         self.validate_file_scope(&file)?;
+        if !is_exposed_path(self.spec.config.content_scope, &file.name) {
+            return Ok(None);
+        }
         let needs_body = plan
             .projected
             .iter()
             .map(String::as_str)
             .chain(plan.residual_attrs())
             .any(|field| field == "body");
-        let mut value = file.to_value(self.model.id())?;
-        if needs_body && is_text_path(&file.name) {
+        if needs_body {
             let response = self
                 .send(self.content_request(&file)?, context, physical_bytes)
                 .await?;
@@ -1452,10 +1517,26 @@ impl DropboxSource {
             self.validate_download_result(&file, &response)?;
             let body =
                 String::from_utf8(response.body).map_err(|_| self.malformed("body encoding"))?;
+            return self.project_file(file, Some(body), plan);
+        }
+        self.project_file(file, None, plan)
+    }
+
+    fn project_file(
+        &self,
+        file: DropboxFile,
+        body: Option<String>,
+        plan: &SourcePlan,
+    ) -> Result<Option<SourceRow>, SourceError> {
+        let mut value = file.to_value(self.model.id())?;
+        if let Some(body) = body {
             value
                 .as_object_mut()
                 .ok_or_else(|| self.malformed("file"))?
                 .insert("body".to_string(), serde_json::Value::String(body));
+        }
+        if !plan.pushed_filters_match(&value) {
+            return Err(self.malformed("pushed filter"));
         }
         if !plan.residual.iter().all(|residual| residual.passes(&value)) {
             return Ok(None);
@@ -1716,6 +1797,79 @@ impl DataSource for DropboxSource {
         if page_size == 0 {
             return Err(SourceError::RowBudgetExceeded);
         }
+        if let Some(expected_path) =
+            self.exact_path_filter(plan)
+                .map_err(|_| SourceError::InvalidPlan {
+                    source_id: self.model.id().clone(),
+                })?
+        {
+            if cursor.is_some() {
+                return Err(SourceError::InvalidCursor);
+            }
+            self.validate_path_scope(expected_path)?;
+            let needs_body = plan
+                .projected
+                .iter()
+                .map(String::as_str)
+                .chain(plan.residual_attrs())
+                .any(|field| field == "body");
+            let mut physical_bytes = 0usize;
+            let (file, body) = if needs_body {
+                let response = self
+                    .send(
+                        self.content_request_path(expected_path)?,
+                        context,
+                        &mut physical_bytes,
+                    )
+                    .await?;
+                if response.status != 200 {
+                    return Err(self.map_http_failure(&response));
+                }
+                let header = response
+                    .headers
+                    .get("dropbox-api-result")
+                    .ok_or_else(|| self.malformed("Dropbox-API-Result"))?;
+                let file: DropboxFile = serde_json::from_str(header)
+                    .map_err(|_| self.malformed("Dropbox-API-Result"))?;
+                let body = String::from_utf8(response.body)
+                    .map_err(|_| self.malformed("body encoding"))?;
+                (file, Some(body))
+            } else {
+                let response = self
+                    .send(
+                        self.api_request(
+                            "/2/files/get_metadata",
+                            serde_json::json!({ "path": expected_path }),
+                        )?,
+                        context,
+                        &mut physical_bytes,
+                    )
+                    .await?;
+                if response.status != 200 {
+                    return Err(self.map_http_failure(&response));
+                }
+                let file: DropboxFile =
+                    serde_json::from_slice(&response.body).map_err(|_| self.malformed("file"))?;
+                (file, None)
+            };
+            self.validate_file_scope(&file)?;
+            if file.path_lower != expected_path {
+                return Err(self.malformed("selected file identity"));
+            }
+            let row = if is_exposed_path(self.spec.config.content_scope, &file.name) {
+                self.project_file(file, body, plan)?
+            } else {
+                None
+            };
+            return Ok(SourcePage {
+                source: self.model.id().clone(),
+                scanned: 1,
+                rows: row.into_iter().collect(),
+                next_cursor: None,
+                observed_at_ms: now_ms(),
+                freshness_ms: 0,
+            });
+        }
         let mut provider_cursor = match cursor {
             Some(cursor) => Some(self.decode_query_cursor(plan, cursor, context)?),
             None => None,
@@ -1840,7 +1994,8 @@ struct DropboxFile {
     server_modified: String,
     rev: String,
     size: u64,
-    content_hash: String,
+    #[serde(default)]
+    content_hash: Option<String>,
 }
 
 impl DropboxFile {
@@ -1851,7 +2006,10 @@ impl DropboxFile {
             || !valid_display_path(&self.path_display)
             || !valid_provider_atom(&self.id, 1_024)
             || !valid_provider_atom(&self.rev, 512)
-            || !valid_provider_atom(&self.content_hash, 512)
+            || self
+                .content_hash
+                .as_ref()
+                .is_some_and(|content_hash| !valid_provider_atom(content_hash, 512))
             || self.size > i64::MAX as u64
             || parse_timestamp_ms(&self.client_modified).is_err()
             || parse_timestamp_ms(&self.server_modified).is_err()
@@ -1863,7 +2021,7 @@ impl DropboxFile {
 
     fn to_value(&self, source_id: &SourceId) -> Result<serde_json::Value, SourceError> {
         self.validate(source_id)?;
-        Ok(serde_json::json!({
+        let mut value = serde_json::json!({
             "id": self.id,
             "name": self.name,
             "path": self.path_lower,
@@ -1871,8 +2029,17 @@ impl DropboxFile {
                 .map_err(|_| malformed_source(source_id, "modifiedAt"))?,
             "size": i64::try_from(self.size).map_err(|_| malformed_source(source_id, "size"))?,
             "rev": self.rev,
-            "contentHash": self.content_hash,
-        }))
+        });
+        if let Some(content_hash) = &self.content_hash {
+            value
+                .as_object_mut()
+                .ok_or_else(|| malformed_source(source_id, "file"))?
+                .insert(
+                    "contentHash".to_string(),
+                    serde_json::Value::String(content_hash.clone()),
+                );
+        }
+        Ok(value)
     }
 }
 
@@ -1958,6 +2125,7 @@ fn allowed_request(endpoint: DropboxEndpoint, path: &str) -> bool {
         (endpoint, path),
         (DropboxEndpoint::Api, "/2/files/list_folder")
             | (DropboxEndpoint::Api, "/2/files/list_folder/continue")
+            | (DropboxEndpoint::Api, "/2/files/get_metadata")
             | (
                 DropboxEndpoint::Api,
                 "/2/files/list_folder/get_latest_cursor"
@@ -2018,12 +2186,15 @@ fn validate_provider_cursor(cursor: &str) -> Result<(), SourceError> {
     Ok(())
 }
 
-fn is_text_path(name: &str) -> bool {
+fn is_exposed_path(scope: DropboxContentScope, name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, extension)| {
-        matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "md" | "markdown" | "txt"
-        )
+        let extension = extension.to_ascii_lowercase();
+        match scope {
+            DropboxContentScope::ReadableText => {
+                matches!(extension.as_str(), "md" | "markdown" | "txt")
+            }
+            DropboxContentScope::Markdown => matches!(extension.as_str(), "md" | "markdown"),
+        }
     })
 }
 

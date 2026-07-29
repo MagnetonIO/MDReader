@@ -1607,6 +1607,7 @@ fn parse_connected_library_response(
             editable: false,
             active: false,
         }],
+        window_truncated: false,
     })
 }
 

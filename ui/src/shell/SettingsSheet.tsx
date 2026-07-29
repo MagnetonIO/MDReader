@@ -732,8 +732,8 @@ export function SettingsSheet({
                           </div>
                           <p>
                             {source.provider === 'google-drive'
-                              ? 'Choose the Drive files or folders that belong in this Library.'
-                              : 'Read Markdown and text files from your Dropbox account.'}
+                              ? 'Choose the Drive folders or Markdown files that belong in this Library.'
+                              : 'Read Markdown files from your Dropbox account.'}
                           </p>
                         </div>
                         <div className="cloud-source__actions">

@@ -7,6 +7,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -176,9 +177,9 @@ describe('Settings sheet', () => {
     expect(within(dialog).getByRole('button', { name: 'Light' })).toBeTruthy();
     expect(within(dialog).getByRole('button', { name: 'Dark' })).toBeTruthy();
     expect(within(dialog).queryByText('MDReader', { exact: true })).toBeNull();
-    for (const ordinal of ['01', '02', '03']) {
-      expect(within(dialog).queryByText(ordinal, { exact: true })).toBeNull();
-    }
+    expect(screen.queryByText('01')).toBeNull();
+    expect(screen.queryByText('02')).toBeNull();
+    expect(within(dialog).queryByText('03', { exact: true })).toBeNull();
   });
 
   it.each([
@@ -328,6 +329,15 @@ describe('Settings sheet', () => {
       name: 'Include Google Drive in Library',
     });
     expect(includeDrive.getAttribute('aria-checked')).toBe('true');
+    const shellCss = readFileSync(`${process.cwd()}/src/shell/shell.css`, 'utf8');
+    const compactSwitchRule = shellCss.match(
+      /\.cloud-source__actions\s+\.source-switch\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(compactSwitchRule, 'the provider action override for the compact switch').toBeTruthy();
+    expect(compactSwitchRule).toContain('width: 38px;');
+    expect(compactSwitchRule).toContain('height: 22px;');
+    expect(compactSwitchRule).toContain('padding: 2px;');
+    expect(compactSwitchRule).toContain('border-radius: 999px;');
 
     fireEvent.click(includeDrive);
     await screen.findByText('Paused');
@@ -461,7 +471,8 @@ describe('Settings sheet', () => {
       />,
     );
 
-    expect(await screen.findByRole('img', { name: 'Google Drive' })).toBeTruthy();
+    await screen.findByRole('img', { name: 'Google Drive' });
+    expect(screen.getByRole('img', { name: 'Google Drive' })).toBeTruthy();
     expect(screen.getByRole('img', { name: 'Dropbox' })).toBeTruthy();
     expect(await screen.findByRole('switch', {
       name: 'Include Google Drive in Library',

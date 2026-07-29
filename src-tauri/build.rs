@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=../ui/dist");
 
     // The macOS release links the reviewed ONNX Runtime, whose install name is
     // `@rpath/libonnxruntime.1.24.2.dylib`, and Tauri packages it under

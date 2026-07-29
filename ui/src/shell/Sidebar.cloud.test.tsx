@@ -71,6 +71,7 @@ function fixtureForMember({
   };
   const response: LibraryEntityQueryResponse_Serialize = {
     memberships: [member],
+    window_truncated: false,
     answer: {
       query_id: uuid(5),
       pins: {
@@ -122,7 +123,8 @@ it('keeps Library Refresh a compact quiet action without changing its behavior',
   const view = render(<Sidebar {...commonProps} />);
 
   const refresh = screen.getByRole('button', { name: 'Refresh' });
-  expect(refresh.classList.contains('library-sources__refresh')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Refresh' }).className)
+    .toContain('library-sources__refresh');
   fireEvent.click(refresh);
   expect(onRefreshLibrary).toHaveBeenCalledOnce();
 
@@ -179,6 +181,59 @@ it('navigates connected read-through sources from the primary Library rail', () 
   expect(screen.getByText('Read-only')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Open Cloud note.md from Dropbox' }));
   expect(open).toHaveBeenCalledWith(dropbox.member, dropbox.response.answer.rows[0]);
+});
+
+it('identifies cloud memberships with provider icons and file-tree typography', () => {
+  const drive = fixtureForMember({
+    id: 40,
+    registryId: 'google-drive',
+    name: 'Google Drive',
+    kind: 'google-drive',
+    editable: false,
+    active: false,
+    title: 'Drive note.md',
+    path: 'drive-note',
+  });
+  const dropbox = fixtureForMember({
+    id: 60,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Dropbox note.md',
+    path: '/notes/dropbox.md',
+  });
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root={null}
+      files={[]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[drive.response, dropbox.response]}
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+    />,
+  );
+
+  screen.getByRole('navigation', { name: 'Library sources' });
+  expect(screen.getByRole('img', { name: 'Google Drive' })).toBeTruthy();
+  expect(screen.getByRole('img', { name: 'Dropbox' })).toBeTruthy();
+
+  const shellCss = readFileSync(`${process.cwd()}/src/shell/shell.css`, 'utf8');
+  const documentRule = shellCss.match(
+    /\.library-sources__source li button\s*\{([^}]*)\}/,
+  )?.[1];
+  expect(documentRule, 'cloud document typography rule').toBeTruthy();
+  expect(documentRule).toContain('font-size: var(--text--1);');
 });
 
 it('keeps the active workspace and every supplemental membership across evidence groups', () => {

@@ -6,16 +6,17 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use catdb_connector_google_drive::{
     DriveAccessGrant, DriveAccessToken, DriveAvailability, DriveChangeCursor, DriveChangeEvent,
-    DriveChangeOutcome, DriveConnectorError, DriveCursorKey, DriveHttpMethod, DriveHttpRequest,
-    DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce, DriveRefreshCredential,
-    DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource,
-    DriveSourceConfig, DriveTransport, DriveTransportError, PinnedDriveSourceSpec,
-    GOOGLE_DRIVE_READONLY_SCOPE,
+    DriveChangeOutcome, DriveConnectorError, DriveContentScope, DriveCursorKey, DriveHttpMethod,
+    DriveHttpRequest, DriveHttpResponse, DriveKnownRevision, DriveOAuthPkce,
+    DriveRefreshCredential, DriveRuntimeSecrets, DriveSecretReference, DriveSecretResolver,
+    DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
+    PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
 };
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
 };
-use catdb_query::{EntityQuery, EntityTarget};
+use catdb_core::BaseType;
+use catdb_query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
 
 #[derive(Clone)]
 struct ScriptedTransport {
@@ -227,6 +228,30 @@ fn selected_file_with_resource_key_config() -> DriveSourceConfig {
     .unwrap()
 }
 
+fn readable_root_config() -> DriveSourceConfig {
+    DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![DriveSelection::root("provider-root")],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap()
+    .with_content_scope(DriveContentScope::ReadableText)
+}
+
+fn markdown_root_config() -> DriveSourceConfig {
+    DriveSourceConfig::new(
+        "drive-library",
+        "drive",
+        "Document",
+        vec![DriveSelection::root("provider-root")],
+        DriveSecretReference::new("keychain/mdreader/drive").unwrap(),
+    )
+    .unwrap()
+    .with_content_scope(DriveContentScope::Markdown)
+}
+
 fn source(
     transport: ScriptedTransport,
     config: DriveSourceConfig,
@@ -247,6 +272,19 @@ fn query() -> EntityQuery {
     EntityQuery {
         target: EntityTarget::Entity("drive.Document".to_string()),
         filters: Vec::new(),
+    }
+}
+
+fn exact_id_query(id: &str) -> EntityQuery {
+    EntityQuery {
+        target: EntityTarget::Entity("drive.Document".to_string()),
+        filters: vec![EntityFilter {
+            attr: "id".to_string(),
+            op: AttrOp::Eq,
+            value: AttrValue::Text(id.to_string()),
+            ty: BaseType::Text,
+            origins: Vec::new(),
+        }],
     }
 }
 
@@ -693,6 +731,274 @@ fn configured_selections_are_unique_by_drive_id_and_conflicting_keys_fail_closed
         secret,
     )
     .is_err());
+}
+
+#[tokio::test]
+async fn readable_root_lists_the_drive_once_and_excludes_non_reader_content() {
+    let root_metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"provider-root",
+        "name":"My Drive",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let global_listing = listing(
+        serde_json::json!([
+            {
+                "id":"nested-note",
+                "name":"nested.md",
+                "mimeType":"text/markdown",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "size":"4",
+                "parents":["nested-folder"],
+                "trashed":false
+            },
+            {
+                "id":"unreadable-pdf",
+                "name":"archive.pdf",
+                "mimeType":"application/pdf",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "size":"400",
+                "parents":["nested-folder"],
+                "trashed":false
+            }
+        ]),
+        None,
+        false,
+    );
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, root_metadata),
+            response(200, global_listing),
+        ]),
+        readable_root_config(),
+    );
+
+    let answer = read(
+        &source,
+        &query(),
+        &["id".to_string(), "name".to_string()],
+        &context(16, 16, 64 * 1024),
+    )
+    .await
+    .expect("readable root query");
+
+    assert_eq!(answer.rows.len(), 1);
+    assert_eq!(answer.rows[0].key, "nested-note");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    let list = url::Url::parse(&format!("https://www.googleapis.com{}", requests[1].path()))
+        .expect("list URL");
+    let query = list
+        .query_pairs()
+        .find_map(|(key, value)| (key == "q").then_some(value.into_owned()))
+        .expect("Drive query");
+    assert!(!query.contains("in parents"));
+    assert!(query.contains("text/markdown"));
+    assert!(query.contains("text/plain"));
+    assert!(query.contains("application/vnd.google-apps.document"));
+}
+
+#[tokio::test]
+async fn markdown_root_excludes_plain_text_and_google_documents() {
+    let root_metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"provider-root",
+        "name":"My Drive",
+        "mimeType":"application/vnd.google-apps.folder",
+        "modifiedTime":"2026-07-20T12:34:55Z",
+        "parents":[],
+        "trashed":false
+    }))
+    .unwrap();
+    let global_listing = listing(
+        serde_json::json!([
+            {
+                "id":"markdown-short",
+                "name":"one.md",
+                "mimeType":"text/plain",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "size":"4",
+                "parents":["nested-folder"],
+                "trashed":false
+            },
+            {
+                "id":"markdown-long",
+                "name":"guide.markdown",
+                "mimeType":"text/markdown",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "size":"4",
+                "parents":["nested-folder"],
+                "trashed":false
+            },
+            {
+                "id":"plain-text",
+                "name":"notes.txt",
+                "mimeType":"text/plain",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "size":"4",
+                "parents":["nested-folder"],
+                "trashed":false
+            },
+            {
+                "id":"google-document",
+                "name":"Provider document",
+                "mimeType":"application/vnd.google-apps.document",
+                "modifiedTime":"2026-07-20T12:34:56Z",
+                "parents":["nested-folder"],
+                "trashed":false
+            }
+        ]),
+        None,
+        false,
+    );
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, root_metadata),
+            response(200, global_listing),
+        ]),
+        markdown_root_config(),
+    );
+
+    let answer = read(
+        &source,
+        &query(),
+        &["id".to_string(), "name".to_string()],
+        &context(16, 16, 64 * 1024),
+    )
+    .await
+    .expect("Markdown-only Drive query");
+
+    assert_eq!(
+        answer
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        ["markdown-short", "markdown-long"]
+    );
+    let requests = transport.requests();
+    let list = url::Url::parse(&format!("https://www.googleapis.com{}", requests[1].path()))
+        .expect("list URL");
+    let provider_query = list
+        .query_pairs()
+        .find_map(|(key, value)| (key == "q").then_some(value.into_owned()))
+        .expect("Drive query");
+    assert!(provider_query.contains("text/markdown"));
+    assert!(provider_query.contains("text/plain"));
+    assert!(!provider_query.contains("application/vnd.google-apps.document"));
+}
+
+#[tokio::test]
+async fn readable_root_exact_id_reads_only_that_document_and_its_body() {
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "id":"nested-note",
+        "name":"nested.md",
+        "mimeType":"text/markdown",
+        "modifiedTime":"2026-07-20T12:34:56Z",
+        "size":"14",
+        "md5Checksum":"note-checksum",
+        "parents":["nested-folder"],
+        "trashed":false
+    }))
+    .unwrap();
+    let (source, transport) = source(
+        ScriptedTransport::without_selected_folder_metadata([
+            response(200, metadata),
+            response(200, b"# Nested note\n".to_vec()),
+        ]),
+        readable_root_config(),
+    );
+    let plan = source
+        .compile(
+            &exact_id_query("nested-note"),
+            &["id".to_string(), "name".to_string(), "body".to_string()],
+        )
+        .expect("exact id plan");
+    let page = source
+        .execute_page(&plan, None, &context(10, 10, 64 * 1024))
+        .await
+        .expect("exact document");
+
+    assert_eq!(page.scanned, 1);
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].value["body"], "# Nested note\n");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0]
+        .path()
+        .starts_with("/drive/v3/files/nested-note?"));
+    assert!(requests[1]
+        .path()
+        .contains("/drive/v3/files/nested-note?alt=media"));
+    assert!(requests
+        .iter()
+        .all(|request| !request.path().contains("q=")));
+}
+
+#[tokio::test]
+async fn readable_root_change_tracking_keeps_nested_text_and_ignores_other_content() {
+    let changed = serde_json::to_vec(&serde_json::json!({
+        "changes": [
+            {
+                "changeType":"file",
+                "removed":false,
+                "fileId":"nested-note",
+                "file":{
+                    "id":"nested-note",
+                    "name":"nested.md",
+                    "mimeType":"text/markdown",
+                    "modifiedTime":"2026-07-20T12:34:56Z",
+                    "md5Checksum":"note-checksum",
+                    "parents":["nested-folder"],
+                    "trashed":false
+                }
+            },
+            {
+                "changeType":"file",
+                "removed":false,
+                "fileId":"nested-pdf",
+                "file":{
+                    "id":"nested-pdf",
+                    "name":"archive.pdf",
+                    "mimeType":"application/pdf",
+                    "modifiedTime":"2026-07-20T12:34:57Z",
+                    "md5Checksum":"pdf-checksum",
+                    "parents":["nested-folder"],
+                    "trashed":false
+                }
+            }
+        ],
+        "newStartPageToken":"changes-2"
+    }))
+    .unwrap();
+    let (source, _) = source(
+        ScriptedTransport::new([
+            response(200, br#"{"startPageToken":"changes-1"}"#),
+            response(200, changed),
+        ]),
+        readable_root_config(),
+    );
+    let cursor = source
+        .start_change_tracking(&context(20, 20, 64 * 1024))
+        .await
+        .expect("start changes");
+    let outcome = source
+        .read_changes(&cursor, &BTreeMap::new(), &context(20, 20, 64 * 1024))
+        .await
+        .expect("read changes");
+    let DriveChangeOutcome::Page { events, .. } = outcome else {
+        panic!("expected change page");
+    };
+    assert_eq!(
+        events,
+        vec![DriveChangeEvent::Upserted {
+            file_id: "nested-note".to_string(),
+            modified_time: "2026-07-20T12:34:56Z".to_string(),
+            checksum: Some("note-checksum".to_string()),
+        }]
+    );
 }
 
 #[tokio::test]

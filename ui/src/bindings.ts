@@ -1224,12 +1224,36 @@ export type LibraryEntityQueryResponse = LibraryEntityQueryResponse_Serialize | 
 export type LibraryEntityQueryResponse_Deserialize = {
 	answer: EntityQueryResponse_Deserialize,
 	memberships: LibrarySourceExecution[],
+	/**
+	 *  The bounded result window reached its limit or CatDB returned a
+	 *  continuation.
+	 *
+	 *  CatDB continuation cursors remain native execution authority: they are
+	 *  authenticated to an immutable runtime snapshot and never cross into the
+	 *  renderer. This conservative flag preserves the difference between a
+	 *  complete source execution and proof that every matching row was
+	 *  enumerated; callers must not interpret `false` source failures from a
+	 *  saturated window.
+	 */
+	window_truncated: boolean,
 };
 
 /**  One exact CatDB answer plus the membership boundary used to produce it. */
 export type LibraryEntityQueryResponse_Serialize = {
 	answer: EntityQueryResponse_Serialize,
 	memberships: LibrarySourceExecution[],
+	/**
+	 *  The bounded result window reached its limit or CatDB returned a
+	 *  continuation.
+	 *
+	 *  CatDB continuation cursors remain native execution authority: they are
+	 *  authenticated to an immutable runtime snapshot and never cross into the
+	 *  renderer. This conservative flag preserves the difference between a
+	 *  complete source execution and proof that every matching row was
+	 *  enumerated; callers must not interpret `false` source failures from a
+	 *  saturated window.
+	 */
+	window_truncated: boolean,
 };
 
 export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };

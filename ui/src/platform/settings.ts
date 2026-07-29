@@ -31,6 +31,14 @@ import {
   type WorkspaceGrant,
 } from '../bindings';
 
+/** Bounded semantic window rendered by the Library sidebar.
+ *
+ * Provider metadata is still read through CatDB, and selected document bodies
+ * are fetched separately. A sidebar refresh must not turn into an eager export
+ * of every record in a large connected source.
+ */
+export const LIBRARY_REFRESH_WINDOW = 1_000;
+
 export type {
   CloudProvider,
   CloudFilterInput,
@@ -328,8 +336,8 @@ export async function queryLibraryDocuments(
     source_ids: sourceIds ?? null,
     max_staleness_ms: null,
     require_complete: false,
-    page_size: 1_000,
-    limit: 100_000,
+    page_size: LIBRARY_REFRESH_WINDOW,
+    limit: LIBRARY_REFRESH_WINDOW,
     cursor: null,
   };
   const result = await commands.queryLibraryDocuments(requestId, request);
@@ -359,8 +367,8 @@ export async function queryConnectedCatdbDocuments(
     source_ids: null,
     max_staleness_ms: null,
     require_complete: false,
-    page_size: 1_000,
-    limit: 100_000,
+    page_size: LIBRARY_REFRESH_WINDOW,
+    limit: LIBRARY_REFRESH_WINDOW,
     cursor: null,
   };
   const result = await commands.queryConnectedLibraryDocuments(

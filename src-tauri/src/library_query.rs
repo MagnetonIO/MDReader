@@ -40,7 +40,7 @@ const VERSION_NAMESPACE: Uuid = Uuid::from_u128(0x7e60a029_b565_47a8_907e_820caf
 const QUERY_DEADLINE: Duration = Duration::from_secs(30);
 const QUERY_WORK_BUDGET: usize = 100_000;
 const QUERY_BYTE_BUDGET: usize = 32 * 1024 * 1024;
-const QUERY_PAGE_SIZE: usize = 256;
+const QUERY_PAGE_SIZE: usize = 1_000;
 const QUERY_CONCURRENCY: usize = 4;
 const SCOPED_KEY_PREFIX: &str = "library:";
 const LIBRARY_IDENTITY_FIELD: &str = "path";
@@ -265,6 +265,16 @@ pub(crate) struct LibrarySourceExecution {
 pub(crate) struct LibraryEntityQueryResponse {
     pub answer: EntityQueryResponse,
     pub memberships: Vec<LibrarySourceExecution>,
+    /// The bounded result window reached its limit or CatDB returned a
+    /// continuation.
+    ///
+    /// CatDB continuation cursors remain native execution authority: they are
+    /// authenticated to an immutable runtime snapshot and never cross into the
+    /// renderer. This conservative flag preserves the difference between a
+    /// complete source execution and proof that every matching row was
+    /// enumerated; callers must not interpret `false` source failures from a
+    /// saturated window.
+    pub window_truncated: bool,
 }
 
 /// A Library query failed before it could return one exact answer.
@@ -754,6 +764,8 @@ pub(crate) async fn execute_registered_library_query(
     request
         .validate()
         .map_err(|_| LibraryQueryError::InvalidRequest)?;
+    let result_window_limit =
+        usize::try_from(request.limit).map_err(|_| LibraryQueryError::LimitExceeded)?;
     if request.entity != "document.Document"
         || request.cursor.is_some()
         || request.query_id.is_some()
@@ -792,11 +804,9 @@ pub(crate) async fn execute_registered_library_query(
     request.source_ids = Some(selected_physical);
     request.catalog_revision_id = Some(runtime.catalog.revision.revision_id);
     request.schema_version_id = Some(runtime.catalog.default_schema_version_id);
-    let pinned_request = request.clone();
-
-    // Continuations are consumed inside this command while the immutable
-    // runtime and per-execution secret remain alive. No opaque cursor crosses
-    // into renderer authority or outlives its exact catalog snapshot.
+    // Continuation authority remains native and bound to this immutable
+    // runtime. The renderer receives one bounded window plus an explicit
+    // `window_truncated` bit, never an authenticated CatDB cursor.
     let mut cursor_seed = Uuid::new_v4().as_bytes().to_vec();
     cursor_seed.extend_from_slice(Uuid::new_v4().as_bytes());
     let cursor_key = *blake3::hash(&cursor_seed).as_bytes();
@@ -818,9 +828,8 @@ pub(crate) async fn execute_registered_library_query(
         ttl: QUERY_DEADLINE,
     })
     .map_err(|_| LibraryQueryError::InvalidCatalog)?;
-    let query_id = Uuid::new_v4();
     let context = ReadContext::new(
-        query_id,
+        Uuid::new_v4(),
         Instant::now()
             .checked_add(QUERY_DEADLINE)
             .ok_or(LibraryQueryError::QueryFailed)?,
@@ -845,30 +854,8 @@ pub(crate) async fn execute_registered_library_query(
         .await
         .map_err(map_entity_query_error)?;
     restore_membership_provenance(&mut answer, &runtime.memberships)?;
-    while let Some(cursor) = answer.next_cursor.take() {
-        let mut continuation = pinned_request.clone();
-        continuation.query_id = Some(answer.query_id);
-        continuation.cursor = Some(cursor);
-        let mut page = service
-            .query_with_correlation_fields(
-                &principal,
-                continuation,
-                &context,
-                &[LIBRARY_IDENTITY_FIELD.to_string()],
-            )
-            .await
-            .map_err(map_entity_query_error)?;
-        restore_membership_provenance(&mut page, &runtime.memberships)?;
-        if page.query_id != answer.query_id
-            || page.pins != answer.pins
-            || page.sources != answer.sources
-            || page.completeness != answer.completeness
-        {
-            return Err(LibraryQueryError::InvalidResponse);
-        }
-        answer.rows.extend(page.rows);
-        answer.next_cursor = page.next_cursor;
-    }
+    let window_truncated =
+        answer.next_cursor.take().is_some() || answer.rows.len() >= result_window_limit;
     let selected = selected_memberships.into_iter().collect::<BTreeSet<_>>();
     Ok(LibraryEntityQueryResponse {
         answer,
@@ -877,6 +864,7 @@ pub(crate) async fn execute_registered_library_query(
             .into_iter()
             .filter(|member| selected.contains(&member.membership_id))
             .collect(),
+        window_truncated,
     })
 }
 
@@ -1221,7 +1209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn library_query_hydrates_every_continuation_page_beyond_one_thousand_rows() {
+    async fn library_query_returns_without_draining_a_cloud_continuation() {
         let workspace = Uuid::new_v4();
         let drive = Uuid::new_v4();
         let mut query = request(workspace, vec![drive]);
@@ -1237,11 +1225,51 @@ mod tests {
             CancellationToken::new(),
         )
         .await
-        .expect("complete paged Library query");
+        .expect("bounded Library query");
 
-        assert_eq!(answer.answer.rows.len(), 1_001);
+        assert_eq!(answer.answer.rows.len(), 1_000);
         assert_eq!(answer.answer.next_cursor, None);
         assert_eq!(answer.answer.completeness, Completeness::Complete);
+        assert!(answer.window_truncated);
+    }
+
+    #[tokio::test]
+    async fn library_query_returns_a_bounded_window_from_a_larger_drive() {
+        let workspace = Uuid::new_v4();
+        let drive = Uuid::new_v4();
+        let mut query = request(workspace, vec![drive]);
+        query.select = [
+            "title",
+            "path",
+            "mediaType",
+            "modifiedAt",
+            "size",
+            "checksum",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        query.page_size = 1_000;
+        query.limit = 1_000;
+
+        let answer = execute_registered_library_query(
+            query,
+            vec![cloud_member(
+                drive,
+                Arc::new(CloudFixture::drive_documents(2_306)),
+                mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+            )],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("a large Drive must return one bounded Library window");
+
+        assert_eq!(answer.answer.rows.len(), 1_000);
+        assert_eq!(answer.answer.next_cursor, None);
+        assert_eq!(answer.answer.completeness, Completeness::Complete);
+        assert!(answer.window_truncated);
+        assert!(answer.answer.rows.iter().all(|row| {
+            row.provenance.contains_key("title") && row.provenance.contains_key("path")
+        }));
     }
 
     #[tokio::test]

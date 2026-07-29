@@ -56,6 +56,7 @@ const row: EntityRow = {
 };
 
 const response: LibraryEntityQueryResponse_Serialize = {
+  window_truncated: false,
   answer: {
     query_id: '00000000-0000-4000-8000-000000000001',
     pins: {

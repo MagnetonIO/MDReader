@@ -447,6 +447,21 @@ mod tests {
     }
 
     #[test]
+    fn desktop_window_starts_resizable_with_its_lower_edge_on_a_small_display() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let window = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.first())
+            .expect("main desktop window");
+        assert_eq!(window["resizable"], serde_json::Value::Bool(true));
+        assert!(
+            window["height"].as_u64().is_some_and(|height| height <= 700),
+            "the initial content height must leave the lower native resize edge reachable on a 768px display"
+        );
+    }
+
+    #[test]
     fn shared_mobile_library_carries_the_production_release_identity() {
         let identity = release_identity().as_bytes();
         assert!(identity.starts_with(b"MDREADER_RELEASE_IDENTITY_V1\0"));

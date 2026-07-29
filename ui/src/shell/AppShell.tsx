@@ -73,7 +73,11 @@ import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
-import { hydrateLibrary, libraryHydrationMessage } from './library-documents.js';
+import {
+  hydrateLibrary,
+  hydrateLibraryDocument,
+  libraryHydrationMessage,
+} from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -170,10 +174,21 @@ export function AppShell() {
   const [librarySearch, setLibrarySearch] = useState('');
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [libraryDocumentLoading, setLibraryDocumentLoading] = useState(false);
+  const [libraryDocumentError, setLibraryDocumentError] = useState<string | null>(null);
   const libraryRefreshGeneration = useRef(0);
   const libraryRefreshRequest = useRef<string | null>(null);
+  const libraryDocumentGeneration = useRef(0);
+  const libraryDocumentRequest = useRef<string | null>(null);
   const clearLibraryDocument = useCallback(() => {
+    libraryDocumentGeneration.current += 1;
+    if (settingsBackend.cancelCloudDocumentQuery && libraryDocumentRequest.current) {
+      void settingsBackend.cancelCloudDocumentQuery(libraryDocumentRequest.current);
+    }
+    libraryDocumentRequest.current = null;
     setLibraryDocument(null);
+    setLibraryDocumentLoading(false);
+    setLibraryDocumentError(null);
   }, []);
 
   useEffect(() => {
@@ -286,6 +301,47 @@ export function AppShell() {
   // generation so a startup read that raced the engine cannot leave the
   // Library empty until the user changes Settings or presses Refresh.
   }, [hydrated, refreshLibrary, semanticWorkspaceGeneration]);
+
+  const openLibraryDocument = useCallback(
+    async (member: LibrarySourceExecution, row: EntityRow): Promise<void> => {
+      const evidence = libraryEvidence.find((answer) =>
+        answer.memberships.some(
+          (candidate) => candidate.membership_id === member.membership_id,
+        ),
+      );
+      if (!evidence) return;
+      const generation = libraryDocumentGeneration.current + 1;
+      libraryDocumentGeneration.current = generation;
+      if (settingsBackend.cancelCloudDocumentQuery && libraryDocumentRequest.current) {
+        await settingsBackend.cancelCloudDocumentQuery(libraryDocumentRequest.current);
+      }
+      const requestId = `library-document:${globalThis.crypto.randomUUID()}`;
+      libraryDocumentRequest.current = requestId;
+      setLibraryDocument({ member, row, evidence });
+      setLibraryDocumentLoading(true);
+      setLibraryDocumentError(null);
+      try {
+        const hydratedDocument = await hydrateLibraryDocument(
+          settingsBackend,
+          { member, row, evidence },
+          requestId,
+        );
+        if (libraryDocumentGeneration.current === generation) {
+          setLibraryDocument(hydratedDocument);
+        }
+      } catch {
+        if (libraryDocumentGeneration.current === generation) {
+          setLibraryDocumentError('This document could not be read from its Library source.');
+        }
+      } finally {
+        if (libraryDocumentGeneration.current === generation) {
+          libraryDocumentRequest.current = null;
+          setLibraryDocumentLoading(false);
+        }
+      }
+    },
+    [libraryEvidence],
+  );
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab?.docRef.path ?? null;
@@ -2019,14 +2075,7 @@ export function AppShell() {
           onLibrarySearch={setLibrarySearch}
           onOpenLibrary={(member, row) => {
             setLibraryError(null);
-            const evidence = libraryEvidence.find((answer) =>
-              answer.memberships.some(
-                (candidate) => candidate.membership_id === member.membership_id,
-              ),
-            );
-            if (evidence) {
-              setLibraryDocument({ member, row, evidence });
-            }
+            void openLibraryDocument(member, row);
           }}
           onRefreshLibrary={() => void refreshLibrary()}
         />
@@ -2047,7 +2096,14 @@ export function AppShell() {
                 member={libraryDocument.member}
                 row={libraryDocument.row}
                 evidence={libraryDocument.evidence}
-                onRetry={() => void refreshLibrary()}
+                loading={libraryDocumentLoading}
+                error={libraryDocumentError}
+                onRetry={() =>
+                  void openLibraryDocument(
+                    libraryDocument.member,
+                    libraryDocument.row,
+                  )
+                }
                 onEdit={
                   libraryDocument.member.editable
                     ? () =>

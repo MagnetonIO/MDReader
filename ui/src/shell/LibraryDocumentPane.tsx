@@ -16,6 +16,8 @@ export interface LibraryDocumentPaneProps {
   member: LibrarySourceExecution;
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
+  loading?: boolean;
+  error?: string | null;
   onEdit?: () => void;
   onRetry?: () => void;
 }
@@ -52,6 +54,8 @@ export function LibraryDocumentPane({
   member,
   row,
   evidence,
+  loading = false,
+  error = null,
   onEdit,
   onRetry,
 }: LibraryDocumentPaneProps) {
@@ -108,9 +112,14 @@ export function LibraryDocumentPane({
               {inspectorOpen ? 'Close Inspector' : 'Inspect'}
             </button>
           ) : null}
-          {evidence.answer.completeness.state === 'partial' && onRetry ? (
-            <button type="button" className="library-reader__retry" onClick={onRetry}>
-              Retry Library
+          {(error !== null || evidence.answer.completeness.state === 'partial') && onRetry ? (
+            <button
+              type="button"
+              className="library-reader__retry"
+              aria-label="Retry Library"
+              onClick={onRetry}
+            >
+              Retry
             </button>
           ) : null}
           {providerUrl ? (
@@ -136,7 +145,9 @@ export function LibraryDocumentPane({
             {body === null ? (
               <div className="reader-empty">
                 <p className="reader-empty__hint">
-                  Could not read this document: the provider body is unavailable.
+                  {loading
+                    ? 'Reading provider-owned content…'
+                    : error ?? 'Could not read this document: the provider body is unavailable.'}
                 </p>
               </div>
             ) : doc ? (

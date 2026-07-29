@@ -470,6 +470,8 @@ pub(crate) struct DriveItemSelection {
     id: String,
     resource_key: Option<String>,
     folder: bool,
+    #[serde(default)]
+    root: bool,
 }
 
 impl fmt::Debug for DriveItemSelection {
@@ -485,6 +487,7 @@ impl fmt::Debug for DriveItemSelection {
                     .map(|_| "[redacted-resource-key]"),
             )
             .field("folder", &self.folder)
+            .field("root", &self.root)
             .finish()
     }
 }
@@ -539,6 +542,9 @@ impl CloudSourceConfig {
                                 .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b',' | b'/'))
                     });
                     if !valid_id || !valid_resource_key || !ids.insert(selection.id.as_str()) {
+                        return Err(CloudSourceError::InvalidConfiguration);
+                    }
+                    if selection.root && !selection.folder {
                         return Err(CloudSourceError::InvalidConfiguration);
                     }
                 }
@@ -1801,6 +1807,7 @@ fn e2e_drive_record() -> CloudSourceRecord {
                 id: E2E_DRIVE_FILE_ID.to_string(),
                 resource_key: None,
                 folder: false,
+                root: false,
             }],
         },
         contract: Some(crate::library::LibrarySourceContract::cloud(
@@ -2246,7 +2253,8 @@ async fn query_cloud_documents_inner(
                     let config = catdb_connector_google_drive::DriveSourceConfig::new(
                         record.id, "mdreader", "Document", selections, reference,
                     )
-                    .map_err(|error| query_invalid(error.to_string()))?;
+                    .map_err(|error| query_invalid(error.to_string()))?
+                    .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
                     let spec = catdb_connector_google_drive::PinnedDriveSourceSpec::new(
                         config,
                         &catalog.schema_version,
@@ -2300,7 +2308,8 @@ async fn query_cloud_documents_inner(
                         catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
                         reference,
                     )
-                    .map_err(|error| query_invalid(error.to_string()))?;
+                    .map_err(|error| query_invalid(error.to_string()))?
+                    .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
                     let spec = catdb_connector_dropbox::PinnedDropboxSourceSpec::new(
                         config,
                         &catalog.schema_version,
@@ -2641,7 +2650,8 @@ async fn bind_library_cloud_source(
                 drive_selections(selections)?,
                 reference,
             )
-            .map_err(|error| query_invalid(error.to_string()))?;
+            .map_err(|error| query_invalid(error.to_string()))?
+            .with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown);
             let spec =
                 catdb_connector_google_drive::PinnedDriveSourceSpec::new(config, schema_version)
                     .map_err(|error| query_invalid(error.to_string()))?;
@@ -2677,7 +2687,8 @@ async fn bind_library_cloud_source(
                 catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
                 reference,
             )
-            .map_err(|error| query_invalid(error.to_string()))?;
+            .map_err(|error| query_invalid(error.to_string()))?
+            .with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown);
             let spec =
                 catdb_connector_dropbox::PinnedDropboxSourceSpec::new(config, schema_version)
                     .map_err(|error| query_invalid(error.to_string()))?;
@@ -3345,25 +3356,39 @@ fn drive_selections(
     selections
         .into_iter()
         .map(
-            |selection| match (selection.folder, selection.resource_key) {
-                (true, Some(key)) => {
+            |selection| match (selection.root, selection.folder, selection.resource_key) {
+                (true, true, Some(key)) => {
+                    catdb_connector_google_drive::DriveSelection::root_with_resource_key(
+                        selection.id,
+                        key,
+                    )
+                }
+                (true, true, None) => Ok(catdb_connector_google_drive::DriveSelection::root(
+                    selection.id,
+                )),
+                (false, true, Some(key)) => {
                     catdb_connector_google_drive::DriveSelection::folder_with_resource_key(
                         selection.id,
                         key,
                     )
                 }
-                (true, None) => Ok(catdb_connector_google_drive::DriveSelection::folder(
+                (false, true, None) => Ok(catdb_connector_google_drive::DriveSelection::folder(
                     selection.id,
                 )),
-                (false, Some(key)) => {
+                (false, false, Some(key)) => {
                     catdb_connector_google_drive::DriveSelection::file_with_resource_key(
                         selection.id,
                         key,
                     )
                 }
-                (false, None) => Ok(catdb_connector_google_drive::DriveSelection::file(
+                (false, false, None) => Ok(catdb_connector_google_drive::DriveSelection::file(
                     selection.id,
                 )),
+                (true, false, _) => Err(
+                    catdb_connector_google_drive::DriveConnectorError::InvalidConfiguration {
+                        field: "selections",
+                    },
+                ),
             },
         )
         .collect::<Result<Vec<_>, _>>()
@@ -5002,6 +5027,7 @@ fn drive_selection_from_metadata(
         id: metadata.id,
         resource_key: metadata.resource_key,
         folder,
+        root: requested_id == "root",
     })
 }
 
@@ -5010,27 +5036,42 @@ fn validate_drive_config(selections: &[DriveItemSelection]) -> Result<(), CloudS
     {
         let mut connector_selections = Vec::with_capacity(selections.len());
         for selection in selections {
-            let connector_selection = match (selection.folder, &selection.resource_key) {
-                (true, Some(key)) => {
-                    catdb_connector_google_drive::DriveSelection::folder_with_resource_key(
+            let connector_selection =
+                match (selection.root, selection.folder, &selection.resource_key) {
+                    (true, true, Some(key)) => {
+                        catdb_connector_google_drive::DriveSelection::root_with_resource_key(
+                            selection.id.clone(),
+                            key.clone(),
+                        )
+                    }
+                    (true, true, None) => Ok(catdb_connector_google_drive::DriveSelection::root(
                         selection.id.clone(),
-                        key.clone(),
-                    )
-                }
-                (true, None) => Ok(catdb_connector_google_drive::DriveSelection::folder(
-                    selection.id.clone(),
-                )),
-                (false, Some(key)) => {
-                    catdb_connector_google_drive::DriveSelection::file_with_resource_key(
+                    )),
+                    (false, true, Some(key)) => {
+                        catdb_connector_google_drive::DriveSelection::folder_with_resource_key(
+                            selection.id.clone(),
+                            key.clone(),
+                        )
+                    }
+                    (false, true, None) => Ok(
+                        catdb_connector_google_drive::DriveSelection::folder(selection.id.clone()),
+                    ),
+                    (false, false, Some(key)) => {
+                        catdb_connector_google_drive::DriveSelection::file_with_resource_key(
+                            selection.id.clone(),
+                            key.clone(),
+                        )
+                    }
+                    (false, false, None) => Ok(catdb_connector_google_drive::DriveSelection::file(
                         selection.id.clone(),
-                        key.clone(),
-                    )
+                    )),
+                    (true, false, _) => Err(
+                        catdb_connector_google_drive::DriveConnectorError::InvalidConfiguration {
+                            field: "selections",
+                        },
+                    ),
                 }
-                (false, None) => Ok(catdb_connector_google_drive::DriveSelection::file(
-                    selection.id.clone(),
-                )),
-            }
-            .map_err(|_| CloudSourceError::InvalidConfiguration)?;
+                .map_err(|_| CloudSourceError::InvalidConfiguration)?;
             connector_selections.push(connector_selection);
         }
         let reference = catdb_connector_google_drive::DriveSecretReference::new("mdreader-keyring")
@@ -5042,6 +5083,9 @@ fn validate_drive_config(selections: &[DriveItemSelection]) -> Result<(), CloudS
             connector_selections,
             reference,
         )
+        .map(|config| {
+            config.with_content_scope(catdb_connector_google_drive::DriveContentScope::Markdown)
+        })
         .map(|_| ())
         .map_err(|_| CloudSourceError::InvalidConfiguration)
     }
@@ -5065,6 +5109,9 @@ fn validate_dropbox_config() -> Result<(), CloudSourceError> {
             catdb_connector_dropbox::DropboxAuthorizationMode::FullDropbox,
             reference,
         )
+        .map(|config| {
+            config.with_content_scope(catdb_connector_dropbox::DropboxContentScope::Markdown)
+        })
         .map(|_| ())
         .map_err(|_| CloudSourceError::InvalidConfiguration)
     }
@@ -5215,6 +5262,36 @@ mod tests {
         });
         held_rx.recv().expect("lifecycle commit point was held");
         (release_tx, gate)
+    }
+
+    fn initialize_committed_git_fixture(root: &Path) {
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "--all"],
+            vec![
+                "-c",
+                "user.name=MDReader Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git fixture command");
+            assert!(
+                output.status.success(),
+                "git fixture command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[derive(Default)]
@@ -5749,6 +5826,7 @@ mod tests {
                 id: "picked_file_123".to_string(),
                 resource_key: None,
                 folder: false,
+                root: false,
             }],
         }
     }
@@ -7306,12 +7384,7 @@ mod tests {
         fs::create_dir(&healthy_root).expect("healthy source");
         fs::write(unavailable_root.join("original.md"), "# original").expect("original document");
         fs::write(healthy_root.join("healthy.md"), "# healthy").expect("healthy document");
-        let healthy_git = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&healthy_root)
-            .output()
-            .expect("initialize healthy git source");
-        assert!(healthy_git.status.success());
+        initialize_committed_git_fixture(&healthy_root);
         let registry_path = temp.path().join("library.json");
         let mut registry = LibraryRegistry::empty();
         let unavailable = registry
@@ -7505,12 +7578,7 @@ mod tests {
         let local_root = temp.path().join("healthy");
         fs::create_dir(&local_root).expect("healthy source");
         fs::write(local_root.join("healthy.md"), "# healthy").expect("healthy document");
-        let healthy_git = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&local_root)
-            .output()
-            .expect("initialize healthy git source");
-        assert!(healthy_git.status.success());
+        initialize_committed_git_fixture(&local_root);
 
         let registry_path = temp.path().join("library.json");
         let mut registry = LibraryRegistry::empty();
@@ -7747,12 +7815,7 @@ mod tests {
         fn initialize(root: &Path, filename: &str, body: &str) {
             fs::create_dir(root).expect("source directory");
             fs::write(root.join(filename), body).expect("source document");
-            let output = std::process::Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(root)
-                .output()
-                .expect("initialize git source");
-            assert!(output.status.success());
+            initialize_committed_git_fixture(root);
         }
 
         let temp = tempdir().expect("temporary directory");

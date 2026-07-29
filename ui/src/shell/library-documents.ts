@@ -25,7 +25,6 @@ const LOCAL_DOCUMENT_FIELDS = [
   'path',
   'modifiedAt',
   'size',
-  'body',
 ] as const;
 
 const DRIVE_DOCUMENT_FIELDS = [
@@ -35,7 +34,6 @@ const DRIVE_DOCUMENT_FIELDS = [
   'modifiedAt',
   'size',
   'checksum',
-  'body',
 ] as const;
 
 const DROPBOX_DOCUMENT_FIELDS = [
@@ -46,7 +44,6 @@ const DROPBOX_DOCUMENT_FIELDS = [
   'size',
   'revision',
   'checksum',
-  'body',
 ] as const;
 
 export interface HydratedLibrary {
@@ -170,13 +167,8 @@ export async function hydrateLibrary(
   };
 }
 
-function connectedCatdbFailureKind(failure: LibraryHydrationFailure): string | null {
-  if (
-    failure.authority !== 'connected-catdb' ||
-    !(failure.reason instanceof SettingsCommandError)
-  ) {
-    return null;
-  }
+function commandFailureKind(failure: LibraryHydrationFailure): string | null {
+  if (!(failure.reason instanceof SettingsCommandError)) return null;
   const detail = failure.reason.detail;
   if (typeof detail !== 'object' || detail === null || !('kind' in detail)) return null;
   return typeof detail.kind === 'string' ? detail.kind : null;
@@ -192,28 +184,82 @@ function isSafeLocalMetadataPartial(
   ) {
     return false;
   }
-  const localSourceIds = new Set(
+  const activeLocalSourceIds = new Set(
     answer.memberships
-      .filter((membership) => membership.kind === 'local-folder')
+      .filter((membership) => membership.kind === 'local-folder' && membership.active)
       .flatMap((membership) => membership.source_ids),
   );
-  const hasUsableLocalRow = answer.answer.rows.some(
-    (row) => memberForRow(answer, row)?.kind === 'local-folder',
+  const healthySourceIds = new Set(
+    answer.answer.sources
+      .filter((source) => source.outcome === 'ran')
+      .map((source) => source.source_id),
   );
   return (
-    hasUsableLocalRow &&
-    completeness.excluded_source_ids.every((sourceId) => localSourceIds.has(sourceId))
+    [...activeLocalSourceIds].some((sourceId) => healthySourceIds.has(sourceId)) &&
+    completeness.excluded_source_ids.every((sourceId) =>
+      activeLocalSourceIds.has(sourceId),
+    )
   );
 }
 
 /** Reader-facing recovery for whole-authority failures and partial answers. */
 export function libraryHydrationMessage(result: HydratedLibrary): string | null {
-  const kinds = new Set(result.failures.map(connectedCatdbFailureKind));
-  if (kinds.has('connection-identity-changed')) {
+  const connectedKinds = new Set(
+    result.failures
+      .filter((failure) => failure.authority === 'connected-catdb')
+      .map(commandFailureKind),
+  );
+  if (connectedKinds.has('connection-identity-changed')) {
     return 'Connected CatDB changed identity. Reconnect it in Settings.';
   }
-  if (kinds.has('permission-denied')) {
+  if (connectedKinds.has('permission-denied')) {
     return 'Connected CatDB denied access. Reconnect it in Settings.';
+  }
+  const embeddedKinds = new Set(
+    result.failures
+      .filter((failure) => failure.authority === 'embedded')
+      .map(commandFailureKind),
+  );
+  if (
+    embeddedKinds.has('credential-missing') ||
+    embeddedKinds.has('credential-unavailable') ||
+    embeddedKinds.has('query-authentication')
+  ) {
+    return 'A connected Library source needs to be reconnected in Settings.';
+  }
+  if (
+    embeddedKinds.has('query-deadline-exceeded') ||
+    embeddedKinds.has('query-timeout')
+  ) {
+    return 'Library refresh timed out while reading a source. Try Refresh again.';
+  }
+  if (embeddedKinds.has('query-rate-limited')) {
+    return 'A Library source is temporarily rate-limited. Try Refresh again shortly.';
+  }
+  if (embeddedKinds.has('query-limit-exceeded')) {
+    return 'This Library is larger than the current refresh limit.';
+  }
+  if (
+    embeddedKinds.has('query-catalog-invalid') ||
+    embeddedKinds.has('query-catalog-unavailable') ||
+    embeddedKinds.has('query-schema-drift')
+  ) {
+    return 'Library metadata is out of date. Refresh the Library or reconnect the source.';
+  }
+  if (
+    embeddedKinds.has('query-read-failed') ||
+    embeddedKinds.has('query-transport') ||
+    embeddedKinds.has('query-source-protocol') ||
+    embeddedKinds.has('query-execution-failed')
+  ) {
+    return 'A Library source failed while CatDB was reading it.';
+  }
+  if (
+    embeddedKinds.has('query-invalid') ||
+    embeddedKinds.has('query-invalid-response') ||
+    embeddedKinds.has('query-failed')
+  ) {
+    return 'CatDB could not prepare or complete the Library query.';
   }
   if (
     result.failures.length === 0 &&
@@ -240,6 +286,69 @@ export interface HydratedLibrarySelection {
   member: LibrarySourceExecution;
   row: EntityRow;
   evidence: LibraryEntityQueryResponse_Serialize;
+}
+
+/**
+ * Read the selected document body without hydrating every Library row. The
+ * semantic `path` identity is mapped to Drive's file id, Dropbox's provider
+ * path, or the local relative path, and the exact source membership is pinned
+ * for the follow-up query.
+ */
+export async function hydrateLibraryDocument(
+  backend: Pick<
+    SettingsBackend,
+    'prepareCloudCatalog' | 'queryLibraryDocuments' | 'queryConnectedCatdbDocuments'
+  >,
+  selection: HydratedLibrarySelection,
+  requestId: string,
+): Promise<HydratedLibrarySelection> {
+  const recordKey = physicalRecordKey(selection.row);
+  if (recordKey === null) {
+    throw new Error('The selected Library document has no provider identity.');
+  }
+  const filters = [{ field: 'path', operator: 'eq' as const, value: recordKey }];
+  let evidence: LibraryEntityQueryResponse_Serialize;
+  if (selection.member.kind === 'connected-catdb') {
+    if (!backend.queryConnectedCatdbDocuments) {
+      throw new Error('Connected CatDB document reads are unavailable.');
+    }
+    evidence = await backend.queryConnectedCatdbDocuments(
+      selection.member.registry_id,
+      filters,
+      [...LIBRARY_DOCUMENT_FIELDS],
+      requestId,
+    );
+  } else {
+    if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
+      throw new Error('Embedded Library document reads are unavailable.');
+    }
+    const catalog = await backend.prepareCloudCatalog();
+    evidence = await backend.queryLibraryDocuments(
+      catalog.workspace_id,
+      filters,
+      [...LIBRARY_DOCUMENT_FIELDS],
+      requestId,
+      [selection.member.membership_id],
+    );
+  }
+  const member =
+    evidence.memberships.find(
+      (candidate) => candidate.membership_id === selection.member.membership_id,
+    ) ?? null;
+  const row =
+    member === null
+      ? null
+      : rowsForMember(evidence, member).find(
+          (candidate) => physicalRecordKey(candidate) === recordKey,
+        ) ?? null;
+  if (
+    member === null ||
+    row === null ||
+    typeof (row.fields as Record<string, unknown> | null)?.body !== 'string'
+  ) {
+    throw new Error('The selected Library document body is unavailable.');
+  }
+  return { member, row, evidence };
 }
 
 function selectedSourceVersion(row: EntityRow): string | null {

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use catdb_connector_dropbox::{
     DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAvailability,
-    DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError, DropboxCursorKey,
-    DropboxEndpoint, DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse,
+    DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError, DropboxContentScope,
+    DropboxCursorKey, DropboxEndpoint, DropboxHttpMethod, DropboxHttpRequest, DropboxHttpResponse,
     DropboxKnownRevision, DropboxOAuthPkce, DropboxRefreshCredential, DropboxRuntimeSecrets,
     DropboxSecretReference, DropboxSecretResolver, DropboxSource, DropboxSourceConfig,
     DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
@@ -16,7 +16,8 @@ use catdb_connector_dropbox::{
 use catdb_connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
 };
-use catdb_query::{EntityQuery, EntityTarget};
+use catdb_core::BaseType;
+use catdb_query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
 
 #[derive(Clone)]
 struct ScriptedTransport {
@@ -103,9 +104,20 @@ fn config() -> DropboxSourceConfig {
     .unwrap()
 }
 
+fn markdown_config() -> DropboxSourceConfig {
+    config().with_content_scope(DropboxContentScope::Markdown)
+}
+
 fn open_source(transport: ScriptedTransport) -> (DropboxSource, ScriptedTransport) {
+    open_source_with_config(transport, config())
+}
+
+fn open_source_with_config(
+    transport: ScriptedTransport,
+    config: DropboxSourceConfig,
+) -> (DropboxSource, ScriptedTransport) {
     let source = DropboxSource::open_with_transport(
-        PinnedDropboxSourceSpec::new(config(), "dropbox-schema-v1").unwrap(),
+        PinnedDropboxSourceSpec::new(config, "dropbox-schema-v1").unwrap(),
         DropboxRuntimeSecrets::new(
             DropboxAccessToken::new("fixture-access-token").unwrap(),
             DropboxCursorKey::new([0x51; 32]),
@@ -120,6 +132,19 @@ fn query() -> EntityQuery {
     EntityQuery {
         target: EntityTarget::Entity("dropbox.Document".to_string()),
         filters: Vec::new(),
+    }
+}
+
+fn exact_path_query(path: &str) -> EntityQuery {
+    EntityQuery {
+        target: EntityTarget::Entity("dropbox.Document".to_string()),
+        filters: vec![EntityFilter {
+            attr: "path".to_string(),
+            op: AttrOp::Eq,
+            value: AttrValue::Text(path.to_string()),
+            ty: BaseType::Text,
+            origins: Vec::new(),
+        }],
     }
 }
 
@@ -228,7 +253,7 @@ fn pkce_uses_exact_read_scopes_without_a_client_secret_or_fictional_folder_scope
 }
 
 #[tokio::test]
-async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
+async fn paginates_list_folder_then_continue_and_exposes_only_reader_content() {
     let first_markdown = file("/knowledge/one.md", "one.md", "r1", "hash-1");
     let binary = file("/knowledge/report.pdf", "report.pdf", "r2", "hash-2");
     let second_text = file("/knowledge/two.txt", "two.txt", "r3", "hash-3");
@@ -279,11 +304,10 @@ async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
     .unwrap();
 
     assert_eq!(answer.scanned, 3);
-    assert_eq!(answer.rows.len(), 3);
+    assert_eq!(answer.rows.len(), 2);
     assert_eq!(answer.rows[0].key, "/knowledge/one.md");
     assert_eq!(answer.rows[0].value["body"], "# One\n\nMarkdown body\n");
-    assert!(answer.rows[1].value.get("body").is_none());
-    assert_eq!(answer.rows[2].value["body"], "plain text body\n");
+    assert_eq!(answer.rows[1].value["body"], "plain text body\n");
 
     let requests = transport.requests();
     assert_eq!(requests.len(), 4);
@@ -314,6 +338,129 @@ async fn paginates_list_folder_then_continue_and_downloads_only_text_content() {
     assert!(requests
         .iter()
         .all(|request| !request.path().contains("upload")));
+}
+
+#[tokio::test]
+async fn optional_metadata_on_an_unrelated_file_cannot_poison_markdown_listing() {
+    let markdown = file("/knowledge/one.md", "one.md", "r1", "hash-1");
+    let mut cloud_native = file(
+        "/knowledge/provider-document.paper",
+        "provider-document.paper",
+        "r2",
+        "unused",
+    );
+    cloud_native
+        .as_object_mut()
+        .expect("file fixture")
+        .remove("content_hash");
+    let transport = ScriptedTransport::new([response(
+        200,
+        list_page(
+            serde_json::json!([cloud_native, markdown]),
+            "cursor-1",
+            false,
+        ),
+    )]);
+    let (source, _) = open_source(transport);
+
+    let answer = read(
+        &source,
+        &query(),
+        &["id".to_string(), "name".to_string(), "path".to_string()],
+        &context(10, 10, 64 * 1024),
+    )
+    .await
+    .expect("optional metadata on an unrelated file");
+
+    assert_eq!(answer.scanned, 2);
+    assert_eq!(answer.rows.len(), 1);
+    assert_eq!(answer.rows[0].key, "/knowledge/one.md");
+}
+
+#[tokio::test]
+async fn markdown_scope_excludes_plain_text_files_from_the_semantic_source() {
+    let transport = ScriptedTransport::new([response(
+        200,
+        list_page(
+            serde_json::json!([
+                file("/knowledge/one.md", "one.md", "r1", "hash-1"),
+                file(
+                    "/knowledge/guide.markdown",
+                    "guide.markdown",
+                    "r2",
+                    "hash-2"
+                ),
+                file("/knowledge/notes.txt", "notes.txt", "r3", "hash-3")
+            ]),
+            "cursor-1",
+            false,
+        ),
+    )]);
+    let (source, _) = open_source_with_config(transport, markdown_config());
+
+    let answer = read(
+        &source,
+        &query(),
+        &["id".to_string(), "name".to_string(), "path".to_string()],
+        &context(10, 10, 64 * 1024),
+    )
+    .await
+    .expect("Markdown-only Dropbox query");
+
+    assert_eq!(answer.scanned, 3);
+    assert_eq!(
+        answer
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        ["/knowledge/one.md", "/knowledge/guide.markdown"]
+    );
+}
+
+#[tokio::test]
+async fn exact_path_reads_only_the_selected_document_body() {
+    let transport = ScriptedTransport::new([response_with_headers(
+        200,
+        [(
+            "Dropbox-API-Result",
+            download_header("/knowledge/one.md", "one.md", "r1", "hash-1"),
+        )],
+        b"# One\n\nMarkdown body\n".to_vec(),
+    )]);
+    let (source, transport) = open_source(transport);
+    let plan = source
+        .compile(
+            &exact_path_query("/knowledge/one.md"),
+            &[
+                "id".to_string(),
+                "name".to_string(),
+                "path".to_string(),
+                "body".to_string(),
+            ],
+        )
+        .expect("exact path plan");
+    let page = source
+        .execute_page(&plan, None, &context(10, 10, 64 * 1024))
+        .await
+        .expect("exact document");
+
+    assert_eq!(page.scanned, 1);
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].value["body"], "# One\n\nMarkdown body\n");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].endpoint(), DropboxEndpoint::Content);
+    assert_eq!(requests[0].path(), "/2/files/download");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            requests[0]
+                .header("Dropbox-API-Arg")
+                .expect("download argument")
+        )
+        .unwrap()["path"],
+        "/knowledge/one.md"
+    );
 }
 
 #[tokio::test]
@@ -403,6 +550,48 @@ async fn bound_query_cursor_rejects_replay_wrong_query_and_tampering_before_http
         Err(SourceError::InvalidCursor)
     );
     assert_eq!(transport.requests().len(), 2);
+}
+
+#[tokio::test]
+async fn provider_cursors_larger_than_one_kib_remain_opaque_and_paginatable() {
+    let provider_cursor = "c".repeat(1_795);
+    let transport = ScriptedTransport::new([
+        response(
+            200,
+            list_page(
+                serde_json::json!([file("/knowledge/report.pdf", "report.pdf", "r2", "hash-2",)]),
+                &provider_cursor,
+                true,
+            ),
+        ),
+        response(200, list_page(serde_json::json!([]), "cursor-2", false)),
+    ]);
+    let (source, transport) = open_source(transport);
+    let read_context = context_with_id(
+        uuid::Uuid::new_v4(),
+        1,
+        10,
+        64 * 1024,
+        CancellationToken::new(),
+    );
+    let source_plan = plan(&source, &["name"]);
+
+    let first = source
+        .execute_page(&source_plan, None, &read_context)
+        .await
+        .expect("a provider cursor is opaque, not limited to one KiB");
+    let cursor = first.next_cursor.expect("provider continuation");
+    source
+        .execute_page(&source_plan, Some(&cursor), &read_context)
+        .await
+        .expect("the authenticated continuation remains within CatDB's bound");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].json_body()["cursor"],
+        serde_json::Value::String(provider_cursor)
+    );
 }
 
 #[tokio::test]

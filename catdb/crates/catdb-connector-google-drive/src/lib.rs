@@ -21,6 +21,7 @@ use catdb_connectors::{
 };
 use catdb_core::{BaseType, Schema};
 use catdb_query::EntityQuery;
+use catdb_storage::{ObjectFilterOp, ObjectValue};
 use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,26 @@ const ACCESS_TOKEN_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const CURSOR_VERSION: u8 = 1;
 const QUERY_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-query-cursor\0";
 const CHANGE_CURSOR_DOMAIN: &[u8] = b"catdb-google-drive-change-cursor\0";
+const GOOGLE_DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+const GOOGLE_DRIVE_DOCUMENT_MIME: &str = "application/vnd.google-apps.document";
+
+/// The physical records exposed by one immutable Drive source.
+///
+/// The default preserves the general connector contract, including
+/// metadata-only records. Reader applications may explicitly pin the narrower
+/// text-document universe so provider filtering is part of the versioned
+/// source meaning rather than an unreported UI shortcut.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DriveContentScope {
+    /// Expose every selected file, including metadata-only records.
+    #[default]
+    AllMetadata,
+    /// Expose Google Docs, Markdown, and plain-text records only.
+    ReadableText,
+    /// Expose Markdown files only.
+    Markdown,
+}
 
 /// Runtime secret lookup key stored in the immutable source specification.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +115,15 @@ pub enum DriveSelection {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resource_key: Option<String>,
     },
+    /// The provider's My Drive root, whose readable records may be searched
+    /// directly instead of recursively walking every folder.
+    Root {
+        /// Stable provider root id resolved from the `root` alias.
+        id: String,
+        /// Resource key when the provider supplies one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource_key: Option<String>,
+    },
 }
 
 impl fmt::Debug for DriveSelection {
@@ -101,6 +131,7 @@ impl fmt::Debug for DriveSelection {
         match self {
             Self::File { .. } => formatter.write_str("DriveSelection::File([redacted-id])"),
             Self::Folder { .. } => formatter.write_str("DriveSelection::Folder([redacted-id])"),
+            Self::Root { .. } => formatter.write_str("DriveSelection::Root([redacted-id])"),
         }
     }
 }
@@ -120,6 +151,29 @@ impl DriveSelection {
             id: id.into(),
             resource_key: None,
         }
+    }
+
+    /// Select the provider's My Drive root.
+    pub fn root(id: impl Into<String>) -> Self {
+        Self::Root {
+            id: id.into(),
+            resource_key: None,
+        }
+    }
+
+    /// Select the provider root with its resource key.
+    pub fn root_with_resource_key(
+        id: impl Into<String>,
+        resource_key: impl Into<String>,
+    ) -> Result<Self, DriveConnectorError> {
+        let id = id.into();
+        let resource_key = resource_key.into();
+        validate_drive_id("selection", &id)?;
+        validate_resource_key(&resource_key)?;
+        Ok(Self::Root {
+            id,
+            resource_key: Some(resource_key),
+        })
     }
 
     /// Select one link-shared file with its Picker resource key.
@@ -162,15 +216,15 @@ impl DriveSelection {
 
     fn id(&self) -> &str {
         match self {
-            Self::File { id, .. } | Self::Folder { id, .. } => id,
+            Self::File { id, .. } | Self::Folder { id, .. } | Self::Root { id, .. } => id,
         }
     }
 
     fn resource_key(&self) -> Option<&str> {
         match self {
-            Self::File { resource_key, .. } | Self::Folder { resource_key, .. } => {
-                resource_key.as_deref()
-            }
+            Self::File { resource_key, .. }
+            | Self::Folder { resource_key, .. }
+            | Self::Root { resource_key, .. } => resource_key.as_deref(),
         }
     }
 
@@ -192,6 +246,8 @@ pub struct DriveSourceConfig {
     selections: Vec<DriveSelection>,
     credential_reference: DriveSecretReference,
     shared_drive_id: Option<String>,
+    #[serde(default)]
+    content_scope: DriveContentScope,
 }
 
 impl fmt::Debug for DriveSourceConfig {
@@ -224,6 +280,7 @@ impl DriveSourceConfig {
             selections,
             credential_reference,
             shared_drive_id: None,
+            content_scope: DriveContentScope::AllMetadata,
         };
         config.validate()?;
         Ok(config)
@@ -238,6 +295,12 @@ impl DriveSourceConfig {
         validate_drive_id("shared_drive_id", &drive_id)?;
         self.shared_drive_id = Some(drive_id);
         Ok(self)
+    }
+
+    /// Pin the physical record universe exposed by this source.
+    pub fn with_content_scope(mut self, scope: DriveContentScope) -> Self {
+        self.content_scope = scope;
+        self
     }
 
     /// Exact OAuth scope required by the connector.
@@ -946,6 +1009,7 @@ struct FolderTraversal {
     id: String,
     depth: usize,
     page_token: Option<String>,
+    whole_drive: bool,
 }
 
 struct QueryTraversal {
@@ -979,7 +1043,10 @@ impl DriveMembership {
         let mut resource_keys = BTreeMap::new();
         let mut resource_key_header_bytes = 0usize;
         for selection in selections {
-            if matches!(selection, DriveSelection::Folder { .. }) {
+            if matches!(
+                selection,
+                DriveSelection::Folder { .. } | DriveSelection::Root { .. }
+            ) {
                 tracked_folders.insert(selection.id().to_string());
             }
             if let Some(resource_key) = selection.resource_key() {
@@ -1126,9 +1193,14 @@ impl fmt::Debug for DriveSource {
 }
 
 impl DriveSource {
-    fn attributes() -> Vec<catdb_connectors::SourceAttr> {
+    fn attributes(exact_id_lookup: bool) -> Vec<catdb_connectors::SourceAttr> {
+        let id = if exact_id_lookup {
+            catdb_connectors::SourceAttr::text("id").pushes([ObjectFilterOp::Eq])
+        } else {
+            catdb_connectors::SourceAttr::text("id")
+        };
         vec![
-            catdb_connectors::SourceAttr::text("id"),
+            id,
             catdb_connectors::SourceAttr::text("name"),
             catdb_connectors::SourceAttr::text("mimeType"),
             catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
@@ -1144,11 +1216,16 @@ impl DriveSource {
         spec: &PinnedDriveSourceSpec,
     ) -> Result<SourceModel, DriveConnectorError> {
         spec.config.validate()?;
+        let exact_id_lookup = spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| matches!(selection, DriveSelection::Root { .. }));
         Ok(SourceModel::new(
             SourceId::new(spec.config.source_id.clone()),
             &spec.config.catdb_schema,
             &spec.config.catdb_entity,
-            Self::attributes(),
+            Self::attributes(exact_id_lookup),
         ))
     }
 
@@ -1609,20 +1686,46 @@ impl DriveSource {
         }
     }
 
-    fn list_path(&self, folder_id: &str, page_token: Option<&str>, page_size: usize) -> String {
+    fn list_path(
+        &self,
+        folder_id: &str,
+        whole_drive: bool,
+        page_token: Option<&str>,
+        page_size: usize,
+    ) -> String {
+        let readable = match self.spec.config.content_scope {
+            DriveContentScope::AllMetadata => None,
+            DriveContentScope::ReadableText => Some(format!(
+                "(mimeType = '{GOOGLE_DRIVE_DOCUMENT_MIME}' or mimeType = 'text/markdown' or mimeType = 'text/plain')"
+            )),
+            DriveContentScope::Markdown => {
+                Some("(mimeType = 'text/markdown' or mimeType = 'text/plain')".to_string())
+            }
+        };
+        let query = if whole_drive {
+            match readable.as_deref() {
+                None => "trashed = false".to_string(),
+                Some(readable) => format!("trashed = false and {readable}"),
+            }
+        } else {
+            match readable.as_deref() {
+                Some(readable) => format!(
+                    "trashed = false and '{}' in parents and (mimeType = '{GOOGLE_DRIVE_FOLDER_MIME}' or {readable})",
+                    escape_query_literal(folder_id)
+                ),
+                None => format!(
+                    "trashed = false and '{}' in parents",
+                    escape_query_literal(folder_id)
+                ),
+            }
+        };
         let mut params = vec![
             (
                 "fields",
                 "files(id,name,mimeType,modifiedTime,size,md5Checksum,resourceKey,parents,trashed),nextPageToken,incompleteSearch".to_string(),
             ),
             ("pageSize", page_size.to_string()),
-            (
-                "q",
-                format!(
-                    "trashed = false and '{}' in parents",
-                    escape_query_literal(folder_id)
-                ),
-            ),
+            ("q", query),
             ("spaces", "drive".to_string()),
             ("supportsAllDrives", "true".to_string()),
         ];
@@ -1654,7 +1757,7 @@ impl DriveSource {
     fn body_path(&self, file: &DriveFile) -> Option<String> {
         let encoded_id = encode_path_segment(&file.id);
         match file.mime_type.as_str() {
-            "application/vnd.google-apps.document" => Some(encoded_path(
+            GOOGLE_DRIVE_DOCUMENT_MIME => Some(encoded_path(
                 &format!("/drive/v3/files/{encoded_id}/export"),
                 vec![("mimeType", "text/plain".to_string())],
             )),
@@ -1705,6 +1808,15 @@ impl DriveSource {
         {
             return Ok(true);
         }
+        if self
+            .spec
+            .config
+            .selections
+            .iter()
+            .any(|selection| matches!(selection, DriveSelection::Root { .. }))
+        {
+            return Ok(self.exposes_file(file));
+        }
         let membership = self.membership.lock().map_err(|_| SourceError::Transport {
             source_id: self.model.id().clone(),
         })?;
@@ -1712,6 +1824,20 @@ impl DriveSource {
             .parents
             .iter()
             .any(|parent| membership.current.tracked_folders.contains(parent)))
+    }
+
+    fn exposes_file(&self, file: &DriveFile) -> bool {
+        match self.spec.config.content_scope {
+            DriveContentScope::AllMetadata => true,
+            DriveContentScope::ReadableText => matches!(
+                file.mime_type.as_str(),
+                GOOGLE_DRIVE_DOCUMENT_MIME | "text/markdown" | "text/plain"
+            ),
+            DriveContentScope::Markdown => {
+                matches!(file.mime_type.as_str(), "text/markdown" | "text/plain")
+                    && is_markdown_name(&file.name)
+            }
+        }
     }
 
     fn is_tracked_folder_id(&self, file_id: &str) -> Result<bool, SourceError> {
@@ -1724,7 +1850,7 @@ impl DriveSource {
     }
 
     fn validate_plan(&self, plan: &SourcePlan) -> Result<(), SourceError> {
-        if plan.source != *self.model.id() || !plan.pushed.filters.is_empty() {
+        if plan.source != *self.model.id() || self.exact_id_filter(plan).is_err() {
             return Err(SourceError::InvalidPlan {
                 source_id: self.model.id().clone(),
             });
@@ -1742,6 +1868,19 @@ impl DriveSource {
             }
         }
         Ok(())
+    }
+
+    fn exact_id_filter<'a>(&self, plan: &'a SourcePlan) -> Result<Option<&'a str>, ()> {
+        match plan.pushed.filters.as_slice() {
+            [] => Ok(None),
+            [filter] if filter.attr == "id" && filter.op == ObjectFilterOp::Eq => {
+                match &filter.value {
+                    ObjectValue::Text(id) => Ok(Some(id.as_str())),
+                    _ => Err(()),
+                }
+            }
+            _ => Err(()),
+        }
     }
 
     fn encode_query_cursor(
@@ -1801,18 +1940,19 @@ impl DriveSource {
             .iter()
             .filter_map(|selection| match selection {
                 DriveSelection::File { id, .. } => Some(id.as_str()),
-                DriveSelection::Folder { .. } => None,
+                DriveSelection::Folder { .. } | DriveSelection::Root { .. } => None,
             })
             .collect()
     }
 
-    fn selected_folder_ids(&self) -> Vec<&str> {
+    fn selected_folder_ids(&self) -> Vec<(&str, bool)> {
         self.spec
             .config
             .selections
             .iter()
             .filter_map(|selection| match selection {
-                DriveSelection::Folder { id, .. } => Some(id.as_str()),
+                DriveSelection::Folder { id, .. } => Some((id.as_str(), false)),
+                DriveSelection::Root { id, .. } => Some((id.as_str(), true)),
                 DriveSelection::File { .. } => None,
             })
             .collect()
@@ -1998,6 +2138,9 @@ impl DriveSource {
         if file.trashed {
             return Ok(None);
         }
+        if !self.exposes_file(&file) {
+            return Ok(None);
+        }
         let needs_body = plan
             .projected
             .iter()
@@ -2097,6 +2240,57 @@ impl DataSource for DriveSource {
         if page_size == 0 {
             return Err(SourceError::RowBudgetExceeded);
         }
+        if let Some(expected_id) =
+            self.exact_id_filter(plan)
+                .map_err(|_| SourceError::InvalidPlan {
+                    source_id: self.model.id().clone(),
+                })?
+        {
+            if cursor.is_some() {
+                return Err(SourceError::InvalidCursor);
+            }
+            let mut physical_bytes = 0usize;
+            let mut membership = self.configured_membership.clone();
+            let response = self
+                .send(
+                    self.request_with_membership(self.metadata_path(expected_id), &membership)?,
+                    context,
+                    &mut physical_bytes,
+                )
+                .await?;
+            if response.status == 404 {
+                return Err(SourceError::Read {
+                    source_id: self.model.id().clone(),
+                    path: "selected Drive item".to_string(),
+                    detail: "provider returned 404; deletion and lost authorization are ambiguous"
+                        .to_string(),
+                });
+            }
+            if response.status != 200 {
+                return Err(self.map_http_failure(&response));
+            }
+            let file: DriveFile =
+                serde_json::from_slice(&response.body).map_err(|_| self.malformed("file"))?;
+            file.validate(self.model.id())?;
+            if file.id != expected_id {
+                return Err(self.malformed("selected file identity"));
+            }
+            if file.mime_type == GOOGLE_DRIVE_FOLDER_MIME {
+                return Err(self.malformed("selected file kind"));
+            }
+            membership.record_provider_file(&file, false, self.model.id())?;
+            let row = self
+                .observe_file(file, &membership, plan, context, &mut physical_bytes)
+                .await?;
+            return Ok(SourcePage {
+                source: self.model.id().clone(),
+                scanned: 1,
+                rows: row.into_iter().collect(),
+                next_cursor: None,
+                observed_at_ms: now_ms(),
+                freshness_ms: 0,
+            });
+        }
         let mut traversal = if let Some(cursor) = cursor {
             let (traversal_id, generation) =
                 self.decode_query_cursor(plan, cursor, context.query_id())?;
@@ -2168,7 +2362,7 @@ impl DataSource for DriveSource {
             while traversal.folders.is_empty()
                 && traversal.selected_folder_index < selected_folder_ids.len()
             {
-                let root = selected_folder_ids[traversal.selected_folder_index];
+                let (root, whole_drive) = selected_folder_ids[traversal.selected_folder_index];
                 let response = self
                     .send(
                         self.request_with_membership(
@@ -2216,6 +2410,7 @@ impl DataSource for DriveSource {
                         id: root.to_string(),
                         depth: 0,
                         page_token: None,
+                        whole_drive,
                     });
                 }
             }
@@ -2225,11 +2420,17 @@ impl DataSource for DriveSource {
             let folder_id = current.id.clone();
             let folder_depth = current.depth;
             let provider_page_token = current.page_token.clone();
+            let whole_drive = current.whole_drive;
             let remaining = page_size - scanned;
             let response = self
                 .send(
                     self.request_with_membership(
-                        self.list_path(&folder_id, provider_page_token.as_deref(), remaining),
+                        self.list_path(
+                            &folder_id,
+                            whole_drive,
+                            provider_page_token.as_deref(),
+                            remaining,
+                        ),
                         &traversal.membership,
                     )?,
                     context,
@@ -2262,10 +2463,10 @@ impl DataSource for DriveSource {
             for file in list.files {
                 context.check()?;
                 file.validate(self.model.id())?;
-                if !file.parents.iter().any(|parent| parent == &folder_id) {
+                if !whole_drive && !file.parents.iter().any(|parent| parent == &folder_id) {
                     return Err(self.malformed("parents"));
                 }
-                let is_folder = file.mime_type == "application/vnd.google-apps.folder";
+                let is_folder = file.mime_type == GOOGLE_DRIVE_FOLDER_MIME;
                 traversal
                     .membership
                     .record_provider_file(&file, is_folder, self.model.id())?;
@@ -2295,6 +2496,7 @@ impl DataSource for DriveSource {
                         id: file.id,
                         depth,
                         page_token: None,
+                        whole_drive: false,
                     });
                     if traversal.folders.len() > MAX_TRAVERSAL_ITEMS {
                         return Err(SourceError::ResourceLimit {
@@ -2614,6 +2816,12 @@ fn encode_path_segment(segment: &str) -> String {
 
 fn escape_query_literal(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn is_markdown_name(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
+    })
 }
 
 fn retry_after_ms(response: &DriveHttpResponse) -> Option<u64> {
