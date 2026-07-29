@@ -2,6 +2,7 @@
 
 mod model;
 pub(crate) mod source;
+pub(crate) mod store;
 
 #[cfg(test)]
 mod tests;

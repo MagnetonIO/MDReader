@@ -666,3 +666,608 @@ fn lifecycle_connector_unavailability_stays_distinct_at_the_adapter_boundary() {
         CloudDocumentError::ConnectorUnavailable
     );
 }
+
+mod store {
+    use tempfile::tempdir;
+
+    use super::super::store::{
+        CloudDocumentStore, CloudDocumentStoreError, CloudDocumentVersionPins, CloudWriteRepair,
+    };
+    use super::super::{
+        MarkdownDocumentRevision, MarkdownMetadata, MarkdownMetadataPage, ProviderCursor,
+        ProviderRevision, SourceRecordKey,
+    };
+    use catdb_connectors::SourceId;
+
+    fn source_id() -> SourceId {
+        SourceId::new("cloud-store-test-source")
+    }
+
+    fn cursor(value: &[u8]) -> ProviderCursor {
+        ProviderCursor(value.to_vec())
+    }
+
+    fn pins() -> CloudDocumentVersionPins {
+        CloudDocumentVersionPins::new(b"schema-v1", b"mapping-v1", b"source-v1")
+            .expect("valid fixed version pins")
+    }
+
+    fn page(names: &[&str]) -> MarkdownMetadataPage {
+        MarkdownMetadataPage {
+            rows: names
+                .iter()
+                .map(|name| MarkdownMetadata {
+                    key: SourceRecordKey::new(*name),
+                    name: (*name).to_owned(),
+                    display_path: format!("/documents/{name}"),
+                    media_type: Some("text/markdown".to_owned()),
+                    modified_at_ms: Some(1),
+                    size_bytes: Some(1),
+                    revision: ProviderRevision {
+                        opaque: format!("revision-{name}"),
+                        content_hash: None,
+                    },
+                    deleted: false,
+                })
+                .collect(),
+            next_cursor: None,
+            observed_at_ms: 1,
+        }
+    }
+
+    fn page_with_revisions(rows: &[(&str, &str)]) -> MarkdownMetadataPage {
+        MarkdownMetadataPage {
+            rows: rows
+                .iter()
+                .map(|(name, revision)| MarkdownMetadata {
+                    key: SourceRecordKey::new(*name),
+                    name: (*name).to_owned(),
+                    display_path: format!("/documents/{name}"),
+                    media_type: Some("text/markdown".to_owned()),
+                    modified_at_ms: Some(1),
+                    size_bytes: Some(1),
+                    revision: ProviderRevision {
+                        opaque: (*revision).to_owned(),
+                        content_hash: None,
+                    },
+                    deleted: false,
+                })
+                .collect(),
+            next_cursor: None,
+            observed_at_ms: 1,
+        }
+    }
+
+    fn publish_page(
+        store: &CloudDocumentStore,
+        source: &SourceId,
+        page: &MarkdownMetadataPage,
+        change_cursor: &[u8],
+    ) {
+        let generation = store
+            .begin_initial_sync(source, &cursor(change_cursor), &pins(), 1)
+            .expect("begin snapshot");
+        store
+            .stage_page(&generation, &pins(), page)
+            .expect("stage rows");
+        store
+            .publish_initial_sync(&generation, &cursor(change_cursor), 2)
+            .expect("publish snapshot");
+    }
+
+    fn document(
+        name: &str,
+        revision: &str,
+        body: &[u8],
+        observed_at_ms: i64,
+    ) -> MarkdownDocumentRevision {
+        MarkdownDocumentRevision {
+            key: SourceRecordKey::new(name),
+            revision: ProviderRevision {
+                opaque: revision.to_owned(),
+                content_hash: None,
+            },
+            body: body.to_vec(),
+            observed_at_ms,
+        }
+    }
+
+    #[test]
+    fn incomplete_initial_sync_never_replaces_the_published_snapshot() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-materializations.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        let old_generation = store
+            .begin_initial_sync(&source, &cursor(b"before"), &pins(), 1)
+            .expect("begin old snapshot");
+        store
+            .stage_page(&old_generation, &pins(), &page(&["old.md"]))
+            .expect("stage old row");
+        store
+            .publish_initial_sync(&old_generation, &cursor(b"before"), 2)
+            .expect("publish old snapshot");
+
+        let incomplete_generation = store
+            .begin_initial_sync(&source, &cursor(b"before"), &pins(), 3)
+            .expect("begin replacement snapshot");
+        store
+            .stage_page(&incomplete_generation, &pins(), &page(&["new-a.md"]))
+            .expect("stage incomplete row");
+        drop(store);
+
+        let reopened = CloudDocumentStore::open(&path).expect("reopen store");
+        let published = reopened.list_published(&source).expect("published rows");
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].name, "old.md");
+    }
+
+    #[test]
+    fn replacing_an_incomplete_initial_sync_discards_its_staging_generation() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-materializations.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        let abandoned = store
+            .begin_initial_sync(&source, &cursor(b"before"), &pins(), 1)
+            .expect("begin abandoned sync");
+        store
+            .stage_page(&abandoned, &pins(), &page(&["partial.md"]))
+            .expect("stage abandoned row");
+        store
+            .begin_initial_sync(&source, &cursor(b"before"), &pins(), 2)
+            .expect("replace incomplete sync");
+
+        let connection = rusqlite::Connection::open(&path).expect("inspect staging snapshots");
+        let staging_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND state = 'staging'",
+                [source.as_str().as_bytes()],
+                |row| row.get(0),
+            )
+            .expect("count staging snapshots");
+        assert_eq!(staging_count, 1);
+    }
+
+    #[test]
+    fn incremental_page_and_cursor_commit_together() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-materializations.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        let generation = store
+            .begin_initial_sync(&source, &cursor(b"previous"), &pins(), 1)
+            .expect("begin snapshot");
+        store
+            .stage_page(&generation, &pins(), &page(&["before.md"]))
+            .expect("stage row");
+        store
+            .publish_initial_sync(&generation, &cursor(b"previous"), 2)
+            .expect("publish snapshot");
+        store.inject_commit_failure_after_rows();
+
+        assert!(store
+            .apply_change_page(&source, &pins(), &page(&["after.md"]), &cursor(b"next"), 3)
+            .is_err());
+        assert_eq!(
+            store
+                .load_change_cursor(&source)
+                .expect("cursor after failure"),
+            Some(cursor(b"previous"))
+        );
+        let published = store.list_published(&source).expect("published rows");
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].name, "before.md");
+    }
+
+    #[test]
+    fn incremental_page_reuses_the_published_generation_without_copying_unchanged_metadata() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud-materializations.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        publish_page(&store, &source, &page(&["unchanged.md"]), b"previous");
+
+        store
+            .apply_change_page(
+                &source,
+                &pins(),
+                &page(&["changed.md"]),
+                &cursor(b"next"),
+                3,
+            )
+            .expect("apply incremental page");
+        let connection = rusqlite::Connection::open(&path).expect("inspect materializations");
+        let snapshot_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mdreader_cloud_snapshot WHERE source_id = ?1",
+                [source.as_str().as_bytes()],
+                |row| row.get(0),
+            )
+            .expect("count source snapshots");
+        let unchanged_row_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mdreader_cloud_document WHERE record_key = ?1",
+                [b"unchanged.md".as_slice()],
+                |row| row.get(0),
+            )
+            .expect("count unchanged materialization rows");
+        assert_eq!(snapshot_count, 1);
+        assert_eq!(unchanged_row_count, 1);
+        let published = store.list_published(&source).expect("published rows");
+        assert_eq!(published.len(), 2);
+        assert!(published.iter().any(|row| row.name == "unchanged.md"));
+        assert!(published.iter().any(|row| row.name == "changed.md"));
+    }
+
+    #[test]
+    fn rejects_empty_cursor_and_revision_without_publishing_any_rows() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+
+        assert!(matches!(
+            store.begin_initial_sync(&source, &cursor(b""), &pins(), 1),
+            Err(CloudDocumentStoreError::InvalidCursor)
+        ));
+
+        let generation = store
+            .begin_initial_sync(&source, &cursor(b"cursor"), &pins(), 1)
+            .expect("begin valid snapshot");
+        let invalid = page_with_revisions(&[("note.md", "")]);
+        assert!(matches!(
+            store.stage_page(&generation, &pins(), &invalid),
+            Err(CloudDocumentStoreError::InvalidRevision)
+        ));
+        assert!(store
+            .list_published(&source)
+            .expect("published rows")
+            .is_empty());
+    }
+
+    #[test]
+    fn foreign_source_cannot_change_a_published_snapshot() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        publish_page(&store, &source, &page(&["kept.md"]), b"previous");
+        let foreign = SourceId::new("different-cloud-source");
+
+        assert!(matches!(
+            store.apply_change_page(
+                &foreign,
+                &pins(),
+                &page(&["injected.md"]),
+                &cursor(b"next"),
+                3,
+            ),
+            Err(CloudDocumentStoreError::ForeignSource)
+        ));
+        let published = store.list_published(&source).expect("published rows");
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].name, "kept.md");
+    }
+
+    #[test]
+    fn interrupted_migration_refuses_to_guess_at_partial_schema() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let connection = rusqlite::Connection::open(&path).expect("open partial database");
+        connection
+            .execute_batch(
+                "CREATE TABLE mdreader_cloud_snapshot (source_id BLOB NOT NULL); PRAGMA user_version = 0;",
+            )
+            .expect("manufacture interrupted migration");
+        drop(connection);
+
+        assert!(matches!(
+            CloudDocumentStore::open(&path),
+            Err(CloudDocumentStoreError::MigrationInterrupted)
+        ));
+    }
+
+    #[test]
+    fn staging_generation_refuses_rows_with_different_version_pins() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        let generation = store
+            .begin_initial_sync(&source, &cursor(b"cursor"), &pins(), 1)
+            .expect("begin snapshot");
+        store
+            .stage_page(&generation, &pins(), &page(&["first.md"]))
+            .expect("stage first pinned page");
+        let different_pins =
+            CloudDocumentVersionPins::new(b"schema-v2", b"mapping-v1", b"source-v1")
+                .expect("valid differing pins");
+
+        assert!(matches!(
+            store.stage_page(&generation, &different_pins, &page(&["second.md"])),
+            Err(CloudDocumentStoreError::VersionPinMismatch)
+        ));
+    }
+
+    #[test]
+    fn cache_evicts_the_least_recently_used_body_deterministically() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store =
+            CloudDocumentStore::open_with_cache_limit_for_tests(&path, 7).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("one.md", "r1"), ("two.md", "r1"), ("three.md", "r1")]),
+            b"cursor",
+        );
+
+        store
+            .put_body(&source, &pins(), &document("one.md", "r1", b"111", 10))
+            .expect("cache first body");
+        store
+            .put_body(&source, &pins(), &document("two.md", "r1", b"222", 20))
+            .expect("cache second body");
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("one.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    30
+                )
+                .expect("read most recent body"),
+            Some(b"111".to_vec())
+        );
+        store
+            .put_body(&source, &pins(), &document("three.md", "r1", b"333", 40))
+            .expect("cache third body and evict LRU");
+
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("two.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    50
+                )
+                .expect("query evicted body"),
+            None
+        );
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("one.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    50
+                )
+                .expect("query retained body"),
+            Some(b"111".to_vec())
+        );
+    }
+
+    #[test]
+    fn metadata_survives_body_eviction_and_cache_keeps_two_revisions_of_one_record() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store =
+            CloudDocumentStore::open_with_cache_limit_for_tests(&path, 4).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("versioned.md", "r2"), ("evicted.md", "r1")]),
+            b"cursor",
+        );
+
+        store
+            .put_body(&source, &pins(), &document("versioned.md", "r1", b"a", 10))
+            .expect("cache first revision");
+        store
+            .put_body(&source, &pins(), &document("versioned.md", "r2", b"b", 20))
+            .expect("cache second revision");
+        let connection = rusqlite::Connection::open(&path).expect("inspect exact revision cache");
+        let revision_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM mdreader_cloud_body_cache
+                 WHERE record_key = ?1",
+                [b"versioned.md".as_slice()],
+                |row| row.get(0),
+            )
+            .expect("count independently cached revisions");
+        assert_eq!(revision_count, 2);
+        drop(connection);
+        store
+            .put_body(&source, &pins(), &document("evicted.md", "r1", b"cccc", 30))
+            .expect("evict old revisions under tight cache limit");
+
+        let published = store.list_published(&source).expect("published metadata");
+        assert_eq!(published.len(), 2);
+        assert!(published.iter().any(|row| row.name == "versioned.md"));
+        assert!(published.iter().any(|row| row.name == "evicted.md"));
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("versioned.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    40
+                )
+                .expect("query evicted revision"),
+            None
+        );
+    }
+
+    #[test]
+    fn opaque_source_keys_revisions_and_cursors_are_bound_as_sqlite_blobs() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("note.md", "r1")]),
+            b"cursor",
+        );
+        drop(store);
+        let connection = rusqlite::Connection::open(&path).expect("inspect materialization types");
+        let (snapshot_source, document_key, document_revision, change_cursor): (
+            String,
+            String,
+            String,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT typeof(s.source_id), typeof(d.record_key), typeof(d.revision),
+                    typeof(state.change_cursor)
+                 FROM mdreader_cloud_snapshot s
+                 INNER JOIN mdreader_cloud_document d
+                   ON d.source_id = s.source_id AND d.generation = s.generation
+                 INNER JOIN mdreader_cloud_sync_state state ON state.source_id = s.source_id
+                 WHERE s.state = 'published'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read SQLite storage types");
+        assert_eq!(snapshot_source, "blob");
+        assert_eq!(document_key, "blob");
+        assert_eq!(document_revision, "blob");
+        assert_eq!(change_cursor, "blob");
+    }
+
+    #[test]
+    fn oversized_bodies_are_rejected_before_the_cache_changes() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let store =
+            CloudDocumentStore::open(directory.path().join("cloud.sqlite")).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("large.md", "r1")]),
+            b"cursor",
+        );
+        let body = vec![0_u8; CloudDocumentStore::MAX_BODY_BYTES + 1];
+
+        assert!(matches!(
+            store.put_body(&source, &pins(), &document("large.md", "r1", &body, 1)),
+            Err(CloudDocumentStoreError::BodyTooLarge)
+        ));
+        assert_eq!(
+            store
+                .get_body(
+                    &source,
+                    &pins(),
+                    &SourceRecordKey::new("large.md"),
+                    &ProviderRevision {
+                        opaque: "r1".to_owned(),
+                        content_hash: None,
+                    },
+                    2
+                )
+                .expect("query cache"),
+            None
+        );
+    }
+
+    #[test]
+    fn cache_corruption_is_refused_without_returning_the_body() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        let source = source_id();
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("note.md", "r1")]),
+            b"cursor",
+        );
+        store
+            .put_body(&source, &pins(), &document("note.md", "r1", b"body", 1))
+            .expect("cache body");
+        let connection = rusqlite::Connection::open(&path).expect("open database for corruption");
+        connection
+            .execute(
+                "UPDATE mdreader_cloud_body_cache SET body_hash = zeroblob(32)",
+                [],
+            )
+            .expect("corrupt cache row");
+        drop(connection);
+
+        assert!(matches!(
+            store.get_body(
+                &source,
+                &pins(),
+                &SourceRecordKey::new("note.md"),
+                &ProviderRevision {
+                    opaque: "r1".to_owned(),
+                    content_hash: None,
+                },
+                2
+            ),
+            Err(CloudDocumentStoreError::CorruptStore)
+        ));
+    }
+
+    #[test]
+    fn provider_acceptance_receipt_survives_restart_until_publication_is_marked_durable() {
+        let directory = tempdir().expect("temporary SQLite directory");
+        let path = directory.path().join("cloud.sqlite");
+        let source = source_id();
+        let repair = CloudWriteRepair::new(
+            b"operation-1",
+            &source,
+            SourceRecordKey::new("note.md"),
+            ProviderRevision {
+                opaque: "accepted-r2".to_owned(),
+                content_hash: None,
+            },
+            [7_u8; 32],
+            br#"{\"provider\":\"accepted\"}"#,
+            9,
+        )
+        .expect("valid repair receipt");
+        let store = CloudDocumentStore::open(&path).expect("open store");
+        store
+            .record_provider_acceptance(&repair)
+            .expect("persist provider acceptance before derived publication");
+        drop(store);
+
+        let reopened = CloudDocumentStore::open(&path).expect("reopen store");
+        let pending = reopened
+            .load_write_repair(repair.operation_id())
+            .expect("load persisted receipt")
+            .expect("receipt remains pending");
+        assert!(pending.is_provider_accepted());
+        reopened
+            .mark_write_published(repair.operation_id())
+            .expect("mark derived publication durable");
+        let durable = reopened
+            .load_write_repair(repair.operation_id())
+            .expect("load durable receipt")
+            .expect("receipt is retained after marking publication");
+        assert!(durable.is_published());
+        assert_eq!(durable.receipt_json(), br#"{\"provider\":\"accepted\"}"#);
+    }
+}
