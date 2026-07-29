@@ -77,7 +77,8 @@ import {
   continueHydratedLibrary,
   hydrateLibrary,
   hydrateLibraryDocument,
-  libraryHydrationMessage,
+  libraryAvailability as availabilityForLibrary,
+  type LibraryAvailability,
   type HydratedLibrary,
 } from './library-documents.js';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
@@ -178,6 +179,9 @@ export function AppShell() {
   const libraryEvidence = libraryHydration.evidence;
   const [librarySearch, setLibrarySearch] = useState('');
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryAvailability, setLibraryAvailability] = useState<LibraryAvailability>({
+    kind: 'ready',
+  });
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [libraryDocumentLoading, setLibraryDocumentLoading] = useState(false);
   const [libraryDocumentError, setLibraryDocumentError] = useState<string | null>(null);
@@ -251,6 +255,7 @@ export function AppShell() {
     }
     setLibraryLoading(true);
     setLibraryError(null);
+    setLibraryAvailability({ kind: 'syncing', sourceNames: [] });
     try {
       const requestId = `library:${globalThis.crypto.randomUUID()}`;
       libraryRefreshRequest.current = requestId;
@@ -274,12 +279,15 @@ export function AppShell() {
         }
         return null;
       });
-      setLibraryError(libraryHydrationMessage(hydration));
+      setLibraryAvailability(availabilityForLibrary(hydration));
     } catch {
       if (libraryRefreshGeneration.current === generation) {
         setLibraryHydration({ evidence: [], failures: [] });
         setLibraryDocument(null);
-        setLibraryError('Library sources could not be read.');
+        setLibraryAvailability({
+          kind: 'failed',
+          message: 'Library sources could not be read.',
+        });
       }
     } finally {
       if (libraryRefreshGeneration.current === generation) {
@@ -299,6 +307,7 @@ export function AppShell() {
     if (libraryRefreshGeneration.current !== generation) return;
     setLibraryLoading(true);
     setLibraryError(null);
+    setLibraryAvailability({ kind: 'syncing', sourceNames: [] });
     try {
       const requestId = `library:${globalThis.crypto.randomUUID()}`;
       libraryRefreshRequest.current = requestId;
@@ -309,13 +318,14 @@ export function AppShell() {
       );
       if (libraryRefreshGeneration.current !== generation) return;
       setLibraryHydration(hydration);
-      setLibraryError(libraryHydrationMessage(hydration));
+      setLibraryAvailability(availabilityForLibrary(hydration));
     } catch {
       if (libraryRefreshGeneration.current === generation) {
         setLibraryHydration((current) => ({
           evidence: current.evidence,
           failures: current.failures,
         }));
+        setLibraryAvailability({ kind: 'partial', sourceNames: [] });
         setLibraryError(
           'More Library documents could not be loaded. Refresh the Library.',
         );
@@ -2117,6 +2127,7 @@ export function AppShell() {
           librarySearch={librarySearch}
           libraryLoading={libraryLoading}
           libraryError={libraryError}
+          libraryAvailability={libraryAvailability}
           libraryHasMore={Boolean(libraryHydration.continuation)}
           onLibrarySearch={setLibrarySearch}
           onOpenLibrary={(member, row) => {

@@ -17,8 +17,9 @@ export const LIBRARY_DOCUMENT_FIELDS = [
   'size',
   'revision',
   'checksum',
-  'body',
 ] as const;
+
+const LIBRARY_DOCUMENT_BODY_FIELDS = ['body'] as const;
 
 const LOCAL_DOCUMENT_FIELDS = [
   'title',
@@ -68,6 +69,124 @@ export interface LibraryHydrationFailure {
   authority: 'embedded' | 'connected-catdb';
   /** Preserve the native typed error so the UI can offer the right recovery. */
   reason: unknown;
+}
+
+/** The reader-facing freshness state of the published Library materialization. */
+export type LibraryAvailability =
+  | { kind: 'ready' }
+  | { kind: 'syncing'; sourceNames: string[] }
+  | { kind: 'stale'; sourceNames: string[] }
+  | { kind: 'partial'; sourceNames: string[] }
+  | { kind: 'failed'; message: string };
+
+function publishedSourceNames(result: HydratedLibrary): string[] {
+  return [
+    ...new Set(
+      result.evidence.flatMap((answer) =>
+        answer.memberships.map((membership) => membership.name),
+      ),
+    ),
+  ];
+}
+
+function sourceNamesFor(
+  result: HydratedLibrary,
+  sourceIds: ReadonlySet<string>,
+): string[] {
+  const names = [
+    ...new Set(
+      result.evidence.flatMap((answer) =>
+        answer.memberships
+          .filter(
+            (membership) =>
+              sourceIds.size === 0 ||
+              membership.source_ids.some((sourceId) => sourceIds.has(sourceId)),
+          )
+          .map((membership) => membership.name),
+      ),
+    ),
+  ];
+  return names.length > 0 ? names : publishedSourceNames(result);
+}
+
+function sourceIdsFromFailure(failure: LibraryHydrationFailure): string[] {
+  if (!(failure.reason instanceof SettingsCommandError)) return [];
+  const detail = failure.reason.detail;
+  if (typeof detail !== 'object' || detail === null) return [];
+  const record = detail as Record<string, unknown>;
+  if (typeof record.source_id === 'string') return [record.source_id];
+  if (Array.isArray(record.source_ids)) {
+    return record.source_ids.filter((sourceId): sourceId is string => typeof sourceId === 'string');
+  }
+  return [];
+}
+
+function failureHasKind(
+  failure: LibraryHydrationFailure,
+  kind: string,
+): boolean {
+  return commandFailureKind(failure) === kind;
+}
+
+/**
+ * Classify published query evidence without treating a background refresh
+ * failure as a failure to read rows that were already materialized.
+ */
+export function libraryAvailability(result: HydratedLibrary): LibraryAvailability {
+  const hasPublishedRows = result.evidence.some((answer) => answer.answer.rows.length > 0);
+  const staleSourceIds = new Set(
+    result.evidence.flatMap((answer) =>
+      answer.answer.sources
+        .filter((source) => source.outcome === 'stale')
+        .map((source) => source.source_id),
+    ),
+  );
+  const partialSourceIds = new Set(
+    result.evidence.flatMap((answer) =>
+      answer.answer.completeness.state === 'partial'
+        ? answer.answer.completeness.excluded_source_ids
+        : [],
+    ),
+  );
+  const failedSourceIds = new Set(result.failures.flatMap(sourceIdsFromFailure));
+  if (
+    hasPublishedRows &&
+    (staleSourceIds.size > 0 ||
+      result.failures.some((failure) => failureHasKind(failure, 'query-stale-sources')))
+  ) {
+    return {
+      kind: 'stale',
+      sourceNames: sourceNamesFor(
+        result,
+        new Set([...staleSourceIds, ...failedSourceIds]),
+      ),
+    };
+  }
+  if (hasPublishedRows && result.failures.length > 0) {
+    return {
+      kind: 'partial',
+      sourceNames: sourceNamesFor(result, failedSourceIds),
+    };
+  }
+  const partialAnswers = result.evidence.filter(
+    (answer) => answer.answer.completeness.state === 'partial',
+  );
+  if (
+    partialAnswers.length > 0 &&
+    !partialAnswers.every(isSafeLocalMetadataPartial)
+  ) {
+    return {
+      kind: 'partial',
+      sourceNames: sourceNamesFor(result, partialSourceIds),
+    };
+  }
+  if (result.failures.length > 0) {
+    return {
+      kind: 'failed',
+      message: libraryHydrationMessage(result) ?? 'Library sources could not be read.',
+    };
+  }
+  return { kind: 'ready' };
 }
 
 /** A reader-facing name from semantic fields, never CatDB's composite key when
@@ -473,7 +592,7 @@ export async function hydrateLibraryDocument(
     evidence = await backend.queryConnectedCatdbDocuments(
       selection.member.registry_id,
       filters,
-      [...LIBRARY_DOCUMENT_FIELDS],
+      [...LIBRARY_DOCUMENT_BODY_FIELDS],
       requestId,
     );
   } else {
@@ -484,7 +603,7 @@ export async function hydrateLibraryDocument(
     evidence = await backend.queryLibraryDocuments(
       catalog.workspace_id,
       filters,
-      [...LIBRARY_DOCUMENT_FIELDS],
+      [...LIBRARY_DOCUMENT_BODY_FIELDS],
       requestId,
       [selection.member.membership_id],
     );

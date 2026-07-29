@@ -11,7 +11,11 @@ import type {
 import { DropboxIcon, FolderIcon, GoogleDriveIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import type { DocRef } from '../stores/types.js';
-import { libraryDocumentTitle, rowsForMember } from './library-documents.js';
+import {
+  libraryDocumentTitle,
+  rowsForMember,
+  type LibraryAvailability,
+} from './library-documents.js';
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -31,6 +35,7 @@ export interface SidebarProps {
   librarySearch?: string;
   libraryLoading?: boolean;
   libraryError?: string | null;
+  libraryAvailability?: LibraryAvailability;
   libraryHasMore?: boolean;
   onLibrarySearch?: (value: string) => void;
   onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
@@ -51,6 +56,22 @@ function sourceIcon(kind: LibrarySourceExecution['kind']) {
     default:
       return null;
   }
+}
+
+function LibraryAvailabilityBadge({ availability }: { availability: LibraryAvailability }) {
+  if (availability.kind === 'ready') return null;
+  if (availability.kind === 'failed') {
+    return <p className="library-sources__error" role="alert">{availability.message}</p>;
+  }
+  const names = availability.sourceNames.join(', ');
+  const sourceLabel = names || 'Library sources';
+  const message =
+    availability.kind === 'syncing'
+      ? `Syncing published metadata for ${sourceLabel}.`
+      : availability.kind === 'stale'
+        ? `Showing the last published snapshot; ${sourceLabel} needs refresh.`
+        : `Showing the last published snapshot; ${sourceLabel} needs attention.`;
+  return <p className="library-sources__state" role="status">{message}</p>;
 }
 
 /**
@@ -96,6 +117,7 @@ export function Sidebar({
   librarySearch = '',
   libraryLoading = false,
   libraryError = null,
+  libraryAvailability = { kind: 'ready' },
   libraryHasMore = false,
   onLibrarySearch,
   onOpenLibrary,
@@ -114,7 +136,8 @@ export function Sidebar({
     hasSupplementalMemberships ||
     libraryLoading ||
     libraryHasMore ||
-    Boolean(libraryError);
+    Boolean(libraryError) ||
+    libraryAvailability.kind !== 'ready';
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
@@ -183,6 +206,7 @@ export function Sidebar({
             />
           ) : null}
           {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
+          <LibraryAvailabilityBadge availability={libraryAvailability} />
           {libraryEvidence.flatMap((evidence) =>
             evidence.memberships
               .filter((member) => member.kind !== 'local-folder' || !member.active)

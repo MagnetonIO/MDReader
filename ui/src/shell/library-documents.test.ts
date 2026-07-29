@@ -10,7 +10,7 @@ import { SettingsCommandError } from '../platform/settings.js';
 import {
   hydrateLibraryDocument,
   hydrateLibrary,
-  LIBRARY_DOCUMENT_FIELDS,
+  libraryAvailability,
   libraryDocumentTitle,
   libraryHydrationMessage,
   memberForRow,
@@ -267,7 +267,7 @@ describe('one hydrated Library answer', () => {
     expect(queryLibraryDocuments).toHaveBeenCalledWith(
       '00000000-0000-4000-8000-000000000020',
       [{ field: 'path', operator: 'eq', value: 'drive-file' }],
-      [...LIBRARY_DOCUMENT_FIELDS],
+      ['body'],
       'document-request-1',
       [MEMBERSHIP_ID],
     );
@@ -325,7 +325,7 @@ describe('one hydrated Library answer', () => {
     expect(queryLibraryDocuments).toHaveBeenCalledWith(
       '00000000-0000-4000-8000-000000000020',
       [{ field: 'path', operator: 'eq', value: dropboxPath }],
-      [...LIBRARY_DOCUMENT_FIELDS],
+      ['body'],
       'document-request-dropbox',
       [MEMBERSHIP_ID],
     );
@@ -387,7 +387,17 @@ describe('one hydrated Library answer', () => {
     expect(queryConnectedCatdbDocuments).toHaveBeenCalledWith(
       'connected-catdb',
       [],
-      [...LIBRARY_DOCUMENT_FIELDS],
+      [
+        'providerId',
+        'title',
+        'author',
+        'path',
+        'mediaType',
+        'modifiedAt',
+        'size',
+        'revision',
+        'checksum',
+      ],
       'request-connected:connected-catdb',
     );
     expect(connectedEvidence.memberships[0]?.editable).toBe(false);
@@ -452,6 +462,46 @@ describe('one hydrated Library answer', () => {
         failures: [],
       }),
     ).toBeNull();
+  });
+
+  it('keeps a published cloud snapshot in a compact partial state when its refresh fails', () => {
+    expect(
+      libraryAvailability({
+        evidence: [evidence],
+        failures: [
+          {
+            authority: 'embedded',
+            reason: new Error('background sync failed'),
+          },
+        ],
+      }),
+    ).toEqual({ kind: 'partial', sourceNames: ['Google Drive'] });
+  });
+
+  it('marks published rows stale when CatDB reports a stale materialization source', () => {
+    expect(
+      libraryAvailability({
+        evidence: [
+          {
+            ...evidence,
+            answer: {
+              ...evidence.answer,
+              sources: [
+                {
+                  ...evidence.answer.sources[0]!,
+                  outcome: 'stale',
+                },
+              ],
+              completeness: {
+                state: 'partial',
+                excluded_source_ids: [PHYSICAL_SOURCE_ID],
+              },
+            },
+          },
+        ],
+        failures: [],
+      }),
+    ).toEqual({ kind: 'stale', sourceNames: ['Google Drive'] });
   });
 
   it('does not report a bounded result window as a complete Library', () => {

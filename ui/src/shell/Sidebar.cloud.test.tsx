@@ -183,6 +183,52 @@ it('navigates connected read-through sources from the primary Library rail', () 
   expect(open).toHaveBeenCalledWith(dropbox.member, dropbox.response.answer.rows[0]);
 });
 
+it('keeps published cloud rows visible behind a compact source-state badge', () => {
+  const dropbox = fixtureForMember({
+    id: 30,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: false,
+    active: false,
+    title: 'Cloud note.md',
+    path: '/notes/cloud.md',
+  });
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root={null}
+      files={[]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[dropbox.response]}
+      libraryAvailability={{ kind: 'partial', sourceNames: ['Dropbox'] }}
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+    />,
+  );
+
+  const status = screen.getByRole('status');
+  expect(status.textContent).toBe(
+    'Showing the last published snapshot; Dropbox needs attention.',
+  );
+  expect(status.className).toContain('library-sources__state');
+  const shellCss = readFileSync(`${process.cwd()}/src/shell/shell.css`, 'utf8');
+  const stateRule = shellCss.match(/\.library-sources__state\s*\{([^}]*)\}/)?.[1];
+  expect(stateRule, 'compact Library source-state rule').toBeTruthy();
+  expect(stateRule).toContain('display: inline-flex;');
+  expect(stateRule).toContain('padding: 2px var(--space-1);');
+  expect(screen.queryByText('Library sources could not be read.')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Open Cloud note.md from Dropbox' })).toBeTruthy();
+});
+
 it('identifies cloud memberships with provider icons and file-tree typography', () => {
   const drive = fixtureForMember({
     id: 40,
