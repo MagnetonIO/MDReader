@@ -312,6 +312,10 @@ export function AppShell() {
       setLibraryError(libraryHydrationMessage(hydration));
     } catch {
       if (libraryRefreshGeneration.current === generation) {
+        setLibraryHydration((current) => ({
+          evidence: current.evidence,
+          failures: current.failures,
+        }));
         setLibraryError(
           'More Library documents could not be loaded. Refresh the Library.',
         );

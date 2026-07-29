@@ -710,6 +710,26 @@ describe('library source identity follows the committed backend epoch', () => {
     ]);
   });
 
+  it('clears a consumed continuation after Load more fails and keeps Refresh recovery', async () => {
+    installDropboxContinuationPages();
+    h.libraryQueryQueue.pop();
+    h.libraryQueryFails = true;
+    render(<App />);
+
+    await screen.findByText('No documents found.');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    expect(
+      await screen.findByText(
+        'More Library documents could not be loaded. Refresh the Library.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: 'Load more' }),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
+  });
+
   it('starts only the newest document query after rapid selections share a pending cancellation', async () => {
     installRapidCloudLibraryDocuments();
     render(<App />);

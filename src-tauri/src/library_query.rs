@@ -1124,9 +1124,6 @@ async fn serve_cached_library_page(
     if continuation.expires_at <= now {
         return Err(LibraryQueryError::InvalidRequest);
     }
-    let next_expires_at = now
-        .checked_add(LIBRARY_CONTINUATION_LIFETIME)
-        .ok_or(LibraryQueryError::QueryFailed)?;
     let cached = continuation
         .cached
         .take()
@@ -1183,7 +1180,6 @@ async fn serve_cached_library_page(
     };
     let continuation = token.map(|token| LibraryQueryContinuation {
         token,
-        expires_at: next_expires_at,
         ..continuation
     });
     Ok(RegisteredLibraryQueryPage {
@@ -1702,6 +1698,59 @@ mod tests {
         );
         assert!(second.response.answer.next_cursor.is_some());
         assert!(second.response.window_truncated);
+    }
+
+    #[tokio::test]
+    async fn intermediate_cached_continuation_keeps_original_authority_expiry() {
+        let workspace = Uuid::new_v4();
+        let drive_one = Uuid::new_v4();
+        let drive_two = Uuid::new_v4();
+        let drive_three = Uuid::new_v4();
+        let mut query = request(workspace, vec![drive_one, drive_two, drive_three]);
+        query.page_size = 1_000;
+        query.limit = 2_306;
+
+        let first = begin_registered_library_query(
+            query.clone(),
+            [drive_one, drive_two, drive_three]
+                .into_iter()
+                .map(|membership| {
+                    cloud_member(
+                        membership,
+                        Arc::new(CloudFixture::drive_documents(1_000)),
+                        mdreader_domain::library::CloudDocumentSource::GoogleDrive,
+                    )
+                })
+                .collect(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("first bounded Library page");
+        let first_continuation = first.continuation.expect("first cached continuation");
+        assert!(
+            first_continuation.cached.is_some(),
+            "the first response must retain CatDB snapshot authority"
+        );
+        let authority_expires_at = first_continuation.expires_at;
+
+        query.query_id = Some(first.response.answer.query_id);
+        query.cursor = first.response.answer.next_cursor;
+        let second =
+            continue_registered_library_query(query, first_continuation, CancellationToken::new())
+                .await
+                .expect("second bounded Library page");
+        let second_continuation = second
+            .continuation
+            .expect("page two must retain an intermediate cached successor");
+
+        assert!(
+            second_continuation.cached.is_some(),
+            "page two must still wrap CatDB snapshot authority"
+        );
+        assert_eq!(
+            second_continuation.expires_at, authority_expires_at,
+            "the outer continuation must not outlive the CatDB cursor authority"
+        );
     }
 
     #[tokio::test]
