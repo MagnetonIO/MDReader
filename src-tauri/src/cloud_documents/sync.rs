@@ -790,9 +790,7 @@ impl CloudSyncCoordinator {
             blocking_store(store, move |store| {
                 store
                     .published_snapshot(&source_id_for_publication)
-                    .map(|snapshot| {
-                        snapshot.is_some_and(|snapshot| snapshot.pins == expected_pins)
-                    })
+                    .map(|snapshot| snapshot.is_some_and(|snapshot| snapshot.pins == expected_pins))
             })
             .await
             .map_err(store_error)?

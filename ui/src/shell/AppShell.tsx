@@ -825,22 +825,6 @@ export function AppShell() {
           // optimistic membership.active rewrite.
           void refreshLibrary();
           activeSourceIdRef.current = sourceId;
-          // Library hydration can finish before session restore commits the
-          // active workspace. Reconcile the already-returned presentation
-          // metadata immediately, then supersede that read so the next answer
-          // comes from the post-commit registry revision.
-          setLibraryEvidence((evidence) =>
-            evidence
-              ? {
-                  ...evidence,
-                  memberships: evidence.memberships.map((member) =>
-                    member.kind === 'local-folder'
-                      ? { ...member, active: member.registry_id === sourceId }
-                      : member,
-                  ),
-                }
-              : evidence,
-          );
           void refreshLibrary();
           recordDiagnosticEventNonBlocking({
             kind: 'workspace',

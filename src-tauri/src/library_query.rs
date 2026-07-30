@@ -831,12 +831,10 @@ fn build_runtime(
         spec: provenance_rule_spec,
         checksum: provenance_rule_checksum,
     };
-    provenance_rule_version
-        .verify()
-        .map_err(|error| {
-            eprintln!("MDReader Library provenance rule is invalid: {error:?}");
-            LibraryQueryError::InvalidCatalog
-        })?;
+    provenance_rule_version.verify().map_err(|error| {
+        eprintln!("MDReader Library provenance rule is invalid: {error:?}");
+        LibraryQueryError::InvalidCatalog
+    })?;
 
     let policy_document = PolicyDocument {
         rules: source_policy_fields
@@ -864,12 +862,10 @@ fn build_runtime(
         spec: policy_spec,
         checksum: policy_checksum,
     };
-    policy_version
-        .verify()
-        .map_err(|error| {
-            eprintln!("MDReader Library policy is invalid: {error:?}");
-            LibraryQueryError::InvalidCatalog
-        })?;
+    policy_version.verify().map_err(|error| {
+        eprintln!("MDReader Library policy is invalid: {error:?}");
+        LibraryQueryError::InvalidCatalog
+    })?;
 
     let revision_spec = serde_json::json!({
         "workspace_id": workspace_id,
