@@ -29,14 +29,6 @@ playwright-report/
 # Hand-authored fixtures live in fixtures/corpus/ and ARE committed.
 fixtures/generated/
 
-# Synthetic multi-backend seed generator output (scripts/seed/gen-synthetic.mjs
-# default outdir) — regenerate with `node scripts/seed/gen-synthetic.mjs`.
-# deploy/compose/docker-compose.yml's seed-check service refuses to start the
-# stack if this is missing, precisely so an empty/missing directory here
-# fails loudly instead of looking like a successfully-seeded, merely-empty
-# database.
-scripts/seed/out/
-
 # Local CatDB databases (`catdb import` default --db location)
 .catdb/
 
