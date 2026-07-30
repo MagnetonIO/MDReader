@@ -193,67 +193,6 @@ fn runtime_specta_builder() -> Builder<tauri::Wry> {
     specta_builder()
 }
 
-/// The mobile native boundary is intentionally smaller than the generated
-/// desktop TypeScript vocabulary. Unknown commands are rejected by Tauri
-/// before reaching application code, so content mutation cannot be recovered
-/// by a compromised webview.
-#[cfg(mobile)]
-fn mobile_specta_builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![
-        commands::ping,
-        cloud_accounts::list_cloud_sources,
-        cloud_accounts::query_cloud_documents,
-        mobile_enterprise::mobile_enterprise_connection,
-        mobile_enterprise::mobile_enterprise_request,
-        federation::query_federated_document,
-        overlay::list_schemas,
-        overlay::project_corpus,
-        overlay::describe_schema,
-        overlay::inspect_span,
-        overlay::check_constraints,
-        mapping::list_mappings,
-        mapping::inspect_mapping,
-        mapping::compose_mappings,
-        mapping::diff_schema_versions,
-        mapping::inspect_migration,
-    ])
-}
-
-#[cfg(mobile)]
-fn specta_builder() -> Builder<tauri::Wry> {
-    mobile_specta_builder()
-}
-
-#[cfg(debug_assertions)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeTarget {
-    Desktop,
-    Mobile,
-}
-
-#[cfg(debug_assertions)]
-impl RuntimeTarget {
-    const fn current() -> Self {
-        if cfg!(mobile) {
-            Self::Mobile
-        } else {
-            Self::Desktop
-        }
-    }
-}
-
-#[cfg(debug_assertions)]
-fn runtime_specta_builder(
-    target: RuntimeTarget,
-    export: impl FnOnce(&Builder<tauri::Wry>),
-) -> Builder<tauri::Wry> {
-    let builder = specta_builder();
-    if target == RuntimeTarget::Desktop {
-        export(&builder);
-    }
-    builder
-}
-
 /// Build the macOS application menu. Tauri's *default* menu binds ⌘W to the
 /// native "Close Window", which would swallow the keystroke before it reaches
 /// the webview — stealing the shell's "close tab" binding. This replacement
@@ -561,18 +500,6 @@ mod tests {
         let bindings = include_str!("../../ui/src/bindings.ts");
         assert!(!bindings.contains("__TAURI_INVOKE(\"set_workspace\""));
         assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn native_application_menu_routes_settings_to_the_renderer() {
-        let production = include_str!("lib.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production module");
-        assert!(production.contains("MENU_SETTINGS"));
-        assert!(production.contains(".accelerator(\"CmdOrCtrl+,\")"));
-        assert!(production.contains("mdreader:show-settings"));
     }
 
     #[test]

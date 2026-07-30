@@ -2710,7 +2710,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "workspace_id": "00000000-0000-0000-0000-000000000099",
                 "catalog_revision_id": "00000000-0000-0000-0000-000000000098",
-                "schema_version_id": "00000000-0000-0000-0000-000000000096",
+                "schema_version_id": null,
                 "entity": "document.Document",
                 "select": ["title"],
                 "filters": [],

@@ -1660,63 +1660,6 @@ impl Drop for CloudConnectOwner<'_> {
 }
 
 #[derive(Debug)]
-struct ActiveCloudConnect {
-    serial: u64,
-    cancellation: catdb_connectors::CancellationToken,
-}
-
-#[derive(Debug)]
-struct CloudConnectHandle {
-    provider: CloudProvider,
-    serial: u64,
-    cancellation: catdb_connectors::CancellationToken,
-}
-
-struct CloudConnectOwner<'a> {
-    state: &'a CloudAccountsState,
-    handle: CloudConnectHandle,
-    settled: bool,
-}
-
-impl<'a> CloudConnectOwner<'a> {
-    fn begin(
-        state: &'a CloudAccountsState,
-        provider: CloudProvider,
-    ) -> Result<Self, CloudSourceError> {
-        Ok(Self {
-            state,
-            handle: state.begin_connect(provider)?,
-            settled: false,
-        })
-    }
-
-    fn cancellation(&self) -> catdb_connectors::CancellationToken {
-        self.handle.cancellation.clone()
-    }
-
-    fn ensure_current(&self) -> Result<(), CloudSourceError> {
-        self.state.ensure_connect_current(&self.handle)
-    }
-
-    fn finish(mut self) -> Result<(), CloudSourceError> {
-        let result = self.state.finish_connect(&self.handle);
-        self.settled = true;
-        result
-    }
-}
-
-impl Drop for CloudConnectOwner<'_> {
-    fn drop(&mut self) {
-        if self.settled {
-            return;
-        }
-        self.handle.cancellation.cancel();
-        let _ = self.state.finish_connect(&self.handle);
-        self.settled = true;
-    }
-}
-
-#[derive(Debug)]
 struct CloudQueryHandle {
     request_id: String,
     serial: u64,
@@ -5722,21 +5665,6 @@ where
     .map_err(|_| CloudSourceError::PersistFailed)??;
     owner.finish_committed();
     Ok(installed)
-}
-
-async fn commit_cloud_connect<T, Install, InstallFuture>(
-    state: &CloudAccountsState,
-    owner: CloudConnectOwner<'_>,
-    install: Install,
-) -> Result<T, CloudSourceError>
-where
-    Install: FnOnce() -> InstallFuture,
-    InstallFuture: std::future::Future<Output = Result<T, CloudSourceError>>,
-{
-    let _commit = state.lifecycle_commits.lock().await;
-    owner.ensure_current()?;
-    owner.finish()?;
-    install().await
 }
 
 #[tauri::command(async)]
