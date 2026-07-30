@@ -255,6 +255,12 @@ export function AppShell() {
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
+  useEffect(() => {
+    const showSettings = () => setSettingsOpen(true);
+    window.addEventListener('mdreader:show-settings', showSettings);
+    return () => window.removeEventListener('mdreader:show-settings', showSettings);
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     const generation = libraryRefreshGeneration.current + 1;
     libraryRefreshGeneration.current = generation;
@@ -819,6 +825,23 @@ export function AppShell() {
           // optimistic membership.active rewrite.
           void refreshLibrary();
           activeSourceIdRef.current = sourceId;
+          // Library hydration can finish before session restore commits the
+          // active workspace. Reconcile the already-returned presentation
+          // metadata immediately, then supersede that read so the next answer
+          // comes from the post-commit registry revision.
+          setLibraryEvidence((evidence) =>
+            evidence
+              ? {
+                  ...evidence,
+                  memberships: evidence.memberships.map((member) =>
+                    member.kind === 'local-folder'
+                      ? { ...member, active: member.registry_id === sourceId }
+                      : member,
+                  ),
+                }
+              : evidence,
+          );
+          void refreshLibrary();
           recordDiagnosticEventNonBlocking({
             kind: 'workspace',
             source_id: sourceId,

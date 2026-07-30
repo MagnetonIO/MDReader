@@ -533,6 +533,18 @@ mod tests {
         assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_application_menu_routes_settings_to_the_renderer() {
+        let production = include_str!("lib.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production module");
+        assert!(production.contains("MENU_SETTINGS"));
+        assert!(production.contains(".accelerator(\"CmdOrCtrl+,\")"));
+        assert!(production.contains("mdreader:show-settings"));
+    }
+
     #[test]
     fn federated_document_query_is_a_registered_specta_command() {
         let registry = include_str!("lib.rs");
