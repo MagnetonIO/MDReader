@@ -171,7 +171,6 @@ it('navigates connected read-through sources from the primary Library rail', () 
       onOpenRecent={vi.fn()}
       libraryEvidence={[dropbox.response]}
       librarySearch=""
-      libraryError="Some Library sources could not answer this query."
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
       onRefreshLibrary={vi.fn()}
@@ -461,7 +460,6 @@ it('keeps the active workspace and every supplemental membership across evidence
       onOpenRecent={vi.fn()}
       libraryEvidence={[...evidenceGroups]}
       librarySearch=""
-      libraryError="Some Library sources could not answer this query."
       onLibrarySearch={vi.fn()}
       onOpenLibrary={open}
       onRefreshLibrary={vi.fn()}

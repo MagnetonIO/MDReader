@@ -65,15 +65,6 @@ test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull());
 });
 
-test('the native application menu can open Settings', async () => {
-  render(<App />);
-  expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
-
-  act(() => window.dispatchEvent(new Event('mdreader:show-settings')));
-
-  await waitFor(() => expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy());
-});
-
 test('Mod+\\ toggles the sidebar collapsed state', async () => {
   render(<App />);
   expect(useSettingsStore.getState().sidebarCollapsed).toBe(false);

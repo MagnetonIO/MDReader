@@ -255,12 +255,6 @@ export function AppShell() {
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
-  useEffect(() => {
-    const showSettings = () => setSettingsOpen(true);
-    window.addEventListener('mdreader:show-settings', showSettings);
-    return () => window.removeEventListener('mdreader:show-settings', showSettings);
-  }, []);
-
   const refreshLibrary = useCallback(async () => {
     const generation = libraryRefreshGeneration.current + 1;
     libraryRefreshGeneration.current = generation;
@@ -825,7 +819,6 @@ export function AppShell() {
           // optimistic membership.active rewrite.
           void refreshLibrary();
           activeSourceIdRef.current = sourceId;
-          void refreshLibrary();
           recordDiagnosticEventNonBlocking({
             kind: 'workspace',
             source_id: sourceId,
