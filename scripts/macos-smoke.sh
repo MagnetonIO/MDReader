@@ -10,10 +10,10 @@
 # the red-X close ends the process. The webview UI is read through WebKit's
 # Accessibility tree (WKWebView exposes no WebDriver bridge).
 #
-# The Node runner owns the Appium session lifecycle: it kills any stale
-# WebDriverAgentMac host (a reused host wedges new sessions), re-seeds the fixture
-# workspace, launches the app, and — if no Appium server is already listening on
-# :4723 — spawns one from the local APPIUM_HOME and tears it down afterwards.
+# The Node runner owns the Appium session lifecycle: it re-seeds only the isolated
+# E2E profile, launches its E2E bundle, and — if no Appium server is already
+# listening on :4723 — spawns one from the local APPIUM_HOME and tears it down
+# afterwards. It never terminates an existing MDReader process.
 #
 # Exits non-zero on any failed step. macOS only (WKWebView has no WebDriver, so
 # this is the only leg that exercises the real app on a Mac).

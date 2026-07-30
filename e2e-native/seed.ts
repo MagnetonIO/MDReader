@@ -186,6 +186,8 @@ export async function withNativeRunArtifacts(
   return summary;
 }
 
+import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
+
 /** The store key `persistence.ts` reads the session under (`store.get('session')`). */
 const SESSION_KEY = 'session';
 /** The session schema version `deserializeSession` accepts. */
@@ -219,7 +221,7 @@ const CATDB_MANAGED_ENTRIES = [
 
 /**
  * The directory tauri-plugin-store resolves a bare store filename against — the
- * app's config dir for `identifier`.
+ * app's config dir for the E2E bundle identifier.
  *
  *   - macOS:   ~/Library/Application Support/<identifier>
  *   - Linux:   $XDG_CONFIG_HOME/<identifier>  (default ~/.config/<identifier>)

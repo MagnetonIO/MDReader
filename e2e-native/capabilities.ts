@@ -137,6 +137,12 @@ async function validateAndroidArchive(
   }
 }
 
+/** Fail closed if a mobile harness override points at a normal MDReader app. */
+export function mobileE2EIdentifier(value: string | undefined, variable: string): string {
+  if (value === undefined || value === E2E_BUNDLE_IDENTIFIER) return E2E_BUNDLE_IDENTIFIER;
+  throw new Error(`${variable} must use the E2E mobile identifier ${E2E_BUNDLE_IDENTIFIER}`);
+}
+
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
  *  what tauri-driver launches. */
 export function desktopAppBinary(): string {

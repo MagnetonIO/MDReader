@@ -17,7 +17,9 @@
   },
   "include": [
     "flows.ts",
+    "bundle.ts",
     "seed.ts",
+    "*.test.ts",
     "capabilities.ts",
     "mobile-fixture.ts",
     "validate-artifact.ts",
