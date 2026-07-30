@@ -14,7 +14,7 @@
  *     an in-flight save both leave the tab open; the dirty-quit hook preventDefaults.
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function deferred<T = void>() {
@@ -82,6 +82,7 @@ const h = vi.hoisted(() => ({
   >,
   libraryCancelGate: null as null | { promise: Promise<void>; resolve: () => void },
   libraryCancelCalls: [] as string[],
+  cloudReadCalls: [] as Array<{ sourceId: string; recordKey: string }>,
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
   markStarted: false,
   markSucceeded: false,
@@ -292,6 +293,21 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       h.libraryCancelCalls.push(requestId);
       if (h.libraryCancelGate) await h.libraryCancelGate.promise;
       return true;
+    }),
+    readCloudMarkdown: vi.fn(async (sourceId: string, recordKey: string) => {
+      h.cloudReadCalls.push({ sourceId, recordKey });
+      const title =
+        recordKey === 'drive-first'
+          ? 'First note'
+          : recordKey.split(/[\\/]/).pop() ?? recordKey;
+      return {
+        document_key: `${sourceId}:${recordKey}`,
+        title,
+        content: `# ${title}`,
+        edit_token: `edit:${sourceId}:${recordKey}`,
+        cache_state: 'provider-fresh' as const,
+        modified_at_ms: 1,
+      };
     }),
     resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
       h.editResolutions.push({ sourceId, relativePath });
@@ -637,6 +653,7 @@ beforeEach(() => {
   h.libraryQueryContinuations.length = 0;
   h.libraryCancelGate = null;
   h.libraryCancelCalls.length = 0;
+  h.cloudReadCalls.length = 0;
   h.markGate = null;
   h.markStarted = false;
   h.markSucceeded = false;
@@ -686,6 +703,44 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
+  it('records a cloud open in Recent and reopens it through provider identity', async () => {
+    installRapidCloudLibraryDocuments();
+    render(<App />);
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Open First note from Google Drive',
+      }),
+    );
+    await waitFor(() =>
+      expect(h.cloudReadCalls).toEqual([
+        { sourceId: 'google-drive', recordKey: 'drive-first' },
+      ]),
+    );
+    expect(useSourcesStore.getState().recent).toMatchObject([
+      {
+        kind: 'cloud',
+        sourceId: 'google-drive',
+        recordKey: 'drive-first',
+        name: 'First note',
+      },
+    ]);
+
+    const tabId = useTabsStore.getState().activeTabId;
+    expect(tabId).not.toBeNull();
+    act(() => useTabsStore.getState().closeTab(tabId!));
+    const recent = await screen.findByRole('navigation', {
+      name: 'Recent documents',
+    });
+    fireEvent.click(within(recent).getByRole('button', { name: 'First note' }));
+
+    await waitFor(() => expect(h.cloudReadCalls).toHaveLength(2));
+    expect(h.cloudReadCalls[1]).toEqual({
+      sourceId: 'google-drive',
+      recordKey: 'drive-first',
+    });
+  });
+
   it('loads a later Dropbox Markdown page after an empty first provider page', async () => {
     installDropboxContinuationPages();
     render(<App />);

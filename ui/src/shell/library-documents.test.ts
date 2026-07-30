@@ -162,6 +162,55 @@ const localLibrary: LibrarySnapshot = {
 };
 
 describe('one hydrated Library answer', () => {
+  it('keeps non-Markdown filesystem rows out of a local MDReader membership', () => {
+    const localMember: LibrarySourceExecution = {
+      ...member,
+      registry_id: 'local-folder',
+      name: 'Previous folder',
+      kind: 'local-folder',
+      editable: true,
+    };
+    const markdownRow: EntityRow = {
+      ...row,
+      record_key: 'notes/answer.md',
+      fields: { path: 'notes/answer.md', title: 'answer.md' },
+      provenance: {
+        ...row.provenance,
+        path: {
+          ...row.provenance.path!,
+          considered: row.provenance.path!.considered.map((provider) => ({
+            ...provider,
+            record_key: 'notes/answer.md',
+            state: { state: 'observed_value', value: 'notes/answer.md' },
+          })),
+        },
+      },
+    };
+    const imageRow: EntityRow = {
+      ...markdownRow,
+      record_key: 'images/diagram.png',
+      fields: { path: 'images/diagram.png', title: 'diagram.png' },
+      provenance: {
+        ...markdownRow.provenance,
+        path: {
+          ...markdownRow.provenance.path!,
+          considered: markdownRow.provenance.path!.considered.map((provider) => ({
+            ...provider,
+            record_key: 'images/diagram.png',
+            state: { state: 'observed_value', value: 'images/diagram.png' },
+          })),
+        },
+      },
+    };
+    const localEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      answer: { ...evidence.answer, rows: [imageRow, markdownRow] },
+      memberships: [localMember],
+    };
+
+    expect(rowsForMember(localEvidence, localMember)).toEqual([markdownRow]);
+  });
+
   it('uses one entity-query IPC and never issues provider-specific reads', async () => {
     const queryLibraryDocuments = vi.fn(async () => evidence);
     const backend = {

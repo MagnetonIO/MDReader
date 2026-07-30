@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 
 import type { ImportState, ListingFailure, WorkspaceFile } from '../platform/fs.js';
-import type { DocRef, RecentDoc } from './types.js';
+import type { DocumentRef, RecentDoc } from './types.js';
 
 export type WatcherStatus = 'idle' | 'watching' | 'error';
 
@@ -36,8 +36,8 @@ export interface SourcesState {
   setFiles: (files: WorkspaceFile[]) => void;
   setListingError: (listingError: ListingFailure | null) => void;
   setLoading: (loading: boolean) => void;
-  /** Record `docRef` as most-recent under workspace `root` (deduped by path). */
-  addRecent: (docRef: DocRef, root: string | null) => void;
+  /** Record a document under its native local or provider-owned identity. */
+  addRecent: (docRef: DocumentRef, root: string | null) => void;
   setWatcher: (watcher: WatcherStatus) => void;
   setImport: (importState: ImportState | null) => void;
   setFromIndex: (fromIndex: boolean) => void;
@@ -69,20 +69,37 @@ export const useSourcesStore = create<SourcesState>((set) => ({
   setFromIndex: (fromIndex) => set({ fromIndex }),
   addRecent: (docRef, root) =>
     set((state) => {
-      const entry = { path: docRef.path, name: docRef.name, root };
-      // Dedupe within the SAME workspace only — the same relative path can exist
-      // in two workspaces, and each keeps its own history.
+      const entry: RecentDoc =
+        docRef.kind === 'cloud'
+          ? { ...docRef, root: null }
+          : { path: docRef.path, name: docRef.name, root };
+      const sameDocument = (candidate: RecentDoc): boolean => {
+        if (entry.kind === 'cloud') {
+          return (
+            candidate.kind === 'cloud' &&
+            candidate.sourceId === entry.sourceId &&
+            candidate.recordKey === entry.recordKey
+          );
+        }
+        return (
+          candidate.kind !== 'cloud' &&
+          candidate.root === entry.root &&
+          candidate.path === entry.path
+        );
+      };
       const next = [
         entry,
-        ...state.recent.filter((e) => !(e.root === root && e.path === entry.path)),
+        ...state.recent.filter((candidate) => !sameDocument(candidate)),
       ];
-      // Cap PER workspace root (not globally, newest-first) so heavy activity in
-      // one workspace can't evict another's recents.
-      const perRoot = new Map<string | null, number>();
+      // Cap independently per local workspace and for the cloud Library, so one
+      // authority's activity cannot evict another authority's history.
+      const perScope = new Map<string, number>();
       return {
-        recent: next.filter((e) => {
-          const count = (perRoot.get(e.root) ?? 0) + 1;
-          perRoot.set(e.root, count);
+        recent: next.filter((candidate) => {
+          const scope =
+            candidate.kind === 'cloud' ? 'cloud-library' : `local:${candidate.root ?? ''}`;
+          const count = (perScope.get(scope) ?? 0) + 1;
+          perScope.set(scope, count);
           return count <= MAX_RECENT;
         }),
       };
@@ -106,7 +123,9 @@ export const useSourcesStore = create<SourcesState>((set) => ({
             listingError: null,
           }
         : {}),
-      recent: state.recent.filter((entry) => entry.root !== root),
+      recent: state.recent.filter(
+        (entry) => entry.kind === 'cloud' || entry.root !== root,
+      ),
     })),
   reset: () => set({ ...initialState }),
 }));

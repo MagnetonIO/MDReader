@@ -165,7 +165,11 @@ function parseRecentArray(candidate: unknown, fallbackRoot: string | null): Rece
   const recents: RecentDoc[] = [];
   for (const entry of candidate) {
     const ref = parseRef(entry);
-    if (!ref || ref.kind === 'cloud') continue;
+    if (!ref) continue;
+    if (ref.kind === 'cloud') {
+      recents.push({ ...ref, root: null });
+      continue;
+    }
     const root =
       isRecord(entry) && typeof entry.root === 'string' ? entry.root : fallbackRoot;
     recents.push({ path: ref.path, name: ref.name, root });
@@ -260,7 +264,16 @@ function cloneRef(ref: DocumentRef): DocumentRef {
 }
 
 function cloneRecent(ref: RecentDoc): RecentDoc {
-  return { path: ref.path, name: ref.name, root: ref.root };
+  return ref.kind === 'cloud'
+    ? {
+        kind: 'cloud',
+        sourceId: ref.sourceId,
+        recordKey: ref.recordKey,
+        documentKey: ref.documentKey,
+        name: ref.name,
+        root: null,
+      }
+    : { path: ref.path, name: ref.name, root: ref.root };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

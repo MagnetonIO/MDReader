@@ -732,7 +732,14 @@ export function rowsForMember(
   evidence: LibraryEntityQueryResponse_Serialize,
   member: LibrarySourceExecution,
 ): EntityRow[] {
-  return evidence.answer.rows.filter(
-    (row) => memberForRow(evidence, row)?.membership_id === member.membership_id,
-  );
+  return evidence.answer.rows.filter((row) => {
+    if (memberForRow(evidence, row)?.membership_id !== member.membership_id) {
+      return false;
+    }
+    if (member.kind !== 'local-folder') return true;
+    const path =
+      physicalRecordKey(row) ??
+      (typeof row.fields.path === 'string' ? row.fields.path : null);
+    return path !== null && /\.(?:md|markdown)$/iu.test(path);
+  });
 }

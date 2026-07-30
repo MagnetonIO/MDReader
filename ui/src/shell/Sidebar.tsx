@@ -11,7 +11,7 @@ import type {
 } from '../bindings.js';
 import { DropboxIcon, FolderIcon, GoogleDriveIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
-import type { DocRef } from '../stores/types.js';
+import { documentKey, type DocumentRef } from '../stores/types.js';
 import {
   libraryDocumentTitle,
   rowsForMember,
@@ -22,7 +22,7 @@ export interface SidebarProps {
   collapsed: boolean;
   root: string | null;
   files: WorkspaceFile[];
-  recent: DocRef[];
+  recent: DocumentRef[];
   activePath: string | null;
   loading: boolean;
   /** Why the listing failed, or `null`. Takes precedence over the file tree:
@@ -30,7 +30,7 @@ export interface SidebarProps {
   listingError?: ListingFailure | null;
   onPickFolder: () => void;
   onOpenFile: (file: WorkspaceFile) => void;
-  onOpenRecent: (ref: DocRef) => void;
+  onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
   libraryEvidence?: LibraryEntityQueryResponse_Serialize[];
   librarySearch?: string;
@@ -386,11 +386,11 @@ export function Sidebar({
           <div className="recent__heading">Recent</div>
           {recent.map((ref) => (
             <button
-              key={ref.path}
+              key={documentKey(ref)}
               type="button"
               className="recent__item"
               onClick={() => onOpenRecent(ref)}
-              title={ref.path}
+              title={ref.kind === 'cloud' ? `${ref.name} — ${ref.sourceId}` : ref.path}
             >
               {ref.name}
             </button>

@@ -35,7 +35,13 @@ import {
   useSettingsStore,
 } from '../stores/settings.js';
 import { serializeSession } from '../stores/session.js';
-import { documentKey, isLocalDocument, type DocRef, type ScrollPos } from '../stores/types.js';
+import {
+  documentKey,
+  isLocalDocument,
+  type DocRef,
+  type DocumentRef,
+  type ScrollPos,
+} from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
@@ -79,6 +85,7 @@ import {
   hydrateLibraryDocument,
   libraryAvailability as availabilityForLibrary,
   physicalRecordKey,
+  rowsForMember,
   type LibraryAvailability,
   type HydratedLibrary,
   type HydratedLibrarySelection,
@@ -410,6 +417,7 @@ export function AppShell() {
             };
             setCloudDocuments((current) => ({ ...current, [documentKey(ref)]: hydratedDocument }));
             useTabsStore.getState().openTab(ref, { originRoot: null });
+            useSourcesStore.getState().addRecent(ref, null);
             setLibraryDocument(null);
           } else {
             setLibraryDocument(hydratedDocument);
@@ -965,6 +973,39 @@ export function AppShell() {
     useTabsStore.getState().openTab(ref, { originRoot: root });
     useSourcesStore.getState().addRecent(ref, root);
   }, [clearLibraryDocument]);
+
+  const openRecentDocument = useCallback(
+    (ref: DocumentRef) => {
+      if (isLocalDocument(ref)) {
+        openRef(ref);
+        return;
+      }
+      const cached = cloudDocuments[documentKey(ref)];
+      if (
+        cached &&
+        cached.member.registry_id === ref.sourceId &&
+        physicalRecordKey(cached.row) === ref.recordKey
+      ) {
+        void openLibraryDocument(cached.member, cached.row);
+        return;
+      }
+      for (const evidence of libraryEvidence) {
+        const member = evidence.memberships.find(
+          (candidate) => candidate.registry_id === ref.sourceId,
+        );
+        if (!member) continue;
+        const row = rowsForMember(evidence, member).find(
+          (candidate) => physicalRecordKey(candidate) === ref.recordKey,
+        );
+        if (row) {
+          void openLibraryDocument(member, row);
+          return;
+        }
+      }
+      toast('Refresh the Library to reopen this cloud document');
+    },
+    [cloudDocuments, libraryEvidence, openLibraryDocument, openRef],
+  );
 
   const openFile = useCallback(
     (file: WorkspaceFile) => {
@@ -2171,13 +2212,22 @@ export function AppShell() {
     };
   }, []);
 
-  // Recent is scoped to the active workspace: an entry retired from workspace A
-  // never surfaces (and so can never be reopened as an error tab) under B's grant.
-  const visibleRecent = useMemo(
+  // Local Recent remains scoped to its workspace grant. Cloud Recent belongs to
+  // the Library and retains provider identity across local workspace switches.
+  const visibleRecent = useMemo<DocumentRef[]>(
     () =>
-      recent
-        .filter((entry) => entry.root === root)
-        .map((entry) => ({ path: entry.path, name: entry.name })),
+      recent.flatMap<DocumentRef>((entry) => {
+        if (entry.kind === 'cloud') {
+          return [{
+            kind: 'cloud' as const,
+            sourceId: entry.sourceId,
+            recordKey: entry.recordKey,
+            documentKey: entry.documentKey,
+            name: entry.name,
+          }];
+        }
+        return entry.root === root ? [{ path: entry.path, name: entry.name }] : [];
+      }),
     [recent, root],
   );
 
@@ -2240,7 +2290,7 @@ export function AppShell() {
           listingError={listingError}
           onPickFolder={onPickFolder}
           onOpenFile={openFile}
-          onOpenRecent={openRef}
+          onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
           libraryEvidence={libraryEvidence}
           librarySearch={librarySearch}

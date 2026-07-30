@@ -37,16 +37,22 @@ export function isLocalDocument(ref: DocumentRef): ref is LocalDocumentRef {
 export type DocRef = LocalDocumentRef;
 
 /**
- * A recently-opened document, tagged with the workspace root it belongs to.
- * Recent is scoped per-workspace: an entry only surfaces while its own workspace
- * is active, so a document retired from workspace A can never be reopened under
- * workspace B's grant (which would escape the root and produce an error tab).
+ * A recently-opened document with its owning authority intact.
+ *
+ * Local entries remain scoped to the workspace grant that opened them. Cloud
+ * entries are Library-scoped and retain provider identity; a provider key is
+ * never converted into a filesystem path.
  */
-export interface RecentDoc extends LocalDocumentRef {
-  /** The granted workspace root this document was opened under (`null` if it was
-   *  opened before any workspace grant existed — e.g. a legacy persisted entry). */
-  root: string | null;
-}
+export type RecentDoc =
+  | (LocalDocumentRef & {
+      /** The granted workspace root this document was opened under (`null` for
+       *  a legacy entry persisted before workspace-scoped Recent existed). */
+      root: string | null;
+    })
+  | (CloudDocumentRef & {
+      /** Cloud entries belong to the Library rather than one local workspace. */
+      root: null;
+    });
 
 /** Scroll position within a reader, anchored to a top-level block. */
 export interface ScrollPos {

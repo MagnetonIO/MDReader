@@ -5,6 +5,13 @@ import { MAX_RECENT, useSourcesStore } from './sources.js';
 afterEach(() => useSourcesStore.getState().reset());
 
 const ref = (n: number) => ({ path: `/ws/${n}.md`, name: `${n}.md` });
+const cloudRef = (sourceId: string, recordKey: string) => ({
+  kind: 'cloud' as const,
+  sourceId,
+  recordKey,
+  documentKey: `${sourceId}:${recordKey}`,
+  name: 'README.md',
+});
 
 describe('addRecent — per-workspace scoping', () => {
   test('dedupes within a workspace by path, moving the entry to the front', () => {
@@ -46,5 +53,24 @@ describe('addRecent — per-workspace scoping', () => {
     // The newest A entry survived; the oldest A entry was evicted.
     expect(recent.some((e) => e.path === '/a/extra.md')).toBe(true);
     expect(recent.some((e) => e.path === '/a/0.md')).toBe(false);
+  });
+
+  test('keeps same-named cloud documents distinct by provider identity', () => {
+    const { addRecent } = useSourcesStore.getState();
+    addRecent(cloudRef('google-drive', 'drive-readme'), null);
+    addRecent(cloudRef('dropbox', '/docs/README.md'), null);
+    addRecent(cloudRef('google-drive', 'drive-readme'), null);
+
+    const recent = useSourcesStore.getState().recent;
+    expect(recent).toHaveLength(2);
+    expect(recent.map((entry) => entry.kind)).toEqual(['cloud', 'cloud']);
+    expect(
+      recent.map((entry) =>
+        entry.kind === 'cloud' ? [entry.sourceId, entry.recordKey] : null,
+      ),
+    ).toEqual([
+      ['google-drive', 'drive-readme'],
+      ['dropbox', '/docs/README.md'],
+    ]);
   });
 });
