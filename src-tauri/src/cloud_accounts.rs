@@ -11100,6 +11100,16 @@ mod tests {
                         1,
                         "Dropbox authorization URL must request an offline token once"
                     );
+                    assert_eq!(
+                        parameters
+                            .iter()
+                            .filter(|(key, value)| {
+                                key == "include_granted_scopes" && value == "user"
+                            })
+                            .count(),
+                        1,
+                        "Dropbox write authorization must merge the user's existing grant"
+                    );
                 }
             }
         }

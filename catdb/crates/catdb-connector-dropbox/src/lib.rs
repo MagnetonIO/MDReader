@@ -527,7 +527,8 @@ impl DropboxOAuthPkce {
         }
         let mut url =
             Url::parse(AUTHORIZATION_ENDPOINT).map_err(|_| DropboxConnectorError::InvalidPkce)?;
-        url.query_pairs_mut()
+        let mut query = url.query_pairs_mut();
+        query
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &self.redirect_uri)
             .append_pair("response_type", "code")
@@ -536,6 +537,10 @@ impl DropboxOAuthPkce {
             .append_pair("code_challenge_method", "S256")
             .append_pair("token_access_type", "offline")
             .append_pair("state", &self.state);
+        if profile == DropboxAuthorizationProfile::MarkdownReadWrite {
+            query.append_pair("include_granted_scopes", "user");
+        }
+        drop(query);
         Ok(url.into())
     }
 
