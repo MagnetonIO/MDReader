@@ -438,8 +438,15 @@ export async function continueHydratedLibrary(
   backend: Pick<SettingsBackend, 'queryLibraryDocuments'>,
   current: HydratedLibrary,
   requestId: string,
+  membershipId?: string,
 ): Promise<HydratedLibrary> {
-  const continuations = current.continuations;
+  const currentContinuations = current.continuations;
+  const continuations =
+    membershipId === undefined
+      ? currentContinuations
+      : currentContinuations?.filter((continuation) =>
+          continuation.sourceIds.includes(membershipId),
+        );
   if (!continuations || continuations.length === 0 || !backend.queryLibraryDocuments) {
     throw new Error('Library continuation is unavailable.');
   }
@@ -466,11 +473,15 @@ export async function continueHydratedLibrary(
       return { continuation, evidenceIndex, page };
     }),
   );
-  const next = pages.flatMap(({ continuation, evidenceIndex, page }) => {
+  const nextForLoadedSources = pages.flatMap(({ continuation, evidenceIndex, page }) => {
     evidence[evidenceIndex] = mergeLibraryPages(evidence[evidenceIndex]!, page);
     const nextContinuation = nextLibraryContinuation(page, continuation);
     return nextContinuation === null ? [] : [nextContinuation];
   });
+  const untouched = (currentContinuations ?? []).filter(
+    (continuation) => !continuations.includes(continuation),
+  );
+  const next = [...untouched, ...nextForLoadedSources];
   return {
     evidence,
     failures: current.failures,

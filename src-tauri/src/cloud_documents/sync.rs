@@ -138,6 +138,7 @@ struct SyncOwner {
     phase: CloudSyncPhase,
     running: bool,
     idle: Arc<Notify>,
+    published: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -311,6 +312,7 @@ impl CloudSyncCoordinator {
                             phase: CloudSyncPhase::NeverSynced,
                             running: true,
                             idle: Arc::new(Notify::new()),
+                            published: Arc::new(Notify::new()),
                         },
                     );
                     (1, cancellation)
@@ -423,6 +425,46 @@ impl CloudSyncCoordinator {
             }),
             (None, None) => None,
         })
+    }
+
+    /// Waits until this owner has published a local snapshot that foreground
+    /// Library queries can read. Provider enumeration may continue after the
+    /// first bounded publication.
+    pub(crate) async fn wait_until_published(
+        &self,
+        source_id: &SourceId,
+    ) -> Result<(), CloudSyncError> {
+        loop {
+            let (published, idle, running) = {
+                let owners = self.owners()?;
+                let owner = owners
+                    .get(source_id.as_str())
+                    .ok_or(CloudSyncError::UnknownSource)?;
+                (
+                    Arc::clone(&owner.published),
+                    Arc::clone(&owner.idle),
+                    owner.running,
+                )
+            };
+            let source_id_for_store = source_id.clone();
+            let store = Arc::clone(&self.store);
+            if blocking_store(store, move |store| {
+                store
+                    .published_snapshot(&source_id_for_store)
+                    .map(|snapshot| snapshot.is_some())
+            })
+            .await?
+            {
+                return Ok(());
+            }
+            if !running {
+                return Err(CloudSyncError::StateUnavailable);
+            }
+            tokio::select! {
+                _ = published.notified() => {}
+                _ = idle.notified() => {}
+            }
+        }
     }
 
     /// Waits until the current owner has no scheduled provider work. A
@@ -727,9 +769,71 @@ impl CloudSyncCoordinator {
     ) -> Result<i64, CloudDocumentError> {
         let deadline = Instant::now() + SYNC_DEADLINE;
         let query_id = uuid::Uuid::new_v4();
+        let source_id_for_repair = source_id.clone();
+        let pins_for_repair = pins.clone();
+        let store = Arc::clone(&self.store);
+        let repaired_publication = blocking_store(store, move |store| {
+            store.repair_published_schema_pin(&source_id_for_repair, &pins_for_repair)
+        })
+        .await
+        .map_err(store_error)?;
+        if repaired_publication {
+            self.notify_published_if_current(source_id, epoch)?;
+        }
         let start_cursor =
             provider_start(source.as_ref(), cancellation, query_id, deadline).await?;
         self.check_current(source_id, epoch, cancellation)?;
+        let source_id_for_publication = source_id.clone();
+        let has_current_publication = {
+            let store = Arc::clone(&self.store);
+            let expected_pins = pins.clone();
+            blocking_store(store, move |store| {
+                store
+                    .published_snapshot(&source_id_for_publication)
+                    .map(|snapshot| {
+                        snapshot.is_some_and(|snapshot| snapshot.pins == expected_pins)
+                    })
+            })
+            .await
+            .map_err(store_error)?
+        };
+        if !has_current_publication {
+            if let Some(bootstrap) =
+                provider_bootstrap_recent(source.as_ref(), cancellation, query_id, deadline).await?
+            {
+                let mut budget = PageBudget::default();
+                budget.start_page()?;
+                budget.charge_metadata(&bootstrap.rows)?;
+                if !bootstrap.rows.is_empty() {
+                    let observed_at_ms = bootstrap.observed_at_ms;
+                    let bootstrap_pins = pins.clone();
+                    let source_id_for_bootstrap = source_id.clone();
+                    let cursor_for_bootstrap = start_cursor.clone();
+                    let generation = self
+                        .source_effect(source_id.clone(), epoch, cancellation, move |store| {
+                            store.begin_initial_sync(
+                                &source_id_for_bootstrap,
+                                &cursor_for_bootstrap,
+                                &bootstrap_pins,
+                                observed_at_ms,
+                            )
+                        })
+                        .await?;
+                    let bootstrap_pins = pins.clone();
+                    let generation_for_stage = generation.clone();
+                    self.source_effect(source_id.clone(), epoch, cancellation, move |store| {
+                        store.stage_page(&generation_for_stage, &bootstrap_pins, &bootstrap)
+                    })
+                    .await?;
+                    let generation_for_publish = generation.clone();
+                    self.source_effect(source_id.clone(), epoch, cancellation, move |store| {
+                        store.publish_provisional_sync(&generation_for_publish, observed_at_ms)
+                    })
+                    .await?;
+                    self.notify_published_if_current(source_id, epoch)?;
+                }
+            }
+        }
         let pins = pins.clone();
         let pins_for_begin = pins.clone();
         let source_id_for_store = source_id.clone();
@@ -775,6 +879,7 @@ impl CloudSyncCoordinator {
             )
         })
         .await?;
+        self.notify_published_if_current(source_id, epoch)?;
         self.check_current(source_id, epoch, cancellation)?;
         self.run_incremental(&operation, start_cursor).await
     }
@@ -1071,6 +1176,24 @@ impl CloudSyncCoordinator {
         owner.idle.notify_waiters();
     }
 
+    fn notify_published_if_current(
+        &self,
+        source_id: &SourceId,
+        epoch: u64,
+    ) -> Result<(), CloudDocumentError> {
+        let owners = self
+            .owners()
+            .map_err(|_| CloudDocumentError::ProtocolFailed)?;
+        let owner = owners
+            .get(source_id.as_str())
+            .ok_or(CloudDocumentError::SourceDisconnected)?;
+        if owner.epoch != epoch || owner.cancellation.is_cancelled() {
+            return Err(CloudDocumentError::Cancelled);
+        }
+        owner.published.notify_one();
+        Ok(())
+    }
+
     fn owners(&self) -> Result<MutexGuard<'_, HashMap<String, SyncOwner>>, CloudSyncError> {
         self.owners
             .lock()
@@ -1200,6 +1323,21 @@ async fn provider_start(
         cancellation,
         context.deadline,
         source.start_change_tracking(&context),
+    )
+    .await
+}
+
+async fn provider_bootstrap_recent(
+    source: &dyn MarkdownDocumentSource,
+    cancellation: &CancellationToken,
+    query_id: uuid::Uuid,
+    deadline: Instant,
+) -> Result<Option<MarkdownMetadataPage>, CloudDocumentError> {
+    let context = context(cancellation, query_id, deadline);
+    provider_call(
+        cancellation,
+        context.deadline,
+        source.bootstrap_recent(&context),
     )
     .await
 }

@@ -196,10 +196,26 @@ fn map_source_error(error: SourceError) -> CloudDocumentError {
         SourceError::RateLimited { retry_after_ms, .. } => {
             CloudDocumentError::RateLimited { retry_after_ms }
         }
-        SourceError::ResourceLimit { .. }
-        | SourceError::RowBudgetExceeded
-        | SourceError::ByteBudgetExceeded => CloudDocumentError::TooLarge,
-        SourceError::InvalidCursor | SourceError::CursorTooLarge { .. } => {
+        SourceError::ResourceLimit { resource, .. } => {
+            eprintln!("MDReader cloud source limit: resource={resource}");
+            CloudDocumentError::TooLarge
+        }
+        SourceError::RowBudgetExceeded => {
+            eprintln!("MDReader cloud source limit: resource=row-budget");
+            CloudDocumentError::TooLarge
+        }
+        SourceError::ByteBudgetExceeded => {
+            eprintln!("MDReader cloud source limit: resource=byte-budget");
+            CloudDocumentError::TooLarge
+        }
+        SourceError::InvalidCursor => {
+            eprintln!("MDReader cloud source cursor rejected: reason=invalid");
+            CloudDocumentError::ResetCursor
+        }
+        SourceError::CursorTooLarge { actual, maximum } => {
+            eprintln!(
+                "MDReader cloud source cursor rejected: reason=too-large actual={actual} maximum={maximum}"
+            );
             CloudDocumentError::ResetCursor
         }
         _ => CloudDocumentError::ProtocolFailed,
@@ -718,6 +734,45 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
         self.write_operations.source_id()
     }
 
+    async fn bootstrap_recent(
+        &self,
+        context: &CloudIoContext,
+    ) -> Result<Option<MarkdownMetadataPage>, CloudDocumentError> {
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        let fields = [
+            "id",
+            "name",
+            "path",
+            "modifiedAt",
+            "size",
+            "rev",
+            "contentHash",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let query = EntityQuery {
+            target: EntityTarget::Entity(CLOUD_DOCUMENT_ENTITY.to_string()),
+            filters: Vec::new(),
+        };
+        let source = self.source()?;
+        let plan = source.compile(&query, &fields).map_err(map_source_error)?;
+        let page = source
+            .search_recent_markdown(&plan, &read_context(context)?)
+            .await
+            .map_err(map_source_error)?;
+        check_lifecycle(self.lifecycle.as_ref()).await?;
+        Ok(Some(MarkdownMetadataPage {
+            rows: page
+                .rows
+                .into_iter()
+                .map(Self::metadata)
+                .collect::<Result<_, _>>()?,
+            next_cursor: None,
+            observed_at_ms: page.observed_at_ms,
+        }))
+    }
+
     async fn start_change_tracking(
         &self,
         context: &CloudIoContext,
@@ -781,7 +836,7 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
             key: SourceRecordKey::new(document.record_key()),
             revision: ProviderRevision {
                 opaque: document.revision().as_str().to_string(),
-                content_hash: None,
+                content_hash: document.content_hash().map(decode_hash).transpose()?,
             },
             body: document.body().to_vec(),
             observed_at_ms: now_ms(),

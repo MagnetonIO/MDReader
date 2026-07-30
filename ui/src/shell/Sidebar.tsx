@@ -41,7 +41,7 @@ export interface SidebarProps {
   onLibrarySearch?: (value: string) => void;
   onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
   onRefreshLibrary?: () => void;
-  onLoadMoreLibrary?: () => void;
+  onLoadMoreLibrary?: (membershipId?: string) => void;
 }
 
 function basename(path: string): string {
@@ -127,6 +127,9 @@ export function Sidebar({
 }: SidebarProps) {
   const [libraryExpanded, setLibraryExpanded] = useState(false);
   const [libraryCollapsed, setLibraryCollapsed] = useState(false);
+  const [collapsedLibrarySources, setCollapsedLibrarySources] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [libraryHeight, setLibraryHeight] = useState<number | null>(null);
   const beginLibraryResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rail = event.currentTarget.nextElementSibling as HTMLElement | null;
@@ -290,11 +293,35 @@ export function Sidebar({
                   if (!search) return true;
                   return libraryDocumentTitle(row).toLocaleLowerCase().includes(search);
                 });
+                const sourceCollapsed = collapsedLibrarySources.has(member.membership_id);
+                const sourceHasMore =
+                  evidence.window_truncated && evidence.answer.next_cursor !== null;
                 return (
                   <section className="library-sources__source" key={member.membership_id}>
-                    <div>
-                      {sourceIcon(member.kind)}
-                      <strong>{member.name}</strong>
+                    <div className="library-sources__source-heading">
+                      <button
+                        type="button"
+                        className="library-sources__source-toggle"
+                        aria-expanded={!sourceCollapsed}
+                        aria-label={`${sourceCollapsed ? 'Expand' : 'Collapse'} ${member.name}`}
+                        onClick={() => {
+                          setCollapsedLibrarySources((current) => {
+                            const next = new Set(current);
+                            if (next.has(member.membership_id)) {
+                              next.delete(member.membership_id);
+                            } else {
+                              next.add(member.membership_id);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        <span className="library-sources__disclosure" aria-hidden="true">
+                          {sourceCollapsed ? '›' : '⌄'}
+                        </span>
+                        {sourceIcon(member.kind)}
+                        <strong>{member.name}</strong>
+                      </button>
                       <small>
                         {member.kind === 'local-folder'
                           ? member.editable
@@ -307,42 +334,47 @@ export function Sidebar({
                             : 'Read-only'}
                       </small>
                     </div>
-                    {rows.length > 0 ? (
-                      <ul>
-                        {rows.map((row) => {
-                          const title = libraryDocumentTitle(row);
-                          return (
-                            <li key={row.record_key}>
-                              <button
-                                type="button"
-                                className="library-sources__document"
-                                aria-label={`Open ${title} from ${member.name}`}
-                                onClick={() => onOpenLibrary?.(member, row)}
-                              >
-                                {title}
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
-                    )}
+                    {!sourceCollapsed ? (
+                      <>
+                        {rows.length > 0 ? (
+                          <ul>
+                            {rows.map((row) => {
+                              const title = libraryDocumentTitle(row);
+                              return (
+                                <li key={row.record_key}>
+                                  <button
+                                    type="button"
+                                    className="library-sources__document"
+                                    aria-label={`Open ${title} from ${member.name}`}
+                                    onClick={() => onOpenLibrary?.(member, row)}
+                                  >
+                                    {title}
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
+                        )}
+                        {sourceHasMore && onLoadMoreLibrary ? (
+                          <button
+                            type="button"
+                            className="library-sources__refresh library-sources__load-more"
+                            aria-label={`Load more ${member.name}`}
+                            onClick={() => onLoadMoreLibrary(member.membership_id)}
+                            disabled={libraryLoading}
+                          >
+                            {libraryLoading ? 'Reading…' : 'Load more'}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
                   </section>
                 );
               }),
           )}
           {libraryEvidence.length === 0 && libraryLoading ? <p>Reading Library…</p> : null}
-          {libraryHasMore && onLoadMoreLibrary ? (
-            <button
-              type="button"
-              className="library-sources__refresh"
-              onClick={onLoadMoreLibrary}
-              disabled={libraryLoading}
-            >
-              {libraryLoading ? 'Reading…' : 'Load more'}
-            </button>
-          ) : null}
           </>
           ) : null}
         </nav>

@@ -308,6 +308,15 @@ fn download_header(path: &str, name: &str, rev: &str, content_hash: &str) -> Str
     file(path, name, rev, content_hash).to_string()
 }
 
+fn provider_download_header(path: &str, name: &str, rev: &str, content_hash: &str) -> String {
+    let mut metadata = file(path, name, rev, content_hash);
+    metadata
+        .as_object_mut()
+        .expect("file metadata object")
+        .remove(".tag");
+    metadata.to_string()
+}
+
 #[tokio::test]
 async fn sync_metadata_uses_dropbox_metadata_without_a_content_download() {
     let (source, transport) = open_source_with_config(
@@ -392,6 +401,7 @@ async fn downloads_the_exact_markdown_record_and_revision() {
 
     assert_eq!(document.record_key(), "id:note.md");
     assert_eq!(document.revision().as_str(), "rev-1");
+    assert_eq!(document.content_hash(), Some("hash-1"));
     assert_eq!(document.body(), b"# one");
     let requests = transport.requests();
     assert_eq!(requests.len(), 1);
@@ -404,6 +414,49 @@ async fn downloads_the_exact_markdown_record_and_revision() {
         .unwrap()["path"],
         "id:note.md"
     );
+}
+
+#[tokio::test]
+async fn download_accepts_provider_file_metadata_without_a_union_tag() {
+    let transport = ScriptedTransport::new([response_with_headers(
+        200,
+        [(
+            "Dropbox-API-Result",
+            provider_download_header("/knowledge/note.md", "note.md", "rev-1", "hash-1"),
+        )],
+        b"# one".to_vec(),
+    )]);
+    let (source, _) = open_source_with_config(transport, markdown_config());
+
+    let document = source
+        .download_markdown("id:note.md", &context(10, 10, 64 * 1024))
+        .await
+        .expect("Dropbox download metadata does not carry the list-entry union tag");
+
+    assert_eq!(document.record_key(), "id:note.md");
+    assert_eq!(document.revision().as_str(), "rev-1");
+    assert_eq!(document.body(), b"# one");
+}
+
+#[tokio::test]
+async fn download_accepts_the_materialized_path_as_record_identity() {
+    let transport = ScriptedTransport::new([response_with_headers(
+        200,
+        [(
+            "Dropbox-API-Result",
+            provider_download_header("/knowledge/note.md", "note.md", "rev-1", "hash-1"),
+        )],
+        b"# one".to_vec(),
+    )]);
+    let (source, _) = open_source_with_config(transport, markdown_config());
+
+    let document = source
+        .download_markdown("/knowledge/note.md", &context(10, 10, 64 * 1024))
+        .await
+        .expect("materialized Dropbox rows use the provider path as their record key");
+
+    assert_eq!(document.record_key(), "/knowledge/note.md");
+    assert_eq!(document.body(), b"# one");
 }
 
 #[tokio::test]

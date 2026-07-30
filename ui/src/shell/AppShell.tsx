@@ -308,7 +308,7 @@ export function AppShell() {
     }
   }, []);
 
-  const loadMoreLibrary = useCallback(async () => {
+  const loadMoreLibrary = useCallback(async (membershipId?: string) => {
     if (!libraryHydration.continuations?.length) return;
     const generation = libraryRefreshGeneration.current + 1;
     libraryRefreshGeneration.current = generation;
@@ -326,6 +326,7 @@ export function AppShell() {
         settingsBackend,
         libraryHydration,
         requestId,
+        membershipId,
       );
       if (libraryRefreshGeneration.current !== generation) return;
       setLibraryHydration(hydration);

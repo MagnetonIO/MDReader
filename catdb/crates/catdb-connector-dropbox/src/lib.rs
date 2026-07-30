@@ -1109,6 +1109,7 @@ impl fmt::Debug for DropboxDocumentError {
 pub struct DropboxDownloadedDocument {
     record_key: String,
     revision: DropboxRevision,
+    content_hash: Option<String>,
     body: Vec<u8>,
 }
 
@@ -1123,6 +1124,11 @@ impl DropboxDownloadedDocument {
         &self.revision
     }
 
+    /// Provider content hash captured with the same downloaded revision.
+    pub fn content_hash(&self) -> Option<&str> {
+        self.content_hash.as_deref()
+    }
+
     /// Validated UTF-8 Markdown bytes.
     pub fn body(&self) -> &[u8] {
         self.body.as_slice()
@@ -1135,6 +1141,7 @@ impl fmt::Debug for DropboxDownloadedDocument {
             .debug_struct("DropboxDownloadedDocument")
             .field("record_key_bytes", &self.record_key.len())
             .field("revision_bytes", &self.revision.0.len())
+            .field("has_content_hash", &self.content_hash.is_some())
             .field("body_bytes", &self.body.len())
             .field("body_encoding", &"utf-8")
             .finish()
@@ -1369,6 +1376,97 @@ impl DropboxSource {
         DropboxAvailability::FixtureValidated
     }
 
+    /// Return a bounded provider-indexed bootstrap of recently modified
+    /// Markdown files.
+    ///
+    /// Dropbox search is intentionally a bootstrap rather than completeness
+    /// evidence: its index may lag and caps retrievable matches. Callers must
+    /// retain the cursor-backed `list_folder` traversal for the authoritative
+    /// materialization.
+    pub async fn search_recent_markdown(
+        &self,
+        plan: &SourcePlan,
+        context: &ReadContext,
+    ) -> Result<SourcePage, SourceError> {
+        context.check()?;
+        self.validate_plan(plan)?;
+        let page_size = context.page_size().min(context.remaining_rows());
+        if page_size == 0 {
+            return Err(SourceError::RowBudgetExceeded);
+        }
+        let per_extension = page_size.div_ceil(2).min(100);
+        let mut physical_bytes = 0usize;
+        let mut scanned = 0usize;
+        let mut rows = BTreeMap::<String, SourceRow>::new();
+        for (query, extension) in [("md", "md"), ("markdown", "markdown")] {
+            let response = self
+                .send(
+                    self.api_request(
+                        "/2/files/search_v2",
+                        serde_json::json!({
+                            "query": query,
+                            "options": {
+                                "max_results": per_extension,
+                                "filename_only": true,
+                                "file_status": "active",
+                                "file_extensions": [extension],
+                                "order_by": { ".tag": "last_modified_time" },
+                            },
+                        }),
+                    )?,
+                    context,
+                    &mut physical_bytes,
+                )
+                .await?;
+            if response.status != 200 {
+                return Err(self.map_http_failure(&response));
+            }
+            let search: DropboxSearchResponse = serde_json::from_slice(&response.body)
+                .map_err(|_| self.malformed("search matches"))?;
+            scanned = scanned
+                .checked_add(search.matches.len())
+                .ok_or(SourceError::RowBudgetExceeded)?;
+            if scanned > context.remaining_rows() {
+                return Err(SourceError::RowBudgetExceeded);
+            }
+            for matched in search.matches {
+                if matched.metadata.tag != "metadata" {
+                    return Err(self.malformed("search metadata"));
+                }
+                let file = matched.metadata.metadata;
+                if let Some(row) = self
+                    .observe_file(file, plan, context, &mut physical_bytes)
+                    .await?
+                {
+                    rows.insert(row.key.clone(), row);
+                }
+            }
+        }
+        let mut rows = rows.into_values().collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            let left_modified = left
+                .value
+                .get("modifiedAt")
+                .and_then(serde_json::Value::as_str);
+            let right_modified = right
+                .value
+                .get("modifiedAt")
+                .and_then(serde_json::Value::as_str);
+            right_modified
+                .cmp(&left_modified)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+        rows.truncate(page_size);
+        Ok(SourcePage {
+            source: self.model.id().clone(),
+            scanned,
+            rows,
+            next_cursor: None,
+            observed_at_ms: now_ms(),
+            freshness_ms: 0,
+        })
+    }
+
     /// Download one source-authorized Markdown document and its revision authority.
     pub async fn download_markdown(
         &self,
@@ -1391,10 +1489,11 @@ impl DropboxSource {
             .headers
             .get("dropbox-api-result")
             .ok_or_else(|| self.malformed("Dropbox-API-Result"))?;
-        let file: DropboxFile =
+        let file: DropboxDownloadMetadata =
             serde_json::from_str(header).map_err(|_| self.malformed("Dropbox-API-Result"))?;
-        self.validate_file_scope(&file)?;
-        if file.id != record_key {
+        file.validate(self.model.id())?;
+        self.validate_path_scope(&file.path_lower)?;
+        if file.id != record_key && file.path_lower != record_key {
             return Err(DropboxDocumentError::IdentityMismatch {
                 source_id: self.model.id().clone(),
             });
@@ -1419,6 +1518,7 @@ impl DropboxSource {
         Ok(DropboxDownloadedDocument {
             record_key: record_key.to_string(),
             revision,
+            content_hash: file.content_hash,
             body: response.body,
         })
     }
@@ -2491,6 +2591,11 @@ impl DataSource for DropboxSource {
                 freshness_ms: 0,
             });
         }
+        // Dropbox documents `list_folder.limit` as approximate and may return
+        // slightly more entries than requested. Ask the provider for half of
+        // CatDB's semantic page allowance so the returned semantic page can
+        // still satisfy the exact row bound without dropping provider rows.
+        let provider_page_size = page_size.div_ceil(2);
         let mut provider_cursor = match cursor {
             Some(cursor) => Some(self.decode_query_cursor(plan, cursor, context)?),
             None => None,
@@ -2507,7 +2612,7 @@ impl DataSource for DropboxSource {
             } else {
                 self.api_request(
                     "/2/files/list_folder",
-                    list_arguments(&self.spec.config.selected_path, page_size, false),
+                    list_arguments(&self.spec.config.selected_path, provider_page_size, false),
                 )?
             };
             let response = self.send(request, context, &mut physical_bytes).await?;
@@ -2586,6 +2691,23 @@ struct DropboxListResponse {
     has_more: bool,
 }
 
+#[derive(Deserialize)]
+struct DropboxSearchResponse {
+    matches: Vec<DropboxSearchMatch>,
+}
+
+#[derive(Deserialize)]
+struct DropboxSearchMatch {
+    metadata: DropboxSearchMetadata,
+}
+
+#[derive(Deserialize)]
+struct DropboxSearchMetadata {
+    #[serde(rename = ".tag")]
+    tag: String,
+    metadata: DropboxFile,
+}
+
 impl DropboxListResponse {
     fn validate(&self, source_id: &SourceId) -> Result<(), SourceError> {
         validate_provider_cursor(&self.cursor).map_err(|_| malformed_source(source_id, "cursor"))
@@ -2617,6 +2739,41 @@ struct DropboxFile {
     size: u64,
     #[serde(default)]
     content_hash: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DropboxDownloadMetadata {
+    name: String,
+    path_lower: String,
+    path_display: String,
+    id: String,
+    client_modified: String,
+    server_modified: String,
+    rev: String,
+    size: u64,
+    #[serde(default)]
+    content_hash: Option<String>,
+}
+
+impl DropboxDownloadMetadata {
+    fn validate(&self, source_id: &SourceId) -> Result<(), SourceError> {
+        if !valid_provider_atom(&self.name, 1_024)
+            || !valid_dropbox_path(&self.path_lower)
+            || !valid_display_path(&self.path_display)
+            || !valid_provider_atom(&self.id, 1_024)
+            || !valid_provider_atom(&self.rev, 512)
+            || self
+                .content_hash
+                .as_ref()
+                .is_some_and(|content_hash| !valid_provider_atom(content_hash, 512))
+            || self.size > i64::MAX as u64
+            || parse_timestamp_ms(&self.client_modified).is_err()
+            || parse_timestamp_ms(&self.server_modified).is_err()
+        {
+            return Err(malformed_source(source_id, "download metadata"));
+        }
+        Ok(())
+    }
 }
 
 impl DropboxFile {
@@ -2746,6 +2903,7 @@ fn allowed_request(endpoint: DropboxEndpoint, path: &str) -> bool {
         (endpoint, path),
         (DropboxEndpoint::Api, "/2/files/list_folder")
             | (DropboxEndpoint::Api, "/2/files/list_folder/continue")
+            | (DropboxEndpoint::Api, "/2/files/search_v2")
             | (DropboxEndpoint::Api, "/2/files/get_metadata")
             | (
                 DropboxEndpoint::Api,

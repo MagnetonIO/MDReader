@@ -225,6 +225,12 @@ pub(crate) enum CloudMarkdownSaveOutcome {
 #[async_trait::async_trait]
 pub(crate) trait MarkdownDocumentSource: Send + Sync {
     fn source_id(&self) -> &catdb_connectors::SourceId;
+    async fn bootstrap_recent(
+        &self,
+        _context: &CloudIoContext,
+    ) -> Result<Option<MarkdownMetadataPage>, CloudDocumentError> {
+        Ok(None)
+    }
     async fn start_change_tracking(
         &self,
         context: &CloudIoContext,

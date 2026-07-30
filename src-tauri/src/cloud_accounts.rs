@@ -56,6 +56,7 @@ const CLOUD_QUERY_PAGE_SIZE: usize = 100;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 const CLOUD_QUERY_RESPONSE_BYTE_BUDGET: usize = 16 * 1024 * 1024;
 const CLOUD_SYNC_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const CLOUD_INITIAL_PUBLICATION_WAIT: Duration = Duration::from_secs(10);
 #[cfg(feature = "e2e-build")]
 const E2E_DRIVE_RECORD_ID: &str =
     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -132,7 +133,7 @@ pub(crate) enum NativeMarkdownWriteAcceptance {
 const GOOGLE_DRIVE_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
     NativeMarkdownWriteAcceptance::Accepted;
 const DROPBOX_MARKDOWN_WRITE_ACCEPTANCE: NativeMarkdownWriteAcceptance =
-    NativeMarkdownWriteAcceptance::Pending;
+    NativeMarkdownWriteAcceptance::Accepted;
 
 fn native_markdown_write_acceptance(provider: CloudProvider) -> NativeMarkdownWriteAcceptance {
     match provider {
@@ -2689,7 +2690,7 @@ where
 fn markdown_sync_pins(
     authority: &CloudExecutionAuthority,
 ) -> Result<crate::cloud_documents::store::CloudDocumentVersionPins, CloudSourceError> {
-    let schema = parse_pin(&authority.pins.schema_version)?;
+    let schema = parse_pin(&authority.pins.source_schema_version)?;
     let mapping = parse_pin(&authority.pins.mapping_version)?;
     let source = parse_pin(&authority.pins.source_version)?;
     crate::cloud_documents::store::CloudDocumentVersionPins::new(
@@ -3931,7 +3932,11 @@ pub(crate) async fn query_library_documents(
                     .collect::<Result<Vec<_>, _>>()
             })
             .await
-            .map_err(|_| CloudSourceError::PersistFailed)??;
+            .map_err(|_| CloudSourceError::PersistFailed)?
+            .map_err(|error| {
+                eprintln!("MDReader Library materialized source binding failed: {error:?}");
+                error
+            })?;
             members.extend(materialized_members);
             let page = crate::library_query::begin_registered_library_query(
                 request,
@@ -3939,7 +3944,11 @@ pub(crate) async fn query_library_documents(
                 cancellation.clone(),
             )
             .await
-            .map_err(map_registered_library_query_error)?;
+            .map_err(|error| {
+                let mapped = map_registered_library_query_error(error);
+                eprintln!("MDReader Library registered query failed: {mapped:?}");
+                mapped
+            })?;
             let validation_registry = registry.clone();
             let validation_locals = local_records.clone();
             let validation_clouds = expected_clouds.clone();
@@ -5335,7 +5344,13 @@ async fn reconcile_cloud_sync_after_commit(
                 .map_err(|_| CloudSourceError::PersistFailed)?;
             state
                 .cloud_sync
-                .schedule_background_refresh(coordinator, source_id)
+                .schedule_background_refresh(coordinator.clone(), source_id.clone())?;
+            let _ = tokio::time::timeout(
+                CLOUD_INITIAL_PUBLICATION_WAIT,
+                coordinator.wait_until_published(&source_id),
+            )
+            .await;
+            Ok(())
         }
         CloudSyncLifecycleAction::Replace {
             retired_source_id,
@@ -5361,7 +5376,13 @@ async fn reconcile_cloud_sync_after_commit(
                 .map_err(|_| CloudSourceError::PersistFailed)?;
             state
                 .cloud_sync
-                .schedule_background_refresh(coordinator, source_id)
+                .schedule_background_refresh(coordinator.clone(), source_id.clone())?;
+            let _ = tokio::time::timeout(
+                CLOUD_INITIAL_PUBLICATION_WAIT,
+                coordinator.wait_until_published(&source_id),
+            )
+            .await;
+            Ok(())
         }
         action @ (CloudSyncLifecycleAction::Pause(_) | CloudSyncLifecycleAction::Retire(_)) => {
             reconcile_inactive_cloud_sync_after_commit(state, action).await

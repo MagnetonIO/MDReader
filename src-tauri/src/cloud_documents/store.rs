@@ -652,7 +652,7 @@ impl CloudDocumentStore {
             .execute(
                 "DELETE FROM mdreader_cloud_snapshot
                  WHERE source_id = ?1 AND state = 'staging'",
-                params![source_id],
+                params![&source_id],
             )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         transaction
@@ -678,7 +678,7 @@ impl CloudDocumentStore {
                  VALUES (?1, NULL, 'initializing', NULL, NULL, NULL)
                  ON CONFLICT(source_id) DO UPDATE SET sync_state = 'initializing',
                      last_error_kind = NULL, retry_after_ms = NULL",
-                params![source_id],
+                params![&source_id],
             )
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
         transaction
@@ -707,6 +707,60 @@ impl CloudDocumentStore {
         ensure_staging_generation(&transaction, generation)?;
         ensure_generation_pins(&transaction, generation, pins)?;
         insert_metadata_rows(&transaction, generation, pins, page)?;
+        transaction
+            .commit()
+            .map_err(|_| CloudDocumentStoreError::Persistence)
+    }
+
+    /// Publishes a fast provider-indexed snapshot while leaving the source in
+    /// initializing state. The exhaustive cursor-backed baseline replaces it;
+    /// until then foreground readers can use the bounded local materialization
+    /// without mistaking it for a complete source scan.
+    pub(crate) fn publish_provisional_sync(
+        &self,
+        generation: &CloudSnapshotGeneration,
+        observed_at_ms: i64,
+    ) -> StoreResult<()> {
+        let connection = self.connection()?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        ensure_staging_generation(&transaction, generation)?;
+        transaction
+            .execute(
+                "UPDATE mdreader_cloud_snapshot SET state = 'retired'
+                 WHERE source_id = ?1 AND state = 'published'",
+                params![&generation.source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let published = transaction
+            .execute(
+                "UPDATE mdreader_cloud_snapshot SET state = 'published', observed_at_ms = ?3
+                 WHERE source_id = ?1 AND generation = ?2 AND state = 'staging'",
+                params![&generation.source_id, generation.generation, observed_at_ms],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        if published != 1 {
+            return Err(CloudDocumentStoreError::UnknownGeneration);
+        }
+        transaction
+            .execute(
+                "INSERT INTO mdreader_cloud_sync_state
+                    (source_id, change_cursor, sync_state, last_success_ms, last_error_kind, retry_after_ms)
+                 VALUES (?1, NULL, 'initializing', ?2, NULL, NULL)
+                 ON CONFLICT(source_id) DO UPDATE SET change_cursor = NULL,
+                     sync_state = 'initializing', last_success_ms = excluded.last_success_ms,
+                     last_error_kind = NULL, retry_after_ms = NULL",
+                params![&generation.source_id, observed_at_ms],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "DELETE FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND state = 'retired'",
+                params![&generation.source_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
         transaction
             .commit()
             .map_err(|_| CloudDocumentStoreError::Persistence)
@@ -779,7 +833,7 @@ impl CloudDocumentStore {
                 "SELECT generation, schema_version_id, mapping_version_id, source_version_id
                  FROM mdreader_cloud_snapshot
                  WHERE source_id = ?1 AND state = 'published'",
-                params![source_id],
+                params![&source_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
@@ -863,6 +917,60 @@ impl CloudDocumentStore {
             )
             .optional()
             .map_err(|_| CloudDocumentStoreError::CorruptStore)
+    }
+
+    /// Repairs snapshots written by the pre-V2 pin bug, which stamped the
+    /// canonical `document.Document` schema identity where the provider's
+    /// physical schema identity belonged. Mapping and source identities must
+    /// already match the admitted owner; no other version is rewritten.
+    pub(crate) fn repair_published_schema_pin(
+        &self,
+        source_id: &SourceId,
+        pins: &CloudDocumentVersionPins,
+    ) -> StoreResult<bool> {
+        let source_id = source_bytes(source_id)?;
+        pins.validate()?;
+        let connection = self.connection()?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        let published: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = transaction
+            .query_row(
+                "SELECT generation, schema_version_id, mapping_version_id, source_version_id
+                 FROM mdreader_cloud_snapshot
+                 WHERE source_id = ?1 AND state = 'published'",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
+        let Some((generation, schema, mapping, source)) = published else {
+            return Ok(false);
+        };
+        if mapping != pins.mapping_version_id || source != pins.source_version_id {
+            return Ok(false);
+        }
+        if schema == pins.schema_version_id {
+            return Ok(true);
+        }
+        transaction
+            .execute(
+                "UPDATE mdreader_cloud_snapshot SET schema_version_id = ?3
+                 WHERE source_id = ?1 AND generation = ?2 AND state = 'published'",
+                params![&source_id, &generation, &pins.schema_version_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .execute(
+                "UPDATE mdreader_cloud_document SET schema_version_id = ?3
+                 WHERE source_id = ?1 AND generation = ?2",
+                params![&source_id, &generation, &pins.schema_version_id],
+            )
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        transaction
+            .commit()
+            .map_err(|_| CloudDocumentStoreError::Persistence)?;
+        Ok(true)
     }
 
     /// Reads one bounded SQLite page from the exact published generation.

@@ -327,7 +327,8 @@ impl CloudDocumentService {
         };
         if let Some(body) = cached {
             self.authority.revalidate().await?;
-            return self.document_from_body(&published, body, CloudCacheState::Cached);
+            return self
+                .document_from_body(&published, body, CloudCacheState::Cached);
         }
 
         let context = CloudIoContext {
@@ -337,7 +338,10 @@ impl CloudDocumentService {
             byte_limit: CloudDocumentStore::MAX_BODY_BYTES,
             cancellation: CancellationToken::new(),
         };
-        let document = self.source.read_document(&record_key, &context).await?;
+        let document = self
+            .source
+            .read_document(&record_key, &context)
+            .await?;
         if document.key != record_key || document.revision != published.revision {
             return Err(CloudDocumentError::IdentityMismatch);
         }

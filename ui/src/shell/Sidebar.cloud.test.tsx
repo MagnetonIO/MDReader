@@ -282,6 +282,113 @@ it('identifies cloud memberships with provider icons and file-tree typography', 
   expect(documentRule).toContain('font-size: var(--text--1);');
 });
 
+it('collapses each cloud source independently without hiding the other source', () => {
+  const drive = fixtureForMember({
+    id: 80,
+    registryId: 'google-drive',
+    name: 'Google Drive',
+    kind: 'google-drive',
+    editable: true,
+    active: false,
+    title: 'Drive note.md',
+    path: 'drive-note',
+  });
+  const dropbox = fixtureForMember({
+    id: 90,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: true,
+    active: false,
+    title: 'Dropbox note.md',
+    path: '/notes/dropbox.md',
+  });
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root={null}
+      files={[]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[drive.response, dropbox.response]}
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse Google Drive' }));
+  expect(screen.queryByRole('button', { name: 'Open Drive note.md from Google Drive' })).toBeNull();
+  expect(
+    screen.getByRole('button', { name: 'Open Dropbox note.md from Dropbox' }),
+  ).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Expand Google Drive' }));
+  expect(
+    screen.getByRole('button', { name: 'Open Drive note.md from Google Drive' }),
+  ).toBeTruthy();
+});
+
+it('shows and routes pagination inside each cloud source section', () => {
+  const drive = fixtureForMember({
+    id: 95,
+    registryId: 'google-drive',
+    name: 'Google Drive',
+    kind: 'google-drive',
+    editable: true,
+    active: false,
+    title: 'Drive note.md',
+    path: 'drive-note',
+  });
+  const dropbox = fixtureForMember({
+    id: 105,
+    registryId: 'dropbox',
+    name: 'Dropbox',
+    kind: 'dropbox',
+    editable: true,
+    active: false,
+    title: 'Dropbox note.md',
+    path: '/notes/dropbox.md',
+  });
+  for (const response of [drive.response, dropbox.response]) {
+    response.window_truncated = true;
+    response.answer.next_cursor = 'opaque-next-page';
+  }
+  const loadMore = vi.fn();
+
+  render(
+    <Sidebar
+      collapsed={false}
+      root={null}
+      files={[]}
+      recent={[]}
+      activePath={null}
+      loading={false}
+      onPickFolder={vi.fn()}
+      onOpenFile={vi.fn()}
+      onOpenRecent={vi.fn()}
+      libraryEvidence={[drive.response, dropbox.response]}
+      libraryHasMore
+      librarySearch=""
+      onLibrarySearch={vi.fn()}
+      onOpenLibrary={vi.fn()}
+      onRefreshLibrary={vi.fn()}
+      onLoadMoreLibrary={loadMore}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Load more Google Drive' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
+  expect(loadMore).toHaveBeenNthCalledWith(1, drive.member.membership_id);
+  expect(loadMore).toHaveBeenNthCalledWith(2, dropbox.member.membership_id);
+});
+
 it('keeps the active workspace and every supplemental membership across evidence groups', () => {
   const activeLocal = fixtureForMember({
     id: 100,

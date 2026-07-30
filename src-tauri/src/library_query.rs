@@ -631,6 +631,7 @@ fn build_runtime(
                 .iter()
                 .any(|source| source.source_id.is_nil() || !physical_ids.insert(source.source_id))
         {
+            eprintln!("MDReader Library catalog has duplicate or nil member/source identity");
             return Err(LibraryQueryError::InvalidCatalog);
         }
     }
@@ -803,6 +804,10 @@ fn build_runtime(
                 .cloned()
                 .unwrap_or_default()
         {
+            eprintln!(
+                "MDReader Library provenance providers disagree for field {}",
+                declaration.field
+            );
             return Err(LibraryQueryError::InvalidCatalog);
         }
         declared_provider_pairs.extend(provider_pairs);
@@ -814,6 +819,7 @@ fn build_runtime(
         }));
     }
     if declared_provider_pairs != source_mapping_pairs {
+        eprintln!("MDReader Library provenance does not cover every source mapping");
         return Err(LibraryQueryError::InvalidCatalog);
     }
     let provenance_rule_spec = serde_json::json!({ "fields": rule_fields });
@@ -827,7 +833,10 @@ fn build_runtime(
     };
     provenance_rule_version
         .verify()
-        .map_err(|_| LibraryQueryError::InvalidCatalog)?;
+        .map_err(|error| {
+            eprintln!("MDReader Library provenance rule is invalid: {error:?}");
+            LibraryQueryError::InvalidCatalog
+        })?;
 
     let policy_document = PolicyDocument {
         rules: source_policy_fields
@@ -857,7 +866,10 @@ fn build_runtime(
     };
     policy_version
         .verify()
-        .map_err(|_| LibraryQueryError::InvalidCatalog)?;
+        .map_err(|error| {
+            eprintln!("MDReader Library policy is invalid: {error:?}");
+            LibraryQueryError::InvalidCatalog
+        })?;
 
     let revision_spec = serde_json::json!({
         "workspace_id": workspace_id,
@@ -910,7 +922,10 @@ fn build_runtime(
     };
     catalog
         .validate_control_plane_integrity()
-        .map_err(|_| LibraryQueryError::InvalidCatalog)?;
+        .map_err(|error| {
+            eprintln!("MDReader Library control-plane catalog is invalid: {error:?}");
+            LibraryQueryError::InvalidCatalog
+        })?;
     Ok(LibraryRuntime {
         catalog,
         bindings,
