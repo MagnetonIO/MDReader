@@ -2085,7 +2085,8 @@ mod tests {
     #[tokio::test]
     async fn body_only_projection_keeps_every_selected_local_provider_in_evidence() {
         let tree = tempfile::tempdir().expect("temp tree");
-        std::fs::write(tree.path().join("note.md"), "# Local body\n").expect("fixture");
+        std::fs::create_dir_all(tree.path().join("docs/arch")).expect("nested fixture directory");
+        std::fs::write(tree.path().join("docs/arch/note.md"), "# Local body\n").expect("fixture");
         let output = std::process::Command::new("git")
             .args(["init", "-q"])
             .current_dir(tree.path())
@@ -2096,7 +2097,12 @@ mod tests {
         let workspace = Uuid::new_v4();
         let local = Uuid::new_v4();
         let mut query = request(workspace, vec![local]);
-        query.select = vec!["body".to_string()];
+        query.select = vec!["path".to_string(), "body".to_string()];
+        query.filters = vec![EntityFilter {
+            field: "path".to_string(),
+            operator: FilterOperator::Eq,
+            value: "docs/arch/note.md".to_string(),
+        }];
         let answer = execute_registered_library_query(
             query,
             vec![local_member(tree.path(), local)],
@@ -2113,7 +2119,7 @@ mod tests {
             .iter()
             .all(|source| source.outcome == catdb_api_types::SourceOutcome::Ran));
         let row = answer.answer.rows.first().expect("local row");
-        assert_eq!(row.fields.len(), 1);
+        assert_eq!(row.fields.len(), 2);
         assert_eq!(row.fields["body"], serde_json::json!("# Local body\n"));
         assert_eq!(row.provenance["body"].considered().len(), 1);
         assert_eq!(
@@ -2125,6 +2131,48 @@ mod tests {
                 })
                 .count(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn point_read_hydrates_a_nested_document_from_the_real_corpus() {
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/corpus")
+            .canonicalize()
+            .expect("real corpus");
+        let workspace = Uuid::new_v4();
+        let local = Uuid::new_v4();
+        let mut query = request(workspace, vec![local]);
+        query.select = vec!["path".to_string(), "body".to_string()];
+        query.filters = vec![EntityFilter {
+            field: "path".to_string(),
+            operator: FilterOperator::Eq,
+            value: "docs/arch/catdb-core.md".to_string(),
+        }];
+
+        let answer = execute_registered_library_query(
+            query,
+            vec![local_member(&corpus, local)],
+            CancellationToken::new(),
+        )
+        .await
+        .expect("real-corpus point read");
+
+        let row = answer.answer.rows.first().expect("nested corpus row");
+        assert_eq!(
+            row.fields["path"],
+            serde_json::json!("docs/arch/catdb-core.md")
+        );
+        assert!(row.fields["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("# catdb-core")));
+        assert!(
+            answer
+                .answer
+                .sources
+                .iter()
+                .all(|source| source.scanned <= 1),
+            "an exact identity query must not scan unrelated corpus files"
         );
     }
 

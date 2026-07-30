@@ -20,7 +20,7 @@ export const LIBRARY_DOCUMENT_FIELDS = [
   'checksum',
 ] as const;
 
-const LIBRARY_DOCUMENT_BODY_FIELDS = ['body'] as const;
+const LIBRARY_DOCUMENT_BODY_FIELDS = ['path', 'body'] as const;
 
 const LOCAL_DOCUMENT_FIELDS = [
   'title',

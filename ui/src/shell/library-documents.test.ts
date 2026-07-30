@@ -388,6 +388,71 @@ describe('one hydrated Library answer', () => {
     expect(hydrated.member.kind).toBe('dropbox');
   });
 
+  it('retains path identity when hydrating an inactive local document body', async () => {
+    const localMember: LibrarySourceExecution = {
+      ...member,
+      registry_id: 'local-folder',
+      name: 'Previous folder',
+      kind: 'local-folder',
+      editable: true,
+      active: false,
+    };
+    const localPath = 'plans/recovery.md';
+    const localPathProvenance = {
+      ...row.provenance.path!,
+      considered: row.provenance.path!.considered.map((provider) => ({
+        ...provider,
+        record_key: localPath,
+        state: { state: 'observed_value' as const, value: localPath },
+      })),
+    };
+    const metadataRow: EntityRow = {
+      ...row,
+      record_key: localPath,
+      fields: { path: localPath, title: 'recovery.md' },
+      provenance: { path: localPathProvenance },
+    };
+    const metadataEvidence: LibraryEntityQueryResponse_Serialize = {
+      ...evidence,
+      answer: { ...evidence.answer, rows: [metadataRow] },
+      memberships: [localMember],
+    };
+    const queryLibraryDocuments = vi.fn(
+      async (
+        _workspaceId: string,
+        _filters: unknown[],
+        fields: string[],
+      ): Promise<LibraryEntityQueryResponse_Serialize> => {
+        const bodyRow: EntityRow = {
+          ...metadataRow,
+          fields: fields.includes('path')
+            ? { path: localPath, body: '# Recovery' }
+            : { body: '# Recovery' },
+          provenance: fields.includes('path') ? { path: localPathProvenance } : {},
+        };
+        return {
+          ...metadataEvidence,
+          answer: { ...metadataEvidence.answer, rows: [bodyRow] },
+        };
+      },
+    );
+
+    const hydrated = await hydrateLibraryDocument(
+      {
+        prepareCloudCatalog: vi.fn(async () => ({
+          workspace_id: '00000000-0000-4000-8000-000000000020',
+          catalog_revision_id: '00000000-0000-4000-8000-000000000021',
+          schema_version_id: '00000000-0000-4000-8000-000000000022',
+        })),
+        queryLibraryDocuments,
+      },
+      { member: localMember, row: metadataRow, evidence: metadataEvidence },
+      'document-request-local',
+    );
+
+    expect(hydrated.row.fields.body).toBe('# Recovery');
+  });
+
   it('hydrates an authenticated Connected CatDB membership into the same Library result', async () => {
     const connectedEvidence: LibraryEntityQueryResponse_Serialize = {
       ...evidence,
