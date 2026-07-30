@@ -179,6 +179,12 @@ export interface SettingsBackend {
     fields: string[],
     requestId: string,
   ) => Promise<LibraryEntityQueryResponse_Serialize>;
+  queryConnectedCatdbDocuments?: (
+    connectionId: string,
+    filters: CloudFilterInput[],
+    fields: string[],
+    requestId: string,
+  ) => Promise<LibraryEntityQueryResponse_Serialize>;
   cancelCloudDocumentQuery?: (requestId: string) => Promise<boolean>;
   readCloudMarkdown?: (
     sourceId: string,
