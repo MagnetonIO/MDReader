@@ -48,7 +48,6 @@ pub(crate) use catdb_sdk::connectors::{
     Availability, DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor,
     SourceError, SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
 };
-pub(crate) use catdb_sdk::connectors::{freshness_since, observation_now_ms};
 
 /// A persisted local-source body is not the exact closed shape emitted by the
 /// corresponding connector.

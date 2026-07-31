@@ -24,9 +24,9 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use catdb_core::{BaseType, Schema};
-use catdb_query::EntityQuery;
-use catdb_storage::ObjectFilterOp;
+use catdb_sdk::core::{BaseType, Schema};
+use catdb_sdk::query::EntityQuery;
+use catdb_sdk::storage::ObjectFilterOp;
 
 use crate::{
     Availability, DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor,
@@ -248,7 +248,7 @@ impl FilesystemSource {
         {
             return Err(SourceError::InvalidCursor);
         }
-        let prefix = crate::plan::pushed_prefix(plan, "path");
+        let prefix = catdb_sdk::connectors::plan::pushed_prefix(plan, "path");
         let quantum = context.page_size();
         let contained_root =
             self.contained_root
@@ -283,11 +283,11 @@ impl FilesystemSource {
                 .pushed
                 .filters
                 .iter()
-                .all(|filter| crate::plan::filter_matches(filter, &row.value))
+                .all(|filter| catdb_sdk::connectors::plan::filter_matches(filter, &row.value))
             {
                 continue;
             }
-            if crate::plan::passes_all(&plan.residual, &row.value) {
+            if catdb_sdk::connectors::plan::passes_all(&plan.residual, &row.value) {
                 let mut row = row;
                 if let Some(fields) = row.value.as_object_mut() {
                     fields.retain(|field, _| plan.projected.contains(field));

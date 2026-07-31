@@ -11,7 +11,7 @@
 //! It does not observe `size`, `title` or `body`.
 //!
 //! The glob is deliberately **not** pushed as a git pathspec even though git
-//! accepts one: git's wildmatch and [`catdb_query::Glob`] disagree about
+//! accepts one: git's wildmatch and [`catdb_sdk::query::Glob`] disagree about
 //! whether `*` crosses `/`, and a pushdown whose semantics differ from the
 //! residual it replaces is worse than no pushdown. Only the literal prefix
 //! goes down.
@@ -38,8 +38,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use catdb_core::Schema;
-use catdb_query::EntityQuery;
+use catdb_sdk::core::Schema;
+use catdb_sdk::query::EntityQuery;
 
 use crate::{
     Availability, DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor,
@@ -202,10 +202,10 @@ impl GitSource {
     fn attributes() -> Vec<SourceAttr> {
         vec![
             SourceAttr::text("path").pushes([
-                catdb_storage::ObjectFilterOp::Eq,
-                catdb_storage::ObjectFilterOp::Prefix,
+                catdb_sdk::storage::ObjectFilterOp::Eq,
+                catdb_sdk::storage::ObjectFilterOp::Prefix,
             ]),
-            SourceAttr::parsed("modifiedAt", catdb_core::BaseType::Timestamp),
+            SourceAttr::parsed("modifiedAt", catdb_sdk::core::BaseType::Timestamp),
             SourceAttr::text("author"),
         ]
     }
@@ -433,13 +433,13 @@ impl GitSource {
             .as_ref()
             .and_then(|cursor| cursor.after.as_deref())
             .unwrap_or("");
-        let prefix = crate::plan::pushed_prefix(plan, "path");
+        let prefix = catdb_sdk::connectors::plan::pushed_prefix(plan, "path");
         let exact_path = plan.pushed.filters.iter().any(|filter| {
             filter.attr == "path"
-                && filter.op == catdb_storage::ObjectFilterOp::Eq
+                && filter.op == catdb_sdk::storage::ObjectFilterOp::Eq
                 && matches!(
                     &filter.value,
-                    catdb_storage::ObjectValue::Text(value) if value == &prefix
+                    catdb_sdk::storage::ObjectValue::Text(value) if value == &prefix
                 )
         });
         let listing = self.list_page(&prefix, exact_path, after, context, &mut budget)?;
@@ -464,11 +464,11 @@ impl GitSource {
                 .pushed
                 .filters
                 .iter()
-                .all(|filter| crate::plan::filter_matches(filter, &row.value))
+                .all(|filter| catdb_sdk::connectors::plan::filter_matches(filter, &row.value))
             {
                 continue;
             }
-            if crate::plan::passes_all(&plan.residual, &row.value) {
+            if catdb_sdk::connectors::plan::passes_all(&plan.residual, &row.value) {
                 let mut row = row;
                 if let Some(fields) = row.value.as_object_mut() {
                     fields.retain(|field, _| plan.projected.contains(field));
