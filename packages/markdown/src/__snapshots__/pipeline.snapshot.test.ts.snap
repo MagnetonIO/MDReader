@@ -1,0 +1,361 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`parseMarkdown hast snapshots > docs/guides/code-fences.md renders stable hast 1`] = `
+"<h1 id="user-content-code-fences" data-line-start="6" data-line-end="6">Code Fences</h1>
+<p data-line-start="8" data-line-end="9">Fenced code in several languages. Each closes properly (the unclosed case lives
+in <code>edge-cases/unclosed-fence.md</code>).</p>
+<h2 id="user-content-rust" data-line-start="11" data-line-end="11">Rust</h2>
+<pre data-line-start="13" data-line-end="17"><code class="language-rust">pub fn embed(text: &#x26;str) -> Vec&#x3C;f32> {
+    text.split_whitespace().map(|w| w.len() as f32).collect()
+}
+</code></pre>
+<h2 id="user-content-python" data-line-start="19" data-line-end="19">Python</h2>
+<pre data-line-start="21" data-line-end="24"><code class="language-python">def chunk(md: str, size: int = 512) -> list[str]:
+    return [md[i : i + size] for i in range(0, len(md), size)]
+</code></pre>
+<h2 id="user-content-typescript" data-line-start="26" data-line-end="26">TypeScript</h2>
+<pre data-line-start="28" data-line-end="32"><code class="language-typescript">export function toBindings(cmds: string[]): string {
+  return cmds.map((c) => \`export const \${c}: Command;\`).join("\\n");
+}
+</code></pre>
+<h2 id="user-content-sql" data-line-start="34" data-line-end="34">SQL</h2>
+<pre data-line-start="36" data-line-end="39"><code class="language-sql">create index notes_trgm on notes using gin (body gin_trgm_ops);
+select id from notes order by embedding &#x3C;-> $1 limit 10;
+</code></pre>
+<h2 id="user-content-bash" data-line-start="41" data-line-end="41">Bash</h2>
+<pre data-line-start="43" data-line-end="47"><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+cargo test --workspace
+</code></pre>
+<h2 id="user-content-json" data-line-start="49" data-line-end="49">JSON</h2>
+<pre data-line-start="51" data-line-end="53"><code class="language-json">{ "path": "index.md", "features": ["hub", "image", "wikilink"] }
+</code></pre>
+<h2 id="user-content-toml" data-line-start="55" data-line-end="55">TOML</h2>
+<pre data-line-start="57" data-line-end="61"><code class="language-toml">[db]
+port = 54322
+major_version = 17
+</code></pre>
+<h2 id="user-content-indented-no-language" data-line-start="63" data-line-end="63">Indented (no language)</h2>
+<pre data-line-start="65" data-line-end="66"><code>plain indented code block
+still code
+</code></pre>
+<p data-line-start="68" data-line-end="68">An inline <code>code span</code> and a fence with a tilde delimiter:</p>
+<pre data-line-start="70" data-line-end="72"><code class="language-text">tilde-fenced block
+</code></pre>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/footnotes.md renders stable hast 1`] = `
+"<h1 id="user-content-footnotes" data-line-start="6" data-line-end="6">Footnotes</h1>
+<p data-line-start="8" data-line-end="10">CatDB stores provenance the way a good essay stores footnotes<sup><a href="#user-content-fn-prov" id="user-content-fnref-prov" aria-describedby="user-content-footnote-label">1</a></sup>: every
+claim can be traced. Vectors are just one representation<sup><a href="#user-content-fn-vec" id="user-content-fnref-vec" aria-describedby="user-content-footnote-label">2</a></sup>, and they are not
+always the right one<sup><a href="#user-content-fn-vec" id="user-content-fnref-vec-2" aria-describedby="user-content-footnote-label">2</a></sup>.</p>
+<p data-line-start="12" data-line-end="12">A footnote can hold multiple paragraphs<sup><a href="#user-content-fn-long" id="user-content-fnref-long" aria-describedby="user-content-footnote-label">3</a></sup>.</p>
+<p data-line-start="23" data-line-end="23">Back to the <a href="gfm-tables.md">tables guide</a>.</p>
+<section class="footnotes" data-line-start="14" data-line-end="21"><h2 class="sr-only" id="user-content-footnote-label">Footnotes</h2>
+<ol>
+<li id="user-content-fn-prov">
+<p>Provenance = source file + byte range + ingest run. <a href="#user-content-fnref-prov" aria-label="Back to reference 1" class="data-footnote-backref">↩</a></p>
+</li>
+<li id="user-content-fn-vec">
+<p>Reused reference — the same marker can appear more than once. <a href="#user-content-fnref-vec" aria-label="Back to reference 2" class="data-footnote-backref">↩</a> <a href="#user-content-fnref-vec-2" aria-label="Back to reference 2-2" class="data-footnote-backref">↩<sup>2</sup></a></p>
+</li>
+<li id="user-content-fn-long">
+<p>First paragraph of the long note.</p>
+<p>Second paragraph, indented so it stays part of the footnote. It can even
+contain a <a href="task-lists.md">link</a>. <a href="#user-content-fnref-long" aria-label="Back to reference 3" class="data-footnote-backref">↩</a></p>
+</li>
+</ol>
+</section>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/gfm-tables.md renders stable hast 1`] = `
+"<h1 id="user-content-gfm-tables" data-line-start="6" data-line-end="6">GFM Tables</h1>
+<p data-line-start="8" data-line-end="8">A plain table:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table data-line-start="10" data-line-end="13"><thead><tr><th>Backend</th><th align="center">Local</th><th align="right">Server</th></tr></thead><tbody><tr><td>SQLite</td><td align="center">yes</td><td align="right">no</td></tr><tr><td>Postgres</td><td align="center">no</td><td align="right">yes</td></tr></tbody></table>
+<p data-line-start="15" data-line-end="16">Alignment above: centre, then right. A table with inline formatting and a
+pipe escaped inside a cell:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table data-line-start="18" data-line-end="23"><thead><tr><th>Feature</th><th>Notes</th></tr></thead><tbody><tr><td><strong>bold</strong></td><td>rendered strong</td></tr><tr><td><code>code</code></td><td>monospace</td></tr><tr><td>a | literal</td><td>the pipe is escaped, not a new column</td></tr><tr><td><a href="gfm-tables.md#gfm-tables">link</a></td><td>self reference</td></tr></tbody></table>
+<p data-line-start="25" data-line-end="25">A ragged table (missing trailing cells) that parsers must tolerate:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table data-line-start="27" data-line-end="30"><thead><tr><th>A</th><th>B</th><th>C</th></tr></thead><tbody><tr><td>1</td><td>2</td><td></td></tr><tr><td>3</td><td></td><td></td></tr></tbody></table>
+<p data-line-start="32" data-line-end="32">Next up: <a href="task-lists.md">task lists</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/katex-block.md renders stable hast 1`] = `
+"<h1 id="user-content-katex-block-math" data-line-start="6" data-line-end="6">KaTeX Block Math</h1>
+<p data-line-start="8" data-line-end="8">Softmax over logits:</p>
+<div data-line-start="10" data-line-end="12"><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>σ</mi><mo stretchy="false">(</mo><mi>z</mi><msub><mo stretchy="false">)</mo><mi>i</mi></msub><mo>=</mo><mfrac><msup><mi>e</mi><msub><mi>z</mi><mi>i</mi></msub></msup><mrow><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mi>K</mi></munderover><msup><mi>e</mi><msub><mi>z</mi><mi>j</mi></msub></msup></mrow></mfrac></mrow><annotation encoding="application/x-tex">\\sigma(z)_i = \\frac{e^{z_i}}{\\sum_{j=1}^{K} e^{z_j}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0359em;">σ</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right:0.044em;">z</span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.6484em;vertical-align:-1.307em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.3414em;"><span style="top:-2.1288em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.9812em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0572em;">j</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span style="top:-3.2029em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0715em;">K</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.4358em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.6065em;"><span style="top:-3.0051em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:-0.044em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0572em;">j</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2819em;"><span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.6644em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.044em;">z</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3281em;"><span style="top:-2.357em;margin-left:-0.044em;margin-right:0.0714em;"><span class="pstrut" style="height:2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.143em;"><span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.307em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></div>
+<p data-line-start="14" data-line-end="14">An aligned derivation:</p>
+<div data-line-start="16" data-line-end="21"><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mtable rowspacing="0.25em" columnalign="right left" columnspacing="0em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="true"><mrow><mo stretchy="false">∥</mo><mi>a</mi><mo>−</mo><mi>b</mi><msup><mo stretchy="false">∥</mo><mn>2</mn></msup></mrow></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="true"><mrow><mrow></mrow><mo>=</mo><mo stretchy="false">(</mo><mi>a</mi><mo>−</mo><mi>b</mi><mo stretchy="false">)</mo><mo>⋅</mo><mo stretchy="false">(</mo><mi>a</mi><mo>−</mo><mi>b</mi><mo stretchy="false">)</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel="0" displaystyle="true"><mrow></mrow></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="true"><mrow><mrow></mrow><mo>=</mo><mo stretchy="false">∥</mo><mi>a</mi><msup><mo stretchy="false">∥</mo><mn>2</mn></msup><mo>−</mo><mn>2</mn><mtext> </mtext><mi>a</mi><mo>⋅</mo><mi>b</mi><mo>+</mo><mo stretchy="false">∥</mo><mi>b</mi><msup><mo stretchy="false">∥</mo><mn>2</mn></msup></mrow></mstyle></mtd></mtr></mtable><annotation encoding="application/x-tex">\\begin{aligned}
+\\lVert a - b \\rVert^2 &#x26;= (a - b) \\cdot (a - b) \\\\
+                      &#x26;= \\lVert a \\rVert^2 - 2\\,a \\cdot b + \\lVert b \\rVert^2
+\\end{aligned}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:2.7482em;vertical-align:-1.1241em;"></span><span class="mord"><span class="mtable"><span class="col-align-r"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.6241em;"><span style="top:-3.76em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mopen">∥</span><span class="mord mathnormal">a</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal">b</span><span class="mclose"><span class="mclose">∥</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8641em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span><span style="top:-2.2359em;"><span class="pstrut" style="height:3em;"></span><span class="mord"></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.1241em;"><span></span></span></span></span></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.6241em;"><span style="top:-3.76em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mopen">(</span><span class="mord mathnormal">a</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal">b</span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mopen">(</span><span class="mord mathnormal">a</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal">b</span><span class="mclose">)</span></span></span><span style="top:-2.2359em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mopen">∥</span><span class="mord mathnormal">a</span><span class="mclose"><span class="mclose">∥</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8641em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord">2</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">a</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord mathnormal">b</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mopen">∥</span><span class="mord mathnormal">b</span><span class="mclose"><span class="mclose">∥</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8641em;"><span style="top:-3.113em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.1241em;"><span></span></span></span></span></span></span></span></span></span></span></span></div>
+<p data-line-start="23" data-line-end="23">A matrix:</p>
+<div data-line-start="25" data-line-end="27"><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>M</mi><mo>=</mo><mrow><mo fence="true">[</mo><mtable rowspacing="0.16em" columnalign="center center" columnspacing="1em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>1</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0</mn></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>1</mn></mstyle></mtd></mtr></mtable><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">M = \\begin{bmatrix} 1 &#x26; 0 \\\\ 0 &#x26; 1 \\end{bmatrix}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.4em;vertical-align:-0.95em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">[</span></span><span class="mord"><span class="mtable"><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.45em;"><span style="top:-3.61em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span><span style="top:-2.41em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.95em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.45em;"><span style="top:-3.61em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0</span></span></span><span style="top:-2.41em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.95em;"><span></span></span></span></span></span></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">]</span></span></span></span></span></span></span></div>
+<p data-line-start="29" data-line-end="30">Inline math still works here too: <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msup><mi>e</mi><mrow><mi>i</mi><mi>π</mi></mrow></msup><mo>+</mo><mn>1</mn><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">e^{i\\pi} + 1 = 0</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.908em;vertical-align:-0.0833em;"></span><span class="mord"><span class="mord mathnormal">e</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8247em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0359em;">iπ</span></span></span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0</span></span></span></span>. See also
+<a href="katex-inline.md">inline math</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/katex-inline.md renders stable hast 1`] = `
+"<h1 id="user-content-katex-inline-math" data-line-start="6" data-line-end="6">KaTeX Inline Math</h1>
+<p data-line-start="8" data-line-end="10">Cosine similarity between vectors <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>a</mi></mrow><annotation encoding="application/x-tex">a</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4306em;"></span><span class="mord mathnormal">a</span></span></span></span> and <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>b</mi></mrow><annotation encoding="application/x-tex">b</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">b</span></span></span></span> is
+<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>cos</mi><mo>⁡</mo><mi>θ</mi><mo>=</mo><mfrac><mrow><mi>a</mi><mo>⋅</mo><mi>b</mi></mrow><mrow><mo stretchy="false">∥</mo><mi>a</mi><mo stretchy="false">∥</mo><mtext> </mtext><mo stretchy="false">∥</mo><mi>b</mi><mo stretchy="false">∥</mo></mrow></mfrac></mrow><annotation encoding="application/x-tex">\\cos\\theta = \\frac{a \\cdot b}{\\lVert a \\rVert \\, \\lVert b \\rVert}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mop">cos</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.0278em;">θ</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.4001em;vertical-align:-0.52em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8801em;"><span style="top:-2.655em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mopen mtight">∥</span><span class="mord mathnormal mtight">a</span><span class="mclose mtight">∥</span><span class="mspace mtight" style="margin-right:0.1952em;"></span><span class="mopen mtight">∥</span><span class="mord mathnormal mtight">b</span><span class="mclose mtight">∥</span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.394em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">a</span><span class="mbin mtight">⋅</span><span class="mord mathnormal mtight">b</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.52em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span>, which is <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>1</mn></mrow><annotation encoding="application/x-tex">1</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">1</span></span></span></span>
+when they point the same way and <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0</mn></mrow><annotation encoding="application/x-tex">0</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0</span></span></span></span> when orthogonal.</p>
+<p data-line-start="12" data-line-end="12">The dot product <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>a</mi><mo>⋅</mo><mi>b</mi><mo>=</mo><msubsup><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></msubsup><msub><mi>a</mi><mi>i</mi></msub><msub><mi>b</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">a \\cdot b = \\sum_{i=1}^{n} a_i b_i</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.4445em;"></span><span class="mord mathnormal">a</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">b</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1.104em;vertical-align:-0.2997em;"></span><span class="mop"><span class="mop op-symbol small-op" style="position:relative;top:0em;">∑</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8043em;"><span style="top:-2.4003em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span style="top:-3.2029em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">n</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2997em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal">a</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal">b</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span> appears inline mid-sentence.</p>
+<p data-line-start="14" data-line-end="14">A dollar sign that is <em>not</em> math: it costs $5, and <code>$PATH</code> in code is untouched.</p>
+<p data-line-start="16" data-line-end="16">Greek and subscripts inline: <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>α</mi><mn>0</mn></msub><mo separator="true">,</mo><msub><mi>β</mi><mn>1</mn></msub><mo separator="true">,</mo><msub><mi>γ</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></mrow><annotation encoding="application/x-tex">\\alpha_0, \\beta_1, \\gamma_{ij}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.9805em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3011em;"><span style="top:-2.55em;margin-left:-0.0037em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0528em;">β</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3011em;"><span style="top:-2.55em;margin-left:-0.0528em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0556em;">γ</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3117em;"><span style="top:-2.55em;margin-left:-0.0556em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0572em;">ij</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span>.</p>
+<p data-line-start="18" data-line-end="18">For display math see <a href="katex-block.md">the block math note</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/mermaid-flowchart.md renders stable hast 1`] = `
+"<h1 id="user-content-mermaid-flowchart" data-line-start="6" data-line-end="6">Mermaid Flowchart</h1>
+<p data-line-start="8" data-line-end="8">The ingest-to-answer pipeline:</p>
+<pre data-line-start="10" data-line-end="22"><code class="language-mermaid">flowchart LR
+    A[Markdown files] --> B[Ingest]
+    B --> C[(Storage)]
+    B --> D[Embed]
+    D --> C
+    C --> E{Query engine}
+    E --> F[Lexical search]
+    E --> G[Semantic search]
+    F --> H[Ranked results]
+    G --> H
+    H --> I[Provenance-attached answer]
+</code></pre>
+<p data-line-start="24" data-line-end="24">A second, tiny diagram in the same file:</p>
+<pre data-line-start="26" data-line-end="29"><code class="language-mermaid">flowchart TD
+    Start --> Stop
+</code></pre>
+<p data-line-start="31" data-line-end="32">Prose after the diagrams so it is not the last block. Related:
+<a href="mermaid-sequence.md">sequence diagram</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/strikethrough-autolinks.md renders stable hast 1`] = `
+"<h1 id="user-content-strikethrough-and-autolinks" data-line-start="6" data-line-end="6">Strikethrough and Autolinks</h1>
+<h2 id="user-content-strikethrough" data-line-start="8" data-line-end="8">Strikethrough</h2>
+<p data-line-start="10" data-line-end="11">We <del>use RocksDB</del> use SQLite and Postgres. The <del>old plan</del> is gone.
+Double tildes are required: <del>this</del> is not struck through in strict GFM.</p>
+<h2 id="user-content-autolinks" data-line-start="13" data-line-end="13">Autolinks</h2>
+<p data-line-start="15" data-line-end="15">Bare URL, should linkify: <a href="https://supabase.com/docs">https://supabase.com/docs</a></p>
+<p data-line-start="17" data-line-end="18">Bare URL with path and query:
+<a href="https://github.com/catdb-project/catdb/issues?q=is%3Aopen">https://github.com/catdb-project/catdb/issues?q=is%3Aopen</a></p>
+<p data-line-start="20" data-line-end="20">Email autolink: <a href="mailto:mlong168@gmail.com">mlong168@gmail.com</a></p>
+<p data-line-start="22" data-line-end="22">Angle-bracket autolink: <a href="https://example.com/angle">https://example.com/angle</a></p>
+<p data-line-start="24" data-line-end="24">Not a link, just text with a dot: example dot com.</p>
+<p data-line-start="26" data-line-end="27">Compare with the explicit links back to <a href="gfm-tables.md">tables</a> and
+<a href="task-lists.md">task lists</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/guides/task-lists.md renders stable hast 1`] = `
+"<h1 id="user-content-task-lists" data-line-start="6" data-line-end="6">Task Lists</h1>
+<p data-line-start="8" data-line-end="8">Top-level tasks:</p>
+<ul class="contains-task-list" data-line-start="10" data-line-end="12">
+<li class="task-list-item"><input type="checkbox" checked disabled> Ship the scaffold</li>
+<li class="task-list-item"><input type="checkbox" disabled> Write the ingest</li>
+<li class="task-list-item"><input type="checkbox" disabled> Draw the graph view</li>
+</ul>
+<p data-line-start="14" data-line-end="14">Nested tasks with mixed state:</p>
+<ul class="contains-task-list" data-line-start="16" data-line-end="21">
+<li class="task-list-item"><input type="checkbox" disabled> Release 0.1
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" checked disabled> Fixtures</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> CI</li>
+<li class="task-list-item"><input type="checkbox" disabled> Docs
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> Getting started</li>
+<li class="task-list-item"><input type="checkbox" disabled> API reference</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p data-line-start="23" data-line-end="23">A task item that also contains a <a href="footnotes.md">link</a> and <code>inline code</code>:</p>
+<ul class="contains-task-list" data-line-start="25" data-line-end="25">
+<li class="task-list-item"><input type="checkbox" disabled> Follow up on <a href="footnotes.md">footnotes</a> once <code>catdb-query</code> lands</li>
+</ul>
+<p data-line-start="27" data-line-end="27">Not a task, just a bullet that happens to mention "[ ]" in text.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > docs/reference/no-headings.md renders stable hast 1`] = `
+"<p data-line-start="6" data-line-end="7">This file has frontmatter but not a single markdown heading. It is all body
+text, the kind you get from an exported clipping or a plain paragraph note.</p>
+<p data-line-start="9" data-line-end="9">It still has structure of a sort: a couple of paragraphs, a list, and a link.</p>
+<ul data-line-start="11" data-line-end="13">
+<li>one</li>
+<li>two</li>
+<li>three</li>
+</ul>
+<p data-line-start="15" data-line-end="17">The outline builder should produce an empty heading tree here and fall back to
+the frontmatter <code>title</code>. Related reading: the
+<a href="headings-deep.md">deep headings</a> example.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > edge-cases/crlf-endings.md renders stable hast 1`] = `
+"<h1 id="user-content-crlf-endings" data-line-start="6" data-line-end="6">CRLF Endings</h1>
+<p data-line-start="8" data-line-end="10">Every line in this file ends with a carriage-return + line-feed (\\r\\n), the
+Windows convention. Parsers and offset trackers must normalize these so that
+headings, lists, and links still resolve.</p>
+<ul data-line-start="12" data-line-end="14">
+<li>first</li>
+<li>second</li>
+<li>third</li>
+</ul>
+<p data-line-start="16" data-line-end="16">A link back to the <a href="../index.md">index</a> to keep it in the link web.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > edge-cases/unclosed-fence.md renders stable hast 1`] = `
+"<h1 id="user-content-unclosed-fence" data-line-start="6" data-line-end="6">Unclosed Fence</h1>
+<p data-line-start="8" data-line-end="10">The paragraph before the fence is normal. Below, a code fence opens and is never
+closed — the rest of the file should be treated as code until EOF, and the
+parser must not hang or crash.</p>
+<pre data-line-start="12" data-line-end="18"><code class="language-rust">fn main() {
+    println!("this fence is never closed");
+    // no closing backticks follow — EOF ends the block
+    let x = 1;
+    let y = 2;
+</code></pre>"
+`;
+
+exports[`parseMarkdown hast snapshots > edge-cases/unicode-emoji-cjk.md renders stable hast 1`] = `
+"<h1 id="user-content-unicode--表意文字-テスト" data-line-start="6" data-line-end="6">Unicode 🌍 表意文字 テスト</h1>
+<p data-line-start="8" data-line-end="8">Mixed scripts in one heading and one body.</p>
+<h2 id="user-content-emoji" data-line-start="10" data-line-end="10">Emoji</h2>
+<p data-line-start="12" data-line-end="13">Status: ✅ done, 🚧 in progress, ❌ blocked. Family: 👩‍👩‍👧‍👦 (a ZWJ sequence that
+is one grapheme but several code points). Flags: 🇯🇵 🇰🇷 🇺🇸. Skin tone: 👍🏽.</p>
+<h2 id="user-content-cjk" data-line-start="15" data-line-end="15">CJK</h2>
+<ul data-line-start="17" data-line-end="19">
+<li>中文：知识库把文档变成向量。</li>
+<li>日本語：ドキュメントをベクトルに変換します。</li>
+<li>한국어: 문서를 벡터로 변환합니다.</li>
+</ul>
+<h2 id="user-content-diacritics-and-rtl" data-line-start="21" data-line-end="21">Diacritics and RTL</h2>
+<p data-line-start="23" data-line-end="23">Café, naïve, Zürich, Håkon, Þorvaldur. Arabic: مرحبا بالعالم. Hebrew: שלום עולם.</p>
+<h2 id="user-content-widths-and-combining-marks" data-line-start="25" data-line-end="25">Widths and combining marks</h2>
+<p data-line-start="27" data-line-end="27">Full-width ＡＢＣ next to ASCII ABC. Combining: e + ́ = é. Zalgo-lite: a̐b̽c̈.</p>
+<p data-line-start="29" data-line-end="30">Character counts here are a good test for byte-vs-grapheme offset handling in
+<a href="../notes/zettel/node-provenance.md">provenance</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > frontmatter/empty-frontmatter.md renders stable hast 1`] = `
+"<h1 id="user-content-empty-frontmatter" data-line-start="4" data-line-end="4">Empty Frontmatter</h1>
+<p data-line-start="6" data-line-end="8">The frontmatter delimiters are present but the block between them is empty. The
+parser should treat this as "no metadata" rather than an error, and the body
+below should render normally.</p>
+<p data-line-start="10" data-line-end="10">Back to the <a href="typical.md">typical case</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > frontmatter/malformed-frontmatter.md renders stable hast 1`] = `
+"<h1 id="user-content-malformed-frontmatter" data-line-start="11" data-line-end="11">Malformed Frontmatter</h1>
+<p data-line-start="13" data-line-end="16">The YAML above is deliberately broken: an unclosed flow sequence, a key with no
+colon, doubled colons, and inconsistent indentation. A robust ingest should
+recover — surface a metadata-parse warning, keep <code>title</code> if it can, and still
+render the body — rather than dropping the whole document.</p>
+<p data-line-start="18" data-line-end="18">Compare with <a href="typical.md">typical</a>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > frontmatter/typical.md renders stable hast 1`] = `
+"<h1 id="user-content-typical-frontmatter" data-line-start="15" data-line-end="15">Typical Frontmatter</h1>
+<p data-line-start="17" data-line-end="18">A normal note with a full YAML frontmatter block: strings, a date, a list of
+tags, a boolean, and a number. The body then continues as usual.</p>
+<p data-line-start="20" data-line-end="22">This is the happy path for the frontmatter parser. Compare with the
+<a href="empty-frontmatter.md">empty</a>, <a href="malformed-frontmatter.md">malformed</a>, and
+<a href="frontmatter-only.md">frontmatter-only</a> cases.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > notes/zettel/broken-links.md renders stable hast 1`] = `
+"<h1 id="user-content-broken-links" data-line-start="6" data-line-end="6">Broken Links</h1>
+<p data-line-start="8" data-line-end="9">These wiki-links point at notes that do not exist and must resolve to dangling
+stubs, not crashes:</p>
+<ul data-line-start="11" data-line-end="15">
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="ghost-node">ghost-node</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="node-that-was-deleted">node-that-was-deleted</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="archive/old-note">archive/old-note</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="node-storage" data-heading="Nonexistent Heading">node-storage#Nonexistent Heading</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="" data-label="empty target">empty target</wiki-link></li>
+</ul>
+<p data-line-start="17" data-line-end="18">A broken relative markdown link too:
+<a href="../projects/does-not-exist.md">missing file</a>.</p>
+<p data-line-start="20" data-line-end="20">And a broken anchor within this file: <a href="#no-such-heading">jump</a>.</p>
+<p data-line-start="22" data-line-end="22">For the links that <em>do</em> work, see <wiki-link class="wikilink" data-wikilink="true" data-target="wikilinks">wikilinks</wiki-link> and <wiki-link class="wikilink" data-wikilink="true" data-target="graph-hub">graph-hub</wiki-link>.</p>"
+`;
+
+exports[`parseMarkdown hast snapshots > notes/zettel/wikilinks.md renders stable hast 1`] = `
+"<h1 id="user-content-wiki-link-syntax" data-line-start="6" data-line-end="6">Wiki-link Syntax</h1>
+<p data-line-start="8" data-line-end="8">A plain link to another note: <wiki-link class="wikilink" data-wikilink="true" data-target="node-storage">node-storage</wiki-link>.</p>
+<p data-line-start="10" data-line-end="10">A link with a label: <wiki-link class="wikilink" data-wikilink="true" data-target="node-query-engine" data-label="the query engine">the query engine</wiki-link>.</p>
+<p data-line-start="12" data-line-end="12">A link to a heading inside a note: <wiki-link class="wikilink" data-wikilink="true" data-target="node-search" data-heading="Search">node-search#Search</wiki-link>.</p>
+<p data-line-start="14" data-line-end="15">A link to a heading with a custom label:
+<wiki-link class="wikilink" data-wikilink="true" data-target="node-embeddings" data-heading="Embeddings" data-label="how vectors work">how vectors work</wiki-link>.</p>
+<p data-line-start="17" data-line-end="18">Links can sit inline in a sentence — see <wiki-link class="wikilink" data-wikilink="true" data-target="graph-hub">graph-hub</wiki-link> for the whole web — or
+stacked in a list:</p>
+<ul data-line-start="20" data-line-end="22">
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="node-ingest">node-ingest</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="node-provenance">node-provenance</wiki-link></li>
+<li><wiki-link class="wikilink" data-wikilink="true" data-target="node-graph-view">node-graph-view</wiki-link></li>
+</ul>
+<p data-line-start="24" data-line-end="24">Contrast these with the deliberately <wiki-link class="wikilink" data-wikilink="true" data-target="broken-links" data-label="broken ones">broken ones</wiki-link>.</p>"
+`;

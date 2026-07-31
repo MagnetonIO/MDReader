@@ -1,0 +1,46 @@
+{
+  "name": "@mdreader/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./eslint": "./eslint.config.js",
+    "./vitest": "./vitest.base.js",
+    "./tailwind-preset": "./tailwind-preset.css",
+    "./tokens.css": "./tokens.css",
+    "./tsconfig.base.json": "./tsconfig.base.json"
+  },
+  "files": [
+    "dist",
+    "eslint.config.js",
+    "vitest.base.js",
+    "tokens.css",
+    "tailwind-preset.css",
+    "tsconfig.base.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@eslint/js": "^9.39.5",
+    "globals": "^17.7.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.65.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "eslint": "^9.39.0"
+  }
+}

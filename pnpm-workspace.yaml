@@ -1,0 +1,24 @@
+packages:
+  - ui
+  - packages/*
+  - catdb/sdk/*
+allowBuilds:
+  '@swc/core': false
+  esbuild: false
+  msw: false
+  sharp: false
+  # The pinned wrapper resolves the matching @cloudflare/workerd-* optional
+  # binary directly. Its postinstall can invoke npm or the network as fallback,
+  # so this workspace deliberately denies that script.
+  workerd: false
+minimumReleaseAgeExclude:
+  - '@turbo/darwin-64@2.10.6'
+  - '@turbo/darwin-arm64@2.10.6'
+  - '@turbo/linux-64@2.10.6'
+  - '@turbo/linux-arm64@2.10.6'
+  - '@turbo/windows-64@2.10.6'
+  - '@turbo/windows-arm64@2.10.6'
+  - turbo@2.10.6
+  # Wrangler's optional peer was generated today; pin the exact official
+  # runtime declaration while retaining the age gate for every other package.
+  - '@cloudflare/workers-types@5.20260726.1'

@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/test-utils.ts",
+    "src/dom-globals.setup.ts",
+    "src/parity-fixtures.ts",
+    "src/gen-parity-reference.ts",
+    "dist",
+    "node_modules"
+  ]
+}

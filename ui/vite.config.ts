@@ -37,7 +37,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@catdb/client': new URL(
-        '../../../catdb/sdk/typescript/src/index.ts',
+        '../catdb/sdk/typescript/src/index.ts',
         import.meta.url,
       ).pathname,
     },

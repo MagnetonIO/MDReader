@@ -1,0 +1,8 @@
+/*
+ * KaTeX stylesheet re-export. The rendering pipeline produces KaTeX markup but
+ * ships no CSS on its own; consumers import this file so their bundler pulls in
+ * KaTeX's stylesheet from the locally-installed package. No CDN is used.
+ *
+ *   import '@mdreader/markdown/katex.css';
+ */
+@import "katex/dist/katex.min.css";

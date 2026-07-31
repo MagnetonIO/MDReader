@@ -1,0 +1,22 @@
+{
+  "name": "mdreader",
+  "private": true,
+  "packageManager": "pnpm@11.16.0",
+  "engines": {
+    "node": "^24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @mdreader/app dev",
+    "build": "pnpm --filter @mdreader/app build",
+    "test": "pnpm --filter @mdreader/app test",
+    "tauri": "pnpm --filter @mdreader/app tauri",
+    "tauri:build": "pnpm --filter @mdreader/app tauri build"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "3.1095.0",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "turbo": "^2.10.6",
+    "yaml": "2.9.0"
+  }
+}
