@@ -1021,7 +1021,7 @@ dependencies = [
 [[package]]
 name = "catdb-api-types"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "catdb-provenance",
  "schemars 1.2.2",
@@ -1037,7 +1037,7 @@ dependencies = [
 [[package]]
 name = "catdb-catalog"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "serde",
  "serde_json",
@@ -1047,7 +1047,7 @@ dependencies = [
 [[package]]
 name = "catdb-cli"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "axum",
@@ -1080,7 +1080,7 @@ dependencies = [
 [[package]]
 name = "catdb-connector-duckdb"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1103,7 +1103,7 @@ dependencies = [
 [[package]]
 name = "catdb-connector-postgres"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1127,7 +1127,7 @@ dependencies = [
 [[package]]
 name = "catdb-connector-snowflake"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1153,7 +1153,7 @@ dependencies = [
 [[package]]
 name = "catdb-connectors"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "catdb-core"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "serde",
  "serde_json",
@@ -1186,7 +1186,7 @@ dependencies = [
 [[package]]
 name = "catdb-embed"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "directories",
@@ -1198,7 +1198,7 @@ dependencies = [
 [[package]]
 name = "catdb-engine"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1225,7 +1225,7 @@ dependencies = [
 [[package]]
 name = "catdb-federation"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1250,7 +1250,7 @@ dependencies = [
 [[package]]
 name = "catdb-ir"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "blake3",
  "schemars 1.2.2",
@@ -1262,7 +1262,7 @@ dependencies = [
 [[package]]
 name = "catdb-planner"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "catdb-query",
  "catdb-storage",
@@ -1274,7 +1274,7 @@ dependencies = [
 [[package]]
 name = "catdb-policy"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "catdb-storage",
  "jsonwebtoken",
@@ -1289,7 +1289,7 @@ dependencies = [
 [[package]]
 name = "catdb-provenance"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -1304,7 +1304,7 @@ dependencies = [
 [[package]]
 name = "catdb-query"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "catdb-core",
  "serde",
@@ -1314,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "catdb-sdk"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "catdb-api-types",
@@ -1346,7 +1346,7 @@ dependencies = [
 [[package]]
 name = "catdb-server"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "axum",
@@ -1383,7 +1383,7 @@ dependencies = [
 [[package]]
 name = "catdb-sql"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "catdb-api-types",
@@ -1406,7 +1406,7 @@ dependencies = [
 [[package]]
 name = "catdb-storage"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1421,7 +1421,7 @@ dependencies = [
 [[package]]
 name = "catdb-storage-sqlite"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1444,7 +1444,7 @@ dependencies = [
 [[package]]
 name = "catdb-validation"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "catdb-core",
  "egg",
@@ -1455,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "catdb-workspace"
 version = "1.0.0"
-source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#5c848cfc29f81c1d7d4360f0db73cd10a121db3d"
+source = "git+file:///Users/mlong/Documents/Development/CatDB?tag=catdb-sdk-v1.0.0#c06e45404a3805183ae2cead0b0ad37679d24ace"
 dependencies = [
  "blake3",
  "catdb-ir",

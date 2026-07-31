@@ -36,3 +36,5 @@ fixtures/generated/
 .DS_Store
 .claude/worktrees/
 .vercel
+
+.env
