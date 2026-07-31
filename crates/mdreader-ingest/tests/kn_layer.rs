@@ -329,7 +329,7 @@ async fn fixture_corpus_concepts_extract_and_equations_hold() {
     // The committed frontmatter fixtures: tags extract into concepts under
     // their stable ids, and the equation-check job still reports zero
     // violations over the whole corpus with the KN layer emitted.
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../fixtures/corpus");
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus");
     let db_dir = tempfile::tempdir().unwrap();
     let engine = open(&db_dir.path().join("catdb.db"));
     engine

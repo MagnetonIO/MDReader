@@ -343,7 +343,7 @@ export const commands = {
 	 *  report the composite's coverage.
 	 *
 	 *  This is the claim that N×M pipelines collapse toward N+M, made concrete: the
-	 *  result is a real [`catdb_core::ComposedMapping`], validated end to end with
+	 *  result is a real [`catdb_sdk::core::ComposedMapping`], validated end to end with
 	 *  the same equality-saturation prover that gates every registered mapping at
 	 *  startup — not a rendering of two mappings side by side.
 	 *
@@ -358,7 +358,7 @@ export const commands = {
 	 *  Each version's stored body is verified against its recorded checksum first,
 	 *  so a corrupt row is refused rather than certified "unchanged"; only then does
 	 *  an equal-checksum pair skip the structural comparison. The short answer can
-	 *  never disagree with the long one (see [`catdb_engine::semantic_diff`]).
+	 *  never disagree with the long one (see [`catdb_sdk::engine::semantic_diff`]).
 	 */
 	diffSchemaVersions: (schema: string, from: number, to: number) => typedError<SchemaDiffDto, string>(__TAURI_INVOKE("diff_schema_versions", { schema, from, to })),
 	/**
@@ -1171,7 +1171,7 @@ export type ImportProgress = {
 /**
  *  One way the mapping fails to determine a source concept from its image.
  *
- *  See [`catdb_core::coverage`] for what "loss" does and does not claim: it is
+ *  See [`catdb_sdk::core::coverage`] for what "loss" does and does not claim: it is
  *  a statement about the mapping, never a claim that a lossless mapping is
  *  invertible.
  */

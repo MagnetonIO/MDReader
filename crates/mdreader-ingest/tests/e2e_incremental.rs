@@ -446,7 +446,7 @@ async fn fixtures_corpus_imports_cleanly() {
     // engine is opened without a proposal store, and so no overlay fact is ever
     // extracted or approved into it. The violation only exists once a human
     // approves the claims — which is exactly what the GUI harness seeds.
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../fixtures/corpus");
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus");
     let db_dir = tempfile::tempdir().unwrap();
     let engine = open(&db_dir.path().join("catdb.db"));
 

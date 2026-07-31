@@ -7,7 +7,7 @@ use mdreader_ingest::{parse_markdown, ParsedDocument};
 
 fn corpus_file(rel: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../fixtures/corpus")
+        .join("../../fixtures/corpus")
         .join(rel);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }

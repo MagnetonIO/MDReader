@@ -9990,7 +9990,7 @@ mod tests {
     #[tokio::test]
     async fn full_library_query_keeps_healthy_local_sources_when_frontmatter_is_malformed() {
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fixtures/corpus")
+            .join("../fixtures/corpus")
             .canonicalize()
             .expect("committed corpus");
         let temp = tempdir().expect("temporary registry");

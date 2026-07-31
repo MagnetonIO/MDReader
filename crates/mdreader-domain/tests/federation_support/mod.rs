@@ -45,7 +45,7 @@ pub fn execute_query(
 
 /// The committed corpus every adapter reads.
 pub fn corpus() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../fixtures/corpus")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus")
 }
 
 /// A content digest of a whole directory tree: every file's relative path,

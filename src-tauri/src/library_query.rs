@@ -2137,7 +2137,7 @@ mod tests {
     #[tokio::test]
     async fn point_read_hydrates_a_nested_document_from_the_real_corpus() {
         let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fixtures/corpus")
+            .join("../fixtures/corpus")
             .canonicalize()
             .expect("real corpus");
         let workspace = Uuid::new_v4();
