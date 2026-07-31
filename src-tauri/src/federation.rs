@@ -6,9 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use catdb_sdk::connectors::{
-    CancellationToken, DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext,
-};
+use catdb_sdk::connectors::{CancellationToken, DataSource, ReadContext};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 use catdb_sdk::federation::{Completeness, ExecutionPolicy, Executor, Freshness, Outcome};
 use mdreader_domain::federated::{
     document_schema, Federation, ProviderVerdict, SCHEMA as FEDERATED_SCHEMA,

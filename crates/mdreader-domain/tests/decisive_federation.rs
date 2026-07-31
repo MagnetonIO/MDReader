@@ -96,9 +96,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use catdb_sdk::connectors::{
-    DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceId, SourceRow,
-};
+use catdb_sdk::connectors::{DataSource, SourceId, SourceRow};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 use catdb_sdk::core::AttrName;
 use catdb_sdk::federation::{
     Completeness, Execution, ExecutionPolicy, Executor, Federated, Freshness, Outcome, Ran,

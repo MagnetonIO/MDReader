@@ -8,9 +8,8 @@
 
 mod federation_support;
 
-use catdb_sdk::connectors::{
-    Availability, DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceId,
-};
+use catdb_sdk::connectors::{Availability, DataSource, SourceId};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 use catdb_sdk::core::{
     AttrName, AttrTarget, BaseType, Concept, IdentityConfidence, IdentityRule, InformationLoss,
     MappingError, ObjectId, Path, ValueTransformation,

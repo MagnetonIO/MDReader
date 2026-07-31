@@ -3333,9 +3333,9 @@ fn bind_identity_bound_local_sources(
     membership_id: uuid::Uuid,
     root: &mdreader_ingest::SourceRoot,
 ) -> Result<Vec<crate::library_query::LibraryPhysicalSource>, CloudSourceError> {
-    use catdb_sdk::connectors::{
-        DataSource, DirectoryAuthority, FilesystemSource, FrontmatterSource, GitSource,
-    };
+    use catdb_sdk::connectors::DataSource;
+    use mdreader_connector_local::DirectoryAuthority;
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 
     let directory =
         root.try_clone_directory_handle()
@@ -3378,7 +3378,8 @@ fn bind_unavailable_local_sources(
     membership_id: uuid::Uuid,
     path: &Path,
 ) -> Result<Vec<crate::library_query::LibraryPhysicalSource>, CloudSourceError> {
-    use catdb_sdk::connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+    use catdb_sdk::connectors::{DataSource};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 
     let reason = "the registered directory identity is not currently available";
     let sources: [Arc<dyn DataSource>; 3] = [
@@ -6650,10 +6651,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use catdb_sdk::connectors::{
-        DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError,
-        SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
-    };
+    use catdb_sdk::connectors::{DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow};
     use tempfile::tempdir;
     use tokio::{
         io::AsyncWriteExt as _,
@@ -10495,7 +10493,7 @@ mod tests {
 
         let source: Arc<dyn DataSource> = Arc::new(IdentityBoundLocalSource {
             root: bound_root,
-            source: Arc::new(catdb_sdk::connectors::GitSource::open_with_git_binary(
+            source: Arc::new(mdreader_connector_local::GitSource::open_with_git_binary(
                 &root, &shim,
             )),
         });

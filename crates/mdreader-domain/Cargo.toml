@@ -13,6 +13,7 @@ workspace = true
 # database and pulls `embed` and `storage-sqlite` with it; the kernel,
 # connectors, federation, query, IR and validation are unconditional in the
 # facade, which is why they are not named here.
+mdreader-connector-local = { path = "../mdreader-connector-local" }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["engine"] }
 # The three read-only adapters (filesystem, git, frontmatter) the federated
 # `Document` concept is declared over. The platform ships the sources; the

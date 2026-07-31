@@ -7,9 +7,8 @@
 
 mod federation_support;
 
-use catdb_sdk::connectors::{
-    Availability, DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceError, SourceId,
-};
+use catdb_sdk::connectors::{Availability, DataSource, SourceError, SourceId};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
 use catdb_sdk::federation::{
     Execution, ExecutionPolicy, Executor, Federated, Outcome, Ran, SourceReport,
 };

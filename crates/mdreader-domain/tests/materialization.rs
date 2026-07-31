@@ -1,21 +1,19 @@
 //! On-demand materialization: what a cached answer promises, and what it does
 //! not.
 
-mod support;
+mod exec_support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use catdb_connectors::{
-    CancellationToken, DataSource, FilesystemSource, ReadContext, SourceAttr, SourceCapabilities,
-    SourceCursor, SourceError, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
-};
-use catdb_federation::{
+use catdb_sdk::connectors::{CancellationToken, DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow};
+use mdreader_connector_local::{FilesystemSource};
+use catdb_sdk::federation::{
     Clock, Execution, ExecutionPolicy, Executor, FederationError, Freshness, SystemClock,
 };
-use support::{corpus, execute_query, federated_query, tree, write, Counting, Flaky, ManualClock};
+use exec_support::{corpus, execute_query, federated_query, tree, write, Counting, Flaky, ManualClock};
 
 /// An arbitrary but fixed wall-clock instant the manual clock starts at.
 const T0: i64 = 1_700_000_000_000;
@@ -58,7 +56,7 @@ impl DataSource for SparseWorkSource {
         self.model.id()
     }
 
-    fn schema(&self) -> &catdb_core::Schema {
+    fn schema(&self) -> &catdb_sdk::core::Schema {
         self.model.schema()
     }
 
@@ -72,7 +70,7 @@ impl DataSource for SparseWorkSource {
 
     fn compile(
         &self,
-        query: &catdb_query::EntityQuery,
+        query: &catdb_sdk::query::EntityQuery,
         authorized_fields: &[String],
     ) -> Result<SourcePlan, SourceError> {
         self.model.compile(query, authorized_fields)

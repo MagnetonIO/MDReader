@@ -1,10 +1,11 @@
 //! Virtual execution: push what each source declared, apply the rest here.
 
-mod support;
+mod exec_support;
 
-use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, SourceError, SourceId};
-use catdb_federation::{Completeness, Execution, ExecutionPolicy, Executor, Outcome};
-use support::{
+use catdb_sdk::connectors::{DataSource, SourceError, SourceId};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource};
+use catdb_sdk::federation::{Completeness, Execution, ExecutionPolicy, Executor, Outcome};
+use exec_support::{
     brute_force_paths, corpus, execute_query, execute_source, federated_query, keyed, read_source,
     Counting,
 };

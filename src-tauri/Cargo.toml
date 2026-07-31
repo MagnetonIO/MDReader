@@ -76,6 +76,7 @@ mdreader-connector-dropbox = { path = "../crates/mdreader-connector-dropbox", op
 # Schema introspection (the View As / Schema View surfaces) and the kernel
 # provenance the Semantic Inspector renders. Read-only: nothing here builds a
 # fact, it only describes ones the engine and the extractors produced.
+mdreader-connector-local = { path = "../crates/mdreader-connector-local" }
 mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }

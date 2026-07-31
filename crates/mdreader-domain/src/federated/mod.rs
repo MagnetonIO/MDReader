@@ -55,9 +55,7 @@ pub use schema::{document_schema, qualified_entity, ATTRIBUTES, ENTITY, SCHEMA};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use catdb_sdk::connectors::{
-    federate, read, Availability, DataSource, ReadContext, SourceError, SourceId, SourceRow,
-};
+use catdb_sdk::connectors::{federate, read, Availability, DataSource, ReadContext, SourceError, SourceId, SourceRow};
 use catdb_sdk::core::{
     apply_chain, coverage, AttrName, IdentityRefusal, IdentityRule, MappingCoverage, MappingError,
     ObjectId, PathProver, Schema, ValidMapping,
@@ -828,7 +826,8 @@ fn object_id(name: &str) -> ObjectId {
 
 #[cfg(test)]
 mod product_scope_tests {
-    use catdb_sdk::connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+    use catdb_sdk::connectors::{DataSource};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
     use catdb_sdk::validation::EggProver;
 
     use super::Federation;

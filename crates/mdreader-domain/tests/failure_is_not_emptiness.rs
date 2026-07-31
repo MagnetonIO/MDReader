@@ -1,10 +1,11 @@
 //! A failure never degrades into a smaller answer.
 
-mod support;
+mod exec_support;
 
-use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceError};
-use catdb_federation::{Completeness, ExecutionPolicy, Executor, FederationError};
-use support::{corpus, execute_query, federated_query, read_source, Flaky};
+use catdb_sdk::connectors::{DataSource, SourceError};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
+use catdb_sdk::federation::{Completeness, ExecutionPolicy, Executor, FederationError};
+use exec_support::{corpus, execute_query, federated_query, read_source, Flaky};
 
 /// A source whose read fails fails the **query**. Its rows are not quietly
 /// omitted, and the other source's rows are not handed back as if they were the
@@ -164,7 +165,7 @@ fn a_partial_answer_names_the_sources_it_left_out() {
 /// render the source report.
 #[test]
 fn a_non_git_markdown_library_returns_a_partial_answer_with_all_source_reports() {
-    let root = support::tree(&[(
+    let root = exec_support::tree(&[(
         "note.md",
         "---\ntitle: Plain folder\n---\n# Plain folder\n\nBody.\n",
     )]);
@@ -186,7 +187,7 @@ fn a_non_git_markdown_library_returns_a_partial_answer_with_all_source_reports()
     assert!(answer.reports[0].ran().is_some(), "filesystem ran");
     assert!(matches!(
         answer.reports[1].outcome,
-        catdb_federation::Outcome::Refused {
+        catdb_sdk::federation::Outcome::Refused {
             reason: SourceError::Unavailable { .. }
         }
     ));

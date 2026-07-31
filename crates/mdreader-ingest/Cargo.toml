@@ -84,6 +84,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+serde_yaml = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }

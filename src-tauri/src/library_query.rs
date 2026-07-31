@@ -11,10 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use catdb_sdk::api_types::{EntityCursor, EntityQueryRequest, EntityQueryResponse, SourceExecution};
-use catdb_sdk::connectors::{
-    CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError,
-    SourceFreshness, SourceModel, SourcePage, SourcePlan,
-};
+use catdb_sdk::connectors::{CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceModel, SourcePage, SourcePlan};
 use catdb_sdk::core::Mapping;
 use catdb_sdk::federation::{
     CatalogResolveError, CatalogResolver, ContinuationLimits, EntityQueryError, EntityQueryService,
@@ -1328,11 +1325,8 @@ mod tests {
 
     use async_trait::async_trait;
     use catdb_sdk::api_types::{Completeness, EntityFilter, EntityQueryRequest, FilterOperator};
-    use catdb_sdk::connectors::{
-        DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext, SourceAttr,
-        SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel,
-        SourcePage, SourcePlan, SourceRow,
-    };
+    use catdb_sdk::connectors::{DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan, SourceRow};
+use mdreader_connector_local::{FilesystemSource, FrontmatterSource, GitSource};
     use catdb_sdk::core::BaseType;
     use serde_json::json;
 
