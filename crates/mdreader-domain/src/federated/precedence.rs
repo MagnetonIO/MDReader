@@ -32,8 +32,8 @@
 //! YAML one, and a document with only an H1 gets the H1, and both are pinned
 //! by tests against the real corpus.
 
-use catdb_connectors::{FilesystemSource, FrontmatterSource, GitSource, SourceId};
-use catdb_core::AttrName;
+use catdb_sdk::connectors::{FilesystemSource, FrontmatterSource, GitSource, SourceId};
+use catdb_sdk::core::AttrName;
 use serde::{Deserialize, Serialize};
 
 /// One source's ability to answer one `Document` attribute.

@@ -8,14 +8,14 @@
 
 mod federation_support;
 
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     Availability, DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceId,
 };
-use catdb_core::{
+use catdb_sdk::core::{
     AttrName, AttrTarget, BaseType, Concept, IdentityConfidence, IdentityRule, InformationLoss,
     MappingError, ObjectId, Path, ValueTransformation,
 };
-use catdb_validation::EggProver;
+use catdb_sdk::validation::EggProver;
 use federation_support::corpus;
 use mdreader_domain::federated::{
     self, document_schema, path_identity_rule, source_mapping, validated_source_mapping,
@@ -121,7 +121,7 @@ fn every_source_mapping_validates_against_the_real_prover() {
         assert_eq!(valid.mapping().dst.as_str(), federated::SCHEMA);
         assert_eq!(
             valid.mapping().write_capability,
-            catdb_core::MappingWriteCapability::ReadOnly,
+            catdb_sdk::core::MappingWriteCapability::ReadOnly,
             "`{}` must declare itself read-only",
             source.id()
         );
@@ -381,7 +381,7 @@ fn a_mapping_that_drops_an_attribute_reports_it_lost_by_name_and_fails_to_valida
     let mut draft = source_mapping(&fs).expect("mapping builds");
     draft.attr_map.remove(&AttrName::from("size"));
 
-    let report = catdb_core::coverage(&draft, fs.schema(), &document_schema());
+    let report = catdb_sdk::core::coverage(&draft, fs.schema(), &document_schema());
     assert!(!report.is_lossless(), "dropping an attribute is loss");
     assert_eq!(
         report.loss,
@@ -415,7 +415,7 @@ fn two_attributes_sharing_one_slot_are_reported_as_overwriting_by_name() {
             attr: "path".into(),
         },
     );
-    let report = catdb_core::coverage(&draft, fs.schema(), &document_schema());
+    let report = catdb_sdk::core::coverage(&draft, fs.schema(), &document_schema());
     assert!(
         matches!(
             report.loss.as_slice(),
@@ -501,7 +501,7 @@ fn an_identity_rule_on_an_undeclared_key_is_refused_by_the_kernel() {
         } => IdentityRule::SharedKey {
             src_entity,
             canonical_entity,
-            keys: vec![catdb_core::IdentityKey {
+            keys: vec![catdb_sdk::core::IdentityKey {
                 src: "inode".into(),
                 canonical: "inode".into(),
             }],

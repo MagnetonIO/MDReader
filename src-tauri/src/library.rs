@@ -1950,7 +1950,7 @@ fn recover_v2_engine_source_id_with_hooks(
         return Err(LibraryError::CorruptRegistry);
     }
     ensure_no_sqlite_recovery_sidecars(&db_path)?;
-    let inspected = catdb_storage_sqlite::inspect_single_source_catalog_for_adoption(&connection)
+    let inspected = catdb_sdk::storage_sqlite::inspect_single_source_catalog_for_adoption(&connection)
         .map_err(|_| LibraryError::CorruptRegistry)?;
     // Registry V2 was introduced against CatDB v7. Earlier schemas were never
     // V2 producers; later supported schemas remain migration-owned and are
@@ -3257,7 +3257,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use catdb_storage::CatalogStorage;
+    use catdb_sdk::storage::CatalogStorage;
     use tempfile::tempdir;
 
     use super::{
@@ -3339,10 +3339,10 @@ mod tests {
     }
 
     fn create_authentic_v2_index_with_schema(path: &Path, root: &SourceRoot) -> (uuid::Uuid, i64) {
-        let engine = catdb_engine::EmbeddedCatDb::open(
-            catdb_engine::EngineConfig::new(
+        let engine = catdb_sdk::engine::EmbeddedCatDb::open(
+            catdb_sdk::engine::EngineConfig::new(
                 path,
-                std::sync::Arc::new(catdb_embed::HashEmbedder::new()),
+                std::sync::Arc::new(catdb_sdk::embed::HashEmbedder::new()),
             )
             .with_domain(mdreader_ingest::registration()),
         )
@@ -3352,7 +3352,7 @@ mod tests {
             .build()
             .expect("runtime");
         runtime
-            .block_on(engine.import(&root.path, catdb_engine::ImportOptions::default()))
+            .block_on(engine.import(&root.path, catdb_sdk::engine::ImportOptions::default()))
             .expect("import authentic V2 managed index");
         let sources = runtime
             .block_on(engine.store().list_sources())
@@ -3368,7 +3368,7 @@ mod tests {
     fn create_genuine_v7_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
         fs::create_dir_all(path.parent().expect("legacy index parent"))
             .expect("create legacy workspace");
-        catdb_storage_sqlite::migrate_database_to_version_for_tests(path, 7)
+        catdb_sdk::storage_sqlite::migrate_database_to_version_for_tests(path, 7)
             .expect("migrate through genuine v7 DDL");
         let source_id = uuid::Uuid::new_v4();
         let connection = rusqlite::Connection::open(path).expect("open genuine v7 catalog");
@@ -4154,10 +4154,10 @@ mod tests {
             &admitted.path,
             &admitted.identity,
         );
-        let legacy_engine = catdb_engine::EmbeddedCatDb::open(
-            catdb_engine::EngineConfig::new(
+        let legacy_engine = catdb_sdk::engine::EmbeddedCatDb::open(
+            catdb_sdk::engine::EngineConfig::new(
                 &old_db,
-                std::sync::Arc::new(catdb_embed::HashEmbedder::new()),
+                std::sync::Arc::new(catdb_sdk::embed::HashEmbedder::new()),
             )
             .with_domain(mdreader_ingest::registration()),
         )
@@ -4166,7 +4166,7 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime")
-            .block_on(legacy_engine.import(&admitted.path, catdb_engine::ImportOptions::default()))
+            .block_on(legacy_engine.import(&admitted.path, catdb_sdk::engine::ImportOptions::default()))
             .expect("import authentic old managed index");
         let legacy_sources = tokio::runtime::Builder::new_current_thread()
             .enable_all()

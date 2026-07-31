@@ -29,7 +29,7 @@
 //!
 //! # Read-only, structurally
 //!
-//! Every mapping declares [`MappingWriteCapability::ReadOnly`](catdb_core::MappingWriteCapability::ReadOnly),
+//! Every mapping declares [`MappingWriteCapability::ReadOnly`](catdb_sdk::core::MappingWriteCapability::ReadOnly),
 //! every adapter opens files for reading, and the tests hash the fixture tree
 //! before and after every assembly. Nothing in this module has a path to a
 //! writer.
@@ -40,7 +40,7 @@
 //! and refuses anything else, because the natural key is the one thing every
 //! source both observes and can push down, and splitting a richer query into a
 //! pushed half and a residual half is
-//! [`catdb_connectors::SourcePlan`]'s job — already built, and not worth a
+//! [`catdb_sdk::connectors::SourcePlan`]'s job — already built, and not worth a
 //! second implementation here that could disagree with it.
 
 pub mod attribution;
@@ -55,15 +55,15 @@ pub use schema::{document_schema, qualified_entity, ATTRIBUTES, ENTITY, SCHEMA};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     federate, read, Availability, DataSource, ReadContext, SourceError, SourceId, SourceRow,
 };
-use catdb_core::{
+use catdb_sdk::core::{
     apply_chain, coverage, AttrName, IdentityRefusal, IdentityRule, MappingCoverage, MappingError,
     ObjectId, PathProver, Schema, ValidMapping,
 };
-use catdb_federation::{Federated, Outcome};
-use catdb_query::{
+use catdb_sdk::federation::{Federated, Outcome};
+use catdb_sdk::query::{
     parse_query, validate_entity, validate_entity_request, AttrOp, EntityFilterInput, EntityQuery,
     EntityTarget, EntityVocabulary,
 };
@@ -157,7 +157,7 @@ pub enum FederationError {
     Source(#[from] SourceError),
     /// The scope query is not valid against the federated vocabulary.
     #[error(transparent)]
-    Query(#[from] catdb_query::QueryError),
+    Query(#[from] catdb_sdk::query::QueryError),
     /// The scope filters on something other than the natural key.
     #[error(
         "a federation scope may only narrow `{}` — the natural key every source observes and can \
@@ -516,7 +516,7 @@ impl<'a> Federation<'a> {
     }
 
     /// Assemble the documents from an answer a federating
-    /// [`Executor`](catdb_federation::Executor) has already produced.
+    /// [`Executor`](catdb_sdk::federation::Executor) has already produced.
     ///
     /// [`assemble`](Self::assemble) reads the sources itself, which is enough
     /// when nobody needs to know *how* each source ran. When somebody does —
@@ -828,8 +828,8 @@ fn object_id(name: &str) -> ObjectId {
 
 #[cfg(test)]
 mod product_scope_tests {
-    use catdb_connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
-    use catdb_validation::EggProver;
+    use catdb_sdk::connectors::{DataSource, FilesystemSource, FrontmatterSource, GitSource};
+    use catdb_sdk::validation::EggProver;
 
     use super::Federation;
 
@@ -849,10 +849,10 @@ mod product_scope_tests {
 
         assert_eq!(query.filters.len(), 1);
         assert_eq!(query.filters[0].attr, "path");
-        assert_eq!(query.filters[0].op, catdb_query::AttrOp::Eq);
+        assert_eq!(query.filters[0].op, catdb_sdk::query::AttrOp::Eq);
         assert_eq!(
             query.filters[0].value,
-            catdb_query::AttrValue::Text("a file.md".to_string())
+            catdb_sdk::query::AttrValue::Text("a file.md".to_string())
         );
     }
 }

@@ -10,21 +10,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use catdb_api_types::{EntityCursor, EntityQueryRequest, EntityQueryResponse, SourceExecution};
-use catdb_connectors::{
+use catdb_sdk::api_types::{EntityCursor, EntityQueryRequest, EntityQueryResponse, SourceExecution};
+use catdb_sdk::connectors::{
     CancellationToken, DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError,
     SourceFreshness, SourceModel, SourcePage, SourcePlan,
 };
-use catdb_core::Mapping;
-use catdb_federation::{
+use catdb_sdk::core::Mapping;
+use catdb_sdk::federation::{
     CatalogResolveError, CatalogResolver, ContinuationLimits, EntityQueryError, EntityQueryService,
     ResolvedCatalog, RuntimeCatalog, SourceBinding,
 };
-use catdb_policy::{
+use catdb_sdk::policy::{
     Action, Effect, PolicyDocument, PolicyRule, Principal, ResourceScope, SubjectSelector,
 };
-use catdb_provenance::FieldProvenance;
-use catdb_storage::{
+use catdb_sdk::provenance::FieldProvenance;
+use catdb_sdk::storage::{
     catalog_content_checksum, CatalogRevision, Compatibility, MappingCapability, MappingVersion,
     PolicyVersion, ProvenanceRuleVersion, SchemaContent, SchemaVersion, SourceVersion,
 };
@@ -98,11 +98,11 @@ impl std::fmt::Debug for LibraryPageSource {
 
 #[async_trait]
 impl DataSource for LibraryPageSource {
-    fn id(&self) -> &catdb_connectors::SourceId {
+    fn id(&self) -> &catdb_sdk::connectors::SourceId {
         self.source.id()
     }
 
-    fn schema(&self) -> &catdb_core::Schema {
+    fn schema(&self) -> &catdb_sdk::core::Schema {
         self.source.schema()
     }
 
@@ -120,7 +120,7 @@ impl DataSource for LibraryPageSource {
 
     fn compile(
         &self,
-        query: &catdb_query::EntityQuery,
+        query: &catdb_sdk::query::EntityQuery,
         authorized_fields: &[String],
     ) -> Result<SourcePlan, SourceError> {
         self.source.compile(query, authorized_fields)
@@ -218,11 +218,11 @@ pub(crate) fn declared_unavailable_source(
 
 #[async_trait]
 impl DataSource for DeclaredUnavailableSource {
-    fn id(&self) -> &catdb_connectors::SourceId {
+    fn id(&self) -> &catdb_sdk::connectors::SourceId {
         self.model.id()
     }
 
-    fn schema(&self) -> &catdb_core::Schema {
+    fn schema(&self) -> &catdb_sdk::core::Schema {
         self.model.schema()
     }
 
@@ -236,7 +236,7 @@ impl DataSource for DeclaredUnavailableSource {
 
     fn compile(
         &self,
-        _query: &catdb_query::EntityQuery,
+        _query: &catdb_sdk::query::EntityQuery,
         _authorized_fields: &[String],
     ) -> Result<SourcePlan, SourceError> {
         Err(SourceError::Unavailable {
@@ -261,15 +261,15 @@ impl DataSource for DeclaredUnavailableSource {
 
 #[async_trait]
 impl DataSource for MembershipScopedSource {
-    fn id(&self) -> &catdb_connectors::SourceId {
+    fn id(&self) -> &catdb_sdk::connectors::SourceId {
         self.source.id()
     }
 
-    fn schema(&self) -> &catdb_core::Schema {
+    fn schema(&self) -> &catdb_sdk::core::Schema {
         self.source.schema()
     }
 
-    fn capabilities(&self) -> &catdb_connectors::SourceCapabilities {
+    fn capabilities(&self) -> &catdb_sdk::connectors::SourceCapabilities {
         self.source.capabilities()
     }
 
@@ -287,7 +287,7 @@ impl DataSource for MembershipScopedSource {
 
     fn compile(
         &self,
-        query: &catdb_query::EntityQuery,
+        query: &catdb_sdk::query::EntityQuery,
         authorized_fields: &[String],
     ) -> Result<SourcePlan, SourceError> {
         self.source.compile(query, authorized_fields)
@@ -346,7 +346,7 @@ pub(crate) struct LibraryPhysicalSource {
     /// Complete mapping into `document.Document`.
     pub mapping: Mapping,
     /// Stable source family used by the declared semantic precedence.
-    precedence_source_id: catdb_connectors::SourceId,
+    precedence_source_id: catdb_sdk::connectors::SourceId,
     /// Immutable semantic identities published with a local cloud snapshot.
     published_version_pins: Option<PublishedLibraryVersionPins>,
 }
@@ -371,7 +371,7 @@ impl LibraryPhysicalSource {
         membership_id: Uuid,
         source: Arc<dyn DataSource>,
         mapping: Mapping,
-        precedence_source_id: catdb_connectors::SourceId,
+        precedence_source_id: catdb_sdk::connectors::SourceId,
     ) -> Self {
         let mut identity = membership_id.as_bytes().to_vec();
         identity.extend_from_slice(source.id().as_str().as_bytes());
@@ -394,7 +394,7 @@ impl LibraryPhysicalSource {
         membership_id: Uuid,
         source: Arc<dyn DataSource>,
         mapping: Mapping,
-        precedence_source_id: catdb_connectors::SourceId,
+        precedence_source_id: catdb_sdk::connectors::SourceId,
         pins: PublishedLibraryVersionPins,
     ) -> Self {
         let mut physical = Self::new_as(membership_id, source, mapping, precedence_source_id);
@@ -1327,13 +1327,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use catdb_api_types::{Completeness, EntityFilter, EntityQueryRequest, FilterOperator};
-    use catdb_connectors::{
+    use catdb_sdk::api_types::{Completeness, EntityFilter, EntityQueryRequest, FilterOperator};
+    use catdb_sdk::connectors::{
         DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext, SourceAttr,
         SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel,
         SourcePage, SourcePlan, SourceRow,
     };
-    use catdb_core::BaseType;
+    use catdb_sdk::core::BaseType;
     use serde_json::json;
 
     use super::*;
@@ -1428,7 +1428,7 @@ mod tests {
             self.model.id()
         }
 
-        fn schema(&self) -> &catdb_core::Schema {
+        fn schema(&self) -> &catdb_sdk::core::Schema {
             self.model.schema()
         }
 
@@ -1450,7 +1450,7 @@ mod tests {
 
         fn compile(
             &self,
-            query: &catdb_query::EntityQuery,
+            query: &catdb_sdk::query::EntityQuery,
             authorized_fields: &[String],
         ) -> Result<SourcePlan, SourceError> {
             self.model.compile(query, authorized_fields)
@@ -2117,7 +2117,7 @@ mod tests {
             .answer
             .sources
             .iter()
-            .all(|source| source.outcome == catdb_api_types::SourceOutcome::Ran));
+            .all(|source| source.outcome == catdb_sdk::api_types::SourceOutcome::Ran));
         let row = answer.answer.rows.first().expect("local row");
         assert_eq!(row.fields.len(), 2);
         assert_eq!(row.fields["body"], serde_json::json!("# Local body\n"));
@@ -2127,7 +2127,7 @@ mod tests {
                 .considered()
                 .iter()
                 .filter(|observation| {
-                    observation.state().kind() == catdb_provenance::ObservationKind::NotAsked
+                    observation.state().kind() == catdb_sdk::provenance::ObservationKind::NotAsked
                 })
                 .count(),
             0
@@ -2375,7 +2375,7 @@ mod tests {
             .expect("unavailable source report");
         assert_eq!(
             unavailable_report.outcome,
-            catdb_api_types::SourceOutcome::Refused
+            catdb_sdk::api_types::SourceOutcome::Refused
         );
         assert_eq!(unavailable_report.scanned, 0);
         assert_eq!(unavailable_report.returned, 0);

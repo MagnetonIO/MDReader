@@ -12,21 +12,21 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
-use catdb_connector_dropbox::{
+use mdreader_connector_dropbox::{
     DropboxAccessToken, DropboxAuthorizationMode, DropboxContentScope, DropboxCursorKey,
     DropboxDocumentError, DropboxHttpRequest, DropboxHttpResponse, DropboxRevision,
     DropboxRuntimeSecrets, DropboxSecretReference, DropboxSource, DropboxSourceConfig,
     DropboxTransport, DropboxTransportError, PinnedDropboxSourceSpec,
 };
 #[cfg(all(feature = "google-drive-connector", feature = "dropbox-connector"))]
-use catdb_connector_google_drive::{
+use mdreader_connector_google_drive::{
     DriveAccessToken, DriveContentScope, DriveCursorKey, DriveDocumentError, DriveHttpMethod,
     DriveHttpRequest, DriveHttpResponse, DriveRevision, DriveRuntimeSecrets, DriveSecretReference,
     DriveSelection, DriveSource, DriveSourceConfig, DriveTransport, DriveTransportError,
     PinnedDriveSourceSpec,
 };
-use catdb_connectors::{CancellationToken, DataSource, ReadContext, SourceError, SourceId};
-use catdb_query::{EntityQuery, EntityTarget};
+use catdb_sdk::connectors::{CancellationToken, DataSource, ReadContext, SourceError, SourceId};
+use catdb_sdk::query::{EntityQuery, EntityTarget};
 
 #[cfg(feature = "google-drive-connector")]
 use super::map_drive_document_error;
@@ -177,7 +177,7 @@ mod read {
     };
 
     use async_trait::async_trait;
-    use catdb_connectors::SourceId;
+    use catdb_sdk::connectors::SourceId;
 
     use super::super::{
         service::{
@@ -3098,26 +3098,26 @@ fn drive_adapter_maps_closed_document_failures_without_provider_detail() {
 
     assert_eq!(
         map_drive_document_error(
-            catdb_connector_google_drive::DriveDocumentError::Authentication {
+            mdreader_connector_google_drive::DriveDocumentError::Authentication {
                 source_id: source_id.clone(),
             }
         ),
         CloudDocumentError::Unauthorized
     );
     assert_eq!(
-        map_drive_document_error(catdb_connector_google_drive::DriveDocumentError::Conflict {
+        map_drive_document_error(mdreader_connector_google_drive::DriveDocumentError::Conflict {
             source_id: source_id.clone(),
         }),
         CloudDocumentError::Conflict
     );
     assert_eq!(
-        map_drive_document_error(catdb_connector_google_drive::DriveDocumentError::Source {
+        map_drive_document_error(mdreader_connector_google_drive::DriveDocumentError::Source {
             error: SourceError::DeadlineExceeded,
         }),
         CloudDocumentError::Timeout
     );
     assert_eq!(
-        map_drive_document_error(catdb_connector_google_drive::DriveDocumentError::Source {
+        map_drive_document_error(mdreader_connector_google_drive::DriveDocumentError::Source {
             error: SourceError::Cancelled,
         }),
         CloudDocumentError::Cancelled
@@ -3130,19 +3130,19 @@ fn dropbox_adapter_maps_closed_document_failures_without_provider_detail() {
     let source_id = SourceId::new("dropbox-source");
 
     assert_eq!(
-        map_dropbox_document_error(catdb_connector_dropbox::DropboxDocumentError::NotFound {
+        map_dropbox_document_error(mdreader_connector_dropbox::DropboxDocumentError::NotFound {
             source_id: source_id.clone(),
         }),
         CloudDocumentError::NotFound
     );
     assert_eq!(
-        map_dropbox_document_error(catdb_connector_dropbox::DropboxDocumentError::InvalidUtf8 {
+        map_dropbox_document_error(mdreader_connector_dropbox::DropboxDocumentError::InvalidUtf8 {
             source_id: source_id.clone(),
         }),
         CloudDocumentError::InvalidUtf8
     );
     assert_eq!(
-        map_dropbox_document_error(catdb_connector_dropbox::DropboxDocumentError::RateLimited {
+        map_dropbox_document_error(mdreader_connector_dropbox::DropboxDocumentError::RateLimited {
             source_id,
             retry_after_ms: Some(125),
         }),
@@ -3189,7 +3189,7 @@ mod store {
         MarkdownDocumentRevision, MarkdownMetadata, MarkdownMetadataPage, ProviderCursor,
         ProviderRevision, SourceRecordKey,
     };
-    use catdb_connectors::SourceId;
+    use catdb_sdk::connectors::SourceId;
 
     fn source_id() -> SourceId {
         SourceId::new("cloud-store-test-source")

@@ -34,7 +34,7 @@
 //! 4. **Map it.** `F_deployment : deployment_overlay → architecture_overlay`
 //!    goes through [`compose_validated`] with the same `EggProver` the engine
 //!    itself uses, yielding a real `ValidMapping` — not a rendering trick.
-//! 5. **Inspect preserved/lost.** [`catdb_core::coverage`] is asserted BY
+//! 5. **Inspect preserved/lost.** [`catdb_sdk::core::coverage`] is asserted BY
 //!    NAME: which concepts are carried, and the exact `EntitiesMerged` /
 //!    `ArrowsMerged` / `AttributesOverwritten` groups, with `Dropped` absent
 //!    because a validated mapping is total. `unreached_destination` is
@@ -72,12 +72,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path as FilePath, PathBuf};
 use std::sync::Arc;
 
-use catdb_core::{
+use catdb_sdk::core::{
     builtin, compose_validated, coverage, delta, ArrowName, AttrName, AttrTarget, Concept,
     EntityName, InformationLoss, Leg, Mapping, MemInstance, Path, RowId, Schema, SchemaName,
 };
-use catdb_embed::HashEmbedder;
-use catdb_engine::{
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{
     DomainRegistration, EggProver, EmbeddedCatDb, EngineConfig, ImportOptions, RegisteredMapping,
     SearchOptions,
 };

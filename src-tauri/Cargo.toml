@@ -11,8 +11,8 @@ publish = false
 default = ["google-drive-connector", "dropbox-connector"]
 direct-updater = ["dep:tauri-plugin-updater"]
 e2e-build = []
-google-drive-connector = ["dep:catdb-connector-google-drive"]
-dropbox-connector = ["dep:catdb-connector-dropbox"]
+google-drive-connector = ["dep:mdreader-connector-google-drive"]
+dropbox-connector = ["dep:mdreader-connector-dropbox"]
 
 [lib]
 # The `_lib` suffix keeps the library name distinct from the binary so the two
@@ -68,28 +68,18 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # `MDREADER_DEV_HASH_EMBED` runtime flag (dev/CI: no download). `mdreader-ingest`
 # stays default-features off to keep its `catdb` bin's ORT *binary* out of the
 # app build; we consume only its `registration()` and `scan_root` (public API).
-catdb-engine = { path = "../../../catdb/crates/catdb-engine" }
-catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false }
-catdb-storage = { path = "../../../catdb/crates/catdb-storage" }
-catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite" }
-catdb-connector-google-drive = { path = "../../../catdb/crates/catdb-connector-google-drive", optional = true }
-catdb-connector-dropbox = { path = "../../../catdb/crates/catdb-connector-dropbox", optional = true }
+# The platform as one versioned dependency. `specta` turns on TypeScript type
+# generation for the API and provenance types the shell renders.
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["engine", "specta"] }
+mdreader-connector-google-drive = { path = "../crates/mdreader-connector-google-drive", optional = true }
+mdreader-connector-dropbox = { path = "../crates/mdreader-connector-dropbox", optional = true }
 # Schema introspection (the View As / Schema View surfaces) and the kernel
 # provenance the Semantic Inspector renders. Read-only: nothing here builds a
 # fact, it only describes ones the engine and the extractors produced.
-catdb-core = { path = "../../../catdb/crates/catdb-core" }
-catdb-api-types = { path = "../../../catdb/crates/catdb-api-types", features = ["specta"] }
-catdb-provenance = { path = "../../../catdb/crates/catdb-provenance", features = ["specta"] }
-catdb-connectors = { path = "../../../catdb/crates/catdb-connectors" }
-catdb-federation = { path = "../../../catdb/crates/catdb-federation" }
-catdb-policy = { path = "../../../catdb/crates/catdb-policy" }
-catdb-ir = { path = "../../../catdb/crates/catdb-ir" }
-catdb-query = { path = "../../../catdb/crates/catdb-query" }
-catdb-validation = { path = "../../../catdb/crates/catdb-validation" }
 mdreader-domain = { path = "../crates/mdreader-domain" }
 mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }
-# The shell implements `catdb_embed::Embedder` once, for the `DeferredEmbedder`
+# The shell implements `catdb_sdk::embed::Embedder` once, for the `DeferredEmbedder`
 # that lets the index open before (or without) the model — and that trait is
 # `#[async_trait]`, so the impl needs the same macro.
 async-trait = { workspace = true }
@@ -100,23 +90,22 @@ time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
-catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
-catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["sync-secret-service"] }
-catdb-embed = { path = "../../../catdb/crates/catdb-embed", default-features = false, features = ["local-embed"] }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-catdb-storage-sqlite = { path = "../../../catdb/crates/catdb-storage-sqlite", features = ["test-migrations"] }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["storage-sqlite-test-migrations"] }
 # Index-version rows, so a test can manufacture the reported situation — a
 # workspace whose ACTIVE index was embedded by a different model — through the
 # storage lifecycle instead of a stand-in embedder.
-catdb-catalog = { path = "../../../catdb/crates/catdb-catalog" }
 # Parses `commands.rs` into an AST so the structural test can assert the public
 # `save_doc` command body is EXACTLY one bare call to the guarded core (a grep can
 # be defeated by a method-chain like `save_doc_guarded(..).inspect(..)`).

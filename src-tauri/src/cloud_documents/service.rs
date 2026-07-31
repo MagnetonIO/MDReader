@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use catdb_connectors::{CancellationToken, SourceId};
+use catdb_sdk::connectors::{CancellationToken, SourceId};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;

@@ -19,7 +19,7 @@
 //!
 //! [`compose_mappings`] builds every leg from the **registration** — the same
 //! `RegisteredMapping` values the engine validated at
-//! [`open`](catdb_engine::EmbeddedCatDb::open) — rather than mixing registered
+//! [`open`](catdb_sdk::engine::EmbeddedCatDb::open) — rather than mixing registered
 //! mappings with catalog-reconstructed schemas. Two versions of one schema name
 //! are two different schemas, and composing across them silently is precisely
 //! what [`CompositionError::IntermediateSchemaDisagreement`] exists to reject;
@@ -31,7 +31,7 @@
 //!
 //! Nothing in this module writes. [`inspect_migration`] in particular reports
 //! what a migration *would* do without performing any of it — see
-//! [`catdb_engine::migration`] for the guarantee and the test that pins it.
+//! [`catdb_sdk::engine::migration`] for the guarantee and the test that pins it.
 //!
 //! ## Epoch-guarded, like everything else
 //!
@@ -44,11 +44,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use catdb_core::{
+use catdb_sdk::core::{
     compose_validated, coverage, Concept, ConceptImage, InformationLoss, Leg, MappedConcept,
     MappingCoverage, MappingWriteCapability, Path,
 };
-use catdb_engine::{
+use catdb_sdk::engine::{
     ArrowMove, ClassificationVerdict, ConceptClassification, EggProver, EmbeddedCatDb, EntityMove,
     EntityObjectCount, FieldMove, MigrationAmbiguity, MigrationOptions, MigrationPlan,
     MigrationValidation, RegisteredMapping, SchemaChange, SchemaDiff, SchemaVersionRef,
@@ -106,7 +106,7 @@ pub struct MappedConceptDto {
 
 /// One way the mapping fails to determine a source concept from its image.
 ///
-/// See [`catdb_core::coverage`] for what "loss" does and does not claim: it is
+/// See [`catdb_sdk::core::coverage`] for what "loss" does and does not claim: it is
 /// a statement about the mapping, never a claim that a lossless mapping is
 /// invertible.
 #[derive(Debug, Clone, Serialize, Type)]
@@ -520,7 +520,7 @@ fn inspect_mapping_guarded(
 /// report the composite's coverage.
 ///
 /// This is the claim that N×M pipelines collapse toward N+M, made concrete: the
-/// result is a real [`catdb_core::ComposedMapping`], validated end to end with
+/// result is a real [`catdb_sdk::core::ComposedMapping`], validated end to end with
 /// the same equality-saturation prover that gates every registered mapping at
 /// startup — not a rendering of two mappings side by side.
 ///
@@ -626,7 +626,7 @@ fn compose_mappings_guarded(
 /// Each version's stored body is verified against its recorded checksum first,
 /// so a corrupt row is refused rather than certified "unchanged"; only then does
 /// an equal-checksum pair skip the structural comparison. The short answer can
-/// never disagree with the long one (see [`catdb_engine::semantic_diff`]).
+/// never disagree with the long one (see [`catdb_sdk::engine::semantic_diff`]).
 #[tauri::command(async)]
 #[specta::specta]
 pub fn diff_schema_versions(
@@ -705,7 +705,7 @@ fn inspect_migration_guarded(
                 .iter()
                 .find(|registered| registered.name == mapping)
                 .ok_or_else(|| stored_err.to_string())?;
-            catdb_engine::inspect_migration(
+            catdb_sdk::engine::inspect_migration(
                 &db,
                 &registered.mapping,
                 &registered.src,
@@ -843,21 +843,21 @@ fn coverage_dto(report: &MappingCoverage) -> MappingCoverageDto {
     }
 }
 
-fn failure_dto(failure: &catdb_core::CompositionFailure) -> CompositionFailureDto {
+fn failure_dto(failure: &catdb_sdk::core::CompositionFailure) -> CompositionFailureDto {
     match failure {
-        catdb_core::CompositionFailure::Structure(error) => CompositionFailureDto {
+        catdb_sdk::core::CompositionFailure::Structure(error) => CompositionFailureDto {
             kind: "structure".to_string(),
             leg: None,
             message: error.to_string(),
             errors: Vec::new(),
         },
-        catdb_core::CompositionFailure::Leg { leg, errors } => CompositionFailureDto {
+        catdb_sdk::core::CompositionFailure::Leg { leg, errors } => CompositionFailureDto {
             kind: "leg".to_string(),
             leg: Some(*leg as u32),
             message: failure.to_string(),
             errors: errors.iter().map(ToString::to_string).collect(),
         },
-        catdb_core::CompositionFailure::Composite(errors) => CompositionFailureDto {
+        catdb_sdk::core::CompositionFailure::Composite(errors) => CompositionFailureDto {
             kind: "composite".to_string(),
             leg: None,
             message: failure.to_string(),
@@ -965,7 +965,7 @@ fn change_dto(change: &SchemaChange) -> SchemaChangeDto {
     }
 }
 
-fn render_attribute(attribute: &catdb_core::Attribute) -> String {
+fn render_attribute(attribute: &catdb_sdk::core::Attribute) -> String {
     format!(
         "{}.{} : {}{}",
         attribute.dom,

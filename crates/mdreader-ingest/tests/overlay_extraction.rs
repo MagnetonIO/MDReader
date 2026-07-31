@@ -18,8 +18,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use mdreader_domain::extract::{architecture, decision, ApprovalState, Extraction, SourceDocument};
 use mdreader_ingest::proposals::{
     approve_and_promote, reject_and_retract, ProposalFilter, ProposalStore, StoredFact,

@@ -20,8 +20,8 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig};
 
 #[derive(Clone)]
 struct RunIdentity(Arc<str>);
@@ -47,10 +47,10 @@ async fn require_run_identity(
 }
 
 fn e2e_read_only_router(
-    engine: Arc<dyn catdb_server::CatDbEngine>,
+    engine: Arc<dyn catdb_sdk::server::CatDbEngine>,
     run_identity: Arc<str>,
 ) -> axum::Router {
-    catdb_server::hybrid_read_only_router_for_e2e_tests(
+    catdb_sdk::server::hybrid_read_only_router_for_e2e_tests(
         engine,
         middleware::from_fn_with_state(RunIdentity(run_identity), require_run_identity),
     )

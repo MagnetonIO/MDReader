@@ -9,7 +9,7 @@ pub fn crate_name() -> &'static str {
 
 /// Returns the engine crate whose results this layer shapes into DTOs.
 pub fn engine_crate() -> &'static str {
-    catdb_engine::crate_name()
+    catdb_sdk::engine::crate_name()
 }
 
 #[cfg(test)]

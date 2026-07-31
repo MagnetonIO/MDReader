@@ -88,8 +88,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use catdb_engine::EmbeddedCatDb;
-use catdb_ir::CatOperation;
+use catdb_sdk::engine::EmbeddedCatDb;
+use catdb_sdk::ir::CatOperation;
 use mdreader_domain::extract::{
     ApprovalError, ApprovalState, ExtractedMorphism, ExtractedObject, Extraction, Review,
 };
@@ -118,7 +118,7 @@ pub enum ProposalError {
     Approval(#[from] ApprovalError),
     /// Promoting the fact into the overlay graph failed.
     #[error("promote: {0}")]
-    Engine(#[from] catdb_engine::EngineError),
+    Engine(#[from] catdb_sdk::engine::EngineError),
 }
 
 /// Result alias for proposal-store operations.
@@ -200,7 +200,7 @@ impl StoredProposal {
     }
 
     /// The fact's kernel provenance.
-    pub fn provenance(&self) -> &catdb_core::Provenance {
+    pub fn provenance(&self) -> &catdb_sdk::core::Provenance {
         match &self.fact {
             StoredFact::Object(object) => &object.object.provenance,
             StoredFact::Morphism(morphism) => &morphism.morphism.provenance,
@@ -1075,13 +1075,13 @@ mod tests {
             schema: "decision_overlay".into(),
             extractor: "mdreader.decision@1".into(),
             fact: StoredFact::Object(ExtractedObject {
-                object: catdb_core::Object {
-                    id: catdb_core::ObjectId::from_uuid(Uuid::nil()),
+                object: catdb_sdk::core::Object {
+                    id: catdb_sdk::core::ObjectId::from_uuid(Uuid::nil()),
                     entity: "decision_overlay.Decision".into(),
                     value: serde_json::Value::Null,
-                    provenance: catdb_core::Provenance {
+                    provenance: catdb_sdk::core::Provenance {
                         content_hash: Some(content.to_string()),
-                        ..catdb_core::Provenance::default()
+                        ..catdb_sdk::core::Provenance::default()
                     },
                 },
                 rule: "D1".into(),

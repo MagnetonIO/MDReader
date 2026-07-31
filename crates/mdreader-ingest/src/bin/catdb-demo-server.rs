@@ -156,7 +156,7 @@ async fn serve() -> Result<(), String> {
         .await
         .map_err(|_| "binding the configured PORT failed".to_string())?;
     let router = with_deployment_identity(
-        catdb_server::read_only_router(runtime.engine()),
+        catdb_sdk::server::read_only_router(runtime.engine()),
         &identity.source_commit,
         &identity.deployment_fingerprint,
     )?;

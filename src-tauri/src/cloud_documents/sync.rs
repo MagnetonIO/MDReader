@@ -16,7 +16,7 @@ use std::{
 #[cfg(test)]
 use std::future::Future;
 
-use catdb_connectors::{CancellationToken, SourceId};
+use catdb_sdk::connectors::{CancellationToken, SourceId};
 use tokio::sync::Notify;
 
 use super::{

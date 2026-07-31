@@ -15,13 +15,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError, SourceFreshness,
     SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
 };
-use catdb_core::{BaseType, Schema};
-use catdb_query::{AttrOp, EntityFilterInput, EntityQuery, EntityTarget, EntityVocabulary};
-use catdb_storage::{ObjectFilterOp, ObjectValue};
+use catdb_sdk::core::{BaseType, Schema};
+use catdb_sdk::query::{AttrOp, EntityFilterInput, EntityQuery, EntityTarget, EntityVocabulary};
+use catdb_sdk::storage::{ObjectFilterOp, ObjectValue};
 use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -874,10 +874,10 @@ pub struct DropboxChangeCursor(Vec<u8>);
 impl DropboxChangeCursor {
     /// Restore bounded opaque change state from application-managed storage.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, SourceError> {
-        if bytes.len() > catdb_connectors::MAX_SOURCE_CURSOR_BYTES {
+        if bytes.len() > catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES {
             return Err(SourceError::CursorTooLarge {
                 actual: bytes.len(),
-                maximum: catdb_connectors::MAX_SOURCE_CURSOR_BYTES,
+                maximum: catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES,
             });
         }
         Ok(Self(bytes))
@@ -1277,16 +1277,16 @@ impl fmt::Debug for DropboxSource {
 }
 
 impl DropboxSource {
-    fn attributes() -> Vec<catdb_connectors::SourceAttr> {
+    fn attributes() -> Vec<catdb_sdk::connectors::SourceAttr> {
         vec![
-            catdb_connectors::SourceAttr::text("id"),
-            catdb_connectors::SourceAttr::text("name"),
-            catdb_connectors::SourceAttr::text("path").pushes([ObjectFilterOp::Eq]),
-            catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
-            catdb_connectors::SourceAttr::parsed("size", BaseType::Int),
-            catdb_connectors::SourceAttr::text("rev"),
-            catdb_connectors::SourceAttr::text("contentHash"),
-            catdb_connectors::SourceAttr::text("body"),
+            catdb_sdk::connectors::SourceAttr::text("id"),
+            catdb_sdk::connectors::SourceAttr::text("name"),
+            catdb_sdk::connectors::SourceAttr::text("path").pushes([ObjectFilterOp::Eq]),
+            catdb_sdk::connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
+            catdb_sdk::connectors::SourceAttr::parsed("size", BaseType::Int),
+            catdb_sdk::connectors::SourceAttr::text("rev"),
+            catdb_sdk::connectors::SourceAttr::text("contentHash"),
+            catdb_sdk::connectors::SourceAttr::text("body"),
         ]
     }
 
@@ -1661,7 +1661,7 @@ impl DropboxSource {
             });
         };
         let vocabulary = EntityVocabulary::derive(&[self.model.schema().clone()]);
-        let query = catdb_query::validate_entity_request(
+        let query = catdb_sdk::query::validate_entity_request(
             EntityTarget::Entity(format!("{}.{}", self.model.schema().name, entity)),
             &[EntityFilterInput {
                 field: "path".to_string(),
@@ -2407,10 +2407,10 @@ impl DropboxSource {
             authentication_tag,
         })
         .map_err(|_| SourceError::InvalidCursor)?;
-        if bytes.len() > catdb_connectors::MAX_SOURCE_CURSOR_BYTES {
+        if bytes.len() > catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES {
             return Err(SourceError::CursorTooLarge {
                 actual: bytes.len(),
-                maximum: catdb_connectors::MAX_SOURCE_CURSOR_BYTES,
+                maximum: catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES,
             });
         }
         Ok(DropboxChangeCursor(bytes))

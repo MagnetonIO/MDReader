@@ -3,7 +3,7 @@
 //! Every other test in this crate reaches for a library type. This one
 //! deliberately does not: it spawns the REAL shipping `catdb` binary — the
 //! composition root at `src/bin/catdb.rs`, which is nothing but
-//! `catdb_cli::main_with_domains(vec![mdreader_ingest::registration()])` —
+//! `catdb_sdk::cli::main_with_domains(vec![mdreader_ingest::registration()])` —
 //! through `env!("CARGO_BIN_EXE_catdb")`, so cargo builds and hands us the
 //! exact artifact a user invokes. Calling `EmbeddedCatDb` directly would
 //! prove the engine works; only spawning the binary proves the *seam* works:
@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
-use catdb_embed::HashEmbedder;
+use catdb_sdk::embed::HashEmbedder;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------

@@ -96,14 +96,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceId, SourceRow,
 };
-use catdb_core::AttrName;
-use catdb_federation::{
+use catdb_sdk::core::AttrName;
+use catdb_sdk::federation::{
     Completeness, Execution, ExecutionPolicy, Executor, Federated, Freshness, Outcome, Ran,
 };
-use catdb_validation::EggProver;
+use catdb_sdk::validation::EggProver;
 use federation_support::{corpus, fs_modified_ms, git_author, git_commit_seconds, git_status};
 use mdreader_domain::federated::{Document, Federation, ProviderVerdict};
 

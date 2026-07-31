@@ -1,6 +1,6 @@
 //! MDReader's markdown indexing pipeline: scanner, parser/chunker, and the
 //! incremental [`MarkdownIngestor`] that emits `CatOperation`s and domain
-//! rows through the engine's [`IngestContext`](catdb_engine::IngestContext).
+//! rows through the engine's [`IngestContext`](catdb_sdk::engine::IngestContext).
 //!
 //! The crate also hosts the `catdb` binary — the composition root where the
 //! MDReader domain (schemas + mappings from `mdreader-domain`, the markdown
@@ -21,7 +21,7 @@ mod source_view;
 
 use std::sync::Arc;
 
-use catdb_engine::DomainRegistration;
+use catdb_sdk::engine::DomainRegistration;
 
 pub use ingestor::MarkdownIngestor;
 pub use parse::{
@@ -39,7 +39,7 @@ pub use source_view::{parse_source_document, source_document};
 /// The fully composed MDReader domain registration: `mdreader-domain`'s
 /// schemas and mappings plus this crate's [`MarkdownIngestor`] and chunker
 /// version. This is what the `catdb` binary (and later the Tauri app) hands
-/// to [`catdb_engine::EngineConfig`].
+/// to [`catdb_sdk::engine::EngineConfig`].
 ///
 /// Overlay extraction does **not** run under this registration: there is
 /// nowhere to put a proposal, and the one place a proposal must never go is
@@ -90,7 +90,7 @@ pub fn crate_name() -> &'static str {
 
 /// Returns the IR crate whose CatOperations this crate emits.
 pub fn ir_crate() -> &'static str {
-    catdb_ir::crate_name()
+    catdb_sdk::ir::crate_name()
 }
 
 #[cfg(test)]

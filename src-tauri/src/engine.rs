@@ -98,10 +98,10 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
 #[cfg(not(mobile))]
-use catdb_embed::FastembedEmbedder;
-use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
-use catdb_storage::DocumentRow;
+use catdb_sdk::embed::FastembedEmbedder;
+use catdb_sdk::embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
+use catdb_sdk::storage::DocumentRow;
 use mdreader_ingest::{
     registration_with_proposals_and_source_root, scan_source_root, ProposalStore, ScanOptions,
 };
@@ -1645,7 +1645,7 @@ fn heading_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catdb_storage::{CatalogStorage, DocumentRow};
+    use catdb_sdk::storage::{CatalogStorage, DocumentRow};
     use mdreader_ingest::registration;
     use std::fs;
     use tempfile::TempDir;
@@ -1824,8 +1824,8 @@ mod tests {
     /// with `reembedding` vs `importing`.
     #[test]
     fn a_workspace_embedded_by_another_model_starts_in_the_reembedding_phase() {
-        use catdb_catalog::{IndexState, IndexVersionRow};
-        use catdb_storage::CatalogStorage;
+        use catdb_sdk::catalog::{IndexState, IndexVersionRow};
+        use catdb_sdk::storage::CatalogStorage;
 
         let corpus = TempDir::new().unwrap();
         let root = fs::canonicalize(corpus.path()).unwrap();
@@ -2533,9 +2533,9 @@ mod tests {
         let first_hits = rt
             .block_on(first_db.search(
                 "alpha",
-                catdb_engine::SearchOptions {
+                catdb_sdk::engine::SearchOptions {
                     explain: true,
-                    ..catdb_engine::SearchOptions::default()
+                    ..catdb_sdk::engine::SearchOptions::default()
                 },
             ))
             .expect("search original");
@@ -2580,9 +2580,9 @@ mod tests {
         let second_hits = rt
             .block_on(second_db.search(
                 "alpha",
-                catdb_engine::SearchOptions {
+                catdb_sdk::engine::SearchOptions {
                     explain: true,
-                    ..catdb_engine::SearchOptions::default()
+                    ..catdb_sdk::engine::SearchOptions::default()
                 },
             ))
             .expect("search renamed");
@@ -2651,9 +2651,9 @@ mod tests {
         let original_hits = rt
             .block_on(legacy_db.search(
                 "alpha",
-                catdb_engine::SearchOptions {
+                catdb_sdk::engine::SearchOptions {
                     explain: true,
-                    ..catdb_engine::SearchOptions::default()
+                    ..catdb_sdk::engine::SearchOptions::default()
                 },
             ))
             .expect("search V2 index");
@@ -2745,9 +2745,9 @@ mod tests {
         let renamed_hits = rt
             .block_on(renamed_db.search(
                 "alpha",
-                catdb_engine::SearchOptions {
+                catdb_sdk::engine::SearchOptions {
                     explain: true,
-                    ..catdb_engine::SearchOptions::default()
+                    ..catdb_sdk::engine::SearchOptions::default()
                 },
             ))
             .expect("search renamed index");

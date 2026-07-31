@@ -9,8 +9,8 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig};
 use mdreader_domain::extract::{architecture, decision, ApprovalState, Extraction, SourceDocument};
 
 fn fixture_root() -> PathBuf {
@@ -569,7 +569,7 @@ fn approve_all(extraction: &mut Extraction, reviewer: &str) {
     }
 }
 
-fn schema_of(extraction: &Extraction) -> catdb_core::Schema {
+fn schema_of(extraction: &Extraction) -> catdb_sdk::core::Schema {
     match extraction.schema.as_str() {
         "decision_overlay" => mdreader_domain::builtin::decision_overlay_schema(),
         "architecture_overlay" => mdreader_domain::builtin::architecture_overlay_schema(),
@@ -870,15 +870,15 @@ async fn hand_built_operations_from_proposed_facts_are_refused_by_the_engine() {
     let extraction = decision::extract(&corpus());
     // Exactly the reconstruction a determined caller would write, reading the
     // proposals straight off the preview.
-    let smuggled: Vec<catdb_ir::CatOperation> = extraction
+    let smuggled: Vec<catdb_sdk::ir::CatOperation> = extraction
         .preview()
         .objects()
         .iter()
-        .map(|extracted| catdb_ir::CatOperation::AssertObject {
+        .map(|extracted| catdb_sdk::ir::CatOperation::AssertObject {
             entity: extracted.object.entity.to_string(),
             object_id: *extracted.object.id.as_uuid(),
             value: extracted.object.value.clone(),
-            provenance: catdb_ir::Provenance {
+            provenance: catdb_sdk::ir::Provenance {
                 source: extracted.object.provenance.source.clone(),
                 range: extracted
                     .object
@@ -903,7 +903,7 @@ async fn hand_built_operations_from_proposed_facts_are_refused_by_the_engine() {
     assert!(
         matches!(
             err,
-            catdb_engine::EngineError::UnapprovedFact {
+            catdb_sdk::engine::EngineError::UnapprovedFact {
                 kind: "object",
                 ref schema,
                 ..

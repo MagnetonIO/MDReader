@@ -14,13 +14,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     DataSource, ReadContext, SourceCapabilities, SourceCursor, SourceError, SourceFreshness,
     SourceId, SourceModel, SourcePage, SourcePlan, SourceRow,
 };
-use catdb_core::{BaseType, Schema};
-use catdb_query::{AttrOp, EntityFilterInput, EntityQuery, EntityTarget, EntityVocabulary};
-use catdb_storage::{ObjectFilterOp, ObjectValue};
+use catdb_sdk::core::{BaseType, Schema};
+use catdb_sdk::query::{AttrOp, EntityFilterInput, EntityQuery, EntityTarget, EntityVocabulary};
+use catdb_sdk::storage::{ObjectFilterOp, ObjectValue};
 use futures_util::StreamExt as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -954,10 +954,10 @@ pub struct DriveChangeCursor(Vec<u8>);
 impl DriveChangeCursor {
     /// Restore bounded opaque change state from application-managed storage.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, SourceError> {
-        if bytes.len() > catdb_connectors::MAX_SOURCE_CURSOR_BYTES {
+        if bytes.len() > catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES {
             return Err(SourceError::CursorTooLarge {
                 actual: bytes.len(),
-                maximum: catdb_connectors::MAX_SOURCE_CURSOR_BYTES,
+                maximum: catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES,
             });
         }
         Ok(Self(bytes))
@@ -1482,20 +1482,20 @@ impl fmt::Debug for DriveSource {
 }
 
 impl DriveSource {
-    fn attributes(exact_id_lookup: bool) -> Vec<catdb_connectors::SourceAttr> {
+    fn attributes(exact_id_lookup: bool) -> Vec<catdb_sdk::connectors::SourceAttr> {
         let id = if exact_id_lookup {
-            catdb_connectors::SourceAttr::text("id").pushes([ObjectFilterOp::Eq])
+            catdb_sdk::connectors::SourceAttr::text("id").pushes([ObjectFilterOp::Eq])
         } else {
-            catdb_connectors::SourceAttr::text("id")
+            catdb_sdk::connectors::SourceAttr::text("id")
         };
         vec![
             id,
-            catdb_connectors::SourceAttr::text("name"),
-            catdb_connectors::SourceAttr::text("mimeType"),
-            catdb_connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
-            catdb_connectors::SourceAttr::parsed("size", BaseType::Int),
-            catdb_connectors::SourceAttr::text("checksum"),
-            catdb_connectors::SourceAttr::text("body"),
+            catdb_sdk::connectors::SourceAttr::text("name"),
+            catdb_sdk::connectors::SourceAttr::text("mimeType"),
+            catdb_sdk::connectors::SourceAttr::parsed("modifiedAt", BaseType::Timestamp),
+            catdb_sdk::connectors::SourceAttr::parsed("size", BaseType::Int),
+            catdb_sdk::connectors::SourceAttr::text("checksum"),
+            catdb_sdk::connectors::SourceAttr::text("body"),
         ]
     }
 
@@ -1824,7 +1824,7 @@ impl DriveSource {
             });
         };
         let vocabulary = EntityVocabulary::derive(&[self.model.schema().clone()]);
-        let query = catdb_query::validate_entity_request(
+        let query = catdb_sdk::query::validate_entity_request(
             EntityTarget::Entity(format!("{}.{}", self.model.schema().name, entity)),
             &[EntityFilterInput {
                 field: "id".to_string(),
@@ -2799,10 +2799,10 @@ impl DriveSource {
             authentication_tag,
         })
         .map_err(|_| SourceError::InvalidCursor)?;
-        if bytes.len() > catdb_connectors::MAX_SOURCE_CURSOR_BYTES {
+        if bytes.len() > catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES {
             return Err(SourceError::CursorTooLarge {
                 actual: bytes.len(),
-                maximum: catdb_connectors::MAX_SOURCE_CURSOR_BYTES,
+                maximum: catdb_sdk::connectors::MAX_SOURCE_CURSOR_BYTES,
             });
         }
         Ok(DriveChangeCursor(bytes))
@@ -3643,7 +3643,7 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod cursor_binding_tests {
     use super::*;
-    use catdb_query::EntityTarget;
+    use catdb_sdk::query::EntityTarget;
 
     struct NeverTransport;
 

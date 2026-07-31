@@ -48,15 +48,15 @@
 //!
 //! Instead, [`engine_registration`](crate::engine_registration) declares the
 //! overlay schemas in
-//! [`DomainRegistration::approval_required_schemas`](catdb_engine::DomainRegistration::approval_required_schemas),
+//! [`DomainRegistration::approval_required_schemas`](catdb_sdk::engine::DomainRegistration::approval_required_schemas),
 //! and the engine refuses any assertion into one of them whose provenance
 //! names no reviewer, with
-//! [`EngineError::UnapprovedFact`](catdb_engine::EngineError::UnapprovedFact).
+//! [`EngineError::UnapprovedFact`](catdb_sdk::engine::EngineError::UnapprovedFact).
 //! That holds however the operation was constructed, and on **both** of the
 //! engine's persistence paths — the external write surface
 //! ([`EmbeddedCatDb::apply_operations`]) and the engine-owned ingest path
 //! that wave 3 will wire extraction into
-//! ([`IngestContext::emit`](catdb_engine::IngestContext::emit) and
+//! ([`IngestContext::emit`](catdb_sdk::engine::IngestContext::emit) and
 //! `apply_batch`). Either way the batch is rejected whole, writing nothing.
 //!
 //! What this module provides is **defence in depth**, and is described as
@@ -68,17 +68,17 @@
 //! turned into an in-memory instance and checked against the schema's laws,
 //! so "what would approving this do?" is answerable without writing anything.
 //!
-//! [`Provenance::approved_by`]: catdb_core::Provenance::approved_by
-//! [`EmbeddedCatDb::apply_operations`]: catdb_engine::EmbeddedCatDb::apply_operations
+//! [`Provenance::approved_by`]: catdb_sdk::core::Provenance::approved_by
+//! [`EmbeddedCatDb::apply_operations`]: catdb_sdk::engine::EmbeddedCatDb::apply_operations
 
 pub mod architecture;
 pub mod decision;
 mod resolve;
 mod source;
 
-use catdb_core::{MemInstance, MorphismInstance, Object, Provenance, RowId, Schema};
-use catdb_engine::{LocatedViolation, SourceSpan, ViolatingObject};
-use catdb_ir::CatOperation;
+use catdb_sdk::core::{MemInstance, MorphismInstance, Object, Provenance, RowId, Schema};
+use catdb_sdk::engine::{LocatedViolation, SourceSpan, ViolatingObject};
+use catdb_sdk::ir::CatOperation;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -249,7 +249,7 @@ impl Extraction {
     /// the authoritative graph. Under-emitting is the safe direction — the
     /// edge appears as soon as its endpoints are approved too.
     ///
-    /// [`EmbeddedCatDb::apply_operations`]: catdb_engine::EmbeddedCatDb::apply_operations
+    /// [`EmbeddedCatDb::apply_operations`]: catdb_sdk::engine::EmbeddedCatDb::apply_operations
     pub fn approved_operations(&self) -> Vec<CatOperation> {
         let mut ops = Vec::new();
         let mut approved_objects = std::collections::HashSet::new();
@@ -322,7 +322,7 @@ impl Extraction {
 /// use mdreader_domain::extract::{decision, SourceDocument};
 /// let corpus: Vec<SourceDocument> = Vec::new();
 /// let extraction = decision::extract(&corpus);
-/// let ops: Vec<catdb_ir::CatOperation> = extraction.approved_operations();
+/// let ops: Vec<catdb_sdk::ir::CatOperation> = extraction.approved_operations();
 /// assert!(ops.is_empty(), "nothing approved yet");
 /// ```
 ///
@@ -335,7 +335,7 @@ impl Extraction {
 /// let corpus: Vec<SourceDocument> = Vec::new();
 /// let extraction = decision::extract(&corpus);
 /// // `ProposalPreview` has no method that produces operations.
-/// let ops: Vec<catdb_ir::CatOperation> = extraction.preview().operations();
+/// let ops: Vec<catdb_sdk::ir::CatOperation> = extraction.preview().operations();
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ProposalPreview<'a> {
@@ -447,8 +447,8 @@ fn source_span(provenance: &Provenance) -> Option<SourceSpan> {
 /// Translate kernel provenance to the wire form the operation log stores,
 /// stamping the reviewer at materialization time (approval happens after
 /// extraction, so the kernel object built by a rule never carries one).
-fn to_ir_provenance(provenance: &Provenance, approved_by: Option<String>) -> catdb_ir::Provenance {
-    catdb_ir::Provenance {
+fn to_ir_provenance(provenance: &Provenance, approved_by: Option<String>) -> catdb_sdk::ir::Provenance {
+    catdb_sdk::ir::Provenance {
         source: provenance.source.clone(),
         range: provenance.range.map(|(start, end)| [start, end]),
         content_hash: provenance.content_hash.clone(),
@@ -535,7 +535,7 @@ pub(crate) fn object(
 ) -> ExtractedObject {
     ExtractedObject {
         object: Object {
-            id: catdb_core::ObjectId::from_uuid(id),
+            id: catdb_sdk::core::ObjectId::from_uuid(id),
             entity: format!("{schema}.{entity}").into(),
             value,
             provenance: derivation.provenance(),
@@ -556,15 +556,15 @@ pub(crate) fn morphism(
 ) -> ExtractedMorphism {
     ExtractedMorphism {
         morphism: MorphismInstance {
-            id: catdb_core::MorphismId::from_uuid(stable_uuid(&[
+            id: catdb_sdk::core::MorphismId::from_uuid(stable_uuid(&[
                 schema,
                 arrow,
                 &source.to_string(),
                 &target.to_string(),
             ])),
             arrow: format!("{schema}.{arrow}").into(),
-            source: catdb_core::ObjectId::from_uuid(source),
-            target: catdb_core::ObjectId::from_uuid(target),
+            source: catdb_sdk::core::ObjectId::from_uuid(source),
+            target: catdb_sdk::core::ObjectId::from_uuid(target),
             provenance: derivation.provenance(),
         },
         rule: rule.to_string(),

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use catdb_connector_dropbox::{
+use mdreader_connector_dropbox::{
     DropboxAccessGrant, DropboxAccessToken, DropboxAuthorizationMode, DropboxAuthorizationProfile,
     DropboxAvailability, DropboxChangeEvent, DropboxChangeOutcome, DropboxConnectorError,
     DropboxContentScope, DropboxCursorKey, DropboxDocumentError, DropboxEndpoint,
@@ -14,11 +14,11 @@ use catdb_connector_dropbox::{
     DropboxTransportError, PinnedDropboxSourceSpec, DROPBOX_CONTENT_READ_SCOPE,
     DROPBOX_METADATA_READ_SCOPE,
 };
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
 };
-use catdb_core::BaseType;
-use catdb_query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
+use catdb_sdk::core::BaseType;
+use catdb_sdk::query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
 
 #[derive(Clone)]
 struct ScriptedTransport {
@@ -268,7 +268,7 @@ fn context(page_size: usize, row_budget: usize, byte_budget: usize) -> ReadConte
     )
 }
 
-fn plan(source: &DropboxSource, projected: &[&str]) -> catdb_connectors::SourcePlan {
+fn plan(source: &DropboxSource, projected: &[&str]) -> catdb_sdk::connectors::SourcePlan {
     source
         .compile(
             &query(),
@@ -1986,7 +1986,7 @@ fn deserialized_pinned_spec_revalidates_schema_identity() {
 
 #[test]
 fn request_construction_refuses_non_dropbox_origins_redirects_and_header_injection() {
-    let transport = catdb_connector_dropbox::ReqwestDropboxTransport::new().unwrap();
+    let transport = mdreader_connector_dropbox::ReqwestDropboxTransport::new().unwrap();
     assert_eq!(
         transport.api_origin().as_str(),
         "https://api.dropboxapi.com/"

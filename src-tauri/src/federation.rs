@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     CancellationToken, DataSource, FilesystemSource, FrontmatterSource, GitSource, ReadContext,
 };
-use catdb_federation::{Completeness, ExecutionPolicy, Executor, Freshness, Outcome};
+use catdb_sdk::federation::{Completeness, ExecutionPolicy, Executor, Freshness, Outcome};
 use mdreader_domain::federated::{
     document_schema, Federation, ProviderVerdict, SCHEMA as FEDERATED_SCHEMA,
 };
@@ -535,7 +535,7 @@ async fn query_federated_document_unpublished(
     let git = GitSource::open(&source_root.path);
     let frontmatter = FrontmatterSource::new(&source_root.path);
     let sources: Vec<&dyn DataSource> = vec![&filesystem, &git, &frontmatter];
-    let federation = Federation::new(sources.clone(), &catdb_validation::EggProver::default())
+    let federation = Federation::new(sources.clone(), &catdb_sdk::validation::EggProver::default())
         .map_err(|error| error.to_string())?;
     let query = federation
         .scope_exact_path(&relative)
@@ -665,11 +665,11 @@ fn persisted_document_schema(
     content
         .verify()
         .map_err(|error| format!("could not verify the persisted Document schema body: {error}"))?;
-    let persisted: catdb_core::Schema =
+    let persisted: catdb_sdk::core::Schema =
         serde_json::from_value(content.spec.clone()).map_err(|error| {
             format!("could not reconstruct the persisted Document schema body: {error}")
         })?;
-    let active = catdb_storage::SchemaContent::new(
+    let active = catdb_sdk::storage::SchemaContent::new(
         serde_json::to_value(document_schema())
             .map_err(|error| format!("could not serialize the active Document schema: {error}"))?,
     );
@@ -712,7 +712,7 @@ fn persisted_schema(
     summary: SchemaSummary,
     schema_version_id: Uuid,
     schema_checksum: String,
-    schema: &catdb_core::Schema,
+    schema: &catdb_sdk::core::Schema,
 ) -> FederatedSchemaDto {
     FederatedSchemaDto {
         name: schema.name.to_string(),
@@ -760,15 +760,15 @@ impl Write for BoundedWriter {
     }
 }
 
-fn source_dto(report: &catdb_federation::SourceReport) -> Result<FederatedSourceDto, String> {
+fn source_dto(report: &catdb_sdk::federation::SourceReport) -> Result<FederatedSourceDto, String> {
     match &report.outcome {
         Outcome::Ran(ran) => {
             let (freshness, age_ms) = match ran.execution {
-                catdb_federation::Execution::Virtual
-                | catdb_federation::Execution::Materialized(Freshness::Fresh) => {
+                catdb_sdk::federation::Execution::Virtual
+                | catdb_sdk::federation::Execution::Materialized(Freshness::Fresh) => {
                     ("fresh".to_string(), 0_u32)
                 }
-                catdb_federation::Execution::Materialized(Freshness::Cached { age_ms }) => (
+                catdb_sdk::federation::Execution::Materialized(Freshness::Cached { age_ms }) => (
                     "cached".to_string(),
                     u32::try_from(age_ms)
                         .map_err(|_| "cached answer age exceeds the application contract")?,
@@ -815,8 +815,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use catdb_embed::{Embedder, HashEmbedder};
-    use catdb_engine::EngineConfig;
+    use catdb_sdk::embed::{Embedder, HashEmbedder};
+    use catdb_sdk::engine::EngineConfig;
 
     use super::{
         query_federated_document, query_federated_document_guarded,
@@ -891,12 +891,12 @@ mod tests {
 
     fn catalogued_state_with_registration(
         root: &Path,
-        registration: catdb_engine::DomainRegistration,
+        registration: catdb_sdk::engine::DomainRegistration,
     ) -> WorkspaceState {
         let embedder = Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>;
         let mut config = EngineConfig::in_memory(embedder).with_actor("federation-product-test");
         config.domains = vec![registration];
-        let db = Arc::new(catdb_engine::EmbeddedCatDb::open(config).expect("open engine"));
+        let db = Arc::new(catdb_sdk::engine::EmbeddedCatDb::open(config).expect("open engine"));
         let state = WorkspaceState::granted(root.to_path_buf());
         state
             .current()

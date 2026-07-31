@@ -11,14 +11,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use catdb_connector_google_drive::{
+use mdreader_connector_google_drive::{
     DriveAccessToken, DriveChangeCursor, DriveChangeOutcome, DriveConnectorError, DriveCursorKey,
     DriveDocumentError, DriveHttpRequest, DriveHttpResponse, DriveRuntimeSecrets,
     DriveSecretReference, DriveSecretResolver, DriveSource, DriveTransport, DriveTransportError,
     PinnedDriveSourceSpec, GOOGLE_DRIVE_FULL_SCOPE, GOOGLE_DRIVE_READONLY_SCOPE,
 };
-use catdb_connectors::{read, CancellationToken, ReadContext, SourceError};
-use catdb_query::{EntityQuery, EntityTarget};
+use catdb_sdk::connectors::{read, CancellationToken, ReadContext, SourceError};
+use catdb_sdk::query::{EntityQuery, EntityTarget};
 use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -494,7 +494,7 @@ fn parse_live_config_json(input: &str) -> Result<LiveConfig, String> {
         ));
     }
     if raw.page_size == 0
-        || raw.page_size > catdb_connectors::MAX_PAGE_SIZE
+        || raw.page_size > catdb_sdk::connectors::MAX_PAGE_SIZE
         || raw.page_size > raw.work_budget
     {
         return Err(

@@ -3,7 +3,7 @@
 //! This crate re-exports the kernel's builtin pipeline as MDReader's domain
 //! model: the four pipeline schemas, the three (contravariant) pipeline
 //! mappings defined on their provenance-core sub-schemas, and the overlay
-//! demo schemas. See [`catdb_core::builtin`] for the direction and
+//! demo schemas. See [`catdb_sdk::core::builtin`] for the direction and
 //! sub-schema design rationale.
 //!
 //! [`validate_all`] runs the whole domain — every schema, every equation,
@@ -27,10 +27,10 @@ pub mod library;
 
 use std::sync::Arc;
 
-pub use catdb_core::builtin;
-use catdb_core::{Mapping, PathProver, Schema};
-use catdb_engine::{DomainRegistration, Ingestor, RegisteredMapping};
-use catdb_validation::ValidationReport;
+pub use catdb_sdk::core::builtin;
+use catdb_sdk::core::{Mapping, PathProver, Schema};
+use catdb_sdk::engine::{DomainRegistration, Ingestor, RegisteredMapping};
+use catdb_sdk::validation::ValidationReport;
 
 /// Returns this crate's package name.
 pub fn crate_name() -> &'static str {
@@ -39,7 +39,7 @@ pub fn crate_name() -> &'static str {
 
 /// Returns the categorical kernel crate this domain package is defined against.
 pub fn kernel_crate() -> &'static str {
-    catdb_core::crate_name()
+    catdb_sdk::core::crate_name()
 }
 
 /// The four pipeline schemas, in data-flow order: `fs`, `md`, `kn`, `rx`.
@@ -130,7 +130,7 @@ pub fn validate_all(prover: &dyn PathProver) -> ValidationReport {
     report
 }
 
-/// The MDReader domain, packaged for [`catdb_engine`]: every pipeline schema
+/// The MDReader domain, packaged for [`catdb_sdk::engine`]: every pipeline schema
 /// (and provenance core, and overlay) plus the three pipeline mappings, ready
 /// to be validated by the engine's prover at startup — this is the "domain
 /// registers itself INTO the engine" side of the platform boundary. The
@@ -194,8 +194,8 @@ pub fn engine_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catdb_core::SchemaName;
-    use catdb_validation::EggProver;
+    use catdb_sdk::core::SchemaName;
+    use catdb_sdk::validation::EggProver;
 
     #[test]
     fn engine_registration_carries_the_whole_domain() {
@@ -227,8 +227,8 @@ mod tests {
 
     #[test]
     fn engine_accepts_the_registration_at_open() {
-        use catdb_embed::HashEmbedder;
-        use catdb_engine::{EmbeddedCatDb, EngineConfig};
+        use catdb_sdk::embed::HashEmbedder;
+        use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig};
         let engine = EmbeddedCatDb::open(
             EngineConfig::in_memory(Arc::new(HashEmbedder::new()))
                 .with_domain(engine_registration(Vec::new(), "test-chunker@1")),

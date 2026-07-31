@@ -4,8 +4,8 @@
 //! path-keyed `document.Document` schema. Provider metadata lands in that one
 //! shape rather than creating a second application-facing document identity.
 
-use catdb_connectors::DataSource;
-use catdb_core::{
+use catdb_sdk::connectors::DataSource;
+use catdb_sdk::core::{
     AttrTarget, Mapping, MappingWriteCapability, Path, PathProver, Schema, ValidMapping,
 };
 
@@ -177,12 +177,12 @@ pub fn validated_cloud_document_mapping(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use catdb_connectors::{
+    use catdb_sdk::connectors::{
         ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError, SourceFreshness,
         SourceId, SourceModel, SourcePage, SourcePlan,
     };
-    use catdb_query::EntityQuery;
-    use catdb_validation::EggProver;
+    use catdb_sdk::query::EntityQuery;
+    use catdb_sdk::validation::EggProver;
 
     struct DeclaredSource {
         model: SourceModel,
@@ -199,8 +199,8 @@ mod tests {
                         SourceAttr::text("id"),
                         SourceAttr::text("name"),
                         SourceAttr::text("mimeType"),
-                        SourceAttr::parsed("modifiedAt", catdb_core::BaseType::Timestamp),
-                        SourceAttr::parsed("size", catdb_core::BaseType::Int),
+                        SourceAttr::parsed("modifiedAt", catdb_sdk::core::BaseType::Timestamp),
+                        SourceAttr::parsed("size", catdb_sdk::core::BaseType::Int),
                         SourceAttr::text("checksum"),
                         SourceAttr::text("body"),
                     ],
@@ -218,8 +218,8 @@ mod tests {
                         SourceAttr::text("id"),
                         SourceAttr::text("name"),
                         SourceAttr::text("path"),
-                        SourceAttr::parsed("modifiedAt", catdb_core::BaseType::Timestamp),
-                        SourceAttr::parsed("size", catdb_core::BaseType::Int),
+                        SourceAttr::parsed("modifiedAt", catdb_sdk::core::BaseType::Timestamp),
+                        SourceAttr::parsed("size", catdb_sdk::core::BaseType::Int),
                         SourceAttr::text("rev"),
                         SourceAttr::text("contentHash"),
                         SourceAttr::text("body"),

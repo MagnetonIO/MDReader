@@ -9,5 +9,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    catdb_cli::main_with_domains(vec![mdreader_ingest::registration()])
+    catdb_sdk::cli::main_with_domains(vec![mdreader_ingest::registration()])
 }

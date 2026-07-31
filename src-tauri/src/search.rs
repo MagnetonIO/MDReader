@@ -4,7 +4,7 @@
 //!
 //! ## Two-phase streaming (honest, not decorative)
 //!
-//! `catdb-engine`'s [`search`](catdb_engine::EmbeddedCatDb::search) is a single
+//! `catdb-engine`'s [`search`](catdb_sdk::engine::EmbeddedCatDb::search) is a single
 //! atomic call — it does not itself stream. But the CLI's two-phase *reality*
 //! (a lexical batch, then a semantic merge) is real work we can mirror without
 //! faking it: [`search`] runs the engine **twice** — first `lexical_only` (the
@@ -17,7 +17,7 @@
 //!
 //! ## Provenance ids threaded through (reconciliation)
 //!
-//! Every serde-defaulted [`SearchHit`](catdb_engine::SearchHit) field —
+//! Every serde-defaulted [`SearchHit`](catdb_sdk::engine::SearchHit) field —
 //! `rrf_score`, `boosts`, `explain`, and the provenance chain's ids — is carried
 //! onto the wire DTO so the bindings expose them to TS (the palette's score
 //! badge, explain popover, and provenance breadcrumb read them). Uuids cross as
@@ -41,7 +41,7 @@ use specta::Type;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use catdb_engine::{
+use catdb_sdk::engine::{
     EmbeddedCatDb, HitBoosts, HitExplain, ProvenanceChain, RelatedComponents, RelatedDoc,
     SearchHit, SearchOptions,
 };
@@ -662,8 +662,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    use catdb_embed::{Embedder, HashEmbedder};
-    use catdb_engine::{EngineConfig, ImportOptions};
+    use catdb_sdk::embed::{Embedder, HashEmbedder};
+    use catdb_sdk::engine::{EngineConfig, ImportOptions};
     use mdreader_ingest::registration;
 
     fn workspace_dir() -> (TempDir, std::path::PathBuf) {
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn a_search_without_an_embedder_stays_lexical_and_says_so() {
         use crate::engine::DeferredEmbedder;
-        use catdb_embed::ModelInfo;
+        use catdb_sdk::embed::ModelInfo;
 
         let corpus = TempDir::new().unwrap();
         let root = fs::canonicalize(corpus.path()).unwrap();

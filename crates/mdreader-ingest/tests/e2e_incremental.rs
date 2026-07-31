@@ -9,9 +9,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
-use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions, SearchOptions};
-use catdb_storage::{CatalogStorage, LexicalQuery, QueryFilters, SemanticStore, VectorQuery};
+use catdb_sdk::embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions, SearchOptions};
+use catdb_sdk::storage::{CatalogStorage, LexicalQuery, QueryFilters, SemanticStore, VectorQuery};
 use uuid::Uuid;
 
 /// Item-4 invariant: every `rx.Chunk` object in the operation-log's
@@ -250,7 +250,7 @@ async fn failed_embedding_leaves_files_reprocessable() {
         let jobs = failing.store().list_jobs().await.unwrap();
         let ingest_jobs: Vec<_> = jobs.iter().filter(|j| j.kind == "ingest").collect();
         assert_eq!(ingest_jobs.len(), 1);
-        assert_eq!(ingest_jobs[0].status, catdb_catalog::JobStatus::Failed);
+        assert_eq!(ingest_jobs[0].status, catdb_sdk::catalog::JobStatus::Failed);
         // Even mid-crash, the op log and the chunk rows agree (each file's
         // sync is one transaction).
         assert_no_orphan_chunk_objects(&failing);
@@ -417,7 +417,7 @@ async fn chunker_version_bump_reprocesses_unchanged_files() {
     assert_eq!(
         versions
             .iter()
-            .filter(|v| v.state == catdb_catalog::IndexState::Retired)
+            .filter(|v| v.state == catdb_sdk::catalog::IndexState::Retired)
             .count(),
         1,
         "the displaced version is retired (terminal), not merely inactive"

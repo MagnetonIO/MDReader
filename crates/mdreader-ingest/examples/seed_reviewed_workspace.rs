@@ -37,8 +37,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use mdreader_ingest::proposals::{approve_and_promote, ProposalFilter, ProposalStore, StoredFact};
 use mdreader_ingest::{registration_with_proposals, workspace_index_path, SourceRoot};
 
@@ -147,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         equations.violations.len()
     );
     for violation in &equations.violations {
-        let located = |what: &str, object: Option<&catdb_engine::ViolatingObject>| match object {
+        let located = |what: &str, object: Option<&catdb_sdk::engine::ViolatingObject>| match object {
             Some(object) => format!(
                 "{what}={} @ {}",
                 object.entity,

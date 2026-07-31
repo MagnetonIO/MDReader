@@ -10,9 +10,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
-use catdb_storage::CatalogStorage;
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
+use catdb_sdk::storage::CatalogStorage;
 use uuid::Uuid;
 
 fn write(root: &Path, rel: &str, content: &str) {

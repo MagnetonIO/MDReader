@@ -9,4 +9,4 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["engine"] }

@@ -7,13 +7,13 @@
 
 mod federation_support;
 
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     Availability, DataSource, FilesystemSource, FrontmatterSource, GitSource, SourceError, SourceId,
 };
-use catdb_federation::{
+use catdb_sdk::federation::{
     Execution, ExecutionPolicy, Executor, Federated, Outcome, Ran, SourceReport,
 };
-use catdb_validation::EggProver;
+use catdb_sdk::validation::EggProver;
 use federation_support::{
     corpus, fs_modified_ms, git_author, git_commit_seconds, tree_digest, FIXTURE_AUTHOR,
     FIXTURE_COMMIT_SECONDS,
@@ -160,12 +160,12 @@ async fn one_file_seen_by_three_adapters_is_one_document_with_three_intact_obser
     let canonical: std::collections::BTreeSet<_> = document
         .claims()
         .iter()
-        .map(catdb_core::IdentityClaim::canonical)
+        .map(catdb_sdk::core::IdentityClaim::canonical)
         .collect();
     let observed: std::collections::BTreeSet<_> = document
         .claims()
         .iter()
-        .map(catdb_core::IdentityClaim::source)
+        .map(catdb_sdk::core::IdentityClaim::source)
         .collect();
     assert_eq!(canonical.len(), 1, "all three identify into one document");
     assert_eq!(observed.len(), 3, "and each source record keeps its own id");
@@ -173,7 +173,7 @@ async fn one_file_seen_by_three_adapters_is_one_document_with_three_intact_obser
     for claim in document.claims() {
         assert_eq!(
             claim.confidence(),
-            catdb_core::IdentityConfidence::Known,
+            catdb_sdk::core::IdentityConfidence::Known,
             "path equality within one root is a key by construction"
         );
     }
@@ -667,7 +667,7 @@ fn a_row_with_no_natural_key_is_refused_however_the_answer_arrived() {
 
     // A row carrying a size and no `path` at all: the natural key is absent,
     // not empty.
-    let rows = vec![catdb_connectors::SourceRow {
+    let rows = vec![catdb_sdk::connectors::SourceRow {
         source: SourceId::new("filesystem"),
         entity: "doc.Document".to_string(),
         key: "docs/guides/task-lists.md".to_string(),

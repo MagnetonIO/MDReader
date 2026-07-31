@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use catdb_connectors::{CancellationToken, DataSource, ReadContext};
-use catdb_federation::{Executor, Federated, FederationError};
-use catdb_query::EntityQuery;
+use catdb_sdk::connectors::{CancellationToken, DataSource, ReadContext};
+use catdb_sdk::federation::{Executor, Federated, FederationError};
+use catdb_sdk::query::EntityQuery;
 use uuid::Uuid;
 
 pub fn read_context() -> ReadContext {

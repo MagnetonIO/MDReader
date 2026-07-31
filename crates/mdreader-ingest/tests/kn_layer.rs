@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use uuid::Uuid;
 
 fn write(root: &Path, rel: &str, content: &str) {
@@ -377,7 +377,7 @@ async fn artifact_link_spans_are_total_and_faithful_to_fanout() {
     // an arrow is a function (exactly one target per source; MemInstance's
     // set_fk overwriting duplicates is faithful to that), while a span
     // entity carries one row per link.
-    use catdb_core::MemInstance;
+    use catdb_sdk::core::MemInstance;
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("vault");

@@ -7,8 +7,8 @@ use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, EngineResult};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, EngineResult};
 use rusqlite::{Connection, OptionalExtension, MAIN_DB};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,7 +56,7 @@ pub enum DemoDeploymentError {
     },
     /// CatDB could not open or inspect the workspace.
     #[error("opening authoritative CatDB workspace: {0}")]
-    Engine(#[from] catdb_engine::EngineError),
+    Engine(#[from] catdb_sdk::engine::EngineError),
     /// An identity input was malformed or unsafe.
     #[error("{0}")]
     InvalidIdentity(String),
@@ -1202,8 +1202,8 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use catdb_embed::HashEmbedder;
-    use catdb_engine::{EngineConfig, ImportOptions};
+    use catdb_sdk::embed::HashEmbedder;
+    use catdb_sdk::engine::{EngineConfig, ImportOptions};
     use tempfile::tempdir;
 
     use super::*;

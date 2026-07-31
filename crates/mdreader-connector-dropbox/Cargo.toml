@@ -1,5 +1,5 @@
 [package]
-name = "catdb-connector-google-drive"
+name = "mdreader-connector-dropbox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,13 +9,12 @@ repository.workspace = true
 async-trait = { workspace = true }
 base64 = "0.22"
 blake3 = "1"
-catdb-connectors = { path = "../catdb-connectors" }
-catdb-core = { path = "../catdb-core" }
-catdb-query = { path = "../catdb-query" }
-catdb-storage = { path = "../catdb-storage" }
+# `DataSource` and the kernel types this connector implements against.
+# `default-features = false` deliberately: a connector has no business
+# dragging in the engine, the embedder or SQLite.
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", default-features = false }
 futures-util = "0.3"
 hmac = "0.12"
-httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls-native-roots",
     "stream",
@@ -35,11 +34,11 @@ ring = "0.17"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [features]
-google-drive-live-tests = []
+dropbox-live-tests = []
 
 [[test]]
 name = "live_smoke"
-required-features = ["google-drive-live-tests"]
+required-features = ["dropbox-live-tests"]
 
 [lints]
 workspace = true

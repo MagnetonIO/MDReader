@@ -46,8 +46,8 @@ use specta::Type;
 use tauri::State;
 use uuid::Uuid;
 
-use catdb_core::Schema;
-use catdb_engine::{EmbeddedCatDb, LocatedViolation, SourceSpan, ViolatingObject};
+use catdb_sdk::core::Schema;
+use catdb_sdk::engine::{EmbeddedCatDb, LocatedViolation, SourceSpan, ViolatingObject};
 use mdreader_ingest::proposals::{
     approve_and_promote, reject_and_retract, ProposalFilter, ProposalStore, StoredFact,
     StoredProposal,
@@ -157,8 +157,8 @@ pub struct FactProvenanceDto {
     pub approved_by: Option<String>,
 }
 
-impl From<&catdb_core::Provenance> for FactProvenanceDto {
-    fn from(provenance: &catdb_core::Provenance) -> Self {
+impl From<&catdb_sdk::core::Provenance> for FactProvenanceDto {
+    fn from(provenance: &catdb_sdk::core::Provenance) -> Self {
         Self {
             file: provenance.source.clone(),
             start_line: provenance.range.map(|(start, _)| start),
@@ -172,8 +172,8 @@ impl From<&catdb_core::Provenance> for FactProvenanceDto {
     }
 }
 
-impl From<&catdb_ir::Provenance> for FactProvenanceDto {
-    fn from(provenance: &catdb_ir::Provenance) -> Self {
+impl From<&catdb_sdk::ir::Provenance> for FactProvenanceDto {
+    fn from(provenance: &catdb_sdk::ir::Provenance) -> Self {
         Self {
             file: provenance.source.clone(),
             start_line: provenance.range.map(|[start, _]| start),
@@ -481,7 +481,7 @@ fn known_schemas(db: Option<&EmbeddedCatDb>) -> Vec<KnownSchema> {
 
     // Newest persisted version per name. A read failure degrades to the
     // registration shape rather than blanking the picker.
-    let mut latest: std::collections::HashMap<String, catdb_engine::StoredSchema> =
+    let mut latest: std::collections::HashMap<String, catdb_sdk::engine::StoredSchema> =
         std::collections::HashMap::new();
     for stored in db
         .and_then(|db| db.stored_schemas().ok())
@@ -1092,8 +1092,8 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use catdb_embed::{Embedder, HashEmbedder};
-    use catdb_engine::{EngineConfig, ImportOptions};
+    use catdb_sdk::embed::{Embedder, HashEmbedder};
+    use catdb_sdk::engine::{EngineConfig, ImportOptions};
     use tempfile::TempDir;
 
     /// A tiny corpus that exercises both overlays AND breaks one law:

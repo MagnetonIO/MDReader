@@ -6,8 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use catdb_embed::HashEmbedder;
-use catdb_engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
+use catdb_sdk::embed::HashEmbedder;
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -26,7 +26,7 @@ fn demo_binary() -> &'static str {
 
 fn curated_corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../catdb-demo/corpus")
+        .join("../../demo/corpus")
         .canonicalize()
         .expect("curated corpus exists")
 }

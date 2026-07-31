@@ -14,7 +14,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use catdb_api_types::{
+use catdb_sdk::api_types::{
     ControlPlaneSnapshot, EntityQueryRequest, EntityQueryResponse, SessionResponse,
 };
 use serde::{Deserialize, Serialize};
@@ -288,7 +288,7 @@ impl BearerVault for KeyringBearerVault {
 #[derive(Debug)]
 struct ActiveMobileEnterpriseOperation {
     serial: u64,
-    cancellation: catdb_connectors::CancellationToken,
+    cancellation: catdb_sdk::connectors::CancellationToken,
     phase: Arc<AtomicU8>,
 }
 
@@ -298,7 +298,7 @@ struct MobileEnterpriseOperationHandle {
     serial: u64,
     lifecycle: bool,
     connection_generation: u64,
-    cancellation: catdb_connectors::CancellationToken,
+    cancellation: catdb_sdk::connectors::CancellationToken,
     phase: Arc<AtomicU8>,
 }
 
@@ -310,7 +310,7 @@ const MOBILE_OPERATION_COMPLETE: u8 = 2;
 struct MobileEnterpriseCommitAuthority {
     lifecycle_operation: Arc<Mutex<Option<ActiveMobileEnterpriseOperation>>>,
     serial: u64,
-    cancellation: catdb_connectors::CancellationToken,
+    cancellation: catdb_sdk::connectors::CancellationToken,
     phase: Arc<AtomicU8>,
 }
 
@@ -380,7 +380,7 @@ impl<'a> MobileEnterpriseOperationOwner<'a> {
         })
     }
 
-    fn cancellation(&self) -> catdb_connectors::CancellationToken {
+    fn cancellation(&self) -> catdb_sdk::connectors::CancellationToken {
         self.handle.cancellation.clone()
     }
 
@@ -446,7 +446,7 @@ impl MobileEnterpriseState {
             return Err(MobileEnterpriseError::InvalidRequest);
         }
         let serial = self.next_operation_serial.fetch_add(1, Ordering::SeqCst);
-        let cancellation = catdb_connectors::CancellationToken::new();
+        let cancellation = catdb_sdk::connectors::CancellationToken::new();
         let phase = Arc::new(AtomicU8::new(MOBILE_OPERATION_PENDING));
         let mut active = self
             .active_operations
@@ -486,7 +486,7 @@ impl MobileEnterpriseState {
         &self,
     ) -> Result<MobileEnterpriseOperationHandle, MobileEnterpriseError> {
         let serial = self.next_operation_serial.fetch_add(1, Ordering::SeqCst);
-        let cancellation = catdb_connectors::CancellationToken::new();
+        let cancellation = catdb_sdk::connectors::CancellationToken::new();
         let phase = Arc::new(AtomicU8::new(MOBILE_OPERATION_PENDING));
         let mut active = self
             .active_operations
@@ -1404,7 +1404,7 @@ impl ConnectedPaginationBudget {
 
     fn record_rows(
         &mut self,
-        rows: &[catdb_api_types::EntityRow],
+        rows: &[catdb_sdk::api_types::EntityRow],
     ) -> Result<(), MobileEnterpriseError> {
         for row in rows {
             if !self.seen_record_keys.insert(row.record_key.clone()) {
@@ -1417,7 +1417,7 @@ impl ConnectedPaginationBudget {
     fn record_page(
         &mut self,
         rows: usize,
-        next_cursor: Option<&catdb_api_types::EntityCursor>,
+        next_cursor: Option<&catdb_sdk::api_types::EntityCursor>,
         response_bytes: usize,
     ) -> Result<(), MobileEnterpriseError> {
         self.pages = self
@@ -1456,7 +1456,7 @@ async fn execute_connected_library_page(
     source: &crate::library::ConnectedCatdbSourceRecord,
     token: &BearerToken,
     request: EntityQueryRequest,
-    cancellation: &catdb_connectors::CancellationToken,
+    cancellation: &catdb_sdk::connectors::CancellationToken,
     deadline: tokio::time::Instant,
     phase: ConnectedQueryPhase,
 ) -> Result<MobileEnterpriseResponse, MobileEnterpriseError> {
@@ -1535,13 +1535,13 @@ fn parse_connected_library_response(
     let excluded_source_ids = answer
         .sources
         .iter()
-        .filter(|source| source.outcome != catdb_api_types::SourceOutcome::Ran)
+        .filter(|source| source.outcome != catdb_sdk::api_types::SourceOutcome::Ran)
         .map(|source| source.source_id)
         .collect::<Vec<_>>();
     let derived_completeness = if excluded_source_ids.is_empty() {
-        catdb_api_types::Completeness::Complete
+        catdb_sdk::api_types::Completeness::Complete
     } else {
-        catdb_api_types::Completeness::Partial {
+        catdb_sdk::api_types::Completeness::Partial {
             excluded_source_ids,
         }
     };
@@ -1577,7 +1577,7 @@ fn parse_connected_library_response(
         for (field, evidence) in &row.provenance {
             let selected_value_matches = match (row.fields.get(field), evidence.selected()) {
                 (Some(value), Some(observation)) if value.is_null() => {
-                    observation.state().kind() == catdb_provenance::ObservationKind::ObservedNull
+                    observation.state().kind() == catdb_sdk::provenance::ObservationKind::ObservedNull
                 }
                 (Some(value), Some(observation)) => observation.state().value() == Some(value),
                 (None, None) => true,
@@ -2239,7 +2239,7 @@ mod tests {
         source
     }
 
-    fn connected_query_request() -> catdb_api_types::EntityQueryRequest {
+    fn connected_query_request() -> catdb_sdk::api_types::EntityQueryRequest {
         serde_json::from_value(serde_json::json!({
             "workspace_id": "00000000-0000-0000-0000-000000000099",
             "catalog_revision_id": null,
@@ -2261,8 +2261,8 @@ mod tests {
 
     fn connected_response(
         record_keys: &[&str],
-        outcome: catdb_api_types::SourceOutcome,
-        completeness: catdb_api_types::Completeness,
+        outcome: catdb_sdk::api_types::SourceOutcome,
+        completeness: catdb_sdk::api_types::Completeness,
     ) -> MobileEnterpriseResponse {
         let provenance_rule_version_id = uuid::Uuid::from_u128(27);
         let mapping_version_id = uuid::Uuid::from_u128(25);
@@ -2271,21 +2271,21 @@ mod tests {
             .iter()
             .map(|record_key| {
                 let title = format!("Title for {record_key}");
-                let observation = catdb_provenance::FieldObservation::observed(
+                let observation = catdb_sdk::provenance::FieldObservation::observed(
                     source_version_id,
                     *record_key,
                     mapping_version_id,
                     1,
                     serde_json::json!(title),
                 );
-                let evidence = catdb_provenance::FieldProvenance::new(
+                let evidence = catdb_sdk::provenance::FieldProvenance::new(
                     provenance_rule_version_id,
                     "title",
                     vec![observation],
                     Some(0),
                 )
                 .expect("valid field evidence");
-                catdb_api_types::EntityRow {
+                catdb_sdk::api_types::EntityRow {
                     record_key: (*record_key).to_string(),
                     fields: std::collections::BTreeMap::from([(
                         "title".to_string(),
@@ -2295,9 +2295,9 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        let response = catdb_api_types::EntityQueryResponse {
+        let response = catdb_sdk::api_types::EntityQueryResponse {
             query_id: uuid::Uuid::from_u128(21),
-            pins: catdb_api_types::PinnedVersions {
+            pins: catdb_sdk::api_types::PinnedVersions {
                 catalog_resolver_id: uuid::Uuid::from_u128(22),
                 catalog_revision_id: uuid::Uuid::from_u128(4),
                 schema_version_id: uuid::Uuid::from_u128(5),
@@ -2307,12 +2307,12 @@ mod tests {
                 policy_version_ids: vec![uuid::Uuid::from_u128(26)],
                 provenance_rule_version_id,
             },
-            sources: vec![catdb_api_types::SourceExecution {
+            sources: vec![catdb_sdk::api_types::SourceExecution {
                 source_id: uuid::Uuid::from_u128(11),
                 source_version_id,
                 outcome,
                 retry_after_ms: None,
-                freshness_ms: (outcome == catdb_api_types::SourceOutcome::Ran).then_some(0),
+                freshness_ms: (outcome == catdb_sdk::api_types::SourceOutcome::Ran).then_some(0),
                 scanned: record_keys.len() as u64,
                 returned: record_keys.len() as u64,
             }],
@@ -2444,7 +2444,7 @@ mod tests {
 
     #[test]
     fn connected_pagination_rejects_repeated_cursors_and_an_unbounded_total() {
-        let cursor = catdb_api_types::EntityCursor::new("v1.same".to_string()).expect("cursor");
+        let cursor = catdb_sdk::api_types::EntityCursor::new("v1.same".to_string()).expect("cursor");
         let mut repeated = ConnectedPaginationBudget::new(2_000, 1_000).expect("budget");
         repeated
             .record_page(1_000, Some(&cursor), 1024)
@@ -2463,7 +2463,7 @@ mod tests {
 
     #[test]
     fn connected_pagination_rejects_a_record_repeated_on_a_later_page() {
-        let row = catdb_api_types::EntityRow {
+        let row = catdb_sdk::api_types::EntityRow {
             record_key: "same.md".to_string(),
             fields: std::collections::BTreeMap::new(),
             provenance: std::collections::BTreeMap::new(),
@@ -2485,7 +2485,7 @@ mod tests {
         let mut continuation = connected_query_request();
         continuation.query_id = Some(uuid::Uuid::from_u128(77));
         continuation.cursor =
-            Some(catdb_api_types::EntityCursor::new("v1.page-two".to_string()).expect("cursor"));
+            Some(catdb_sdk::api_types::EntityCursor::new("v1.page-two".to_string()).expect("cursor"));
         assert_eq!(
             pin_connected_query(&source, &mut continuation),
             Err(MobileEnterpriseError::InvalidRequest),
@@ -2506,8 +2506,8 @@ mod tests {
         let source = connected_source();
         let response = connected_response(
             &[],
-            catdb_api_types::SourceOutcome::Refused,
-            catdb_api_types::Completeness::Complete,
+            catdb_sdk::api_types::SourceOutcome::Refused,
+            catdb_sdk::api_types::Completeness::Complete,
         );
 
         assert_eq!(
@@ -2521,8 +2521,8 @@ mod tests {
         let source = connected_source();
         let response = connected_response(
             &["same.md", "same.md"],
-            catdb_api_types::SourceOutcome::Ran,
-            catdb_api_types::Completeness::Complete,
+            catdb_sdk::api_types::SourceOutcome::Ran,
+            catdb_sdk::api_types::Completeness::Complete,
         );
 
         assert_eq!(
@@ -2706,7 +2706,7 @@ mod tests {
     #[test]
     fn connected_query_pins_native_workspace_revision_and_selected_sources() {
         let source = connected_source();
-        let mut request: catdb_api_types::EntityQueryRequest =
+        let mut request: catdb_sdk::api_types::EntityQueryRequest =
             serde_json::from_value(serde_json::json!({
                 "workspace_id": "00000000-0000-0000-0000-000000000099",
                 "catalog_revision_id": "00000000-0000-0000-0000-000000000098",
@@ -2763,10 +2763,10 @@ mod tests {
         let source = connected_source();
         let mut response = connected_response(
             &["remote.md"],
-            catdb_api_types::SourceOutcome::Ran,
-            catdb_api_types::Completeness::Complete,
+            catdb_sdk::api_types::SourceOutcome::Ran,
+            catdb_sdk::api_types::Completeness::Complete,
         );
-        let mut body: catdb_api_types::EntityQueryResponse =
+        let mut body: catdb_sdk::api_types::EntityQueryResponse =
             serde_json::from_str(&response.body_json).expect("response");
         body.pins.schema_version_id = uuid::Uuid::from_u128(99);
         response.body_json = serde_json::to_string(&body).expect("response");
@@ -2782,10 +2782,10 @@ mod tests {
         let source = connected_source();
         let mut response = connected_response(
             &["remote.md"],
-            catdb_api_types::SourceOutcome::Ran,
-            catdb_api_types::Completeness::Complete,
+            catdb_sdk::api_types::SourceOutcome::Ran,
+            catdb_sdk::api_types::Completeness::Complete,
         );
-        let mut body: catdb_api_types::EntityQueryResponse =
+        let mut body: catdb_sdk::api_types::EntityQueryResponse =
             serde_json::from_str(&response.body_json).expect("response");
         body.pins
             .source_version_ids
@@ -2815,10 +2815,10 @@ mod tests {
 
         let mut response = connected_response(
             &["remote.md"],
-            catdb_api_types::SourceOutcome::Ran,
-            catdb_api_types::Completeness::Complete,
+            catdb_sdk::api_types::SourceOutcome::Ran,
+            catdb_sdk::api_types::Completeness::Complete,
         );
-        let mut body: catdb_api_types::EntityQueryResponse =
+        let mut body: catdb_sdk::api_types::EntityQueryResponse =
             serde_json::from_str(&response.body_json).expect("response");
         let mut second_execution = body.sources[0].clone();
         second_execution.source_id = second_source;
@@ -2862,7 +2862,7 @@ mod tests {
     fn connected_query_refuses_an_empty_native_selection() {
         let mut source = connected_source();
         source.selected_source_ids.clear();
-        let mut request: catdb_api_types::EntityQueryRequest =
+        let mut request: catdb_sdk::api_types::EntityQueryRequest =
             serde_json::from_value(serde_json::json!({
                 "workspace_id": "00000000-0000-0000-0000-000000000099",
                 "catalog_revision_id": null,
@@ -3460,7 +3460,7 @@ mod tests {
         });
         let mut source = connected_source();
         source.server_origin = format!("http://{address}/");
-        let request: catdb_api_types::EntityQueryRequest =
+        let request: catdb_sdk::api_types::EntityQueryRequest =
             serde_json::from_value(serde_json::json!({
                 "workspace_id": "00000000-0000-0000-0000-000000000099",
                 "catalog_revision_id": null,

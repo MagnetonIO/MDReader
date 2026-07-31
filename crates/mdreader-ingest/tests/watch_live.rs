@@ -13,11 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use catdb_embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
-use catdb_engine::{
+use catdb_sdk::embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
+use catdb_sdk::engine::{
     EmbeddedCatDb, EngineConfig, ImportOptions, SearchOptions, WatchEvent, WatchEventKind,
 };
-use catdb_storage::CatalogStorage;
+use catdb_sdk::storage::CatalogStorage;
 use tokio::sync::broadcast;
 
 fn write(root: &Path, rel: &str, content: &str) {
@@ -548,10 +548,10 @@ async fn killed_import_resumes_and_status_reads_failed_then_done() {
     assert_eq!(ingest.len(), 2);
     assert!(ingest
         .iter()
-        .any(|j| j.status == catdb_catalog::JobStatus::Failed));
+        .any(|j| j.status == catdb_sdk::catalog::JobStatus::Failed));
     assert!(ingest
         .iter()
-        .any(|j| j.status == catdb_catalog::JobStatus::Done));
+        .any(|j| j.status == catdb_sdk::catalog::JobStatus::Done));
 
     // And the resumed corpus actually serves search with vectors.
     let hits = engine

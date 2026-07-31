@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use catdb_connector_google_drive::{
+use mdreader_connector_google_drive::{
     DriveAccessGrant, DriveAccessToken, DriveAuthorizationProfile, DriveAvailability,
     DriveChangeCursor, DriveChangeEvent, DriveChangeOutcome, DriveConnectorError,
     DriveContentScope, DriveCursorKey, DriveDocumentError, DriveHttpMethod, DriveHttpRequest,
@@ -12,11 +12,11 @@ use catdb_connector_google_drive::{
     DriveSecretReference, DriveSecretResolver, DriveSelection, DriveSource, DriveSourceConfig,
     DriveTransport, DriveTransportError, PinnedDriveSourceSpec, GOOGLE_DRIVE_READONLY_SCOPE,
 };
-use catdb_connectors::{
+use catdb_sdk::connectors::{
     read, CancellationToken, DataSource, ReadContext, SourceCursor, SourceError,
 };
-use catdb_core::BaseType;
-use catdb_query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
+use catdb_sdk::core::BaseType;
+use catdb_sdk::query::{AttrOp, AttrValue, EntityFilter, EntityQuery, EntityTarget};
 
 #[derive(Clone)]
 struct ScriptedTransport {
@@ -524,7 +524,7 @@ async fn sync_metadata_preserves_typed_drive_provider_failures() {
     }
 }
 
-fn plan(source: &DriveSource, projected: &[&str]) -> catdb_connectors::SourcePlan {
+fn plan(source: &DriveSource, projected: &[&str]) -> catdb_sdk::connectors::SourcePlan {
     source
         .compile(
             &query(),

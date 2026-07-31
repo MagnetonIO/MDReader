@@ -3,8 +3,8 @@ use std::time::SystemTime;
 #[cfg(any(feature = "google-drive-connector", feature = "dropbox-connector"))]
 use std::sync::Arc;
 
-use catdb_connectors::{DataSource, ReadContext, SourceCursor, SourceError, SourceId, SourcePage};
-use catdb_query::{EntityQuery, EntityTarget};
+use catdb_sdk::connectors::{DataSource, ReadContext, SourceCursor, SourceError, SourceId, SourcePage};
+use catdb_sdk::query::{EntityQuery, EntityTarget};
 
 use super::model::{
     CloudDocumentError, CloudIoContext, KnownMarkdownMetadata, MarkdownChangeEvent,
@@ -104,7 +104,7 @@ impl GuardedMarkdownWriteReceipt {
 
 #[async_trait::async_trait]
 #[cfg(feature = "google-drive-connector")]
-impl GuardedMarkdownDocumentOperations for catdb_connector_google_drive::DriveSource {
+impl GuardedMarkdownDocumentOperations for mdreader_connector_google_drive::DriveSource {
     fn source_id(&self) -> &SourceId {
         self.id()
     }
@@ -116,7 +116,7 @@ impl GuardedMarkdownDocumentOperations for catdb_connector_google_drive::DriveSo
         body: &[u8],
         context: &ReadContext,
     ) -> Result<GuardedMarkdownWriteReceipt, CloudDocumentError> {
-        let revision = catdb_connector_google_drive::DriveRevision::new(expected_revision)
+        let revision = mdreader_connector_google_drive::DriveRevision::new(expected_revision)
             .map_err(|_| CloudDocumentError::ProtocolFailed)?;
         let receipt = self
             .update_markdown(key, &revision, body, context)
@@ -131,7 +131,7 @@ impl GuardedMarkdownDocumentOperations for catdb_connector_google_drive::DriveSo
 
 #[async_trait::async_trait]
 #[cfg(feature = "dropbox-connector")]
-impl GuardedMarkdownDocumentOperations for catdb_connector_dropbox::DropboxSource {
+impl GuardedMarkdownDocumentOperations for mdreader_connector_dropbox::DropboxSource {
     fn source_id(&self) -> &SourceId {
         self.id()
     }
@@ -143,7 +143,7 @@ impl GuardedMarkdownDocumentOperations for catdb_connector_dropbox::DropboxSourc
         body: &[u8],
         context: &ReadContext,
     ) -> Result<GuardedMarkdownWriteReceipt, CloudDocumentError> {
-        let revision = catdb_connector_dropbox::DropboxRevision::new(expected_revision)
+        let revision = mdreader_connector_dropbox::DropboxRevision::new(expected_revision)
             .map_err(|_| CloudDocumentError::ProtocolFailed)?;
         let receipt = self
             .update_markdown(key, &revision, body, context)
@@ -224,9 +224,9 @@ fn map_source_error(error: SourceError) -> CloudDocumentError {
 
 #[cfg(feature = "google-drive-connector")]
 pub(crate) fn map_drive_document_error(
-    error: catdb_connector_google_drive::DriveDocumentError,
+    error: mdreader_connector_google_drive::DriveDocumentError,
 ) -> CloudDocumentError {
-    use catdb_connector_google_drive::DriveDocumentError;
+    use mdreader_connector_google_drive::DriveDocumentError;
 
     match error {
         DriveDocumentError::NotFound { .. } => CloudDocumentError::NotFound,
@@ -248,9 +248,9 @@ pub(crate) fn map_drive_document_error(
 
 #[cfg(feature = "dropbox-connector")]
 pub(crate) fn map_dropbox_document_error(
-    error: catdb_connector_dropbox::DropboxDocumentError,
+    error: mdreader_connector_dropbox::DropboxDocumentError,
 ) -> CloudDocumentError {
-    use catdb_connector_dropbox::DropboxDocumentError;
+    use mdreader_connector_dropbox::DropboxDocumentError;
 
     match error {
         DropboxDocumentError::NotFound { .. } => CloudDocumentError::NotFound,
@@ -386,7 +386,7 @@ fn decode_hash(value: &str) -> Result<[u8; 32], CloudDocumentError> {
 /// rechecks source identity before and after every provider effect.
 #[cfg(feature = "google-drive-connector")]
 pub(crate) struct DriveMarkdownDocumentSource {
-    source: Option<Arc<catdb_connector_google_drive::DriveSource>>,
+    source: Option<Arc<mdreader_connector_google_drive::DriveSource>>,
     lifecycle: Arc<dyn DocumentLifecycle>,
     write_operations: Arc<dyn GuardedMarkdownDocumentOperations>,
     write_capability: MarkdownWriteCapability,
@@ -395,7 +395,7 @@ pub(crate) struct DriveMarkdownDocumentSource {
 #[cfg(feature = "google-drive-connector")]
 impl DriveMarkdownDocumentSource {
     pub(crate) fn new(
-        source: Arc<catdb_connector_google_drive::DriveSource>,
+        source: Arc<mdreader_connector_google_drive::DriveSource>,
         resolver: Arc<CloudCredentialResolver>,
         profile: CloudAuthorizationProfile,
         acceptance: NativeMarkdownWriteAcceptance,
@@ -423,13 +423,13 @@ impl DriveMarkdownDocumentSource {
         }
     }
 
-    fn source(&self) -> Result<&catdb_connector_google_drive::DriveSource, CloudDocumentError> {
+    fn source(&self) -> Result<&mdreader_connector_google_drive::DriveSource, CloudDocumentError> {
         self.source
             .as_deref()
             .ok_or(CloudDocumentError::ProtocolFailed)
     }
 
-    fn metadata(row: catdb_connectors::SourceRow) -> Result<MarkdownMetadata, CloudDocumentError> {
+    fn metadata(row: catdb_sdk::connectors::SourceRow) -> Result<MarkdownMetadata, CloudDocumentError> {
         let name = string(&row.value, "name")?;
         Ok(MarkdownMetadata {
             key: SourceRecordKey::new(row.key.clone()),
@@ -563,7 +563,7 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         check_lifecycle(self.lifecycle.as_ref()).await?;
-        let cursor = catdb_connector_google_drive::DriveChangeCursor::from_bytes(cursor.0.clone())
+        let cursor = mdreader_connector_google_drive::DriveChangeCursor::from_bytes(cursor.0.clone())
             .map_err(map_source_error)?;
         let outcome = self
             .source()?
@@ -572,10 +572,10 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
             .map_err(map_source_error)?;
         check_lifecycle(self.lifecycle.as_ref()).await?;
         match outcome {
-            catdb_connector_google_drive::DriveChangeOutcome::RebuildRequired => {
+            mdreader_connector_google_drive::DriveChangeOutcome::RebuildRequired => {
                 Err(CloudDocumentError::ResetCursor)
             }
-            catdb_connector_google_drive::DriveChangeOutcome::Page {
+            mdreader_connector_google_drive::DriveChangeOutcome::Page {
                 events,
                 next_cursor,
                 checkpoint,
@@ -590,12 +590,12 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
                     changes: events
                         .into_iter()
                         .map(|event| match event {
-                            catdb_connector_google_drive::DriveChangeEvent::Deleted { file_id } => {
+                            mdreader_connector_google_drive::DriveChangeEvent::Deleted { file_id } => {
                                 MarkdownChangeEvent::Deleted {
                                     key: SourceRecordKey::new(file_id),
                                 }
                             }
-                            catdb_connector_google_drive::DriveChangeEvent::Upserted {
+                            mdreader_connector_google_drive::DriveChangeEvent::Upserted {
                                 file_id,
                             } => MarkdownChangeEvent::Upsert {
                                 key: SourceRecordKey::new(file_id),
@@ -647,7 +647,7 @@ impl MarkdownDocumentSource for DriveMarkdownDocumentSource {
 /// and guarded-write invariants shared by both provider implementations.
 #[cfg(feature = "dropbox-connector")]
 pub(crate) struct DropboxMarkdownDocumentSource {
-    source: Option<Arc<catdb_connector_dropbox::DropboxSource>>,
+    source: Option<Arc<mdreader_connector_dropbox::DropboxSource>>,
     lifecycle: Arc<dyn DocumentLifecycle>,
     write_operations: Arc<dyn GuardedMarkdownDocumentOperations>,
     write_capability: MarkdownWriteCapability,
@@ -656,7 +656,7 @@ pub(crate) struct DropboxMarkdownDocumentSource {
 #[cfg(feature = "dropbox-connector")]
 impl DropboxMarkdownDocumentSource {
     pub(crate) fn new(
-        source: Arc<catdb_connector_dropbox::DropboxSource>,
+        source: Arc<mdreader_connector_dropbox::DropboxSource>,
         resolver: Arc<CloudCredentialResolver>,
         profile: CloudAuthorizationProfile,
         acceptance: NativeMarkdownWriteAcceptance,
@@ -684,13 +684,13 @@ impl DropboxMarkdownDocumentSource {
         }
     }
 
-    fn source(&self) -> Result<&catdb_connector_dropbox::DropboxSource, CloudDocumentError> {
+    fn source(&self) -> Result<&mdreader_connector_dropbox::DropboxSource, CloudDocumentError> {
         self.source
             .as_deref()
             .ok_or(CloudDocumentError::ProtocolFailed)
     }
 
-    fn metadata(row: catdb_connectors::SourceRow) -> Result<MarkdownMetadata, CloudDocumentError> {
+    fn metadata(row: catdb_sdk::connectors::SourceRow) -> Result<MarkdownMetadata, CloudDocumentError> {
         let name = string(&row.value, "name")?;
         let display_path = string(&row.value, "path")?;
         Ok(MarkdownMetadata {
@@ -868,7 +868,7 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
         context: &CloudIoContext,
     ) -> Result<MarkdownChangePage, CloudDocumentError> {
         check_lifecycle(self.lifecycle.as_ref()).await?;
-        let cursor = catdb_connector_dropbox::DropboxChangeCursor::from_bytes(cursor.0.clone())
+        let cursor = mdreader_connector_dropbox::DropboxChangeCursor::from_bytes(cursor.0.clone())
             .map_err(map_source_error)?;
         let outcome = self
             .source()?
@@ -877,10 +877,10 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
             .map_err(map_source_error)?;
         check_lifecycle(self.lifecycle.as_ref()).await?;
         match outcome {
-            catdb_connector_dropbox::DropboxChangeOutcome::RebuildRequired => {
+            mdreader_connector_dropbox::DropboxChangeOutcome::RebuildRequired => {
                 Err(CloudDocumentError::ResetCursor)
             }
-            catdb_connector_dropbox::DropboxChangeOutcome::Page {
+            mdreader_connector_dropbox::DropboxChangeOutcome::Page {
                 events,
                 next_cursor,
                 checkpoint,
@@ -895,12 +895,12 @@ impl MarkdownDocumentSource for DropboxMarkdownDocumentSource {
                     changes: events
                         .into_iter()
                         .map(|event| match event {
-                            catdb_connector_dropbox::DropboxChangeEvent::Deleted { path_lower } => {
+                            mdreader_connector_dropbox::DropboxChangeEvent::Deleted { path_lower } => {
                                 MarkdownChangeEvent::Deleted {
                                     key: SourceRecordKey::new(path_lower),
                                 }
                             }
-                            catdb_connector_dropbox::DropboxChangeEvent::Upserted {
+                            mdreader_connector_dropbox::DropboxChangeEvent::Upserted {
                                 path_lower,
                             } => MarkdownChangeEvent::Upsert {
                                 key: SourceRecordKey::new(path_lower),

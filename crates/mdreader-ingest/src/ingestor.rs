@@ -77,11 +77,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use catdb_engine::{
+use catdb_sdk::engine::{
     qualify, EngineResult, IngestContext, IngestRequest, IngestStats, IngestWrite, Ingestor,
 };
-use catdb_ir::{CatOperation, Provenance};
-use catdb_storage::{ChunkRow, DocumentRow, LinkRow, SectionRow, StaleTarget};
+use catdb_sdk::ir::{CatOperation, Provenance};
+use catdb_sdk::storage::{ChunkRow, DocumentRow, LinkRow, SectionRow, StaleTarget};
 use mdreader_domain::extract::{architecture, decision, SourceDocument};
 use uuid::Uuid;
 
@@ -118,7 +118,7 @@ impl MarkdownIngestor {
     /// A markdown ingestor splitting at an explicit token limit. A different
     /// limit produces different chunk *boundaries* for the same source —
     /// that is a chunker change, so the accompanying
-    /// [`DomainRegistration`](catdb_engine::DomainRegistration) must carry a
+    /// [`DomainRegistration`](catdb_sdk::engine::DomainRegistration) must carry a
     /// distinct `chunker_version` (the engine rotates the index version and
     /// forces a full re-chunk when it changes).
     pub fn with_chunk_token_limit(chunk_token_limit: u32) -> Self {
@@ -333,14 +333,14 @@ impl Ingestor for MarkdownIngestor {
         let files = match &self.source_root {
             Some(root) => {
                 if req.root != root.path {
-                    return Err(catdb_engine::EngineError::Ingest(format!(
+                    return Err(catdb_sdk::engine::EngineError::Ingest(format!(
                         "import root {} is not the retained source {}",
                         req.root.display(),
                         root.path.display()
                     )));
                 }
                 root.verify()
-                    .map_err(|error| catdb_engine::EngineError::Ingest(error.to_string()))?;
+                    .map_err(|error| catdb_sdk::engine::EngineError::Ingest(error.to_string()))?;
                 scan_source_root(root, &scan_options)?
             }
             None => scan_root(&req.root, &scan_options)?,
@@ -505,12 +505,12 @@ impl Ingestor for MarkdownIngestor {
             for extraction in [decision::extract(&corpus), architecture::extract(&corpus)] {
                 store
                     .record(&extraction)
-                    .map_err(|err| catdb_engine::EngineError::Ingest(err.to_string()))?;
+                    .map_err(|err| catdb_sdk::engine::EngineError::Ingest(err.to_string()))?;
             }
         }
         if let Some(root) = &self.source_root {
             root.verify()
-                .map_err(|error| catdb_engine::EngineError::Ingest(error.to_string()))?;
+                .map_err(|error| catdb_sdk::engine::EngineError::Ingest(error.to_string()))?;
         }
         Ok(stats)
     }

@@ -9,20 +9,18 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-catdb-core = { path = "../../../../catdb/crates/catdb-core" }
+# The platform, as one versioned dependency. `engine` carries the embedded
+# database and pulls `embed` and `storage-sqlite` with it; the kernel,
+# connectors, federation, query, IR and validation are unconditional in the
+# facade, which is why they are not named here.
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["engine"] }
 # The three read-only adapters (filesystem, git, frontmatter) the federated
 # `Document` concept is declared over. The platform ships the sources; the
 # concept that binds them into one entity is the app's domain.
-catdb-connectors = { path = "../../../../catdb/crates/catdb-connectors" }
 # Executing ONE query across those adapters, with a per-source account of how
 # each one ran. `Federation::assemble_from` attributes that answer, so the
 # execution report and the per-field provenance describe the same read instead
 # of two reads that happen to agree.
-catdb-federation = { path = "../../../../catdb/crates/catdb-federation" }
-catdb-query = { path = "../../../../catdb/crates/catdb-query" }
-catdb-ir = { path = "../../../../catdb/crates/catdb-ir" }
-catdb-validation = { path = "../../../../catdb/crates/catdb-validation" }
-catdb-engine = { path = "../../../../catdb/crates/catdb-engine" }
 blake3 = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,7 +29,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-catdb-embed = { path = "../../../../catdb/crates/catdb-embed", default-features = false }
 blake3 = "1"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

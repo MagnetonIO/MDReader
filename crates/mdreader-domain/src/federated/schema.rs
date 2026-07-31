@@ -25,7 +25,7 @@
 //! `size` and `body` are required by the local adapters. Provider identity,
 //! media type, revision, and checksum are required by Drive and Dropbox.
 //! Schema mappings are **total** over their source attributes
-//! ([`Mapping::validate`](catdb_core::Mapping::validate)); leaving any of these
+//! ([`Mapping::validate`](catdb_sdk::core::Mapping::validate)); leaving any of these
 //! fields out would silently fork the semantic concept or invalidate a source
 //! mapping. The honest representation is one widened `Document`.
 //!
@@ -42,7 +42,7 @@
 //!
 //! [`Document::path`]: crate::federated::Document::path
 
-use catdb_core::{builtin::standard_typeside, Schema};
+use catdb_sdk::core::{builtin::standard_typeside, Schema};
 
 /// The federated schema's name.
 pub const SCHEMA: &str = "document";
