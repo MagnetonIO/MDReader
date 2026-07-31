@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/mdreader-connector-dropbox",
     "crates/mdreader-connector-google-drive",
+    "crates/mdreader-connector-local",
     "crates/mdreader-domain",
     "crates/mdreader-ingest",
     "crates/mdreader-presentation",
