@@ -246,6 +246,8 @@
 }
 
 .mobile-field input {
+  /* Smaller focused text makes iOS zoom/pan the entire reader viewport. */
+  font-size: max(16px, 1rem);
   width: 100%;
   min-height: 44px;
   padding: 0 0.8rem;

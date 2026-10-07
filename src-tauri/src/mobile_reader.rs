@@ -233,6 +233,10 @@ fn publish_import(
     // Sync recovery bytes too; source grant, metadata and completion share one
     // SQLite transaction and final retained-root verification.
     file.sync_all().map_err(|e| e.to_string())?;
+    root.try_clone_directory_handle()
+        .map_err(|e| e.to_string())?
+        .sync_all()
+        .map_err(|e| e.to_string())?;
     let (source,()) = store.add_local_source_with(&intent.name,root,|tx,source| {
         if !source.enabled { return Err(mdreader_core::ReaderError::Unavailable); }
         tx.execute("INSERT INTO device_documents_v1(id,name,source_id,revision,bytes) VALUES(?1,?2,?3,?4,?5)",params![intent.id,intent.name,source.id,intent.revision,intent.bytes])?;
@@ -260,6 +264,7 @@ fn pending_imports(store: &mut ReaderStore) -> Result<Vec<ImportIntent>, String>
         .query_map([],|r|Ok(ImportIntent{id:r.get(0)?,name:r.get(1)?,revision:r.get(2)?,bytes:r.get(3)?,parent_identity:r.get(4)?,root_identity:r.get(5)?}))?.collect::<Result<Vec<_>,_>>()).map_err(|e:rusqlite::Error|e.to_string())
 }
 fn recover_imports(store: &mut ReaderStore, directory: &Path) -> Result<DeviceLibrary, String> {
+    restore_published_imports(store, directory)?;
     // Only exact persisted intents are considered. Never crawl an app directory
     // or infer consent from a leftover file. Failed copies stay reserved/visible.
     for intent in pending_imports(store)? {
@@ -277,6 +282,34 @@ fn recover_imports(store: &mut ReaderStore, directory: &Path) -> Result<DeviceLi
         documents: list(store)?,
         pending,
     })
+}
+// iOS may move the entire data container when an app is updated. Rebind only
+// persisted published imports to the current native-owned directory, retaining
+// both directory object identities and the original source grant. This does
+// not discover files, accept replacement objects or revive a disabled source.
+fn restore_published_imports(store: &mut ReaderStore, directory: &Path) -> Result<(), String> {
+    schema(store)?;
+    let imports = store.with_library_connection(|db| {
+        db.prepare("SELECT i.id,i.name,i.revision,i.bytes,i.parent_identity,i.root_identity,d.source_id FROM device_import_intents_v1 i JOIN device_documents_v1 d ON d.id=i.id JOIN sources s ON s.id=d.source_id WHERE i.state='published' AND s.enabled=1 ORDER BY i.rowid LIMIT 1000")?
+            .query_map([], |r| Ok((ImportIntent { id:r.get(0)?, name:r.get(1)?, revision:r.get(2)?, bytes:r.get(3)?, parent_identity:r.get(4)?, root_identity:r.get(5)? },r.get::<_,String>(6)?)))?
+            .collect::<Result<Vec<_>,_>>()
+    }).map_err(|e:rusqlite::Error|e.to_string())?;
+    for (intent, source_id) in imports {
+        let root = intent_root(directory, &intent)?;
+        if let Some(source) = store.find_local_source(&root.path, &root.identity).map_err(|e|e.to_string())? {
+            if source.id != source_id || !source.enabled {
+                return Err("Imported source identity changed".into());
+            }
+            continue;
+        }
+        store.add_local_source_with(&intent.name, root, |_, source| {
+            if source.id != source_id || !source.enabled {
+                return Err(mdreader_core::ReaderError::Unavailable);
+            }
+            Ok(())
+        }).map_err(|e|e.to_string())?;
+    }
+    Ok(())
 }
 fn discard_import(store: &mut ReaderStore, directory: &Path, id: &str) -> Result<(), String> {
     let intent = pending_imports(store)?
@@ -539,6 +572,42 @@ pub async fn mobile_reader_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn app_container_relocation_preserves_exact_imports_and_never_revives_revoked_sources() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let old = sandbox.path().join("old-container");
+        fs::create_dir(&old).unwrap();
+        let docs = old.join("device-markdown-v1");
+        let mut store = ReaderStore::open(&old.join("reader-v1")).unwrap();
+        let text = "\u{feff}# Moved\r\n\r\nSearchable original bytes.\r\n";
+        let saved = import(&mut store, &docs, "moved.md".into(), text.into()).unwrap();
+        let revoked = import(&mut store, &docs, "revoked.md".into(), "# Hidden".into()).unwrap();
+        position(&mut store, &saved.id, &saved.revision, 3).unwrap();
+        store.with_library_connection(|db| db.execute("UPDATE device_documents_v1 SET pinned=1 WHERE id=?1", [&saved.id])).unwrap();
+        store.set_source_enabled(&revoked.source_id, false).unwrap();
+        drop(store);
+        let new = sandbox.path().join("new-container");
+        fs::rename(&old, &new).unwrap();
+        let mut store = ReaderStore::open(&new.join("reader-v1")).unwrap();
+        let library = recover_imports(&mut store, &new.join("device-markdown-v1")).unwrap();
+        assert_eq!(library.documents.len(), 1);
+        let actual = read(&mut store, &saved.id, Some(&saved.revision)).unwrap();
+        assert_eq!(actual.markdown, text);
+        assert_eq!(actual.document.source_id, saved.source_id);
+        assert!(actual.document.pinned);
+        assert_eq!(actual.document.line, 3);
+        assert_eq!(search(&mut store, "Searchable").unwrap().len(), 1);
+        assert!(read(&mut store, &revoked.id, None).is_err());
+        assert!(!store.list_sources().unwrap().iter().find(|source| source.id == revoked.source_id).unwrap().enabled);
+        // A replacement directory must not acquire the old grant, even if its
+        // Markdown bytes match. Keep the old object alive to avoid inode reuse.
+        let root = new.join("device-markdown-v1").join(&saved.id);
+        fs::rename(&root, root.with_extension("retained")).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("document.md"), text).unwrap();
+        assert!(recover_imports(&mut store, &new.join("device-markdown-v1")).is_err());
+        assert!(read(&mut store, &saved.id, None).is_err());
+    }
     #[test]
     fn interrupted_imports_reserve_quota_and_publish_grant_atomically_after_reopen() {
         let profile = tempfile::tempdir().unwrap();
