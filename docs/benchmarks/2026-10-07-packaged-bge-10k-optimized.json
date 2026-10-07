@@ -1,0 +1,3462 @@
+{
+  "kind": "actual-bge-packaged-service-scale",
+  "documents_requested": 10000,
+  "binary_sha256": "f64a8eb00ec82a6799fe84e5d5495f52d6080d348576b6f50384a71401d59314",
+  "binary_bytes": 149338560,
+  "harness_sha256": "55adb1d7cc2790a4ee61d3f1cd2e30e7a2804ebadf09fe0762a5bc256d398656",
+  "bundle": null,
+  "model_cache_before": {
+    "logical_bytes": 267612160,
+    "allocated_unique_bytes": 133824512,
+    "files": 16
+  },
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "machine": "arm64",
+  "build_class": "debug packaged bundle",
+  "actual_bge": true,
+  "touches_installed_profile": false,
+  "synthetic_only": true,
+  "query_samples_per_mode": 30,
+  "query_warmups_per_mode": 5,
+  "thresholds_ms": {
+    "exact_p95": 150,
+    "hybrid_p95": 1000
+  },
+  "failures": [],
+  "phases": [
+    {
+      "phase": "queued",
+      "elapsed_ms": 1.1864589999999176,
+      "embedded_reported": 0
+    },
+    {
+      "phase": "loading",
+      "elapsed_ms": 528.0975419999999,
+      "embedded_reported": 0
+    },
+    {
+      "phase": "embedding",
+      "elapsed_ms": 1030.3477920000003,
+      "embedded_reported": 13
+    },
+    {
+      "phase": "done",
+      "elapsed_ms": 992128.282542,
+      "embedded_reported": 10000
+    }
+  ],
+  "corpus_sha256": "8c24f72a975beaa2eb6dad893e16fddeaaeb673b5210ddfaee4d2467a5623b93",
+  "corpus_bytes": 3301968,
+  "fixture_topics": 20,
+  "one_section_per_document": true,
+  "startup_ms": 49.540125000000046,
+  "cold_lexical_index_ms": 1919.924292,
+  "lexical_status": {
+    "chunks": 10000,
+    "documents": 10000,
+    "embedded": 0,
+    "model": "bge-small-en-v1.5"
+  },
+  "index_before_vectors": {
+    "logical_bytes": 38254210,
+    "allocated_unique_bytes": 38477824,
+    "files": 8
+  },
+  "model_ready_and_first_query_ms": 218.0478749999999,
+  "queued_index_and_embedding_ms": 992128.316,
+  "fully_indexed_status": {
+    "chunks": 10000,
+    "documents": 10000,
+    "embedded": 10000,
+    "model": "bge-small-en-v1.5"
+  },
+  "measurements": {
+    "exact": {
+      "count": 30,
+      "p50_ms": 1.815374999978303,
+      "p95_ms": 5.307750000042688,
+      "max_ms": 5.4097500000125365,
+      "failed_samples": 0,
+      "samples": [
+        {
+          "query": "photovoltaic",
+          "elapsed_ms": 3.135082999961014,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-00000.md",
+              "revision": "b242896d9889bbaa99b92291da0da6f2b2929783641d9356d931924edcd0300c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "solar/case-00020.md",
+              "revision": "576bd31089f96d3bfae6cb4935c49af7e2cc44748899c5818d6786bb890f17e4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "solar/case-00040.md",
+              "revision": "07d8777de1770cc6e1472eccb60a8e55699e3fa1588e79c64ba30ef53af6d69e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "sourdough",
+          "elapsed_ms": 4.6571249999942665,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-00001.md",
+              "revision": "38b1afe8318a558142e16f04e9a25fb616baccbc1df9cda54ceeb2076fc2f046",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "bread/case-00021.md",
+              "revision": "28c73b5b9a8f1d1b17cb5e9fdcb25ba238eeade2f1ec7a8899ae3770e8a21348",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "bread/case-00041.md",
+              "revision": "f684252bcb1401b5fd29fdfedff5c4e180d7f6e17d771d5bf8e7286615353002",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "password",
+          "elapsed_ms": 2.3936670000921367,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-00002.md",
+              "revision": "296304785298ba5d9734194684843f8ba33d800e62dc91e88f45cb7ff50f6f73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "security/case-00022.md",
+              "revision": "fa0cb70ce6ed0da02c27f030a6d6b6d879c438114dd39aa7b2c8d306d1b61292",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "security/case-00042.md",
+              "revision": "e272d7d37e6d5fb7e85e83f05ee119356c324cf643b3f41c21986360bdb8b0e0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "compost",
+          "elapsed_ms": 4.967999999962558,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-00003.md",
+              "revision": "933fba60381b24a76c2c6346fadb4ecd18b72a71c9b1027f16fbffdcc8a605ad",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "garden/case-00043.md",
+              "revision": "db090c466a5aae4f09bf9eb1662a4be0357f6ec0ddcc1bca02c9bb48ac4b77e0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "telescope",
+          "elapsed_ms": 3.992999999923086,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-00004.md",
+              "revision": "5aba32d91b6dd2b1382fd60277114ffe6050a8eca72644caa0b83652e299b925",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "astronomy/case-00024.md",
+              "revision": "64a0db3e662b8c21485b8d5798958fecd0ceeb42ec281d2f4ff625406b0d75a8",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "astronomy/case-00044.md",
+              "revision": "aedac050c498ad534ad1b58964da3613e8e20fed3cf0e73f2928e8f2910f6da2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "lithium",
+          "elapsed_ms": 4.4832910000423,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00005.md",
+              "revision": "3b6724cd8c3e1177852860b8dfe412ecba076a0a50a0c797b45575a5558a34f4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "batteries/case-00025.md",
+              "revision": "1f15a08821361a2b4ce7ea50ac5668b544c016be4c2d92b6770223d97b033b52",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "batteries/case-00045.md",
+              "revision": "7d7781f78b9722c19c0c51b73be4c57961d8a2df3e98f4fcfc877f2d14622bb2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "suspension",
+          "elapsed_ms": 5.4097500000125365,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-00006.md",
+              "revision": "0aff7492158f9034414e83071dd4d8f6e989206ad541fcb8b581564e580f6246",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "bridges/case-00026.md",
+              "revision": "cade47e787a7330eff1f3ee508b9f1367f71eb9862c75747b3447b303fd3ad27",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "bridges/case-00046.md",
+              "revision": "7d27c3bd1dc948698b04a492b3a0eb364e1a322bd468d29bbdf4e9cd1cab96a5",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "piano",
+          "elapsed_ms": 2.5587919999452424,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-00007.md",
+              "revision": "7447cd66ad1bdd09aa817377737e1f3a1e6657f9dbc6609ccadf2d450ece0d65",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "piano/case-00027.md",
+              "revision": "b5a199db9611b0edf4c7372de08407aa94557466f6547f1c71cb258a05a8446f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "piano/case-00047.md",
+              "revision": "4761025484ead1ba18b914e5fc1e03f7588c91cde4e95a075bb1daa4ea239f28",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "filtration",
+          "elapsed_ms": 2.388125000038599,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-00008.md",
+              "revision": "57655668f057a3644ec8a0ad6e0a64c56805c08569daeaceb73621cb8b03601c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "water/case-00028.md",
+              "revision": "a26008b707357bdda0173857990b8506cce660155f7de91c1ce2001dde6355c4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "water/case-00048.md",
+              "revision": "c182944abe25f42b3e0649d9a36744a1ba7f8bccd70c53527a8054587186ed84",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "railway",
+          "elapsed_ms": 2.3407500000303116,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-00009.md",
+              "revision": "b37c0d58cddff7ca8c651328129e1055f18e0b8c7fa4f224e3a791a85886582f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "rail/case-00029.md",
+              "revision": "64bb49d147ade1dbe2f66f27b9eff5500f3d7b38244667dd7e9b6bd8acfb86f1",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "rail/case-00049.md",
+              "revision": "5de7b7a218ee1ec36a355c80ad195efe34ee879297a9026b898025e35c15df40",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "volcanic",
+          "elapsed_ms": 2.9231669999489895,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "volcano/case-00010.md",
+              "revision": "3c14f4de220dbdb583bde31ea405817a3f78ac0eed0409ef34602bba8252fe78",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "volcano/case-00030.md",
+              "revision": "a830156867c6216fef176108e1cd9e7db3673f8da2ce00dac6e870da6ebb58b7",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "volcano/case-00050.md",
+              "revision": "cbbe5bf4ef3cfebc364c0df08ae4b319f6cb3d669777596a6afbedfa920b83c3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "backups",
+          "elapsed_ms": 5.00704199998836,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "backup/case-00011.md",
+              "revision": "127a8fa39c5b297c24b3ae33ecf7ef7eb0dc009f14f28eb590e1eadf06a5c4f9",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "backup/case-00031.md",
+              "revision": "d032be1cf52f3268f38543387c7b8290594c0f0ac16ad9042cada717f027c5fa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "backup/case-00051.md",
+              "revision": "dda3c7315c7dc196213d40ef3f22d002b1081975e2b1949fa6b8c486180955fd",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "migratory",
+          "elapsed_ms": 5.307750000042688,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "migration/case-00012.md",
+              "revision": "80870f3a3d364837135c3a0f486d75d327a2f2c38ed859325b350cfa0916e42a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "migration/case-00032.md",
+              "revision": "796ac5517bc9232189e74c70f3530aaff01dd55a89f999a439a5fe380ee7b99b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "migration/case-00052.md",
+              "revision": "2227c06dd39ff4a8b76c6330152baeea5171297de3730ad0771463bd988144ff",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "compiler",
+          "elapsed_ms": 4.480542000010246,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "compiler/case-00013.md",
+              "revision": "98b688163c8e5360de17cc149931633e71720c84dff945693a0c3e60963e0474",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "compiler/case-00033.md",
+              "revision": "b6a0a48277657751957c103558833b9da9f2697e7adb11e2a1bc5a282d94d78e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "compiler/case-00053.md",
+              "revision": "392e12e69a46adacd69eda366396ee9324550ab634a7dd6b230c0fad209d88e3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.634857257428555,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "wildfire",
+          "elapsed_ms": 1.923833999967428,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "wildfire/case-00014.md",
+              "revision": "2ea4e132b7d9511ce36b984b16531bf44aee9e672bb01778044027f0f58e4cb8",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "wildfire/case-00034.md",
+              "revision": "1da3f594a73d9198ab98c5d67912024d8a4d85aec73638ac37da992b2bed9dcd",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "wildfire/case-00054.md",
+              "revision": "be2a3475207c91849525f6d71edc62be81eb3782a54f79cc4cda8d184c080bd0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "coral",
+          "elapsed_ms": 1.3291249999838328,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "marine/case-00015.md",
+              "revision": "11ae64c6696858f57eb8c69a1efd1e9d9d235189dbad6946885bca33cc17f1db",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.989441103581094,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "marine/case-00035.md",
+              "revision": "ec94e667c3838c3755b64abd0e882bf931ed0f8ffd04cca4c4fbec2a80c5164e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.989441103581094,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "marine/case-00055.md",
+              "revision": "3b6c85c61bd1b6d3b351b2fd62741854c3295bc819010ea611bc20d5459cd1b5",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.989441103581094,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "glacier",
+          "elapsed_ms": 1.241999999933796,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "glacier/case-00016.md",
+              "revision": "d9151444de937879388c011182483256f2471d09c1a843c0f7049cd8e52f186e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.90915329751596,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "glacier/case-00036.md",
+              "revision": "722e71d7da0c61b836d664712d73902dfea1a5ae8c8bb2fd84aafac701823f8e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.90915329751596,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "glacier/case-00056.md",
+              "revision": "b5bdfc93cee4d5ad37ec5e78a91b04e33a983deb877ae8fb5e8091350fd84c7f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.90915329751596,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "microphone",
+          "elapsed_ms": 1.354749999904925,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "audio/case-00017.md",
+              "revision": "0d62d898c5915525ced15e4d3ce4f87554aff1791ba115051e45b72613f27318",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "audio/case-00037.md",
+              "revision": "727f90a589d067191e8c67df1d7db664de5fed774ff4a021a776e11a03a21e39",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "audio/case-00057.md",
+              "revision": "50032d8cbe6bf85499f6f5e3e4bd83359aee6205fca67e926963245e3d5c4c53",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "erosion",
+          "elapsed_ms": 1.4112909999539625,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "soil/case-00018.md",
+              "revision": "3898b57c505b51f3453d492fa2c3f6de3d241a8d454e23c752e2b1029ab58cfa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "soil/case-00038.md",
+              "revision": "e37ca354886dc478079cde0d2c8ca9f2a75f1cfc40846997af36fdb17809e769",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "soil/case-00058.md",
+              "revision": "b75fa9002a626d32cd3c36140ee647bd359e537c625887d64f72bada9c33a674",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "vaccine",
+          "elapsed_ms": 1.229791000014302,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "vaccines/case-00019.md",
+              "revision": "d0fd625ab5de5fca8612d2ee5bcbc858aa3b61c999256a32eb39ca71cccbb153",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "vaccines/case-00039.md",
+              "revision": "3774c10fe9c4a66aef45092a9c4dd376eaaf3e48844b18d35637e09f0c3d4a21",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "vaccines/case-00059.md",
+              "revision": "fc8b6dc87ea26eefec9e3183ab8a45640234e0cf3ccf57980e299a057bf0e904",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.565496240938935,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "photovoltaic",
+          "elapsed_ms": 1.1415830000487404,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-00000.md",
+              "revision": "b242896d9889bbaa99b92291da0da6f2b2929783641d9356d931924edcd0300c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "solar/case-00020.md",
+              "revision": "576bd31089f96d3bfae6cb4935c49af7e2cc44748899c5818d6786bb890f17e4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "solar/case-00040.md",
+              "revision": "07d8777de1770cc6e1472eccb60a8e55699e3fa1588e79c64ba30ef53af6d69e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "sourdough",
+          "elapsed_ms": 1.3733330000604838,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-00001.md",
+              "revision": "38b1afe8318a558142e16f04e9a25fb616baccbc1df9cda54ceeb2076fc2f046",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "bread/case-00021.md",
+              "revision": "28c73b5b9a8f1d1b17cb5e9fdcb25ba238eeade2f1ec7a8899ae3770e8a21348",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "bread/case-00041.md",
+              "revision": "f684252bcb1401b5fd29fdfedff5c4e180d7f6e17d771d5bf8e7286615353002",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.611503928956459,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "password",
+          "elapsed_ms": 1.3261670000019876,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-00002.md",
+              "revision": "296304785298ba5d9734194684843f8ba33d800e62dc91e88f45cb7ff50f6f73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "security/case-00022.md",
+              "revision": "fa0cb70ce6ed0da02c27f030a6d6b6d879c438114dd39aa7b2c8d306d1b61292",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "security/case-00042.md",
+              "revision": "e272d7d37e6d5fb7e85e83f05ee119356c324cf643b3f41c21986360bdb8b0e0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 5.051401783277852,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "compost",
+          "elapsed_ms": 1.815374999978303,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-00003.md",
+              "revision": "933fba60381b24a76c2c6346fadb4ecd18b72a71c9b1027f16fbffdcc8a605ad",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "garden/case-00043.md",
+              "revision": "db090c466a5aae4f09bf9eb1662a4be0357f6ec0ddcc1bca02c9bb48ac4b77e0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "telescope",
+          "elapsed_ms": 1.1810839999952805,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-00004.md",
+              "revision": "5aba32d91b6dd2b1382fd60277114ffe6050a8eca72644caa0b83652e299b925",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "astronomy/case-00024.md",
+              "revision": "64a0db3e662b8c21485b8d5798958fecd0ceeb42ec281d2f4ff625406b0d75a8",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "astronomy/case-00044.md",
+              "revision": "aedac050c498ad534ad1b58964da3613e8e20fed3cf0e73f2928e8f2910f6da2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "lithium",
+          "elapsed_ms": 1.1692499999753636,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00005.md",
+              "revision": "3b6724cd8c3e1177852860b8dfe412ecba076a0a50a0c797b45575a5558a34f4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "batteries/case-00025.md",
+              "revision": "1f15a08821361a2b4ce7ea50ac5668b544c016be4c2d92b6770223d97b033b52",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "batteries/case-00045.md",
+              "revision": "7d7781f78b9722c19c0c51b73be4c57961d8a2df3e98f4fcfc877f2d14622bb2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.682280762791057,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "suspension",
+          "elapsed_ms": 1.192000000060034,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-00006.md",
+              "revision": "0aff7492158f9034414e83071dd4d8f6e989206ad541fcb8b581564e580f6246",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "bridges/case-00026.md",
+              "revision": "cade47e787a7330eff1f3ee508b9f1367f71eb9862c75747b3447b303fd3ad27",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "bridges/case-00046.md",
+              "revision": "7d27c3bd1dc948698b04a492b3a0eb364e1a322bd468d29bbdf4e9cd1cab96a5",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.588384758189632,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "piano",
+          "elapsed_ms": 1.373957999931008,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-00007.md",
+              "revision": "7447cd66ad1bdd09aa817377737e1f3a1e6657f9dbc6609ccadf2d450ece0d65",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "piano/case-00027.md",
+              "revision": "b5a199db9611b0edf4c7372de08407aa94557466f6547f1c71cb258a05a8446f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "piano/case-00047.md",
+              "revision": "4761025484ead1ba18b914e5fc1e03f7588c91cde4e95a075bb1daa4ea239f28",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "filtration",
+          "elapsed_ms": 1.2577500000361397,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-00008.md",
+              "revision": "57655668f057a3644ec8a0ad6e0a64c56805c08569daeaceb73621cb8b03601c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "water/case-00028.md",
+              "revision": "a26008b707357bdda0173857990b8506cce660155f7de91c1ce2001dde6355c4",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "water/case-00048.md",
+              "revision": "c182944abe25f42b3e0649d9a36744a1ba7f8bccd70c53527a8054587186ed84",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        },
+        {
+          "query": "railway",
+          "elapsed_ms": 1.1420829999906346,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-00009.md",
+              "revision": "b37c0d58cddff7ca8c651328129e1055f18e0b8c7fa4f224e3a791a85886582f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 1,
+              "semantic_rank": null
+            },
+            {
+              "path": "rail/case-00029.md",
+              "revision": "64bb49d147ade1dbe2f66f27b9eff5500f3d7b38244667dd7e9b6bd8acfb86f1",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 2,
+              "semantic_rank": null
+            },
+            {
+              "path": "rail/case-00049.md",
+              "revision": "5de7b7a218ee1ec36a355c80ad195efe34ee879297a9026b898025e35c15df40",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 4.658448319139254,
+              "lexical_rank": 3,
+              "semantic_rank": null
+            }
+          ]
+        }
+      ]
+    },
+    "semantic": {
+      "count": 30,
+      "p50_ms": 136.7409999999154,
+      "p95_ms": 180.36549999999352,
+      "max_ms": 213.22345800001585,
+      "failed_samples": 0,
+      "samples": [
+        {
+          "query": "generate electricity from sunshine",
+          "elapsed_ms": 128.96641600002567,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-08080.md",
+              "revision": "200abba1a7c1eceba9db291cab522169de3636ae55cdb29bbb7db5683274a351",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.687861293554306,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "solar/case-01400.md",
+              "revision": "506b21725617483759cc1c954c24309ae656cdfa7cf93117836fac9afd4e9c2d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6878116726875305,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "solar/case-05820.md",
+              "revision": "938a29dba23586eca09093b4e011a603b5f5a7f03fe69950598c4e3da00f6551",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.687592476606369,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "bake a loaf using a living flour starter",
+          "elapsed_ms": 180.36549999999352,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-04821.md",
+              "revision": "828b69e9597e783c9e8a0c132f2b5d0f02764c63e56df61100e3faeef2cfe036",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7500791698694229,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bread/case-00741.md",
+              "revision": "63fd74105da0272de3314fa3c1ff6fe6b34f18f69418e9894a50aa3f3da1f75d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7495144903659821,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bread/case-04641.md",
+              "revision": "e1f9a240e89fd723baf3e778ddb01799edc7f60198969237f84ba10c0aa7bb9b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7494179308414459,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect a login account with a second verification factor",
+          "elapsed_ms": 152.961166999944,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-04942.md",
+              "revision": "7a49a7265b2ec89586fb644c8e24e14d12f64b73236aea62aa9d3f8a16edee9f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.761846050620079,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "security/case-01282.md",
+              "revision": "f7113b685c05b2e1cd106aaaa3539589bc2e826aaff44ee5c667a244abe788bc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7614775896072388,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "security/case-03282.md",
+              "revision": "384d50d8c7163f05f5882620bfb4f06b332b17266553bb33580d43d172c07e4c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.761272594332695,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "turn kitchen scraps into food for vegetable plants",
+          "elapsed_ms": 128.71999999993022,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-02003.md",
+              "revision": "3d9eacc2763b86d4f24d163d1a6c55a00359f9ef892b4fb07385d99de7c98efa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8075251430273056,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "garden/case-00103.md",
+              "revision": "e6d627a54bc6811fe30baeba2853f0fca784b5db0a327d7afb4c900729bb675b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8074265718460083,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8071351200342178,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "observe distant planets through an optical instrument",
+          "elapsed_ms": 125.35829099999773,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-01104.md",
+              "revision": "69dde1f6e364eb1091334d91690dce80ca903df4b70d9bb0cef96ace40791bff",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7738721817731857,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "astronomy/case-00204.md",
+              "revision": "c96166d92a9acf7226d1f883e9b3a8fc7419f6fca3f3393844219818c0bc4fe3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7734100967645645,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "astronomy/case-09484.md",
+              "revision": "1b7f70fc38c899459fd2c5d6c23793bcc7400938c3118f0ff003057f46b4d3e6",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7733110189437866,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "store electrical energy in a rechargeable cell",
+          "elapsed_ms": 172.9728330000171,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00205.md",
+              "revision": "9d61f6c5f616ac0ba5258372b63a4f97f738c0e50587264f73040474c7b3f84a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7599587738513947,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "batteries/case-00305.md",
+              "revision": "5ae18a0f7ed94d7629f9e7b903dffd6b3cfcc3047f286b7e75d7335026abaadb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7599109411239624,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "batteries/case-02025.md",
+              "revision": "97419071ae6cfcbd4685fc3af6e61a7d9d7dabd62201a22e19d53456570ff5c2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7597639858722687,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "carry traffic across a river using cables and towers",
+          "elapsed_ms": 213.22345800001585,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-08726.md",
+              "revision": "30d0179b65a3e54ef89846a5c270cf796c24a06abd7ea87bb8abbe6da4b886db",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.669295459985733,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bridges/case-02526.md",
+              "revision": "66a0916f68e61594b222da219e8469c0f835bb2f0ce11aa385537f4c8e22e165",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6687680780887604,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bridges/case-00306.md",
+              "revision": "3ea1a46c2caabb3803358639b56dd0e40fd509960bd128562b7e4ae15096c594",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6687541007995605,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "learn to play a keyboard instrument with both hands",
+          "elapsed_ms": 155.53079200003594,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-05287.md",
+              "revision": "0b4fbb09e9180dc6e6732aeb27e3042bc233e85a40794c831c6859793e2ce485",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7787073850631714,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "piano/case-00307.md",
+              "revision": "77906ef482d7d430ac72ddd9da8ad1bc760cad98268fd7b69d7863c456814bf0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7786146700382233,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "piano/case-06447.md",
+              "revision": "d903fa13a357517d75a37844977b6274b3197452ad7e1d6589d2e38dfba7ae44",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7785601913928986,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "remove impurities from water before people drink it",
+          "elapsed_ms": 158.28012500003297,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-01408.md",
+              "revision": "b8bc7a38b5140488a489e56d06fe267472fd09d9bfc7813d1dbb3d3c4289a61d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7296269834041595,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "water/case-00308.md",
+              "revision": "b4534634719862397c2c2e452c5b2aacd402cd9419da0e85d2e5f28d64b02913",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7295983135700226,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "water/case-03728.md",
+              "revision": "f69bf4436411e429d15bd916bc5050ac59266ee70f8e2593bea3707f5c824d9e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7295243144035339,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "keep trains safely separated on a shared track",
+          "elapsed_ms": 149.86983400001463,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-03129.md",
+              "revision": "0240546763d38ee5a30e365f43b66c82a89907bba09db9d934f93dee565f3c73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7735038697719574,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "rail/case-00309.md",
+              "revision": "41a16602908c26c0c72a86efdd373b2cc83b7ad6851dd10279019fa9900e0137",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7734545022249222,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "rail/case-04429.md",
+              "revision": "3b83e11bcf7571be6661dfd00653fb37169d416df9719ec3d2be73add06fa57b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7732428163290024,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "watch changes in a mountain that may release molten rock",
+          "elapsed_ms": 131.65154199998597,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "volcano/case-03750.md",
+              "revision": "388b7805a58f82090570bd98ad2aabde5f43076d6b2d9a93fe17cd3d2983a936",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7379424571990967,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "volcano/case-02150.md",
+              "revision": "ee1f314bab42d37d9f321861f92f916d91471854d337084454810cd35daa18ee",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7377429008483887,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "volcano/case-03650.md",
+              "revision": "4978f9824074e5b29763b0d3290f1b960cfd6175ae3836f33b7f6dbcdad0e836",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7376744449138641,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "restore computer files after a storage device fails",
+          "elapsed_ms": 175.88399999999638,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "backup/case-06451.md",
+              "revision": "6abbd30c976cc6d506c94d7d52a93a63401277362dca69b29fd944fd4ccc7f2f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7375887036323547,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "backup/case-01611.md",
+              "revision": "dd5e44434e35d71fa8c2162c155e83a7f9cdbbc046744fd5d11d39720f8ede53",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7365098297595978,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "backup/case-01731.md",
+              "revision": "875c95b8a063957473be5b530e2c85894aaddb19b39a103571425279849083ce",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7362973988056183,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "how seasonal birds find their way between distant habitats",
+          "elapsed_ms": 132.09729099992273,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "migration/case-00292.md",
+              "revision": "f4f769e02f9c1fc9b4be9bb6002e895ac93381e7cc3b5b475aa82aa422c051cc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8391993492841721,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "migration/case-01132.md",
+              "revision": "01a236e18387ea9f57d635893f20374f7dfe94493db474bc4f7b0eec7c137425",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8388469070196152,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "migration/case-00332.md",
+              "revision": "f4592f3a5f489adebde5ac68c5a520858d06cbd9ae97ca79d9f6564800aae00a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8388464897871017,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "translate a programming language into efficient machine instructions",
+          "elapsed_ms": 132.6688330000252,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "compiler/case-00313.md",
+              "revision": "51d9f912df34ab8832930452673acc9ff6ebf82e64ae37c41e98ad5241d659eb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.739374428987503,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "compiler/case-00213.md",
+              "revision": "8dadd278f2406a4804403743817d5553aa97477f8195becb061d41e5f772ac87",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.738773763179779,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "compiler/case-00253.md",
+              "revision": "9c9fe1cef351a7a133be6979669f2e1a41f987f8e4fd1d008093776826a923c3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7386613488197327,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "reduce the chance that a forest fire spreads to homes",
+          "elapsed_ms": 124.8910420000584,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "wildfire/case-01714.md",
+              "revision": "ee3ae4362c2d799ff607f2ea1315364f582155cda98e51a55e0f2eb99de5c874",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7523255199193954,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "wildfire/case-08514.md",
+              "revision": "58c8a561c5dc0b2d08e647f3129972e11297db533b14940c69ddcbc0a9d194ae",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7520836293697357,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "wildfire/case-00674.md",
+              "revision": "2c39a97a62ffc932a3f34ee585de72652e6ecddd50c79b9f3f120bf3f833997e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7515992373228073,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect underwater reef habitats from warming seas",
+          "elapsed_ms": 125.45758299995668,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "marine/case-00235.md",
+              "revision": "853c47ca50efaa93d8c5f1cdb6dbf36e5f8729b7181d1d01d8041dd43402d71e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8443790376186371,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "marine/case-00355.md",
+              "revision": "b81e1a7383fd5ad89835231ba94774073a5d7c3b1c69140714050672b862460f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8443408161401749,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "marine/case-04215.md",
+              "revision": "43582aacb551ba31aaf1eaf4aa875b1b586e499a8b75591d41813624358b8bca",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8443076908588409,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "why a large mass of mountain ice slowly flows downhill",
+          "elapsed_ms": 132.37183299997923,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "glacier/case-03736.md",
+              "revision": "b1979435a72aba69d26800d4d0dd393705b3378e27d43fee5368189f105b5387",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8464155942201614,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "glacier/case-06416.md",
+              "revision": "effb56dbf5ca1e5416f546a6e03f0f3f8dc3577ea7f6b15e708f747d9feb6a0d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8458257615566254,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "glacier/case-02036.md",
+              "revision": "d36b00a07a8833cec1c74b75c9074f3c8f7ea2a177865e5fdca0616a21279a24",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8457103371620178,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "capture clear speech with a sound recording device",
+          "elapsed_ms": 126.0479170000508,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "audio/case-00317.md",
+              "revision": "e9a44d9192b8b62019d0d4dea08f78f127b847f5955fd36f56b95930c6895cc0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7284172177314758,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "audio/case-06117.md",
+              "revision": "9a38d1d5b0a05a5f9b58aecadb9bbf54b1d5139e9a383a3692117de0843aa51b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7283431589603424,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "audio/case-01437.md",
+              "revision": "d9a9fa2702590c0903697c02ec439af3941b29638080b638e86878311e1e8316",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7282596826553345,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "stop rain from washing fertile ground down a hillside",
+          "elapsed_ms": 127.26170799999181,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "soil/case-09018.md",
+              "revision": "b1461f698b289fc5c75a53be184c8155a364b51920048bbc01c64f098ff4d107",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7363695204257965,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "soil/case-09038.md",
+              "revision": "600855c2cb666023b06f69d5573e95dbc4c8bd211f7765abdcacd606e05e6082",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7359926402568817,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "soil/case-07738.md",
+              "revision": "ed35bfc1c4ab9b22b3a2ff101d71dd095b0ca8ded5bdf1e3ead5eee0f77fc36c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7359499037265778,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "prepare the immune system to recognize a pathogen before infection",
+          "elapsed_ms": 124.65366599997196,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "vaccines/case-03959.md",
+              "revision": "f06a07911077b13429032a13380a0f19cfd69bffaf1d6d26c166e49b41343557",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.760850191116333,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "vaccines/case-00399.md",
+              "revision": "0d0a3c4091ac34b178116cd51594d3615d7029d759e27591cb46a711680d673b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7607430070638657,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "vaccines/case-00319.md",
+              "revision": "f4f5fb38089585e301c29f94870e2363504bf331435189ab4256246e7372f007",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7606960982084274,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "generate electricity from sunshine",
+          "elapsed_ms": 159.40787499994258,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-08080.md",
+              "revision": "200abba1a7c1eceba9db291cab522169de3636ae55cdb29bbb7db5683274a351",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.687861293554306,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "solar/case-01400.md",
+              "revision": "506b21725617483759cc1c954c24309ae656cdfa7cf93117836fac9afd4e9c2d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6878116726875305,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "solar/case-05820.md",
+              "revision": "938a29dba23586eca09093b4e011a603b5f5a7f03fe69950598c4e3da00f6551",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.687592476606369,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "bake a loaf using a living flour starter",
+          "elapsed_ms": 139.58658299998206,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-04821.md",
+              "revision": "828b69e9597e783c9e8a0c132f2b5d0f02764c63e56df61100e3faeef2cfe036",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7500791698694229,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bread/case-00741.md",
+              "revision": "63fd74105da0272de3314fa3c1ff6fe6b34f18f69418e9894a50aa3f3da1f75d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7495144903659821,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bread/case-04641.md",
+              "revision": "e1f9a240e89fd723baf3e778ddb01799edc7f60198969237f84ba10c0aa7bb9b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7494179308414459,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect a login account with a second verification factor",
+          "elapsed_ms": 137.15058300010696,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-04942.md",
+              "revision": "7a49a7265b2ec89586fb644c8e24e14d12f64b73236aea62aa9d3f8a16edee9f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.761846050620079,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "security/case-01282.md",
+              "revision": "f7113b685c05b2e1cd106aaaa3539589bc2e826aaff44ee5c667a244abe788bc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7614775896072388,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "security/case-03282.md",
+              "revision": "384d50d8c7163f05f5882620bfb4f06b332b17266553bb33580d43d172c07e4c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.761272594332695,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "turn kitchen scraps into food for vegetable plants",
+          "elapsed_ms": 140.68279200000688,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-02003.md",
+              "revision": "3d9eacc2763b86d4f24d163d1a6c55a00359f9ef892b4fb07385d99de7c98efa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8075251430273056,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "garden/case-00103.md",
+              "revision": "e6d627a54bc6811fe30baeba2853f0fca784b5db0a327d7afb4c900729bb675b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8074265718460083,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.8071351200342178,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "observe distant planets through an optical instrument",
+          "elapsed_ms": 138.5621669999182,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-01104.md",
+              "revision": "69dde1f6e364eb1091334d91690dce80ca903df4b70d9bb0cef96ace40791bff",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7738721817731857,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "astronomy/case-00204.md",
+              "revision": "c96166d92a9acf7226d1f883e9b3a8fc7419f6fca3f3393844219818c0bc4fe3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7734100967645645,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "astronomy/case-09484.md",
+              "revision": "1b7f70fc38c899459fd2c5d6c23793bcc7400938c3118f0ff003057f46b4d3e6",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7733110189437866,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "store electrical energy in a rechargeable cell",
+          "elapsed_ms": 136.726082999985,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00205.md",
+              "revision": "9d61f6c5f616ac0ba5258372b63a4f97f738c0e50587264f73040474c7b3f84a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7599587738513947,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "batteries/case-00305.md",
+              "revision": "5ae18a0f7ed94d7629f9e7b903dffd6b3cfcc3047f286b7e75d7335026abaadb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7599109411239624,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "batteries/case-02025.md",
+              "revision": "97419071ae6cfcbd4685fc3af6e61a7d9d7dabd62201a22e19d53456570ff5c2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7597639858722687,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "carry traffic across a river using cables and towers",
+          "elapsed_ms": 136.7409999999154,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-08726.md",
+              "revision": "30d0179b65a3e54ef89846a5c270cf796c24a06abd7ea87bb8abbe6da4b886db",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.669295459985733,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bridges/case-02526.md",
+              "revision": "66a0916f68e61594b222da219e8469c0f835bb2f0ce11aa385537f4c8e22e165",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6687680780887604,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bridges/case-00306.md",
+              "revision": "3ea1a46c2caabb3803358639b56dd0e40fd509960bd128562b7e4ae15096c594",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.6687541007995605,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "learn to play a keyboard instrument with both hands",
+          "elapsed_ms": 136.17691700005707,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-05287.md",
+              "revision": "0b4fbb09e9180dc6e6732aeb27e3042bc233e85a40794c831c6859793e2ce485",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7787073850631714,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "piano/case-00307.md",
+              "revision": "77906ef482d7d430ac72ddd9da8ad1bc760cad98268fd7b69d7863c456814bf0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7786146700382233,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "piano/case-06447.md",
+              "revision": "d903fa13a357517d75a37844977b6274b3197452ad7e1d6589d2e38dfba7ae44",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7785601913928986,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "remove impurities from water before people drink it",
+          "elapsed_ms": 140.893291999987,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-01408.md",
+              "revision": "b8bc7a38b5140488a489e56d06fe267472fd09d9bfc7813d1dbb3d3c4289a61d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7296269834041595,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "water/case-00308.md",
+              "revision": "b4534634719862397c2c2e452c5b2aacd402cd9419da0e85d2e5f28d64b02913",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7295983135700226,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "water/case-03728.md",
+              "revision": "f69bf4436411e429d15bd916bc5050ac59266ee70f8e2593bea3707f5c824d9e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7295243144035339,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "keep trains safely separated on a shared track",
+          "elapsed_ms": 137.18725000001086,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-03129.md",
+              "revision": "0240546763d38ee5a30e365f43b66c82a89907bba09db9d934f93dee565f3c73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7735038697719574,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "rail/case-00309.md",
+              "revision": "41a16602908c26c0c72a86efdd373b2cc83b7ad6851dd10279019fa9900e0137",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7734545022249222,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "rail/case-04429.md",
+              "revision": "3b83e11bcf7571be6661dfd00653fb37169d416df9719ec3d2be73add06fa57b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.7732428163290024,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        }
+      ]
+    },
+    "hybrid": {
+      "count": 30,
+      "p50_ms": 135.88174999995317,
+      "p95_ms": 182.21362500003124,
+      "max_ms": 196.45491699998274,
+      "failed_samples": 0,
+      "samples": [
+        {
+          "query": "generate electricity from sunshine",
+          "elapsed_ms": 128.73095899999498,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-08080.md",
+              "revision": "200abba1a7c1eceba9db291cab522169de3636ae55cdb29bbb7db5683274a351",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "solar/case-01400.md",
+              "revision": "506b21725617483759cc1c954c24309ae656cdfa7cf93117836fac9afd4e9c2d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "solar/case-05820.md",
+              "revision": "938a29dba23586eca09093b4e011a603b5f5a7f03fe69950598c4e3da00f6551",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "bake a loaf using a living flour starter",
+          "elapsed_ms": 125.61554199999136,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-04821.md",
+              "revision": "828b69e9597e783c9e8a0c132f2b5d0f02764c63e56df61100e3faeef2cfe036",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bread/case-00741.md",
+              "revision": "63fd74105da0272de3314fa3c1ff6fe6b34f18f69418e9894a50aa3f3da1f75d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bread/case-04641.md",
+              "revision": "e1f9a240e89fd723baf3e778ddb01799edc7f60198969237f84ba10c0aa7bb9b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect a login account with a second verification factor",
+          "elapsed_ms": 126.8808339999623,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-04942.md",
+              "revision": "7a49a7265b2ec89586fb644c8e24e14d12f64b73236aea62aa9d3f8a16edee9f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "security/case-01282.md",
+              "revision": "f7113b685c05b2e1cd106aaaa3539589bc2e826aaff44ee5c667a244abe788bc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "security/case-03282.md",
+              "revision": "384d50d8c7163f05f5882620bfb4f06b332b17266553bb33580d43d172c07e4c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "turn kitchen scraps into food for vegetable plants",
+          "elapsed_ms": 128.3035840000366,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-02003.md",
+              "revision": "3d9eacc2763b86d4f24d163d1a6c55a00359f9ef892b4fb07385d99de7c98efa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "garden/case-00103.md",
+              "revision": "e6d627a54bc6811fe30baeba2853f0fca784b5db0a327d7afb4c900729bb675b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "observe distant planets through an optical instrument",
+          "elapsed_ms": 123.90791699999681,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-01104.md",
+              "revision": "69dde1f6e364eb1091334d91690dce80ca903df4b70d9bb0cef96ace40791bff",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "astronomy/case-00204.md",
+              "revision": "c96166d92a9acf7226d1f883e9b3a8fc7419f6fca3f3393844219818c0bc4fe3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "astronomy/case-09484.md",
+              "revision": "1b7f70fc38c899459fd2c5d6c23793bcc7400938c3118f0ff003057f46b4d3e6",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "store electrical energy in a rechargeable cell",
+          "elapsed_ms": 131.24887499998295,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00205.md",
+              "revision": "9d61f6c5f616ac0ba5258372b63a4f97f738c0e50587264f73040474c7b3f84a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "batteries/case-00305.md",
+              "revision": "5ae18a0f7ed94d7629f9e7b903dffd6b3cfcc3047f286b7e75d7335026abaadb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "batteries/case-02025.md",
+              "revision": "97419071ae6cfcbd4685fc3af6e61a7d9d7dabd62201a22e19d53456570ff5c2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "carry traffic across a river using cables and towers",
+          "elapsed_ms": 135.67024999997557,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-08726.md",
+              "revision": "30d0179b65a3e54ef89846a5c270cf796c24a06abd7ea87bb8abbe6da4b886db",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bridges/case-02526.md",
+              "revision": "66a0916f68e61594b222da219e8469c0f835bb2f0ce11aa385537f4c8e22e165",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bridges/case-00306.md",
+              "revision": "3ea1a46c2caabb3803358639b56dd0e40fd509960bd128562b7e4ae15096c594",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "learn to play a keyboard instrument with both hands",
+          "elapsed_ms": 139.82399999997597,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-05287.md",
+              "revision": "0b4fbb09e9180dc6e6732aeb27e3042bc233e85a40794c831c6859793e2ce485",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "piano/case-00307.md",
+              "revision": "77906ef482d7d430ac72ddd9da8ad1bc760cad98268fd7b69d7863c456814bf0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "piano/case-06447.md",
+              "revision": "d903fa13a357517d75a37844977b6274b3197452ad7e1d6589d2e38dfba7ae44",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "remove impurities from water before people drink it",
+          "elapsed_ms": 138.2071250000081,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-01408.md",
+              "revision": "b8bc7a38b5140488a489e56d06fe267472fd09d9bfc7813d1dbb3d3c4289a61d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "water/case-00308.md",
+              "revision": "b4534634719862397c2c2e452c5b2aacd402cd9419da0e85d2e5f28d64b02913",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "water/case-03728.md",
+              "revision": "f69bf4436411e429d15bd916bc5050ac59266ee70f8e2593bea3707f5c824d9e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "keep trains safely separated on a shared track",
+          "elapsed_ms": 139.02495800005,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-03129.md",
+              "revision": "0240546763d38ee5a30e365f43b66c82a89907bba09db9d934f93dee565f3c73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "rail/case-00309.md",
+              "revision": "41a16602908c26c0c72a86efdd373b2cc83b7ad6851dd10279019fa9900e0137",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "rail/case-04429.md",
+              "revision": "3b83e11bcf7571be6661dfd00653fb37169d416df9719ec3d2be73add06fa57b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "watch changes in a mountain that may release molten rock",
+          "elapsed_ms": 144.0800829999489,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "volcano/case-03750.md",
+              "revision": "388b7805a58f82090570bd98ad2aabde5f43076d6b2d9a93fe17cd3d2983a936",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "volcano/case-02150.md",
+              "revision": "ee1f314bab42d37d9f321861f92f916d91471854d337084454810cd35daa18ee",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "volcano/case-03650.md",
+              "revision": "4978f9824074e5b29763b0d3290f1b960cfd6175ae3836f33b7f6dbcdad0e836",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "restore computer files after a storage device fails",
+          "elapsed_ms": 133.8502910000443,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "backup/case-06451.md",
+              "revision": "6abbd30c976cc6d506c94d7d52a93a63401277362dca69b29fd944fd4ccc7f2f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "backup/case-01611.md",
+              "revision": "dd5e44434e35d71fa8c2162c155e83a7f9cdbbc046744fd5d11d39720f8ede53",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "backup/case-01731.md",
+              "revision": "875c95b8a063957473be5b530e2c85894aaddb19b39a103571425279849083ce",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "how seasonal birds find their way between distant habitats",
+          "elapsed_ms": 145.09033299998464,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "migration/case-00292.md",
+              "revision": "f4f769e02f9c1fc9b4be9bb6002e895ac93381e7cc3b5b475aa82aa422c051cc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "migration/case-01132.md",
+              "revision": "01a236e18387ea9f57d635893f20374f7dfe94493db474bc4f7b0eec7c137425",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "migration/case-00332.md",
+              "revision": "f4592f3a5f489adebde5ac68c5a520858d06cbd9ae97ca79d9f6564800aae00a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "translate a programming language into efficient machine instructions",
+          "elapsed_ms": 155.5561669999861,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "compiler/case-00313.md",
+              "revision": "51d9f912df34ab8832930452673acc9ff6ebf82e64ae37c41e98ad5241d659eb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "compiler/case-00213.md",
+              "revision": "8dadd278f2406a4804403743817d5553aa97477f8195becb061d41e5f772ac87",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "compiler/case-00253.md",
+              "revision": "9c9fe1cef351a7a133be6979669f2e1a41f987f8e4fd1d008093776826a923c3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "reduce the chance that a forest fire spreads to homes",
+          "elapsed_ms": 176.00058400000762,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "wildfire/case-01714.md",
+              "revision": "ee3ae4362c2d799ff607f2ea1315364f582155cda98e51a55e0f2eb99de5c874",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "wildfire/case-08514.md",
+              "revision": "58c8a561c5dc0b2d08e647f3129972e11297db533b14940c69ddcbc0a9d194ae",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "wildfire/case-00674.md",
+              "revision": "2c39a97a62ffc932a3f34ee585de72652e6ecddd50c79b9f3f120bf3f833997e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect underwater reef habitats from warming seas",
+          "elapsed_ms": 182.21362500003124,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "marine/case-00235.md",
+              "revision": "853c47ca50efaa93d8c5f1cdb6dbf36e5f8729b7181d1d01d8041dd43402d71e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "marine/case-00355.md",
+              "revision": "b81e1a7383fd5ad89835231ba94774073a5d7c3b1c69140714050672b862460f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "marine/case-04215.md",
+              "revision": "43582aacb551ba31aaf1eaf4aa875b1b586e499a8b75591d41813624358b8bca",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "why a large mass of mountain ice slowly flows downhill",
+          "elapsed_ms": 196.45491699998274,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "glacier/case-03736.md",
+              "revision": "b1979435a72aba69d26800d4d0dd393705b3378e27d43fee5368189f105b5387",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "glacier/case-06416.md",
+              "revision": "effb56dbf5ca1e5416f546a6e03f0f3f8dc3577ea7f6b15e708f747d9feb6a0d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "glacier/case-02036.md",
+              "revision": "d36b00a07a8833cec1c74b75c9074f3c8f7ea2a177865e5fdca0616a21279a24",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "capture clear speech with a sound recording device",
+          "elapsed_ms": 133.22633299992503,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "audio/case-00317.md",
+              "revision": "e9a44d9192b8b62019d0d4dea08f78f127b847f5955fd36f56b95930c6895cc0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "audio/case-06117.md",
+              "revision": "9a38d1d5b0a05a5f9b58aecadb9bbf54b1d5139e9a383a3692117de0843aa51b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "audio/case-01437.md",
+              "revision": "d9a9fa2702590c0903697c02ec439af3941b29638080b638e86878311e1e8316",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "stop rain from washing fertile ground down a hillside",
+          "elapsed_ms": 132.3252089999869,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "soil/case-09018.md",
+              "revision": "b1461f698b289fc5c75a53be184c8155a364b51920048bbc01c64f098ff4d107",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "soil/case-09038.md",
+              "revision": "600855c2cb666023b06f69d5573e95dbc4c8bd211f7765abdcacd606e05e6082",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "soil/case-07738.md",
+              "revision": "ed35bfc1c4ab9b22b3a2ff101d71dd095b0ca8ded5bdf1e3ead5eee0f77fc36c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "prepare the immune system to recognize a pathogen before infection",
+          "elapsed_ms": 135.88174999995317,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "vaccines/case-03959.md",
+              "revision": "f06a07911077b13429032a13380a0f19cfd69bffaf1d6d26c166e49b41343557",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "vaccines/case-00399.md",
+              "revision": "0d0a3c4091ac34b178116cd51594d3615d7029d759e27591cb46a711680d673b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "vaccines/case-00319.md",
+              "revision": "f4f5fb38089585e301c29f94870e2363504bf331435189ab4256246e7372f007",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "generate electricity from sunshine",
+          "elapsed_ms": 138.769625000009,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "solar/case-08080.md",
+              "revision": "200abba1a7c1eceba9db291cab522169de3636ae55cdb29bbb7db5683274a351",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "solar/case-01400.md",
+              "revision": "506b21725617483759cc1c954c24309ae656cdfa7cf93117836fac9afd4e9c2d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "solar/case-05820.md",
+              "revision": "938a29dba23586eca09093b4e011a603b5f5a7f03fe69950598c4e3da00f6551",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "bake a loaf using a living flour starter",
+          "elapsed_ms": 133.28345900004024,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bread/case-04821.md",
+              "revision": "828b69e9597e783c9e8a0c132f2b5d0f02764c63e56df61100e3faeef2cfe036",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bread/case-00741.md",
+              "revision": "63fd74105da0272de3314fa3c1ff6fe6b34f18f69418e9894a50aa3f3da1f75d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bread/case-04641.md",
+              "revision": "e1f9a240e89fd723baf3e778ddb01799edc7f60198969237f84ba10c0aa7bb9b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "protect a login account with a second verification factor",
+          "elapsed_ms": 134.18137500002558,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "security/case-04942.md",
+              "revision": "7a49a7265b2ec89586fb644c8e24e14d12f64b73236aea62aa9d3f8a16edee9f",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "security/case-01282.md",
+              "revision": "f7113b685c05b2e1cd106aaaa3539589bc2e826aaff44ee5c667a244abe788bc",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "security/case-03282.md",
+              "revision": "384d50d8c7163f05f5882620bfb4f06b332b17266553bb33580d43d172c07e4c",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "turn kitchen scraps into food for vegetable plants",
+          "elapsed_ms": 131.5094169999611,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "garden/case-02003.md",
+              "revision": "3d9eacc2763b86d4f24d163d1a6c55a00359f9ef892b4fb07385d99de7c98efa",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "garden/case-00103.md",
+              "revision": "e6d627a54bc6811fe30baeba2853f0fca784b5db0a327d7afb4c900729bb675b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "garden/case-00023.md",
+              "revision": "1461c086039ff9599c14484f6adde65fdaca108631fdbbe694b304d6c78aad5a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "observe distant planets through an optical instrument",
+          "elapsed_ms": 133.56083300004684,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "astronomy/case-01104.md",
+              "revision": "69dde1f6e364eb1091334d91690dce80ca903df4b70d9bb0cef96ace40791bff",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "astronomy/case-00204.md",
+              "revision": "c96166d92a9acf7226d1f883e9b3a8fc7419f6fca3f3393844219818c0bc4fe3",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "astronomy/case-09484.md",
+              "revision": "1b7f70fc38c899459fd2c5d6c23793bcc7400938c3118f0ff003057f46b4d3e6",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "store electrical energy in a rechargeable cell",
+          "elapsed_ms": 144.39279199996236,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "batteries/case-00205.md",
+              "revision": "9d61f6c5f616ac0ba5258372b63a4f97f738c0e50587264f73040474c7b3f84a",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "batteries/case-00305.md",
+              "revision": "5ae18a0f7ed94d7629f9e7b903dffd6b3cfcc3047f286b7e75d7335026abaadb",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "batteries/case-02025.md",
+              "revision": "97419071ae6cfcbd4685fc3af6e61a7d9d7dabd62201a22e19d53456570ff5c2",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "carry traffic across a river using cables and towers",
+          "elapsed_ms": 140.70437500004118,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "bridges/case-08726.md",
+              "revision": "30d0179b65a3e54ef89846a5c270cf796c24a06abd7ea87bb8abbe6da4b886db",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "bridges/case-02526.md",
+              "revision": "66a0916f68e61594b222da219e8469c0f835bb2f0ce11aa385537f4c8e22e165",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "bridges/case-00306.md",
+              "revision": "3ea1a46c2caabb3803358639b56dd0e40fd509960bd128562b7e4ae15096c594",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "learn to play a keyboard instrument with both hands",
+          "elapsed_ms": 156.13883299999998,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "piano/case-05287.md",
+              "revision": "0b4fbb09e9180dc6e6732aeb27e3042bc233e85a40794c831c6859793e2ce485",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "piano/case-00307.md",
+              "revision": "77906ef482d7d430ac72ddd9da8ad1bc760cad98268fd7b69d7863c456814bf0",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "piano/case-06447.md",
+              "revision": "d903fa13a357517d75a37844977b6274b3197452ad7e1d6589d2e38dfba7ae44",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "remove impurities from water before people drink it",
+          "elapsed_ms": 151.48429100008798,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "water/case-01408.md",
+              "revision": "b8bc7a38b5140488a489e56d06fe267472fd09d9bfc7813d1dbb3d3c4289a61d",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "water/case-00308.md",
+              "revision": "b4534634719862397c2c2e452c5b2aacd402cd9419da0e85d2e5f28d64b02913",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "water/case-03728.md",
+              "revision": "f69bf4436411e429d15bd916bc5050ac59266ee70f8e2593bea3707f5c824d9e",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        },
+        {
+          "query": "keep trains safely separated on a shared track",
+          "elapsed_ms": 162.35149999999976,
+          "hits": 10,
+          "expected_topic_rank": 1,
+          "semantic_unavailable": null,
+          "failure": null,
+          "top": [
+            {
+              "path": "rail/case-03129.md",
+              "revision": "0240546763d38ee5a30e365f43b66c82a89907bba09db9d934f93dee565f3c73",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.01639344262295082,
+              "lexical_rank": null,
+              "semantic_rank": 1
+            },
+            {
+              "path": "rail/case-00309.md",
+              "revision": "41a16602908c26c0c72a86efdd373b2cc83b7ad6851dd10279019fa9900e0137",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.016129032258064516,
+              "lexical_rank": null,
+              "semantic_rank": 2
+            },
+            {
+              "path": "rail/case-04429.md",
+              "revision": "3b83e11bcf7571be6661dfd00653fb37169d416df9719ec3d2be73add06fa57b",
+              "line_start": 4,
+              "line_end": 8,
+              "score": 0.015873015873015872,
+              "lexical_rank": null,
+              "semantic_rank": 3
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "index_with_vectors": {
+    "logical_bytes": 58335482,
+    "allocated_unique_bytes": 59445248,
+    "files": 8
+  },
+  "sqlite_files": {
+    "library.sqlite-wal": 4120032,
+    "library.sqlite-shm": 32768,
+    "index.sqlite": 34902016,
+    "library.sqlite": 118784,
+    "index.sqlite-wal": 19096232,
+    "index.sqlite-shm": 65536
+  },
+  "service_process_resources": {
+    "raw": "1005.70 real       863.51 user       226.47 sys\n           289013760  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               41516  page reclaims\n                   3  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                2204  messages sent\n                2204  messages received\n                   0  signals received\n               54468  voluntary context switches\n            30552268  involuntary context switches\n      12069140625865  instructions retired\n       4493422590432  cycles elapsed\n           259719984  peak memory footprint",
+    "wall_seconds": 1005.7,
+    "user_cpu_seconds": 863.51,
+    "system_cpu_seconds": 226.47,
+    "max_rss_bytes": 289013760
+  },
+  "model_cache_after": {
+    "logical_bytes": 267612160,
+    "allocated_unique_bytes": 133824512,
+    "files": 16
+  },
+  "binary_unchanged": true,
+  "total_wall_seconds": 1007.244449375,
+  "accepts_lexical_budget": true,
+  "accepts_hybrid_budget": true,
+  "accepts_10k_hybrid_budget": true
+}

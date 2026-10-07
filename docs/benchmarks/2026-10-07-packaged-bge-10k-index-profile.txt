@@ -1,0 +1,262 @@
+Synthetic packaged-service indexing sample; actual BGE, immutable f64a8e...59314 binary.
+Only this benchmark owner PID95343 sampled: 1second requested,10ms interval,37 samples/thread.
+Excerpt retains model-owner and scheduler threads; other ORT workers omitted.
+Qualitative call-stack evidence, not a whole-process CPU percentage estimate.
+ASLR addresses and process metadata removed; no user source/configuration read.
+
+    37 Thread_98973552
+    + 37 thread_start  (in libsystem_pthread.dylib) + 8
+    +   37 _pthread_start  (in libsystem_pthread.dylib) + 136
+    +     37 std::sys::thread::unix::Thread::new::thread_start::hb5c7d2a38fab9e31  (in optimized-reader-service) + 408
+    +       37 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h96efc7a8ad760aad  (in optimized-reader-service) + 24
+    +         37 std::thread::lifecycle::spawn_unchecked::_$u7b$$u7b$closure$u7d$$u7d$::h28b92047623dad5b  (in optimized-reader-service) + 284
+    +           37 __rust_try  (in optimized-reader-service) + 32
+    +             37 std::panicking::catch_unwind::do_call::h34b869d9fbd887ea  (in optimized-reader-service) + 52
+    +               37 _$LT$core..panic..unwind_safe..AssertUnwindSafe$LT$F$GT$$u20$as$u20$core..ops..function..FnOnce$LT$$LP$$RP$$GT$$GT$::call_once::h08d0287b0ca09909  (in optimized-reader-service) + 44
+    +                 37 std::thread::lifecycle::spawn_unchecked::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::ha8d05ba7250a1a32  (in optimized-reader-service) + 120
+    +                   37 std::sys::backtrace::__rust_begin_short_backtrace::hc4473602f27f89ec  (in optimized-reader-service) + 16
+    +                     30 mdreader_service::runtime::model::ModelActor::with_factory::_$u7b$$u7b$closure$u7d$$u7d$::hcebdb7e293722358  (in optimized-reader-service) + 92
+    +                     ! 30 std::sync::mpsc::Receiver$LT$T$GT$::recv::hb2a5464e1de6dc08  (in optimized-reader-service) + 24
+    +                     !   30 std::sync::mpmc::Receiver$LT$T$GT$::recv::h287a483e0c0de5a5  (in optimized-reader-service) + 100
+    +                     !     30 std::sync::mpmc::array::Channel$LT$T$GT$::recv::hdb17164763f381e7  (in optimized-reader-service) + 260
+    +                     !       30 std::sync::mpmc::context::Context::with::h37d00dc061521468  (in optimized-reader-service) + 52
+    +                     !         30 std::thread::local::LocalKey$LT$T$GT$::try_with::h0ba1b2c093a495e8  (in optimized-reader-service) + 172
+    +                     !           30 std::sync::mpmc::context::Context::with::_$u7b$$u7b$closure$u7d$$u7d$::h82038034cefcd4c1  (in optimized-reader-service) + 548
+    +                     !             30 std::sync::mpmc::array::Channel$LT$T$GT$::recv::_$u7b$$u7b$closure$u7d$$u7d$::h8348f5cf06ab906c  (in optimized-reader-service) + 244
+    +                     !               30 std::sync::mpmc::context::Context::wait_until::hba289d780b126bb5  (in optimized-reader-service) + 396
+    +                     !                 30 std::thread::thread::Thread::park::hf5fd87087e5d2db1  (in optimized-reader-service) + 48
+    +                     !                   30 _dispatch_semaphore_wait_slow  (in libdispatch.dylib) + 132
+    +                     !                     30 _dispatch_sema4_wait  (in libdispatch.dylib) + 28
+    +                     !                       30 semaphore_wait_trap  (in libsystem_kernel.dylib) + 8
+    +                     7 mdreader_service::runtime::model::ModelActor::with_factory::_$u7b$$u7b$closure$u7d$$u7d$::hcebdb7e293722358  (in optimized-reader-service) + 512
+    +                       7 std::panic::catch_unwind::h22f4a6bd687b51a5  (in optimized-reader-service) + 120
+    +                         7 __rust_try  (in optimized-reader-service) + 32
+    +                           7 std::panicking::catch_unwind::do_call::he493050458f7706f  (in optimized-reader-service) + 68
+    +                             7 _$LT$core..panic..unwind_safe..AssertUnwindSafe$LT$F$GT$$u20$as$u20$core..ops..function..FnOnce$LT$$LP$$RP$$GT$$GT$::call_once::h23de307aee4f5bc8  (in optimized-reader-service) + 52
+    +                               7 mdreader_service::runtime::model::ModelActor::with_factory::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h4e4d1f7f6f58ba36  (in optimized-reader-service) + 228
+    +                                 7 core::result::Result$LT$T$C$E$GT$::and_then::h4c9561369e7e74d7  (in optimized-reader-service) + 96
+    +                                   7 mdreader_service::runtime::model::ModelActor::with_factory::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::ha1544e7db63b8c5c  (in optimized-reader-service) + 92
+    +                                     7 _$LT$mdreader_core..embed..BgeEmbedder$u20$as$u20$mdreader_service..runtime..model..Engine$GT$::embed::h6a249899c03b3f0f  (in optimized-reader-service) + 36
+    +                                       7 mdreader_core::embed::BgeEmbedder::embed::hf3a7ce07553abf6e  (in optimized-reader-service) + 132
+    +                                         7 fastembed::text_embedding::impl::_$LT$impl$u20$fastembed..text_embedding..init..TextEmbedding$GT$::embed::h4bdb38de84e17d26  (in optimized-reader-service) + 128
+    +                                           7 fastembed::text_embedding::impl::_$LT$impl$u20$fastembed..text_embedding..init..TextEmbedding$GT$::transform::hb0207abf3bd28b6a  (in optimized-reader-service) + 536
+    +                                             7 core::iter::traits::iterator::Iterator::collect::heb62e37ff7356996  (in optimized-reader-service) + 12
+    +                                               7 _$LT$core..result..Result$LT$V$C$E$GT$$u20$as$u20$core..iter..traits..collect..FromIterator$LT$core..result..Result$LT$A$C$E$GT$$GT$$GT$::from_iter::h8234b4f491d82b76  (in optimized-reader-service) + 40
+    +                                                 7 core::iter::adapters::try_process::h9b5e5a2ab4697b9a  (in optimized-reader-service) + 120
+    +                                                   7 _$LT$core..result..Result$LT$V$C$E$GT$$u20$as$u20$core..iter..traits..collect..FromIterator$LT$core..result..Result$LT$A$C$E$GT$$GT$$GT$::from_iter::_$u7b$$u7b$closure$u7d$$u7d$::h8362dd33a3a6b35e  (in optimized-reader-service) + 28
+    +                                                     7 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$core..iter..traits..collect..FromIterator$LT$T$GT$$GT$::from_iter::h18471ffe28f3c8eb  (in optimized-reader-service) + 40
+    +                                                       7 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h42e8d38b47ab4d45  (in optimized-reader-service) + 12
+    +                                                         7 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter_nested..SpecFromIterNested$LT$T$C$I$GT$$GT$::from_iter::hf8d3aadd9ab784b2  (in optimized-reader-service) + 68
+    +                                                           7 _$LT$core..iter..adapters..GenericShunt$LT$I$C$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::next::hb716d84b7d97e807  (in optimized-reader-service) + 32
+    +                                                             7 _$LT$core..iter..adapters..GenericShunt$LT$I$C$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::h63038049cec948fd  (in optimized-reader-service) + 40
+    +                                                               7 _$LT$core..iter..adapters..map..Map$LT$I$C$F$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::hbcc0b359bea48435  (in optimized-reader-service) + 72
+    +                                                                 7 core::iter::traits::iterator::Iterator::try_fold::hc34f786b2c6bdf15  (in optimized-reader-service) + 196
+    +                                                                   7 core::iter::adapters::map::map_try_fold::_$u7b$$u7b$closure$u7d$$u7d$::hbcf98927225a71ae  (in optimized-reader-service) + 64
+    +                                                                     7 fastembed::text_embedding::impl::_$LT$impl$u20$fastembed..text_embedding..init..TextEmbedding$GT$::transform::_$u7b$$u7b$closure$u7d$$u7d$::hbcde994c14f74d48  (in optimized-reader-service) + 2284
+    +                                                                       7 ort::session::Session::run::haa23ec51a6a796e9  (in optimized-reader-service) + 520
+    +                                                                         7 ort::session::Session::run_inner::he62e251b4429c78d  (in optimized-reader-service) + 960
+    +                                                                           7 ort::util::stack::with_cstr_ptr_array::h3e4422050802581d  (in optimized-reader-service) + 124
+    +                                                                             7 ort::util::stack::with_cstr_ptr_array::run_with_stack_cstr_array::hf7c99b6dc979bc64  (in optimized-reader-service) + 176
+    +                                                                               7 ort::session::Session::run_inner::_$u7b$$u7b$closure$u7d$$u7d$::h91fbc18001ef3d13  (in optimized-reader-service) + 116
+    +                                                                                 7 ort::util::stack::with_cstr_ptr_array::h3e4422050802581d  (in optimized-reader-service) + 124
+    +                                                                                   7 ort::util::stack::with_cstr_ptr_array::run_with_stack_cstr_array::hf7c99b6dc979bc64  (in optimized-reader-service) + 176
+    +                                                                                     7 ort::session::Session::run_inner::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::hcfdac018197c785b  (in optimized-reader-service) + 232
+    +                                                                                       7 OrtApis::Run(OrtSession*, OrtRunOptions const*, char const* const*, OrtValue const* const*, unsigned long, char const* const*, unsigned long, OrtValue**)  (in optimized-reader-service) + 332
+    +                                                                                         7 onnxruntime::InferenceSession::Run(OrtRunOptions const&, gsl::span<char const* const, 18446744073709551615ul>, gsl::span<OrtValue const* const, 18446744073709551615ul>, gsl::span<char const* const, 18446744073709551615ul>, gsl::span<OrtValue*, 18446744073709551615ul>)  (in optimized-reader-service) + 960
+    +                                                                                           7 onnxruntime::InferenceSession::Run(OrtRunOptions const&, gsl::span<std::basic_string<char> const, 18446744073709551615ul>, gsl::span<OrtValue const, 18446744073709551615ul>, gsl::span<std::basic_string<char> const, 18446744073709551615ul>, std::vector<OrtValue>*, std::vector<OrtDevice> const*)  (in optimized-reader-service) + 3520
+    +                                                                                             7 onnxruntime::utils::ExecuteGraph(onnxruntime::SessionState const&, onnxruntime::FeedsFetchesManager&, gsl::span<OrtValue const, 18446744073709551615ul>, std::vector<OrtValue>&, ExecutionMode, OrtRunOptions const&, onnxruntime::DeviceStreamCollectionHolder&, onnxruntime::logging::Logger const&)  (in optimized-reader-service) + 44
+    +                                                                                               7 onnxruntime::utils::ExecuteGraph(onnxruntime::SessionState const&, onnxruntime::FeedsFetchesManager&, gsl::span<OrtValue const, 18446744073709551615ul>, std::vector<OrtValue>&, ExecutionMode, bool const&, onnxruntime::logging::Logger const&, onnxruntime::DeviceStreamCollectionHolder&, bool, onnxruntime::Stream*)  (in optimized-reader-service) + 792
+    +                                                                                                 7 onnxruntime::utils::ExecuteGraphImpl(onnxruntime::SessionState const&, onnxruntime::FeedsFetchesManager const&, gsl::span<OrtValue const, 18446744073709551615ul>, std::vector<OrtValue>&, std::unordered_map<unsigned long, std::function<onnxruntime::common::Status (onnxruntime::TensorShape const&, OrtDevice const&, OrtValue&, bool&)>> const&, ExecutionMode, bool const&, onnxruntime::logging::Logger const&, onnxruntime::DeviceStreamCollection*, bool, onnxruntime::Stream*)  (in optimized-reader-service) + 864
+    +                                                                                                   7 onnxruntime::ExecuteThePlan(onnxruntime::SessionState const&, gsl::span<int const, 18446744073709551615ul>, gsl::span<OrtValue const, 18446744073709551615ul>, gsl::span<int const, 18446744073709551615ul>, std::vector<OrtValue>&, std::unordered_map<unsigned long, std::function<onnxruntime::common::Status (onnxruntime::TensorShape const&, OrtDevice const&, OrtValue&, bool&)>> const&, onnxruntime::logging::Logger const&, onnxruntime::DeviceStreamCollection const*, bool const&, bool, bool)  (in optimized-reader-service) + 548
+    +                                                                                                     7 onnxruntime::RunSince(unsigned long, onnxruntime::StreamExecutionContext&, onnxruntime::SessionScope&, bool const&, unsigned long)  (in optimized-reader-service) + 360
+    +                                                                                                       7 onnxruntime::LaunchKernelStep::Execute(onnxruntime::StreamExecutionContext&, unsigned long, onnxruntime::SessionScope&, bool const&, bool&)  (in optimized-reader-service) + 48
+    +                                                                                                         7 onnxruntime::ExecuteKernel(onnxruntime::StreamExecutionContext&, unsigned long, unsigned long, bool const&, onnxruntime::SessionScope&)  (in optimized-reader-service) + 332
+    +                                                                                                           5 onnxruntime::MatMul<float>::Compute(onnxruntime::OpKernelContext*) const  (in optimized-reader-service) + 808
+    +                                                                                                           : 5 MlasGemmBatch(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, unsigned long, unsigned long, unsigned long, MLAS_SGEMM_DATA_PARAMS const*, unsigned long, onnxruntime::concurrency::ThreadPool*)  (in optimized-reader-service) + 164
+    +                                                                                                           :   5 ArmKleidiAI::MlasGemmBatch(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, unsigned long, unsigned long, unsigned long, MLAS_SGEMM_DATA_PARAMS const*, unsigned long, onnxruntime::concurrency::ThreadPool*)  (in optimized-reader-service) + 1824
+    +                                                                                                           :     5 onnxruntime::concurrency::ThreadPool::SimpleParallelFor(long, std::function<void (long)> const&)  (in optimized-reader-service) + 64
+    +                                                                                                           :       5 onnxruntime::concurrency::ThreadPool::ParallelForFixedBlockSizeScheduling(long, long, std::function<void (long, long)> const&)  (in optimized-reader-service) + 824
+    +                                                                                                           :         5 onnxruntime::concurrency::ThreadPool::RunInParallel(std::function<void (unsigned int)>, unsigned int, long)  (in optimized-reader-service) + 324
+    +                                                                                                           :           2 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::RunInParallel(std::function<void (unsigned int)>, unsigned int, long)  (in optimized-reader-service) + 612
+    +                                                                                                           :           | 2 std::__function::__func<onnxruntime::concurrency::ThreadPool::ParallelForFixedBlockSizeScheduling(long, long, std::function<void (long, long)> const&)::$_0, void (unsigned int)>::operator()(unsigned int&&)  (in optimized-reader-service) + 172
+    +                                                                                                           :           |   2 std::__function::__func<onnxruntime::concurrency::ThreadPool::SimpleParallelFor(long, std::function<void (long)> const&)::$_0, void (long, long)>::operator()(long&&, long&&)  (in optimized-reader-service) + 72
+    +                                                                                                           :           |     2 std::__function::__func<ArmKleidiAI::MlasGemmBatch(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, unsigned long, unsigned long, unsigned long, MLAS_SGEMM_DATA_PARAMS const*, unsigned long, onnxruntime::concurrency::ThreadPool*)::$_2, void (long)>::operator()(long&&)  (in optimized-reader-service) + 520
+    +                                                                                                           :           |       2 kai_run_matmul_clamp_f32_f32p2vlx1_f32p2vlx1biasf32_sme2_mopa  (in optimized-reader-service) + 48
+    +                                                                                                           :           |         1 ???  (in optimized-reader-service)  load address 0x104364000 + 0x2c6bdc8
+    +                                                                                                           :           |         1 ???  (in optimized-reader-service)  load address 0x104364000 + 0x2c6bfb0
+    +                                                                                                           :           2 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::RunInParallel(std::function<void (unsigned int)>, unsigned int, long)  (in optimized-reader-service) + 736
+    +                                                                                                           :           | 1 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::EndParallelSectionInternal(onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::PerThread&, onnxruntime::concurrency::ThreadPoolParallelSection&)  (in optimized-reader-service) + 248
+    +                                                                                                           :           | + 1 onnxruntime::concurrency::SpinPause()  (in optimized-reader-service) + 0
+    +                                                                                                           :           | 1 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::EndParallelSectionInternal(onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::PerThread&, onnxruntime::concurrency::ThreadPoolParallelSection&)  (in optimized-reader-service) + 564
+    +                                                                                                           :           |   1 onnxruntime::concurrency::SpinPause()  (in optimized-reader-service) + 0
+    +                                                                                                           :           1 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::RunInParallel(std::function<void (unsigned int)>, unsigned int, long)  (in optimized-reader-service) + 436
+    +                                                                                                           :             1 onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::RunInParallelInternal(onnxruntime::concurrency::ThreadPoolTempl<onnxruntime::Env>::PerThread&, onnxruntime::concurrency::ThreadPoolParallelSection&, unsigned int, bool, std::function<void (unsigned int)>)  (in optimized-reader-service) + 804
+    +                                                                                                           :               1 std::condition_variable::notify_one()  (in libc++.1.dylib) + 16
+    +                                                                                                           :                 1 pthread_cond_signal  (in libsystem_pthread.dylib) + 708
+    +                                                                                                           :                   1 __psynch_cvsignal  (in libsystem_kernel.dylib) + 8
+    +                                                                                                           1 onnxruntime::Add<float>::Compute(onnxruntime::OpKernelContext*) const  (in optimized-reader-service) + 64
+    +                                                                                                           : 1 onnxruntime::UntypedBroadcastTwo(onnxruntime::OpKernelContext&, onnxruntime::ProcessBroadcastSpanFuncs const&, double, void*)  (in optimized-reader-service) + 108
+    +                                                                                                           :   1 onnxruntime::InputBroadcaster::InputBroadcaster(onnxruntime::Tensor const&, onnxruntime::Tensor const&)  (in optimized-reader-service) + 144
+    +                                                                                                           :     1 onnxruntime::BroadcastIterator::Append(long, long)  (in optimized-reader-service) + 444
+    +                                                                                                           1 onnxruntime::Add<float>::Compute(onnxruntime::OpKernelContext*) const  (in optimized-reader-service) + 0
+    37 Thread_98973553
+    + 37 thread_start  (in libsystem_pthread.dylib) + 8
+    +   37 _pthread_start  (in libsystem_pthread.dylib) + 136
+    +     37 std::sys::thread::unix::Thread::new::thread_start::hb5c7d2a38fab9e31  (in optimized-reader-service) + 408
+    +       37 core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h55100ddef98f1e88  (in optimized-reader-service) + 24
+    +         37 std::thread::lifecycle::spawn_unchecked::_$u7b$$u7b$closure$u7d$$u7d$::hf3e3c4b79e38cae2  (in optimized-reader-service) + 288
+    +           37 __rust_try  (in optimized-reader-service) + 32
+    +             37 std::panicking::catch_unwind::do_call::h3ab3d6388109d6f9  (in optimized-reader-service) + 52
+    +               37 _$LT$core..panic..unwind_safe..AssertUnwindSafe$LT$F$GT$$u20$as$u20$core..ops..function..FnOnce$LT$$LP$$RP$$GT$$GT$::call_once::he83638f43e39b061  (in optimized-reader-service) + 44
+    +                 37 std::thread::lifecycle::spawn_unchecked::_$u7b$$u7b$closure$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h345e38d10aa4de75  (in optimized-reader-service) + 120
+    +                   37 std::sys::backtrace::__rust_begin_short_backtrace::h5017d88f861b0bb9  (in optimized-reader-service) + 16
+    +                     23 mdreader_service::runtime::Runtime::with_model::_$u7b$$u7b$closure$u7d$$u7d$::hf20256f6b25d571f  (in optimized-reader-service) + 540
+    +                     ! 23 mdreader_service::runtime::Scheduler::tick::he0c3ffdf10b33cad  (in optimized-reader-service) + 1304
+    +                     !   22 mdreader_service::runtime::step::h3c8058da2b29891e  (in optimized-reader-service) + 3600
+    +                     !   : 22 mdreader_service::runtime::phase::h550cabc02284228c  (in optimized-reader-service) + 336
+    +                     !   :   22 mdreader_core::store::ReaderStore::record_index_job_if_current::hd78f82cd33a48aae  (in optimized-reader-service) + 236
+    +                     !   :     22 mdreader_core::store::ReaderStore::index_status::hd21bd8a5bfcd57cc  (in optimized-reader-service) + 580
+    +                     !   :       22 rusqlite::Connection::query_row::hf6fa1fe08ff19fc6  (in optimized-reader-service) + 304
+    +                     !   :         22 rusqlite::statement::Statement::query_row::hbc8cafa1f8f44c7d  (in optimized-reader-service) + 256
+    +                     !   :           22 rusqlite::row::Rows::get_expected_row::h544572a3a0211e34  (in optimized-reader-service) + 40
+    +                     !   :             22 rusqlite::row::Rows::next::h25b6d5ea305ed24c  (in optimized-reader-service) + 44
+    +                     !   :               22 _$LT$rusqlite..row..Rows$u20$as$u20$fallible_streaming_iterator..FallibleStreamingIterator$GT$::advance::h95b171ed170416e4  (in optimized-reader-service) + 88
+    +                     !   :                 22 rusqlite::statement::Statement::step::h664f4af8b3d8ac52  (in optimized-reader-service) + 36
+    +                     !   :                   22 rusqlite::raw_statement::RawStatement::step::h02ecc59280f46a51  (in optimized-reader-service) + 28
+    +                     !   :                     22 sqlite3_step  (in optimized-reader-service) + 104
+    +                     !   :                       22 sqlite3Step  (in optimized-reader-service) + 484
+    +                     !   :                         17 sqlite3VdbeExec  (in optimized-reader-service) + 36936
+    +                     !   :                         | 17 vec0Filter  (in optimized-reader-service) + 340
+    +                     !   :                         |   17 vec0Filter_point  (in optimized-reader-service) + 312
+    +                     !   :                         |     9 vec0_get_vector_data  (in optimized-reader-service) + 472
+    +                     !   :                         |     + 9 sqlite3_blob_read  (in optimized-reader-service) + 56
+    +                     !   :                         |     +   9 blobReadWrite  (in optimized-reader-service) + 252
+    +                     !   :                         |     +     9 sqlite3BtreePayloadChecked  (in optimized-reader-service) + 68
+    +                     !   :                         |     +       8 accessPayload  (in optimized-reader-service) + 1016
+    +                     !   :                         |     +       ! 5 getOverflowPage  (in optimized-reader-service) + 360
+    +                     !   :                         |     +       ! : 4 btreeGetPage  (in optimized-reader-service) + 52
+    +                     !   :                         |     +       ! : | 3 sqlite3PagerGet  (in optimized-reader-service) + 56
+    +                     !   :                         |     +       ! : | + 3 getPageNormal  (in optimized-reader-service) + 80
+    +                     !   :                         |     +       ! : | +   3 sqlite3PcacheFetch  (in optimized-reader-service) + 76
+    +                     !   :                         |     +       ! : | +     3 pcache1Fetch  (in optimized-reader-service) + 68
+    +                     !   :                         |     +       ! : | +       2 pcache1FetchWithMutex  (in optimized-reader-service) + 84
+    +                     !   :                         |     +       ! : | +       ! 1 sqlite3_mutex_leave  (in optimized-reader-service) + 48
+    +                     !   :                         |     +       ! : | +       ! : 1 pthreadMutexLeave  (in optimized-reader-service) + 24
+    +                     !   :                         |     +       ! : | +       ! :   1 pthread_mutex_unlock  (in libsystem_pthread.dylib) + 32
+    +                     !   :                         |     +       ! : | +       ! 1 sqlite3_mutex_leave  (in optimized-reader-service) + 16
+    +                     !   :                         |     +       ! : | +       1 pcache1FetchWithMutex  (in optimized-reader-service) + 64
+    +                     !   :                         |     +       ! : | +         1 pcache1FetchNoMutex  (in optimized-reader-service) + 128
+    +                     !   :                         |     +       ! : | 1 sqlite3PagerGet  (in optimized-reader-service) + 48
+    +                     !   :                         |     +       ! : 1 btreeGetPage  (in optimized-reader-service) + 0
+    +                     !   :                         |     +       ! 2 getOverflowPage  (in optimized-reader-service) + 448
+    +                     !   :                         |     +       ! : 2 releasePage  (in optimized-reader-service) + 36
+    +                     !   :                         |     +       ! :   2 releasePageNotNull  (in optimized-reader-service) + 28
+    +                     !   :                         |     +       ! :     2 sqlite3PagerUnrefNotNull  (in optimized-reader-service) + 52
+    +                     !   :                         |     +       ! :       2 sqlite3PcacheRelease  (in optimized-reader-service) + 84
+    +                     !   :                         |     +       ! :         1 pcacheUnpin  (in optimized-reader-service) + 76
+    +                     !   :                         |     +       ! :         | 1 pcache1Unpin  (in optimized-reader-service) + 172
+    +                     !   :                         |     +       ! :         1 pcacheUnpin  (in optimized-reader-service) + 24
+    +                     !   :                         |     +       ! 1 getOverflowPage  (in optimized-reader-service) + 412
+    +                     !   :                         |     +       1 accessPayload  (in optimized-reader-service) + 1260
+    +                     !   :                         |     +         1 sqlite3OsRead  (in optimized-reader-service) + 60
+    +                     !   :                         |     +           1 unixRead  (in optimized-reader-service) + 260
+    +                     !   :                         |     +             1 seekAndRead  (in optimized-reader-service) + 72
+    +                     !   :                         |     +               1 pread  (in libsystem_kernel.dylib) + 8
+    +                     !   :                         |     5 vec0_get_vector_data  (in optimized-reader-service) + 168
+    +                     !   :                         |     + 5 vec0_get_chunk_position  (in optimized-reader-service) + 228
+    +                     !   :                         |     +   5 sqlite3_step  (in optimized-reader-service) + 104
+    +                     !   :                         |     +     5 sqlite3Step  (in optimized-reader-service) + 484
+    +                     !   :                         |     +       2 sqlite3VdbeExec  (in optimized-reader-service) + 19508
+    +                     !   :                         |     +       ! 1 allocateCursor  (in optimized-reader-service) + 328
+    +                     !   :                         |     +       ! : 1 sqlite3DbMallocRaw  (in optimized-reader-service) + 44
+    +                     !   :                         |     +       ! :   1 sqlite3DbMallocRawNN  (in optimized-reader-service) + 456
+    +                     !   :                         |     +       ! 1 allocateCursor  (in optimized-reader-service) + 124
+    +                     !   :                         |     +       2 sqlite3VdbeExec  (in optimized-reader-service) + 23484
+    +                     !   :                         |     +       ! 1 sqlite3BtreeTableMoveto  (in optimized-reader-service) + 320
+    +                     !   :                         |     +       ! : 1 moveToRoot  (in optimized-reader-service) + 300
+    +                     !   :                         |     +       ! :   1 getAndInitPage  (in optimized-reader-service) + 164
+    +                     !   :                         |     +       ! 1 sqlite3BtreeTableMoveto  (in optimized-reader-service) + 1124
+    +                     !   :                         |     +       !   1 moveToChild  (in optimized-reader-service) + 200
+    +                     !   :                         |     +       !     1 getAndInitPage  (in optimized-reader-service) + 112
+    +                     !   :                         |     +       !       1 sqlite3PagerGet  (in optimized-reader-service) + 56
+    +                     !   :                         |     +       !         1 getPageNormal  (in optimized-reader-service) + 80
+    +                     !   :                         |     +       !           1 sqlite3PcacheFetch  (in optimized-reader-service) + 76
+    +                     !   :                         |     +       !             1 pcache1Fetch  (in optimized-reader-service) + 68
+    +                     !   :                         |     +       !               1 pcache1FetchWithMutex  (in optimized-reader-service) + 64
+    +                     !   :                         |     +       !                 1 pcache1FetchNoMutex  (in optimized-reader-service) + 68
+    +                     !   :                         |     +       1 sqlite3VdbeExec  (in optimized-reader-service) + 10948
+    +                     !   :                         |     2 vec0_get_vector_data  (in optimized-reader-service) + 292
+    +                     !   :                         |     + 2 sqlite3_blob_open  (in optimized-reader-service) + 1696
+    +                     !   :                         |     +   2 blobSeekToRow  (in optimized-reader-service) + 120
+    +                     !   :                         |     +     2 sqlite3_step  (in optimized-reader-service) + 104
+    +                     !   :                         |     +       2 sqlite3Step  (in optimized-reader-service) + 484
+    +                     !   :                         |     +         1 sqlite3VdbeExec  (in optimized-reader-service) + 10428
+    +                     !   :                         |     +         ! 1 sqlite3BtreePayloadSize  (in optimized-reader-service) + 24
+    +                     !   :                         |     +         !   1 getCellInfo  (in optimized-reader-service) + 76
+    +                     !   :                         |     +         !     1 btreeParseCell  (in optimized-reader-service) + 120
+    +                     !   :                         |     +         !       1 btreeParseCellPtr  (in optimized-reader-service) + 800
+    +                     !   :                         |     +         1 sqlite3VdbeExec  (in optimized-reader-service) + 19612
+    +                     !   :                         |     +           1 sqlite3BtreeCursor  (in optimized-reader-service) + 104
+    +                     !   :                         |     +             1 btreeCursor  (in optimized-reader-service) + 340
+    +                     !   :                         |     1 vec0_get_vector_data  (in optimized-reader-service) + 216
+    +                     !   :                         |       1 vtab_set_error  (in optimized-reader-service) + 56
+    +                     !   :                         |         1 sqlite3_vmprintf  (in optimized-reader-service) + 140
+    +                     !   :                         |           1 sqlite3StrAccumFinish  (in optimized-reader-service) + 100
+    +                     !   :                         |             1 strAccumFinishRealloc  (in optimized-reader-service) + 40
+    +                     !   :                         |               1 sqlite3DbMallocRaw  (in optimized-reader-service) + 60
+    +                     !   :                         |                 1 sqlite3Malloc  (in optimized-reader-service) + 116
+    +                     !   :                         |                   1 sqlite3_mutex_leave  (in optimized-reader-service) + 48
+    +                     !   :                         |                     1 pthreadMutexLeave  (in optimized-reader-service) + 24
+    +                     !   :                         |                       1 _pthread_mutex_firstfit_unlock_slow  (in libsystem_pthread.dylib) + 220
+    +                     !   :                         |                         1 _pthread_mutex_firstfit_wake  (in libsystem_pthread.dylib) + 28
+    +                     !   :                         |                           1 __psynch_mutexdrop  (in libsystem_kernel.dylib) + 8
+    +                     !   :                         3 sqlite3VdbeExec  (in optimized-reader-service) + 21672
+    +                     !   :                         | 2 sqlite3BtreeIndexMoveto  (in optimized-reader-service) + 616
+    +                     !   :                         | + 2 vdbeRecordCompareInt  (in optimized-reader-service) + 72,628  [0x1075a5de8,0x1075a6014]
+    +                     !   :                         | 1 sqlite3BtreeIndexMoveto  (in optimized-reader-service) + 356
+    +                     !   :                         |   1 moveToRoot  (in optimized-reader-service) + 64
+    +                     !   :                         |     1 releasePageNotNull  (in optimized-reader-service) + 28
+    +                     !   :                         |       1 sqlite3PagerUnrefNotNull  (in optimized-reader-service) + 52
+    +                     !   :                         |         1 sqlite3PcacheRelease  (in optimized-reader-service) + 48
+    +                     !   :                         1 sqlite3VdbeExec  (in optimized-reader-service) + 28128
+    +                     !   :                         | 1 sqlite3VdbeCursorRestore  (in optimized-reader-service) + 64
+    +                     !   :                         1 sqlite3VdbeExec  (in optimized-reader-service) + 28612
+    +                     !   :                           1 sqlite3BtreePayloadSize  (in optimized-reader-service) + 24
+    +                     !   :                             1 getCellInfo  (in optimized-reader-service) + 76
+    +                     !   :                               1 btreeParseCell  (in optimized-reader-service) + 8
+    +                     !   1 mdreader_service::runtime::step::h3c8058da2b29891e  (in optimized-reader-service) + 5040
+    +                     !     1 mdreader_core::store::ReaderStore::install_embeddings::h793ac9a52265e41a  (in optimized-reader-service) + 2976
+    +                     !       1 rusqlite::Connection::execute::h5d4adfdb9e09cb2f  (in optimized-reader-service) + 128
+    +                     !         1 core::result::Result$LT$T$C$E$GT$::and_then::h804a3365e1a8acde  (in optimized-reader-service) + 176
+    +                     !           1 rusqlite::Connection::execute::_$u7b$$u7b$closure$u7d$$u7d$::h8dcdf8182654a27c  (in optimized-reader-service) + 56
+    +                     !             1 rusqlite::statement::Statement::execute::h7a981cbcb5cb6e31  (in optimized-reader-service) + 192
+    +                     !               1 rusqlite::statement::Statement::execute_with_bound_parameters::h0700b2540ed3a697  (in optimized-reader-service) + 168
+    +                     !                 1 rusqlite::raw_statement::RawStatement::step::h02ecc59280f46a51  (in optimized-reader-service) + 28
+    +                     !                   1 sqlite3_step  (in optimized-reader-service) + 104
+    +                     !                     1 sqlite3Step  (in optimized-reader-service) + 484
+    +                     !                       1 sqlite3VdbeExec  (in optimized-reader-service) + 38096
+    +                     !                         1 vec0Update  (in optimized-reader-service) + 152
+    +                     !                           1 vec0Update_Insert  (in optimized-reader-service) + 1352
+    +                     !                             1 vec0Update_InsertWriteFinalStep  (in optimized-reader-service) + 1204
+    +                     !                               1 vec0_rowids_update_position  (in optimized-reader-service) + 148
+    +                     !                                 1 sqlite3_prepare_v2  (in optimized-reader-service) + 64
+    +                     !                                   1 sqlite3LockAndPrepare  (in optimized-reader-service) + 188
+    +                     !                                     1 sqlite3Prepare  (in optimized-reader-service) + 748
+    +                     !                                       1 sqlite3RunParser  (in optimized-reader-service) + 756
+    +                     !                                         1 sqlite3Parser  (in optimized-reader-service) + 236
+    +                     !                                           1 yy_reduce  (in optimized-reader-service) + 6620
+    +                     !                                             1 sqlite3Update  (in optimized-reader-service) + 5200
+    +                     14 mdreader_service::runtime::Runtime::with_model::_$u7b$$u7b$closure$u7d$$u7d$::hf20256f6b25d571f  (in optimized-reader-service) + 596
+    +                       14 std::sync::mpsc::Receiver$LT$T$GT$::recv_timeout::h65f5106fc53cb396  (in optimized-reader-service) + 32
+    +                         14 std::sync::mpmc::Receiver$LT$T$GT$::recv_timeout::heb766da68ab0034d  (in optimized-reader-service) + 132
+    +                           14 std::sync::mpmc::Receiver$LT$T$GT$::recv_deadline::h8a6064670f05d300  (in optimized-reader-service) + 96
+    +                             14 std::sync::mpmc::array::Channel$LT$T$GT$::recv::h061827cf3dccf8fb  (in optimized-reader-service) + 240
+    +                               14 std::sync::mpmc::context::Context::with::hb78c429e28aa5c8c  (in optimized-reader-service) + 52
+    +                                 14 std::thread::local::LocalKey$LT$T$GT$::try_with::h6da6aa2534abaa95  (in optimized-reader-service) + 172
+    +                                   14 std::sync::mpmc::context::Context::with::_$u7b$$u7b$closure$u7d$$u7d$::hac6e633c06bbbc84  (in optimized-reader-service) + 548
+    +                                     14 std::sync::mpmc::array::Channel$LT$T$GT$::recv::_$u7b$$u7b$closure$u7d$$u7d$::h3f41fa8688368bbd  (in optimized-reader-service) + 244
+    +                                       14 std::sync::mpmc::context::Context::wait_until::hba289d780b126bb5  (in optimized-reader-service) + 572
+    +                                         14 std::thread::thread::Thread::park_timeout::ha4ad7207e689b08b  (in optimized-reader-service) + 100
+    +                                           14 _dispatch_semaphore_wait_slow  (in libdispatch.dylib) + 76
+    +                                             14 _dispatch_sema4_timedwait  (in libdispatch.dylib) + 64
+    +                                               14 semaphore_timedwait_trap  (in libsystem_kernel.dylib) + 8

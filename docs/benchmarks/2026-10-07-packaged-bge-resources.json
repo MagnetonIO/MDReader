@@ -1,0 +1,267 @@
+{
+  "kind": "actual-bge-short-resource-probe",
+  "binary_sha256": "6fc393b90f6c86da2b08f44b4a48d8f6da9b86752ac2435b8462faceecd3d963",
+  "binary_bytes": 150587216,
+  "harness_sha256": "1ec5d674d4fa89716495cae491cbe032d59aa159aa6a1d2ea631ed593bb7f5f9",
+  "helper_sha256": "1c87127d3d53c072dc87f1e1142818bc1db98226684e1cb45ff649b924952e45",
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "synthetic_only": true,
+  "documents": 120,
+  "actual_bge": true,
+  "configured_onnx_intra_threads": 1,
+  "thread_configuration_evidence": "parent-supplied native build includes BgeEmbedder.with_intra_threads(1)",
+  "balanced_target_inference_wall_duty": 0.25,
+  "actor_duty_fraction_measured": false,
+  "host_contention": "Shared macOS host; unrelated AgentHero builds reported. Root Cargo paused during probe.",
+  "failures": [],
+  "corpus_sha256": "682b5c7e6a3d3a13cbb756c96debe739ae35d1c03a414a34fdbefe039bdb9d4c",
+  "corpus_bytes": 114748,
+  "startup_ms": 46.393415999999995,
+  "fresh_default_policy": "balanced",
+  "model_ready_ms": 216.41800000000003,
+  "balanced_background_only": {
+    "wall_seconds": 0.760416333,
+    "cpu_seconds": 0.19000000000000003,
+    "observed_cpu_percent": 24.986312333719958,
+    "start": {
+      "monotonic_seconds": 0.433261833,
+      "cpu_seconds": 0.21,
+      "rss_bytes": 283738112,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 1.193678166,
+      "cpu_seconds": 0.4,
+      "rss_bytes": 292225024,
+      "process_threads": null
+    },
+    "before": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 0,
+      "model": "bge-small-en-v1.5"
+    },
+    "after": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 9,
+      "model": "bge-small-en-v1.5"
+    }
+  },
+  "foreground_during_background": [
+    {
+      "mode": "exact",
+      "elapsed_ms": 1.307332999999966,
+      "semantic_unavailable": null,
+      "hits": 6,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "semantic",
+      "elapsed_ms": 1.1788329999999902,
+      "semantic_unavailable": "Local embedding model is busy; lexical search remains available",
+      "hits": 0,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "hybrid",
+      "elapsed_ms": 5.500499999999908,
+      "semantic_unavailable": null,
+      "hits": 10,
+      "actual_semantic_evidence": true,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "exact",
+      "elapsed_ms": 1.1499999999999844,
+      "semantic_unavailable": null,
+      "hits": 6,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "semantic",
+      "elapsed_ms": 1.6394160000001712,
+      "semantic_unavailable": "Local embedding model is busy; lexical search remains available",
+      "hits": 0,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "hybrid",
+      "elapsed_ms": 4.959375000000099,
+      "semantic_unavailable": null,
+      "hits": 10,
+      "actual_semantic_evidence": true,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "exact",
+      "elapsed_ms": 1.7370409999999392,
+      "semantic_unavailable": null,
+      "hits": 6,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "semantic",
+      "elapsed_ms": 3.0072909999998565,
+      "semantic_unavailable": "Local embedding model is busy; lexical search remains available",
+      "hits": 0,
+      "actual_semantic_evidence": false,
+      "job_phase": "embedding"
+    },
+    {
+      "mode": "hybrid",
+      "elapsed_ms": 4.785083000000023,
+      "semantic_unavailable": null,
+      "hits": 10,
+      "actual_semantic_evidence": true,
+      "job_phase": "embedding"
+    }
+  ],
+  "foreground_phase_resources": {
+    "wall_seconds": 0.27698804199999993,
+    "cpu_seconds": 0.07999999999999996,
+    "observed_cpu_percent": 28.882113257438014,
+    "start": {
+      "monotonic_seconds": 1.200608083,
+      "cpu_seconds": 0.4,
+      "rss_bytes": 292225024,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 1.477596125,
+      "cpu_seconds": 0.48,
+      "rss_bytes": 292683776,
+      "process_threads": null
+    }
+  },
+  "paused": {
+    "wall_seconds": 5.0118525,
+    "cpu_seconds": 0.07000000000000006,
+    "observed_cpu_percent": 1.3966891483737813,
+    "start": {
+      "monotonic_seconds": 1.838010875,
+      "cpu_seconds": 0.49,
+      "rss_bytes": 292683776,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 6.849863375,
+      "cpu_seconds": 0.56,
+      "rss_bytes": 245792768,
+      "process_threads": null
+    },
+    "before": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 12,
+      "model": "bge-small-en-v1.5"
+    },
+    "after": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 12,
+      "model": "bge-small-en-v1.5"
+    },
+    "no_new_vectors": true
+  },
+  "foreground_while_paused": {
+    "elapsed_ms": 4.046583000000048,
+    "semantic_unavailable": null,
+    "actual_semantic_evidence": true
+  },
+  "first_process_resources": {
+    "raw": "6.73 real         0.45 user         0.11 sys\n           292749312  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               18362  page reclaims\n                   4  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                  34  messages sent\n                  34  messages received\n                   0  signals received\n                 126  voluntary context switches\n                2872  involuntary context switches\n          5728736438  instructions retired\n          2300593651  cycles elapsed\n           262407032  peak memory footprint",
+    "wall_seconds": 6.73,
+    "user_cpu_seconds": 0.45,
+    "system_cpu_seconds": 0.11,
+    "max_rss_bytes": 292749312
+  },
+  "restart_policy": "paused",
+  "restart_paused": {
+    "wall_seconds": 3.0090809589999994,
+    "cpu_seconds": 0.03999999999999998,
+    "observed_cpu_percent": 1.3293095315485657,
+    "start": {
+      "monotonic_seconds": 7.251782416,
+      "cpu_seconds": 0.14,
+      "rss_bytes": 278757376,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 10.260863375,
+      "cpu_seconds": 0.18,
+      "rss_bytes": 231899136,
+      "process_threads": null
+    },
+    "before": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 12,
+      "model": "bge-small-en-v1.5"
+    },
+    "after": {
+      "chunks": 120,
+      "documents": 120,
+      "embedded": 12,
+      "model": "bge-small-en-v1.5"
+    },
+    "no_new_vectors": true
+  },
+  "resumed_balanced": {
+    "wall_seconds": 10.2406775,
+    "cpu_seconds": 2.5300000000000002,
+    "observed_cpu_percent": 24.70539668884212,
+    "start": {
+      "monotonic_seconds": 10.268645958,
+      "cpu_seconds": 0.19,
+      "rss_bytes": 233472000,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 20.509323458,
+      "cpu_seconds": 2.72,
+      "rss_bytes": 247988224,
+      "process_threads": null
+    }
+  },
+  "fully_indexed_status": {
+    "chunks": 120,
+    "documents": 120,
+    "embedded": 120,
+    "model": "bge-small-en-v1.5"
+  },
+  "loaded_idle": {
+    "wall_seconds": 8.011621040999998,
+    "cpu_seconds": 0.0,
+    "observed_cpu_percent": 0.0,
+    "start": {
+      "monotonic_seconds": 20.82546075,
+      "cpu_seconds": 2.72,
+      "rss_bytes": 247988224,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 28.837081791,
+      "cpu_seconds": 2.72,
+      "rss_bytes": 247988224,
+      "process_threads": null
+    }
+  },
+  "restart_process_resources": {
+    "raw": "21.98 real         2.53 user         0.19 sys\n           278822912  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               18693  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 106  messages sent\n                 106  messages received\n                   0  signals received\n                 436  voluntary context switches\n                3268  involuntary context switches\n         28563626406  instructions retired\n          9740343710  cycles elapsed\n           251511600  peak memory footprint",
+    "wall_seconds": 21.98,
+    "user_cpu_seconds": 2.53,
+    "system_cpu_seconds": 0.19,
+    "max_rss_bytes": 278822912
+  },
+  "binary_unchanged": true,
+  "total_wall_seconds": 28.821888792,
+  "passed_control_checks": true,
+  "thread_count_measurement_valid": false,
+  "thread_count_measurement_note": "Darwin ps -M ignored requested output columns; original sampler parsed zero. Counts are unavailable, not zero. Sampler parser corrected afterward; no model rerun."
+}
