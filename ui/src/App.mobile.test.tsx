@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -17,6 +18,7 @@ const persistence = vi.hoisted(() => ({
 let nativeDeviceConfigured = false;
 let pendingImports: { id: string; name: string; bytes: number }[] = [];
 let rejectDiscard = false;
+let pinAcknowledgement:Promise<void>|null=null;
 let deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
 const deviceDocument = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -72,6 +74,7 @@ function installTauriRuntime(): void {
             },
           ];
         if (command === "mobile_reader_pin") {
+          await pinAcknowledgement;
           deviceDocument.pinned = Boolean(args?.pinned);
           return null;
         }
@@ -184,6 +187,7 @@ beforeEach(() => {
   nativeDeviceConfigured = false;
   pendingImports = [];
   rejectDiscard = false;
+  pinAcknowledgement=null;
   deviceDocument.pinned = false;
   deviceDocument.name = "architecture.md";
   deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
@@ -244,6 +248,25 @@ describe("compile-time mobile composition", () => {
     await screen.findByRole("button", { name: "Unpin" });
     expect(screen.getByText("Imported", { selector: "h1" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByText(/Pinned ·/);
+  });
+  test("a delayed pin acknowledgement preserves Back navigation and the newly selected tab", async () => {
+    installDeviceLibrary();
+    let acknowledge!:()=>void;
+    pinAcknowledgement=new Promise<void>(resolve=>{acknowledge=resolve;});
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button",{name:"architecture.md"}));
+    await screen.findByText("Semantic architecture",{selector:"h1"});
+    fireEvent.click(screen.getByRole("button",{name:"Pin"}));
+    await waitFor(()=>expect(nativeCalls).toHaveBeenCalledWith("mobile_reader_pin",{id:deviceDocument.id,pinned:true}));
+    fireEvent.click(screen.getByRole("button",{name:"Back"}));
+    await screen.findByRole("navigation",{name:"Primary"});
+    fireEvent.click(screen.getByRole("button",{name:"Search"}));
+    await act(async()=>acknowledge());
+    await waitFor(()=>expect(deviceDocument.pinned).toBe(true));
+    expect(screen.queryByRole("main",{name:"Reader"})).toBeNull();
+    expect(screen.getByRole("button",{name:"Search"}).getAttribute("aria-current")).toBe("page");
+    fireEvent.click(screen.getByRole("button",{name:"Library"}));
     await screen.findByText(/Pinned ·/);
   });
   test.each(["ios", "android"] as const)(

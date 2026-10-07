@@ -326,7 +326,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     try {
       const doc = active.document;
       await result(commands.mobileReaderPin(doc.id, !doc.pinned));
-      setActive({ ...active, document: { ...doc, pinned: !doc.pinned } });
+      setActive((current) =>
+        current?.document.id === doc.id &&
+        current.document.revision === doc.revision
+          ? { ...current, document: { ...current.document, pinned: !doc.pinned } }
+          : current,
+      );
       await refresh();
     } catch (cause) {
       setError(message(cause));

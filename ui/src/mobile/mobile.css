@@ -54,6 +54,47 @@
   flex-shrink: 0;
 }
 
+/* Device readers fill the space left by bounded status messages. Only their
+   document surface scrolls; toolbar, evidence and outline stay in the reader. */
+.mobile-shell--device > .mobile-state {
+  margin: 0;
+  max-height: 25dvh;
+  padding: 0.65rem 0.85rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.mobile-shell--device .mobile-reader {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mobile-shell--device .mobile-reader__bar {
+  flex-shrink: 0;
+  grid-template-columns:
+    minmax(44px, auto) minmax(0, 1fr) repeat(3, minmax(44px, auto));
+}
+
+.mobile-shell--device .mobile-reader > .mobile-state,
+.mobile-shell--device .mobile-reader > nav[aria-label="Document outline"] {
+  flex-shrink: 0;
+  max-height: 25%;
+  margin: 0;
+  padding: 0.5rem 0.8rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.mobile-shell--device .mobile-reader__document {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+}
+
 .mobile-screen {
   width: min(100%, 46rem);
   margin: 0 auto;

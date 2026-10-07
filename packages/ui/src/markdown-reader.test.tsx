@@ -59,21 +59,29 @@ describe('MarkdownReader', () => {
     });
   });
 
-  test('scrollToLine scrolls the block whose source range contains the line', () => {
-    const scrollIntoView = vi.fn();
-    // jsdom does not implement scrollIntoView; provide a spy.
-    Element.prototype.scrollIntoView = scrollIntoView;
-
+  test('scrollToLine scrolls the containing source block without moving ancestor scroll containers', () => {
     const doc = parseMarkdown('# One\n\nPara two.\n\n## Three\n\nPara four.\n');
     const ref = createRef<MarkdownReaderHandle>();
-    render(<MarkdownReader doc={doc} ref={ref} />);
-
-    // Line 5 is the "## Three" heading (block index 2).
-    ref.current?.scrollToLine(5);
-
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    const scrolledElement = scrollIntoView.mock.instances[0] as HTMLElement;
-    expect(scrolledElement.getAttribute('data-block-index')).toBe('2');
+    const { container } = render(<div data-outer><header>Mobile toolbar</header><MarkdownReader doc={doc} ref={ref} /></div>);
+    const outer = container.querySelector<HTMLElement>('[data-outer]')!;
+    const scroll = container.querySelector<HTMLElement>('.mdreader')!;
+    outer.scrollTop = 83;
+    document.documentElement.scrollTop = 19;
+    scroll.scrollTop = 40;
+    const tops = [0, 120, 260, 500];
+    scroll.getBoundingClientRect = () => ({top:160}) as DOMRect;
+    Array.from(scroll.querySelectorAll<HTMLElement>('[data-block-index]')).forEach((el,index)=>{
+      el.getBoundingClientRect = () => ({top:160+tops[index]!-scroll.scrollTop}) as DOMRect;
+    });
+    // Model scrollIntoView's ancestor movement, the regression observed on iOS.
+    const original=Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView=vi.fn(()=>{outer.scrollTop=999;document.documentElement.scrollTop=999;});
+    try {
+      ref.current!.scrollToLine(5);
+      expect(scroll.scrollTop).toBe(260);
+      expect(outer.scrollTop).toBe(83);
+      expect(document.documentElement.scrollTop).toBe(19);
+    } finally {Element.prototype.scrollIntoView=original;document.documentElement.scrollTop=0;}
   });
 
   test('getScrollAnchor + scrollToBlock round-trip lands in the same block at the same offset', () => {
@@ -152,19 +160,18 @@ describe('MarkdownReader', () => {
   });
 
   test('scrollToLine falls back to the nearest heading (section), not the preceding block', () => {
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
-
-    // h1@1, p@3, p@5, h2@7, p@9. Line 6 is a gap in the H1 section: the section
-    // fallback targets the H1 heading (index 0), not the preceding paragraph.
+    // h1@1, p@3, p@5, h2@7, p@9: line 6 belongs to the H1 section.
     const doc = parseMarkdown('# H1\n\npara a\n\npara b\n\n## H2\n\npara c\n');
     const ref = createRef<MarkdownReaderHandle>();
-    render(<MarkdownReader doc={doc} ref={ref} />);
-
-    ref.current?.scrollToLine(6);
-
-    const scrolled = scrollIntoView.mock.instances[0] as HTMLElement;
-    expect(scrolled.getAttribute('data-block-index')).toBe('0');
+    const {container}=render(<MarkdownReader doc={doc} ref={ref} />);
+    const scroll=container.querySelector<HTMLElement>('.mdreader')!;
+    scroll.scrollTop=230;
+    scroll.getBoundingClientRect=()=>({top:100}) as DOMRect;
+    Array.from(scroll.querySelectorAll<HTMLElement>('[data-block-index]')).forEach((el,index)=>{
+      el.getBoundingClientRect=()=>({top:100+index*150-scroll.scrollTop}) as DOMRect;
+    });
+    ref.current!.scrollToLine(6);
+    expect(scroll.scrollTop).toBe(0);
   });
 });
 

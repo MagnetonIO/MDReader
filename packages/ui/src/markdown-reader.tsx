@@ -326,10 +326,15 @@ export function MarkdownReader({
           virtualizer.scrollToIndex(index, { align: 'start' });
           return;
         }
-        const target = scrollRef.current?.querySelector<HTMLElement>(
+        const container = scrollRef.current;
+        const target = container?.querySelector<HTMLElement>(
           `[data-block-index="${index}"]`,
         );
-        target?.scrollIntoView({ block: 'start' });
+        if (!container || !target) return;
+        // scrollIntoView also scrolls ancestors (including the mobile toolbar).
+        // Keep source navigation inside this reader's own scroll surface.
+        container.scrollTop +=
+          target.getBoundingClientRect().top - container.getBoundingClientRect().top;
       },
       getScrollAnchor() {
         return readAnchor(scrollRef.current);
