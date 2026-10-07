@@ -1,5 +1,36 @@
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    // Fresh narrow native provider registrations are independent of legacy
+    // broad cloud-account configuration. GUI and headless service share identity.
+    for field in [
+        "MDREADER_NATIVE_DRIVE_CLIENT_ID",
+        "MDREADER_NATIVE_DROPBOX_CLIENT_ID",
+        "MDREADER_NATIVE_DROPBOX_APP_FOLDER_REGISTRATION_SHA256",
+        "MDREADER_NATIVE_DROPBOX_REDIRECT_URI",
+    ] {
+        println!("cargo:rerun-if-env-changed={field}");
+    }
+    let native_base: serde_json::Value = serde_json::from_str(include_str!("tauri.conf.json"))
+        .expect("tauri.conf.json must contain valid JSON");
+    let native_overlay = std::env::var("TAURI_CONFIG").ok().map(|value| {
+        serde_json::from_str::<serde_json::Value>(&value)
+            .expect("TAURI_CONFIG must contain valid JSON")
+    });
+    let native_identifier = native_overlay
+        .as_ref()
+        .and_then(|v| v.get("identifier"))
+        .or_else(|| native_base.get("identifier"))
+        .and_then(serde_json::Value::as_str)
+        .expect("native app identifier is required");
+    assert!(
+        !native_identifier.is_empty()
+            && native_identifier.len() <= 128
+            && native_identifier
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b)),
+        "native app identifier is invalid"
+    );
+    println!("cargo:rustc-env=MDREADER_NATIVE_APP_ID={native_identifier}");
     println!("cargo:rerun-if-changed=tauri.conf.json");
     println!("cargo:rerun-if-changed=../ui/dist");
 
