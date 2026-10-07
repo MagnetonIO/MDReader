@@ -87,6 +87,7 @@ test("virtual URI paths and line evidence cannot escape their source", () => {
     line: 4,
   };
   assert.deepEqual(parseSelectionUri(selectionUri(selection)), selection);
+  assert.deepEqual(parseSelectionUri(`mdreader://selected/notes/space%20%23%C3%A9.md?revision=${revision}#line=4`), selection);
   for (const uri of [
     "file:///etc/passwd",
     "mdreader://selected/../secret.md",
@@ -95,6 +96,20 @@ test("virtual URI paths and line evidence cannot escape their source", () => {
     "mdreader://selected/ok.md?revision=bad#line=0",
   ])
     assert.throws(() => parseSelectionUri(uri), ReaderFailure);
+});
+test("provider source identities survive virtual URI roundtrip without granting another binding", () => {
+  const source = `provider:${"a".repeat(64)}`;
+  const selected = { source_id: source, path: "selected/space #é.md", revision, line: 3 };
+  assert.deepEqual(parseSelectionUri(selectionUri(selected)), selected);
+  assert.equal(new URL(selectionUri(selected)).host, "document");
+  const declaredPattern = require("../package.json").contributes.configuration.properties["mdreader.sourceIds"].items.pattern;
+  assert.ok(new RegExp(declaredPattern).test(source));
+  const client = new ReaderClient({ dataDirectory: "/tmp", sourceIds: [source] });
+  assert.equal(client.selected(selected).source_id, source);
+  assert.throws(() => client.selected({ ...selected, source_id: `provider:${"b".repeat(64)}` }), ReaderFailure);
+  for (const forged of ["provider:abc", `other:${"a".repeat(64)}`, "provider:../escape", "selected:123"]) {
+    assert.throws(() => new ReaderClient({ dataDirectory: "/tmp", sourceIds: [forged] }), ReaderFailure);
+  }
 });
 test("loopback client sends authenticated read-only requests and filters sources", async (t) => {
   const { client } = await fixture(t, (socket, envelope) => {

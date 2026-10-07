@@ -6,7 +6,7 @@ const { TextDecoder } = require("node:util");
 const MAX_RESPONSE = 16 * 1024 * 1024;
 const MAX_REQUEST = 64 * 1024;
 const REVISION = /^[a-fA-F0-9]{64}$/;
-const SOURCE = /^[A-Za-z0-9_-]{1,128}$/;
+const SOURCE = /^(?:[A-Za-z0-9_-]{1,128}|provider:[a-f0-9]{64})$/;
 class ReaderFailure extends Error {
   constructor(code = "unavailable") {
     const messages = {
@@ -74,17 +74,17 @@ function validateSelection(value, requireRevision = false) {
 }
 function selectionUri(value) {
   const selected = validateSelection(value, true);
-  return `mdreader://${selected.source_id}/${selected.path.split("/").map(encodeURIComponent).join("/")}?revision=${selected.revision}#line=${selected.line}`;
+  // Keep opaque source identity in the path, never in a host/port authority.
+  return `mdreader://document/${encodeURIComponent(selected.source_id)}/${selected.path.split("/").map(encodeURIComponent).join("/")}?revision=${selected.revision}#line=${selected.line}`;
 }
 function parseSelectionUri(value) {
   if (typeof value !== "string" || value.length > 16384) fail("invalid_path");
-  const match =
-    /^mdreader:\/\/([A-Za-z0-9_-]{1,128})\/([^?#]+)\?([^#]+)#line=([1-9][0-9]*)$/u.exec(
-      value,
-    );
+  const modern = /^mdreader:\/\/document\/([^/?#]+)\/([^?#]+)\?([^#]+)#line=([1-9][0-9]*)$/u.exec(value);
+  const match = modern ?? /^mdreader:\/\/([A-Za-z0-9_-]{1,128})\/([^?#]+)\?([^#]+)#line=([1-9][0-9]*)$/u.exec(value);
   if (!match) fail("invalid_path");
-  let relative;
+  let relative, source;
   try {
+    source = modern ? decodeURIComponent(match[1]) : match[1];
     relative = match[2]
       .split("/")
       .map((part) => {
@@ -101,7 +101,7 @@ function parseSelectionUri(value) {
     fail("invalid_path");
   return validateSelection(
     {
-      source_id: match[1],
+      source_id: source,
       path: relative,
       revision: query.get("revision"),
       line: Number(match[4]),
