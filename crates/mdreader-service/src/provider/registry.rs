@@ -224,7 +224,7 @@ pub fn revalidate(connection: &mut Connection, binding: &SourceBinding) -> Resul
 pub fn disable(
     connection: &mut Connection,
     binding: &SourceBinding,
-    projection: &impl ProjectionAdmission,
+    projection: &dyn ProjectionAdmission,
 ) -> Result<()> {
     initialize(connection)?;
     descriptor_at(connection, binding, false)?;
@@ -630,7 +630,7 @@ fn published_metadata(
 pub fn publish_snapshot(
     connection: &mut Connection,
     snapshot: &Snapshot,
-    projection: &impl ProjectionAdmission,
+    projection: &dyn ProjectionAdmission,
 ) -> Result<()> {
     initialize(connection)?;
     let d = descriptor_at(connection, &snapshot.binding, true)?;
@@ -835,7 +835,7 @@ pub fn admit_body(
     connection: &mut Connection,
     binding: &SourceBinding,
     document: &DocumentBody,
-    projection: &impl ProjectionAdmission,
+    projection: &dyn ProjectionAdmission,
 ) -> Result<ProjectionReceipt> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
@@ -870,7 +870,7 @@ pub fn publish_mutation(
     connection: &mut Connection,
     binding: &SourceBinding,
     operation: Uuid,
-    projection: &impl ProjectionAdmission,
+    projection: &dyn ProjectionAdmission,
     observed_at_ms: i64,
 ) -> Result<ProjectionReceipt> {
     initialize(connection)?;
@@ -963,7 +963,7 @@ pub(super) fn ready(connection: &mut Connection, snapshot: &Snapshot) -> Result<
 pub fn forget_materialization(
     connection: &mut Connection,
     binding: &SourceBinding,
-    projection: &impl ProjectionAdmission,
+    projection: &dyn ProjectionAdmission,
 ) -> Result<()> {
     disable(connection, binding, projection)?;
     let tx = db(connection.transaction())?;

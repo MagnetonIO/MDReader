@@ -18,12 +18,23 @@ pub(super) struct Runtime {
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    providers:
+        std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
 }
 impl Runtime {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(
         store: Arc<Mutex<ReaderStore>>,
         cache: PathBuf,
         options: super::ServiceOptions,
+    ) -> Result<Self> {
+        Self::new_with_provider(store, cache, options, None)
+    }
+    pub fn new_with_provider(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
+        options: super::ServiceOptions,
+        factory: Option<Arc<dyn super::provider::ProviderFactory>>,
     ) -> Result<Self> {
         // Offline mode creates neither an actor thread nor a model/download.
         #[cfg(feature = "local-embed")]
@@ -33,7 +44,22 @@ impl Runtime {
             let _ = options;
             None
         };
-        Self::with_model(store, cache, model)
+        let owner = store.clone();
+        let mut runtime = Self::with_model(store, cache, model)?;
+        if let Some(factory) = factory {
+            // Provider cache/host failure must not take local reading, capture,
+            // or indexing offline. Retain the typed error for provider clients.
+            runtime.providers = (|| {
+                let library =
+                    super::provider::Owner::with_connection(&*owner, super::provider::library_id)?;
+                let projection = Arc::new(super::provider::CoreProjection::open(
+                    &runtime.directory.join("provider-cache"),
+                    library,
+                )?);
+                super::provider::Coordinator::new(owner, projection, factory).map(Some)
+            })();
+        }
+        Ok(runtime)
     }
     fn with_model(
         store: Arc<Mutex<ReaderStore>>,
@@ -41,9 +67,13 @@ impl Runtime {
         model: Option<ModelActor>,
     ) -> Result<Self> {
         {
-            let mut owner = store.lock().map_err(|_| protocol_error("reader worker failed"))?;
+            let mut owner = store
+                .lock()
+                .map_err(|_| protocol_error("reader worker failed"))?;
             crate::workload::initialize(&mut owner)?;
-            if let Some(model) = &model { model.set_background_policy(crate::workload::get(&mut owner)?); }
+            if let Some(model) = &model {
+                model.set_background_policy(crate::workload::get(&mut owner)?);
+            }
         }
         let (wake, receiver) = mpsc::sync_channel(1);
         let worker_store = Arc::clone(&store);
@@ -106,6 +136,7 @@ impl Runtime {
             model,
             wake,
             directory,
+            providers: Ok(None),
         })
     }
     fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -119,11 +150,32 @@ impl Runtime {
             .map_err(|_| protocol_error("reader query worker failed"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::Provider { request } = request {
+            let result = self
+                .providers
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|coordinator| {
+                    coordinator
+                        .as_ref()
+                        .ok_or(mdreader_provider::ProviderError::Unsupported)
+                })
+                .and_then(|coordinator| coordinator.execute(request));
+            let value = match result {
+                Ok(value) => serde_json::json!({"result":value,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            };
+            let _ = self.wake.try_send(());
+            return Ok(value);
+        }
         if let Request::SetEmbeddingPolicy { policy } = request {
             crate::workload::set(&mut *self.store()?, policy)?;
-            if let Some(model) = &self.model { model.set_background_policy(policy); }
+            if let Some(model) = &self.model {
+                model.set_background_policy(policy);
+            }
             let _ = self.wake.try_send(());
-            return serde_json::to_value(policy).map_err(|_| protocol_error("invalid embedding policy"));
+            return serde_json::to_value(policy)
+                .map_err(|_| protocol_error("invalid embedding policy"));
         }
         if let Request::ConfigureCapture { policy } = request {
             let path = super::capture::policy_path(&self.directory, &policy.project_id);
@@ -443,7 +495,9 @@ fn step(
         return Ok(Step::Progress);
     }
     let model = model.ok_or(ReaderError::ModelUnavailable)?;
-    if !model.background_ready() { return Ok(Step::Waiting); }
+    if !model.background_ready() {
+        return Ok(Step::Waiting);
+    }
     match model.ensure_loaded() {
         ModelState::Ready => {}
         ModelState::Loading | ModelState::Busy => return Ok(Step::Waiting),
@@ -452,7 +506,9 @@ fn step(
     let mut texts = Vec::new();
     let mut bytes = 0;
     for text in &document.texts {
-        if texts.len() == model.background_batch_limit() || bytes + text.len() > model::MAX_BATCH_BYTES {
+        if texts.len() == model.background_batch_limit()
+            || bytes + text.len() > model::MAX_BATCH_BYTES
+        {
             break;
         }
         bytes += text.len();

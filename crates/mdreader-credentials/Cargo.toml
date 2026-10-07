@@ -1,0 +1,29 @@
+[package]
+name = "mdreader-credentials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdreader-provider = { path = "../mdreader-provider" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+zeroize = { version = "1.9", features = ["derive"] }
+getrandom = "0.4"
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["sync-secret-service"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

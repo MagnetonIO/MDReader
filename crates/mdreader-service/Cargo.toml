@@ -15,9 +15,14 @@ mdreader-capture = { path = "../mdreader-capture" }
 mdreader-sync = { path = "../mdreader-sync" }
 mdreader-integrations = { path = "../mdreader-integrations" }
 mdreader-provider = { path = "../mdreader-provider" }
+mdreader-credentials = { path = "../mdreader-credentials" }
+mdreader-connector-google-drive = { path = "../mdreader-connector-google-drive", default-features = false }
+mdreader-connector-dropbox = { path = "../mdreader-connector-dropbox", default-features = false }
+zeroize = "1.9"
+url = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 async-trait = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

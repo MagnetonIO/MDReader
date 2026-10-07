@@ -4,7 +4,11 @@
 //! between short owner callbacks. Private remote caches are never local source
 //! grants. Projection admission defaults to Unsupported until core can enforce
 //! provider binding/generation authority in the same publication transaction.
+mod coordinator;
+mod factory;
 mod orchestration;
+pub use coordinator::*;
+pub use factory::*;
 mod registry;
 use mdreader_provider::*;
 pub use orchestration::*;

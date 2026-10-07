@@ -25,10 +25,10 @@ pub struct SyncResult {
 /// Resume durable staging or refresh a published checkpoint. No writer lock is
 /// held across any await. Initial change tracking begins before enumeration.
 /// Completed metadata is not completed indexing; bodies are admitted separately.
-pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized, A: ProjectionAdmission>(
+pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
     owner: &O,
     provider: &P,
-    projection: &A,
+    projection: &dyn ProjectionAdmission,
     context: &IoContext,
 ) -> Result<SyncResult> {
     let binding = provider.descriptor().binding();
@@ -161,11 +161,11 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized, A: ProjectionAd
 }
 /// Fetch exact current metadata revision, durably cache it, then explicitly ask
 /// core for admission. Unsupported admission leaves a private cached body only.
-pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized, A: ProjectionAdmission>(
+pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized>(
     owner: &O,
     provider: &P,
     key: &RecordKey,
-    projection: &A,
+    projection: &dyn ProjectionAdmission,
     context: &IoContext,
 ) -> Result<ProjectionReceipt> {
     let binding = provider.descriptor().binding();
@@ -183,11 +183,11 @@ pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized, A: Projecti
 }
 /// Explicit dispatch only. The durable permit is consumed exactly once. Any
 /// post-dispatch error remains uncertain and is never automatically reissued.
-pub async fn dispatch_write<O: Owner, P: DocumentProvider + ?Sized, A: ProjectionAdmission>(
+pub async fn dispatch_write<O: Owner, P: DocumentProvider + ?Sized>(
     owner: &O,
     provider: &P,
     operation: Uuid,
-    projection: &A,
+    projection: &dyn ProjectionAdmission,
     context: &IoContext,
 ) -> Result<ProjectionReceipt> {
     let binding = provider.descriptor().binding();
@@ -260,10 +260,10 @@ pub struct RepairResult {
 /// Startup repair performs read-only reconciliation for unknown writes and
 /// idempotent local publication for accepted receipts. Prepared intents require
 /// a new explicit dispatch request; no restart path performs a provider write.
-pub async fn repair_mutations<O: Owner, P: DocumentProvider + ?Sized, A: ProjectionAdmission>(
+pub async fn repair_mutations<O: Owner, P: DocumentProvider + ?Sized>(
     owner: &O,
     provider: &P,
-    projection: &A,
+    projection: &dyn ProjectionAdmission,
     context: &IoContext,
 ) -> Result<RepairResult> {
     let binding = provider.descriptor().binding();

@@ -31,6 +31,8 @@ serde_json = { workspace = true }
 
 [dependencies]
 mdreader-core = { path = "../crates/mdreader-core" }
+mdreader-provider = { path = "../crates/mdreader-provider" }
+mdreader-credentials = { path = "../crates/mdreader-credentials" }
 mdreader-service = { path = "../crates/mdreader-service" }
 mdreader-capture = { path = "../crates/mdreader-capture" }
 mdreader-mcp = { path = "../crates/mdreader-mcp" }

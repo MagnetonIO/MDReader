@@ -41,9 +41,14 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    Provider {
+        request: provider::ProviderRequest,
+    },
     Ping,
     EmbeddingPolicy,
-    SetEmbeddingPolicy { policy: workload::EmbeddingPolicy },
+    SetEmbeddingPolicy {
+        policy: workload::EmbeddingPolicy,
+    },
     Admit {
         name: String,
         path: PathBuf,
@@ -214,7 +219,8 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
-        Request::ConfigureCapture { .. }
+        Request::Provider { .. }
+        | Request::ConfigureCapture { .. }
         | Request::CaptureStatus
         | Request::CapturePolicy { .. }
         | Request::PrepareIntegration { .. }
@@ -225,7 +231,10 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         }
         Request::Ping => Ok(json!({"protocol":PROTOCOL,"pid":std::process::id(),"headless":true})),
         Request::EmbeddingPolicy => serde_json::to_value(workload::get(store)?),
-        Request::SetEmbeddingPolicy { policy } => { workload::set(store, policy)?; serde_json::to_value(policy) },
+        Request::SetEmbeddingPolicy { policy } => {
+            workload::set(store, policy)?;
+            serde_json::to_value(policy)
+        }
         Request::Admit {
             name,
             path,
@@ -238,7 +247,9 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
             serde_json::to_value(store.index_status(&[source_id])?)
         }
         Request::ListSources => serde_json::to_value(store.list_sources()?),
-        Request::FindSource { path, identity } => serde_json::to_value(store.find_local_source(&path, &identity)?),
+        Request::FindSource { path, identity } => {
+            serde_json::to_value(store.find_local_source(&path, &identity)?)
+        }
         Request::Status { sources } => serde_json::to_value(store.index_status(&sources)?),
         Request::Search {
             query,
@@ -366,6 +377,22 @@ pub fn serve(directory: &Path) -> Result<()> {
     serve_with_options(directory, ServiceOptions::default())
 }
 pub fn serve_with_options(directory: &Path, options: ServiceOptions) -> Result<()> {
+    serve_configured(directory, options, None)
+}
+/// Native owner supplies registration/vault/transport custody. No credential
+/// enumeration or provider I/O occurs merely because the service starts.
+pub fn serve_with_provider_factory(
+    directory: &Path,
+    options: ServiceOptions,
+    factory: Arc<dyn provider::ProviderFactory>,
+) -> Result<()> {
+    serve_configured(directory, options, Some(factory))
+}
+fn serve_configured(
+    directory: &Path,
+    options: ServiceOptions,
+    factory: Option<Arc<dyn provider::ProviderFactory>>,
+) -> Result<()> {
     std::fs::create_dir_all(directory)?;
     #[cfg(unix)]
     {
@@ -380,10 +407,11 @@ pub fn serve_with_options(directory: &Path, options: ServiceOptions) -> Result<(
     sync::initialize(&mut owner)
         .map_err(|_| protocol_error("Encrypted sync storage is unavailable"))?;
     let store = Arc::new(Mutex::new(owner));
-    let runtime = Arc::new(runtime::Runtime::new(
+    let runtime = Arc::new(runtime::Runtime::new_with_provider(
         store,
         directory.join("models"),
         options,
+        factory,
     )?);
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     let token = format!(

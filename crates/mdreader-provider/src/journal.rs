@@ -168,8 +168,39 @@ pub fn prepare(
     expected: &DocumentVersion,
     body: &MarkdownBytes,
 ) -> Result<uuid::Uuid> {
+    prepare_with_id(
+        connection,
+        binding,
+        key,
+        expected,
+        body,
+        uuid::Uuid::new_v4(),
+    )
+}
+/// Owner-generated stable operation identity makes a lost prepare reply replay
+/// the same intent. Matching replays never create a fresh dispatch permit.
+pub fn prepare_with_id(
+    connection: &mut Connection,
+    binding: &SourceBinding,
+    key: &RecordKey,
+    expected: &DocumentVersion,
+    body: &MarkdownBytes,
+    id: uuid::Uuid,
+) -> Result<uuid::Uuid> {
+    if id.get_version_num() != 4 {
+        return Err(ProviderError::Invalid);
+    }
     initialize(connection)?;
-    let id = uuid::Uuid::new_v4();
+    match record(connection, binding, id) {
+        Ok((intent, prior, _, _)) => {
+            if intent.key != *key || intent.expected != *expected || prior != *body {
+                return Err(ProviderError::Conflict);
+            }
+            return Ok(id);
+        }
+        Err(ProviderError::Unauthorized) => {}
+        Err(error) => return Err(error),
+    }
     let intent = Intent {
         v: 1,
         operation_id: id,

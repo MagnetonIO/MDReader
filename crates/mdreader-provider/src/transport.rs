@@ -53,6 +53,7 @@ impl Request {
 impl Drop for Request {
     fn drop(&mut self) {
         use zeroize::Zeroize;
+        self.body.zeroize();
         for value in self.headers.values_mut() {
             value.zeroize();
         }

@@ -154,3 +154,96 @@ IPC/app requests, replace legacy Library/sidebar/settings queries, migrate legac
 profiles, construct credential resolvers/cursor-key custody, prove OAuth/Picker UX,
 perform live provider access/writes, implement assets, or establish complete
 searchable coverage. Those gates remain explicit; this is not Task 6 acceptance.
+
+## Native factory and service RPC (Stage 4)
+
+The packaged native owner constructs:
+
+```rust,ignore
+let vault = VaultClient::new(Arc::new(KeyringVault::new(app_identifier)?))?;
+let transport = Arc::new(mdreader_provider::transport::ReqwestTransport::new()?);
+let factory = Arc::new(NativeFactory::new(vault, native_registrations, transport)?);
+mdreader_service::serve_with_provider_factory(data_directory, options, factory)?;
+```
+
+`NativeFactory` accepts only fresh references and a grant matching configured
+native registration metadata, verified account, exact selected scope and stored
+configuration digest. It constructs CatDB-free standard Google Drive/Dropbox
+kernels. Dropbox is read-only in this first rollout; Google still requires an
+actual strong HTTP validator for guarded mutation. Refresh uses the provider's
+native refresh-token endpoint, verifies the refreshed account before generation
+CAS, preserves selection/registration/cursor secret and never broadens scopes.
+Primary contracts: [Google native refresh](https://developers.google.com/identity/protocols/oauth2/native-app#offline),
+[Dropbox OAuth](https://docs.dropboxapi.com/dropbox-api/docs/oauth),
+[Google native Picker](https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker).
+Live provider registration/approval and OS credential acceptance remain gates;
+synthetic protocol evidence is not live authorization acceptance.
+
+`Request::Provider { request: ProviderRequest }` returns
+`{"result": <value-or-null>, "error": <typed-provider-error-or-null>}`.
+The provider error retains only its public kind/operation ID, never raw HTTP
+errors, IDs, tokens or validators. The native wrapper must inspect `error` even
+when the enclosing service transport succeeds.
+
+- `List`: sanitized source summaries. No vault enumeration or network.
+- `Admit { credential_reference, name }`: native-only input following verified
+  OAuth and fresh custody creation; never expose credential references in a
+  renderer command. The service generates source ID/generation and derives
+  account/selection/capabilities from the grant.
+- `Reconnect { source_id, credential_reference, name }`: explicit fresh grant
+  after old source disable. Account/selection changes get a fresh generation.
+- `Refresh { source_id }`: resume staged enumeration/change checkpoints. A
+  successful metadata refresh does not claim body/index completeness.
+- `Documents { source_id, offset, limit }`: at most 256 display records and
+  opaque UUID handles, cache/admission status, cache observation time and an
+  optional safe core projection receipt for exact cached/offline reads.
+  Pagination is bounded to the private 16,384-row source inventory.
+- `Open { source_id, document_id }`: fetch exact current published metadata
+  version, cache/admit and return `ProjectionReceipt`; use its safe
+  `reader_source_id/path/revision` with ordinary core `Read`. An observation
+  timestamp describes cached evidence, not proof of the present remote head.
+- `Disable` / `Forget`: synchronous owner-only authority changes bypass network
+  slots and the vault worker. Core revoke and registry disable share one durable
+  transaction. Forget removes derived materialization and keeps the source
+  paused plus uncertain mutation evidence.
+- `BeginEdit`: admitted body plus opaque UUID edit authority, expires in ten
+  minutes, bounded to 256 tickets. Raw provider revisions/HTTP validators remain
+  in owner storage. Unsupported capability/validator fails closed.
+- `PrepareSave`: exact ticket version and visible Markdown become a durable
+  journal intent before dispatch. Ticket UUID is the operation UUID; a lost
+  reply/restart cannot create a second intent. Matching replay is idempotent;
+  changed replay bodies conflict.
+- `DispatchSave`: explicit single-send mutation. Verified receipt and core job
+  commit precede acknowledgement. Uncertain outcomes never become resendable.
+- `Mutations`: bounded operation IDs/states only. `Repair` performs read-only
+  reconciliation and idempotent local publication, never auto-dispatches.
+
+Admission/reconnect replay is keyed by exact fresh credential reference plus
+configuration digest. A lost IPC reply returns the original source and its
+**current** enabled state; replay cannot silently regrant a subsequently paused
+source. A different configuration or reuse for a different source conflicts.
+Keep a pending native reference after timeout and reconcile; never delete a
+potentially admitted credential merely because its IPC reply was lost.
+
+The coordinator has one persistent current-thread async runtime, queue capacity
+8, at most two active network operations and one per source, 30-second operation
+deadlines. Busy is explicit, no unbounded queued tasks or abandoned workers.
+SQLite callbacks are synchronous and short; no writer guard crosses an await.
+Startup reads only registry references, marks interrupted dispatched intents
+Unknown, and performs no credential enumeration/network/OAuth. Factory loading
+is lazy for the exact requested source. Private opaque handles persist across
+restart, are bound to the full generation, and cannot be used for another source
+or after revoke. A three-table independent migration guard stores handles/edit
+authority without changing global `user_version`.
+
+The focused synthetic service-process regression covers native grant refresh,
+account verification, exact file enumeration, opaque listing, real core
+admission/read, restart, accepted-upload/lost-response uncertainty (one upload),
+read-only reconciliation, stale revision rejection, revoke and paused admission
+replay. OAuth browser/Picker and shipping app routing are owned by the native
+app; this backend test does not claim live provider access or completed UI port.
+
+A provider initialization failure (unsupported host, damaged or unavailable
+private cache) is retained as a typed provider error in Runtime. Provider RPCs
+report that diagnostic; local reading, capture and indexing still start and
+operate. The source is never registered as a local fallback or silently admitted.

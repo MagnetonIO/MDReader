@@ -4539,9 +4539,11 @@ dependencies = [
  "mdreader-connector-google-drive",
  "mdreader-connector-local",
  "mdreader-core",
+ "mdreader-credentials",
  "mdreader-domain",
  "mdreader-ingest",
  "mdreader-mcp",
+ "mdreader-provider",
  "mdreader-service",
  "notify-debouncer-mini",
  "regex",
@@ -4676,6 +4678,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdreader-credentials"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "getrandom 0.4.3",
+ "keyring",
+ "mdreader-provider",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "mdreader-domain"
 version = "1.0.0"
 dependencies = [
@@ -4788,7 +4805,10 @@ dependencies = [
  "async-trait",
  "fs2",
  "mdreader-capture",
+ "mdreader-connector-dropbox",
+ "mdreader-connector-google-drive",
  "mdreader-core",
+ "mdreader-credentials",
  "mdreader-integrations",
  "mdreader-provider",
  "mdreader-sync",
@@ -4797,7 +4817,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
