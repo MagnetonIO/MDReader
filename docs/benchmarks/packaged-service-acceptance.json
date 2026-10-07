@@ -1,0 +1,16 @@
+{
+  "kind": "synthetic-packaged-entrypoint-acceptance",
+  "binary_sha256": "ce812aed6d73982ed59ad0616aca61965ef4add45f02f9c3a9596b77a5da2ac1",
+  "checks": [
+    "packaged headless service indexes source-owned Markdown",
+    "packaged hook automatically projects, admits and indexes visible output",
+    "packaged MCP bootstraps service after restart and retrieves exact captured revision",
+    "MCP rejects a source outside its explicit grant",
+    "MCP retrieval echo is excluded by actual packaged capture hook",
+    "source-owned original bytes are unchanged"
+  ],
+  "accepts_gui": false,
+  "accepts_mobile": false,
+  "accepts_cloud_sync": false,
+  "touches_installed_profile": false
+}

@@ -1,0 +1,102 @@
+{
+  "name": "mdreader",
+  "displayName": "MDReader",
+  "description": "Read-only access to explicitly selected local MDReader sources.",
+  "version": "1.0.0",
+  "publisher": "mdreader",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false
+    },
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Only explicit user-level source grants are used; workspace paths and settings cannot grant access."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "mdreader.search",
+        "title": "MDReader: Search Selected Sources"
+      },
+      {
+        "command": "mdreader.open",
+        "title": "MDReader: Open Document from Source"
+      },
+      {
+        "command": "mdreader.preview",
+        "title": "MDReader: Preview Reader Document"
+      },
+      {
+        "command": "mdreader.backlinks",
+        "title": "MDReader: Show Related Links"
+      },
+      {
+        "command": "mdreader.status",
+        "title": "MDReader: Show Source and Index Status"
+      },
+      {
+        "command": "mdreader.openReference",
+        "title": "MDReader: Follow Document Reference"
+      }
+    ],
+    "configuration": {
+      "title": "MDReader",
+      "properties": {
+        "mdreader.dataDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "restricted": true,
+          "description": "Absolute data directory of an already running local MDReader service. No service is started automatically."
+        },
+        "mdreader.sourceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          },
+          "default": [],
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "scope": "machine",
+          "restricted": true,
+          "description": "Explicitly selected, already registered source IDs. An empty list grants no access."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/extension.js && node --check src/reader-client.js && node --check src/preview.js",
+    "package": "npm run build && vsce package --no-dependencies --out artifacts/mdreader-1.0.0.vsix",
+    "build": "node scripts/build.js",
+    "test:service": "node --test test/service.integration.js"
+  },
+  "dependencies": {
+    "markdown-it": "14.3.2",
+    "sanitize-html": "2.18.0"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.25.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/catdb-project/mdreader.git",
+    "directory": "extensions/vscode"
+  }
+}

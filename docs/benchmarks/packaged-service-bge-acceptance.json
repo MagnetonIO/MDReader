@@ -1,0 +1,19 @@
+{
+  "kind": "synthetic-packaged-entrypoint-acceptance",
+  "binary_sha256": "ee782af5729d572789c59f318c30c27a912a3fae4d96dce1445723e236a17c66",
+  "checks": [
+    "actual BGE paraphrase retrieval through packaged service",
+    "packaged headless service indexes source-owned Markdown",
+    "packaged hook automatically projects, admits and indexes visible output",
+    "packaged MCP bootstraps service after restart and retrieves exact captured revision",
+    "MCP rejects a source outside its explicit grant",
+    "MCP retrieval echo is excluded by actual packaged capture hook",
+    "source-owned original bytes are unchanged",
+    "service restart restores semantic retrieval without reindexing"
+  ],
+  "actual_bge": true,
+  "accepts_gui": false,
+  "accepts_mobile": false,
+  "accepts_cloud_sync": false,
+  "touches_installed_profile": false
+}
