@@ -35,7 +35,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$REPO_ROOT/target/release/bundle/macos/MDReader E2E.app"
-E2E_DIR="$REPO_ROOT/apps/mdreader/e2e-native"
+E2E_DIR="$REPO_ROOT/e2e-native"
 export APPIUM_HOME="$E2E_DIR/.appium"
 
 SKIP_BUILD=0

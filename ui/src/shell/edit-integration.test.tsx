@@ -82,6 +82,7 @@ const h = vi.hoisted(() => ({
   >,
   libraryCancelGate: null as null | { promise: Promise<void>; resolve: () => void },
   libraryCancelCalls: [] as string[],
+  cloudReadQueue: [] as Promise<Record<string, unknown>>[],
   cloudReadCalls: [] as Array<{ sourceId: string; recordKey: string }>,
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
   markStarted: false,
@@ -296,6 +297,8 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
     }),
     readCloudMarkdown: vi.fn(async (sourceId: string, recordKey: string) => {
       h.cloudReadCalls.push({ sourceId, recordKey });
+      const queued = h.cloudReadQueue.shift();
+      if (queued) return queued;
       const title =
         recordKey === 'drive-first'
           ? 'First note'
@@ -654,6 +657,7 @@ beforeEach(() => {
   h.libraryCancelGate = null;
   h.libraryCancelCalls.length = 0;
   h.cloudReadCalls.length = 0;
+  h.cloudReadQueue.length = 0;
   h.markGate = null;
   h.markStarted = false;
   h.markSucceeded = false;
@@ -746,7 +750,7 @@ describe('library source identity follows the committed backend epoch', () => {
     render(<App />);
 
     await screen.findByText('No documents found.');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
 
     expect(
       await screen.findByRole('button', {
@@ -754,7 +758,7 @@ describe('library source identity follows the committed backend epoch', () => {
       }),
     ).toBeTruthy();
     expect(
-      screen.getByText('Some Library sources could not answer this query.'),
+      screen.getByText('Showing the last published snapshot; Dropbox needs attention.'),
     ).toBeTruthy();
     expect(h.libraryQueryContinuations).toEqual([
       undefined,
@@ -772,7 +776,7 @@ describe('library source identity follows the committed backend epoch', () => {
     render(<App />);
 
     await screen.findByText('No documents found.');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
 
     expect(
       await screen.findByText(
@@ -780,7 +784,7 @@ describe('library source identity follows the committed backend epoch', () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.queryByRole('button', { name: 'Load more' }),
+      screen.queryByRole('button', { name: 'Load more Dropbox' }),
     ).toBeNull();
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
   });
@@ -799,10 +803,10 @@ describe('library source identity follows the committed backend epoch', () => {
     });
     h.libraryQueryRecordKeys.length = 0;
     const firstBody = deferred<Record<string, unknown>>();
-    h.libraryQueryQueue.push(firstBody.promise);
+    h.cloudReadQueue.push(firstBody.promise);
 
     fireEvent.click(first);
-    await waitFor(() => expect(h.libraryQueryRecordKeys).toEqual(['drive-first']));
+    await waitFor(() => expect(h.cloudReadCalls.map(call => call.recordKey)).toEqual(['drive-first']));
 
     h.libraryCancelGate = deferred();
     fireEvent.click(second);
@@ -814,9 +818,9 @@ describe('library source identity follows the committed backend epoch', () => {
       h.libraryCancelGate!.resolve();
       await h.libraryCancelGate!.promise;
     });
-    await waitFor(() => expect(h.libraryQueryRecordKeys).toContain('drive-third'));
+    await waitFor(() => expect(h.cloudReadCalls.map(call => call.recordKey)).toContain('drive-third'));
 
-    expect(h.libraryQueryRecordKeys).toEqual(['drive-first', 'drive-third']);
+    expect(h.cloudReadCalls.map(call => call.recordKey)).toEqual(['drive-first', 'drive-third']);
   });
 
   it('publishes only the post-mark Library hydration after workspace activation', async () => {

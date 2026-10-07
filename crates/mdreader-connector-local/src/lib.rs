@@ -44,6 +44,9 @@ use std::path::{Path, PathBuf};
 
 // The contract these adapters implement, re-exported from the platform facade
 // so the modules below can keep using unqualified names.
+#[cfg(test)]
+pub(crate) use catdb_sdk::connectors::CancellationToken;
+
 pub(crate) use catdb_sdk::connectors::{Availability, DataSource, ReadContext, SourceAttr, SourceCapabilities, SourceCursor, SourceError, SourceFreshness, SourceId, SourceModel, SourcePage, SourcePlan};
 
 /// A persisted local-source body is not the exact closed shape emitted by the

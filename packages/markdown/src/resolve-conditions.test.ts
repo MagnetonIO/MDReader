@@ -28,7 +28,7 @@ import {
  *     `vite.config.ts` imports the helper from `@mdreader/markdown/worker-conditions`.)
  */
 
-const viteConfigPath = fileURLToPath(new URL('../../../apps/mdreader/ui/vite.config.ts', import.meta.url));
+const viteConfigPath = fileURLToPath(new URL('../../../ui/vite.config.ts', import.meta.url));
 
 describe('worker resolve conditions mirror production', () => {
   const effective = workerBundleResolveConditions(defaultClientConditions);

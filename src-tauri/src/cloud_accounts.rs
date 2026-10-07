@@ -11126,8 +11126,8 @@ mod tests {
                                 key == "include_granted_scopes" && value == "user"
                             })
                             .count(),
-                        1,
-                        "Dropbox write authorization must merge the user's existing grant"
+                        0,
+                        "Read-only authorization must not merge unrelated existing grants"
                     );
                 }
             }

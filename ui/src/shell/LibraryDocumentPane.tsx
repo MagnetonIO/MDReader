@@ -80,7 +80,7 @@ export function LibraryDocumentPane({
   const editorEntry = useEditorStore((store) =>
     cloudEditor ? store.entry(cloudEditor.tabId, cloudEditor.documentKey) : undefined,
   );
-  const editable = member.editable || cloudDocument?.edit_token !== null;
+  const editable = member.editable || typeof cloudDocument?.edit_token === 'string';
   const editing = Boolean(cloudEditor && editorEntry && editorEntry.mode !== 'read');
 
   const toggleEdit = () => {

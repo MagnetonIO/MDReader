@@ -3723,13 +3723,19 @@ mod store {
         publish_page(
             &store,
             &source,
-            &page_with_revisions(&[("versioned.md", "r2"), ("evicted.md", "r1")]),
+            &page_with_revisions(&[("versioned.md", "r1"), ("evicted.md", "r1")]),
             b"cursor",
         );
 
         store
             .put_body(&source, &pins(), &document("versioned.md", "r1", b"a", 10))
             .expect("cache first revision");
+        publish_page(
+            &store,
+            &source,
+            &page_with_revisions(&[("versioned.md", "r2"), ("evicted.md", "r1")]),
+            b"cursor-2",
+        );
         store
             .put_body(&source, &pins(), &document("versioned.md", "r2", b"b", 20))
             .expect("cache second revision");

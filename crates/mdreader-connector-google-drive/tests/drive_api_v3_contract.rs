@@ -581,6 +581,38 @@ async fn downloads_the_exact_markdown_record_and_revision() {
 }
 
 #[tokio::test]
+async fn download_uses_etag_write_authority_even_when_content_md5_is_present() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "rev-1")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.MD",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "md5Checksum": "different-content-hash",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response(200, b"# one".to_vec()),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let document = source
+        .download_markdown("record-1", &context(10, 10, 64 * 1024))
+        .await
+        .expect("download");
+
+    assert_eq!(document.record_key(), "record-1");
+    assert_eq!(document.revision().as_str(), "rev-1");
+    assert_eq!(document.body(), b"# one");
+    assert_eq!(transport.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn download_refuses_a_metadata_identity_other_than_the_requested_record() {
     let transport = ScriptedTransport::new([
         response_with_headers(
@@ -1332,7 +1364,7 @@ async fn guarded_drive_update_refuses_a_file_response_for_a_different_record() {
     assert_eq!(transport.requests().len(), 2);
     assert!(transport.requests()[1]
         .path()
-        .contains("fields=id%2Cname%2CmimeType%2CmodifiedTime%2Cparents%2Ctrashed"));
+        .contains("fields=id%2Cname%2CmimeType%2CmodifiedTime%2Csize%2Cmd5Checksum%2CresourceKey%2Cparents%2Ctrashed"));
 }
 
 #[tokio::test]

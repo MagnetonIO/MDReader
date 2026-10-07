@@ -56,7 +56,7 @@ const run = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** The monorepo root (`apps/mdreader/ui/e2e/support` → five levels up). */
-export const repoRoot = path.resolve(here, '../../../../..');
+export const repoRoot = path.resolve(here, '../../..');
 
 /**
  * The port the E2E server binds, and the port `vite.config.ts` proxies

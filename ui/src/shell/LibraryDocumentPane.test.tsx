@@ -8,6 +8,9 @@ import type {
 } from '../bindings.js';
 import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 
+const native = vi.hoisted(() => ({ openOriginal: vi.fn(async () => ({ status: 'ok' })) }));
+vi.mock('../bindings.js', () => ({ commands: { openCloudOriginal: native.openOriginal } }));
+
 const member: LibrarySourceExecution = {
   membership_id: '00000000-0000-4000-8000-000000000010',
   registry_id: 'google-drive',
@@ -121,9 +124,8 @@ it('reads and inspects one hydrated provider response without a second query', a
   expect(screen.getByText('Provider-owned body.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Source view' })).toBeTruthy();
   expect(screen.queryByText(/Changes remain in the source/i)).toBeNull();
-  expect(screen.getByRole('link', { name: 'Open original' }).getAttribute('href')).toContain(
-    'drive-file-1',
-  );
+  fireEvent.click(screen.getByRole('button', { name: 'Open original' }));
+  expect(native.openOriginal).toHaveBeenCalledWith('https://drive.google.com/open?id=drive-file-1');
   expect(
     screen.queryByRole('complementary', { name: 'Semantic Inspector' }),
   ).toBeNull();
@@ -436,4 +438,10 @@ it('preserves a valid 4 KiB Dropbox record key in the hydrated Inspector evidenc
     screen.getByRole('complementary', { name: 'Semantic Inspector' }),
   );
   expect(inspector.getAllByText(recordKey)).toHaveLength(2);
+});
+
+it('keeps a provider document without edit authority read-only', () => {
+  render(<LibraryDocumentPane member={member} row={row} evidence={response} />);
+  expect(screen.queryByRole('button', { name: 'Source view' })).toBeNull();
+  expect(screen.getByText('Read-only')).toBeTruthy();
 });

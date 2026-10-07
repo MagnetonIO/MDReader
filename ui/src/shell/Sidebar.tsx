@@ -295,7 +295,7 @@ export function Sidebar({
                 });
                 const sourceCollapsed = collapsedLibrarySources.has(member.membership_id);
                 const sourceHasMore =
-                  evidence.window_truncated && evidence.answer.next_cursor !== null;
+                  libraryHasMore && evidence.window_truncated && evidence.answer.next_cursor !== null;
                 return (
                   <section className="library-sources__source" key={member.membership_id}>
                     <div className="library-sources__source-heading">

@@ -269,37 +269,22 @@ export async function hydrateLibrary(
   let embeddedWorkspaceId: string | null = null;
   const embeddedFields = localQueryableLibraryFields(snapshot);
   if (embeddedFields.length > 0) {
-    if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
-      reads.push({
-        authority: 'embedded',
-        execute: async () => {
+    reads.push({
+      authority: 'embedded',
+      execute: async () => {
+        if (!backend.prepareCloudCatalog || !backend.queryLibraryDocuments) {
           throw new Error('Embedded Library queries are unavailable.');
-        },
-      });
-    } else {
-      const catalog = await backend.prepareCloudCatalog();
-      embeddedWorkspaceId = catalog.workspace_id;
-      const membershipSnapshot = await backend.queryLibraryDocuments(
-        catalog.workspace_id,
-        [],
-        embeddedFields,
-        `${requestId}:memberships`,
-      );
-      for (const member of membershipSnapshot.memberships) {
-        const memberFields = fieldsForMember(member);
-        reads.push({
-          authority: 'embedded',
-          execute: () =>
-            backend.queryLibraryDocuments!(
-              catalog.workspace_id,
-              [],
-              memberFields,
-              `${requestId}:${member.membership_id}`,
-              [member.membership_id],
-            ),
-        });
-      }
-    }
+        }
+        const catalog = await backend.prepareCloudCatalog();
+        embeddedWorkspaceId = catalog.workspace_id;
+        return backend.queryLibraryDocuments(
+          catalog.workspace_id,
+          [],
+          embeddedFields,
+          requestId,
+        );
+      },
+    });
   }
   if (snapshot.connected_catdb && snapshot.connected_catdb.selected_source_ids.length > 0) {
     const connectionId = snapshot.connected_catdb.connection_id;
@@ -334,8 +319,8 @@ export async function hydrateLibrary(
     if (!member) return [];
     const continuation = nextLibraryContinuation(result.value, {
       workspaceId: embeddedWorkspaceId,
-      fields: fieldsForMember(member),
-      sourceIds: [member.membership_id],
+      fields: embeddedFields,
+      sourceIds: [],
     });
     return continuation === null ? [] : [continuation];
   });
@@ -445,7 +430,7 @@ export async function continueHydratedLibrary(
     membershipId === undefined
       ? currentContinuations
       : currentContinuations?.filter((continuation) =>
-          continuation.sourceIds.includes(membershipId),
+          continuation.sourceIds.length === 0 || continuation.sourceIds.includes(membershipId),
         );
   if (!continuations || continuations.length === 0 || !backend.queryLibraryDocuments) {
     throw new Error('Library continuation is unavailable.');
