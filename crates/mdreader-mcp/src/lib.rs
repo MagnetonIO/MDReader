@@ -92,12 +92,19 @@ impl Config {
     }
 }
 fn valid_id(value: &str) -> bool {
+    if let Some(digest) = value.strip_prefix("provider:") {
+        return digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    }
     !value.is_empty()
         && value.len() <= 128
         && value
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
+
 fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 4096
@@ -398,8 +405,7 @@ fn string_schema(max: usize) -> Value {
     json!({"type":"string","minLength":1,"maxLength":max})
 }
 fn tools() -> Value {
-    let source =
-        json!({"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_-]+$"});
+    let source = json!({"type":"string","minLength":1,"maxLength":128,"pattern":"^(?:[A-Za-z0-9_-]+|provider:[a-f0-9]{64})$"});
     let sources =
         json!({"type":"array","minItems":1,"maxItems":32,"uniqueItems":true,"items":source});
     let limit = json!({"type":"integer","minimum":1,"maximum":100,"default":20});

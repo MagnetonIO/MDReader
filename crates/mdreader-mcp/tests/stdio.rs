@@ -684,3 +684,98 @@ fn explicit_search_intent_is_honest_when_semantic_model_is_unavailable() {
     assert!(!data(&recent).as_array().unwrap().is_empty());
     assert!(recent["result"]["_meta"]["mdreader/semanticUnavailable"].is_null());
 }
+
+#[cfg(unix)]
+#[test]
+fn scoped_provider_projection_reads_preserve_exact_evidence_and_revoke() {
+    use mdreader_core::{ProviderProjection, ReaderStore};
+    let temporary = tempdir().unwrap();
+    let directory = temporary.path().join("data");
+    let mut store = ReaderStore::open(&directory).unwrap();
+    let projection = ProviderProjection::open(
+        &temporary.path().join("private-provider-cache"),
+        serde_json::from_value(json!("synthetic-provider-library")).unwrap(),
+    )
+    .unwrap();
+    let binding = serde_json::from_value(json!({
+        "library_id":"synthetic-provider-library","source_id":"synthetic-drive",
+        "account":"synthetic-account","generation":"5dd6fe86-d490-4acb-847d-552eae66fa75",
+        "selection_digest":"1".repeat(64)
+    }))
+    .unwrap();
+    let version =
+        json!({"provider_revision":"remote-v1","content_hash":null,"conditional_write_token":null});
+    let markdown = "# Provider evidence\nSynthetic photovoltaic plan.\n";
+    let metadata=serde_json::from_value(json!({"key":"opaque-key","name":"Synthetic provider note","display_path":"Notes / Synthetic","media_type":null,"modified_at_ms":1234,"size_bytes":markdown.len(),"version":version})).unwrap();
+    let document=serde_json::from_value(json!({"key":"opaque-key","version":version,"body":markdown.as_bytes(),"observed_at_ms":1235})).unwrap();
+    let receipt = store.with_library_connection(|connection| {
+        let tx = connection.transaction().unwrap();
+        let receipt = projection
+            .admit(&tx, &binding, &metadata, &document)
+            .unwrap();
+        tx.commit().unwrap();
+        receipt
+    });
+    assert!(
+        mdreader_mcp::Config::new(directory.clone(), vec![receipt.reader_source_id.clone()])
+            .is_ok(),
+        "canonical provider source IDs must be selectable"
+    );
+    for invalid in [
+        "provider:short".to_owned(),
+        format!("provider:{}", "A".repeat(64)),
+        format!("other:{}", "a".repeat(64)),
+        "file:/private".into(),
+    ] {
+        assert!(mdreader_mcp::Config::new(directory.clone(), vec![invalid]).is_err());
+    }
+    store.index_source(&receipt.reader_source_id).unwrap();
+    drop(store);
+    let _daemon = service(&directory);
+    let mut client = Client::new(&directory, &[&receipt.reader_source_id]);
+    client.ready();
+    let tools = client.request(json!("schema"), "tools/list", json!({}));
+    let read_schema = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "read_document")
+        .unwrap();
+    assert!(
+        read_schema["inputSchema"]["properties"]["source_id"]["pattern"]
+            .as_str()
+            .unwrap()
+            .contains("provider:")
+    );
+    let result=data(&client.tool("read_document",json!({"source_id":receipt.reader_source_id,"path":receipt.path,"revision":receipt.revision})));
+    assert_eq!(result["markdown"], markdown);
+    assert_eq!(result["revision"], receipt.revision);
+    assert_eq!(result["line_start"], 1);
+    assert_eq!(result["line_end"], 2);
+    let hits = data(&client.tool("search", json!({"query":"photovoltaic"})));
+    assert!(!hits.as_array().unwrap().is_empty());
+    assert!(hits
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| hit["source_id"] == receipt.reader_source_id
+            && hit["revision"] == receipt.revision));
+    let hidden = format!("provider:{}", "0".repeat(64));
+    let response = client.tool(
+        "read_document",
+        json!({"source_id":hidden,"path":receipt.path}),
+    );
+    assert_eq!(response["result"]["isError"], true);
+    assert!(!response.to_string().contains("photovoltaic"));
+    call(
+        &directory,
+        &Request::SetSourceEnabled {
+            source_id: receipt.reader_source_id.clone(),
+            enabled: false,
+        },
+    )
+    .unwrap();
+    let response=client.tool("read_document",json!({"source_id":receipt.reader_source_id,"path":receipt.path,"revision":receipt.revision}));
+    assert_eq!(response["result"]["isError"], true);
+    assert!(!response.to_string().contains("photovoltaic"));
+}
