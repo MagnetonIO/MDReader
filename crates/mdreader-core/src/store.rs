@@ -12,6 +12,9 @@ use std::time::{Duration, UNIX_EPOCH};
 #[path = "related.rs"]
 mod related;
 pub use related::*;
+#[path = "provider_projection.rs"]
+mod projection;
+pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 
 pub const MODEL_NAME: &str = "bge-small-en-v1.5";
 pub const EMBEDDING_DIM: usize = 384;
@@ -214,7 +217,7 @@ const MAX_SOURCE_LINKS: usize = 100_000;
 const MAX_RESOLVED_EDGES: usize = 1_000_000;
 
 fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
-    let connection = Connection::open(path)?;
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_URI)?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version > if index {INDEX_VERSION} else {LIBRARY_VERSION} {
         return Err(ReaderError::NewerDatabase(version));
@@ -228,6 +231,7 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
         tx.execute_batch(schema)?;
         tx.commit()?;
     }
+    if index { connection.execute_batch("CREATE TEMP VIEW available_documents AS SELECT * FROM documents;")?; }
     if index && version < 2 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(LINK_SCHEMA)?;
@@ -282,7 +286,7 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
     Ok(connection)
 }
 fn open_readonly_database(path: &Path, expected: i64) -> Result<Connection> {
-    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX | rusqlite::OpenFlags::SQLITE_OPEN_URI)?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > expected { return Err(ReaderError::NewerDatabase(version)); }
     if version != expected { return Err(invalid("database requires owner migration")); }
@@ -353,22 +357,102 @@ fn vector_bytes(vector: &[f32]) -> Result<Vec<u8>> {
     }
     Ok(vector.iter().flat_map(|x| x.to_le_bytes()).collect())
 }
+fn index_markdown(tx: &rusqlite::Transaction<'_>, id: &str, path: &str, hash: &str, markdown: &str, modified: i64, scan: &str) -> Result<bool> {
+    let known: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
+            params![id, path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((document, old)) = &known {
+        if old == hash {
+            tx.execute(
+                "UPDATE documents SET scan=?2,modified_ms=?3 WHERE id=?1",
+                params![document, scan, modified],
+            )?;
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM documents WHERE id=?1", [document])?;
+    }
+    let parsed = parse_markdown(markdown, path);
+    tx.execute("INSERT INTO documents(source_id,path,revision,title,modified_ms,scan) VALUES(?1,?2,?3,?4,?5,?6)",params![id,path,hash,parsed.title,modified,scan])?;
+    let document = tx.last_insert_rowid();
+    add_document_aliases(tx, document, id, path, &parsed.title)?;
+    for (key,value) in &parsed.frontmatter {
+        if key.eq_ignore_ascii_case("tags") || key.eq_ignore_ascii_case("tag") {
+            for tag in value.trim_matches(['[',']']).split(',') {
+                let tag=tag.trim().trim_matches(['\'', '"']).trim_start_matches('#').to_lowercase();
+                if !tag.is_empty() { tx.execute("INSERT OR IGNORE INTO document_tags VALUES(?1,?2)",params![document,tag])?; }
+            }
+        }
+    }
+    let mut slugs: HashMap<String, u32> = HashMap::new();
+    for section in parsed.sections {
+        if section.depth > 0 {
+            let text = section.heading_path.last().cloned().unwrap_or_default();
+            let base = heading_slug(&text);
+            let mut slug = base.clone();
+            let mut suffix = 0;
+            while slugs.contains_key(&slug) {
+                suffix += 1;
+                slug = format!("{base}-{suffix}");
+            }
+            slugs.insert(slug.clone(), section.start_line);
+            tx.execute(
+                "INSERT INTO headings VALUES(?1,?2,?3,?4)",
+                params![document, text, slug, section.start_line],
+            )?;
+        }
+        for link in &section.links {
+            tx.execute(
+                "INSERT INTO links VALUES(?1,?2,?3,?4)",
+                params![document, link.raw_target, link.kind, link.line],
+            )?;
+        }
+        let mut offset = 0;
+        for chunk in section.chunks {
+            let position = section.text[offset..]
+                .find(&chunk.text)
+                .map(|p| p + offset)
+                .unwrap_or(offset);
+            let start = section.start_line
+                + section.text[..position]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count() as u32;
+            let end = start
+                + chunk
+                    .text
+                    .trim_end_matches('\n')
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count() as u32;
+            offset = position + chunk.text.len();
+            tx.execute("INSERT INTO chunks(document_id,heading,line_start,line_end,text,embedding_text) VALUES(?1,?2,?3,?4,?5,?6)",params![document,section.heading_path.join(" > "),start,end,chunk.text,chunk.embedding_text])?;
+        }
+    }
+    Ok(true)
+}
+
 impl ReaderStore {
     pub fn open(directory: &Path) -> Result<Self> {
         register_vectors()?;
         std::fs::create_dir_all(directory)?;
-        Ok(Self {
-            library: open_database(&directory.join("library.sqlite"), LIBRARY_SCHEMA, false)?,
-            index: open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?,
-        })
+        let library=open_database(&directory.join("library.sqlite"), LIBRARY_SCHEMA, false)?;
+        projection::initialize(&library)?;
+        let index=open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?;
+        projection::attach_authority(&index,&directory.join("library.sqlite"))?;
+        Ok(Self {library,index})
     }
     /// Read existing owner-managed databases without creating or migrating them.
     pub fn open_readonly(directory: &Path) -> Result<Self> {
         register_vectors()?;
-        Ok(Self {
-            library: open_readonly_database(&directory.join("library.sqlite"), LIBRARY_VERSION)?,
-            index: open_readonly_database(&directory.join("index.sqlite"), INDEX_VERSION)?,
-        })
+        let library=open_readonly_database(&directory.join("library.sqlite"), LIBRARY_VERSION)?;
+        projection::check_schema(&library)?;
+        let index=open_readonly_database(&directory.join("index.sqlite"), INDEX_VERSION)?;
+        projection::attach_authority(&index,&directory.join("library.sqlite"))?;
+        Ok(Self {library,index})
     }
     /// Borrow the owner's durable connection, including for sync transactions.
     pub fn with_library_connection<T>(&mut self, operation: impl FnOnce(&mut Connection) -> T) -> T {
@@ -379,6 +463,8 @@ impl ReaderStore {
             return Err(invalid("invalid source name"));
         }
         root.verify()?;
+        let private:Option<Vec<u8>>=self.library.query_row("SELECT cache_path FROM core_provider_profile WHERE singleton=1",[],|r|r.get(0)).optional()?;
+        if let Some(private)=private {let private=decode_path(private)?;let local=std::fs::canonicalize(&root.path)?;if private.starts_with(&local)||local.starts_with(&private) {return Err(invalid("local source overlaps private provider cache"));}}
         let identity = serde_json::to_string(&root.identity)
             .map_err(|_| invalid("invalid source identity"))?;
         let id = revision(identity.as_bytes());
@@ -391,7 +477,7 @@ impl ReaderStore {
     /// This also permits revocation after a directory disappears or is replaced.
     pub fn find_local_source(&self, path: &Path, identity: &SourceRootIdentity) -> Result<Option<Source>> {
         let identity = serde_json::to_string(identity).map_err(|_| invalid("invalid source identity"))?;
-        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE identity=?1 AND path=?2",
+        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE identity=?1 AND path=?2 AND id NOT LIKE 'provider:%'",
             params![identity, encode_path(path)], |r| Ok(Source { id:r.get(0)?, name:r.get(1)?, enabled:r.get(2)? })).optional()?)
     }
     pub fn list_sources(&self) -> Result<Vec<Source>> {
@@ -408,6 +494,7 @@ impl ReaderStore {
             .collect::<std::result::Result<_, _>>()?)
     }
     fn stored_root(&self, id: &str, require_enabled: bool) -> Result<SourceRoot> {
+        if id.starts_with("provider:") {self.provider_enabled(id)?;}
         let row: Option<(Vec<u8>, String, bool)> = self
             .library
             .query_row(
@@ -440,6 +527,15 @@ impl ReaderStore {
         Ok(ids)
     }
     pub fn set_source_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
+        if id.starts_with("provider:") {
+            if enabled {return Err(invalid("provider sources require a new explicit binding generation"));}
+            let tx=self.library.transaction()?;
+            tx.execute("UPDATE core_provider_slots SET enabled=0 WHERE binding_digest IN(SELECT binding_digest FROM core_provider_sources WHERE reader_source_id=?1)",[id])?;
+            tx.execute("UPDATE sources SET enabled=0 WHERE id=?1",[id])?;
+            tx.execute("UPDATE core_provider_jobs SET state='revoked' WHERE reader_source_id=?1",[id])?;
+            tx.execute("UPDATE index_jobs SET phase='error',error='Source unavailable',generation=generation+1 WHERE source_id=?1",[id])?;
+            tx.commit()?;return Ok(());
+        }
         if enabled {
             self.stored_root(id, false)?.verify()?;
         }
@@ -468,6 +564,7 @@ impl ReaderStore {
     }
     pub fn index_source_cancelled(&mut self, id: &str, cancel: &Cancellation) -> Result<usize> {
         cancel.check()?;
+        if id.starts_with("provider:") {return self.index_provider(id,cancel);}
         let root = self.stored_root(id, true)?;
         let options=ScanOptions {include_mdx:false,max_file_size:MAX_DOCUMENT_BYTES,respect_gitignore:true};
         let scan = uuid::Uuid::new_v4().to_string();
@@ -489,81 +586,7 @@ impl ReaderStore {
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            let known: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
-                    params![id, file.rel],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((document, old)) = &known {
-                if old == &hash {
-                    tx.execute(
-                        "UPDATE documents SET scan=?2,modified_ms=?3 WHERE id=?1",
-                        params![document, scan, modified],
-                    )?;
-                    return Ok(());
-                }
-                tx.execute("DELETE FROM documents WHERE id=?1", [document])?;
-            }
-            let parsed = parse_markdown(markdown, &file.rel);
-            changed = true;
-            tx.execute("INSERT INTO documents(source_id,path,revision,title,modified_ms,scan) VALUES(?1,?2,?3,?4,?5,?6)",params![id,file.rel,hash,parsed.title,modified,scan])?;
-            let document = tx.last_insert_rowid();
-            add_document_aliases(&tx, document, id, &file.rel, &parsed.title)?;
-            for (key,value) in &parsed.frontmatter {
-                if key.eq_ignore_ascii_case("tags") || key.eq_ignore_ascii_case("tag") {
-                    for tag in value.trim_matches(['[',']']).split(',') {
-                        let tag=tag.trim().trim_matches(['\'', '"']).trim_start_matches('#').to_lowercase();
-                        if !tag.is_empty() { tx.execute("INSERT OR IGNORE INTO document_tags VALUES(?1,?2)",params![document,tag])?; }
-                    }
-                }
-            }
-            let mut slugs: HashMap<String, u32> = HashMap::new();
-            for section in parsed.sections {
-                if section.depth > 0 {
-                    let text = section.heading_path.last().cloned().unwrap_or_default();
-                    let base = heading_slug(&text);
-                    let mut slug = base.clone();
-                    let mut suffix = 0;
-                    while slugs.contains_key(&slug) {
-                        suffix += 1;
-                        slug = format!("{base}-{suffix}");
-                    }
-                    slugs.insert(slug.clone(), section.start_line);
-                    tx.execute(
-                        "INSERT INTO headings VALUES(?1,?2,?3,?4)",
-                        params![document, text, slug, section.start_line],
-                    )?;
-                }
-                for link in &section.links {
-                    tx.execute(
-                        "INSERT INTO links VALUES(?1,?2,?3,?4)",
-                        params![document, link.raw_target, link.kind, link.line],
-                    )?;
-                }
-                let mut offset = 0;
-                for chunk in section.chunks {
-                    let position = section.text[offset..]
-                        .find(&chunk.text)
-                        .map(|p| p + offset)
-                        .unwrap_or(offset);
-                    let start = section.start_line
-                        + section.text[..position]
-                            .bytes()
-                            .filter(|b| *b == b'\n')
-                            .count() as u32;
-                    let end = start
-                        + chunk
-                            .text
-                            .trim_end_matches('\n')
-                            .bytes()
-                            .filter(|b| *b == b'\n')
-                            .count() as u32;
-                    offset = position + chunk.text.len();
-                    tx.execute("INSERT INTO chunks(document_id,heading,line_start,line_end,text,embedding_text) VALUES(?1,?2,?3,?4,?5,?6)",params![document,section.heading_path.join(" > "),start,end,chunk.text,chunk.embedding_text])?;
-                }
-            }
+            changed |= index_markdown(&tx,id,&file.rel,&hash,markdown,modified,&scan)?;
             Ok(())
         })?;
         changed |= tx.execute(
@@ -595,7 +618,7 @@ impl ReaderStore {
             ("chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid", "-bm25(chunks_fts)", "bm25(chunks_fts),d.path,c.id", "chunks_fts MATCH ? AND ")
         } else { ("chunks c", "0.0", "d.modified_ms DESC,d.path,c.id", "") };
         let order=if recent {"d.modified_ms DESC,d.path,c.id"} else {order};
-        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,{score},d.modified_ms FROM {from} JOIN documents d ON d.id=c.document_id WHERE {predicate}{filters} ORDER BY {order} LIMIT ?");
+        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,{score},d.modified_ms FROM {from} JOIN available_documents d ON d.id=c.document_id WHERE {predicate}{filters} ORDER BY {order} LIMIT ?");
         values.push((limit as i64).into());
         let mut hits: Vec<Evidence> = self
             .index
@@ -670,7 +693,7 @@ impl ReaderStore {
         Ok(())
     }
     pub fn pending_index_jobs(&self) -> Result<Vec<String>> {
-        Ok(self.library.prepare("SELECT source_id FROM index_jobs WHERE phase IN('queued','indexing','loading','embedding') ORDER BY source_id")?.query_map([],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
+        Ok(self.library.prepare("SELECT j.source_id FROM index_jobs j JOIN sources s ON s.id=j.source_id WHERE s.enabled=1 AND j.phase IN('queued','indexing','loading','embedding') ORDER BY j.source_id")?.query_map([],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
     }
     pub fn record_index_job(&self, source: &str, phase: &str, error: Option<&str>) -> Result<()> {
         let generation=self.index_job_record(source)?.map_or(1,|job|job.generation);
@@ -679,8 +702,12 @@ impl ReaderStore {
     }
     pub fn record_index_job_if_current(&self, source:&str,generation:u64,phase:&str,error:Option<&str>) -> Result<bool> {
         if !["queued","indexing","loading","embedding","done","model-unavailable","error"].contains(&phase) || error.is_some_and(|e|e.len()>4096) { return Err(invalid("invalid job status")); }
+        if source.starts_with("provider:") && self.provider_enabled(source).is_err() {return Ok(false);}
         let status=self.index_status(&[source.into()]).ok();
         let changed=self.library.execute("INSERT INTO index_jobs(source_id,phase,documents,chunks,embedded,error,generation) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(source_id) DO UPDATE SET phase=excluded.phase,documents=excluded.documents,chunks=excluded.chunks,embedded=excluded.embedded,error=excluded.error WHERE index_jobs.generation=excluded.generation",params![source,phase,status.as_ref().map_or(0,|s|s.documents),status.as_ref().map_or(0,|s|s.chunks),status.as_ref().map_or(0,|s|s.embedded),error,generation])?;
+        if changed==1 && source.starts_with("provider:") && ["done","model-unavailable","error"].contains(&phase) {
+            self.library.execute("UPDATE core_provider_jobs SET state=?2 WHERE reader_source_id=?1 AND state='queued' AND EXISTS(SELECT 1 FROM core_provider_records p WHERE p.reader_source_id=core_provider_jobs.reader_source_id AND p.record_key=core_provider_jobs.record_key AND p.revision=core_provider_jobs.revision)",params![source,phase])?;
+        }
         Ok(changed==1)
     }
     pub fn index_job(&self, source: &str) -> Result<Option<IndexJob>> {
@@ -693,11 +720,11 @@ impl ReaderStore {
     }
     pub fn pending_embedding_documents(&self, source: &str) -> Result<Vec<String>> {
         self.scope(&[source.into()])?;
-        Ok(self.index.prepare("SELECT d.path FROM documents d WHERE d.source_id=?1 AND EXISTS(SELECT 1 FROM chunks c LEFT JOIN embedding_memberships m ON m.chunk_id=c.id WHERE c.document_id=d.id AND m.chunk_id IS NULL) ORDER BY d.path")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
+        Ok(self.index.prepare("SELECT d.path FROM available_documents d WHERE d.source_id=?1 AND EXISTS(SELECT 1 FROM chunks c LEFT JOIN embedding_memberships m ON m.chunk_id=c.id WHERE c.document_id=d.id AND m.chunk_id IS NULL) ORDER BY d.path")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
     }
     pub fn list_documents(&self,source:&str)->Result<Vec<ListedDocument>> {
         self.scope(&[source.into()])?;
-        let documents:Vec<_>=self.index.prepare("SELECT path,revision,modified_ms FROM documents WHERE source_id=?1 ORDER BY path LIMIT 50001")?.query_map([source],|r|Ok(ListedDocument {path:r.get(0)?,revision:r.get(1)?,modified_ms:r.get(2)?}))?.collect::<std::result::Result<_,_>>()?;
+        let documents:Vec<_>=self.index.prepare("SELECT path,revision,modified_ms FROM available_documents WHERE source_id=?1 ORDER BY path LIMIT 50001")?.query_map([source],|r|Ok(ListedDocument {path:r.get(0)?,revision:r.get(1)?,modified_ms:r.get(2)?}))?.collect::<std::result::Result<_,_>>()?;
         if documents.len()>50000 {return Err(invalid("document listing exceeds budget"));}
         self.scope(&[source.into()])?;
         Ok(documents)
@@ -709,6 +736,7 @@ impl ReaderStore {
         expected: Option<&str>,
     ) -> Result<Document> {
         checked_path(path)?;
+        if source.starts_with("provider:") {return self.provider_document(source,path,expected);}
         let root = self.stored_root(source, true)?;
         use std::io::Read;
         let mut bytes = Vec::new();
@@ -740,7 +768,8 @@ impl ReaderStore {
             model: MODEL_NAME.into(),
         };
         for id in ids {
-            let (docs,chunks,embedded):(u64,u64,u64)=self.index.query_row("SELECT (SELECT count(*) FROM documents WHERE source_id=?1),(SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.source_id=?1),(SELECT count(*) FROM embedding_memberships WHERE source_id=?1)",[id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            let (docs,chunks,embedded):(u64,u64,u64)=self.index.query_row("SELECT (SELECT count(*) FROM available_documents WHERE source_id=?1),(SELECT count(*) FROM chunks c JOIN available_documents d ON d.id=c.document_id WHERE d.source_id=?1),(SELECT count(*) FROM embedding_memberships WHERE source_id=?1)",[&id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            let embedded=if id.starts_with("provider:") {self.index.query_row("SELECT count(*) FROM embedding_memberships m JOIN chunks c ON c.id=m.chunk_id JOIN available_documents d ON d.id=c.document_id WHERE d.source_id=?1",[&id],|r|r.get(0))?}else {embedded};
             status.documents += docs;
             status.chunks += chunks;
             status.embedded += embedded;
@@ -779,7 +808,7 @@ impl ReaderStore {
     pub fn embedding_inputs(&self, source: &str, path: &str) -> Result<(String, Vec<String>)> {
         self.stored_root(source, true)?.verify()?;
         let (id, revision): (i64, String) = self.index.query_row(
-            "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
+            "SELECT id,revision FROM available_documents WHERE source_id=?1 AND path=?2",
             params![source, path],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
@@ -799,10 +828,11 @@ impl ReaderStore {
         vectors: &[Vec<f32>],
     ) -> Result<()> {
         self.stored_root(source, true)?.verify()?;
+        if source.starts_with("provider:") {self.provider_document(source,path,Some(expected))?;}
         let tx = self.index.transaction()?;
         let document: Option<(i64, String)> = tx
             .query_row(
-                "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
+                "SELECT id,revision FROM available_documents WHERE source_id=?1 AND path=?2",
                 params![source, path],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -852,7 +882,7 @@ impl ReaderStore {
         // Scope before LIMIT, never filter a global top-k after the query.
         let parsed=query.map(crate::query::Query::parse).transpose()?.unwrap_or_default();
         let (filters,filter_values)=self.query_filters(&parsed,&ids)?;
-        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
+        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN available_documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
         let mut values: Vec<rusqlite::types::Value> = vec![vector_bytes(vector)?.into()];
         values.extend(filter_values);
         values.push((limit as i64).into());
@@ -1009,7 +1039,7 @@ fn resolve_indexed(
     } else {
         normalize_target(from, &decoded)?
     };
-    let mut exact = connection.prepare_cached("SELECT id,path,revision FROM documents WHERE source_id=?1 AND path IN(?2,?3) ORDER BY path")?;
+    let mut exact = connection.prepare_cached("SELECT id,path,revision FROM available_documents WHERE source_id=?1 AND path IN(?2,?3) ORDER BY path")?;
     let mut matches: Vec<(i64, String, String)> = exact
         .query_map(params![source, resolved, format!("{resolved}.md")], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -1018,7 +1048,7 @@ fn resolve_indexed(
     // Exact relative paths take precedence even if their requested heading does
     // not exist. ASCII folding deliberately preserves the previous semantics.
     if matches.is_empty() && !decoded.contains('/') {
-        let mut aliases = connection.prepare_cached("SELECT d.id,d.path,d.revision FROM documents d WHERE d.id IN(SELECT a.document_id FROM document_aliases a WHERE a.source_id=?1 AND a.kind='stem' AND a.alias=?2 UNION SELECT a.document_id FROM document_aliases a WHERE a.source_id=?1 AND a.kind='title' AND a.alias=?3) ORDER BY d.path LIMIT ?4")?;
+        let mut aliases = connection.prepare_cached("SELECT d.id,d.path,d.revision FROM available_documents d WHERE d.id IN(SELECT a.document_id FROM document_aliases a WHERE a.source_id=?1 AND a.kind='stem' AND a.alias=?2 UNION SELECT a.document_id FROM document_aliases a WHERE a.source_id=?1 AND a.kind='title' AND a.alias=?3) ORDER BY d.path LIMIT ?4")?;
         matches = aliases
             .query_map(
                 params![
@@ -1067,7 +1097,7 @@ fn rebuild_resolved_links(
     // Recompute when any source document changes: new/deleted aliases or headings
     // can change an unchanged link's resolution. Never publish a partial graph.
     connection.execute("DELETE FROM resolved_links WHERE source_id=?1", [source])?;
-    let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
+    let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
     let mut rows = links.query(params![source, MAX_SOURCE_LINKS as i64 + 1])?;
     let mut count = 0;
     let mut edges = 0;
@@ -1172,14 +1202,14 @@ impl ReaderStore {
         // A reciprocal neighbor can appear as both incoming and outgoing. The
         // origin-path/line ordering preserves the previous deterministic last
         // link selection, including heading evidence for outgoing references.
-        let sql = "WITH current AS (SELECT id FROM documents WHERE source_id=?1 AND path=?2), neighbors AS (
+        let sql = "WITH current AS (SELECT id FROM available_documents WHERE source_id=?1 AND path=?2), neighbors AS (
           SELECT t.path,t.revision,r.target_line AS line,o.path AS origin,r.origin_line
           FROM current c JOIN resolved_links r ON r.source_id=?1 AND r.origin_id=c.id
-          JOIN documents t ON t.id=r.target_id JOIN documents o ON o.id=r.origin_id WHERE t.id<>c.id
+          JOIN available_documents t ON t.id=r.target_id JOIN available_documents o ON o.id=r.origin_id WHERE t.id<>c.id
           UNION ALL
           SELECT o.path,o.revision,1,o.path,r.origin_line
           FROM current c JOIN resolved_links r ON r.source_id=?1 AND r.target_id=c.id
-          JOIN documents o ON o.id=r.origin_id WHERE o.id<>c.id
+          JOIN available_documents o ON o.id=r.origin_id WHERE o.id<>c.id
         ), ranked AS (SELECT path,revision,line,ROW_NUMBER() OVER(PARTITION BY path ORDER BY origin DESC,origin_line DESC,line DESC) AS n FROM neighbors)
         SELECT path,revision,line FROM ranked WHERE n=1 ORDER BY path LIMIT ?3";
         let results = self

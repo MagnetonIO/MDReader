@@ -10,6 +10,7 @@ default = []
 local-embed = ["dep:fastembed"]
 
 [dependencies]
+mdreader-provider = { path = "../mdreader-provider" }
 fastembed = { version = "=5.17.3", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

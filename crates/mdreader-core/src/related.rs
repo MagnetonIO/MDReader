@@ -95,7 +95,7 @@ fn graph_neighbors(
     remaining: usize,
 ) -> Result<Vec<(i64, u32)>> {
     // Group repeated links/headings to one neighbor before extending the walk.
-    Ok(connection.prepare_cached("SELECT r.target_id,MIN(r.target_line) FROM resolved_links r JOIN documents d ON d.id=r.target_id WHERE r.source_id=?1 AND r.origin_id=?2 AND d.source_id=?1 GROUP BY r.target_id LIMIT ?3")?
+    Ok(connection.prepare_cached("SELECT r.target_id,MIN(r.target_line) FROM resolved_links r JOIN available_documents d ON d.id=r.target_id WHERE r.source_id=?1 AND r.origin_id=?2 AND d.source_id=?1 GROUP BY r.target_id LIMIT ?3")?
       .query_map(params![source,origin,remaining as i64+1],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
 }
 fn graph(
@@ -161,7 +161,7 @@ fn shared_tags(
     if mine == 0 {
         return Ok(());
     }
-    let sql=format!("SELECT d.id,COUNT(*),(SELECT COUNT(*) FROM document_tags total WHERE total.document_id=d.id) FROM document_tags own JOIN document_tags other ON other.tag=own.tag JOIN documents d ON d.id=other.document_id WHERE own.document_id=? AND d.id<>? AND {filters} GROUP BY d.id LIMIT ?");
+    let sql=format!("SELECT d.id,COUNT(*),(SELECT COUNT(*) FROM document_tags total WHERE total.document_id=d.id) FROM document_tags own JOIN document_tags other ON other.tag=own.tag JOIN available_documents d ON d.id=other.document_id WHERE own.document_id=? AND d.id<>? AND {filters} GROUP BY d.id LIMIT ?");
     let mut parameters: Vec<Value> = vec![anchor.into(), anchor.into()];
     parameters.extend_from_slice(values);
     parameters.push((MAX_CANDIDATES as i64 + 1).into());
@@ -237,7 +237,7 @@ fn vectors(
     // between large vector blobs and repeatedly traverse overflow pages.
     // Scope/filter and exclude the entire anchor
     // before any bound; chunk-heavy documents cannot crowd a global top-k pool.
-    let sql=format!("SELECT d.id,c.line_start,1.0-vec_distance_cosine(v.embedding,?) FROM vectors v CROSS JOIN chunks c ON c.id=v.rowid CROSS JOIN documents d ON d.id=c.document_id WHERE d.id<>? AND {filters} LIMIT ?");
+    let sql=format!("SELECT d.id,c.line_start,1.0-vec_distance_cosine(v.embedding,?) FROM vectors v CROSS JOIN chunks c ON c.id=v.rowid CROSS JOIN available_documents d ON d.id=c.document_id WHERE d.id<>? AND {filters} LIMIT ?");
     let mut parameters: Vec<Value> = vec![vector_bytes(centroid)?.into(), anchor.into()];
     parameters.extend_from_slice(values);
     parameters.push((MAX_VECTOR_CHUNKS as i64 + 1).into());
@@ -288,7 +288,7 @@ pub(super) fn rank(
 ) -> Result<RelatedRanked> {
     let anchor: Option<(i64, String)> = connection
         .query_row(
-            "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
+            "SELECT id,revision FROM available_documents WHERE source_id=?1 AND path=?2",
             params![source, path],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -351,7 +351,7 @@ pub(super) fn rank(
     let mut hits = Vec::new();
     if !candidates.is_empty() {
         let ids = candidates.keys().copied().collect::<Vec<_>>();
-        let sql=format!("SELECT d.id,d.path,d.revision,d.title FROM documents d WHERE d.id IN(SELECT value FROM json_each(?)) AND {filters}");
+        let sql=format!("SELECT d.id,d.path,d.revision,d.title FROM available_documents d WHERE d.id IN(SELECT value FROM json_each(?)) AND {filters}");
         let mut parameters: Vec<Value> = vec![serde_json::to_string(&ids)
             .map_err(|_| invalid("invalid related candidates"))?
             .into()];
