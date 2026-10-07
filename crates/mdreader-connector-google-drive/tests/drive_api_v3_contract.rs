@@ -581,7 +581,7 @@ async fn downloads_the_exact_markdown_record_and_revision() {
 }
 
 #[tokio::test]
-async fn download_uses_etag_write_authority_even_when_content_md5_is_present() {
+async fn download_keeps_catalog_content_revision_separate_from_etag() {
     let transport = ScriptedTransport::new([
         response_with_headers(
             200,
@@ -607,9 +607,10 @@ async fn download_uses_etag_write_authority_even_when_content_md5_is_present() {
         .expect("download");
 
     assert_eq!(document.record_key(), "record-1");
-    assert_eq!(document.revision().as_str(), "rev-1");
+    assert_eq!(document.revision().as_str(), "different-content-hash");
     assert_eq!(document.body(), b"# one");
     assert_eq!(transport.requests().len(), 2);
+    assert_eq!(transport.requests()[1].header("If-Match"), Some("rev-1"));
 }
 
 #[tokio::test]
@@ -1593,6 +1594,55 @@ async fn guarded_drive_update_returns_the_provider_revision_authority() {
     assert_eq!(receipt.record_key(), "record-1");
     assert_eq!(receipt.revision().as_str(), "rev-2");
 }
+
+#[tokio::test]
+async fn guarded_drive_update_checks_content_revision_but_sends_etag_validator() {
+    let transport = ScriptedTransport::new([
+        response_with_headers(
+            200,
+            [("ETag", "metadata-rev")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:34:56Z",
+                "md5Checksum": "content-hash-before",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+        response_with_headers(
+            200,
+            [("ETag", "rev-2")],
+            serde_json::to_vec(&serde_json::json!({
+                "id": "record-1",
+                "name": "note.md",
+                "mimeType": "text/markdown",
+                "modifiedTime": "2026-07-20T12:35:56Z",
+                "parents": ["provider-root"],
+                "trashed": false
+            }))
+            .unwrap(),
+        ),
+    ]);
+    let (source, transport) = source(transport, markdown_root_config());
+
+    let receipt = source
+        .update_markdown(
+            "record-1",
+            &DriveRevision::new("content-hash-before").unwrap(),
+            b"# edited",
+            &context(10, 10, 64 * 1024),
+        )
+        .await
+        .expect("guarded update");
+
+    assert_eq!(receipt.record_key(), "record-1");
+    assert_eq!(receipt.revision().as_str(), "rev-2");
+    assert_eq!(transport.requests()[1].header("If-Match"), Some("metadata-rev"));
+}
+
 
 #[test]
 fn downloaded_document_and_write_receipt_debug_redact_provider_record_keys() {

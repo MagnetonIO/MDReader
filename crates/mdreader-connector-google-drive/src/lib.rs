@@ -1635,8 +1635,7 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
-        let revision = metadata
-            .headers.get("etag")
+        let revision = file.md5_checksum.as_ref().or_else(|| metadata.headers.get("etag"))
             .ok_or_else(|| self.malformed("document revision"))
             .and_then(|value| {
                 DriveRevision::new(value.clone()).map_err(|_| self.malformed("document revision"))
@@ -1644,9 +1643,13 @@ impl DriveSource {
         let body_path = self
             .body_path(&file)
             .ok_or_else(|| self.malformed("document mime type"))?;
+        let mut request = self.request_with_membership(body_path, &membership)?;
+        if let Some(etag) = metadata.headers.get("etag") {
+            request.headers.insert("if-match".to_string(), etag.clone());
+        }
         let body = self
             .send(
-                self.request_with_membership(body_path, &membership)?,
+                request,
                 context,
                 &mut physical_bytes,
             )
@@ -1721,14 +1724,22 @@ impl DriveSource {
         self.verify_point_read_authority(&file, &mut membership, context, &mut physical_bytes)
             .await?;
         membership.record_provider_file(&file, false, self.model.id())?;
-        // Only the provider can atomically compare the conditional-write token.
-        // A content MD5 is not an HTTP ETag; comparing them rejects valid writes.
-        // Keep If-Match on PATCH even if the preflight metadata has changed.
+        // Catalog/body revisions use content MD5 when available. Only a fresh
+        // metadata ETag can guard the HTTP mutation; a checksum is never If-Match.
+        let validator = if let Some(checksum) = &file.md5_checksum {
+            if checksum != revision.as_str() {
+                return Err(DriveDocumentError::Conflict { source_id: self.model.id().clone() });
+            }
+            DriveRevision::new(metadata.headers.get("etag").ok_or_else(|| self.malformed("conditional write validator"))?.clone())
+                .map_err(|_| self.malformed("conditional write validator"))?
+        } else {
+            revision.clone()
+        };
         let authorized_parents = file.parents.iter().cloned().collect::<BTreeSet<_>>();
         let reconciliation = self.write_reconciliation(record_key)?;
         let response = self
             .send_guarded_document_update(
-                self.document_update_request(&file.id, revision, body, &membership)?,
+                self.document_update_request(&file.id, &validator, body, &membership)?,
                 context,
                 &mut physical_bytes,
                 reconciliation.clone(),
@@ -1755,8 +1766,7 @@ impl DriveSource {
         if file.parents.iter().cloned().collect::<BTreeSet<_>>() != authorized_parents {
             return Err(self.write_outcome_unknown(reconciliation));
         }
-        let revision = response
-            .headers.get("etag")
+        let revision = file.md5_checksum.as_ref().or_else(|| response.headers.get("etag"))
             .ok_or_else(|| self.write_outcome_unknown(reconciliation.clone()))
             .and_then(|value| {
                 DriveRevision::new(value.clone())
