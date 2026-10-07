@@ -5,6 +5,7 @@ type SnapshotRow = (String, String, Option<Vec<u8>>, Option<Vec<u8>>);
 type CachedRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Option<String>);
 const MAX_METADATA: usize = 32 * 1024;
 const MAX_SOURCES: u64 = 128;
+const MAX_ADMISSION_RECEIPTS: u64 = 4096;
 const MAX_ROWS: u64 = 16_384;
 const MAX_METADATA_STORAGE: u64 = 64 * 1024 * 1024;
 const MAX_CACHE_STORAGE: u64 = 256 * 1024 * 1024;
@@ -39,21 +40,22 @@ pub fn initialize(connection: &mut Connection) -> Result<()> {
         return Err(ProviderError::Persistence);
     }
     let tx = db(connection.transaction())?;
-    let count:u64=db(tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('mdreader_provider_registry_meta','mdreader_provider_registry_sources','mdreader_provider_registry_snapshots','mdreader_provider_registry_rows','mdreader_provider_registry_seen','mdreader_provider_registry_state','mdreader_provider_registry_cache')",[],|r|r.get(0)))?;
+    let count:u64=db(tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('mdreader_provider_registry_meta','mdreader_provider_registry_sources','mdreader_provider_registry_snapshots','mdreader_provider_registry_rows','mdreader_provider_registry_seen','mdreader_provider_registry_state','mdreader_provider_registry_cache','mdreader_provider_registry_admissions')",[],|r|r.get(0)))?;
     if count == 0 {
-        db(tx.execute_batch("CREATE TABLE mdreader_provider_registry_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,library_id TEXT NOT NULL);
+        db(tx.execute_batch("CREATE TABLE mdreader_provider_registry_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,library_id TEXT NOT NULL,legacy_reference_fence INTEGER NOT NULL CHECK(legacy_reference_fence IN (0,1)));
 CREATE TABLE mdreader_provider_registry_sources(identity TEXT PRIMARY KEY,binding BLOB NOT NULL,descriptor TEXT NOT NULL,digest BLOB NOT NULL,credential_reference TEXT NOT NULL,configuration_digest BLOB NOT NULL,enabled INTEGER NOT NULL,coverage TEXT NOT NULL,projection_bound INTEGER NOT NULL);
 CREATE TABLE mdreader_provider_registry_snapshots(id TEXT PRIMARY KEY,source TEXT NOT NULL,binding BLOB NOT NULL,phase TEXT NOT NULL,list_cursor BLOB,change_cursor BLOB,observed INTEGER NOT NULL,coverage TEXT NOT NULL,base_epoch INTEGER NOT NULL);
 CREATE UNIQUE INDEX mdreader_provider_registry_one_staging ON mdreader_provider_registry_snapshots(source) WHERE phase!='published';
 CREATE TABLE mdreader_provider_registry_rows(snapshot TEXT NOT NULL,key TEXT NOT NULL,metadata TEXT NOT NULL,digest BLOB NOT NULL,PRIMARY KEY(snapshot,key));
 CREATE TABLE mdreader_provider_registry_seen(snapshot TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL,PRIMARY KEY(snapshot,kind,digest));
 CREATE TABLE mdreader_provider_registry_state(source TEXT PRIMARY KEY,published TEXT,checkpoint BLOB,epoch INTEGER NOT NULL);
-CREATE TABLE mdreader_provider_registry_cache(source TEXT NOT NULL,binding BLOB NOT NULL,key TEXT NOT NULL,version BLOB NOT NULL,body BLOB NOT NULL,digest BLOB NOT NULL,observed INTEGER NOT NULL,job TEXT,PRIMARY KEY(source,binding,key));"))?;
+CREATE TABLE mdreader_provider_registry_cache(source TEXT NOT NULL,binding BLOB NOT NULL,key TEXT NOT NULL,version BLOB NOT NULL,body BLOB NOT NULL,digest BLOB NOT NULL,observed INTEGER NOT NULL,job TEXT,PRIMARY KEY(source,binding,key));
+CREATE TABLE mdreader_provider_registry_admissions(reference_digest BLOB PRIMARY KEY CHECK(length(reference_digest)=32),configuration_digest BLOB NOT NULL CHECK(length(configuration_digest)=32),source_id TEXT NOT NULL,binding BLOB NOT NULL CHECK(length(binding)=32));"))?;
         db(tx.execute(
-            "INSERT INTO mdreader_provider_registry_meta VALUES(1,1,?1)",
+            "INSERT INTO mdreader_provider_registry_meta VALUES(1,2,?1,0)",
             [Uuid::new_v4().to_string()],
         ))?;
-    } else if count != 7 {
+    } else if !matches!(count, 7 | 8) {
         return Err(ProviderError::Persistence);
     }
     let version: u64 = db(tx.query_row(
@@ -61,10 +63,118 @@ CREATE TABLE mdreader_provider_registry_cache(source TEXT NOT NULL,binding BLOB 
         [],
         |r| r.get(0),
     ))?;
-    if version != 1 {
+    if count == 7 && version == 1 {
+        // Prototype v1 stored only current refs. Preserve those; unknown refs
+        // cannot safely be distinguished from retired pre-migration grants.
+        let records = {
+            let mut statement=db(tx.prepare("SELECT descriptor,digest,credential_reference,configuration_digest,binding FROM mdreader_provider_registry_sources LIMIT 129"))?;
+            let rows = db(statement.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            }))?;
+            rows.map(db).collect::<Result<Vec<_>>>()?
+        };
+        if records.len() > MAX_SOURCES as usize {
+            return Err(ProviderError::Persistence);
+        }
+        db(tx.execute_batch("ALTER TABLE mdreader_provider_registry_meta ADD COLUMN legacy_reference_fence INTEGER NOT NULL DEFAULT 0 CHECK(legacy_reference_fence IN (0,1));CREATE TABLE mdreader_provider_registry_admissions(reference_digest BLOB PRIMARY KEY CHECK(length(reference_digest)=32),configuration_digest BLOB NOT NULL CHECK(length(configuration_digest)=32),source_id TEXT NOT NULL,binding BLOB NOT NULL CHECK(length(binding)=32));"))?;
+        let fence = !records.is_empty();
+        for (text, digest, reference, configuration, binding) in records {
+            if body_hash(text.as_bytes()).as_slice() != digest || configuration.len() != 32 {
+                return Err(ProviderError::Persistence);
+            }
+            let descriptor: SourceDescriptor = decode(&text, 65536)?;
+            if descriptor.binding().digest().as_slice() != binding {
+                return Err(ProviderError::Persistence);
+            }
+            let reference = OpaqueValue::new(reference).map_err(|_| ProviderError::Persistence)?;
+            db(tx.execute(
+                "INSERT INTO mdreader_provider_registry_admissions VALUES(?1,?2,?3,?4)",
+                params![
+                    body_hash(reference.as_str().as_bytes()).as_slice(),
+                    configuration,
+                    descriptor.binding().source_id().as_str(),
+                    binding
+                ],
+            ))?;
+        }
+        db(tx.execute("UPDATE mdreader_provider_registry_meta SET version=2,legacy_reference_fence=?1 WHERE id=1",[fence]))?;
+    } else if version != 2 || !matches!(count, 0 | 8) {
         return Err(ProviderError::Persistence);
     }
+    let fence: u8 = db(tx.query_row(
+        "SELECT legacy_reference_fence FROM mdreader_provider_registry_meta WHERE id=1",
+        [],
+        |r| r.get(0),
+    ))?;
+    if fence > 1 {
+        return Err(ProviderError::Persistence);
+    }
+    db(tx.prepare("SELECT reference_digest,configuration_digest,source_id,binding FROM mdreader_provider_registry_admissions LIMIT 0"))?;
     db(tx.commit())
+}
+pub(super) struct AdmissionReceipt {
+    pub configuration_digest: [u8; 32],
+    pub source_id: SourceId,
+    pub binding: [u8; 32],
+}
+pub(super) fn admission_receipt(
+    c: &Connection,
+    reference: &OpaqueValue,
+) -> Result<Option<AdmissionReceipt>> {
+    type Row = (Vec<u8>, String, Vec<u8>);
+    let row:Option<Row>=db(c.query_row("SELECT configuration_digest,source_id,binding FROM mdreader_provider_registry_admissions WHERE reference_digest=?1",[body_hash(reference.as_str().as_bytes()).as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional())?;
+    row.map(|(configuration, source, binding)| {
+        Ok(AdmissionReceipt {
+            configuration_digest: configuration
+                .try_into()
+                .map_err(|_| ProviderError::Persistence)?,
+            source_id: SourceId::new(source).map_err(|_| ProviderError::Persistence)?,
+            binding: binding.try_into().map_err(|_| ProviderError::Persistence)?,
+        })
+    })
+    .transpose()
+}
+fn record_admission(
+    tx: &Transaction<'_>,
+    descriptor: &SourceDescriptor,
+    reference: &OpaqueValue,
+    configuration: [u8; 32],
+) -> Result<()> {
+    if admission_receipt(tx, reference)?.is_some() {
+        return Err(ProviderError::Conflict);
+    }
+    let fence: bool = db(tx.query_row(
+        "SELECT legacy_reference_fence FROM mdreader_provider_registry_meta WHERE id=1",
+        [],
+        |r| r.get(0),
+    ))?;
+    if fence {
+        return Err(ProviderError::Unsupported);
+    }
+    let count: u64 = db(tx.query_row(
+        "SELECT count(*) FROM mdreader_provider_registry_admissions",
+        [],
+        |r| r.get(0),
+    ))?;
+    if count >= MAX_ADMISSION_RECEIPTS {
+        return Err(ProviderError::TooLarge);
+    }
+    db(tx.execute(
+        "INSERT INTO mdreader_provider_registry_admissions VALUES(?1,?2,?3,?4)",
+        params![
+            body_hash(reference.as_str().as_bytes()).as_slice(),
+            configuration.as_slice(),
+            descriptor.binding().source_id().as_str(),
+            descriptor.binding().digest().as_slice()
+        ],
+    ))?;
+    Ok(())
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +237,7 @@ pub fn admit(
     if exists {
         return Err(ProviderError::Conflict);
     }
+    record_admission(&tx, descriptor, credential_reference, configuration_digest)?;
     db(tx.execute(
         "INSERT INTO mdreader_provider_registry_sources VALUES(?1,?2,?3,?4,?5,?6,1,?7,0)",
         params![
@@ -268,6 +379,7 @@ pub fn reconnect(
     }
     let text = encode(&normalized(descriptor)?, 64 * 1024)?;
     let tx = db(connection.transaction())?;
+    record_admission(&tx, descriptor, credential_reference, configuration_digest)?;
     clear_snapshots(&tx, &id)?;
     db(tx.execute(
         "DELETE FROM mdreader_provider_registry_cache WHERE source=?1",

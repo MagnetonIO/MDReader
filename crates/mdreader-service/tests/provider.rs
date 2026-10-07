@@ -68,6 +68,58 @@ fn explicit_registry_admission_uses_owner_connection() {
         ),
         Err(ProviderError::Unauthorized)
     );
+    // Exact prototype v1 schema had no retired-reference ledger. Migration can
+    // preserve the current reference, but cannot invent prior grant history.
+    connection
+        .execute_batch(
+            "DROP TABLE mdreader_provider_registry_admissions;
+             ALTER TABLE mdreader_provider_registry_meta DROP COLUMN legacy_reference_fence;
+             UPDATE mdreader_provider_registry_meta SET version=1;",
+        )
+        .unwrap();
+    provider::initialize(&mut connection).unwrap();
+    let migrated: (u64, bool, u64) = connection
+        .query_row(
+            "SELECT version,legacy_reference_fence,
+             (SELECT count(*) FROM mdreader_provider_registry_admissions)
+             FROM mdreader_provider_registry_meta",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(migrated, (2, true, 1));
+    let unknown = SourceDescriptor::new(
+        SourceBinding::new(
+            descriptor.binding().library_id().clone(),
+            SourceId::new("new-source").unwrap(),
+            descriptor.binding().account().clone(),
+            uuid::Uuid::new_v4(),
+            descriptor.scope().digest(),
+        )
+        .unwrap(),
+        descriptor.kind(),
+        descriptor.name().clone(),
+        descriptor.scope().clone(),
+        descriptor.capabilities(),
+        descriptor.health(),
+        descriptor.coverage().clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        provider::admit(
+            &mut connection,
+            &unknown,
+            &OpaqueValue::new("unknown-pre-migration-reference").unwrap(),
+            [9; 32],
+        ),
+        Err(ProviderError::Unsupported)
+    );
+    assert_eq!(
+        provider::list(&mut connection, descriptor.binding().library_id())
+            .unwrap()
+            .len(),
+        1
+    );
     connection
         .execute("UPDATE mdreader_provider_registry_meta SET version=99", [])
         .unwrap();

@@ -75,6 +75,7 @@ impl Vault for MemoryVault {
     }
 }
 const REFERENCE: &str = "native-provider-v3-514c36b5-7e58-43a4-9fc1-64f15471ea8e";
+const SECOND_REFERENCE: &str = "native-provider-v3-66320de8-2124-49fa-9e17-23e8ed9fb3bd";
 fn synthetic_grant(expires: u64) -> ProviderGrant {
     ProviderGrant::new(
         &Registration::google_drive("synthetic.apps.googleusercontent.com".into()).unwrap(),
@@ -168,6 +169,12 @@ fn provider_service_child() {
     memory
         .create(
             &CredentialReference::new(REFERENCE.into()).unwrap(),
+            &synthetic_grant(1),
+        )
+        .unwrap();
+    memory
+        .create(
+            &CredentialReference::new(SECOND_REFERENCE.into()).unwrap(),
             &synthetic_grant(1),
         )
         .unwrap();
@@ -576,4 +583,158 @@ fn unavailable_provider_cache_reports_error_without_blocking_local_index() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+#[test]
+fn lost_admission_replay_cannot_revive_replaced_grant_after_reconnect_or_forget() {
+    use std::io::Write;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path();
+    let child = start(path);
+    let endpoint: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("reader-endpoint.json")).unwrap()).unwrap();
+    let mut stream =
+        std::net::TcpStream::connect(("127.0.0.1", endpoint["port"].as_u64().unwrap() as u16))
+            .unwrap();
+    let request = mdreader_service::Request::Provider {
+        request: ProviderRequest::Admit {
+            credential_reference: REFERENCE.into(),
+            name: DisplayText::new("Lost admission reply").unwrap(),
+        },
+    };
+    let mut bytes = serde_json::to_vec(
+        &serde_json::json!({"protocol":1,"token":endpoint["token"],"request":request}),
+    )
+    .unwrap();
+    bytes.push(b'\n');
+    stream.write_all(&bytes).unwrap();
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(stream);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let original = loop {
+        let listed = success(rpc(path, ProviderRequest::List));
+        if listed.as_array().unwrap().len() == 1 {
+            break listed[0].clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "lost-reply admission did not commit"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let source = SourceId::new(original["source_id"].as_str().unwrap()).unwrap();
+    success(rpc(
+        path,
+        ProviderRequest::Refresh {
+            source_id: source.clone(),
+        },
+    ));
+    let docs = success(rpc(
+        path,
+        ProviderRequest::Documents {
+            source_id: source.clone(),
+            offset: 0,
+            limit: 10,
+        },
+    ));
+    let old_id =
+        uuid::Uuid::parse_str(docs["documents"][0]["document_id"].as_str().unwrap()).unwrap();
+    let old = success(rpc(
+        path,
+        ProviderRequest::Open {
+            source_id: source.clone(),
+            document_id: old_id,
+        },
+    ));
+    success(rpc(
+        path,
+        ProviderRequest::Disable {
+            source_id: source.clone(),
+        },
+    ));
+    let reconnected = success(rpc(
+        path,
+        ProviderRequest::Reconnect {
+            source_id: source.clone(),
+            credential_reference: SECOND_REFERENCE.into(),
+            name: DisplayText::new("Fresh grant").unwrap(),
+        },
+    ));
+    assert_eq!(reconnected["source_id"], original["source_id"]);
+    success(rpc(
+        path,
+        ProviderRequest::Refresh {
+            source_id: source.clone(),
+        },
+    ));
+    let docs = success(rpc(
+        path,
+        ProviderRequest::Documents {
+            source_id: source.clone(),
+            offset: 0,
+            limit: 10,
+        },
+    ));
+    let new_id =
+        uuid::Uuid::parse_str(docs["documents"][0]["document_id"].as_str().unwrap()).unwrap();
+    let current = success(rpc(
+        path,
+        ProviderRequest::Open {
+            source_id: source.clone(),
+            document_id: new_id,
+        },
+    ));
+    assert_ne!(current["reader_source_id"], old["reader_source_id"]);
+    drop(child);
+    let restarted = start(path);
+    let replay = ProviderRequest::Admit {
+        credential_reference: REFERENCE.into(),
+        name: DisplayText::new("Delayed old reply reconciliation").unwrap(),
+    };
+    assert_eq!(rpc(path, replay.clone())["error"]["kind"], "conflict");
+    let sources = success(rpc(path, ProviderRequest::List));
+    assert_eq!(sources.as_array().unwrap().len(), 1);
+    assert_eq!(sources[0]["reader_source_id"], current["reader_source_id"]);
+    assert_eq!(sources[0]["enabled"], true);
+    assert_eq!(
+        rpc(
+            path,
+            ProviderRequest::Reconnect {
+                source_id: source.clone(),
+                credential_reference: REFERENCE.into(),
+                name: DisplayText::new("Old grant reuse").unwrap()
+            }
+        )["error"]["kind"],
+        "conflict"
+    );
+    success(rpc(
+        path,
+        ProviderRequest::Forget {
+            source_id: source.clone(),
+        },
+    ));
+    drop(restarted);
+    let _restarted = start(path);
+    assert_eq!(rpc(path, replay)["error"]["kind"], "conflict");
+    let retained = success(rpc(
+        path,
+        ProviderRequest::Admit {
+            credential_reference: SECOND_REFERENCE.into(),
+            name: DisplayText::new("Current receipt after forget").unwrap(),
+        },
+    ));
+    assert_eq!(retained["source_id"], original["source_id"]);
+    assert_eq!(retained["enabled"], false);
+    assert_eq!(retained["replayed"], true);
+    let sources = success(rpc(path, ProviderRequest::List));
+    assert_eq!(sources.as_array().unwrap().len(), 1);
+    assert_eq!(sources[0]["enabled"], false);
+    assert!(mdreader_service::call(
+        path,
+        &mdreader_service::Request::Read {
+            source_id: current["reader_source_id"].as_str().unwrap().into(),
+            path: current["path"].as_str().unwrap().into(),
+            revision: Some(current["revision"].as_str().unwrap().into())
+        }
+    )
+    .is_err());
 }

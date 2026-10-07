@@ -616,36 +616,29 @@ fn admission_replay(
     next: &SourceConfiguration,
     source: Option<&SourceId>,
 ) -> Result<Option<Value>> {
-    let mut statement=registry::db(c.prepare("SELECT descriptor,digest,configuration_digest,enabled FROM mdreader_provider_registry_sources WHERE credential_reference=?1 LIMIT 2"))?;
-    let rows = registry::db(
-        statement.query_map([next.credential_reference.as_str()], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
-                r.get::<_, bool>(3)?,
-            ))
-        }),
-    )?;
-    let rows = rows.map(registry::db).collect::<Result<Vec<_>>>()?;
-    if rows.len() > 1 {
-        return Err(ProviderError::Persistence);
+    let Some(receipt) = registry::admission_receipt(c, &next.credential_reference)? else {
+        return Ok(None);
+    };
+    if receipt.configuration_digest != next.configuration_digest
+        || source.is_some_and(|source| source != &receipt.source_id)
+    {
+        return Err(ProviderError::Conflict);
     }
-    match rows.into_iter().next() {
-        None => Ok(None),
-        Some((text, digest, configuration, enabled)) => {
-            if body_hash(text.as_bytes()).as_slice() != digest {
-                return Err(ProviderError::Persistence);
-            }
-            let prior: SourceDescriptor = registry::decode(&text, 65536)?;
-            if configuration.as_slice() != next.configuration_digest
-                || source.is_some_and(|s| s != prior.binding().source_id())
-            {
-                return Err(ProviderError::Conflict);
-            }
-            Ok(Some(
-                json!({"source_id":prior.binding().source_id(),"enabled":enabled,"replayed":true}),
-            ))
-        }
+    let current = configuration(c, &receipt.source_id)?;
+    if current.descriptor.binding().digest() != receipt.binding
+        || current.credential_reference != next.credential_reference
+        || current.configuration_digest != receipt.configuration_digest
+    {
+        // Retired references remain consumed after reconnect or forget. They
+        // cannot revive an old generation or manufacture a new source identity.
+        return Err(ProviderError::Conflict);
     }
+    let enabled: bool = registry::db(c.query_row(
+        "SELECT enabled FROM mdreader_provider_registry_sources WHERE identity=?1",
+        [registry::identity(current.descriptor.binding())],
+        |r| r.get(0),
+    ))?;
+    Ok(Some(
+        json!({"source_id":receipt.source_id,"enabled":enabled,"replayed":true}),
+    ))
 }

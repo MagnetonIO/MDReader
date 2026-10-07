@@ -222,12 +222,28 @@ when the enclosing service transport succeeds.
 - `Mutations`: bounded operation IDs/states only. `Repair` performs read-only
   reconciliation and idempotent local publication, never auto-dispatches.
 
-Admission/reconnect replay is keyed by exact fresh credential reference plus
-configuration digest. A lost IPC reply returns the original source and its
-**current** enabled state; replay cannot silently regrant a subsequently paused
-source. A different configuration or reuse for a different source conflicts.
-Keep a pending native reference after timeout and reconcile; never delete a
-potentially admitted credential merely because its IPC reply was lost.
+Admission/reconnect replay uses a durable receipt keyed by the SHA-256 digest of
+the exact fresh credential reference, with configuration digest, original source
+and full generation binding. The receipt commits in the same transaction as
+admission/reconnect. Reconnect and Forget retain prior receipts; historical raw
+credential references are not retained by this ledger. A lost IPC reply returns
+the original source and its **current** enabled state only while that reference
+still identifies the current generation. Replaying a retired reference, a
+different configuration or a different source returns Conflict, never another
+source or a regrant. Replaying the current reference after Forget returns the
+original disabled source. Keep a pending native reference after timeout and
+reconcile; never delete a potentially admitted credential merely because its IPC
+reply was lost. The ledger retains at most 4,096 receipts without pruning; further
+fresh admissions/reconnections fail TooLarge before changing source authority.
+
+Registry schema 2 adds this ledger. Prototype schema 1 recorded only the current
+credential reference, so its migration seeds current receipts and fences all
+unknown references with Unsupported whenever source records already exist.
+Known current references and existing source operations remain available; fresh
+admission/reconnect requires a fresh schema-2 profile or future explicit migration
+tooling. An empty schema-1 registry can migrate without that fence. No accepted
+live v3-grant release used schema 1, and this migration does not claim to recover
+retired history that was never recorded. Global SQLite `user_version` is unchanged.
 
 The coordinator has one persistent current-thread async runtime, queue capacity
 8, at most two active network operations and one per source, 30-second operation
@@ -244,8 +260,11 @@ The focused synthetic service-process regression covers native grant refresh,
 account verification, exact file enumeration, opaque listing, real core
 admission/read, restart, accepted-upload/lost-response uncertainty (one upload),
 read-only reconciliation, stale revision rejection, revoke and paused admission
-replay. OAuth browser/Picker and shipping app routing are owned by the native
-app; this backend test does not claim live provider access or completed UI port.
+replay. A second process regression drops an admission reply, reconnects with a
+fresh reference, restarts, and proves old-reference replay cannot create a second
+source or restore authority, including after Forget. OAuth browser/Picker and
+shipping app routing are owned by the native app; this backend test does not
+claim live provider access or completed UI port.
 
 A provider initialization failure (unsupported host, damaged or unavailable
 private cache) is retained as a typed provider error in Runtime. Provider RPCs
