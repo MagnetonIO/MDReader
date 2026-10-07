@@ -275,6 +275,16 @@ fn native_factory_ipc_restart_unknown_write_and_revocation() {
             document_id: id,
         },
     ));
+    assert_eq!(
+        success(rpc(
+            path,
+            ProviderRequest::CachedOpen {
+                source_id: source.clone(),
+                document_id: id
+            }
+        )),
+        receipt
+    );
     let search = mdreader_service::Request::Search {
         query: "old".into(),
         sources: vec![receipt["reader_source_id"].as_str().unwrap().into()],
@@ -374,6 +384,16 @@ fn native_factory_ipc_restart_unknown_write_and_revocation() {
         rpc(
             path,
             ProviderRequest::Open {
+                source_id: source.clone(),
+                document_id: id
+            }
+        )["error"]["kind"],
+        "unauthorized"
+    );
+    assert_eq!(
+        rpc(
+            path,
+            ProviderRequest::CachedOpen {
                 source_id: source.clone(),
                 document_id: id
             }

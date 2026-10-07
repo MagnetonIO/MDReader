@@ -202,6 +202,10 @@ when the enclosing service transport succeeds.
   version, cache/admit and return `ProjectionReceipt`; use its safe
   `reader_source_id/path/revision` with ordinary core `Read`. An observation
   timestamp describes cached evidence, not proof of the present remote head.
+- `CachedOpen { source_id, document_id }`: owner lookup of the exact currently
+  published cached projection receipt, with no provider/vault I/O. CachedOpen
+  and Documents bypass network slots; revoke and metadata-version gates still
+  apply. The receipt is cached evidence, not a present remote-head assertion.
 - `Disable` / `Forget`: synchronous owner-only authority changes bypass network
   slots and the vault worker. Core revoke and registry disable share one durable
   transaction. Forget removes derived materialization and keeps the source

@@ -1,0 +1,91 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import type { NativeProvidersBackend, NativeProvidersSnapshot, ProviderSource, ProviderDocument } from '../platform/providers.js';
+import { nativeProvidersBackend, NativeProviderError } from '../platform/providers.js';
+const raw = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => raw);
+import { NativeProvidersPanel } from './NativeProvidersPanel.js';
+afterEach(cleanup);
+const source = (sourceId = 'remote-source', name = 'Selected plans'): ProviderSource => ({ sourceId, readerSourceId: null, name, kind: 'google_drive', enabled: true, selectedScope: { kind: 'exact_documents', count: 1 }, capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: true }, health: 'ready', coverage: { kind: 'never_indexed' } });
+const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ availability: [{ provider: 'google_drive', configured: true, supported: true, diagnostic: null }, { provider: 'dropbox', configured: false, supported: true, diagnostic: 'Dropbox registration is not configured.' }], sources, pendingAdmissions: [], error: null });
+const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
+const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
+function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}) }; }
+test('opening provider settings reads status without connecting and explains unavailable registrations', async () => {
+  const api = backend(); render(<NativeProvidersPanel backend={api} />);
+  expect(api.state).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  const google = await screen.findByRole('button', { name: 'Choose Google Drive files' });
+  expect((google as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: 'Connect Dropbox App Folder' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText('Dropbox registration is not configured.')).toBeTruthy();
+  expect(api.connect).not.toHaveBeenCalled();
+});
+test('explicit Picker and App Folder actions pass only the displayed narrow selection', async () => {
+  const snapshot = state(); snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null };
+  const api = backend(snapshot); api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-source', enabled: true, replayed: false }));
+  render(<NativeProvidersPanel backend={api} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Choose Google Drive files' }));
+  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null));
+  await screen.findByText(/selected source is connected/);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/Notes' } });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Include Dropbox subfolders' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox App Folder' }));
+  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('dropbox', { path: '/Notes', recursive: true }));
+  await screen.findByText(/selected source is connected/);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/../outside' } });
+  expect((screen.getByRole('button', { name: 'Connect Dropbox App Folder' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(api.connect).toHaveBeenCalledTimes(2);
+});
+test('metadata enumeration never claims indexed bodies and cached reads use the exact core reference', async () => {
+  const selected = source(); selected.coverage = { kind: 'metadata_complete_selected', observedAtMs: 10 };
+  const api = backend(state([selected])); const onOpen = vi.fn();
+  render(<NativeProvidersPanel backend={api} onOpen={onOpen} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  expect(await screen.findByText(/Document bodies and indexing may still be incomplete/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
+  await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: doc.name, line: 1 }));
+  expect(api.readCached).toHaveBeenCalledWith(selected.sourceId, doc.documentId); expect(api.fetchCurrent).not.toHaveBeenCalled();
+  await screen.findByText(/Opened the exact cached revision/);
+  fireEvent.click(screen.getByRole('button', { name: 'Fetch current revision' }));
+  await waitFor(() => expect(api.fetchCurrent).toHaveBeenCalledWith(selected.sourceId, doc.documentId));
+  await screen.findByText(/Indexing may still be in progress/); expect(onOpen).toHaveBeenCalledTimes(2);
+});
+test('a pending admission is reconciled explicitly without another OAuth attempt', async () => {
+  const snapshot = state(); const api = backend(snapshot);
+  api.connect = vi.fn(async () => { snapshot.pendingAdmissions = [{ attemptId: 'pending', provider: 'google_drive', name: 'Selected plans', sourceId: null, phase: 'admission_pending' }]; return { state: 'pending' as const, attemptId: 'pending', reason: { kind: 'timeout' } }; });
+  api.reconcile = vi.fn(async () => { snapshot.pendingAdmissions = []; return { state: 'admitted' as const, sourceId: 'same-source', enabled: false, replayed: true }; });
+  render(<NativeProvidersPanel backend={api} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Choose Google Drive files' }));
+  expect(await screen.findByText(/connection outcome is pending/)).toBeTruthy(); expect(api.reconcile).not.toHaveBeenCalled(); expect(api.connect).toHaveBeenCalledTimes(1);
+  fireEvent.click(await screen.findByRole('button', { name: 'Reconcile connection' }));
+  await screen.findByText(/source remains paused/); expect(api.reconcile).toHaveBeenCalledWith('pending'); expect(api.connect).toHaveBeenCalledTimes(1);
+});
+test('profile changes discard late fetch results and never open a document in the new library', async () => {
+  let resolve!: (value: typeof projection) => void; const old = backend(state([source()])); old.fetchCurrent = vi.fn(() => new Promise<typeof projection>((done) => { resolve = done; })); const fresh = backend(state([source('new-source', 'New library')])); const onOpen = vi.fn();
+  const view = render(<NativeProvidersPanel backend={old} profileKey="old" onOpen={onOpen} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse documents' })); fireEvent.click(await screen.findByRole('button', { name: 'Fetch current revision' }));
+  await waitFor(() => expect(old.fetchCurrent).toHaveBeenCalledTimes(1)); view.rerender(<NativeProvidersPanel backend={fresh} profileKey="new" onOpen={onOpen} />);
+  await screen.findByRole('heading', { name: 'New library' }); resolve(projection);
+  await waitFor(() => expect(screen.queryByText(/Fetched and admitted/)).toBeNull()); expect(onOpen).not.toHaveBeenCalled(); expect(fresh.documents).not.toHaveBeenCalled();
+});
+test('pause and forget use the actual service source ID and update only after confirmed completion', async () => {
+  const selected = source('actual-service-id'); const snapshot = state([selected]); const api = backend(snapshot); const changed = vi.fn();
+  api.disable = vi.fn(async () => { selected.enabled = false; selected.health = 'paused'; });
+  render(<NativeProvidersPanel backend={api} onSourcesChanged={changed} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
+  const item = await screen.findByRole('listitem', { name: selected.name }); fireEvent.click(within(item).getByRole('button', { name: 'Pause source' }));
+  await screen.findByText(/cached documents are no longer accessible/); expect(api.disable).toHaveBeenCalledWith('actual-service-id'); expect(changed).toHaveBeenCalledTimes(1);
+  expect((within(item).getByRole('button', { name: 'Browse documents' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(within(item).getByRole('button', { name: 'Forget cached documents' }));
+  await screen.findByText(/Uncertain save evidence is retained/); expect(api.forget).toHaveBeenCalledWith('actual-service-id'); expect(api.reconnect).not.toHaveBeenCalled();
+});
+test('the native adapter preserves typed uncertainty and uses only safe command DTOs', async () => {
+  raw.invoke.mockResolvedValueOnce({ operation: 'read_cached', projection });
+  expect(await nativeProvidersBackend.readCached('actual-source', 'opaque-document')).toEqual(projection);
+  expect(raw.invoke).toHaveBeenLastCalledWith('native_provider_request', { request: { operation: 'read_cached', sourceId: 'actual-source', documentId: 'opaque-document' } });
+  raw.invoke.mockRejectedValueOnce({ kind: 'unknown_write', operationId: 'uncertain-operation' });
+  await expect(nativeProvidersBackend.fetchCurrent('actual-source', 'opaque-document')).rejects.toMatchObject({ detail: { kind: 'unknown_write', operationId: 'uncertain-operation' } });
+  raw.invoke.mockRejectedValueOnce('synthetic-private-transport-token');
+  const failure = await nativeProvidersBackend.state().catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(NativeProviderError); expect(String(failure)).not.toContain('synthetic-private-transport-token');
+});

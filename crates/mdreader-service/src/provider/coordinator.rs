@@ -37,6 +37,10 @@ pub enum ProviderRequest {
         source_id: SourceId,
         document_id: Uuid,
     },
+    CachedOpen {
+        source_id: SourceId,
+        document_id: Uuid,
+    },
     Disable {
         source_id: SourceId,
     },
@@ -71,6 +75,7 @@ impl ProviderRequest {
             | Self::Documents { source_id, .. }
             | Self::Refresh { source_id }
             | Self::Open { source_id, .. }
+            | Self::CachedOpen { source_id, .. }
             | Self::Disable { source_id }
             | Self::Forget { source_id }
             | Self::BeginEdit { source_id, .. }
@@ -120,6 +125,12 @@ impl Coordinator {
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
                 match request {
+                    ProviderRequest::CachedOpen { document_id, .. } => {
+                        cached_open(c, binding, document_id)
+                    }
+                    ProviderRequest::Documents { offset, limit, .. } => {
+                        documents(c, binding, offset, limit)
+                    }
                     ProviderRequest::Disable { .. } => {
                         disable(c, binding, &*local_projection)?;
                         Ok(json!({"disabled":true}))
@@ -148,6 +159,8 @@ impl Coordinator {
         if matches!(
             request,
             ProviderRequest::List
+                | ProviderRequest::CachedOpen { .. }
+                | ProviderRequest::Documents { .. }
                 | ProviderRequest::Disable { .. }
                 | ProviderRequest::Forget { .. }
         ) {
@@ -326,6 +339,13 @@ fn key_for(c: &mut Connection, b: &SourceBinding, id: Uuid) -> Result<RecordKey>
         .optional(),
     )?;
     RecordKey::new(key.ok_or(ProviderError::Unauthorized)?)
+}
+fn cached_open(c: &mut Connection, b: &SourceBinding, id: Uuid) -> Result<Value> {
+    let key = key_for(c, b, id)?;
+    let projection = cached(c, b, &key)?
+        .and_then(|d| d.projection)
+        .ok_or(ProviderError::Unavailable)?;
+    serde_json::to_value(projection).map_err(|_| ProviderError::Protocol)
 }
 fn documents(c: &mut Connection, b: &SourceBinding, offset: usize, limit: usize) -> Result<Value> {
     if limit == 0 || limit > 256 {
