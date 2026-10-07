@@ -210,15 +210,42 @@ pub fn scan_source_root(
     root: &SourceRoot,
     options: &ScanOptions,
 ) -> std::io::Result<Vec<ScannedFile>> {
+    let mut out = Vec::new();
+    visit_source_root(root, options, |file| {
+        out.push(file);
+        Ok::<(), std::io::Error>(())
+    })?;
+    out.sort_by(|left, right| left.rel.cmp(&right.rel));
+    Ok(out)
+}
+
+/// Process selected files while their descriptor-relative authority is alive.
+/// The visitor must consume each file before returning to keep descriptor use
+/// bounded by traversal depth, rather than total document count.
+pub fn visit_source_root<E: From<std::io::Error>>(
+    root: &SourceRoot,
+    options: &ScanOptions,
+    mut visit: impl FnMut(ScannedFile) -> Result<(), E>,
+) -> Result<usize, E> {
     let synthetic = root
         .path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "root".to_string());
-    let mut out = Vec::new();
-    scan_bound_dir(root, Path::new(""), options, &synthetic, &[], &mut out)?;
-    out.sort_by(|left, right| left.rel.cmp(&right.rel));
-    Ok(out)
+        .unwrap_or_else(|| "root".into());
+    let mut count = 0;
+    scan_bound_dir(
+        root,
+        Path::new(""),
+        options,
+        &synthetic,
+        &[],
+        &mut |file| -> Result<(), E> {
+            visit(file)?;
+            count += 1;
+            Ok(())
+        },
+    )?;
+    Ok(count)
 }
 
 fn source_io(error: crate::SourceRootError) -> std::io::Error {
@@ -275,14 +302,14 @@ fn ignored_by(matchers: &[Gitignore], relative: &Path, is_dir: bool) -> bool {
     false
 }
 
-fn scan_bound_dir(
+fn scan_bound_dir<E: From<std::io::Error>>(
     root: &SourceRoot,
     relative: &Path,
     options: &ScanOptions,
     inherited_repo: &str,
     inherited_matchers: &[Gitignore],
-    out: &mut Vec<ScannedFile>,
-) -> std::io::Result<()> {
+    visit: &mut impl FnMut(ScannedFile) -> Result<(), E>,
+) -> Result<(), E> {
     let entries = root.read_dir_relative(relative).map_err(source_io)?;
     let mut matchers: Vec<Gitignore> = inherited_matchers.to_vec();
     if let Some(context) = declared_ignore(root, relative, &entries, ".contextignore")? {
@@ -333,7 +360,7 @@ fn scan_bound_dir(
         }
         match entry.kind {
             SourceEntryKind::Directory => {
-                scan_bound_dir(root, &child, options, &repo, &matchers, out)?;
+                scan_bound_dir(root, &child, options, &repo, &matchers, visit)?;
             }
             SourceEntryKind::File
                 if entry.size <= options.max_file_size
@@ -345,12 +372,12 @@ fn scan_bound_dir(
                     .map(|component| component.as_os_str().to_string_lossy())
                     .collect::<Vec<_>>()
                     .join("/");
-                out.push(ScannedFile {
+                visit(ScannedFile {
                     abs: root.path.join(&child),
                     rel,
                     repo: repo.clone(),
                     authority: Some(Arc::new(authority)),
-                });
+                })?;
             }
             SourceEntryKind::File | SourceEntryKind::SymlinkOrReparse | SourceEntryKind::Other => {}
         }

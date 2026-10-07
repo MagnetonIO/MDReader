@@ -4,10 +4,11 @@ pub mod parse;
 pub mod scan;
 pub mod source_root;
 mod store;
+mod query;
 pub use parse::{
     parse_markdown, parse_markdown_with_limit, ParsedDocument, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };
-pub use scan::{scan_root, scan_source_root, ScanOptions, ScannedFile};
+pub use scan::{scan_root, scan_source_root, visit_source_root, ScanOptions, ScannedFile};
 pub use source_root::{SourceRoot, SourceRootError, SourceRootIdentity};
 pub use store::*;
 

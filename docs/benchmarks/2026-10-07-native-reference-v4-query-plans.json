@@ -1,0 +1,61 @@
+{
+  "benchmark": "native-core-synthetic-v1",
+  "profile": "release",
+  "store_source_blake3": "5af556792797bf0a2d29a8ec48002ba8f460bcfab138af3985db58f9d346176d",
+  "query_source_blake3": "02e0328fe788cee705e1e4b3f04ddf9706fe1b0ded64932be34c05182cdbd296",
+  "os": "macos",
+  "arch": "aarch64",
+  "purpose": "Supplemental query-plan diagnosis on the same 20-document synthetic ring; no latency acceptance claim.",
+  "documents": 20,
+  "query_plans": {
+    "linked_to_source_links": [
+      "SEARCH d USING COVERING INDEX sqlite_autoindex_documents_1 (source_id=?)",
+      "SEARCH l USING INDEX links_document (document_id=?)"
+    ],
+    "path_full_search": [
+      "SEARCH d USING INDEX sqlite_autoindex_documents_1 (source_id=?)",
+      "SEARCH c USING COVERING INDEX chunks_document (document_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "related_source_links": [
+      "SEARCH d USING COVERING INDEX sqlite_autoindex_documents_1 (source_id=?)",
+      "SEARCH l USING INDEX links_document (document_id=?)",
+      "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+    ],
+    "resolve_source_documents": [
+      "SEARCH documents USING INDEX sqlite_autoindex_documents_1 (source_id=?)"
+    ],
+    "v4_alias_lookup": [
+      "SEARCH document_aliases USING PRIMARY KEY (source_id=? AND kind=? AND alias=?)"
+    ],
+    "v4_incoming_edges": [
+      "SEARCH resolved_links USING COVERING INDEX resolved_target (target_id=?)",
+      "SCALAR SUBQUERY 1",
+      "SEARCH documents USING COVERING INDEX sqlite_autoindex_documents_1 (source_id=? AND path=?)"
+    ],
+    "v4_linked_to_full_search": [
+      "SEARCH d USING INDEX sqlite_autoindex_documents_1 (source_id=?)",
+      "LIST SUBQUERY 2",
+      "SEARCH r USING COVERING INDEX resolved_target (target_id=?)",
+      "LIST SUBQUERY 1",
+      "SCAN json_each VIRTUAL TABLE INDEX 1:",
+      "CREATE BLOOM FILTER",
+      "CREATE BLOOM FILTER",
+      "SEARCH c USING COVERING INDEX chunks_document (document_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "v4_related_incoming": [
+      "SEARCH resolved_links USING COVERING INDEX resolved_incoming (source_id=? AND target_id=?)",
+      "SCALAR SUBQUERY 1",
+      "SEARCH documents USING COVERING INDEX sqlite_autoindex_documents_1 (source_id=? AND path=?)"
+    ],
+    "v4_related_outgoing": [
+      "SEARCH resolved_links USING PRIMARY KEY (source_id=? AND origin_id=?)",
+      "SCALAR SUBQUERY 1",
+      "SEARCH documents USING COVERING INDEX sqlite_autoindex_documents_1 (source_id=? AND path=?)"
+    ],
+    "v4_resolve_exact": [
+      "SEARCH documents USING INDEX sqlite_autoindex_documents_1 (source_id=? AND path=?)"
+    ]
+  }
+}

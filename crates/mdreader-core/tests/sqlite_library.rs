@@ -1,5 +1,65 @@
 use mdreader_core::{ReaderStore, SourceRoot};
 use tempfile::tempdir;
+
+#[test]
+fn durable_jobs_recover_and_filtered_search_preserves_rank_evidence() {
+    let data = tempdir().unwrap();
+    let notes = tempdir().unwrap();
+    std::fs::create_dir(notes.path().join("plans")).unwrap();
+    std::fs::write(
+        notes.path().join("plans/one.md"),
+        "---\ntags: [reader, local]\n---\n# One\nDurable offline search\n",
+    )
+    .unwrap();
+    std::fs::write(
+        notes.path().join("two.md"),
+        "# Two\nDurable offline search\n",
+    )
+    .unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = store
+        .add_local_source(
+            "Notes",
+            SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    store.queue_index(&source.id).unwrap();
+    drop(store);
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    assert_eq!(store.pending_index_jobs().unwrap(), vec![source.id.clone()]);
+    store.index_source(&source.id).unwrap();
+    store.record_index_job(&source.id, "done", None).unwrap();
+    assert!(store.pending_index_jobs().unwrap().is_empty());
+    assert_eq!(store.index_job(&source.id).unwrap().unwrap().documents, 2);
+    store.queue_index(&source.id).unwrap();
+    assert!(!store
+        .record_index_job_if_current(&source.id, 1, "done", None)
+        .unwrap());
+    assert_eq!(
+        store.index_job(&source.id).unwrap().unwrap().phase,
+        "queued"
+    );
+    for query in [
+        "offline tag:reader",
+        "path:plans/*",
+        "after:2020-01-01 tag:local",
+    ] {
+        let hits = store
+            .search(query, std::slice::from_ref(&source.id), 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1, "{query}");
+        assert_eq!(hits[0].path, "plans/one.md");
+        assert_eq!(hits[0].lexical_rank, Some(1));
+        assert!(hits[0].modified_ms > 0);
+    }
+    assert!(store
+        .search("after:2026-02-30", std::slice::from_ref(&source.id), 10)
+        .is_err());
+    assert!(store
+        .search("path:", std::slice::from_ref(&source.id), 10)
+        .is_err());
+    assert!(store.search("unknown:value", &[source.id], 10).is_err());
+}
 #[test]
 fn sqlite_reopen_rebuild_and_source_revoke_preserve_user_state() {
     let data = tempdir().unwrap();
@@ -18,7 +78,7 @@ fn sqlite_reopen_rebuild_and_source_revoke_preserve_user_state() {
         .unwrap();
     assert_eq!(store.index_source(&source.id).unwrap(), 1);
     let hits = store
-        .search("selected documents", &[source.id.clone()], 10)
+        .search("selected documents", std::slice::from_ref(&source.id), 10)
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, "plan.md");
@@ -34,15 +94,17 @@ fn sqlite_reopen_rebuild_and_source_revoke_preserve_user_state() {
     assert_eq!(store.bookmark(&source.id, "plan.md").unwrap(), Some(4));
     assert_eq!(
         store
-            .search("selected documents", &[source.id.clone()], 10)
+            .search("selected documents", std::slice::from_ref(&source.id), 10)
             .unwrap()[0]
             .revision,
         revision
     );
     store.set_source_enabled(&source.id, false).unwrap();
     assert!(store
-        .search("selected documents", &[source.id.clone()], 10)
+        .search("selected documents", std::slice::from_ref(&source.id), 10)
         .is_err());
+    assert!(store.bookmark(&source.id, "plan.md").is_err());
+    store.set_source_enabled(&source.id, true).unwrap();
     assert_eq!(store.bookmark(&source.id, "plan.md").unwrap(), Some(4));
 }
 #[test]
@@ -68,7 +130,10 @@ fn incremental_index_removes_deleted_documents_and_never_searches_another_source
     store.index_source(&sa.id).unwrap();
     store.index_source(&sb.id).unwrap();
     assert_eq!(
-        store.search("Unique", &[sa.id.clone()], 10).unwrap().len(),
+        store
+            .search("Unique", std::slice::from_ref(&sa.id), 10)
+            .unwrap()
+            .len(),
         1
     );
     assert!(store.search("Unique", &[], 10).is_err());
@@ -103,7 +168,7 @@ fn vectors_are_revision_bound_scoped_and_disposable() {
     let (r1, inputs) = store.embedding_inputs(&source.id, "one.md").unwrap();
     assert_eq!(inputs.len(), 1);
     store
-        .install_embeddings(&source.id, "one.md", &r1, &[animal.clone()])
+        .install_embeddings(&source.id, "one.md", &r1, std::slice::from_ref(&animal))
         .unwrap();
     let (r2, _) = store.embedding_inputs(&source.id, "two.md").unwrap();
     store
@@ -111,20 +176,23 @@ fn vectors_are_revision_bound_scoped_and_disposable() {
         .unwrap();
     assert_eq!(
         store
-            .semantic_search(&animal, &[source.id.clone()], 1)
+            .semantic_search(&animal, std::slice::from_ref(&source.id), 1)
             .unwrap()[0]
             .path,
         "one.md"
     );
     assert_eq!(
         store
-            .hybrid_search("animal", &animal, &[source.id.clone()], 1)
+            .hybrid_search("animal", &animal, std::slice::from_ref(&source.id), 1)
             .unwrap()[0]
             .path,
         "one.md"
     );
     assert_eq!(
-        store.index_status(&[source.id.clone()]).unwrap().embedded,
+        store
+            .index_status(std::slice::from_ref(&source.id))
+            .unwrap()
+            .embedded,
         2
     );
     std::fs::write(notes.path().join("one.md"), "# One\nChanged body.").unwrap();
@@ -134,7 +202,10 @@ fn vectors_are_revision_bound_scoped_and_disposable() {
         Err(mdreader_core::ReaderError::Conflict)
     ));
     assert_eq!(
-        store.index_status(&[source.id.clone()]).unwrap().embedded,
+        store
+            .index_status(std::slice::from_ref(&source.id))
+            .unwrap()
+            .embedded,
         1
     );
     store.set_bookmark(&source.id, "one.md", 2).unwrap();
@@ -178,14 +249,16 @@ fn source_replacement_traversal_and_cancelled_index_fail_closed() {
     ));
     assert_eq!(
         store
-            .search("Unique", &[source.id.clone()], 10)
+            .search("Unique", std::slice::from_ref(&source.id), 10)
             .unwrap()
             .len(),
         1
     );
     std::fs::rename(&notes, parent.path().join("original")).unwrap();
     std::fs::create_dir(&notes).unwrap();
-    assert!(store.search("Unique", &[source.id.clone()], 10).is_err());
+    assert!(store
+        .search("Unique", std::slice::from_ref(&source.id), 10)
+        .is_err());
     assert!(store.read_document(&source.id, "one.md", None).is_err());
 }
 
@@ -257,4 +330,51 @@ fn references_resolve_relative_paths_duplicate_names_and_heading_lines() {
         .is_err());
     let backlinks = store.related(&source.id, "target.md", 10).unwrap();
     assert_eq!(backlinks[0].path, "docs/from.md");
+}
+
+#[test]
+fn bookmarks_require_a_current_source_grant_for_reads_and_writes() {
+    let data = tempfile::tempdir().unwrap();
+    let notes = tempfile::tempdir().unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let root = SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap();
+    let source = store.add_local_source("Notes", root).unwrap();
+    store.set_bookmark(&source.id, "note.md", 2).unwrap();
+    store.set_source_enabled(&source.id, false).unwrap();
+    assert!(store.bookmark(&source.id, "note.md").is_err());
+    assert!(store.set_bookmark(&source.id, "note.md", 3).is_err());
+    assert!(store.bookmark("ungranted", "note.md").is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn indexing_more_files_than_descriptor_budget_does_not_exhaust_handles() {
+    let status = std::process::Command::new("/bin/sh")
+        .args(["-c", "ulimit -n 128\nexec \"$@\"", "mdreader-low-fd"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "low_descriptor_index_process"])
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "indexing must work under a normal descriptor budget"
+    );
+}
+#[test]
+#[ignore = "synthetic subprocess fixture"]
+#[cfg(unix)]
+fn low_descriptor_index_process() {
+    let data = tempfile::tempdir().unwrap();
+    let notes = tempfile::tempdir().unwrap();
+    for index in 0..500 {
+        std::fs::write(
+            notes.path().join(format!("{index}.md")),
+            format!("# Note {index}\nBounded handle indexing"),
+        )
+        .unwrap();
+    }
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let root = SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap();
+    let source = store.add_local_source("Synthetic", root).unwrap();
+    assert_eq!(store.index_source(&source.id).unwrap(), 500);
 }

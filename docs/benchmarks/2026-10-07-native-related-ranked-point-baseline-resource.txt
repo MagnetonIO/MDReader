@@ -1,0 +1,21 @@
+ranked related synthetic corpus: 1000
+ranked related synthetic corpus: 10000
+ranked related synthetic corpus: 50000
+      235.96 real        66.03 user       150.52 sys
+           230948864  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               57004  page reclaims
+                 181  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+               24517  voluntary context switches
+              863240  involuntary context switches
+       2163854386253  instructions retired
+        884070805392  cycles elapsed
+           215089728  peak memory footprint

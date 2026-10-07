@@ -1,0 +1,33 @@
+synthetic corpus: 1000 documents
+  1000: resolve_exact, budget 15s
+  1000: resolve_missing, budget 15s
+  1000: linked_to, budget 15s
+  1000: related, budget 15s
+synthetic corpus: 10000 documents
+  10000: resolve_exact, budget 15s
+  10000: resolve_missing, budget 15s
+  10000: linked_to, budget 15s
+  10000: related, budget 15s
+synthetic corpus: 50000 documents
+  50000: resolve_exact, budget 15s
+  50000: resolve_missing, budget 15s
+  50000: linked_to, budget 15s
+  50000: related, budget 15s
+       82.39 real        59.15 user        20.24 sys
+           287014912  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              531986  page reclaims
+                 173  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                9473  voluntary context switches
+              117716  involuntary context switches
+        280727421049  instructions retired
+         76042800115  cycles elapsed
+            37568896  peak memory footprint
