@@ -84,7 +84,14 @@ impl Runtime {
                 // consumes wakes and detects shutdown; capture admission runs
                 // again before the next bounded turn. Sleep only with no
                 // runnable progress, so blocked inference never causes a spin.
-                let delay = activity.delay();
+                let delay = if activity == Activity::Waiting {
+                    worker_model
+                        .as_ref()
+                        .and_then(ModelActor::background_wait)
+                        .unwrap_or_else(|| activity.delay())
+                } else {
+                    activity.delay()
+                };
                 if matches!(
                     receiver.recv_timeout(delay),
                     Err(mpsc::RecvTimeoutError::Disconnected)

@@ -205,6 +205,12 @@ impl ModelActor {
             .lock()
             .is_ok_and(|state| state.budget.admits(Instant::now()))
     }
+    pub(super) fn background_wait(&self) -> Option<Duration> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.budget.wait(Instant::now()))
+    }
     pub(super) fn background_batch_limit(&self) -> usize {
         self.state
             .lock()

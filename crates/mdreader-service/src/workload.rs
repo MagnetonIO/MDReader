@@ -85,6 +85,15 @@ impl Budget {
             EmbeddingPolicy::Balanced => now >= self.ready_at,
         }
     }
+    pub fn wait(&self, now: Instant) -> Option<std::time::Duration> {
+        match self.policy {
+            EmbeddingPolicy::Paused => Some(std::time::Duration::from_secs(1)),
+            EmbeddingPolicy::Balanced if now < self.ready_at => {
+                Some((self.ready_at - now).min(std::time::Duration::from_secs(1)))
+            }
+            _ => None,
+        }
+    }
     pub fn completed(&mut self, started: Instant, completed: Instant) {
         // 1 part inference + 3 parts cooldown targets 25% inference wall duty.
         // Actual CPU depends on the runtime/host; short spikes remain possible.
@@ -107,6 +116,7 @@ mod tests {
         assert!(budget.admits(start + Duration::from_millis(80)));
         budget.configure(EmbeddingPolicy::Paused);
         assert!(!budget.admits(start + Duration::from_secs(60)));
+        assert_eq!(budget.wait(start), Some(Duration::from_secs(1)));
         budget.configure(EmbeddingPolicy::FullSpeed);
         assert!(budget.admits(start));
         let data = tempfile::tempdir().unwrap();
