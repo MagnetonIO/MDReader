@@ -1,0 +1,38 @@
+[package]
+name = "mdreader-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+local-embed = ["dep:fastembed"]
+
+[dependencies]
+fastembed = { version = "=5.17.3", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+blake3 = "1"
+comrak = { version = "0.54", default-features = false }
+ignore = "0.4"
+percent-encoding = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+sqlite-vec = "0.1.9"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+ "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation",
+ "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

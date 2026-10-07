@@ -4550,6 +4550,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdreader-core"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "comrak",
+ "fastembed",
+ "ignore",
+ "percent-encoding",
+ "rusqlite",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sqlite-vec",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mdreader-domain"
 version = "1.0.0"
 dependencies = [
@@ -4576,6 +4596,7 @@ dependencies = [
  "comrak",
  "ignore",
  "insta",
+ "mdreader-core",
  "mdreader-domain",
  "rusqlite",
  "rustix 1.1.4",

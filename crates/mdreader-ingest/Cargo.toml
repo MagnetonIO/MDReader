@@ -43,6 +43,7 @@ authoritative-catalog = []
 e2e-test-support = ["catdb-sdk/server-e2e-test-support"]
 
 [dependencies]
+mdreader-core = { path = "../mdreader-core" }
 # The platform as one versioned dependency. `cli` is the composition root
 # (`main_with_domains`) this crate builds the shipping binary from; `server`
 # is the read-only router the e2e harness drives.

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/mdreader-core",
     "crates/mdreader-connector-dropbox",
     "crates/mdreader-connector-google-drive",
     "crates/mdreader-connector-local",
