@@ -1,0 +1,31 @@
+[package]
+name = "mdreader-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+local-embed = ["mdreader-core/local-embed"]
+
+[dependencies]
+mdreader-core = { path = "../mdreader-core" }
+mdreader-capture = { path = "../mdreader-capture" }
+mdreader-sync = { path = "../mdreader-sync" }
+mdreader-integrations = { path = "../mdreader-integrations" }
+mdreader-provider = { path = "../mdreader-provider" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -6,13 +6,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+mdreader-provider = { path = "../mdreader-provider", features = ["http-client"] }
 async-trait = { workspace = true }
 base64 = "0.22"
 blake3 = "1"
 # `DataSource` and the kernel types this connector implements against.
 # `default-features = false` deliberately: a connector has no business
 # dragging in the engine, the embedder or SQLite.
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", default-features = false }
+catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", default-features = false, optional = true }
 futures-util = "0.3"
 hmac = "0.12"
 httpdate = "1"
@@ -35,7 +36,9 @@ ring = "0.17"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [features]
-google-drive-live-tests = []
+default = ["legacy"]
+legacy = ["dep:catdb-sdk"]
+google-drive-live-tests = ["legacy"]
 
 [[test]]
 name = "live_smoke"
@@ -43,3 +46,11 @@ required-features = ["google-drive-live-tests"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "drive_api_v3_contract"
+required-features = ["legacy"]
+
+[dev-dependencies.rusqlite]
+version = "0.37"
+features = ["bundled"]

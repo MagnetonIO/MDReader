@@ -9,6 +9,9 @@ impl BgeEmbedder {
     pub fn open(cache: &Path) -> Result<Self> {
         let options = TextInitOptions::new(EmbeddingModel::BGESmallENV15)
             .with_cache_dir(cache.to_path_buf())
+            // Background inference must not create a pool sized to every CPU.
+            // This changes execution resources, not the BGE model contract.
+            .with_intra_threads(1)
             .with_show_download_progress(false);
         Ok(Self(TextEmbedding::try_new(options).map_err(|e| {
             ReaderError::Invalid(format!("model unavailable: {e}"))

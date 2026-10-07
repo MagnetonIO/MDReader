@@ -1957,7 +1957,7 @@ fn source_spec_and_debug_are_secret_free_and_document_mutation_is_constrained() 
         DropboxAvailability::FixtureValidated
     );
 
-    let source_text = include_str!("../src/lib.rs").to_ascii_lowercase();
+    let source_text = include_str!("../src/legacy.rs").to_ascii_lowercase();
     assert!(source_text.contains("/2/files/upload"));
     for forbidden in [
         "/2/files/delete",

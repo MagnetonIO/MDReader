@@ -30,6 +30,10 @@ tauri-build = { version = "2", features = [] }
 serde_json = { workspace = true }
 
 [dependencies]
+mdreader-core = { path = "../crates/mdreader-core" }
+mdreader-service = { path = "../crates/mdreader-service" }
+mdreader-capture = { path = "../crates/mdreader-capture" }
+mdreader-mcp = { path = "../crates/mdreader-mcp" }
 tauri = { version = "2", features = ["specta"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -90,14 +94,17 @@ tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
 keyring = { version = "3.6.3", features = ["windows-native"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
 keyring = { version = "3.6.3", features = ["sync-secret-service"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
