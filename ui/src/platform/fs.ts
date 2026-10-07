@@ -7,7 +7,9 @@
  */
 
 import { Channel } from '@tauri-apps/api/core';
-import type { RelatedHit, SearchAdapter, SearchHit, SearchOutcome } from '@mdreader/ui';
+import type {
+  RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchIntent, SearchOutcome,
+} from '@mdreader/ui';
 
 import {
   commands,
@@ -332,6 +334,8 @@ const RELATED_LIMIT = 12;
 function normalizeHit(dto: SearchHitDto): SearchHit {
   return {
     chunkId: dto.chunk_id,
+    ...(dto.source_id != null ? { sourceId: dto.source_id } : {}),
+    ...(dto.revision != null ? { revision: dto.revision } : {}),
     documentId: dto.document_id,
     path: dto.abs_path,
     filePath: dto.file_path,
@@ -374,6 +378,9 @@ function normalizeHit(dto: SearchHitDto): SearchHit {
 function normalizeRelated(dto: RelatedDocDto): RelatedHit {
   return {
     documentId: dto.document_id,
+    sourceId: dto.source_id ?? undefined,
+    revision: dto.revision ?? undefined,
+    line: dto.line ?? undefined,
     path: dto.abs_path,
     filePath: dto.file_path,
     name: dto.name,
@@ -381,25 +388,27 @@ function normalizeRelated(dto: RelatedDocDto): RelatedHit {
     components: {
       graph: dto.components.graph ?? 0,
       concept: dto.components.concept ?? 0,
-      vector: dto.components.vector ?? 0,
+      vector: dto.components.vector,
+      sharedTags: dto.components.shared_tags ?? undefined,
     },
   };
 }
 
 /**
- * Hybrid search, streamed in two honest phases: `onPhase('lexical', …)` fires
+ * Intent-selected search (legacy hybrid when intent is omitted). Best streams
+ * two phases: `onPhase('lexical', …)` fires
  * as the FTS batch lands, `onPhase('final', …)` as the hybrid pass merges in
  * (the resolved value is the final outcome — authoritative for a mocked IPC that
  * need not drive the channel). Throws with the schema-derived filter-error text
  * on a bad typed query.
  *
  * The resolved {@link SearchOutcome} carries `semanticUnavailable`: non-null when
- * the vector arm was wanted and could not run, so the hits are lexical-only and
- * the caller must present them as such.
+ * the vector arm was wanted and could not run. Best preserves lexical fallback
+ * with that notice; pure Semantic suppresses lexical previews and fallback hits.
  */
 export async function search(
   query: string,
-  opts: { lexicalOnly: boolean; explain: boolean },
+  opts: { lexicalOnly: boolean; explain: boolean; intent?: SearchIntent },
   onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   currentGeneration?: () => number,
 ): Promise<SearchOutcome> {
@@ -411,25 +420,43 @@ export async function search(
     // channel (the backend send is not under the epoch lock) never renders.
     if (currentGeneration && batch.generation < currentGeneration()) return;
     const phase = batch.phase === 'lexical' ? 'lexical' : 'final';
-    onPhase(phase, batch.hits.map(normalizeHit));
+    if (opts.intent === 'semantic' && phase === 'lexical') return;
+    const hits = batch.hits.map(normalizeHit);
+    onPhase(phase, opts.intent === 'semantic' ? hits.filter((hit) => hit.semRank !== null) : hits);
   };
   const result = await commands.search(
     query,
-    { limit: SEARCH_LIMIT, lexical_only: opts.lexicalOnly, explain: opts.explain },
+    {
+      limit: SEARCH_LIMIT,
+      lexical_only: opts.lexicalOnly,
+      explain: opts.explain,
+      ...(opts.intent !== undefined ? { intent: opts.intent } : {}),
+    },
     channel,
   );
   if (result.status === 'error') throw new Error(result.error);
-  return {
-    hits: result.data.hits.map(normalizeHit),
-    semanticUnavailable: result.data.semantic_unavailable,
-  };
+  let hits = result.data.hits.map(normalizeHit);
+  if (opts.intent === 'semantic') {
+    hits = result.data.semantic_unavailable ? [] : hits.filter((hit) => hit.semRank !== null);
+  }
+  return { hits, semanticUnavailable: result.data.semantic_unavailable };
 }
 
 /** Documents related to `docPath` (absolute), unified graph+concept+vector. */
-export async function related(docPath: string, limit = RELATED_LIMIT): Promise<RelatedHit[]> {
+export async function related(docPath: string, limit = RELATED_LIMIT): Promise<RelatedOutcome> {
   const result = await commands.related(docPath, limit);
   if (result.status === 'error') throw new Error(result.error);
-  return result.data.map(normalizeRelated);
+  const a = result.data.availability;
+  return {
+    hits: result.data.hits.map(normalizeRelated),
+    availability: {
+      vector: a.vector,
+      anchorChunks: a.anchor_chunks,
+      anchorVectors: a.anchor_vectors,
+      legacyConcepts: a.legacy_concepts,
+      legacyGraphEntities: a.legacy_graph_entities,
+    },
+  };
 }
 
 /**

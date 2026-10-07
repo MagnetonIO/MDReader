@@ -20,6 +20,9 @@ import {
   INTENTS,
   buildBreadcrumb,
   filterRelated,
+  relatedHits as unwrapRelated,
+  relatedAvailabilityMessage,
+  relatedComponentsText,
   intentPlan,
   parseSnippet,
   sortHits,
@@ -237,10 +240,8 @@ function ResultRow({
 
 /** One related-document row: name, unified score, component decomposition. */
 function RelatedRow({ hit }: { hit: RelatedHit }) {
-  const { graph, concept, vector } = hit.components;
-  const decomp = `graph ${graph.toFixed(2)} · concept ${concept.toFixed(2)} · vector ${vector.toFixed(
-    2,
-  )}`;
+  const { graph, concept, vector, sharedTags } = hit.components;
+  const decomp = relatedComponentsText(hit);
   return (
     <div className="mdsearch-row">
       <div className="mdsearch-row__head">
@@ -251,8 +252,8 @@ function RelatedRow({ hit }: { hit: RelatedHit }) {
       </div>
       <div className="mdsearch-row__components" aria-hidden="true">
         {graph > 0 ? <span className="mdsearch-chip mdsearch-chip--graph">graph</span> : null}
-        {concept > 0 ? <span className="mdsearch-chip mdsearch-chip--concept">concept</span> : null}
-        {vector > 0 ? <span className="mdsearch-chip mdsearch-chip--vector">vector</span> : null}
+        {(sharedTags ?? concept) > 0 ? <span className="mdsearch-chip mdsearch-chip--concept">{sharedTags === undefined ? 'concept' : 'shared tags'}</span> : null}
+        {(vector ?? 0) > 0 ? <span className="mdsearch-chip mdsearch-chip--vector">vector</span> : null}
       </div>
       <div className="mdsearch-crumbs">
         <span className="mdsearch-crumbs__source">{hit.filePath || hit.name}</span>
@@ -294,6 +295,7 @@ export function SearchPalette({
   const [lexHits, setLexHits] = useState<SearchHit[]>([]);
   const [finalHits, setFinalHits] = useState<SearchHit[] | null>(null);
   const [relatedHits, setRelatedHits] = useState<RelatedHit[]>([]);
+  const [relatedNotice, setRelatedNotice] = useState<string | null>(null);
   const [filterError, setFilterError] = useState<string | null>(null);
   // Why the shown ranking is not the one that was asked for (the semantic arm
   // could not run). Never inferred from the hits — only ever what the adapter
@@ -320,6 +322,7 @@ export function SearchPalette({
     setRelatedHits([]);
     setFilterError(null);
     setDegraded(null);
+    setRelatedNotice(null);
     setSelectedValue('');
   }, [workspaceKey]);
 
@@ -338,6 +341,13 @@ export function SearchPalette({
     const id = (runIdRef.current += 1);
     setFilterError(null);
     setDegraded(null);
+    setRelatedNotice(null);
+    // A previous Best/Exact list must not survive under the Semantic tab while
+    // the vector request is pending. Semantic has no lexical preview phase.
+    if (intent === 'semantic') {
+      setLexHits([]);
+      setFinalHits(null);
+    }
 
     if (plan.mode === 'related') {
       if (!activeDoc) {
@@ -348,7 +358,10 @@ export function SearchPalette({
       adapter
         .related(activeDoc.path)
         .then((hits) => {
-          if (runIdRef.current === id) setRelatedHits(hits);
+          if (runIdRef.current === id) {
+            setRelatedHits(unwrapRelated(hits));
+            setRelatedNotice(relatedAvailabilityMessage(hits));
+          }
         })
         .catch((cause) => {
           if (runIdRef.current === id) setFilterError(errorMessage(cause));
@@ -376,18 +389,24 @@ export function SearchPalette({
       setBusy(true);
       setFinalHits(null);
       adapter
-        .search(query, { lexicalOnly: plan.lexicalOnly, explain: true }, (phase, hits) => {
+        .search(query, { lexicalOnly: plan.lexicalOnly, explain: true, intent }, (phase, hits) => {
           if (runIdRef.current !== id) return;
           if (phase === 'lexical') {
+            if (intent === 'semantic') return;
             setLexHits(sortHits(intent, hits));
           } else {
-            setFinalHits(sortHits(intent, hits));
+            const ranked = intent === 'semantic' ? hits.filter((hit) => hit.semRank !== null) : hits;
+            setFinalHits(sortHits(intent, ranked));
             triggerMerge();
           }
         })
         .then((outcome) => {
           if (runIdRef.current !== id) return;
-          setFinalHits(sortHits(intent, outcome.hits));
+          let hits = outcome.hits;
+          if (intent === 'semantic') {
+            hits = outcome.semanticUnavailable ? [] : hits.filter((hit) => hit.semRank !== null);
+          }
+          setFinalHits(sortHits(intent, hits));
           // The resolved outcome is authoritative (the streamed phases are
           // best-effort), so the honesty of the shown list is decided here.
           setDegraded(outcome.semanticUnavailable);
@@ -402,6 +421,7 @@ export function SearchPalette({
           setLexHits([]);
           setFinalHits([]);
           setDegraded(null);
+    setRelatedNotice(null);
         })
         .finally(() => {
           if (runIdRef.current === id) setBusy(false);
@@ -425,7 +445,7 @@ export function SearchPalette({
       for (const { file } of fileMatches) map.set(file.path.toLowerCase(), { file });
     } else if (isRelated) {
       for (const hit of relatedShown) {
-        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name });
+        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.line != null ? { line: hit.line } : {}) });
       }
     } else {
       for (const hit of searchHits) {
@@ -614,11 +634,12 @@ export function SearchPalette({
           ) : null}
 
           {degraded ? (
-            // Not an error — these results are real — but they are NOT the
-            // hybrid ranking the intent promises, and saying so is the whole
-            // point: a short lexical list that looks like a full one is the lie.
+            // Best can display explicitly qualified lexical fallback; Semantic
+            // reports unavailability without displaying a different ranking.
             <div className="mdsearch__degraded" role="status">
-              Text matches only — semantic ranking is unavailable ({degraded})
+              {intent === 'semantic'
+                ? `Semantic search is unavailable (${degraded})`
+                : `Text matches only — semantic ranking is unavailable (${degraded})`}
             </div>
           ) : null}
 
@@ -647,6 +668,7 @@ export function SearchPalette({
                     {busy ? 'Finding related notes…' : 'No related notes'}
                   </Command.Empty>
                 )}
+                {relatedNotice ? <div role="status" className="mdsearch__empty">{relatedNotice}</div> : null}
                 {relatedShown.map((hit) => (
                   <Command.Item
                     key={hit.path}

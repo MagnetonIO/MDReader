@@ -76,6 +76,33 @@ describe('RelatedRail', () => {
     expect(link.querySelectorAll('.related-rail__chip')).toHaveLength(3);
   });
 
+  test('shows real shared tags and unavailable vectors without calling tags concepts', async () => {
+    const hit = relatedHit('tagged.md', { graph: 0, concept: 0, vector: 0 });
+    hit.components = { graph: 0, concept: 0, sharedTags: 0.5, vector: null };
+    hit.score = 0.5;
+    render(<RelatedRail activeDoc={{ path: '/ws/a.md', name: 'a.md' }}
+      adapter={adapterWith(async () => ({ hits: [hit], availability: {
+        vector: 'no_anchor_vectors', anchorChunks: 1, anchorVectors: 0,
+        legacyConcepts: 'not_migrated', legacyGraphEntities: 'not_migrated',
+      } }))} open onToggle={vi.fn()} onOpen={vi.fn()} workspaceKey="/ws" />);
+    const row = await screen.findByRole('button', { name: /tagged.md/ });
+    expect(row.title).toContain('shared tags 0.50');
+    expect(row.title).toContain('vector unavailable');
+    expect(row.title).not.toContain('concept');
+    expect(screen.getByRole('status').textContent).toContain('Vector matches are unavailable');
+    expect(screen.getByRole('status').textContent).toContain('not migrated');
+  });
+
+  test('empty results still disclose incomplete coverage', async () => {
+    render(<RelatedRail activeDoc={{ path: '/ws/a.md', name: 'a.md' }}
+      adapter={adapterWith(async () => ({ hits: [], availability: {
+        vector: 'available', anchorChunks: 5, anchorVectors: 2,
+        legacyConcepts: 'not_migrated', legacyGraphEntities: 'not_migrated',
+      } }))} open onToggle={vi.fn()} onOpen={vi.fn()} workspaceKey="/ws" />);
+    await screen.findByText('No related notes yet.');
+    expect(screen.getByRole('status').textContent).toContain('2 of 5');
+  });
+
   test('opening a related row navigates to it', async () => {
     const onOpen = vi.fn();
     render(
@@ -93,6 +120,15 @@ describe('RelatedRail', () => {
     expect(link.querySelectorAll('.related-rail__chip')).toHaveLength(1);
     link.click();
     expect(onOpen).toHaveBeenCalledWith({ path: '/ws/graph.md', name: 'graph.md' });
+  });
+
+  test('opening a ranked related match preserves its source line', async () => {
+    const onOpen = vi.fn();
+    const hit = { ...relatedHit('evidence.md', { graph: 0, concept: 0, vector: 0.4 }), line: 37 };
+    render(<RelatedRail activeDoc={{ path: '/ws/a.md', name: 'a.md' }}
+      adapter={adapterWith(async () => [hit])} open onToggle={vi.fn()} onOpen={onOpen} workspaceKey="/ws" />);
+    (await screen.findByRole('button', { name: /evidence.md/ })).click();
+    expect(onOpen).toHaveBeenCalledWith({ path: '/ws/evidence.md', name: 'evidence.md', line: 37 });
   });
 
   test('collapsed: shows a toggle and does not fetch', () => {

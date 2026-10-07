@@ -60,9 +60,14 @@ test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
   await waitFor(() => expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy());
   expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
+  const readerContent = document.querySelector('.shell__reader-content');
+  expect(readerContent?.hasAttribute('inert')).toBe(true);
+  expect(readerContent?.getAttribute('aria-hidden')).toBe('true');
 
   act(() => fireEvent.keyDown(window, { key: 'Escape' }));
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull());
+  expect(readerContent?.hasAttribute('inert')).toBe(false);
+  expect(readerContent?.hasAttribute('aria-hidden')).toBe(false);
 });
 
 test('Mod+\\ toggles the sidebar collapsed state', async () => {

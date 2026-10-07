@@ -7,6 +7,16 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
+	readerEmbeddingPolicy: () => typedError<string, string>(__TAURI_INVOKE("reader_embedding_policy")),
+	setReaderEmbeddingPolicy: (policy: string) => typedError<string, string>(__TAURI_INVOKE("set_reader_embedding_policy", { policy })),
+	mobileReaderList: () => typedError<DeviceLibrary, string>(__TAURI_INVOKE("mobile_reader_list")),
+	mobileReaderDiscardImport: (id: string) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_discard_import", { id })),
+	mobileReaderImport: (name: string, content: string) => typedError<DeviceDocument, string>(__TAURI_INVOKE("mobile_reader_import", { name, content })),
+	mobileReaderRead: (id: string, revision: string | null) => typedError<DeviceRead, string>(__TAURI_INVOKE("mobile_reader_read", { id, revision })),
+	mobileReaderSearch: (query: string) => typedError<DeviceHit[], string>(__TAURI_INVOKE("mobile_reader_search", { query })),
+	mobileReaderRebuild: () => typedError<null, string>(__TAURI_INVOKE("mobile_reader_rebuild")),
+	mobileReaderPin: (id: string, pinned: boolean) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_pin", { id, pinned })),
+	mobileReaderPosition: (id: string, revision: string, line: number) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_position", { id, revision, line })),
 	/**
 	 *  Read a single markdown document from within the granted workspace. Thin:
 	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
@@ -174,8 +184,8 @@ export const commands = {
 	 *  the generic `error` an actual index-build failure reports.
 	 *  Captures the current [`Epoch`] once at entry — root, generation, engine, and
 	 *  status travel together. `root` is validated against the epoch's grant (a
-	 *  foreign path is a hard error). Coalesced (#4): a second import for the same
-	 *  epoch returns the live status instead of spawning a duplicate pass. At each
+	 *  foreign path is a hard error). Every request queues a durable job generation.
+	 *  A second progress listener for the same epoch returns its current status. At each
 	 *  commit point (model install, every publish) it re-checks the epoch is still
 	 *  current; a switch mid-import abandons silently-clean, its late status landing
 	 *  only in its own (superseded, unread) slot. The frontend fires this without
@@ -227,15 +237,21 @@ export const commands = {
 	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
 	/**
 	 *  Documents related to `doc_path` (an absolute path in the granted
-	 *  workspace), unified graph + concept + vector scoring with each component
-	 *  recorded for the rail's decomposition tooltips.
+	 *  workspace), using directed Markdown links, explicit shared tags, and stored
+	 *  vector evidence. Availability and migration gaps are carried even when empty.
 	 *
 	 *  The absolute path is mapped back to its source-relative stored form and
 	 *  resolved against the index; an unknown document (or an index not yet built)
 	 *  yields an empty list rather than an error, so the rail simply shows nothing
 	 *  until the import lands. Epoch-guarded like [`search`].
 	 */
-	related: (docPath: string, limit: number) => typedError<RelatedDocDto[], string>(__TAURI_INVOKE("related", { docPath, limit })),
+	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
+	agentCaptureState: (expectedRoot: string) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("agent_capture_state", { expectedRoot })),
+	setAgentCapture: (expectedRoot: string, update: AgentCaptureUpdate) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("set_agent_capture", { expectedRoot, update })),
+	agentIntegrationsState: (expectedRoot: string) => typedError<AgentIntegrationsState, string>(__TAURI_INVOKE("agent_integrations_state", { expectedRoot })),
+	prepareAgentIntegration: (expectedRoot: string, selection: AgentIntegrationSelection) => typedError<AgentIntegrationReview, string>(__TAURI_INVOKE("prepare_agent_integration", { expectedRoot, selection })),
+	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
+	uninstallAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("uninstall_agent_integration", { expectedRoot, preparationId })),
 	/**
 	 *  One hybrid pass with the full score breakdown attached to every hit — the
 	 *  **Query Explanation** surface's read.
@@ -393,6 +409,61 @@ export const events = {
 };
 
 /* Types */
+export type AgentCaptureState = {
+	root: string,
+	enabled: boolean,
+	capture_subagents: boolean,
+	excluded_paths: string[],
+	excluded_sessions: string[],
+	pending_events: number,
+	admitted_occurrences: number,
+	diagnostic: string | null,
+	supported: boolean,
+};
+
+export type AgentCaptureUpdate = {
+	enabled: boolean,
+	capture_subagents: boolean,
+	excluded_paths: string[],
+	excluded_sessions: string[],
+};
+
+export type AgentIntegrationKind = "claude_hooks" | "claude_mcp" | "codex_hooks" | "codex_mcp";
+
+export type AgentIntegrationReview = {
+	preparationId: string,
+	configPath: string,
+	policyPath: string,
+	beforeText: string | null,
+	afterText: string,
+	capabilitiesVerified: boolean,
+};
+
+export type AgentIntegrationSelection = {
+	kind: AgentIntegrationKind,
+	client_version: string,
+	compatibility_and_trust_confirmed: boolean,
+	source_ids: string[],
+};
+
+export type AgentIntegrationSummary = {
+	preparationId: string,
+	kind: string,
+	configPath: string,
+	state: string,
+	capabilitiesVerified: boolean,
+};
+
+export type AgentIntegrationsState = {
+	installations: AgentIntegrationSummary[],
+	sources: AgentSourceChoice[],
+};
+
+export type AgentSourceChoice = {
+	id: string,
+	name: string,
+};
+
 /**  What approving a fact wrote. */
 export type ApprovalOutcomeDto = {
 	/**  The fact that was approved. */
@@ -664,6 +735,33 @@ export type ConstraintReport = {
 	schemas_checked: number,
 	/**  Every violation found, unmodified. */
 	violations: ViolationDto[],
+};
+
+export type DeviceDocument = {
+	id: string,
+	name: string,
+	source_id: string,
+	revision: string,
+	bytes: number,
+	pinned: boolean,
+	line: number,
+	indexed: boolean,
+};
+
+export type DeviceHit = {
+	document: DeviceDocument,
+	line: number,
+	text: string,
+};
+
+export type DeviceLibrary = {
+	documents: DeviceDocument[],
+	pending: PendingDeviceImport[],
+};
+
+export type DeviceRead = {
+	document: DeviceDocument,
+	markdown: string,
 };
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
@@ -1566,6 +1664,12 @@ export type OrderDirection =
 /**  Highest value first. */
 "descending";
 
+export type PendingDeviceImport = {
+	id: string,
+	name: string,
+	bytes: number,
+};
+
 export type PickedLibrarySource = {
 	source: LibrarySourceDto | null,
 	added: boolean,
@@ -1675,14 +1779,24 @@ export type RejectionOutcomeDto = {
 	cascaded: string[],
 };
 
+export type RelatedAvailabilityDto = {
+	vector: RelatedVectorStateDto,
+	anchor_chunks: number,
+	anchor_vectors: number,
+	legacy_concepts: RelatedLegacyStateDto,
+	legacy_graph_entities: RelatedLegacyStateDto,
+};
+
 /**  Per-component contributions behind a related score. */
 export type RelatedComponentsDto = {
 	/**  Link/span-graph walk (depth-decayed, ≤ 2 hops). */
 	graph: number | null,
 	/**  Shared concepts (Jaccard over the two concept sets). */
 	concept: number | null,
-	/**  Document-centroid vector similarity. */
+	/**  Weighted best destination-chunk cosine; None means unavailable. */
 	vector: number | null,
+	/**  Actual frontmatter tag overlap, distinct from legacy concepts. */
+	shared_tags: number | null,
 };
 
 /**
@@ -1690,6 +1804,9 @@ export type RelatedComponentsDto = {
  *  unified score, and the per-component decomposition the rail tooltips show.
  */
 export type RelatedDocDto = {
+	source_id: string | null,
+	revision: string | null,
+	line: number | null,
 	/**  The related document's id (uuid string). */
 	document_id: string,
 	/**  Source-relative stored path. */
@@ -1703,6 +1820,16 @@ export type RelatedDocDto = {
 	/**  Per-component contributions. */
 	components: RelatedComponentsDto,
 };
+
+export type RelatedLegacyStateDto = "not_migrated";
+
+/**  Availability accompanies empty lists as well as ranked results. */
+export type RelatedOutcomeDto = {
+	hits: RelatedDocDto[],
+	availability: RelatedAvailabilityDto,
+};
+
+export type RelatedVectorStateDto = "available" | "anchor_missing" | "no_anchor_vectors" | "zero_centroid";
 
 /**
  *  The outcome of a [`save_doc`]. A tagged struct (mirroring [`crate::engine::WikiResolution`]'s
@@ -1924,6 +2051,8 @@ export type SearchBatch = {
  *  `Recent` intent sorts on.
  */
 export type SearchHitDto = {
+	source_id?: string | null,
+	revision?: string | null,
 	/**  The matched chunk id (uuid string). */
 	chunk_id: string,
 	/**  The chunk's document id (uuid string). */
@@ -1969,6 +2098,7 @@ export type SearchQuery = {
 	lexical_only: boolean,
 	/**  Attach the full [`HitExplain`] breakdown to every hit. */
 	explain: boolean,
+	intent?: string | null,
 };
 
 /**

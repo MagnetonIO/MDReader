@@ -64,6 +64,9 @@ pub struct SearchQuery {
     pub lexical_only: bool,
     /// Attach the full [`HitExplain`] breakdown to every hit.
     pub explain: bool,
+    #[serde(default)]
+    #[specta(optional)]
+    pub intent: Option<String>,
 }
 
 impl SearchQuery {
@@ -176,6 +179,10 @@ impl From<HitExplain> for ExplainDto {
 /// `Recent` intent sorts on.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct SearchHitDto {
+    #[specta(optional)]
+    pub source_id: Option<String>,
+    #[specta(optional)]
+    pub revision: Option<String>,
     /// The matched chunk id (uuid string).
     pub chunk_id: String,
     /// The chunk's document id (uuid string).
@@ -254,8 +261,10 @@ pub struct RelatedComponentsDto {
     pub graph: f32,
     /// Shared concepts (Jaccard over the two concept sets).
     pub concept: f32,
-    /// Document-centroid vector similarity.
-    pub vector: f32,
+    /// Weighted best destination-chunk cosine; None means unavailable.
+    pub vector: Option<f32>,
+    /// Actual frontmatter tag overlap, distinct from legacy concepts.
+    pub shared_tags: Option<f32>,
 }
 
 impl From<RelatedComponents> for RelatedComponentsDto {
@@ -263,7 +272,8 @@ impl From<RelatedComponents> for RelatedComponentsDto {
         Self {
             graph: c.graph,
             concept: c.concept,
-            vector: c.vector,
+            vector: Some(c.vector),
+            shared_tags: None,
         }
     }
 }
@@ -272,6 +282,9 @@ impl From<RelatedComponents> for RelatedComponentsDto {
 /// unified score, and the per-component decomposition the rail tooltips show.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct RelatedDocDto {
+    pub source_id: Option<String>,
+    pub revision: Option<String>,
+    pub line: Option<u32>,
     /// The related document's id (uuid string).
     pub document_id: String,
     /// Source-relative stored path.
@@ -284,6 +297,78 @@ pub struct RelatedDocDto {
     pub score: f32,
     /// Per-component contributions.
     pub components: RelatedComponentsDto,
+}
+
+/// Availability accompanies empty lists as well as ranked results.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct RelatedOutcomeDto {
+    pub hits: Vec<RelatedDocDto>,
+    pub availability: RelatedAvailabilityDto,
+}
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct RelatedAvailabilityDto {
+    pub vector: RelatedVectorStateDto,
+    pub anchor_chunks: u32,
+    pub anchor_vectors: u32,
+    pub legacy_concepts: RelatedLegacyStateDto,
+    pub legacy_graph_entities: RelatedLegacyStateDto,
+}
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedVectorStateDto {
+    Available,
+    AnchorMissing,
+    NoAnchorVectors,
+    ZeroCentroid,
+}
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedLegacyStateDto {
+    NotMigrated,
+}
+impl From<mdreader_core::RelatedAvailability> for RelatedAvailabilityDto {
+    fn from(a: mdreader_core::RelatedAvailability) -> Self {
+        Self {
+            vector: match a.vector {
+                mdreader_core::RelatedVectorState::Available => RelatedVectorStateDto::Available,
+                mdreader_core::RelatedVectorState::AnchorMissing => {
+                    RelatedVectorStateDto::AnchorMissing
+                }
+                mdreader_core::RelatedVectorState::NoAnchorVectors => {
+                    RelatedVectorStateDto::NoAnchorVectors
+                }
+                mdreader_core::RelatedVectorState::ZeroCentroid => {
+                    RelatedVectorStateDto::ZeroCentroid
+                }
+            },
+            anchor_chunks: a.anchor_chunks.try_into().unwrap_or(u32::MAX),
+            anchor_vectors: a.anchor_vectors.try_into().unwrap_or(u32::MAX),
+            legacy_concepts: RelatedLegacyStateDto::NotMigrated,
+            legacy_graph_entities: RelatedLegacyStateDto::NotMigrated,
+        }
+    }
+}
+fn ranked_related_dto(root: &Path, hit: mdreader_core::RelatedRankedHit) -> RelatedDocDto {
+    RelatedDocDto {
+        document_id: uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),
+        )
+        .to_string(),
+        source_id: Some(hit.source_id),
+        revision: Some(hit.revision),
+        line: Some(hit.line),
+        abs_path: root.join(&hit.path).to_string_lossy().into_owned(),
+        name: basename(&hit.path),
+        file_path: hit.path,
+        score: hit.score as f32,
+        components: RelatedComponentsDto {
+            graph: hit.components.graph as f32,
+            concept: 0.0,
+            shared_tags: Some(hit.components.shared_tags as f32),
+            vector: hit.components.vector.map(|v| v as f32),
+        },
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -307,6 +392,8 @@ fn hit_dto(src_root: &SourceRoot, hit: SearchHit) -> SearchHitDto {
             .and_then(|metadata| metadata.modified().ok()),
     );
     SearchHitDto {
+        source_id: None,
+        revision: None,
         chunk_id: hit.chunk_id.to_string(),
         document_id: hit.document_id.to_string(),
         name: basename(&hit.file_path),
@@ -329,6 +416,9 @@ fn hit_dto(src_root: &SourceRoot, hit: SearchHit) -> SearchHitDto {
 fn related_dto(src_root: &Path, doc: RelatedDoc) -> RelatedDocDto {
     let abs = src_root.join(&doc.file_path);
     RelatedDocDto {
+        source_id: None,
+        revision: None,
+        line: None,
         document_id: doc.document_id.to_string(),
         name: basename(&doc.file_path),
         abs_path: abs.to_string_lossy().into_owned(),
@@ -369,12 +459,161 @@ pub async fn search(
     options: SearchQuery,
     on_event: Channel<SearchBatch>,
     workspace: State<'_, WorkspaceState>,
+    reader: State<'_, crate::reader::ReaderBackend>,
 ) -> Result<SearchResults, String> {
     // A closed channel is ignored — the resolved return is authoritative.
-    search_over(&workspace, &query, &options, |batch| {
+    search_reader(&reader, &workspace, &query, &options, |batch| {
         let _ = on_event.send(batch);
     })
     .await
+}
+
+fn reader_hit(root: &SourceRoot, hit: mdreader_core::Evidence, explain: bool) -> SearchHitDto {
+    let document_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),
+    )
+    .to_string();
+    let chunk_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!(
+            "{document_id}:{}:{}:{}",
+            hit.revision, hit.line_start, hit.heading
+        )
+        .as_bytes(),
+    )
+    .to_string();
+    let section_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("{document_id}:{}", hit.heading).as_bytes(),
+    )
+    .to_string();
+    let score = hit.lexical_rank.map_or(0.0, |r| 1.0 / (60.0 + r as f32))
+        + hit.semantic_rank.map_or(0.0, |r| 1.0 / (60.0 + r as f32));
+    let boosts = BoostsDto {
+        title: 0.0,
+        path: 0.0,
+        recency: 0.0,
+        graph: 0.0,
+    };
+    let explanation = explain.then(|| ExplainDto {
+        lex_rank: hit.lexical_rank,
+        sem_rank: hit.semantic_rank,
+        rrf_score: score,
+        boosts,
+        final_score: score,
+        index_version: None,
+        embedding_model: hit.semantic_rank.map(|_| mdreader_core::MODEL_NAME.into()),
+        provenance: ProvenanceDto {
+            chunk_id: chunk_id.clone(),
+            section_id,
+            document_id: document_id.clone(),
+            file_path: hit.path.clone(),
+            source_id: Some(hit.source_id.clone()),
+            source_root: Some(root.path.to_string_lossy().into_owned()),
+        },
+    });
+    SearchHitDto {
+        source_id: Some(hit.source_id),
+        revision: Some(hit.revision),
+        chunk_id,
+        document_id,
+        file_path: hit.path.clone(),
+        abs_path: root.path.join(&hit.path).to_string_lossy().into_owned(),
+        name: basename(&hit.path),
+        heading_path: hit.heading.split(" > ").map(String::from).collect(),
+        start_line: hit.line_start,
+        end_line: hit.line_end,
+        score,
+        rrf_score: score,
+        boosts,
+        lex_rank: hit.lexical_rank,
+        sem_rank: hit.semantic_rank,
+        snippet: hit.text,
+        mtime: hit.modified_ms as f64,
+        explain: explanation,
+    }
+}
+
+pub(crate) async fn search_reader(
+    reader: &crate::reader::ReaderBackend,
+    workspace: &WorkspaceState,
+    query: &str,
+    options: &SearchQuery,
+    mut sink: impl FnMut(SearchBatch),
+) -> Result<SearchResults, String> {
+    use mdreader_service::{Request, SearchMode, SearchOutcome};
+    let epoch = workspace.current().ok_or("no workspace has been opened")?;
+    epoch.validate_root()?;
+    let source = reader.admit_async(epoch.source_root()).await?;
+    let mode = match options.intent.as_deref() {
+        Some("semantic") => SearchMode::Semantic,
+        Some("recent") => SearchMode::Recent,
+        Some("exact") => SearchMode::Exact,
+        Some("best") | None => {
+            if options.lexical_only {
+                SearchMode::Exact
+            } else {
+                SearchMode::Hybrid
+            }
+        }
+        _ => return Err("Unknown search intent".into()),
+    };
+    let limit = options.limit as usize;
+    if !matches!(mode, SearchMode::Semantic) {
+        let lexical: SearchOutcome = reader
+            .invoke(Request::SearchRanked {
+                query: query.into(),
+                sources: vec![source.clone()],
+                limit,
+                mode: if matches!(mode, SearchMode::Recent) {
+                    SearchMode::Recent
+                } else {
+                    SearchMode::Exact
+                },
+            })
+            .await?;
+        let hits: Vec<_> = lexical
+            .hits
+            .into_iter()
+            .map(|h| reader_hit(&epoch.source_root(), h, options.explain))
+            .collect();
+        stream(&epoch, workspace, &mut sink, "lexical", &hits, None)?;
+    }
+    if !workspace.is_current(&epoch) {
+        return Ok(SearchResults::empty());
+    }
+    let outcome: SearchOutcome = reader
+        .invoke(Request::SearchRanked {
+            query: query.into(),
+            sources: vec![source],
+            limit,
+            mode,
+        })
+        .await?;
+    let hits: Vec<_> = outcome
+        .hits
+        .into_iter()
+        .map(|h| reader_hit(&epoch.source_root(), h, options.explain))
+        .collect();
+    stream(
+        &epoch,
+        workspace,
+        &mut sink,
+        "final",
+        &hits,
+        outcome.semantic_unavailable.as_deref(),
+    )?;
+    finish_discarding_superseded(
+        epoch.finish(
+            workspace,
+            SearchResults {
+                hits,
+                semantic_unavailable: outcome.semantic_unavailable,
+            },
+        ),
+        SearchResults::empty(),
+    )
 }
 
 /// The search core, streaming each phase into `sink` instead of a Tauri
@@ -559,41 +798,29 @@ pub async fn explain_query(
     query: String,
     limit: u32,
     workspace: State<'_, WorkspaceState>,
+    reader: State<'_, crate::reader::ReaderBackend>,
 ) -> Result<Vec<SearchHitDto>, String> {
-    let epoch = workspace
-        .current()
-        .ok_or_else(|| "no workspace has been opened".to_string())?;
-    epoch.validate_root()?;
-
-    let Some(db) = epoch.db() else {
-        epoch.validate_root()?;
-        // EPOCH-GUARDED
-        return finish_discarding_superseded(epoch.finish(&workspace, Vec::new()), Vec::new());
-    };
-
-    if let Some(reason) = semantic_unavailable(&epoch) {
+    let epoch = workspace.current().ok_or("no workspace has been opened")?;
+    let result = search_reader(
+        &reader,
+        &workspace,
+        &query,
+        &SearchQuery {
+            limit,
+            lexical_only: false,
+            explain: true,
+            intent: Some("best".into()),
+        },
+        |_| {},
+    )
+    .await?;
+    if let Some(reason) = result.semantic_unavailable {
         return Err(format!(
             "{reason}; a hybrid ranking cannot be explained without its semantic arm"
         ));
     }
-
-    let hits = run_phase(
-        &db,
-        &epoch.source_root(),
-        &query,
-        SearchOptions {
-            limit,
-            lexical_only: false,
-            candidates: SearchOptions::default().candidates,
-            explain: true,
-        },
-    )
-    .await?;
-    epoch.validate_root()?;
-
-    // EPOCH-GUARDED: a switch mid-query means these hits belong to a previous
-    // workspace.
-    finish_discarding_superseded(epoch.finish(&workspace, hits), Vec::new())
+    // EPOCH-GUARDED: also cover the interval after the delegated search returns.
+    finish_discarding_superseded(epoch.finish(&workspace, result.hits), Vec::new())
 }
 
 // --------------------------------------------------------------------------
@@ -601,8 +828,8 @@ pub async fn explain_query(
 // --------------------------------------------------------------------------
 
 /// Documents related to `doc_path` (an absolute path in the granted
-/// workspace), unified graph + concept + vector scoring with each component
-/// recorded for the rail's decomposition tooltips.
+/// workspace), using directed Markdown links, explicit shared tags, and stored
+/// vector evidence. Availability and migration gaps are carried even when empty.
 ///
 /// The absolute path is mapped back to its source-relative stored form and
 /// resolved against the index; an unknown document (or an index not yet built)
@@ -614,45 +841,42 @@ pub async fn related(
     doc_path: String,
     limit: u32,
     workspace: State<'_, WorkspaceState>,
-) -> Result<Vec<RelatedDocDto>, String> {
-    let epoch = workspace
-        .current()
-        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    reader: State<'_, crate::reader::ReaderBackend>,
+) -> Result<RelatedOutcomeDto, String> {
+    related_reader(&reader, &workspace, &doc_path, limit).await
+}
+pub(crate) async fn related_reader(
+    reader: &crate::reader::ReaderBackend,
+    workspace: &WorkspaceState,
+    doc_path: &str,
+    limit: u32,
+) -> Result<RelatedOutcomeDto, String> {
+    let epoch = workspace.current().ok_or("no workspace has been opened")?;
     epoch.validate_root()?;
-
-    let Some(db) = epoch.db() else {
-        epoch.validate_root()?;
-        // EPOCH-GUARDED
-        return finish_discarding_superseded(epoch.finish(&workspace, Vec::new()), Vec::new());
-    };
-
-    let src_root = epoch.root.clone();
-    // Map the absolute path back to the source-relative stored path.
-    let rel = Path::new(&doc_path)
-        .strip_prefix(&src_root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| doc_path.clone());
-
-    let related = match db
-        .store()
-        .document_by_path(&rel)
-        .map_err(|e| format!("resolve document: {e}"))?
-    {
-        Some(doc) => db
-            .related(doc.id, limit)
-            .await
-            .map_err(|e| e.to_string())?
+    let from = epoch
+        .source_root()
+        .relative_path(Path::new(&doc_path))
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let source = reader.admit_async(epoch.source_root()).await?;
+    let ranked: mdreader_core::RelatedRanked = reader
+        .invoke(mdreader_service::Request::RelatedRanked {
+            source_id: source,
+            path: from,
+            query: None,
+            limit: limit as usize,
+        })
+        .await?;
+    let related = RelatedOutcomeDto {
+        hits: ranked
+            .hits
             .into_iter()
-            .map(|r| related_dto(&src_root, r))
+            .map(|hit| ranked_related_dto(&epoch.root, hit))
             .collect(),
-        // Unknown document (e.g. not yet indexed): empty, not an error.
-        None => Vec::new(),
+        availability: ranked.availability.into(),
     };
-    epoch.validate_root()?;
-
-    // EPOCH-GUARDED: a switch mid-lookup yields an empty rail (silently-clean),
-    // never a previous workspace's related list nor a spurious error.
-    finish_discarding_superseded(epoch.finish(&workspace, related), Vec::new())
+    epoch.finish(workspace, related).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -732,6 +956,7 @@ mod tests {
                     limit: 10,
                     lexical_only: true,
                     explain: false,
+                    intent: None,
                 },
                 |_| {},
             ))
@@ -811,6 +1036,7 @@ mod tests {
             limit: 10,
             lexical_only: false,
             explain: true,
+            intent: None,
         };
         let hits = rt
             .block_on(run_phase(
@@ -877,6 +1103,7 @@ mod tests {
             limit: 10,
             lexical_only: false,
             explain: false,
+            intent: None,
         };
         let err = rt
             .block_on(run_phase(
@@ -1022,6 +1249,7 @@ mod tests {
             limit: 10,
             lexical_only: false,
             explain: false,
+            intent: None,
         };
 
         // Control: with the model installed, the hybrid pass runs and the result
@@ -1087,6 +1315,7 @@ mod tests {
                     limit: 10,
                     lexical_only: true,
                     explain: false,
+                    intent: None,
                 },
                 |_| {},
             ))

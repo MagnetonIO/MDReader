@@ -16,5 +16,61 @@ static MDREADER_RELEASE_IDENTITY: &str = concat!(
 
 fn main() {
     std::hint::black_box(MDREADER_RELEASE_IDENTITY);
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    if first
+        .as_ref()
+        .is_some_and(|arg| arg == "--mdreader-capture")
+    {
+        let result = mdreader_capture::cli::run(args, std::io::stdin().lock());
+        println!("{{}}");
+        if let Err(error) = result {
+            eprintln!("MDReader capture failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if first.as_ref().is_some_and(|arg| arg == "--mdreader-mcp") {
+        let config = mdreader_mcp::Config::from_args(args).unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(2)
+        });
+        let executable = std::env::current_exe().unwrap_or_else(|_| {
+            eprintln!("Reader executable unavailable");
+            std::process::exit(1)
+        });
+        if mdreader_service::ensure_running(
+            config.data_dir(),
+            &executable,
+            &["--mdreader-service".into()],
+        )
+        .is_err()
+        {
+            eprintln!("Reader service unavailable");
+            std::process::exit(1);
+        }
+        if mdreader_mcp::serve(config, std::io::stdin().lock(), std::io::stdout().lock()).is_err() {
+            eprintln!("MCP transport closed");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if first.is_some_and(|arg| arg == "--mdreader-service") {
+        let first = args.next();
+        let disable_model = first.as_ref().is_some_and(|arg| arg == "--no-model");
+        let directory = if disable_model { args.next() } else { first };
+        let Some(directory) = directory.filter(|_| args.next().is_none()) else {
+            eprintln!("usage: MDReader --mdreader-service [--no-model] DATA_DIRECTORY");
+            std::process::exit(2);
+        };
+        if let Err(error) = mdreader_service::serve_with_options(
+            std::path::Path::new(&directory),
+            mdreader_service::ServiceOptions { disable_model },
+        ) {
+            eprintln!("Reader service failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     mdreader_app_lib::run()
 }

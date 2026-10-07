@@ -38,6 +38,22 @@
   overflow: auto;
 }
 
+.mobile-shell--device {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-height: 0;
+}
+
+.mobile-shell--device > .mobile-shell__content {
+  flex: 1;
+}
+
+.mobile-shell--device > .mobile-nav,
+.mobile-shell--device > .mobile-state {
+  flex-shrink: 0;
+}
+
 .mobile-screen {
   width: min(100%, 46rem);
   margin: 0 auto;

@@ -1,6 +1,6 @@
 import { platform } from '@tauri-apps/plugin-os';
 
-import { MobileAppShell } from './mobile/MobileAppShell';
+import { DeviceAppShell } from './mobile/DeviceAppShell';
 import { AppShell } from './shell/AppShell';
 import { isTauri } from './shell/persistence';
 
@@ -13,7 +13,7 @@ import { isTauri } from './shell/persistence';
 export default function App() {
   const runtime = isTauri() ? platform() : 'macos';
   if (runtime === 'ios' || runtime === 'android') {
-    return <MobileAppShell platform={runtime} />;
+    return <DeviceAppShell platform={runtime} />;
   }
   return <AppShell />;
 }

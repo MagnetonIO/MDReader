@@ -48,7 +48,11 @@ mod library;
 mod library_query;
 mod mapping;
 mod mobile_enterprise;
+mod mobile_reader;
+mod reader_workload;
 mod overlay;
+mod reader;
+mod reader_agents;
 mod search;
 mod updater;
 
@@ -82,6 +86,16 @@ fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
+            reader_workload::reader_embedding_policy,
+            reader_workload::set_reader_embedding_policy,
+            mobile_reader::mobile_reader_list,
+        mobile_reader::mobile_reader_discard_import,
+            mobile_reader::mobile_reader_import,
+            mobile_reader::mobile_reader_read,
+            mobile_reader::mobile_reader_search,
+            mobile_reader::mobile_reader_rebuild,
+            mobile_reader::mobile_reader_pin,
+            mobile_reader::mobile_reader_position,
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
@@ -128,6 +142,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
             engine::resolve_wikilink,
             search::search,
             search::related,
+            reader_agents::agent_capture_state,
+            reader_agents::set_agent_capture,
+            reader_agents::agent_integrations_state,
+            reader_agents::prepare_agent_integration,
+            reader_agents::apply_agent_integration,
+            reader_agents::uninstall_agent_integration,
             search::explain_query,
             federation::query_federated_document,
             federation::cancel_federated_document,
@@ -160,6 +180,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         commands::ping,
+        mobile_reader::mobile_reader_list,
+        mobile_reader::mobile_reader_discard_import,
+        mobile_reader::mobile_reader_import,
+        mobile_reader::mobile_reader_read,
+        mobile_reader::mobile_reader_search,
+        mobile_reader::mobile_reader_rebuild,
+        mobile_reader::mobile_reader_pin,
+        mobile_reader::mobile_reader_position,
         cloud_accounts::list_cloud_sources,
         cloud_accounts::query_cloud_documents,
         mobile_enterprise::connected_catdb_state,
@@ -265,6 +293,9 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .manage(mobile_enterprise::MobileEnterpriseState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            app.manage(reader::ReaderBackend::open(
+                app.path().app_data_dir()?.join("reader-v1"),
+            )?);
             app.state::<cloud_accounts::CloudAccountsState>()
                 .configure_catalog(app.handle())?;
             #[cfg(all(feature = "e2e-build", not(mobile)))]
@@ -651,6 +682,8 @@ mod tests {
             ("overlay.rs", include_str!("overlay.rs")),
             ("mapping.rs", include_str!("mapping.rs")),
             ("mobile_enterprise.rs", include_str!("mobile_enterprise.rs")),
+            ("mobile_reader.rs", include_str!("mobile_reader.rs")),
+            ("reader_workload.rs", include_str!("reader_workload.rs")),
             ("updater.rs", include_str!("updater.rs")),
         ] {
             let file: syn::File = syn::parse_str(source).expect("module parses");

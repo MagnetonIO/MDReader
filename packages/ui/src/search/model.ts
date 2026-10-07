@@ -35,6 +35,10 @@ export interface SearchExplain {
 /** One search hit, transport-normalized for the palette. */
 export interface SearchHit {
   chunkId: string;
+  /** Source grant that produced the evidence, when supplied by the transport. */
+  sourceId?: string;
+  /** Content revision binding the snippet and line range to the document. */
+  revision?: string;
   documentId: string;
   /** Absolute path the reader opens. */
   path: string;
@@ -70,11 +74,16 @@ export interface SearchHit {
 export interface RelatedComponents {
   graph: number;
   concept: number;
-  vector: number;
+  vector: number | null;
+  /** Explicit frontmatter tags, distinct from legacy derived concepts. */
+  sharedTags?: number;
 }
 
 /** One related document, transport-normalized. */
 export interface RelatedHit {
+  sourceId?: string;
+  revision?: string;
+  line?: number;
   documentId: string;
   /** Absolute path the reader opens. */
   path: string;
@@ -83,6 +92,42 @@ export interface RelatedHit {
   name: string;
   score: number;
   components: RelatedComponents;
+}
+
+/** Availability accompanies even an empty related result. */
+export interface RelatedAvailability {
+  vector: 'available' | 'anchor_missing' | 'no_anchor_vectors' | 'zero_centroid';
+  anchorChunks: number;
+  anchorVectors: number;
+  legacyConcepts: 'not_migrated';
+  legacyGraphEntities: 'not_migrated';
+}
+export interface RelatedOutcome {
+  hits: RelatedHit[];
+  availability: RelatedAvailability;
+}
+/** Legacy transports may still return arrays during migration. */
+export function relatedHits(result: RelatedHit[] | RelatedOutcome): RelatedHit[] {
+  return Array.isArray(result) ? result : result.hits;
+}
+export function relatedAvailabilityMessage(result: RelatedHit[] | RelatedOutcome): string | null {
+  if (Array.isArray(result)) return null;
+  const a = result.availability;
+  const vector = a.vector === 'available'
+    ? a.anchorVectors < a.anchorChunks
+      ? `Vector coverage: ${a.anchorVectors} of ${a.anchorChunks} document sections.`
+      : null
+    : a.vector === 'anchor_missing'
+      ? 'This document is not indexed yet.'
+      : 'Vector matches are unavailable for this document.';
+  return [vector, 'Legacy concept and knowledge-graph matches are not migrated yet.'].filter(Boolean).join(' ');
+}
+export function relatedComponentsText(hit: RelatedHit): string {
+  const c = hit.components;
+  const middle = c.sharedTags === undefined
+    ? `concept ${c.concept.toFixed(2)}`
+    : `shared tags ${c.sharedTags.toFixed(2)}`;
+  return `graph ${c.graph.toFixed(2)} · ${middle} · vector ${c.vector === null ? 'unavailable' : c.vector.toFixed(2)}`;
 }
 
 /**
@@ -101,24 +146,27 @@ export interface SearchOutcome {
    * `null` when the ranking is the one requested — a full hybrid pass, or a
    * lexical-only pass the caller asked for (the Exact intent). Otherwise the
    * reason the semantic arm could not run (typically: the embedding model could
-   * not be loaded), meaning `hits` is lexical-only and must be shown as such.
+   * not be loaded). Best may return lexical-only hits with a notice; pure
+   * Semantic returns no fallback hits.
    */
   semanticUnavailable: string | null;
 }
 
 /**
  * The transport the palette drives — Tauri IPC in the desktop app, HTTP on the
- * website (P5). `search` streams two honest phases through `onPhase` (lexical
- * first, then the hybrid final) and resolves to the final {@link SearchOutcome};
+ * website (P5). `intent` selects the requested ranking; omitted intent preserves
+ * the legacy lexicalOnly behavior. Best streams lexical then hybrid phases,
+ * while Semantic returns vector-ranked results without lexical fallback.
+ * `search` resolves to the final {@link SearchOutcome};
  * a rejected promise carries the schema-derived filter-error text.
  */
 export interface SearchAdapter {
   search: (
     query: string,
-    opts: { lexicalOnly: boolean; explain: boolean },
+    opts: { lexicalOnly: boolean; explain: boolean; intent?: SearchIntent },
     onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   ) => Promise<SearchOutcome>;
-  related: (docPath: string) => Promise<RelatedHit[]>;
+  related: (docPath: string) => Promise<RelatedHit[] | RelatedOutcome>;
 }
 
 // --------------------------------------------------------------------------
@@ -136,7 +184,7 @@ export interface IntentMeta {
 export const INTENTS: readonly IntentMeta[] = [
   { id: 'best', label: 'Best', hint: 'Hybrid: lexical + semantic, fused' },
   { id: 'exact', label: 'Exact', hint: 'Lexical only — literal term matches' },
-  { id: 'semantic', label: 'Semantic', hint: 'Meaning-weighted, vectors lead' },
+  { id: 'semantic', label: 'Semantic', hint: 'Semantic only — vector similarity' },
   { id: 'recent', label: 'Recent', hint: 'Newest-modified first' },
   { id: 'related', label: 'Related', hint: 'Notes related to the open document' },
 ];

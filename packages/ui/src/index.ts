@@ -29,10 +29,13 @@ export {
   cycleIntent,
   sortHits,
   filterRelated,
+  relatedHits,
+  relatedAvailabilityMessage,
+  relatedComponentsText,
   parseSnippet,
   buildBreadcrumb,
 } from './search/model.js';
-export type { IntentMeta, IntentPlan, Crumb, SnippetSegment } from './search/model.js';
+export type { RelatedOutcome, RelatedAvailability, IntentMeta, IntentPlan, Crumb, SnippetSegment } from './search/model.js';
 export { fuzzyScore, rankFiles } from './search/fuzzy.js';
 export type { FileMatch } from './search/fuzzy.js';
 

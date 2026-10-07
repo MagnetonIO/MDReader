@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import type { RelatedHit, SearchAdapter } from '@mdreader/ui';
+import { relatedHits, relatedAvailabilityMessage, relatedComponentsText, type RelatedHit, type SearchAdapter } from '@mdreader/ui';
 
 import type { DocRef } from '../stores/types.js';
 
@@ -22,7 +22,7 @@ export interface RelatedRailProps {
   /** Toggle expanded/collapsed. */
   onToggle: () => void;
   /** Open a related document in a tab. */
-  onOpen: (ref: DocRef) => void;
+  onOpen: (ref: DocRef & { line?: number }) => void;
   /**
    * The active workspace key (its root). A change is a workspace switch: it
    * re-runs the fetch effect (dropping any in-flight result for the previous
@@ -46,18 +46,21 @@ export function RelatedRail({
   workspaceKey,
 }: RelatedRailProps) {
   const [items, setItems] = useState<RelatedHit[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [status, setStatus] = useState<RailStatus>('idle');
   const reqRef = useRef(0);
 
   const activePath = activeDoc?.path ?? null;
 
   useEffect(() => {
+    const id = (reqRef.current += 1);
+    setItems([]);
+    setNotice(null);
     if (!open || !activePath) {
       setItems([]);
       setStatus('idle');
       return;
     }
-    const id = (reqRef.current += 1);
     setStatus('loading');
     const handle = window.setTimeout(() => {
       adapter
@@ -66,7 +69,8 @@ export function RelatedRail({
           // Superseded by a newer fetch (doc change) or a workspace switch
           // (epoch is in the effect deps, so this closure is the current one).
           if (reqRef.current !== id) return;
-          setItems(hits);
+          setItems(relatedHits(hits));
+          setNotice(relatedAvailabilityMessage(hits));
           setStatus('ready');
         })
         .catch(() => {
@@ -75,7 +79,10 @@ export function RelatedRail({
           setStatus('error');
         });
     }, SETTLE_MS);
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      reqRef.current += 1;
+    };
   }, [open, activePath, workspaceKey, adapter]);
 
   if (!open) {
@@ -107,6 +114,7 @@ export function RelatedRail({
         </button>
       </div>
       <div className="related-rail__body">
+        {notice ? <p role="status" className="related-rail__empty">{notice}</p> : null}
         {!activePath ? (
           <p className="related-rail__empty">Open a document to see related notes.</p>
         ) : status === 'loading' ? (
@@ -118,26 +126,24 @@ export function RelatedRail({
         ) : (
           <ul className="related-rail__list">
             {items.map((hit) => {
-              const { graph, concept, vector } = hit.components;
-              const tip = `score ${hit.score.toFixed(2)} · graph ${graph.toFixed(
-                2,
-              )} · concept ${concept.toFixed(2)} · vector ${vector.toFixed(2)}`;
+              const { graph, concept, vector, sharedTags } = hit.components;
+              const tip = `score ${hit.score.toFixed(2)} · ${relatedComponentsText(hit)}`;
               return (
                 <li key={hit.documentId} className="related-rail__item">
                   <button
                     type="button"
                     className="related-rail__link"
                     title={tip}
-                    onClick={() => onOpen({ path: hit.path, name: hit.name })}
+                    onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.line != null ? { line: hit.line } : {}) })}
                   >
                     <span className="related-rail__name">{hit.name}</span>
                     <span className="related-rail__score">{hit.score.toFixed(2)}</span>
                     <span className="related-rail__chips" aria-hidden="true">
                       {graph > 0 ? <i className="related-rail__chip related-rail__chip--graph" /> : null}
-                      {concept > 0 ? (
+                      {(sharedTags ?? concept) > 0 ? (
                         <i className="related-rail__chip related-rail__chip--concept" />
                       ) : null}
-                      {vector > 0 ? (
+                      {(vector ?? 0) > 0 ? (
                         <i className="related-rail__chip related-rail__chip--vector" />
                       ) : null}
                     </span>

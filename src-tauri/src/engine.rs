@@ -1116,8 +1116,8 @@ fn scan_options(respect_gitignore: bool) -> ScanOptions {
 /// the generic `error` an actual index-build failure reports.
 /// Captures the current [`Epoch`] once at entry — root, generation, engine, and
 /// status travel together. `root` is validated against the epoch's grant (a
-/// foreign path is a hard error). Coalesced (#4): a second import for the same
-/// epoch returns the live status instead of spawning a duplicate pass. At each
+/// foreign path is a hard error). Every request queues a durable job generation.
+/// A second progress listener for the same epoch returns its current status. At each
 /// commit point (model install, every publish) it re-checks the epoch is still
 /// current; a switch mid-import abandons silently-clean, its late status landing
 /// only in its own (superseded, unread) slot. The frontend fires this without
@@ -1132,70 +1132,58 @@ pub async fn start_import(
     on_event: Channel<ImportProgress>,
     workspace: State<'_, WorkspaceState>,
 ) -> Result<ImportProgress, String> {
-    // Capture the epoch ONCE; validate the target against its grant.
-    let epoch = workspace
-        .current()
-        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    let epoch = workspace.current().ok_or("no workspace has been opened")?;
     validate_import_root(&epoch, &root)?;
-
-    // Coalesce onto an in-flight import for this epoch (#4). Its return, like
-    // every other, funnels through the choke-point.
-    if !claim_active(&epoch)? {
-        // EPOCH-GUARDED
+    let reader = app.state::<crate::reader::ReaderBackend>().inner().clone();
+    let (owns_progress, source) = queue_reader_index(&reader, &epoch).await?;
+    if !owns_progress {
         return finish_import_progress(&epoch, &workspace, epoch.status());
     }
     let _guard = ActiveGuard {
         epoch: Arc::clone(&epoch),
     };
-
-    // Step 1 — the index, which needs no model. Once this lands the workspace is
-    // fully readable: the tree, the documents, wikilinks and the lexical arm.
-    let (db, embedder) = match ensure_index(&epoch, &workspace, &app) {
-        Ok(Some(pair)) => pair,
-        // A switch superseded this epoch during the open — abandon clean.
-        // EPOCH-GUARDED
-        Ok(None) => return finish_import_progress(&epoch, &workspace, epoch.status()),
-        Err(err) => {
-            // The index itself could not be opened — a genuine index failure.
-            let failed = ImportProgress::failed(0, err);
-            publish(&epoch, &workspace, &on_event, failed.clone());
-            // EPOCH-GUARDED
-            return finish_import_progress(&epoch, &workspace, failed);
+    let outcome:Result<ImportProgress,String>=async {
+        let deadline=std::time::Instant::now()+MODEL_LOAD_DEADLINE;
+        loop {
+            if !workspace.is_current(&epoch) { return Ok(epoch.status()); }
+            epoch.validate_root()?;
+            let job:Option<mdreader_core::IndexJob>=reader.invoke(mdreader_service::Request::JobStatus {source_id:source.clone()}).await?;
+            let job=job.ok_or("Index job disappeared")?;
+            let progress=ImportProgress {
+                phase:match job.phase.as_str() {"queued"|"indexing"=>"importing","embedding"=>"reembedding",phase=>phase}.into(),
+                files_done:job.documents as u32,files_total:job.documents as u32,chunks_embedded:job.embedded as u32,error:job.error,
+            };
+            publish(&epoch,&workspace,&on_event,progress.clone());
+            if ["done","error","model-unavailable"].contains(&progress.phase.as_str()) {return Ok(progress);}
+            if std::time::Instant::now()>=deadline {
+                let mut unavailable=progress;
+                unavailable.phase="model-unavailable".into();
+                unavailable.error=Some("Indexing continues in the reader service; local semantic search is not ready yet".into());
+                return Ok(unavailable);
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
         }
-    };
+    }.await;
+    let progress = outcome.unwrap_or_else(|error| ImportProgress::failed(0, error));
+    publish(&epoch, &workspace, &on_event, progress.clone());
+    finish_import_progress(&epoch, &workspace, progress)
+}
 
-    // Step 2 — the model, which ONLY indexing and the semantic arm need. A
-    // failure here is reported as itself (`model-unavailable`, carrying the
-    // reason) and stops the import: the workspace stays open and readable, and
-    // the semantic arm reports its own unavailability at search time.
-    if let Err(reason) = ensure_model(&epoch, &workspace, &on_event, &embedder).await {
-        let unavailable = ImportProgress::model_unavailable(reason);
-        publish(&epoch, &workspace, &on_event, unavailable.clone());
-        // EPOCH-GUARDED
-        return finish_import_progress(&epoch, &workspace, unavailable);
-    }
-
+/// Coalesce progress listeners, never source-change notifications. Every call
+/// durably advances the service job generation so a change during an active
+/// pass cannot be lost when that older pass finishes.
+pub(crate) async fn queue_reader_index(
+    reader: &crate::reader::ReaderBackend,
+    epoch: &Arc<Epoch>,
+) -> Result<(bool, String), String> {
     epoch.validate_root()?;
-    let total = scan_count(&epoch.source_root());
-    publish(
-        &epoch,
-        &workspace,
-        &on_event,
-        starting_progress(&db, total).await,
-    );
-
-    // The engine serializes imports internally (single-writer); a concurrent
-    // call simply queues, so re-firing on a rapid re-grant is safe.
-    epoch.validate_root()?;
-    let outcome = db.import(&epoch.root, ImportOptions::default()).await;
-    epoch.validate_root()?;
-    let final_status = match outcome {
-        Ok(report) => ImportProgress::done(&report),
-        Err(err) => ImportProgress::failed(total, err.to_string()),
-    };
-    publish(&epoch, &workspace, &on_event, final_status.clone());
-    // EPOCH-GUARDED
-    finish_import_progress(&epoch, &workspace, final_status)
+    let source = reader.admit_async(epoch.source_root()).await?;
+    let _: serde_json::Value = reader
+        .invoke(mdreader_service::Request::StartIndex {
+            source_id: source.clone(),
+        })
+        .await?;
+    Ok((claim_active(epoch)?, source))
 }
 
 /// Preserve the intentionally quiet cancellation of a superseded import while
@@ -1261,8 +1249,66 @@ fn import_status_guarded(
 pub fn list_workspace_files(
     root: String,
     workspace: State<'_, WorkspaceState>,
+    reader: State<'_, crate::reader::ReaderBackend>,
 ) -> Result<WorkspaceListing, ListingError> {
-    list_workspace_files_guarded(&workspace, &root, || {})
+    list_reader_files(&reader, &workspace, &root)
+}
+
+pub(crate) fn list_reader_files(
+    reader: &crate::reader::ReaderBackend,
+    workspace: &WorkspaceState,
+    root: &str,
+) -> Result<WorkspaceListing, ListingError> {
+    let epoch = workspace
+        .current()
+        .ok_or_else(|| "no workspace has been opened".to_string())?;
+    epoch.validate_root()?;
+    let authority = epoch.source_root();
+    let relative = if display_names_root(&authority.path, root) {
+        PathBuf::new()
+    } else {
+        authority
+            .relative_path(Path::new(root))
+            .map_err(|e| ListingError::from(e.to_string()))?
+    };
+    authority
+        .verify_directory_relative(&relative)
+        .map_err(|e| ListingError::from_source(&authority.path.join(&relative), &e))?;
+    let source = reader.admit(&authority)?;
+    let status: mdreader_core::IndexStatus = reader.typed(mdreader_service::Request::Status {
+        sources: vec![source.clone()],
+    })?;
+    let job: Option<mdreader_core::IndexJob> =
+        reader.typed(mdreader_service::Request::JobStatus {
+            source_id: source.clone(),
+        })?;
+    let indexed = status.documents > 0
+        || job.is_some_and(|j| {
+            ["loading", "embedding", "done", "model-unavailable"].contains(&j.phase.as_str())
+        });
+    let listing = if indexed {
+        let documents: Vec<mdreader_core::ListedDocument> =
+            reader.typed(mdreader_service::Request::ListDocuments { source_id: source })?;
+        WorkspaceListing {
+            from_index: true,
+            entries: documents
+                .into_iter()
+                .filter(|doc| Path::new(&doc.path).starts_with(&relative))
+                .map(|doc| {
+                    let metadata = authority.metadata_relative(Path::new(&doc.path)).ok();
+                    file_entry(&authority.path.join(&doc.path), false, metadata.as_ref())
+                })
+                .collect(),
+        }
+    } else {
+        WorkspaceListing {
+            from_index: false,
+            entries: fs_listing(&authority, &relative)?,
+        }
+    };
+    epoch
+        .finish(workspace, listing)
+        .map_err(|e| ListingError::from(e.to_string()))
 }
 
 /// The listing core, with a `gate` hook invoked between building the listing and
@@ -1435,8 +1481,67 @@ pub fn resolve_wikilink(
     target: String,
     heading: Option<String>,
     workspace: State<'_, WorkspaceState>,
+    reader: State<'_, crate::reader::ReaderBackend>,
 ) -> Result<WikiResolution, String> {
-    resolve_wikilink_guarded(&workspace, &from_doc, &target, heading.as_deref(), || {})
+    let epoch = workspace.current().ok_or("no workspace has been opened")?;
+    epoch.validate_root()?;
+    wikilink_guard(&epoch, &from_doc)?;
+    let source = reader.admit(&epoch.source_root())?;
+    let from = if from_doc.is_empty() {
+        "__root__.md".into()
+    } else {
+        epoch
+            .source_root()
+            .relative_path(Path::new(&from_doc))
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    let target = if let Some(heading) = heading {
+        format!("{}#{heading}", target.split('#').next().unwrap_or(""))
+    } else {
+        target
+    };
+    let references: Vec<mdreader_core::Reference> =
+        reader.typed(mdreader_service::Request::Resolve {
+            source_id: source,
+            from,
+            target,
+        })?;
+    let resolution = match references.as_slice() {
+        [] => WikiResolution::unresolved(),
+        [reference] => WikiResolution::resolved(
+            epoch
+                .root
+                .join(&reference.path)
+                .to_string_lossy()
+                .into_owned(),
+            basename(&reference.path),
+            Some(reference.line),
+        ),
+        _ => WikiResolution {
+            status: "ambiguous".into(),
+            path: None,
+            name: None,
+            line: None,
+            candidates: references
+                .into_iter()
+                .map(|reference| WikiCandidate {
+                    path: epoch
+                        .root
+                        .join(&reference.path)
+                        .to_string_lossy()
+                        .into_owned(),
+                    name: basename(&reference.path),
+                })
+                .collect(),
+        },
+    };
+    match epoch.finish(&workspace, resolution) {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_superseded() => Ok(WikiResolution::unresolved()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// The resolution core, with a `gate` hook invoked between constructing the

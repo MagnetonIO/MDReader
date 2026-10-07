@@ -6,6 +6,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { AgentCapturePanel } from './AgentCapturePanel.js';
+import { IndexingPanel } from './IndexingPanel.js';
+
 import type { ImportState } from '../platform/fs.js';
 import {
   SettingsCommandError,
@@ -33,6 +36,7 @@ import {
 } from './icons.js';
 
 export interface SettingsSheetProps {
+  localRoot?: string | null;
   backend?: SettingsBackend;
   watcher: WatcherStatus;
   importState: ImportState | null;
@@ -180,6 +184,7 @@ function activityLabel(watcher: WatcherStatus, importState: ImportState | null):
 
 export function SettingsSheet({
   backend = settingsBackend,
+  localRoot = null,
   watcher,
   importState,
   onActivateSource,
@@ -612,6 +617,7 @@ export function SettingsSheet({
               </button>
             </div>
 
+            <IndexingPanel />
             <div className="library-list" aria-live="polite">
               {!library && !failure ? <div className="settings-empty">Reading local library…</div> : null}
               {library?.sources.length === 0 ? (
@@ -942,6 +948,8 @@ export function SettingsSheet({
               </div>
             ) : null}
           </section>
+
+          <AgentCapturePanel root={localRoot} />
 
           <section className="settings-section" aria-labelledby="settings-diagnostics">
             <div className="settings-section__intro">

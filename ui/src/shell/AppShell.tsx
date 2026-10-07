@@ -2261,9 +2261,11 @@ export function AppShell() {
   // The search/related transport, closed over the live watcher generation so
   // streamed batches from a superseded workspace epoch are discarded.
   const adapter = useMemo(() => makeSearchAdapter(() => watcherGenRef.current), []);
+  const readerBlocked = Boolean(settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
+      <div className="shell__reader-content" inert={readerBlocked} aria-hidden={readerBlocked ? true : undefined}>
       <Titlebar
         isMac={isMac}
         sidebarCollapsed={sidebarCollapsed}
@@ -2424,7 +2426,7 @@ export function AppShell() {
                 adapter={adapter}
                 open={relatedRailOpen}
                 onToggle={() => useSettingsStore.getState().toggleRelatedRail()}
-                onOpen={openRef}
+                onOpen={(target) => onOpenHit(target, { background: false })}
                 workspaceKey={root}
               />
             ) : null}
@@ -2443,6 +2445,7 @@ export function AppShell() {
         fromIndex={fromIndex}
         onRetryIndex={retryIndex}
       />
+      </div>
 
       {paletteOpen ? (
         <SearchPalette
@@ -2463,6 +2466,7 @@ export function AppShell() {
       ) : null}
       {settingsOpen ? (
         <SettingsSheet
+          localRoot={root}
           watcher={watcher}
           importState={importState}
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}

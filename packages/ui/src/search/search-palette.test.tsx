@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { SearchPalette, type SearchPaletteProps } from './search-palette.js';
-import type { RelatedHit, SearchAdapter, SearchHit, SearchOutcome } from './model.js';
+import type { RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchOutcome } from './model.js';
 
 beforeEach(() => {
   // cmdk scrolls the active item into view and observes its size; jsdom has
@@ -93,6 +93,60 @@ describe('intents', () => {
     expect(screen.getByRole('tab', { name: 'Exact' }).getAttribute('aria-selected')).toBe('true');
   });
 
+  test('Semantic sends a distinct intent and never presents lexical fallback as semantic results', async () => {
+    const lexical = hit({ chunkId: 'literal', name: 'literal.md', lexRank: 1 });
+    let finish: ((outcome: SearchOutcome) => void) | undefined;
+    const adapter: SearchAdapter = {
+      search: vi.fn((_query, _opts, onPhase) => {
+        onPhase('lexical', [lexical]);
+        onPhase('final', [lexical]);
+        return new Promise<SearchOutcome>((resolve) => { finish = resolve; });
+      }),
+      related: vi.fn(async () => []),
+    };
+    renderPalette({ adapter });
+    fireEvent.click(screen.getByRole('tab', { name: 'Semantic' }));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'meaning' } });
+    await waitFor(() => expect(adapter.search).toHaveBeenCalledWith(
+      'meaning',
+      { lexicalOnly: false, explain: true, intent: 'semantic' },
+      expect.any(Function),
+    ));
+    expect(screen.queryByRole('option')).toBeNull();
+    finish!({ hits: [lexical], semanticUnavailable: 'model unavailable' });
+    const notice = await screen.findByRole('status');
+    expect(notice.textContent).toContain('Semantic search is unavailable');
+    expect(notice.textContent).not.toContain('Text matches only');
+    expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  test('Semantic shows actual vector-ranked evidence and excludes lexical-only hits', async () => {
+    const vector = hit({ chunkId: 'meaning', name: 'meaning.md', semRank: 1 });
+    const lexical = hit({ chunkId: 'literal', name: 'literal.md', lexRank: 1 });
+    renderPalette({ adapter: staticAdapter([vector, lexical]) });
+    fireEvent.click(screen.getByRole('tab', { name: 'Semantic' }));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'paraphrase' } });
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1));
+    expect(screen.getByRole('option').getAttribute('data-value')).toBe('meaning');
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  test('Best, Exact, and Recent preserve distinct intent in the adapter request', async () => {
+    const adapter = staticAdapter([]);
+    renderPalette({ adapter });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'storage' } });
+    for (const [label, intent, lexicalOnly] of [
+      ['Best', 'best', false],
+      ['Exact', 'exact', true],
+      ['Recent', 'recent', false],
+    ] as const) {
+      fireEvent.click(screen.getByRole('tab', { name: label }));
+      await waitFor(() => expect(adapter.search).toHaveBeenLastCalledWith(
+        'storage', { lexicalOnly, explain: true, intent }, expect.any(Function),
+      ));
+    }
+  });
+
   test('⌘1..5 selects intents and arrow keys rove the tablist', async () => {
     renderPalette();
     const input = screen.getByRole('combobox');
@@ -144,6 +198,18 @@ describe('intents', () => {
     // The score badge carries the component breakdown in its tooltip.
     expect(screen.getByText('1.40').getAttribute('title')).toContain('graph 0.90');
   });
+  test('Related keeps coverage visible when no matches exist', async () => {
+    renderPalette({ adapter: {
+      search: vi.fn(async () => ({ hits: [], semanticUnavailable: null })),
+      related: vi.fn(async (): Promise<RelatedOutcome> => ({ hits: [], availability: {
+        vector: 'no_anchor_vectors', anchorChunks: 2, anchorVectors: 0,
+        legacyConcepts: 'not_migrated', legacyGraphEntities: 'not_migrated',
+      } })),
+    } });
+    fireEvent.click(screen.getByRole('tab', { name: 'Related' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Vector matches are unavailable'));
+  });
+
 });
 
 describe('filter errors', () => {

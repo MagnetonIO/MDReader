@@ -2955,7 +2955,31 @@ pub(crate) fn list_library_sources(
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
-    LibraryStore::new(path).read(|registry| registry.snapshot(&app_data, active.as_ref()))
+    LibraryStore::new(path).read(|registry| {
+        let mut snapshot = registry.snapshot(&app_data, active.as_ref())?;
+        refresh_reader_index_metadata(registry, &mut snapshot, app.state::<crate::reader::ReaderBackend>().inner());
+        Ok(snapshot)
+    })
+}
+
+fn refresh_reader_index_metadata(registry: &LibraryRegistry, snapshot: &mut LibrarySnapshot, reader: &crate::reader::ReaderBackend) {
+    for row in &mut snapshot.sources {
+        let status = (|| -> Result<LibraryIndexState, String> {
+            let binding = registry.source_for(&row.id).ok_or("Source binding missing")?;
+            let identity = binding.identity.clone().ok_or("Source identity unavailable")?;
+            let source: Option<mdreader_core::Source> = reader.typed(mdreader_service::Request::FindSource {
+                path: binding.path().map_err(|e| e.to_string())?, identity,
+            })?;
+            let Some(source) = source else { return Ok(LibraryIndexState::NotCreated); };
+            if !source.enabled { return Ok(LibraryIndexState::Unknown); }
+            let indexed: mdreader_core::IndexStatus = reader.typed(mdreader_service::Request::Status { sources: vec![source.id.clone()] })?;
+            let job: Option<mdreader_core::IndexJob> = reader.typed(mdreader_service::Request::JobStatus { source_id: source.id })?;
+            Ok(if indexed.documents > 0 || job.is_some_and(|job| matches!(job.phase.as_str(), "loading"|"embedding"|"done"|"model-unavailable")) {
+                LibraryIndexState::Present
+            } else { LibraryIndexState::NotCreated })
+        })();
+        row.index_state = status.unwrap_or(LibraryIndexState::Unknown);
+    }
 }
 
 /// Open the real native folder picker and persist its canonical native path.
@@ -3065,6 +3089,7 @@ pub(crate) fn watch_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
+        app.state::<crate::reader::ReaderBackend>().grant(&native_root).map_err(|_| LibraryError::OpenFailed)?;
         let engine_source_id = registry
             .source_for(&source_id)
             .ok_or(LibraryError::SourceNotFound)?
@@ -3095,6 +3120,7 @@ pub(crate) fn grant_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
+        app.state::<crate::reader::ReaderBackend>().grant(&native_root).map_err(|_| LibraryError::OpenFailed)?;
         let engine_source_id = registry
             .source_for(&source_id)
             .ok_or(LibraryError::SourceNotFound)?
@@ -3166,6 +3192,12 @@ pub(crate) fn forget_library_source(
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
     let store = LibraryStore::new(path);
+    let source = store.read(|registry| {
+        let mut preflight = registry.clone();
+        preflight.forget(&source_id, active.as_ref())?;
+        registry.source_for(&source_id).cloned().ok_or(LibraryError::SourceNotFound)
+    })?;
+    revoke_reader_membership(app.state::<crate::reader::ReaderBackend>().inner(), &source)?;
     store.forget_source(&source_id, active.as_ref(), &app_data)?;
     store.read(|registry| registry.snapshot(&app_data, active.as_ref()))
 }
@@ -3184,7 +3216,25 @@ pub(crate) fn close_and_forget_library_source(
 ) -> Result<CloseAndForgetLibrarySourceOutcome, LibraryError> {
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
+    let epoch = workspace.current().ok_or(LibraryError::GrantMismatch)?;
+    let source = LibraryStore::new(path.clone()).read(|registry| {
+        let source = registry.source_for(&source_id).ok_or(LibraryError::SourceNotFound)?;
+        if source.root()? != epoch.source_root() || Some(source.engine_source_id()) != epoch.source_id() {
+            return Err(LibraryError::GrantMismatch);
+        }
+        Ok(source.clone())
+    })?;
+    revoke_reader_membership(app.state::<crate::reader::ReaderBackend>().inner(), &source)?;
     close_and_forget_library_source_at(path, app_data, &source_id, &workspace, &watcher)
+}
+
+fn revoke_reader_membership(reader: &crate::reader::ReaderBackend, source: &LocalFolderSource) -> Result<(), LibraryError> {
+    let path = source.path()?;
+    let identity = source.identity.clone().ok_or(LibraryError::SourceUnavailable)?;
+    reader.revoke_binding(path.clone(), identity).map_err(|_| LibraryError::PersistFailed)?;
+    #[cfg(not(mobile))]
+    reader.pause_capture(&path).map_err(|_| LibraryError::PersistFailed)?;
+    Ok(())
 }
 
 fn close_and_forget_library_source_at(
@@ -4750,6 +4800,31 @@ mod tests {
             .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot after index");
         assert_eq!(after.sources[0].index_state, LibraryIndexState::Present);
+    }
+
+    #[test]
+    fn reader_snapshot_reports_sqlite_index_without_admitting_unindexed_sources() {
+        let temp = tempdir().unwrap();
+        let path = mkdir(temp.path(), "notes");
+        let unindexed = mkdir(temp.path(), "unindexed");
+        fs::write(path.join("note.md"), "# Note\nSQLite metadata\n").unwrap();
+        let app_data = temp.path().join("app-data");
+        let backend = crate::reader::ReaderBackend::embedded(&app_data.join("reader-v1")).unwrap();
+        let mut registry = LibraryRegistry::empty();
+        registry.add_root(&path).unwrap();
+        registry.add_root(&unindexed).unwrap();
+        let root = bound_root(&path);
+        let source = backend.admit(&root).unwrap();
+        backend.call(mdreader_service::Request::Index { source_id: source.clone() }).unwrap();
+        let mut snapshot = registry.snapshot(&app_data, Some(&root)).unwrap();
+        super::refresh_reader_index_metadata(&registry, &mut snapshot, &backend);
+        assert_eq!(snapshot.sources.iter().find(|s| s.name == "notes").unwrap().index_state, LibraryIndexState::Present);
+        assert_eq!(snapshot.sources.iter().find(|s| s.name == "unindexed").unwrap().index_state, LibraryIndexState::NotCreated);
+        let sources: Vec<mdreader_core::Source> = backend.typed(mdreader_service::Request::ListSources).unwrap();
+        assert_eq!(sources.len(), 1, "reading metadata must not grant additional folders");
+        backend.revoke_binding(root.path.clone(), root.identity.clone()).unwrap();
+        super::refresh_reader_index_metadata(&registry, &mut snapshot, &backend);
+        assert_eq!(snapshot.sources.iter().find(|s| s.name == "notes").unwrap().index_state, LibraryIndexState::Unknown);
     }
 
     #[test]
