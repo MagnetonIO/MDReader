@@ -21,6 +21,31 @@ enum Transport {
     Embedded(Mutex<mdreader_core::ReaderStore>),
 }
 impl ReaderBackend {
+    /// Preserve typed service failures at native owner boundaries. Renderer
+    /// adapters may format these later; provider revisions must remain conflicts.
+    #[cfg(not(mobile))]
+    pub(crate) fn call_native(&self, request: Request) -> mdreader_core::Result<Value> {
+        match self.0.as_ref() {
+            Transport::Desktop {
+                directory,
+                executable,
+            } => {
+                mdreader_service::ensure_running(
+                    directory,
+                    executable,
+                    &["--mdreader-service".into()],
+                )?;
+                mdreader_service::call(directory, &request)
+            }
+            #[cfg(test)]
+            Transport::Embedded(store) => {
+                let mut store = store
+                    .lock()
+                    .map_err(|_| mdreader_core::ReaderError::Unavailable)?;
+                mdreader_service::execute(&mut store, request)
+            }
+        }
+    }
     /// Mobile operations share the embedded owner's mutex and durable connection.
     /// A desktop renderer cannot open a second writer through this adapter.
     pub(crate) fn with_mobile_store<T>(

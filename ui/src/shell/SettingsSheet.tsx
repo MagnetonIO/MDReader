@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AgentCapturePanel } from './AgentCapturePanel.js';
 import { IndexingPanel } from './IndexingPanel.js';
+import { NativeProvidersPanel } from './NativeProvidersPanel.js';
+import type { ProviderReaderReference } from '../platform/providers.js';
 
 import type { ImportState } from '../platform/fs.js';
 import {
@@ -44,6 +46,7 @@ export interface SettingsSheetProps {
   onForgetActiveSource: (source: LibrarySourceDto) => Promise<void>;
   onSourceIntent?: () => void;
   onLibraryChanged?: () => void;
+  onOpenProviderDocument?: (reference: ProviderReaderReference) => Promise<void>;
   onClose: () => void;
 }
 
@@ -191,6 +194,7 @@ export function SettingsSheet({
   onForgetActiveSource,
   onSourceIntent = () => {},
   onLibraryChanged = () => {},
+  onOpenProviderDocument,
   onClose,
 }: SettingsSheetProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -618,6 +622,7 @@ export function SettingsSheet({
             </div>
 
             <IndexingPanel />
+            {onOpenProviderDocument ? <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} /> : null}
             <div className="library-list" aria-live="polite">
               {!library && !failure ? <div className="settings-empty">Reading local library…</div> : null}
               {library?.sources.length === 0 ? (

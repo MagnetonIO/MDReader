@@ -14,6 +14,7 @@ static MDREADER_RELEASE_IDENTITY: &str = concat!(
     "\0",
 );
 
+#[cfg(not(mobile))]
 fn main() {
     std::hint::black_box(MDREADER_RELEASE_IDENTITY);
     let mut args = std::env::args_os().skip(1);
@@ -63,7 +64,7 @@ fn main() {
             eprintln!("usage: MDReader --mdreader-service [--no-model] DATA_DIRECTORY");
             std::process::exit(2);
         };
-        if let Err(error) = mdreader_service::serve_with_options(
+        if let Err(error) = mdreader_app_lib::serve_reader_service(
             std::path::Path::new(&directory),
             mdreader_service::ServiceOptions { disable_model },
         ) {
@@ -72,5 +73,11 @@ fn main() {
         }
         return;
     }
+    mdreader_app_lib::run()
+}
+
+#[cfg(mobile)]
+fn main() {
+    std::hint::black_box(MDREADER_RELEASE_IDENTITY);
     mdreader_app_lib::run()
 }

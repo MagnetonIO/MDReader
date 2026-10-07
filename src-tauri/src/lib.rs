@@ -49,12 +49,24 @@ mod library_query;
 mod mapping;
 mod mobile_enterprise;
 mod mobile_reader;
-mod reader_workload;
+#[cfg(not(mobile))]
+mod native_providers;
+#[cfg(not(mobile))]
+mod provider_oauth;
 mod overlay;
 mod reader;
 mod reader_agents;
+mod reader_workload;
 mod search;
 mod updater;
+
+#[cfg(not(mobile))]
+pub fn serve_reader_service(
+    directory: &std::path::Path,
+    options: mdreader_service::ServiceOptions,
+) -> mdreader_core::Result<()> {
+    native_providers::serve(directory, options)
+}
 
 use commands::{WatcherState, WorkspaceState};
 use diagnostics::DiagnosticsState;
@@ -86,10 +98,15 @@ fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
+            native_providers::native_provider_status,
+            native_providers::native_provider_connect,
+            native_providers::native_provider_reconnect,
+            native_providers::native_provider_reconcile,
+            native_providers::native_provider_request,
             reader_workload::reader_embedding_policy,
             reader_workload::set_reader_embedding_policy,
             mobile_reader::mobile_reader_list,
-        mobile_reader::mobile_reader_discard_import,
+            mobile_reader::mobile_reader_discard_import,
             mobile_reader::mobile_reader_import,
             mobile_reader::mobile_reader_read,
             mobile_reader::mobile_reader_search,
@@ -293,9 +310,17 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .manage(mobile_enterprise::MobileEnterpriseState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
-            app.manage(reader::ReaderBackend::open(
+            let reader_backend = reader::ReaderBackend::open(
                 app.path().app_data_dir()?.join("reader-v1"),
-            )?);
+            )?;
+            #[cfg(not(mobile))]
+            match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
+                Ok(providers) => {
+                    app.manage(providers);
+                }
+                Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
+            }
+            app.manage(reader_backend);
             app.state::<cloud_accounts::CloudAccountsState>()
                 .configure_catalog(app.handle())?;
             #[cfg(all(feature = "e2e-build", not(mobile)))]

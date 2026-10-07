@@ -7,6 +7,17 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
+	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
+	nativeProviderConnect: (provider: NativeProviderKind, selection: {
+	path: string,
+	recursive: boolean,
+} | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_connect", { provider, selection })),
+	nativeProviderReconnect: (sourceId: string, selection: {
+	path: string,
+	recursive: boolean,
+} | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconnect", { sourceId, selection })),
+	nativeProviderReconcile: (attemptId: string) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconcile", { attemptId })),
+	nativeProviderRequest: (request: NativeProviderRequest) => typedError<NativeProviderResult, NativeProviderError>(__TAURI_INVOKE("native_provider_request", { request })),
 	readerEmbeddingPolicy: () => typedError<string, string>(__TAURI_INVOKE("reader_embedding_policy")),
 	setReaderEmbeddingPolicy: (policy: string) => typedError<string, string>(__TAURI_INVOKE("set_reader_embedding_policy", { policy })),
 	mobileReaderList: () => typedError<DeviceLibrary, string>(__TAURI_INVOKE("mobile_reader_list")),
@@ -409,6 +420,10 @@ export const events = {
 };
 
 /* Types */
+export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
+
+export type AdmissionPhase = "vault_pending" | "admission_pending";
+
 export type AgentCaptureState = {
 	root: string,
 	enabled: boolean,
@@ -499,6 +514,14 @@ export type BoostsDto = {
 	recency: number | null,
 	/**  Graph proximity to a `linked-to:` document. */
 	graph: number | null,
+};
+
+export type CapabilitiesDto = {
+	read: boolean,
+	list: boolean,
+	changes: boolean,
+	assets: boolean,
+	guardedWrite: boolean,
 };
 
 /**
@@ -737,6 +760,8 @@ export type ConstraintReport = {
 	violations: ViolationDto[],
 };
 
+export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
+
 export type DeviceDocument = {
 	id: string,
 	name: string,
@@ -803,6 +828,11 @@ export type DocPayload = {
 	 *  external-edit conflict guard (P3).
 	 */
 	hash: string,
+};
+
+export type DropboxSelection = {
+	path: string,
+	recursive: boolean,
 };
 
 /**  An opaque, versioned entity-query continuation cursor. */
@@ -1649,6 +1679,21 @@ export type MobileEnterpriseResponse = {
 	body_json: string,
 };
 
+export type MutationDto = {
+	operationId: string,
+	state: MutationStateDto,
+};
+
+export type MutationStateDto = "prepared" | "dispatched" | "unknown" | "accepted" | "published" | "conflict";
+
+export type NativeProviderError = { kind: "unsupported" } | { kind: "unconfigured" } | { kind: "busy" } | { kind: "invalid" } | { kind: "invalid_response" } | { kind: "storage" } | { kind: "service_unavailable" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "reconnect_required" } | { kind: "unauthorized" } | { kind: "conflict" } | { kind: "too_large" } | { kind: "unknown_write"; operationId: string } | { kind: "local_publication_pending"; operationId: string };
+
+export type NativeProviderKind = "google_drive" | "dropbox";
+
+export type NativeProviderRequest = { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
+
+export type NativeProviderResult = { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
+
 /**  One explicit ordering key. */
 export type OrderBy = {
 	/**  Field name. */
@@ -1663,6 +1708,14 @@ export type OrderDirection =
 "ascending" |
 /**  Highest value first. */
 "descending";
+
+export type PendingAdmissionDto = {
+	attemptId: string,
+	provider: NativeProviderKind,
+	name: string,
+	sourceId: string | null,
+	phase: AdmissionPhase,
+};
 
 export type PendingDeviceImport = {
 	id: string,
@@ -1744,6 +1797,13 @@ export type Projection = {
 	truncated: boolean,
 };
 
+export type ProjectionDto = {
+	jobId: string,
+	readerSourceId: string,
+	path: string,
+	revision: string,
+};
+
 /**
  *  The chunk → section → document → file → source provenance ids (uuids as
  *  strings), present when `explain` was requested.
@@ -1761,6 +1821,44 @@ export type ProvenanceDto = {
 	source_id: string | null,
 	/**  That source's root directory, if any. */
 	source_root: string | null,
+};
+
+export type ProviderDocumentDto = {
+	documentId: string,
+	name: string,
+	displayPath: string,
+	modifiedAtMs: number | null,
+	sizeBytes: number | null,
+	cached: boolean,
+	cachedObservedAtMs: number | null,
+	admitted: boolean,
+	projection: ProjectionDto | null,
+};
+
+export type ProviderSnapshot = {
+	availability: RegistrationAvailability[],
+	sources: ProviderSourceDto[],
+	pendingAdmissions: PendingAdmissionDto[],
+	error: NativeProviderError | null,
+};
+
+export type ProviderSourceDto = {
+	sourceId: string,
+	readerSourceId: string | null,
+	name: string,
+	kind: NativeProviderKind,
+	enabled: boolean,
+	selectedScope: ScopeDto,
+	capabilities: CapabilitiesDto,
+	health: string,
+	coverage: CoverageDto,
+};
+
+export type RegistrationAvailability = {
+	provider: NativeProviderKind,
+	configured: boolean,
+	supported: boolean,
+	diagnostic: string | null,
 };
 
 /**  What rejecting a fact wrote. */
@@ -2021,6 +2119,8 @@ export type SchemaVersionRefDto = {
 	/**  `blake3:` content checksum. */
 	checksum: string,
 };
+
+export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "imported_legacy_broad" };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
 export type SearchBatch = {

@@ -7,6 +7,7 @@ import { useTabsStore } from './stores/tabs';
 import { useSourcesStore } from './stores/sources';
 import { useSettingsStore } from './stores/settings';
 import { sessionWriter } from './shell/persistence';
+import { nativeProvidersBackend } from './platform/providers';
 
 afterEach(() => {
   cleanup();
@@ -68,6 +69,26 @@ test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull());
   expect(readerContent?.hasAttribute('inert')).toBe(false);
   expect(readerContent?.hasAttribute('aria-hidden')).toBe(false);
+});
+
+test('selected cloud revision opens in the shared reader and returns to source controls', async () => {
+  const projection = { jobId: 'synthetic-job', readerSourceId: `provider:${'a'.repeat(64)}`, path: `records/${'b'.repeat(64)}.md`, revision: 'c'.repeat(64) };
+  vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ availability: [], pendingAdmissions: [], error: null, sources: [{ sourceId: 'selected-source', readerSourceId: projection.readerSourceId, name: 'Selected plans', kind: 'google_drive', enabled: true, selectedScope: { kind: 'exact_documents', count: 1 }, capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: false }, health: 'ready', coverage: { kind: 'complete_selected', observedAtMs: 1 } }] });
+  vi.spyOn(nativeProvidersBackend, 'documents').mockResolvedValue({ operation: 'documents', offset: 0, nextOffset: null, documents: [{ documentId: 'opaque-handle', name: 'Plan.md', displayPath: 'Plan.md', modifiedAtMs: null, sizeBytes: 20, cached: true, cachedObservedAtMs: 1, admitted: true, projection }] });
+  vi.spyOn(nativeProvidersBackend, 'readCached').mockResolvedValue(projection);
+  const read = vi.spyOn(nativeProvidersBackend, 'readDocument').mockResolvedValue({ operation: 'read_document', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, markdown: '# Provider reading\n\nSelected original.', lineStart: 1, lineEnd: 3 });
+  render(<App />);
+  act(() => modKeyDown(','));
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage cloud sources' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse documents' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
+  expect(await screen.findByRole('heading', { name: /Provider reading/ })).toBeTruthy();
+  expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+  expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(true);
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
+  fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
+  expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy();
+  expect(screen.queryByRole('dialog', { name: 'Cloud document' })).toBeNull();
 });
 
 test('Mod+\\ toggles the sidebar collapsed state', async () => {

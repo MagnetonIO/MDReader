@@ -75,6 +75,8 @@ import { RelatedRail } from './RelatedRail.js';
 import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
+import { ProviderReaderDialog } from './ProviderReaderDialog.js';
+import type { ProviderReaderReference } from '../platform/providers.js';
 import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
@@ -157,6 +159,7 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -1817,6 +1820,8 @@ export function AppShell() {
   // --- global keyboard dispatch ----------------------------------------
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      // The native modal dialog owns Escape, focus and document shortcuts.
+      if (providerDocument) return;
       if (event.key === 'Escape') {
         if (paletteOpen) {
           setPaletteOpen(false);
@@ -1872,6 +1877,7 @@ export function AppShell() {
     paletteOpen,
     sheetOpen,
     settingsOpen,
+    providerDocument,
     lensSheetOpen,
     constraintsOpen,
     explainOpen,
@@ -2261,7 +2267,7 @@ export function AppShell() {
   // The search/related transport, closed over the live watcher generation so
   // streamed batches from a superseded workspace epoch are discarded.
   const adapter = useMemo(() => makeSearchAdapter(() => watcherGenRef.current), []);
-  const readerBlocked = Boolean(settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
+  const readerBlocked = Boolean(providerDocument || settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
@@ -2473,9 +2479,11 @@ export function AppShell() {
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
           onLibraryChanged={() => void refreshLibrary()}
+          onOpenProviderDocument={async (reference) => { setProviderDocument(reference); setSettingsOpen(false); }}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
+      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onClose={() => { setProviderDocument(null); setSettingsOpen(true); }} /> : null}
       {lensSheetOpen ? (
         <LensSheet
           adapter={semantics}
