@@ -50,3 +50,26 @@ Observed local checks: `cargo test -p mdreader-sync` passes 18 test entries (inc
 Task 4 remains incomplete until the service exposes its owned connection safely, applies the selected document/reading-state schema and conflict UI, provides secure local key custody, implements verified account/device authorization and pairing, integrates bounded authenticated networking and retry, and passes real multi-device recovery/offline/deletion/account-switch tests on supported native/mobile hosts. This crate has no live cloud or cross-host runtime acceptance. The separate capture crate still explicitly rejects Windows capture pending its durable publication implementation.
 
 Primary dependency references checked for this implementation: [RustCrypto AES-GCM](https://docs.rs/aes-gcm/latest/aes_gcm/), [zeroize](https://docs.rs/zeroize/latest/zeroize/), [getrandom](https://docs.rs/getrandom/latest/getrandom/), [base64](https://docs.rs/base64/latest/base64/) and [SHA-2](https://docs.rs/sha2/latest/sha2/). The server protocol authority is the checked-in web `workers/sync/README.md` and worker source; no public enrollment endpoint is assumed.
+
+## Selected encrypted payload codecs v1
+
+`codec` now defines strict content/chunk/user-state payload v1 shapes matching
+web `lib/sync/codecs.ts`. The existing AAD/envelope is unchanged. The copied public
+synthetic `fixtures/payload-v1.json` contains five independently authenticated
+vectors (Markdown chunk, PNG chunk, content manifest, block/pixel anchor and line
+anchor), file SHA256
+`0c2b1efe7189caca6823a475edb0ba42a60ef126400576522cabf24b79bb4055`.
+`payload_codec` decrypts and re-encodes the exact fixture bytes and rejects unknown
+ratio/unsafe path/unbounded descriptor shapes. Strict tagged anchors retain line
+versus block/pixel semantics; pins survive document revisions while positions
+remain revision-scoped. No approximate conversion is provided.
+
+The codec validates shape/UUID/path/digest/count/size bounds and canonical chunk
+base64url, not fetched resource graph completeness or raster decoding. Native
+network chunk fetch/reassembly, exact reference/raw-byte hash verification,
+asset MIME/header admission, projection and user-state conflict/tombstone policy
+must be integrated by the owner before native transfer is accepted. Browser
+implementation and exact remaining gates are documented in web
+`lib/sync/PAYLOAD-PROTOCOL.md`. This Rust slice adds no auth/provider/keychain or
+transport behavior. `cargo test -p mdreader-sync` now passes **20 test entries**
+(including the subprocess helper); no cross-device native acceptance is claimed.

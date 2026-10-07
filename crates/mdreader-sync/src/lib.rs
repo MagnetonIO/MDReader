@@ -22,6 +22,7 @@ pub enum SyncError {
     Entropy,
 }
 pub type Result<T> = std::result::Result<T, SyncError>;
+pub mod codec;
 pub mod crypto;
 pub mod store;
 pub use crypto::*;
