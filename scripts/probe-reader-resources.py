@@ -38,7 +38,8 @@ def cpu_seconds(value):
 
 def process_threads(raw, pid):
     # Darwin ps -M emits its fixed USER/PID/thread columns despite -o pid=.
-    count = sum(len(parts) >= 2 and parts[1] == str(pid) for parts in
+    count = sum(bool(parts) and (parts[0] == str(pid) or
+                (len(parts) >= 2 and parts[1] == str(pid))) for parts in
                 (line.split() for line in raw.splitlines()))
     return count or None
 
@@ -263,6 +264,110 @@ def run(args):
     return 0 if result['passed_control_checks'] else 1
 
 
+def run_pause_only(args):
+    """Recheck only pause/restart/loaded idle after a polling change.
+
+    Actual foreground query embeddings load BGE. No passage inference is admitted;
+    a small pending corpus is revoked before the final idle observation.
+    """
+    binary, cache = args.binary.resolve(strict=True), args.model_cache.resolve(strict=True)
+    binary_hash = bench.digest(binary)
+    result = {'kind': 'actual-bge-pause-restart-idle-probe', 'binary_sha256': binary_hash,
+              'harness_sha256': bench.digest(Path(__file__)), 'helper_sha256': bench.digest(HELPER),
+              'platform': platform.platform(), 'synthetic_only': True, 'documents': args.documents,
+              'actual_bge': False, 'passage_vectors_installed': 0, 'failures': [],
+              'configured_onnx_intra_threads': 1,
+              'host_contention': 'Shared host; root Cargo idle during measured windows. Unrelated builds may exist.'}
+    owner = None
+    started = time.monotonic()
+
+    def load_actual_model(current, source):
+        beginning = time.monotonic()
+        while True:
+            outcome = current.client.call('search_ranked', {'query': bench.TOPICS[0][3],
+                'sources': [source], 'limit': 10, 'mode': 'semantic'})
+            if outcome['semantic_unavailable'] is None:
+                return {'elapsed_ms': (time.monotonic() - beginning) * 1000,
+                        'actual_query_embedding_available': True, 'hits': len(outcome['hits']),
+                        'semantic_retrieval_claim': False}
+            if time.monotonic() - beginning > 130 or 'restart' in outcome['semantic_unavailable'].lower():
+                raise RuntimeError('real BGE query initialization failed')
+            time.sleep(.05)
+
+    try:
+        if args.build_inputs:
+            attestation = json.loads(args.build_inputs.read_text())
+            if attestation.get('binary_sha256') != binary_hash or attestation.get('selected_inputs_unchanged') is not True:
+                raise ValueError('build-input attestation does not match immutable binary')
+            result['build_input_attestation_sha256'] = bench.digest(args.build_inputs)
+            result['selected_build_inputs'] = attestation
+        with tempfile.TemporaryDirectory(prefix='mdreader-pause-probe-') as temporary, contextlib.ExitStack() as cleanup:
+            root = Path(temporary)
+            data, notes = root / 'private library', root / 'synthetic worktree'
+            data.mkdir(mode=0o700)
+            notes.mkdir()
+            documents, checksum = bench.corpus(notes, args.documents)
+            result.update(corpus_sha256=checksum, corpus_bytes=sum(len(x.encode()) for x in documents.values()))
+            (data / 'models').symlink_to(cache, target_is_directory=True)
+            owner = Owner(binary, data, root / 'first-resource.txt')
+
+            def cleanup_owner():
+                nonlocal owner
+                if owner is not None:
+                    result['interrupted_process_resources'] = owner.close()
+                    owner = None
+            cleanup.callback(cleanup_owner)
+            client = owner.client
+            result['fresh_policy'] = client.call('embedding_policy')
+            if result['fresh_policy'] != 'balanced':
+                raise ValueError('fresh default policy is not balanced')
+            client.call('set_embedding_policy', {'policy': 'paused'})
+            identity = notes.stat()
+            source = client.call('admit', {'name': 'Synthetic paused resource probe', 'path': str(notes),
+                'identity': {'platform': 'unix', 'device': identity.st_dev, 'inode': identity.st_ino}})['id']
+            client.call('index', {'source_id': source})
+            result['first_model_query'] = load_actual_model(owner, source)
+            result['actual_bge'] = True
+            client.call('start_index', {'source_id': source})
+            result['paused'] = pause_window(owner, source, 5.)
+            if not result['paused']['no_new_vectors'] or result['paused']['after']['embedded'] != 0:
+                raise ValueError('paused job admitted passage inference')
+            result['first_process_resources'] = owner.close()
+            owner = None
+            owner = Owner(binary, data, root / 'restart-resource.txt')
+            client = owner.client
+            result['restart_policy'] = client.call('embedding_policy')
+            if result['restart_policy'] != 'paused':
+                raise ValueError('pause did not persist across restart')
+            result['restart_model_query'] = load_actual_model(owner, source)
+            result['restart_paused'] = pause_window(owner, source, 3.)
+            if not result['restart_paused']['no_new_vectors'] or result['restart_paused']['after']['embedded'] != 0:
+                raise ValueError('restart admitted paused passage inference')
+            # Remove the pending job's authority instead of embedding this corpus.
+            # BGE remains loaded from the real foreground query above.
+            client.call('set_source_enabled', {'source_id': source, 'enabled': False})
+            time.sleep(1.2)
+            phase = sample(owner.pid)
+            time.sleep(8.)
+            result['loaded_idle'] = summarize(phase, sample(owner.pid))
+            result['restart_process_resources'] = owner.close()
+            owner = None
+    except (OSError, ValueError, RuntimeError, KeyError, TimeoutError) as error:
+        result['failures'].append(str(error))
+    except KeyboardInterrupt:
+        result['failures'].append('probe interrupted deliberately')
+    finally:
+        if owner is not None:
+            result['interrupted_process_resources'] = owner.close()
+    result['binary_unchanged'] = bench.digest(binary) == binary_hash
+    result['total_wall_seconds'] = time.monotonic() - started
+    result['passed_control_checks'] = result['actual_bge'] and result['binary_unchanged'] and not result['failures']
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + '\n')
+    print(json.dumps({'receipt': str(args.output), 'passed_control_checks': result['passed_control_checks'], 'failures': result['failures']}), flush=True)
+    return 0 if result['passed_control_checks'] else 1
+
+
 class Tests(unittest.TestCase):
     def test_process_cpu_time_units_and_long_uptime(self):
         self.assertAlmostEqual(cpu_seconds('0:01.25'), 1.25)
@@ -271,7 +376,7 @@ class Tests(unittest.TestCase):
             cpu_seconds('1:2:3:4')
 
     def test_darwin_thread_columns_are_parsed_without_counting_headers(self):
-        raw = 'USER PID TT %CPU STAT\nsynthetic 42 ?? 0.0 S\nsynthetic 42 ?? 0.0 S\nother 43 ?? 0.0 S\n'
+        raw = 'USER PID TT %CPU STAT\nsynthetic 42 ?? 0.0 S\n      42    0.0 S\nother 43 ?? 0.0 S\n'
         self.assertEqual(process_threads(raw, 42), 2)
         self.assertIsNone(process_threads('unexpected output', 42))
 
@@ -290,14 +395,18 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--documents', type=int, default=120)
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--pause-only', action='store_true')
+    parser.add_argument('--build-inputs', type=Path)
     args = parser.parse_args()
     if args.self_test:
         return 0 if unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests)).wasSuccessful() else 1
     if not args.binary or not args.model_cache or not args.output or not 20 <= args.documents <= 200:
         parser.error('explicit binary/cache/output and 20..200 synthetic documents required')
+    if args.pause_only and args.documents > 20:
+        parser.error('pause-only probe is limited to 20 synthetic documents')
     if platform.system() != 'Darwin':
         parser.error('Darwin process resource sampling required')
-    return run(args)
+    return run_pause_only(args) if args.pause_only else run(args)
 
 
 if __name__ == '__main__':

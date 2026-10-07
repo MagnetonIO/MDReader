@@ -1,0 +1,150 @@
+{
+  "kind": "actual-bge-pause-restart-idle-probe",
+  "binary_sha256": "825f2bbbfb952ff932e8cb84545a7031d794c81dee789eeb6fd5b311b740c5e8",
+  "harness_sha256": "600df43d5cefc326b6c3faa6b17b1b89f2355d433b558c597213ade90587c595",
+  "helper_sha256": "1c87127d3d53c072dc87f1e1142818bc1db98226684e1cb45ff649b924952e45",
+  "platform": "macOS-26.7-arm64-arm-64bit",
+  "synthetic_only": true,
+  "documents": 20,
+  "actual_bge": true,
+  "passage_vectors_installed": 0,
+  "failures": [],
+  "configured_onnx_intra_threads": 1,
+  "host_contention": "Shared host; root Cargo idle during measured windows. Unrelated builds may exist.",
+  "build_input_attestation_sha256": "3dfafeceb32968f88550a61dbefb2ea926e450bf56f93c853a7c7114da2c8828",
+  "selected_build_inputs": {
+    "kind": "probe-build-input-fingerprints",
+    "capturedAt": "2026-10-07T23:10:08.303707+00:00",
+    "gitHead": "2568abc9b01bfc3c879589dd97198c3cdce29ef9",
+    "files": {
+      "crates/mdreader-service/src/runtime.rs": "d5ba0800c5fba107cda5b6f9f05a1a711d19f256a92db429eb9900642da431c0",
+      "crates/mdreader-service/src/model.rs": "d0d39ee2a3e64cf9a38b5690a3e44f3c2641247653ec2ba6234e640922fe46e1",
+      "crates/mdreader-service/src/workload.rs": "337963739e6c4bebc7ea53365bf587bc5c6e8dd58d66ea389c94711b9e10c114",
+      "crates/mdreader-core/src/embed.rs": "ad33c25ec2a50ca278c66e5a025c22a5e54383c95d47e74dc90f902722aff606",
+      "crates/mdreader-core/src/store.rs": "e75844c6f15cd1d67d27c45f86222730d750e33822a07fcc6dbda037b833d7a5",
+      "src-tauri/src/main.rs": "d49f5667da94a74b50907c8079c85e146a9685d9d0c202a891eb5462a93391e0",
+      "src-tauri/src/lib.rs": "1ae9b1a66ff03b228b6ac7064ef205812b0259fe0f20f320922bdc4ee3265d81",
+      "src-tauri/src/mobile_reader.rs": "754387703ece5dacd50143e50f1c9f169b53ac89764985b7b578fc9e7f21ca4d",
+      "Cargo.toml": "fa06a5dbbbf261bb47ba4bfc2e4fdf8e35b17532c3c8f9c10af22a10b6ea7260",
+      "Cargo.lock": "9c7513eb9926291dc13d5c0ced9c91d2eef782dbd92c69807192ce7acc0a353d",
+      "src-tauri/Cargo.toml": "264a75461a45a8c0629f5a4b10e3ac9be6cc1c2db00e0a6c719eee1bdee8d1ad"
+    },
+    "scope": "Selected native build inputs captured during build; not a complete reproducible-build attestation. No changes permitted to these inputs until build completion.",
+    "completedAt": "2026-10-07T23:10:34.882858+00:00",
+    "binary_sha256": "825f2bbbfb952ff932e8cb84545a7031d794c81dee789eeb6fd5b311b740c5e8",
+    "binary_bytes": 150763936,
+    "selected_inputs_unchanged": true
+  },
+  "corpus_sha256": "3ad1ddef5b2d73ba477b4b8030cb23dfe5f915f9f11e8b8c325d97d4214aff9f",
+  "corpus_bytes": 6600,
+  "fresh_policy": "balanced",
+  "first_model_query": {
+    "elapsed_ms": 176.94191599999996,
+    "actual_query_embedding_available": true,
+    "hits": 0,
+    "semantic_retrieval_claim": false
+  },
+  "paused": {
+    "wall_seconds": 5.019381459,
+    "cpu_seconds": 0.010000000000000009,
+    "observed_cpu_percent": 0.19922773516385198,
+    "start": {
+      "monotonic_seconds": 0.697392666,
+      "cpu_seconds": 0.15,
+      "rss_bytes": 282230784,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 5.716774125,
+      "cpu_seconds": 0.16,
+      "rss_bytes": 235339776,
+      "process_threads": null
+    },
+    "before": {
+      "chunks": 20,
+      "documents": 20,
+      "embedded": 0,
+      "model": "bge-small-en-v1.5"
+    },
+    "after": {
+      "chunks": 20,
+      "documents": 20,
+      "embedded": 0,
+      "model": "bge-small-en-v1.5"
+    },
+    "no_new_vectors": true
+  },
+  "first_process_resources": {
+    "raw": "5.61 real         0.11 user         0.04 sys\n           282296320  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               17650  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                  12  messages sent\n                  12  messages received\n                   0  signals received\n                  68  voluntary context switches\n                 238  involuntary context switches\n          2044763803  instructions retired\n           666763286  cycles elapsed\n           251937632  peak memory footprint",
+    "wall_seconds": 5.61,
+    "user_cpu_seconds": 0.11,
+    "system_cpu_seconds": 0.04,
+    "max_rss_bytes": 282296320
+  },
+  "restart_policy": "paused",
+  "restart_model_query": {
+    "elapsed_ms": 172.859667,
+    "actual_query_embedding_available": true,
+    "hits": 0,
+    "semantic_retrieval_claim": false
+  },
+  "restart_paused": {
+    "wall_seconds": 3.0152737500000004,
+    "cpu_seconds": 0.0,
+    "observed_cpu_percent": 0.0,
+    "start": {
+      "monotonic_seconds": 6.307212541,
+      "cpu_seconds": 0.13,
+      "rss_bytes": 280215552,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 9.322486291,
+      "cpu_seconds": 0.13,
+      "rss_bytes": 233324544,
+      "process_threads": null
+    },
+    "before": {
+      "chunks": 20,
+      "documents": 20,
+      "embedded": 0,
+      "model": "bge-small-en-v1.5"
+    },
+    "after": {
+      "chunks": 20,
+      "documents": 20,
+      "embedded": 0,
+      "model": "bge-small-en-v1.5"
+    },
+    "no_new_vectors": true
+  },
+  "loaded_idle": {
+    "wall_seconds": 8.016483000000001,
+    "cpu_seconds": 0.0,
+    "observed_cpu_percent": 0.0,
+    "start": {
+      "monotonic_seconds": 10.53774825,
+      "cpu_seconds": 0.14,
+      "rss_bytes": 233357312,
+      "process_threads": null
+    },
+    "end": {
+      "monotonic_seconds": 18.55423125,
+      "cpu_seconds": 0.14,
+      "rss_bytes": 88686592,
+      "process_threads": null
+    }
+  },
+  "restart_process_resources": {
+    "raw": "12.82 real         0.10 user         0.03 sys\n           280281088  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               17514  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   9  messages sent\n                   9  messages received\n                   0  signals received\n                  21  voluntary context switches\n                 303  involuntary context switches\n          1840728876  instructions retired\n           557433139  cycles elapsed\n           251183944  peak memory footprint",
+    "wall_seconds": 12.82,
+    "user_cpu_seconds": 0.1,
+    "system_cpu_seconds": 0.03,
+    "max_rss_bytes": 280281088
+  },
+  "binary_unchanged": true,
+  "total_wall_seconds": 18.519822709,
+  "passed_control_checks": true,
+  "thread_count_measurement_valid": false,
+  "thread_count_measurement_note": "Darwin ps -M omits USER on continuation rows. Run-time parser counted only the first row; total process threads are unavailable. A separate four-thread synthetic process reproduced the format and the parser was subsequently corrected without rerunning BGE. CPU-time and RSS measurements are independent."
+}
