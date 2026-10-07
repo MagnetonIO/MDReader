@@ -194,7 +194,19 @@ CREATE INDEX resolved_incoming ON resolved_links(source_id,target_id,origin_id);
 CREATE INDEX resolved_target ON resolved_links(target_id,origin_id);
 CREATE INDEX resolved_origin ON resolved_links(origin_id,target_id);
 PRAGMA user_version=4;";
-const INDEX_VERSION: i64 = 4;
+// Row membership is derived in the same transaction as each vector install.
+// Counting/progress must never read 384-float vector payloads. Chunk deletion
+// cascades through both this table and the existing vector cleanup trigger.
+const EMBEDDING_MEMBERSHIP_SCHEMA: &str = "
+CREATE TABLE embedding_memberships(chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+ source_id TEXT NOT NULL);
+CREATE INDEX embedding_memberships_source ON embedding_memberships(source_id,chunk_id);
+INSERT INTO embedding_memberships(chunk_id,source_id)
+ SELECT v.rowid,d.source_id FROM vectors v
+ CROSS JOIN chunks c ON c.id=v.rowid
+ CROSS JOIN documents d ON d.id=c.document_id;
+PRAGMA user_version=5;";
+const INDEX_VERSION: i64 = 5;
 const LIBRARY_VERSION: i64 = 4;
 const MAX_REFERENCE_MATCHES: usize = 10_000;
 const REFERENCE_AMBIGUITY_BUDGET: &str = "reference ambiguity exceeds budget";
@@ -228,7 +240,7 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
         tx.execute("DELETE FROM documents", [])?;
         tx.commit()?;
     }
-    if index && version < INDEX_VERSION {
+    if index && version < 4 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(REFERENCE_SCHEMA)?;
         {
@@ -243,6 +255,13 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
         for source in sources {
             rebuild_resolved_links(&tx, &source, &Cancellation::default())?;
         }
+        tx.commit()?;
+    }
+    if index && version < 5 {
+        let tx = connection.unchecked_transaction()?;
+        // Public vec0 rowid iteration only. CROSS JOIN keeps vectors outermost
+        // so migration scans membership rather than fetching each payload.
+        tx.execute_batch(EMBEDDING_MEMBERSHIP_SCHEMA)?;
         tx.commit()?;
     }
     if !index && version < 2 {
@@ -363,12 +382,17 @@ impl ReaderStore {
         let identity = serde_json::to_string(&root.identity)
             .map_err(|_| invalid("invalid source identity"))?;
         let id = revision(identity.as_bytes());
-        self.library.execute("INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path,enabled=1",params![id,name,encode_path(&root.path),identity])?;
-        Ok(Source {
-            id,
-            name: name.into(),
-            enabled: true,
-        })
+        // Admission is idempotent, never an implicit re-grant. A stale window
+        // or queued import must not revive a source that the user revoked.
+        self.library.execute("INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path",params![id,name,encode_path(&root.path),identity])?;
+        self.find_local_source(&root.path, &root.identity)?.ok_or(ReaderError::Unavailable)
+    }
+    /// Look up an exact persisted binding without admitting or reopening it.
+    /// This also permits revocation after a directory disappears or is replaced.
+    pub fn find_local_source(&self, path: &Path, identity: &SourceRootIdentity) -> Result<Option<Source>> {
+        let identity = serde_json::to_string(identity).map_err(|_| invalid("invalid source identity"))?;
+        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE identity=?1 AND path=?2",
+            params![identity, encode_path(path)], |r| Ok(Source { id:r.get(0)?, name:r.get(1)?, enabled:r.get(2)? })).optional()?)
     }
     pub fn list_sources(&self) -> Result<Vec<Source>> {
         Ok(self
@@ -426,6 +450,17 @@ impl ReaderStore {
         {
             return Err(ReaderError::Unavailable);
         }
+        Ok(())
+    }
+    /// Revoke first, then remove only rebuildable index data. The disabled
+    /// durable binding remains as a tombstone against late Admit requests;
+    /// durable bookmarks and original Markdown are preserved for reactivation.
+    pub fn forget_source_index(&mut self, id: &str) -> Result<()> {
+        self.set_source_enabled(id, false)?;
+        let tx = self.index.transaction()?;
+        tx.execute("DELETE FROM documents WHERE source_id=?1", [id])?;
+        tx.commit()?;
+        self.library.execute("DELETE FROM index_jobs WHERE source_id=?1", [id])?;
         Ok(())
     }
     pub fn index_source(&mut self, id: &str) -> Result<usize> {
@@ -658,7 +693,7 @@ impl ReaderStore {
     }
     pub fn pending_embedding_documents(&self, source: &str) -> Result<Vec<String>> {
         self.scope(&[source.into()])?;
-        Ok(self.index.prepare("SELECT d.path FROM documents d WHERE d.source_id=?1 AND EXISTS(SELECT 1 FROM chunks c LEFT JOIN vectors v ON v.rowid=c.id WHERE c.document_id=d.id AND v.rowid IS NULL) ORDER BY d.path")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
+        Ok(self.index.prepare("SELECT d.path FROM documents d WHERE d.source_id=?1 AND EXISTS(SELECT 1 FROM chunks c LEFT JOIN embedding_memberships m ON m.chunk_id=c.id WHERE c.document_id=d.id AND m.chunk_id IS NULL) ORDER BY d.path")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?)
     }
     pub fn list_documents(&self,source:&str)->Result<Vec<ListedDocument>> {
         self.scope(&[source.into()])?;
@@ -705,7 +740,7 @@ impl ReaderStore {
             model: MODEL_NAME.into(),
         };
         for id in ids {
-            let (docs,chunks,embedded):(u64,u64,u64)=self.index.query_row("SELECT (SELECT count(*) FROM documents WHERE source_id=?1),(SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.source_id=?1),(SELECT count(*) FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN documents d ON d.id=c.document_id WHERE d.source_id=?1)",[id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            let (docs,chunks,embedded):(u64,u64,u64)=self.index.query_row("SELECT (SELECT count(*) FROM documents WHERE source_id=?1),(SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.source_id=?1),(SELECT count(*) FROM embedding_memberships WHERE source_id=?1)",[id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
             status.documents += docs;
             status.chunks += chunks;
             status.embedded += embedded;
@@ -790,6 +825,7 @@ impl ReaderStore {
                 "INSERT INTO vectors(rowid,embedding) VALUES(?1,?2)",
                 params![id, bytes],
             )?;
+            tx.execute("INSERT INTO embedding_memberships(chunk_id,source_id) VALUES(?1,?2) ON CONFLICT(chunk_id) DO UPDATE SET source_id=excluded.source_id", params![id,source])?;
         }
         tx.commit()?;
         Ok(())

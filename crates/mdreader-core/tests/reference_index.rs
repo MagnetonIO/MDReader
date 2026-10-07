@@ -171,7 +171,8 @@ fn readonly_handles_never_create_migrate_or_write_and_can_read_during_an_owner_w
     drop(owner);
     for filename in ["library.sqlite", "index.sqlite"] {
         let connection = rusqlite::Connection::open(data.path().join(filename)).unwrap();
-        for version in [0, 3, 5] {
+        let expected = if filename == "index.sqlite" { 5 } else { 4 };
+        for version in [0, expected - 1, expected + 1] {
             connection
                 .pragma_update(None, "user_version", version)
                 .unwrap();
@@ -181,7 +182,7 @@ fn readonly_handles_never_create_migrate_or_write_and_can_read_during_an_owner_w
                 .unwrap();
             assert_eq!(current, version, "readonly must not migrate {filename}");
         }
-        connection.pragma_update(None, "user_version", 4).unwrap();
+        connection.pragma_update(None, "user_version", expected).unwrap();
     }
     assert!(ReaderStore::open_readonly(data.path()).is_ok());
 }
@@ -395,7 +396,7 @@ fn source_scope_revocation_and_derived_migration_keep_authority_boundaries() {
     drop(store);
     // Reproduce a v3 derived database without touching durable library state.
     let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
-    index.execute_batch("DROP TABLE IF EXISTS resolved_links; DROP TABLE IF EXISTS document_aliases; PRAGMA user_version=3;").unwrap();
+    index.execute_batch("DROP TABLE IF EXISTS embedding_memberships; DROP TABLE IF EXISTS resolved_links; DROP TABLE IF EXISTS document_aliases; PRAGMA user_version=3;").unwrap();
     drop(index);
     let store = ReaderStore::open(data.path()).unwrap();
     assert_eq!(
