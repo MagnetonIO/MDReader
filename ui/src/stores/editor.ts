@@ -19,6 +19,7 @@
  */
 
 import { create } from 'zustand';
+import { editorAdmission, type EditorSave } from '../features/editor-preservation/admission';
 
 /** The reading pane's mode for a (tab, doc). `read` is the default (no entry). */
 export type EditorMode = 'read' | 'source' | 'split';
@@ -79,6 +80,8 @@ function makeEntry(
 
 export interface EditorStore {
   entries: Record<string, EditorEntry>;
+  /** Captured ownership of one actual pending save; null means admission denied. */
+  beginSave: (tabId: string, path: string) => EditorSave | null;
 
   /** The (tab, doc) entry, or undefined when it is in read mode. */
   entry: (tabId: string, path: string) => EditorEntry | undefined;
@@ -138,85 +141,106 @@ function patch(
   });
 }
 
-export const useEditorStore = create<EditorStore>((set, get) => ({
-  entries: {},
+export const useEditorStore = create<EditorStore>((set, get) => {
+  function commit(update: (state: EditorStore) => Partial<EditorStore>, replaced?: string) {
+    const state = get();
+    const patch = update(state);
+    // Publish the ownership stamp before synchronous store subscribers observe
+    // the entry, so a reentrant save cannot capture its preceding incarnation.
+    editorAdmission.changed(state.entries, patch.entries ?? state.entries, replaced);
+    set(patch);
+  }
+  function mutate(update: (state: EditorStore) => Partial<EditorStore>, replaced?: string) {
+    if (!editorAdmission.denied()) commit(update, replaced);
+  }
+  return ({
+    entries: {},
+    beginSave(tabId, path) {
+      const key = keyOf(tabId, path);
+      const entry = get().entries[key];
+      if (!entry) return null;
+      return editorAdmission.save(key, entry, () => get().entries[key], (entry) => {
+        commit((state) => ({ entries: { ...state.entries, [key]: entry } }));
+      });
+    },
 
-  entry: (tabId, path) => get().entries[keyOf(tabId, path)],
-  mode: (tabId, path) => get().entries[keyOf(tabId, path)]?.mode ?? 'read',
-  isDirty: (tabId, path) => get().entries[keyOf(tabId, path)]?.dirty ?? false,
-  tabIsDirty: (tabId) =>
-    Object.values(get().entries).some((entry) => entry.tabId === tabId && entry.dirty),
-  dirtyTabIds: () => [
-    ...new Set(
-      Object.values(get().entries)
-        .filter((entry) => entry.dirty)
-        .map((entry) => entry.tabId),
-    ),
-  ],
-  allDirtyEntries: () => Object.values(get().entries).filter((entry) => entry.dirty),
+    entry: (tabId, path) => get().entries[keyOf(tabId, path)],
+    mode: (tabId, path) => get().entries[keyOf(tabId, path)]?.mode ?? 'read',
+    isDirty: (tabId, path) => get().entries[keyOf(tabId, path)]?.dirty ?? false,
+    tabIsDirty: (tabId) =>
+      Object.values(get().entries).some((entry) => entry.tabId === tabId && entry.dirty),
+    dirtyTabIds: () => [
+      ...new Set(
+        Object.values(get().entries)
+          .filter((entry) => entry.dirty)
+          .map((entry) => entry.tabId),
+      ),
+    ],
+    allDirtyEntries: () => Object.values(get().entries).filter((entry) => entry.dirty),
 
-  seed: (tabId, path, content, hash, mode) =>
-    set((state) => ({
-      entries: {
-        ...state.entries,
-        [keyOf(tabId, path)]: makeEntry(tabId, path, mode, content, hash),
-      },
-    })),
+    seed: (tabId, path, content, hash, mode) =>
+      mutate((state) => ({
+        entries: {
+          ...state.entries,
+          [keyOf(tabId, path)]: makeEntry(tabId, path, mode, content, hash),
+        },
+      }), keyOf(tabId, path)),
 
-  setMode: (tabId, path, mode) => patch(set, tabId, path, (entry) => ({ ...entry, mode })),
+    setMode: (tabId, path, mode) => patch(mutate, tabId, path, (entry) => ({ ...entry, mode })),
 
-  edit: (tabId, path, buffer) =>
-    patch(set, tabId, path, (entry) => ({
-      ...entry,
-      buffer,
-      dirty: buffer !== entry.savedContent,
-    })),
+    edit: (tabId, path, buffer) =>
+      patch(mutate, tabId, path, (entry) => ({
+        ...entry,
+        buffer,
+        dirty: buffer !== entry.savedContent,
+      })),
 
-  markSaved: (tabId, path, savedContent, newHash) =>
-    patch(set, tabId, path, (entry) => ({
-      ...entry,
-      savedContent,
-      baseHash: newHash,
-      // Recompute against the LIVE buffer: typing during the save keeps it dirty.
-      dirty: entry.buffer !== savedContent,
-      conflict: null,
-    })),
+    markSaved: (tabId, path, savedContent, newHash) =>
+      patch(mutate, tabId, path, (entry) => ({
+        ...entry,
+        savedContent,
+        baseHash: newHash,
+        // Recompute against the LIVE buffer: typing during the save keeps it dirty.
+        dirty: entry.buffer !== savedContent,
+        conflict: null,
+      })),
 
-  raiseConflict: (tabId, path, currentHash, source) =>
-    patch(set, tabId, path, (entry) => ({
-      ...entry,
-      conflict: { currentHash, source, phase: 'choose' },
-    })),
+    raiseConflict: (tabId, path, currentHash, source) =>
+      patch(mutate, tabId, path, (entry) => ({
+        ...entry,
+        conflict: { currentHash, source, phase: 'choose' },
+      })),
 
-  toConfirmOverwrite: (tabId, path) =>
-    patch(set, tabId, path, (entry) =>
-      entry.conflict ? { ...entry, conflict: { ...entry.conflict, phase: 'confirm' } } : entry,
-    ),
+    toConfirmOverwrite: (tabId, path) =>
+      patch(mutate, tabId, path, (entry) =>
+        entry.conflict ? { ...entry, conflict: { ...entry.conflict, phase: 'confirm' } } : entry,
+      ),
 
-  clearConflict: (tabId, path) =>
-    patch(set, tabId, path, (entry) => ({ ...entry, conflict: null })),
+    clearConflict: (tabId, path) =>
+      patch(mutate, tabId, path, (entry) => ({ ...entry, conflict: null })),
 
-  removeTab: (tabId) =>
-    set((state) => {
-      const next: Record<string, EditorEntry> = {};
-      let changed = false;
-      for (const [key, entry] of Object.entries(state.entries)) {
-        if (entry.tabId === tabId) changed = true;
-        else next[key] = entry;
-      }
-      return changed ? { entries: next } : {};
-    }),
+    removeTab: (tabId) =>
+      mutate((state) => {
+        const next: Record<string, EditorEntry> = {};
+        let changed = false;
+        for (const [key, entry] of Object.entries(state.entries)) {
+          if (entry.tabId === tabId) changed = true;
+          else next[key] = entry;
+        }
+        return changed ? { entries: next } : {};
+      }),
 
-  retain: (keep) =>
-    set((state) => {
-      const next: Record<string, EditorEntry> = {};
-      let changed = false;
-      for (const [key, entry] of Object.entries(state.entries)) {
-        if (keep(entry.tabId, entry.path, entry.dirty)) next[key] = entry;
-        else changed = true;
-      }
-      return changed ? { entries: next } : {};
-    }),
+    retain: (keep) =>
+      mutate((state) => {
+        const next: Record<string, EditorEntry> = {};
+        let changed = false;
+        for (const [key, entry] of Object.entries(state.entries)) {
+          if (keep(entry.tabId, entry.path, entry.dirty)) next[key] = entry;
+          else changed = true;
+        }
+        return changed ? { entries: next } : {};
+      }),
 
-  reset: () => set({ entries: {} }),
-}));
+    reset: () => mutate(() => ({ entries: {} })),
+  });
+});

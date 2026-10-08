@@ -96,3 +96,11 @@ actor/bindings composition). No source or cache deletion was used. Two inherited
 test warnings remained; full strict native Clippy remains open. This combined
 gate does not mount the renderer preservation bridge or establish all-writer
 preservation readiness.
+
+The coordinator also checked combined native integration
+`811ceafebbd2446bb40c7c4b684c92b10d910a72`: actual default-feature
+`profile_transition::` tests passed **9 cases in 0.21 s** after a **37.55 s** warm
+app compilation. This covered additive/read-only history and native JSON owner,
+actual capability snapshot and renderer outer bundle. Two inherited test warnings
+(`ConnectorUnavailable`/`CachedOffline`) remained. Full strict native Clippy is
+not claimed. This later native gate still does not mount the renderer bridge.
