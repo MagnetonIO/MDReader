@@ -21,6 +21,7 @@ fn relative_targets_are_exact_and_never_escape() {
 use super::*;
 struct Fixture {
     temp: tempfile::TempDir,
+    root: std::path::PathBuf,
     store: ReaderStore,
     assets: AssetStore,
     id: String,
@@ -30,32 +31,24 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("document");
-        fs::create_dir(&root).unwrap();
+        let directory = temp.path().join("documents");
         let markdown = "# Assets\n\n![First](figures/a.png) ![Second](b.jpg) ![Third](c.png) ![Fourth](d.png) ![Fifth](e.png)\n";
-        fs::write(root.join("document.md"), markdown).unwrap();
-        let revision = blake3::hash(markdown.as_bytes()).to_hex().to_string();
         let mut store = ReaderStore::open(&temp.path().join("data")).unwrap();
-        let source = store
-            .add_local_source(
-                "Selected",
-                SourceRoot::capture(root.canonicalize().unwrap()).unwrap(),
-            )
-            .unwrap()
-            .id;
-        let id = uuid::Uuid::new_v4().to_string();
-        store.with_library_connection(|db|db.execute_batch("CREATE TABLE device_documents_v1(id TEXT PRIMARY KEY,source_id TEXT NOT NULL,revision TEXT NOT NULL)")).unwrap();
-        store
-            .with_library_connection(|db| {
-                db.execute(
-                    "INSERT INTO device_documents_v1 VALUES(?1,?2,?3)",
-                    params![id, source, revision],
-                )
-            })
-            .unwrap();
+        let document = mdreader_core::device::import(
+            &mut store,
+            &directory,
+            "assets.md".into(),
+            markdown.into(),
+        )
+        .unwrap();
+        let root = directory.join(&document.id);
+        let id = document.id;
+        let source = document.source_id;
+        let revision = document.revision;
         let assets = AssetStore::open(&mut store, &temp.path().join("assets")).unwrap();
         Self {
             temp,
+            root,
             store,
             assets,
             id,
@@ -368,12 +361,8 @@ fn source_revocation_and_root_replacement_fence_pending_publication_and_read_ses
     f.store.set_source_enabled(&f.source, false).unwrap();
     assert!(f.assets.publish(&mut f.store, validated).is_err());
     f.store.set_source_enabled(&f.source, true).unwrap();
-    fs::rename(
-        f.temp.path().join("document"),
-        f.temp.path().join("old-document"),
-    )
-    .unwrap();
-    fs::create_dir(f.temp.path().join("document")).unwrap();
+    fs::rename(&f.root, f.temp.path().join("old-document")).unwrap();
+    fs::create_dir(&f.root).unwrap();
     assert!(f
         .assets
         .prepare_open(
@@ -456,7 +445,7 @@ fn inventory_and_explicit_forget_work_without_restoring_revoked_document_authori
     assert_eq!(inventory.reserved_bytes, receipt.bytes * 2);
     assert_eq!(inventory.max_bytes, MAX_LIBRARY_BYTES as u32);
     f.store.set_source_enabled(&f.source, false).unwrap();
-    let original = f.temp.path().join("document/document.md");
+    let original = f.root.join("document.md");
     fs::write(&original, "externally changed original").unwrap();
     assert!(f.assets.manifest(&mut f.store, &f.id, &f.revision).is_err());
     assert_eq!(f.assets.inventory(&mut f.store).unwrap().items.len(), 2);
@@ -514,7 +503,7 @@ fn selectable_targets_are_bounded_and_report_truncation() {
     let markdown: String = (0..65)
         .map(|i| format!("![Figure](figures/{i:03}.png)\n"))
         .collect();
-    fs::write(f.temp.path().join("document/document.md"), &markdown).unwrap();
+    fs::write(f.root.join("document.md"), &markdown).unwrap();
     f.revision = blake3::hash(markdown.as_bytes()).to_hex().to_string();
     f.store
         .with_library_connection(|db| {
@@ -529,6 +518,39 @@ fn selectable_targets_are_bounded_and_report_truncation() {
     assert!(manifest.targets_truncated);
     assert_eq!(manifest.targets[0], "figures/000.png");
     assert_eq!(manifest.targets[63], "figures/063.png");
+}
+
+#[test]
+fn future_document_schema_blocks_asset_authority_but_keeps_cleanup_metadata_available() {
+    let mut f = Fixture::new();
+    let pending = f.upload("figures/a.png");
+    let (receipt, stamp) = f.commit(&pending);
+    let copy = f.assets.root.path.join(format!("{}.bin", receipt.asset_id));
+    let before = fs::read(&copy).unwrap();
+    f.store
+        .with_library_connection(|db| {
+            db.execute(
+                "UPDATE device_document_schema_v1 SET version=2 WHERE singleton=1",
+                [],
+            )
+        })
+        .unwrap();
+    assert!(f.assets.manifest(&mut f.store, &f.id, &f.revision).is_err());
+    let runtime = AssetRuntime::default();
+    assert!(f
+        .assets
+        .prepare_open(
+            &mut f.store,
+            &f.id,
+            &f.revision,
+            &receipt.asset_id,
+            &stamp,
+            runtime.read_permit(Instant::now()).unwrap(),
+        )
+        .is_err());
+    let inventory = f.assets.inventory(&mut f.store).unwrap();
+    assert_eq!(inventory.items.len(), 1);
+    assert_eq!(fs::read(copy).unwrap(), before);
 }
 
 #[test]

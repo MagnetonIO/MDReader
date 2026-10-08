@@ -65,10 +65,14 @@ than treated as proof of failure or success.
 
 ## Verification and remaining acceptance
 
-The actual app's ten focused `mobile_assets::tests` pass, covering PNG/JPEG,
+The actual app's eleven focused `mobile_assets::tests` pass, covering PNG/JPEG,
 canonical paths, exact replay/reopen, quota/invalid images, ABA manifests,
 revocation/root replacement, read-slot cleanup, inventory/forget, target
-truncation and additive/future schema handling. The feature's isolated native
+truncation and additive/future schema handling. Asset reads now use the shared
+`mdreader-core::device` owner: future document schemas also reject asset access,
+while metadata-only storage inventory remains available. Fixtures import through
+that actual owner instead of creating a synthetic three-column document table.
+The feature's isolated native
 harness also passes strict all-target Clippy. This does not claim whole-legacy-app
 strict Clippy acceptance.
 

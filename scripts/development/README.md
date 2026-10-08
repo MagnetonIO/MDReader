@@ -49,8 +49,10 @@ rustc --edition=2021 --test src-tauri/build_support/release_identity.rs -o /tmp/
 
 The subprocess tests use temporary synthetic Git repositories and a fake `pnpm`;
 they run no Cargo/Xcode/Gradle builds. They establish handoff/argv/failure/lifecycle
-behavior, not a real mobile archive stamp. Actual nested Xcode/Gradle packaging and
-inspection of the final executable's release source identity remain acceptance gates.
+behavior, not a real mobile archive stamp. A subsequent real clean-HEAD Xcode
+simulator archive passed the wrapper and embedded the exact commit; see the
+[bounded receipt](../../docs/benchmarks/2026-10-07-ios-source-stamp-smoke.json).
+Android and signed distribution archive identities still need their own checks.
 
 Observed focused evidence: Node **4/4 passed (1.57 s)** and standalone Rust resolver
 **3/3 passed (0.00 s; compile/run 0.52 s)**. The first subprocess run exposed a

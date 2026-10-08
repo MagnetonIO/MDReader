@@ -49,10 +49,7 @@ pub(super) fn document(store: &mut ReaderStore, id: &str, revision: &str) -> Res
     {
         return Err(unavailable());
     }
-    let source:Option<String>=store.with_library_connection(|db|db.query_row("SELECT d.source_id FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE d.id=?1 AND d.revision=?2 AND s.enabled=1",params![id,revision],|r|r.get(0)).optional()).map_err(sql)?;
-    let source = source.ok_or_else(unavailable)?;
-    store
-        .read_document(&source, "document.md", Some(revision))
+    mdreader_core::device::read(store, id, Some(revision))
         .map(|body| body.markdown)
         .map_err(|_| unavailable())
 }

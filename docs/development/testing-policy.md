@@ -44,8 +44,8 @@ Examples from the worktree root:
 cargo test -p mdreader-core --test sqlite_library repeated_admission
 # Background inference behavior, including persisted policy and query bypass
 cargo test -p mdreader-service --lib
-# The mobile vertical slice; no desktop/provider/release suite
-cargo test -p mdreader-app --lib mobile_reader::tests
+# Portable device owner; no desktop/provider/release suite or model
+CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-core --lib device:: -- --test-threads=1
 pnpm --filter @mdreader/app test src/App.mobile.test.tsx
 # Indexing controls presentation/acknowledgment
 pnpm --filter @mdreader/app test src/shell/IndexingPanel.test.tsx
