@@ -83,6 +83,7 @@ test('three visible local images load without clicks while external images remai
       });
     }
     disconnect() { this.disconnected = true; }
+    unobserve() {}
   });
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
   const reference = { sourceId: 'a'.repeat(64), path: 'welcome.md', revision: 'b'.repeat(64), title: 'Welcome' };
