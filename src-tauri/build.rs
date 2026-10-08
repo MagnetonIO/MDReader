@@ -23,6 +23,7 @@ fn main() {
         "MDREADER_NATIVE_SYNC_JWKS_ENDPOINT",
         "MDREADER_NATIVE_SYNC_ENDPOINT",
         "MDREADER_NATIVE_SYNC_REDIRECT_URI",
+        "MDREADER_MOBILE_SYNC_REDIRECT_URI",
     ] {
         println!("cargo:rerun-if-env-changed={field}");
     }

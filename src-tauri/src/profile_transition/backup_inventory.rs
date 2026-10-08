@@ -50,7 +50,23 @@ fn walk(
 }
 fn classify(path: &Path) -> Result<Disposition> {
     use Disposition::{Excluded, Raw, Sqlite};
-    use Exclusion::{ModelCache, RebuildableIndex, RuntimeEndpointOrLock, SqliteRecoverySidecar};
+    use Exclusion::{
+        Diagnostics, ModelCache, RebuildableIndex, RuntimeEndpointOrLock, SqliteRecoverySidecar,
+    };
+    // Only the diagnostic owner's exact known files are admitted. Unknown
+    // stores inside this directory still require explicit offline preservation.
+    if path == Path::new("diagnostics/settings.json") {
+        return Ok(Raw);
+    }
+    if path == Path::new("diagnostics/diagnostics.lock") {
+        return Ok(Excluded(RuntimeEndpointOrLock));
+    }
+    if path == Path::new("diagnostics/mdreader.log")
+        || (1..crate::diagnostics::LOG_RETENTION)
+            .any(|slot| path == Path::new(&format!("diagnostics/mdreader.log.{slot}")))
+    {
+        return Ok(Excluded(Diagnostics));
+    }
     if [
         "session.json",
         "settings.json",
@@ -108,4 +124,54 @@ fn classify(path: &Path) -> Result<Disposition> {
         return Ok(Raw);
     }
     Err(Error::Unclassified)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_profile_diagnostics_are_classified_without_hiding_unknown_stores() {
+        let profile = tempfile::tempdir().unwrap();
+        let diagnostics = profile.path().join("diagnostics");
+        std::fs::create_dir(&diagnostics).unwrap();
+        for name in [
+            "diagnostics.lock",
+            "mdreader.log",
+            "mdreader.log.1",
+            "mdreader.log.2",
+            "settings.json",
+        ] {
+            std::fs::write(diagnostics.join(name), b"synthetic fixture").unwrap();
+        }
+        let limits = Limits::default();
+        let selected = selections(profile.path(), &limits).unwrap();
+        let inventory =
+            mdreader_profile::Inventory::capture(profile.path(), &selected, &limits).unwrap();
+        assert_eq!(inventory.entries().len(), 5);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|entry| entry.disposition == Disposition::Raw)
+                .count(),
+            1
+        );
+        assert_eq!(
+            classify(Path::new("diagnostics/settings.json")).unwrap(),
+            Disposition::Raw
+        );
+        assert_eq!(
+            classify(Path::new("diagnostics/mdreader.log")).unwrap(),
+            Disposition::Excluded(Exclusion::Diagnostics)
+        );
+        std::fs::write(diagnostics.join("library.sqlite"), b"unknown durable bytes").unwrap();
+        assert!(matches!(
+            selections(profile.path(), &limits),
+            Err(Error::Unclassified)
+        ));
+        assert_eq!(
+            std::fs::read(diagnostics.join("library.sqlite")).unwrap(),
+            b"unknown durable bytes"
+        );
+    }
 }

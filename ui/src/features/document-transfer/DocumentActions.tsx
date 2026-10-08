@@ -4,13 +4,16 @@ import type { ProviderDocumentBody } from '../../platform/providers';
 import { readingLink } from './reading-link';
 import './document-transfer.css';
 
-export function DocumentActions({ reference, read, line = reference.line ?? 1, getLine, nativeExport }: {
+export function DocumentActions({ reference, read, line = reference.line ?? 1, getLine, nativeExport, nativeShare, includesSelectedImages = false, nativeReadingLinks = false }: {
   reference: CanonicalReaderReference;
   read(): Promise<ProviderDocumentBody>;
   line?: number;
   getLine?: () => number;
   /** Present only when a real native save-dialog transport is composed. */
   nativeExport?: (reference: CanonicalReaderReference) => Promise<'exported' | 'cancelled'>;
+  nativeShare?: (reference: CanonicalReaderReference) => Promise<'presented' | 'cancelled'>;
+  includesSelectedImages?: boolean;
+  nativeReadingLinks?: boolean;
 }) {
   const [prepared, setPrepared] = useState<{ reference: CanonicalReaderReference; file: File } | null>(null);
   const file = prepared?.reference === reference ? prepared.file : null;
@@ -49,8 +52,18 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
     setBusy(true); setError(null);
     try {
       const state = await nativeExport(reference);
-      if (selected === epoch.current) setNotice(state === 'exported' ? 'Markdown exported to your selected destination.' : 'Export cancelled.');
+      if (selected === epoch.current) setNotice(state === 'exported' ? (includesSelectedImages ? 'Document copy exported with selected offline images.' : 'Markdown exported to your selected destination.') : 'Export cancelled.');
     } catch (cause) { if (selected === epoch.current) setError(cause instanceof Error ? cause.message : 'Native export is unavailable.'); }
+    finally { if (selected === epoch.current) setBusy(false); }
+  }
+  async function shareNative() {
+    if (!nativeShare) return;
+    const selected = epoch.current;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const state = await nativeShare(reference);
+      if (selected === epoch.current) setNotice(state === 'presented' ? 'Copy presented to the system share sheet. Check the receiving app to confirm delivery.' : 'Sharing cancelled.');
+    } catch (cause) { if (selected === epoch.current) setError(cause instanceof Error ? cause.message : 'Sharing could not be confirmed.'); }
     finally { if (selected === epoch.current) setBusy(false); }
   }
   function download() {
@@ -79,17 +92,18 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
   }
   return <details className="document-actions" onToggle={(event) => { if (event.currentTarget.open) setLinkLine(getLine?.() ?? line); }}>
     <summary>Export, share &amp; reading link</summary>
-    <p>Original Markdown only. Exporting a copy never changes the source.</p>
+    <p>{includesSelectedImages ? "Original Markdown and selected offline images. Copies with images use a ZIP; incomplete and unselected images are excluded." : "Original Markdown only."} Exporting a copy never changes the source.</p>
     <div className="document-actions__buttons">
-      {nativeExport ? <button type="button" disabled={busy} onClick={() => void exportNative()}>Export Markdown…</button> : native ? <p>Native file export is unavailable in this build.</p> : null}
-      {!native || typeof navigator.share === 'function' ? <button type="button" disabled={busy} onClick={() => void prepare()}>Prepare Markdown copy</button> : null}
+      {nativeExport ? <button type="button" disabled={busy} onClick={() => void exportNative()}>{includesSelectedImages ? "Export document copy…" : "Export Markdown…"}</button> : native ? <p>Native file export is unavailable in this build.</p> : null}
+      {nativeShare ? <button type="button" disabled={busy} onClick={() => void shareNative()}>Share document copy…</button> : null}
+      {!native || !nativeShare && typeof navigator.share === 'function' ? <button type="button" disabled={busy} onClick={() => void prepare()}>Prepare Markdown copy</button> : null}
       {!native && file ? <button type="button" onClick={download}>Download Markdown</button> : null}
       {file && navigator.canShare?.({ files: [file] }) ? <button type="button" onClick={() => void share()}>Share Markdown…</button> : null}
-      {typeof navigator.share !== 'function' ? <p>System sharing is unavailable on this host.</p> : null}
+      {!nativeShare && typeof navigator.share !== 'function' ? <p>System sharing is unavailable on this host.</p> : null}
       <button type="button" disabled={!link} onClick={() => void copy()}>Copy reading link</button>
     </div>
     <label>Exact reading link<input readOnly value={link} onFocus={(event) => event.currentTarget.select()} /></label>
-    <p>This link works only with an existing authorized source and exact revision. Paste it into Open reading link; opening links from another app is not supported yet.</p>
+    <p>This link works only with an existing authorized source and exact revision. {nativeReadingLinks ? "Tap it on this device, or paste it into Open reading link." : "Paste it into Open reading link; opening links from another app is unavailable on this host."}</p>
     {notice ? <p role="status">{notice}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
   </details>;

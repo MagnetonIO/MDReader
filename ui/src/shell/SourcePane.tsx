@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { Compartment, EditorState, type Extension } from '@codemirror/state';
+import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
   EditorView,
   keymap,
@@ -36,7 +36,12 @@ import { tags } from '@lezer/highlight';
 
 import { detectMac } from '../keymap/registry.js';
 import { sourceChord } from './source-chord.js';
+import { sourceLineSeparator, sourceText } from './source-text.js';
 import { editorAdmission } from '../features/editor-preservation/admission';
+
+// An external owner value is already in the store: reflecting it in the view
+// must not echo a normalized representation back as a user edit.
+const externalValue = Annotation.define<boolean>();
 
 export interface SourcePaneProps {
   /** The document buffer to edit (a controlled value; external changes — reload,
@@ -112,6 +117,9 @@ function topVisibleLine(view: EditorView): number {
 export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine }: SourcePaneProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  // Keep CodeMirror's default mixed-newline input handling. Only serialization
+  // uses the original convention, so pasting LF into CRLF remains normal input.
+  const separator = useRef(sourceLineSeparator(value));
   // Latest callbacks, read through refs so the editor is built ONCE (rebuilding
   // it on every render would drop cursor/undo state and thrash CM6).
   const onChangeRef = useRef(onChange);
@@ -182,12 +190,14 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       readerTheme,
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+        if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(externalValue))) {
+          onChangeRef.current(update.state.doc.sliceString(0, update.state.doc.length, separator.current));
+        }
       }),
     ];
 
     const view = new EditorView({
-      state: EditorState.create({ doc: value, extensions }),
+      state: EditorState.create({ doc: sourceText(value), extensions }),
       parent: hostRef.current,
     });
     viewRef.current = view;
@@ -210,10 +220,12 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    const current = view.state.doc.toString();
-    if (current === value) return;
+    const next = sourceText(value);
+    separator.current = sourceLineSeparator(value);
+    if (view.state.doc.eq(next)) return;
     view.dispatch({
-      changes: { from: 0, to: current.length, insert: value },
+      changes: { from: 0, to: view.state.doc.length, insert: next },
+      annotations: externalValue.of(true),
     });
   }, [value]);
 

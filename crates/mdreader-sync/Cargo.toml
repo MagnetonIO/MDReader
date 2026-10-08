@@ -33,6 +33,8 @@ aes-kw = { version = "=0.3.1", features = ["zeroize"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"], optional = true }
+[target.'cfg(target_os = "ios")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"], optional = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"], optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]

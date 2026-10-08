@@ -90,6 +90,11 @@ impl ReviewedOidcRegistration {
 }
 /// Implement only in the native system-browser owner. No embedded webview or renderer URL log.
 pub trait NativeBrowser: Send + Sync {
+    /// Native system-auth session only. The callback never enters a WebView.
+    /// Ordinary desktop browser adapters remain unsupported on this channel.
+    fn callback<'a>(&'a self) -> Pin<Box<dyn Future<Output = AuthorityResult<Zeroizing<String>>> + Send + 'a>> {
+        Box::pin(async { Err(AuthorityError::Unsupported) })
+    }
     fn open<'a>(
         &'a self,
         url: &'a str,
@@ -165,7 +170,11 @@ impl OidcClient {
         native_loopback_redirect: &str,
         nonce: Zeroizing<String>,
     ) -> AuthorityResult<PendingLogin> {
-        let redirect = redirect(native_loopback_redirect)?;
+        let redirect = if cfg!(any(target_os = "ios", target_os = "android")) {
+            super::mobile::redirect(native_loopback_redirect)?
+        } else {
+            redirect(native_loopback_redirect)?
+        };
         if LOGIN
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()

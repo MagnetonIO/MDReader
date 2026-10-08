@@ -9,7 +9,8 @@ use std::sync::Arc;
 #[path = "reader/admission.rs"]
 mod admission;
 #[cfg(any(mobile, test))]
-use std::sync::Mutex;
+#[path = "reader/embedded.rs"]
+mod embedded;
 
 #[derive(Clone)]
 pub(crate) struct ReaderBackend(Arc<Transport>, Arc<admission::Gate>);
@@ -20,7 +21,7 @@ enum Transport {
         executable: PathBuf,
     },
     #[cfg(any(mobile, test))]
-    Embedded(Box<Mutex<mdreader_core::ReaderStore>>),
+    Embedded(embedded::Owner),
 }
 impl ReaderBackend {
     pub(crate) fn bind_profile_admission(
@@ -52,6 +53,7 @@ impl ReaderBackend {
             #[cfg(test)]
             Transport::Embedded(store) => {
                 let mut store = store
+                    .store
                     .lock()
                     .map_err(|_| mdreader_core::ReaderError::Unavailable)?;
                 mdreader_service::execute(&mut store, request)
@@ -67,7 +69,7 @@ impl ReaderBackend {
         match self.0.as_ref() {
             #[cfg(any(mobile, test))]
             Transport::Embedded(store) => {
-                let mut owner = store.lock().map_err(|_| "Reader storage failed")?;
+                let mut owner = store.store.lock().map_err(|_| "Reader storage failed")?;
                 operation(&mut owner)
             }
             #[cfg(not(mobile))]
@@ -96,9 +98,7 @@ impl ReaderBackend {
     #[cfg(any(mobile, test))]
     pub(crate) fn embedded(directory: &Path) -> Result<Self, String> {
         Ok(Self(
-            Arc::new(Transport::Embedded(Box::new(Mutex::new(
-                mdreader_core::ReaderStore::open(directory).map_err(|e| e.to_string())?,
-            )))),
+            Arc::new(Transport::Embedded(embedded::Owner::open(directory)?)),
             Arc::default(),
         ))
     }
@@ -120,7 +120,11 @@ impl ReaderBackend {
             }
             #[cfg(any(mobile, test))]
             Transport::Embedded(store) => {
-                let mut store = store.lock().map_err(|_| "Reader storage failed")?;
+                #[cfg(mobile)]
+                if let Request::Account { request } = &request {
+                    return Ok(store.account(request.clone()));
+                }
+                let mut store = store.store.lock().map_err(|_| "Reader storage failed")?;
                 if let Request::StartIndex { source_id } = &request {
                     store.queue_index(source_id).map_err(|e| e.to_string())?;
                     store.index_source(source_id).map_err(|e| e.to_string())?;
@@ -132,6 +136,21 @@ impl ReaderBackend {
                 }
                 mdreader_service::execute(&mut store, request).map_err(|e| e.to_string())
             }
+        }
+    }
+    #[cfg(mobile)]
+    pub(crate) fn mobile_owner(&self) -> Result<Arc<std::sync::Mutex<mdreader_core::ReaderStore>>, String> {
+        match self.0.as_ref() {
+            Transport::Embedded(owner) => Ok(owner.store.clone()),
+        }
+    }
+    #[cfg(mobile)]
+    pub(crate) fn bind_mobile_accounts(
+        &self,
+        accounts: Result<Arc<mdreader_service::accounts::Coordinator>, mdreader_service::accounts::AccountError>,
+    ) -> Result<(), String> {
+        match self.0.as_ref() {
+            Transport::Embedded(owner) => owner.bind_accounts(accounts),
         }
     }
     pub(crate) fn typed<T: DeserializeOwned>(&self, request: Request) -> Result<T, String> {

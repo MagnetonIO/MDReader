@@ -22,6 +22,8 @@ use tauri_plugin_dialog::DialogExt;
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_core::SourceRoot;
 
+mod preservation;
+
 const DIAGNOSTIC_SETTINGS_VERSION: u32 = 1;
 const DIAGNOSTIC_RECORD_SCHEMA: &str = "mdreader.diagnostics";
 const DIAGNOSTIC_RECORD_VERSION: u32 = 1;

@@ -13,6 +13,9 @@ import type { AssetManifest, DeviceDocument, DeviceHit, PendingDeviceImport } fr
 import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
+import { AccountSyncPanel } from "../features/account-sync/AccountSyncPanel";
+import type { DeviceReference } from "../features/device-reader/backend";
+import "../features/settings/settings.css";
 import { resolveImportedLink } from "./imported-links";
 import { nativeAssetBackend } from "./device-assets";
 import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from "./DeviceAssetImage";
@@ -21,6 +24,8 @@ import { ReadingLinkOpen } from "../features/document-transfer/ReadingLinkOpen";
 import type { CanonicalReaderReference } from "../features/reader/contracts";
 import { DeviceAssetsSection } from "./DeviceAssetsSection";
 import { DeviceAssetStorage } from "./DeviceAssetStorage";
+import { observeReadingLinks, transferCapabilities, transferDocument } from "./document-transfer";
+import type { TransferCapabilities } from "./document-transfer";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -38,9 +43,10 @@ function message(cause: unknown): string {
     : "Device library operation failed";
 }
 
-/** Account-free mobile reading over the embedded SQLite owner. */
+/** Local reading remains account-free; optional sync shares the embedded owner. */
 export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
+  const [syncSelection, setSyncSelection] = useState<DeviceReference>();
   const [documents, setDocuments] = useState<DeviceDocument[]>([]);
   const [pending, setPending] = useState<PendingDeviceImport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,7 +107,14 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setAssetRefresh((value) => value + 1);
   }, []);
   const assetManifest = assetResult && assetResult.document_id === activeId && assetResult.document_revision === activeRevision ? assetResult : null;
-  const assetImages = useDeviceAssetImages(assetManifest);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferSupport, setTransferSupport] = useState<TransferCapabilities>({ export: false, share: false, readingLinks: false });
+  const assetImages = useDeviceAssetImages(transferBusy ? null : assetManifest);
+  useEffect(() => {
+    let current = true;
+    void transferCapabilities().then((value) => { if (current) setTransferSupport(value); }).catch(() => {});
+    return () => { current = false; };
+  }, []);
   useEffect(() => {
     let current = true;
     setAssetResult(null); setAssetError(null);
@@ -267,6 +280,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
       reader.current?.scrollToLine(target?.lineStart ?? line);
     }
+    setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
   };
   const openReadingLink = async (reference: CanonicalReaderReference) => {
@@ -277,6 +291,24 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     if (value.document.id !== reference.documentId || value.document.source_id !== reference.sourceId || value.document.revision !== reference.revision)
       throw new Error("The exact device receipt is unavailable. No newer copy was opened.");
     await open(value.document, reference.line ?? 1);
+  };
+  const readingLinkHandler = useRef(openReadingLink);
+  readingLinkHandler.current = openReadingLink;
+  useEffect(() => {
+    let current = true;
+    let stop: (() => void) | undefined;
+    void observeReadingLinks((reference) => current ? readingLinkHandler.current(reference) : Promise.resolve(), (message) => { if (current) setError(message); })
+      .then((dispose) => { if (current) stop = dispose; else dispose(); })
+      .catch(() => {});
+    return () => { current = false; stop?.(); };
+  }, []);
+  const transfer = async (reference: CanonicalReaderReference, action: 'export' | 'share') => {
+    setTransferBusy(true);
+    const images = assetImages;
+    try {
+      await images?.disposeAndDrain();
+      return await transferDocument(reference, action);
+    } finally { setTransferBusy(false); }
   };
   const close = async () => {
     const epoch = ++navigationEpoch.current;
@@ -516,6 +548,17 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 </button>
               </header>
               {transferReference ? <DocumentActions reference={transferReference} line={active.line}
+                includesSelectedImages nativeReadingLinks={transferSupport.readingLinks}
+                nativeExport={transferSupport.export ? async (reference) => {
+                  const state = await transfer(reference, 'export');
+                  if (state === 'presented') throw new Error('Export could not be confirmed.');
+                  return state;
+                } : undefined}
+                nativeShare={transferSupport.share ? async (reference) => {
+                  const state = await transfer(reference, 'share');
+                  if (state === 'exported') throw new Error('Sharing could not be confirmed.');
+                  return state;
+                } : undefined}
                 getLine={() => position.current?.id === active.document.id && position.current.revision === active.document.revision ? position.current.line : active.line}
                 read={async () => {
                   const value = await result(commands.mobileReaderRead(active.document.id, active.document.revision));
@@ -665,7 +708,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               </p>
             </article>
             <DeviceAssetStorage onChanged={refreshAssets} />
-            {["Google Drive", "Dropbox", "Encrypted cloud sync"].map((name) => (
+            {["Google Drive", "Dropbox"].map((name) => (
               <article key={name} className="mobile-source">
                 <h2>{name}</h2>
                 <p>
@@ -692,6 +735,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 </label>
               ))}
             </fieldset>
+            <div className="mobile-account-settings">
+              <h2>Account &amp; sync</h2>
+              <AccountSyncPanel active={tab === "Settings"} selectedDocument={syncSelection} />
+            </div>
             <h2>Offline copies</h2>
             <p>
               Imports and pins are never automatically evicted. This device
@@ -709,7 +756,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 type="button"
                 className="mobile-nav__item"
                 aria-current={name === tab ? "page" : undefined}
-                onClick={() => setTab(name)}
+                onClick={() => {
+                  setTab(name);
+                  if (name === "Library") void refresh().catch((cause) => setError(message(cause)));
+                }}
               >
                 {name}
               </button>

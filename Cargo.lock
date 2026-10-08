@@ -3343,6 +3343,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-mdreader-transfer",
  "tauri-plugin-opener",
  "tauri-plugin-os",
  "tauri-plugin-store",
@@ -3355,6 +3356,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -6343,6 +6345,17 @@ dependencies = [
  "thiserror 2.0.19",
  "toml 1.1.4+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-mdreader-transfer"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "zeroize",
 ]
 
 [[package]]
