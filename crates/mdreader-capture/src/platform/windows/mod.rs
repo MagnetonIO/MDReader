@@ -9,8 +9,10 @@ use std::{
 use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::*};
 
 mod authority;
+mod private;
 mod security;
 pub(crate) use authority::DirectoryAuthority;
+pub use private::{same_open_file, PrivateDirectory};
 
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     authority::Chain::open(path, true, true)?.verify()
@@ -20,13 +22,26 @@ pub(crate) fn private_directory(path: &Path) -> Result<()> {
 // is opened without following reparse points or sharing delete/write access.
 #[allow(unsafe_code)]
 fn open_file(path: &Path, creation: u32, writable: bool) -> Result<File> {
+    open_file_with_lock(
+        path,
+        creation,
+        writable,
+        path.file_name().is_some_and(|name| name == "queue.lock"),
+    )
+}
+#[allow(unsafe_code)]
+pub(super) fn open_file_with_lock(
+    path: &Path,
+    creation: u32,
+    writable: bool,
+    lock_file: bool,
+) -> Result<File> {
     validate_leaf(path)?;
     let parent =
         authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, true)?;
     let wide = authority::wide(path)?;
     let descriptor = security::Descriptor::private()?;
     let attributes = descriptor.attributes();
-    let lock_file = path.file_name().is_some_and(|name| name == "queue.lock");
     let access = if writable {
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | if lock_file { 0 } else { DELETE }
     } else {
@@ -95,10 +110,7 @@ pub(crate) fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-pub(crate) fn confirm_file(path: &Path) -> Result<()> {
-    open_file(path, OPEN_EXISTING, true)?.sync_all()?;
-    Ok(())
-}
+#[cfg(test)]
 pub(crate) fn sync_directory(_: &Path) -> Result<()> {
     Err(CaptureError::UnsupportedPlatform)
 }
@@ -180,4 +192,17 @@ fn validate_leaf(path: &Path) -> Result<()> {
         return Err(CaptureError::UnsafePath);
     }
     Ok(())
+}
+
+/// Pin against replacement while SQLite opens its own read/write descriptor.
+pub(crate) fn pin_database(path: &Path) -> Result<File> {
+    open_file_with_lock(path, OPEN_ALWAYS, true, true)
+}
+
+pub(crate) fn pin_existing_database(path: &Path) -> Result<Option<File>> {
+    match open_file_with_lock(path, OPEN_EXISTING, true, true) {
+        Ok(file) => Ok(Some(file)),
+        Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }

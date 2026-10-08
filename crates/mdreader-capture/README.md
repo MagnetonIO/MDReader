@@ -103,13 +103,20 @@ On Unix, files are created with mode 0600 in mode 0700 directories. Temporary wr
 
 Defaults: 256 KiB input/event, 128 pending events, 8 MiB pending bytes, 2 MiB Markdown projection (including frontmatter, matching reader document admission), 1024 provenance occurrences per body. Exceeding a bound rejects the complete operation and retains prior durable state. Owner-selected limits are themselves bounded; the projection cap cannot exceed the reader's 2 MiB document limit. Immutable Markdown and receipts are retained after draining; storage-retention/export policy belongs to the library, not automatic index cleanup. A full provenance body remains readable while the next occurrence stays queued with an explicit capacity error.
 
-**Windows durable publication remains disabled.** `Spool::open` returns the typed `UnsupportedPlatform` error before filesystem mutation. The isolated Windows primitives create and verify a protected current-user/SYSTEM DACL on opened handles, reject remote/non-NTFS volumes and reparse ancestors, retain full volume/file identities, reject hardlinked files, classify nonblocking lock contention, and implement write-through file flushing with handle-relative replacement. These primitives are not an enabled capture spool or Windows runtime acceptance.
+**Windows uses a canonical SQLite capture journal.** `capture-v1.sqlite` owns
+queued visible output, projected bodies/provenance and acknowledgement receipts.
+It uses private current-user/SYSTEM DACLs, pinned local NTFS objects, the same
+exclusive queue lock, rollback `PERSIST` mode and `synchronous=EXTRA`. Unknown or
+partial schemas are refused; no directory-fsync substitute is assumed. Pending
+state is deleted only with a durable receipt after the reader commits admission.
+The journal is capped at 4 GiB and rejects capacity errors without dropping data.
 
-The remaining blocker is a defensible namespace durability barrier for publication, receipts and pending-event deletion. [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) documents file/volume flushing, without establishing directory namespace fsync equivalence. [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) describes its explicit write-through flush guarantee for copy/delete moves. [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) documents write-through caching behavior, and [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info) supports the pinned destination directory used here; neither is treated as proof of the complete durable queue protocol. The implementation does not substitute a successful no-op. Windows process-crash, power-loss, ACL/reparse/concurrent replacement and hook-budget acceptance remain open; cross-compilation alone completes none of them.
-
-The filesystem boundary is under `src/platform/`; policy validation, projection encoding, queue state and publication have separate cohesive modules. Unix filesystem operations, durable record JSON and public capture calls are preserved.
-
-Live hook trust/install/uninstall preservation, agent-version compatibility, real Claude→Codex/reader/MCP retrieval, host latency budgets, Linux/mobile runtime behavior, markerless paraphrase suppression and Windows durability remain separate acceptance gates. This crate's tests do not complete Task 3 or authorize publishing/merging/installing anything.
+Windows Markdown files are rebuildable projections. The service repairs a
+bounded batch only under current selected project/source authority; hooks never
+scan history or publish Markdown. Canonical journal contents must be preserved
+for backup. The Windows integration installer and live profile backup remain
+separate gates, as do actual Windows process/power-loss, ACL/reparse, crash and
+hook-budget acceptance. Cross-target checking proves none of those runtime gates.
 
 ## Validation
 

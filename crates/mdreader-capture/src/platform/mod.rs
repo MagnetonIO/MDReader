@@ -4,7 +4,7 @@ mod unix;
 #[cfg(unix)]
 pub(crate) use unix::*;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 #[cfg(windows)]
 pub(crate) use windows::*;
 #[cfg(not(any(unix, windows)))]

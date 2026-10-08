@@ -2,8 +2,12 @@ use crate::*;
 use fs2::FileExt;
 
 mod freeze;
+#[cfg(not(windows))]
 mod projection;
+#[cfg(not(windows))]
 mod queue;
+#[cfg(windows)]
+mod windows;
 pub use freeze::FrozenSpool;
 
 // flock belongs to the open file description. Explicit unlock on owner drop
@@ -32,7 +36,7 @@ impl Spool {
         limits.validate()?;
         let root = root.into();
         // Unsupported hosts fail before creating a directory or touching content.
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         sync_directory(&root)?;
         private_directory(&root)?;
         let root = fs::canonicalize(root)?;
@@ -46,6 +50,8 @@ impl Spool {
             authority,
         };
         let lock = spool.lock()?;
+        #[cfg(windows)]
+        windows::Journal::open(&spool)?;
         drop(lock);
         Ok(spool)
     }
@@ -89,18 +95,21 @@ impl Spool {
         self.verify()?;
         Ok(QueueLock(file))
     }
+    #[cfg(not(windows))]
     fn pending_path(&self, id: &str) -> Result<PathBuf> {
         if !valid_id(id) {
             return Err(CaptureError::Invalid);
         }
         Ok(self.root.join("pending").join(format!("{id}.json")))
     }
+    #[cfg(not(windows))]
     fn receipt_path(&self, id: &str) -> Result<PathBuf> {
         if !valid_id(id) {
             return Err(CaptureError::Invalid);
         }
         Ok(self.root.join("receipts").join(id))
     }
+    #[cfg(not(windows))]
     pub fn enqueue(
         &self,
         adapter: Adapter,
@@ -209,10 +218,12 @@ impl Spool {
         record.provenance.occurrence_id = record.id.clone();
         Ok(record)
     }
+    #[cfg(not(windows))]
     fn confirm_durable(&self, path: &Path) -> Result<()> {
         platform::confirm_file(path)?;
         sync_directory(path.parent().ok_or(CaptureError::UnsafePath)?)
     }
+    #[cfg(not(windows))]
     fn atomic_write(&self, destination: &Path, bytes: &[u8]) -> Result<()> {
         ensure_regular_or_missing(destination)?;
         let temporary = self.root.join("temporary").join(format!(

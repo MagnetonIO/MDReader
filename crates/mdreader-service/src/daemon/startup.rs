@@ -12,8 +12,13 @@ impl StartupOwner {
     pub(crate) fn acquire(directory: &Path) -> Result<Arc<Self>> {
         let root = SourceRoot::capture(directory.canonicalize().map_err(|_| Error::Unavailable)?)
             .map_err(|_| Error::Conflict)?;
+        #[cfg(not(windows))]
         let lock = root
             .open_lock_relative(Path::new("reader.lock"))
+            .map_err(|_| Error::Unavailable)?;
+        #[cfg(windows)]
+        let lock = mdreader_capture::PrivateDirectory::open(&root.path)
+            .and_then(|private| private.open_lock(Path::new("reader.lock")))
             .map_err(|_| Error::Unavailable)?;
         fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::Busy)?;
         let owner = Arc::new(Self {
@@ -50,7 +55,16 @@ impl StartupOwner {
                 return Err(Error::Conflict);
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let named = mdreader_capture::PrivateDirectory::open(&self.root.path)
+                .and_then(|private| private.open_lock(Path::new("reader.lock")))
+                .map_err(|_| Error::Conflict)?;
+            if !mdreader_capture::same_open_file(&self.lock, &named).map_err(|_| Error::Conflict)? {
+                return Err(Error::Conflict);
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         let _ = &self.lock;
         Ok(())
     }
