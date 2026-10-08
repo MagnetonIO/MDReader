@@ -1,8 +1,11 @@
-//! Native preservation admission. Not registered in startup: no existing writer
-//! is protected until its real participant and effect leases are wired. Selector
-//! activation stays unavailable until durable restart/handoff is implemented.
+//! Native preservation admission. Unix desktop startup registers the two strict
+//! JSON owners. Other actual writers are still missing; installed preservation
+//! and selector activation remain unavailable until they are composed.
 mod admission;
+pub(crate) mod persistence;
 mod registry;
+#[cfg(all(unix, not(mobile)))]
+pub(crate) mod startup;
 #[cfg(all(test, unix))]
 mod tests;
 pub(crate) use admission::EffectLease;
@@ -17,6 +20,14 @@ pub(crate) struct NativeProfileTransition {
     registry: registry::Registry,
 }
 impl NativeProfileTransition {
+    /// Trusted native startup binds only the selected root. The preservation
+    /// inventory is captured after actual writer freeze, never during launch.
+    pub(crate) fn for_root(root: RootBinding) -> Result<Self> {
+        root.validate()?;
+        Ok(Self {
+            registry: registry::Registry::for_root(root),
+        })
+    }
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self {
             registry: registry::Registry::new(inventory),
@@ -50,6 +61,22 @@ impl NativeProfileTransition {
             let inventory = Inventory::capture(&root, choices, limits)?;
             let mut owner = BorrowedFreeze { frozen };
             mdreader_profile::stage(&mut owner, inventory, destination, limits)
+        })
+    }
+    /// Production installed-profile preservation uses the outer envelope so
+    /// exact preflush originals are never mistaken for latest current JSON.
+    pub(crate) fn preserve_bundle(
+        &self,
+        choices: &[InventorySelection],
+        destination: &Path,
+        limits: &Limits,
+        timeout: Duration,
+    ) -> Result<mdreader_profile::bundle::VerifiedBundle> {
+        self.registry.with_frozen(timeout, |frozen| {
+            let root = frozen.binding().locator.restore()?;
+            let inventory = Inventory::capture(&root, choices, limits)?;
+            let mut owner = BorrowedFreeze { frozen };
+            mdreader_profile::bundle::stage_bundle(&mut owner, inventory, destination, limits)
         })
     }
     // Durable import/startup selector and both-owner shutdown handoff are not

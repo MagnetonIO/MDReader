@@ -136,6 +136,24 @@ pub(super) struct DeniedLease<'a> {
     _serial: MutexGuard<'a, ()>,
 }
 impl DeniedLease<'_> {
+    /// Explicit preservation-only resume. Retain the transition mutex until
+    /// operation-bound notifications finish so another freeze cannot overtake.
+    pub(super) fn resume(&self) -> Result<()> {
+        let mut state = self
+            .admission
+            .state
+            .lock()
+            .map_err(|_| Error::NotQuiescent)?;
+        if state.broken
+            || state.active != 0
+            || !matches!(state.phase, Phase::Denied(id) if id == self.operation)
+        {
+            return Err(Error::NotQuiescent);
+        }
+        state.phase = Phase::Running;
+        self.admission.changed.notify_all();
+        Ok(())
+    }
     /// Invalid live authority requires a new explicitly selected owner/registry;
     /// Drop must not silently resume effects into a replaced root/session.
     pub(super) fn quarantine(&self) {

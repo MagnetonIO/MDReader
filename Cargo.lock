@@ -4639,6 +4639,7 @@ dependencies = [
  "mdreader-ingest",
  "mdreader-legacy-export",
  "mdreader-mcp",
+ "mdreader-profile",
  "mdreader-provider",
  "mdreader-service",
  "mdreader-sync",
@@ -4935,6 +4936,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "fs2",
+ "keyring",
  "mdreader-capture",
  "mdreader-connector-dropbox",
  "mdreader-connector-google-drive",

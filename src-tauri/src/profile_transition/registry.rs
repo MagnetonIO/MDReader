@@ -42,10 +42,20 @@ pub(crate) trait LiveParticipant: Send + Sync {
     fn participant(&self) -> Participant;
     fn root(&self) -> &RootBinding;
     fn freeze(&self, scope: &FreezeScope<'_>) -> Result<Box<dyn FrozenParticipant>>;
+    /// Notification only, after all frozen capabilities have dropped and the
+    /// exact global admission lease has explicitly resumed. Never a writer grant.
+    fn post_resume(&self, _scope: &FreezeScope<'_>) -> Result<()> {
+        Ok(())
+    }
 }
 pub(crate) trait FrozenParticipant {
     /// Bind exact native owner, root, operation and epoch, and reject replacement.
     fn revalidate(&mut self, scope: &FreezeScope<'_>) -> Result<()>;
+    /// Output-only archival evidence, not files to be restored into the current
+    /// installed profile. Only the two real JSON participants supply entries.
+    fn preflush_json(&mut self) -> Result<Vec<mdreader_profile::bundle::PreflushArtifact>> {
+        Ok(Vec::new())
+    }
     /// Yield the actual registered owner's connection, or the specifically
     /// authorized fully closed legacy backup connection. Never reopen an SDK.
     fn with_database(
@@ -65,8 +75,11 @@ pub(crate) struct Registry {
 }
 impl Registry {
     pub(crate) fn new(inventory: &Inventory) -> Self {
+        Self::for_root(inventory.binding().clone())
+    }
+    pub(crate) fn for_root(root: RootBinding) -> Self {
         Self {
-            root: inventory.binding().clone(),
+            root,
             admission: Admission::new(),
             participants: (0..REQUIRED_PARTICIPANTS.len()).map(|_| None).collect(),
         }
@@ -177,11 +190,23 @@ impl Registry {
         // ONE exit path for every partial acquisition, timeout and callback
         // error. Check every acquired handle, not only the one that failed.
         let proof = revalidate_capabilities(&scope, &denied, &mut handles);
-        finalization.armed = false;
         proof?;
-        if Instant::now() >= scope.deadline {
-            return Err(Error::NotQuiescent);
+        let result = if Instant::now() >= scope.deadline {
+            Err(Error::NotQuiescent)
+        } else {
+            result
+        };
+        // Keep the panic/quarantine guard armed through participant destruction
+        // and resumption. No participant Drop may emit an early release notice.
+        drop(handles);
+        if matches!(&result, Err(Error::ReconciliationRequired)) {
+            return result;
         }
+        denied.resume()?;
+        for registered in self.participants.iter().flatten() {
+            registered.owner.post_resume(&scope)?;
+        }
+        finalization.armed = false;
         result
     }
 }
@@ -206,6 +231,24 @@ impl FrozenProfile for Frozen<'_, '_> {
             return Err(Error::NotQuiescent);
         }
         Ok(())
+    }
+    fn preflush_json(&mut self) -> Result<Vec<mdreader_profile::bundle::PreflushArtifact>> {
+        self.revalidate()?;
+        let mut artifacts = Vec::new();
+        let mut bytes = 0usize;
+        for (_, handle) in self.handles.iter_mut() {
+            for artifact in handle.preflush_json()? {
+                bytes = bytes
+                    .checked_add(artifact.bytes.as_ref().map_or(0, Vec::len))
+                    .ok_or(Error::Bounds)?;
+                artifacts.push(artifact);
+                if artifacts.len() > 2 || bytes > 2 * 1024 * 1024 {
+                    return Err(Error::Bounds);
+                }
+            }
+        }
+        self.revalidate()?;
+        Ok(artifacts)
     }
     fn with_database(
         &mut self,
