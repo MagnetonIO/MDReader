@@ -29,7 +29,7 @@ test('explicit Picker and App Folder actions pass only the displayed narrow sele
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null));
   await screen.findByText(/selected source is connected/);
   fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/Notes' } });
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Include Dropbox subfolders' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Include subfolders' }));
   fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox App Folder' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('dropbox', { path: '/Notes', recursive: true }));
   await screen.findByText(/selected source is connected/);
