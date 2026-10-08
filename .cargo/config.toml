@@ -1,3 +1,8 @@
+[build]
+# Keep local compilation responsive. This is per Cargo invocation; agents must
+# also serialize builds so separate invocations do not multiply the budget.
+jobs = 2
+
 # Keep Cargo-only cross-checks and Xcode builds on the declared iOS floor.
 # cc otherwise defaults C objects to the installed SDK version; blake3's build
 # script does not invalidate old objects when only this variable changes.

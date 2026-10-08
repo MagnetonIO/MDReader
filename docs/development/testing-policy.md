@@ -3,6 +3,18 @@
 Requested by the user during implementation on 2026-10-07. Test coverage protects
 behavior and authority boundaries; test count is not a delivery metric.
 
+- Run one heavyweight build or verification command across the MDReader team at
+  a time. The coordinating agent grants the build slot; other agents can edit or
+  review code while it is occupied. Cargo defaults to two jobs in
+  `.cargo/config.toml`; Android Gradle defaults to two workers without parallel
+  project execution. Use `CARGO_BUILD_JOBS=2` for commands run outside this tree.
+  These are concurrency limits, not a hard CPU quota; a compiler can use several
+  threads. Do not override them just to finish verification faster.
+- Reuse compatible Cargo targets and incremental caches. Create isolated targets
+  only when target, configuration or concurrent ownership requires isolation;
+  cold targets recompile dependencies even for a single filtered test. Never run
+  `cargo clean` as routine verification. Finish source edits before packaging a
+  client; serialize desktop, iOS and Android packaging at integration checkpoints.
 - A fix starts with the smallest regression that reproduces the failure. Assert
   observable behavior, not private function calls or a copy of the implementation.
 - Run that test while iterating. Run the affected module suite after the slice is
