@@ -51,7 +51,7 @@ export type ProviderLinkResolution =
   | { state: 'ambiguous'; candidates: ProviderLinkCandidate[]; heading: string | null }
   | { state: 'missing' }
   | { state: 'heading_missing'; candidate: ProviderLinkCandidate; heading: string };
-export interface ProviderDocumentBody { operation: 'read_document'; markdown: string; sourceId: string; path: string; revision: string; lineStart: number; lineEnd: number }
+export interface ProviderDocumentBody { sourceKind?: 'local' | 'provider' | 'capture'; operation: 'read_document'; markdown: string; sourceId: string; path: string; revision: string; lineStart: number; lineEnd: number }
 export interface NativeProvidersBackend {
   state(): Promise<NativeProvidersSnapshot>;
   connect(provider: NativeProviderKind, selection: DropboxSelection | null, allowEditing?: boolean): Promise<ProviderAdmission>;

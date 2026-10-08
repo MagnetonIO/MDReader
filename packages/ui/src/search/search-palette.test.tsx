@@ -458,10 +458,10 @@ describe('ResultRow', () => {
 });
 
 describe('opening hits', () => {
-  test('Enter opens the hit at its provenance line; ⌘Enter opens a background tab', async () => {
+  test.each(['provider', 'device'] as const)('%s hit keeps its exact receipt through keyboard and breadcrumb opens', async (kind) => {
     const onOpenHit = vi.fn();
     const onClose = vi.fn();
-    const h = hit({ chunkId: 'c1', name: 'deep.md', startLine: 7, sourceId: 'provider:' + 'a'.repeat(64), revision: 'b'.repeat(64) });
+    const h = hit({ chunkId: 'c1', name: 'deep.md', startLine: 7, sourceId: kind === 'provider' ? 'provider:' + 'a'.repeat(64) : 'a'.repeat(64), revision: 'b'.repeat(64), sourceKind: kind, ...(kind === 'device' ? { deviceDocumentId: '00000000-0000-4000-8000-000000000001' } : {}) });
     renderPalette({ adapter: staticAdapter([h]), onOpenHit, onClose });
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'x' } });
 
@@ -470,7 +470,7 @@ describe('opening hits', () => {
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', metaKey: true });
     await waitFor(() =>
       expect(onOpenHit).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision }),
+        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision, sourceKind: kind, ...(kind === 'device' ? { deviceDocumentId: h.deviceDocumentId } : {}) }),
         { background: true },
       ),
     );
@@ -480,13 +480,13 @@ describe('opening hits', () => {
     fireEvent.click(option);
     await waitFor(() =>
       expect(onOpenHit).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision }),
+        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision, sourceKind: kind, ...(kind === 'device' ? { deviceDocumentId: h.deviceDocumentId } : {}) }),
         { background: false },
       ),
     );
     expect(onClose).toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'c1.md' }));
-    expect(onOpenHit).toHaveBeenLastCalledWith(expect.objectContaining({path:h.path,sourceId:h.sourceId,revision:h.revision,line:undefined}),{background:false});
+    expect(onOpenHit).toHaveBeenLastCalledWith(expect.objectContaining({path:h.path,sourceId:h.sourceId,revision:h.revision,sourceKind:kind,...(kind === 'device' ? {deviceDocumentId:h.deviceDocumentId}:{}),line:undefined}),{background:false});
   });
 });
 

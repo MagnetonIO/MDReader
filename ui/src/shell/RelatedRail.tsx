@@ -8,9 +8,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { relatedHits, relatedAvailabilityMessage, relatedComponentsText, type RelatedHit, type SearchAdapter } from '@mdreader/ui';
+import { type HitTarget, relatedHits, relatedAvailabilityMessage, relatedComponentsText, type RelatedHit, type SearchAdapter } from '@mdreader/ui';
 
-import type { DocRef } from '../stores/types.js';
 
 export interface RelatedRailProps {
   /** The open document (absolute path + name), or null when none is open. */
@@ -22,7 +21,7 @@ export interface RelatedRailProps {
   /** Toggle expanded/collapsed. */
   onToggle: () => void;
   /** Open a related document in a tab. */
-  onOpen: (ref: DocRef & { line?: number }) => void;
+  onOpen: (ref: HitTarget) => void;
   /**
    * The active workspace key (its root). A change is a workspace switch: it
    * re-runs the fetch effect (dropping any in-flight result for the previous
@@ -134,7 +133,7 @@ export function RelatedRail({
                     type="button"
                     className="related-rail__link"
                     title={tip}
-                    onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) })}
+                    onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.deviceDocumentId != null ? { deviceDocumentId: hit.deviceDocumentId } : {}), ...(hit.sourceKind != null ? { sourceKind: hit.sourceKind } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) })}
                   >
                     <span className="related-rail__name">{hit.name}</span>
                     <span className="related-rail__score">{hit.score.toFixed(2)}</span>

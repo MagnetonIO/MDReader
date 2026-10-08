@@ -61,12 +61,17 @@ export const catalogBackend: CatalogBackend = {
       ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line,
     })) };
   },
-  readDocument: (reference) => request({
-    operation: 'read',
-    sourceId: reference.sourceId,
-    path: reference.path,
-    revision: reference.revision,
-  }, 'read_document'),
+  async readDocument(reference) {
+    const value = await request({ operation: 'read', sourceId: reference.sourceId,
+      path: reference.path, revision: reference.revision }, 'read_document');
+    const kind = 'sourceKind' in value ? value.sourceKind : undefined;
+    if (kind !== undefined && kind !== 'local' && kind !== 'provider' && kind !== 'capture') {
+      throw new CatalogError('unsupported');
+    }
+    return { operation: 'read_document', markdown: value.markdown, sourceId: value.sourceId,
+      path: value.path, revision: value.revision, lineStart: value.lineStart, lineEnd: value.lineEnd,
+      sourceKind: kind };
+  },
 };
 
 /** Never reinterpret a canonical receipt as an absolute local filesystem path. */

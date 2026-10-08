@@ -38,8 +38,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   // A new parent selection takes effect immediately, including before effects.
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
   const history = navigation.origin === reference ? navigation.history : [];
-  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; line: number; anchor: { block: number; offset: number } | null } | null>(null);
+  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
+  const verifiedKind = loaded?.reference === currentReference ? loaded.sourceKind ?? sourceKind : sourceKind;
   const line = loaded?.reference === currentReference ? loaded.line : 1;
   const positionRef = useRef(position);
   positionRef.current = position;
@@ -67,7 +68,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       }
       const restoredPosition = restoreAnchor(parsed, currentReference.revision, value.lineEnd, savedPosition);
       if (restoredPosition.notice) setNotice(restoredPosition.notice);
-      setLoaded({ reference: currentReference, doc: parsed, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
+      setLoaded({ reference: currentReference, doc: parsed, sourceKind: value.sourceKind, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
     }).catch((cause: unknown) => {
       if (current) setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
     });
@@ -144,16 +145,18 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
       <span>Read only</span>
-      {onEdit ? <button type="button" disabled={!doc || editBusy}
+      {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
         onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
-      {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
+      {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
     {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Source evidence</summary>
       <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
-      <p>{sourceKind === 'local'
+      <p>{verifiedKind === 'capture'
+        ? 'This is an exact captured visible-output revision. Capture opt-in controls its availability; this reader cannot edit the captured original.'
+        : sourceKind === 'local'
         ? 'This is the exact retained-source revision. External edits require a new index observation; this reader does not grant folder editing access.'
         : sourceKind === 'device' ? 'This is the exact published device copy. Sync status is separate; reading this copy does not contact another device or grant folder access.'
         : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}

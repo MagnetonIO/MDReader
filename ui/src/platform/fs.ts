@@ -331,9 +331,12 @@ const SEARCH_LIMIT = 20;
 const RELATED_LIMIT = 12;
 
 /** Normalise a wire search hit (never-null numbers) into the palette's shape. */
-function normalizeHit(dto: SearchHitDto): SearchHit {
+function normalizeHit(dto: SearchHitDto & { device_document_id?: string | null; source_kind?: string | null }): SearchHit {
   return {
     chunkId: dto.chunk_id,
+    ...(dto.device_document_id != null ? { deviceDocumentId: dto.device_document_id } : {}),
+    ...(dto.source_kind === 'local' || dto.source_kind === 'provider' || dto.source_kind === 'capture' || dto.source_kind === 'device'
+      ? { sourceKind: dto.source_kind } : {}),
     ...(dto.source_id != null ? { sourceId: dto.source_id } : {}),
     ...(dto.revision != null ? { revision: dto.revision } : {}),
     documentId: dto.document_id,
