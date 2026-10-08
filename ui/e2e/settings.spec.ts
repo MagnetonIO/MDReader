@@ -58,6 +58,8 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await expect(sheet.getByRole('button', { name: 'Close Settings' })).toBeVisible();
   await sheet.getByRole('combobox', { name: 'Settings section', exact: true }).selectOption('account');
   await expect(sheet.getByRole('heading', { name: 'Account & sync' })).toBeVisible();
+  await expect(sheet.getByRole('heading', { name: 'Account & sync' })).toBeInViewport({ ratio: 1 });
+  await expect(sheet.getByRole('button', { name: 'Refresh status' })).toBeInViewport({ ratio: 1 });
   await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
   expect(await sheet.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
