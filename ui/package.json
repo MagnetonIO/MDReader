@@ -12,7 +12,7 @@
     "test:settings-browser": "playwright test --config playwright.settings.config.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "tauri": "cd .. && PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:$PATH\" tauri"
+    "tauri": "node ../scripts/development/tauri.mjs"
   },
   "dependencies": {
     "@catdb/client": "workspace:*",
