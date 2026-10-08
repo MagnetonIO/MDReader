@@ -1,0 +1,173 @@
+# MDReader repository rules
+
+These rules apply to agents and human contributions in this repository.
+The approved product contract is [the SQLite plan](docs/plans/sqlite-reader-next.md).
+Use [the status ledger](docs/development/sqlite-reader-next-status.md) to distinguish
+implemented work, runtime evidence and unfinished release gates.
+
+## Architecture and module ownership
+
+- **No God files or God objects.** Each production module owns one cohesive
+  responsibility. Separate domain rules, persistence, transport, platform
+  integration and presentation. Composition roots wire dependencies; they do
+  not implement business rules, SQL, OAuth or rendering behavior.
+- Keep new production modules around 400 lines or fewer as a review trigger,
+  not a target to game. Split mixed responsibilities before adding features.
+  Large fixtures/generated files have different constraints. Existing oversized
+  modules are debt: extract the touched responsibility instead of adding another
+  subsystem or performing an unrelated wholesale rewrite.
+- Prefer feature directories with small named modules, private implementation
+  details and an explicit public interface. Avoid catch-all `utils`, global
+  mutable registries, duplicate abstractions and circular dependencies.
+- Core contracts belong to MDReader. Tauri, OAuth, Cloudflare and legacy CatDB
+  types stay behind their adapters. New reader code must not depend on CatDB.
+- SQLite remains the chosen database. Original Markdown/provider bodies and
+  durable captures are authoritative; `index.sqlite` is rebuildable. One native
+  owner controls writes/model state. Never add permanent dual writes.
+
+## Directory structure
+
+| Location | Responsibility |
+| --- | --- |
+| `crates/mdreader-core/` | Portable source/document/evidence/indexing rules and SQLite ownership |
+| `crates/mdreader-service/` | Headless owner, bounded IPC, scheduling and adapter composition |
+| `crates/mdreader-provider/`, `crates/mdreader-credentials/` | Provider contracts and private credential custody |
+| `crates/mdreader-capture/`, `crates/mdreader-mcp/`, `crates/mdreader-integrations/` | Explicit agent capture, retrieval and client configuration |
+| `crates/mdreader-sync/` | Versioned encrypted client protocol and durable sync state |
+| `crates/mdreader-legacy-export/` | Explicit offline preservation and archival migration |
+| `src-tauri/` | Thin native commands, platform adapters and app startup |
+| `ui/src/` | App features, platform adapters and client composition |
+| `packages/` | Shared Markdown, reader UI and configuration packages |
+| `extensions/vscode/` | Local extension-host adapter |
+| `fixtures/`, `demo/` | Small public or synthetic fixtures |
+| `docs/`, `scripts/` | Maintained architecture/setup/evidence and reproducible tooling |
+
+The companion MDReader-Web repository owns the Next.js site, browser SQLite
+worker and Cloudflare server. Its `AGENTS.md` governs changes there. Existing
+legacy domain/ingest/admin modules are migration inputs, not new extension points.
+
+## Rust practices and dependency upgrades
+
+- Use the pinned stable toolchain in `rust-toolchain.toml`. Prefer current
+  maintained stable libraries/frameworks compatible with supported targets.
+  Review official release/migration notes before upgrades. Update compiler,
+  edition, framework and dependency versions deliberately in focused changes;
+  never run a blanket upgrade during an unrelated fix.
+- Declare/test the supported Rust version when establishing an MSRV policy;
+  a compiler pin alone does not prove the oldest supported compiler. Check
+  desktop/mobile target support and feature combinations before raising it.
+- Commit `Cargo.lock` and `pnpm-lock.yaml`; use locked/frozen installs and
+  verification. Inspect dependency/version/checksum drift. No new dependencies
+  on developer-specific absolute paths or local `file://` repositories.
+- Keep optional platform/model/provider features narrow. Use workspace
+  dependencies for genuinely shared versions. Add a crate only for a real
+  ownership/reuse boundary; do not add a framework for a small helper.
+- Prefer typed enums/newtypes and `Result` with useful domain errors. Do not
+  panic, `unwrap` or silently default on recoverable production failures.
+  Use narrow visibility, documented public contracts and RAII cleanup.
+- Keep `unsafe_code` denied. Avoid blocking work on async/UI executors; use
+  bounded blocking workers. Never hold a database transaction or owner mutex
+  across network/OS waits or expensive image/model work. Revalidate authority
+  after those waits, and bound time, bytes, queues and concurrency.
+- Use parameterized SQL. Preserve exact revisions and distinguish absent,
+  stale, unsupported and unknown outcomes. Secrets/private paths must not leak
+  through logs, errors or derived `Debug`/serialization implementations.
+- Run formatting and strict Clippy for the affected crate at a stable
+  checkpoint. Do not suppress a lint globally to hide a local design problem.
+
+## Persistence and migrations
+
+- The owning crate owns versioned migrations in a dedicated module/directory;
+  split growing schema SQL into ordered migration files. Use the existing
+  rusqlite architecture. Do not introduce an ORM or migration framework solely
+  to replace a working small migration runner.
+- Applied migration history is immutable. Add the next migration; check schema
+  versions and reject unsupported newer durable schemas without resetting data.
+  Apply each supported schema transition and its version marker transactionally.
+- Separate durable-library upgrades from disposable-index rebuilds. Back up or
+  export durable records before destructive transitions. Prefer additive,
+  backward-compatible changes; document old-client and rollback constraints.
+- Test relevant prior-schema fixtures, reopen, interrupted/replayed migration
+  and preservation of originals/user state. A fresh empty database test alone
+  does not establish upgrade safety. Never drop durable data to make a test pass.
+- Migration from CatDB requires lossless export, verified useful-record mapping,
+  explicit source binding and separate-profile rollback before removal.
+
+## Focused testing and resource discipline
+
+Follow [testing-policy.md](docs/development/testing-policy.md).
+
+- Start with the smallest meaningful regression. Iterate on it, then run the
+  affected module/crate suite. Broaden for changed shared contracts, failures or
+  unresolved integration risk. Do not run thousands of tests for a local fix.
+- Run **one heavyweight build/check at a time across agents**. The coordinating
+  agent assigns the slot. Cargo defaults to two jobs; use `CARGO_BUILD_JOBS=2`
+  outside this tree. Keep Android Gradle at two workers with parallel projects
+  disabled. These settings limit concurrency, not CPU percentage.
+- Reuse compatible caches. No routine `cargo clean`, cold targets or simultaneous
+  desktop/iOS/Android packaging. Finish a coherent slice before packaging it.
+- Use real SQLite for durability/reopen/grants; real subprocesses for process
+  boundaries; a small host/browser set for lifecycle behavior. Mock only the
+  boundary being isolated, not the storage guarantees being claimed.
+- Test synthetic/public inputs in disposable profiles. Never index private
+  agent histories or use installed libraries/provider originals as fixtures.
+- Keep CPU/RSS/size probes separate from ordinary tests. Do not repeat model
+  10k/50k benchmarks as routine feature verification. Build size is not memory
+  usage; a compiler spike is not reader idle CPU.
+- Generate Rust→TypeScript bindings from their source; do not hand-edit them.
+  `scripts/check-bindings.sh` is the focused two-generator drift gate. Full
+  baseline/cross-host/release checks run at integration or release checkpoints.
+
+## Fast local startup
+
+Run from the selected development worktree. Use Node/pnpm versions declared in
+`package.json`, the pinned Rust toolchain and the official Tauri host prerequisites.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm tauri dev
+```
+
+`pnpm dev` starts only the Vite frontend; it does not start the native app.
+Before a first Cargo build, inspect `readlink target` if `target` is a symlink
+and verify that its cache directory exists. Never replace/remove a target link
+without checking what owns its destination.
+
+For an explicit disposable library with no model download:
+
+```sh
+CARGO_BUILD_JOBS=2 cargo run --locked -p mdreader-service -- --no-model /ABS/PRIVATE/DISPOSABLE_LIBRARY
+```
+
+Choose/create that private directory explicitly. Providers and sync are optional
+and must report unconfigured status honestly; local reading must not require
+cloud credentials. Native provider registration uses the current native-provider
+configuration contract, not guessed legacy `.env` names.
+
+Setup documentation must provide prerequisites, exact root-relative commands,
+expected readiness, stopping/cleanup and common failures. Keep it updated when
+scripts/configuration change. Verify a fresh-clone startup at release checkpoints.
+The current legacy SDK still has a machine-local Git dependency: record this
+portability blocker until migration removes it; do not claim fresh-clone readiness.
+
+## Clean repository and delivery
+
+- Work in isolated development branches/worktrees. Preserve unrelated changes,
+  installed baselines and private profiles. Stage only owned, reviewed paths.
+- Keep the root minimal. Commit source, lockfiles, small deterministic fixtures,
+  required generated contracts and useful docs. Ignore build/cache output,
+  binaries, credentials, databases, logs and scratch artifacts. Keep large probe
+  artifacts outside Git; commit sanitized bounded receipts when useful.
+- Remove obsolete imports/code/fixtures within the changed scope. Do not keep
+  parallel implementations or commented-out experiments. Retained legacy code
+  must have an explicit migration reason and removal gate.
+- Before handoff inspect status/diff, formatting and appropriate checks. State
+  what changed, what actually ran and what remains unverified. A clean commit
+  does not authorize discarding another contributor's unfinished work.
+- Keep deployment/resource changes reproducible in the companion Wrangler
+  configuration. Use its local-first tests and documented migration rules.
+  Provisioning infrastructure is distinct from deploying/enabling sync.
+
+Primary references: [Rust MSRV policy](https://doc.rust-lang.org/cargo/reference/rust-version.html),
+[Cargo CI](https://doc.rust-lang.org/cargo/guide/continuous-integration.html),
+[Cloudflare local development](https://developers.cloudflare.com/workers/local-development/).
