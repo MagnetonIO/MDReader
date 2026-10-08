@@ -81,7 +81,7 @@ impl std::fmt::Debug for VerifiedCallback {
     }
 }
 
-fn validate_redirect(value: &str) -> Result<Url> {
+pub(crate) fn validate_redirect(value: &str) -> Result<Url> {
     let url = Url::parse(value).map_err(|_| ProviderError::Invalid)?;
     if url.scheme() != "http"
         || url.host_str() != Some("127.0.0.1")
@@ -90,7 +90,7 @@ fn validate_redirect(value: &str) -> Result<Url> {
         || url.port().is_none_or(|port| port == 0)
         || url.query().is_some()
         || url.fragment().is_some()
-        || url.path() != "/oauth/callback"
+        || !matches!(url.path(), "/oauth/callback" | "/oauth/dropbox")
     {
         return Err(ProviderError::Invalid);
     }
