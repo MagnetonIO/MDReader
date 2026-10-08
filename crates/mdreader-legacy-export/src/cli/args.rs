@@ -1,10 +1,14 @@
-use mdreader_legacy_export::{reviews::ArchiveIdentity, Error, Result};
+use crate::{reviews::ArchiveIdentity, Error, Result};
 use std::{
     ffi::{OsStr, OsString},
     path::PathBuf,
 };
 
 pub(super) enum Command {
+    PrepareProfile {
+        spec: PathBuf,
+        destination: PathBuf,
+    },
     Export {
         spec: PathBuf,
         destination: PathBuf,
@@ -63,6 +67,12 @@ pub(super) fn parse(args: impl Iterator<Item = OsString>) -> Result<Command> {
     // Keep argument collection bounded even for incorrect invocation.
     let args = args.take(8).collect::<Vec<_>>();
     match args.as_slice() {
+        [operation, spec, destination] if operation == "prepare-profile" => {
+            Ok(Command::PrepareProfile {
+                spec: spec.into(),
+                destination: destination.into(),
+            })
+        }
         [operation, spec, destination] if operation == "export" => Ok(Command::Export {
             spec: spec.into(),
             destination: destination.into(),
