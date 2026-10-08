@@ -138,3 +138,15 @@ bytes; verification/rollback from a separate staging destination. Bound rows and
 total bytes with explicit failures, never truncation. This first slice establishes
 lossless preservation evidence, not Task 7 completion or permission to delete the
 legacy databases/dependencies.
+
+The first preservation slice is now implemented in
+[`mdreader-legacy-export`](../../crates/mdreader-legacy-export/README.md): bounded
+explicit offline selections, exact streaming raw copies, proposal v1/v2 and
+known JSON interpretations, hashed manifests and private no-replace publication.
+Synthetic tests cover all three proposal review states, missing-source/hash
+divergence, unknown rows/virtual modules, exact large-integer/blob/real cells,
+tamper, bounds, changed source identity and actual process death before publish.
+The archive verifier and separate destination establish preservation evidence;
+there is no reader-v1 importer, activation/rollback switch or live-profile
+snapshot adapter. Windows publication remains fail-closed. These remaining
+gates still block removal of legacy dependencies or a Task 7 completion claim.
