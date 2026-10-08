@@ -1,5 +1,24 @@
 use super::*;
 
+/// Pure bounded raster validation for native reads of explicitly granted local
+/// Markdown images. It grants no filesystem or asset-store authority.
+pub struct RasterMetadata {
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+}
+pub fn validate_raster(bytes: &[u8]) -> Result<RasterMetadata> {
+    if bytes.is_empty() || bytes.len() > MAX_FILE as usize {
+        return Err(Error::ImageBounds);
+    }
+    let raster = decode_incoming(bytes)?;
+    Ok(RasterMetadata {
+        mime: raster.mime,
+        width: raster.width,
+        height: raster.height,
+    })
+}
+
 pub struct PreparedAsset {
     pub(super) _permit: ValidationPermit,
     pub(super) bytes: Vec<u8>,
