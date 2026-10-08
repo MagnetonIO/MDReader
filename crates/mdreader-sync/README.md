@@ -1,6 +1,6 @@
 # MDReader encrypted sync client primitives
 
-This library supplies the native cryptographic wire format and durable local sync state. It performs no networking, login, device enrollment, transcript reads, database opening, keychain access or background work. The reader service supplies its exclusively owned `&mut rusqlite::Connection` and remains the only SQLite writer. This is a foundation for Task 4, not completed product sync or acceptance evidence.
+This library supplies the native cryptographic wire format and durable local sync state. The default feature set performs no networking, login, device enrollment, transcript reads, database opening, keychain access or background work. Optional `transport` supplies a bounded native-only HTTP foundation with injected authority; see [TRANSPORT.md](TRANSPORT.md). The reader service supplies its exclusively owned `&mut rusqlite::Connection` and remains the only SQLite writer. This is a foundation for Task 4, not completed product sync or acceptance evidence.
 
 ## Wire compatibility and keys
 
@@ -45,9 +45,9 @@ Remote conflict/tombstone state and outbox receipts are retained without automat
 
 The tests use synthetic fixtures and real temporary SQLite files, including reopening unacknowledged outboxes and killing a subprocess inside an uncommitted owner application transaction. They cover browser/native known answers, tamper/context rejection, nonce reservation across reopen, malformed receipts/pages, scoped transitions, conflicts, late offline edits after deletion, explicit merges, schema guards, quotas and cursor boundaries. No deployed account, private key, provider credential or user history is used.
 
-Observed local checks: `cargo test -p mdreader-sync` passes 18 test entries (including the subprocess helper); `cargo clippy -p mdreader-sync --all-targets -- -D warnings` passes; fixture comparison and `git diff --check` pass. Windows GNU `cargo check` was attempted and blocked in bundled SQLite's build script because `x86_64-w64-mingw32-gcc` is unavailable on this host; it provides no Windows compile/runtime evidence.
+Historical foundation checks before the codec/transport additions: `cargo test -p mdreader-sync` passed 18 test entries (including the subprocess helper); `cargo clippy -p mdreader-sync --all-targets -- -D warnings` passes; fixture comparison and `git diff --check` pass. Windows GNU `cargo check` was attempted and blocked in bundled SQLite's build script because `x86_64-w64-mingw32-gcc` is unavailable on this host; it provides no Windows compile/runtime evidence.
 
-Task 4 remains incomplete until the service exposes its owned connection safely, applies the selected document/reading-state schema and conflict UI, provides secure local key custody, implements verified account/device authorization and pairing, integrates bounded authenticated networking and retry, and passes real multi-device recovery/offline/deletion/account-switch tests on supported native/mobile hosts. This crate has no live cloud or cross-host runtime acceptance. The separate capture crate still explicitly rejects Windows capture pending its durable publication implementation.
+Task 4 remains incomplete until the service applies the selected document/reading-state schema and conflict UI, provides secure local key custody, implements verified account/device authorization and pairing, connects the optional bounded transport to typed owner projection and production custody, and passes real multi-device recovery/offline/deletion/account-switch tests on supported native/mobile hosts. This crate has no live cloud or cross-host runtime acceptance. The separate capture crate still explicitly rejects Windows capture pending its durable publication implementation.
 
 Primary dependency references checked for this implementation: [RustCrypto AES-GCM](https://docs.rs/aes-gcm/latest/aes_gcm/), [zeroize](https://docs.rs/zeroize/latest/zeroize/), [getrandom](https://docs.rs/getrandom/latest/getrandom/), [base64](https://docs.rs/base64/latest/base64/) and [SHA-2](https://docs.rs/sha2/latest/sha2/). The server protocol authority is the checked-in web `workers/sync/README.md` and worker source; no public enrollment endpoint is assumed.
 
@@ -70,6 +70,6 @@ network chunk fetch/reassembly, exact reference/raw-byte hash verification,
 asset MIME/header admission, projection and user-state conflict/tombstone policy
 must be integrated by the owner before native transfer is accepted. Browser
 implementation and exact remaining gates are documented in web
-`lib/sync/PAYLOAD-PROTOCOL.md`. This Rust slice adds no auth/provider/keychain or
-transport behavior. `cargo test -p mdreader-sync` now passes **20 test entries**
-(including the subprocess helper); no cross-device native acceptance is claimed.
+`lib/sync/PAYLOAD-PROTOCOL.md`. The codec slice adds no auth/provider/keychain behavior; the optional transport
+foundation is separately described in [TRANSPORT.md](TRANSPORT.md). Current focused transport/owner checks and exact remaining gates are recorded in
+[TRANSPORT.md](TRANSPORT.md); no cross-device native acceptance is claimed.

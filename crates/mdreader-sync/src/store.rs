@@ -8,7 +8,7 @@ const VERSION: i64 = 1;
 const MAX_RECEIPT_BYTES: usize = 4096;
 const MAX_PAGE_BYTES: usize = 256 * 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncScope {
     account_digest: String,
@@ -472,6 +472,43 @@ impl<'a> SyncStore<'a> {
     }
     /// Caller must bind response_scope to its authenticated account/device HTTP channel.
     /// This validates the protocol receipt; it does not authenticate a network connection.
+    /// New transport channel: strict v2 receipt binds account/library/device/operation.
+    /// It must not admit a legacy unscoped receipt as publication authority.
+    pub fn mark_uploaded_scoped(
+        &mut self,
+        scope: &SyncScope,
+        operation: &str,
+        status: u16,
+        bytes: &[u8],
+    ) -> Result<()> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ScopedReceipt {
+            v: u8,
+            account: String,
+            library_id: String,
+            device: String,
+            operation_id: String,
+            blob: String,
+            bytes: u64,
+        }
+        self.response_scope(scope, status, &[200, 201])?;
+        let receipt: ScopedReceipt = parse(bytes, MAX_RECEIPT_BYTES)?;
+        if receipt.v != 2
+            || receipt.account != scope.account_digest
+            || receipt.library_id != scope.library_id
+            || receipt.device != scope.device_id
+            || receipt.operation_id != operation
+        {
+            return Err(SyncError::Authentication);
+        }
+        let legacy =
+            serde_json::to_vec(&serde_json::json!({"blob":receipt.blob,"bytes":receipt.bytes}))
+                .map_err(|_| SyncError::Invalid)?;
+        self.mark_uploaded(scope, operation, status, &legacy)
+    }
+    /// Legacy receipt compatibility only. New transports must use mark_uploaded_scoped.
+    /// Caller binds response_scope to its authenticated HTTP channel.
     pub fn mark_uploaded(
         &mut self,
         response_scope: &SyncScope,
@@ -836,14 +873,20 @@ impl RemoteChange {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ChangesPage {
-    changes: Vec<RemoteChange>,
+pub(crate) struct ChangesPage {
+    pub(crate) changes: Vec<RemoteChange>,
     cursor: u64,
     high_water: u64,
-    has_more: bool,
+    pub(crate) has_more: bool,
     checkpoint: u64,
 }
 impl ChangesPage {
+    #[cfg(feature = "transport")]
+    pub(crate) fn parse(bytes: &[u8], after: u64) -> Result<Self> {
+        let mut page: Self = parse(bytes, MAX_PAGE_BYTES)?;
+        page.validate(after)?;
+        Ok(page)
+    }
     fn validate(&mut self, after: u64) -> Result<()> {
         validate_sequence(self.cursor, true)?;
         validate_sequence(self.high_water, true)?;

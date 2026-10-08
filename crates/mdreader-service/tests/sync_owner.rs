@@ -35,3 +35,39 @@ fn encrypted_sync_uses_the_reader_owner_and_preserves_durable_user_state() {
     assert!(data.path().join("library.sqlite").is_file());
     assert!(!data.path().join("sync.sqlite").exists());
 }
+
+#[cfg(feature = "sync-transport")]
+#[test]
+fn native_transport_owner_binding_rejects_stale_scope_and_releases_owner() {
+    use mdreader_sync::transport::{Owner, TransportError};
+    use std::sync::{Mutex, RwLock};
+    let data = tempfile::tempdir().unwrap();
+    let mut reader = ReaderStore::open(data.path()).unwrap();
+    mdreader_service::sync::initialize(&mut reader).unwrap();
+    let owner = Mutex::new(reader);
+    let scope = SyncScope::new(
+        "a".repeat(64),
+        "11111111-1111-4111-8111-111111111111".into(),
+        "A".repeat(43),
+    )
+    .unwrap();
+    let binding = RwLock::new(Some(scope.clone()));
+    let adapter = mdreader_service::sync::TransportOwner {
+        owner: &owner,
+        active_scope: &binding,
+    };
+    assert_eq!(
+        adapter
+            .with_store(&scope, |s| s.cursors())
+            .unwrap()
+            .received,
+        0
+    );
+    assert!(owner.try_lock().is_ok());
+    *binding.write().unwrap() = None;
+    assert!(matches!(
+        adapter.with_store(&scope, |s| s.cursors()),
+        Err(TransportError::Authority)
+    ));
+    assert!(owner.try_lock().is_ok());
+}
