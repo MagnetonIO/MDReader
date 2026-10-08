@@ -125,6 +125,7 @@ pub enum CatalogReply {
         next_cursor: Option<String>,
     },
     ReadDocument {
+        source_kind: String,
         source_id: String,
         path: String,
         revision: String,

@@ -273,7 +273,7 @@ impl Runtime {
         });
         let reviews = super::reviews::Coordinator::new(store.clone(), &directory);
         Ok(Self {
-            catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()),
+            catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()).with_captures(directory.clone()),
             reviews,
             daemon_admission,
             daemon,
@@ -423,6 +423,25 @@ impl Runtime {
             }
             return serde_json::to_value(reply)
                 .map_err(|_| protocol_error("invalid backfill reply"));
+        }
+        if matches!(request, Request::ReaderOwnedSources) {
+            let captures = super::capture::reader::sources(&*self.queries()?, &self.directory)?;
+            #[cfg(feature = "sync-native")]
+            let devices = self
+                .device
+                .as_ref()
+                .map(|device| device.search_sources())
+                .transpose()
+                .map_err(|_| protocol_error("Device search scope unavailable or exceeds budget"))?
+                .unwrap_or_default();
+            #[cfg(not(feature = "sync-native"))]
+            let devices: Vec<super::catalog::DeviceSearchReceipt> = vec![];
+            return serde_json::to_value(super::catalog::ReaderOwnedSources { captures, devices:devices.into_iter().map(Into::into).collect() })
+                .map_err(|_| protocol_error("invalid reader scope"));
+        }
+        if matches!(request, Request::CaptureReaderSources) {
+            return serde_json::to_value(super::capture::reader::sources(&*self.queries()?,&self.directory)?)
+                .map_err(|_|protocol_error("invalid capture reader scope"));
         }
         if matches!(request, Request::CaptureStatus) {
             let _lease = self.capture_effect()?;

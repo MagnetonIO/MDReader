@@ -34,6 +34,7 @@ pub struct Coordinator {
     owner: Arc<Mutex<ReaderStore>>,
     queries: Arc<Mutex<ReaderStore>>,
     cursors: Mutex<HashMap<Uuid, Cursor>>,
+    captures: Option<std::path::PathBuf>,
 }
 impl Coordinator {
     pub fn new(owner: Arc<Mutex<ReaderStore>>, queries: Arc<Mutex<ReaderStore>>) -> Self {
@@ -43,7 +44,12 @@ impl Coordinator {
             owner,
             queries,
             cursors: Mutex::new(HashMap::new()),
+            captures: None,
         }
+    }
+    pub(crate) fn with_captures(mut self, directory: std::path::PathBuf) -> Self {
+        self.captures = Some(directory);
+        self
     }
     #[cfg(feature = "sync-native")]
     pub fn enable_device_catalog(&mut self, device: Arc<crate::device::Coordinator>) {
@@ -87,14 +93,23 @@ impl Coordinator {
                 ))),
             }
         }
-        for id in local {
+        let captures = self
+            .captures
+            .as_ref()
+            .map(|directory| crate::capture::reader::sources(&queries, directory))
+            .transpose()
+            .map_err(core_error)?
+            .unwrap_or_default();
+        let mut selected: Vec<_> = local.into_iter().map(|id| (id, false)).collect();
+        selected.extend(captures.into_iter().map(|s| (s.id, true)));
+        for (id, capture) in selected {
             let source = match queries.catalog_source(&id) {
                 Ok(source) => source,
                 Err(error) => {
                     sources.push(CatalogSource {
-                        catalog_id: format!("local:{id}"),
+                        catalog_id: format!("{}:{id}", if capture { "capture" } else { "local" }),
                         name: "Unavailable folder".into(),
-                        kind: "local".into(),
+                        kind: if capture { "capture" } else { "local" }.into(),
                         enabled: false,
                         coverage: "unavailable".into(),
                         observed_at_ms: None,
@@ -105,9 +120,9 @@ impl Coordinator {
             };
             let page = queries.catalog_page(&id, None, None, 1);
             sources.push(CatalogSource {
-                catalog_id: format!("local:{id}"),
+                catalog_id: format!("{}:{id}", if capture { "capture" } else { "local" }),
                 name: source.name.clone(),
-                kind: "local".into(),
+                kind: if capture { "capture" } else { "local" }.into(),
                 enabled: source.enabled,
                 coverage: match &page {
                     Ok(p) if p.snapshot.is_some() && p.indexed_at_ms.is_none() => {
@@ -142,6 +157,15 @@ impl Coordinator {
             provider_failure,
         })
     }
+    fn capture_selected(&self, store: &ReaderStore, id: &str) -> Result<bool> {
+        let Some(directory) = &self.captures else {
+            return Ok(false);
+        };
+        Ok(crate::capture::reader::sources(store, directory)
+            .map_err(core_error)?
+            .iter()
+            .any(|s| s.id == id))
+    }
     fn page(&self, id: String, cursor: Option<String>, limit: u32) -> Result<CatalogReply> {
         if !(1..=100).contains(&limit) || id.len() > 256 {
             return Err(CatalogError::Invalid);
@@ -167,7 +191,11 @@ impl Coordinator {
         }
         drop(cursors);
         let after = previous.as_ref().map(|c| c.after.as_str());
-        let (source, documents, next) = if let Some(local) = id.strip_prefix("local:") {
+        let (source, documents, next) = if let Some(local) = id
+            .strip_prefix("local:")
+            .or_else(|| id.strip_prefix("capture:"))
+        {
+            let capture = id.starts_with("capture:");
             if local.len() != 64 || !local.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(CatalogError::Invalid);
             }
@@ -177,16 +205,22 @@ impl Coordinator {
                 None => None,
             };
             let queries = self.queries.lock().map_err(|_| CatalogError::Persistence)?;
+            if capture && !self.capture_selected(&queries, local)? {
+                return Err(CatalogError::Unauthorized);
+            }
             if !queries.catalog_source(local).map_err(core_error)?.enabled {
                 return Err(CatalogError::Unauthorized);
             }
             let p = queries
                 .catalog_page(local, after, expected, limit as usize)
                 .map_err(core_error)?;
+            if capture && !self.capture_selected(&queries, local)? {
+                return Err(CatalogError::Stale);
+            }
             let source = CatalogSource {
                 catalog_id: id.clone(),
                 name: p.source_name,
-                kind: "local".into(),
+                kind: if capture { "capture" } else { "local" }.into(),
                 enabled: true,
                 coverage: if p.snapshot.is_none() {
                     "not_indexed"
