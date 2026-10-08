@@ -1,0 +1,104 @@
+{
+  "scope": "isolated_synthetic_macOS_installed_clients",
+  "sourceBase": "c2055ea94de92726160288037194ffe4ec0d6e0c",
+  "artifactProvenance": "Native binaries built from sourceBase; tested VSIX includes uncommitted URI parser fix now in this feature. Artifact hashes identify actual tested bytes, not a later repack.",
+  "platform": "darwin",
+  "architecture": "arm64",
+  "artifactHashes": {
+    "service": "8542ab0365424ef20366c8b192f17ab9c6d63a57756a36a5591f42be0a0332e1",
+    "mcp": "4b63b9fc90527b4f15d43503faeb688bd1a2e63a08a7399d33462c5cd80bf795",
+    "capture": "ba59d65cb7ba34c7961c4c7947f9b492c60790d73e8dde2ac76446d2d4648f73",
+    "vsix": "de26d198477bf7b41f11e96c2b73a170688e8e9871f00ae4d8ab5984d1fec4f0"
+  },
+  "phases": [
+    {
+      "checkedAt": "2026-10-08T14:17:16.578Z",
+      "client": "claude",
+      "status": "passed",
+      "version": "2.1.294 (Claude Code)",
+      "projectConfigInstalled": true,
+      "pendingBeforeExplicitApproval": true,
+      "explicitIsolatedUserApprovalConnected": true,
+      "interactiveWorkspaceTrust": "not_exercised",
+      "modelInvocation": "not_exercised_no_credentials_copied",
+      "note": "Only Claude result retained from this earlier run; its VS Code phase failed before the URI fix and is not counted as passed."
+    },
+    {
+      "checkedAt": "2026-10-08T14:20:06.266Z",
+      "client": "vscode",
+      "installedHostCommit": "2a59476c9bfcb90b3ddc372c36762471b7dfad1c",
+      "status": "passed",
+      "vscodeVersion": "1.141.0",
+      "uiKind": 1,
+      "remoteName": null,
+      "checks": [
+        "installed_vsix_activated_in_real_local_extension_host",
+        "real_content_provider_returned_exact_revision_bound_service_body",
+        "actual_preview_command_created_webview",
+        "actual_reference_command_opened_selected_target_at_parser_line",
+        "content_provider_rejected_unselected_source",
+        "content_provider_rejected_stale_revision",
+        "extension_host_service_transport_search_status_related_scoped"
+      ],
+      "extensionVersion": "1.0.0",
+      "loadOrigin": "isolated_installed_vsix",
+      "reference": {
+        "sourceId": "8fae30636f3dd282073493bb1cf9c035b48c52ce7a4b67583fec8b82f3034f0a",
+        "path": "notes/plan.md",
+        "revision": "016b6bfa229af3ac217714ba344591bdaa547d37b3874046a32eb1c4644da262",
+        "line": 1
+      },
+      "workspaceTrust": "disabled_for_explicit_synthetic_test_workspace",
+      "globalExtensionInstall": false
+    },
+    {
+      "checkedAt": "2026-10-08T14:21:13.253Z",
+      "client": "codex",
+      "status": "passed",
+      "version": "codex-cli 0.161.0",
+      "projectConfigInstalled": true,
+      "untrustedProjectIgnored": true,
+      "explicitIsolatedProjectTrustLoadedServer": true,
+      "sixToolsDiscovered": true,
+      "actualCodexMcpReadReturnedExactRevisionBody": true,
+      "retrievalMarkerPreserved": true,
+      "modelInvocation": "not_exercised_no_credentials_copied"
+    },
+    {
+      "checkedAt": "2026-10-08T14:21:13.253Z",
+      "phase": "direct_mcp",
+      "status": "passed",
+      "protocolVersion": "2025-11-25",
+      "sixReadOnlyToolsInvoked": true,
+      "revisionLineEvidence": true,
+      "unselectedAndStaleRejected": true,
+      "semanticUnavailableWithoutLexicalSubstitutes": true,
+      "retrievalMarkerPreserved": true,
+      "client": "direct_synthetic_protocol_client_not_agent_model"
+    }
+  ],
+  "preservation": {
+    "knownGlobalConfigurationFilesUnchanged": true,
+    "projectConfigBytesRestoredAfterUninstall": true,
+    "credentialsCopied": false,
+    "globalExtensionInstalled": false,
+    "successfulSyntheticFixturesRemoved": true
+  },
+  "checks": {
+    "warmNativeBuild": "passed 10.97s jobs=2 locked offline",
+    "extensionUnitTests": "15 passed, 0 failed",
+    "extensionSyntaxCheck": "passed",
+    "warmVsixPackage": "passed",
+    "uriRegression": "observed RED then GREEN",
+    "symlinkedProductionLicenseGraph": "passed"
+  },
+  "limitations": [
+    "synthetic launcher routes packaged flags to standalone binaries; packaged-app entrypoint is not accepted",
+    "no model invocation or credentials copied",
+    "interactive agent workspace trust dialogs not exercised",
+    "VS Code search-input/quick-pick interactive command flow not exercised",
+    "Claude model-driven tool invocation and final-output hooks not exercised",
+    "VS Code workspace trust disabled only for explicit synthetic fixture",
+    "No global user-project install; no Linux/Windows/remote/web client runtime acceptance"
+  ]
+}

@@ -79,8 +79,8 @@ function selectionUri(value) {
 }
 function parseSelectionUri(value) {
   if (typeof value !== "string" || value.length > 16384) fail("invalid_path");
-  const modern = /^mdreader:\/\/document\/([^/?#]+)\/([^?#]+)\?([^#]+)#line=([1-9][0-9]*)$/u.exec(value);
-  const match = modern ?? /^mdreader:\/\/([A-Za-z0-9_-]{1,128})\/([^?#]+)\?([^#]+)#line=([1-9][0-9]*)$/u.exec(value);
+  const modern = /^mdreader:\/\/document\/([^/?#]+)\/([^?#]+)\?([^#]+)#line(?:=|%3[dD])([1-9][0-9]*)$/u.exec(value);
+  const match = modern ?? /^mdreader:\/\/([A-Za-z0-9_-]{1,128})\/([^?#]+)\?([^#]+)#line(?:=|%3[dD])([1-9][0-9]*)$/u.exec(value);
   if (!match) fail("invalid_path");
   let relative, source;
   try {
@@ -96,14 +96,15 @@ function parseSelectionUri(value) {
   } catch {
     fail("invalid_path");
   }
-  const query = new URLSearchParams(match[3]);
-  if ([...query.keys()].length !== 1 || !query.has("revision"))
-    fail("invalid_path");
+  // VS Code Uri.toString encodes the equals delimiters for this custom
+  // scheme. Accept that canonical form exactly; never decode the path twice.
+  const query = /^revision(?:=|%3[dD])([a-fA-F0-9]{64})$/u.exec(match[3]);
+  if (!query) fail("invalid_path");
   return validateSelection(
     {
       source_id: source,
       path: relative,
-      revision: query.get("revision"),
+      revision: query[1],
       line: Number(match[4]),
     },
     true,

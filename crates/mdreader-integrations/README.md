@@ -1,6 +1,9 @@
 # MDReader project integrations
 
-This crate prepares and installs narrowly owned project configuration entries for the packaged MDReader binary. It never searches home directories, discovers repositories, reads histories, runs an agent, modifies client trust, or changes the service's capture grants. All tests use synthetic temporary configuration files. No live user settings have been installed or removed.
+This crate prepares and installs narrowly owned project configuration entries for the packaged MDReader binary. It never searches home directories, discovers repositories, reads histories, runs an agent, modifies client trust, or changes the service's capture grants. Crate tests use synthetic temporary configuration files. The separate
+[installed-client driver](../../extensions/vscode/README.md#explicit-installed-client-acceptance)
+has also installed and uninstalled project MCP entries in isolated synthetic
+profiles using real installed clients. Existing global user settings were unchanged.
 
 ## Supported contracts
 
@@ -15,7 +18,7 @@ These current contracts do not prove compatibility with an older installed clien
 
 | Host | Installer status |
 | --- | --- |
-| macOS local Claude Code/Codex | Synthetic filesystem/process tests pass; live client compatibility/trust is unverified. |
+| macOS local Claude Code/Codex | Synthetic tests pass; Claude 2.1.294 isolated approval/connection and Codex 0.161.0 isolated trust/tool-call observed. User-project/hook acceptance pending. |
 | Linux local Claude Code/Codex | POSIX implementation present; runtime acceptance pending. |
 | Native Windows | `Unsupported` before filesystem mutation; private ACLs, safe replacement and capture durability remain incomplete. |
 | Cloud orchestration, remote command host, web/mobile agent UI | Unsupported for these local command integrations. No install is attempted when `local_commands` is false. |
@@ -98,4 +101,10 @@ The suite covers all five adapters, repeated installs/removal/rollback, byte pre
 
 Observed final checks: 16 test entries pass (including one subprocess helper), Clippy with warnings denied passes, Windows GNU cross-compilation passes, and `git diff --check` passes.
 
-Live install/uninstall acceptance, actual client version probes, trust/restart UX, managed policy behavior, noncooperating concurrent-editor safety, Linux/Windows runtime behavior and packaged application wiring remain separate gates. No Task 3 completion, live settings modification, publication or merge is claimed by this crate.
+The [bounded client receipt](../mdreader-mcp/validation/client-hosts-2026-10-08.md)
+records isolated project MCP install/uninstall byte preservation, measured installed
+versions, explicit client approval/trust and real Codex MCP retrieval. Interactive
+trust/restart UX, actual user-project setup, model turns/final-output hooks, managed
+policy behavior, noncooperating concurrent-editor safety, Linux/Windows runtime
+behavior and packaged application wiring remain separate gates. No Task 3
+completion or publication is claimed by this crate.
