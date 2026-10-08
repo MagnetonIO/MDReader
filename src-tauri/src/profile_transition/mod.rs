@@ -1,13 +1,59 @@
-//! Native profile transition registration boundary. Not registered in app startup
-//! yet: legacy/reader/renderer writers currently lack a coordinated freeze.
-//! Keep this unavailable; no caller-supplied readiness flag grants activation.
-use mdreader_profile::{Error, Participant, Result, REQUIRED_PARTICIPANTS};
+//! Native preservation admission. Not registered in startup: no existing writer
+//! is protected until its real participant and effect leases are wired. Selector
+//! activation stays unavailable until durable restart/handoff is implemented.
+mod admission;
+mod registry;
+#[cfg(all(test, unix))]
+mod tests;
+pub(crate) use admission::EffectLease;
+use mdreader_profile::{
+    Error, FreezeOwner, FrozenProfile, Inventory, InventorySelection, Limits, Participant, Result,
+    RootBinding, VerifiedSnapshot,
+};
+pub(crate) use registry::{FreezeScope, FrozenParticipant, LiveParticipant};
+use std::{path::Path, path::PathBuf, sync::Arc, time::Duration};
 
-pub(crate) struct NativeProfileTransition;
+pub(crate) struct NativeProfileTransition {
+    registry: registry::Registry,
+}
 impl NativeProfileTransition {
-    pub(crate) fn missing_participants(&self) -> &'static [Participant] {
-        &REQUIRED_PARTICIPANTS
+    pub(crate) fn new(inventory: &Inventory) -> Self {
+        Self {
+            registry: registry::Registry::new(inventory),
+        }
     }
+    pub(crate) fn missing_participants(&self) -> Vec<Participant> {
+        self.registry.missing()
+    }
+    pub(crate) fn register(
+        &mut self,
+        owner: Arc<dyn LiveParticipant>,
+        databases: Vec<PathBuf>,
+    ) -> Result<()> {
+        self.registry.register(owner, databases)
+    }
+    pub(crate) fn effect(&self, participant: Participant) -> Result<EffectLease> {
+        self.registry.effect(participant)
+    }
+    /// Call on a bounded blocking worker. Strict flush finishes before this
+    /// inventory is captured; participant capabilities remain held throughout
+    /// copying/backups/hash verification/publication. No selector changes.
+    pub(crate) fn preserve(
+        &self,
+        choices: &[InventorySelection],
+        destination: &Path,
+        limits: &Limits,
+        timeout: Duration,
+    ) -> Result<VerifiedSnapshot> {
+        self.registry.with_frozen(timeout, |frozen| {
+            let root = frozen.binding().locator.restore()?;
+            let inventory = Inventory::capture(&root, choices, limits)?;
+            let mut owner = BorrowedFreeze { frozen };
+            mdreader_profile::stage(&mut owner, inventory, destination, limits)
+        })
+    }
+    // Durable import/startup selector and both-owner shutdown handoff are not
+    // registered. A complete participant list never grants these operations.
     pub(crate) fn prepare(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
@@ -16,5 +62,21 @@ impl NativeProfileTransition {
     }
     pub(crate) fn rollback(&self) -> Result<()> {
         Err(Error::NotQuiescent)
+    }
+}
+struct BorrowedFreeze<'a> {
+    frozen: &'a mut dyn FrozenProfile,
+}
+impl FreezeOwner for BorrowedFreeze<'_> {
+    fn with_frozen<T>(
+        &mut self,
+        expected: &RootBinding,
+        action: impl FnOnce(&mut dyn FrozenProfile) -> Result<T>,
+    ) -> Result<T> {
+        if self.frozen.binding() != expected {
+            return Err(Error::Conflict);
+        }
+        self.frozen.revalidate()?;
+        action(&mut *self.frozen)
     }
 }
