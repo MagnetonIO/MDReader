@@ -14,7 +14,7 @@ export interface DeviceReaderBackend {
   manifest(reference: DeviceReference): Promise<AssetManifest | null>;
   images(reference: DeviceReference): AssetBackend;
 }
-function receipt(reference: DeviceReference) {
+export function deviceReceipt(reference: DeviceReference) {
   if (reference.path !== 'document.md'
     || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(reference.documentId)
     || !/^[a-f0-9]{64}$/.test(reference.sourceId) || !/^[a-f0-9]{64}$/.test(reference.revision)) {
@@ -22,7 +22,7 @@ function receipt(reference: DeviceReference) {
   }
   return { documentId: reference.documentId, sourceId: reference.sourceId, revision: reference.revision };
 }
-function message(kind: string) {
+export function deviceErrorMessage(kind: string) {
   if (kind === 'stale') return 'The device document changed. Reload On this device before opening it again.';
   if (kind === 'busy') return 'The device owner is busy. Try again after the current operation.';
   if (kind === 'unsupported') return 'This device namespace requires a supported reader version.';
@@ -32,7 +32,7 @@ function message(kind: string) {
 async function request(value: DeviceRequest): Promise<DeviceReply> {
   try {
     const result = await commands.readerDevice(value);
-    if (result.status === 'error') throw new Error(message(result.error.kind));
+    if (result.status === 'error') throw new Error(deviceErrorMessage(result.error.kind));
     return result.data;
   } catch (cause) {
     throw cause instanceof Error ? cause : new Error('The device reader service is unavailable.');
@@ -40,20 +40,20 @@ async function request(value: DeviceRequest): Promise<DeviceReply> {
 }
 export const deviceReaderBackend: DeviceReaderBackend = {
   async read(reference) {
-    const value = await request({ operation: 'read', receipt: receipt(reference) });
+    const value = await request({ operation: 'read', receipt: deviceReceipt(reference) });
     if (value.operation !== 'read_document' || value.documentId !== reference.documentId
       || value.sourceId !== reference.sourceId || value.revision !== reference.revision
       || value.path !== 'document.md') throw new Error('The exact device receipt could not be verified.');
     return value;
   },
   async manifest(reference) {
-    const value = await request({ operation: 'manifest', receipt: receipt(reference) });
+    const value = await request({ operation: 'manifest', receipt: deviceReceipt(reference) });
     if (value.operation !== 'manifest' || value.value && (value.value.document_id !== reference.documentId
       || value.value.document_revision !== reference.revision)) throw new Error('The selected image manifest changed.');
     return value.value;
   },
   images(reference) {
-    const selected = receipt(reference);
+    const selected = deviceReceipt(reference);
     return async (input) => {
       switch (input.operation) {
         case 'open': {
