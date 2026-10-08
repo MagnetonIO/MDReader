@@ -164,7 +164,8 @@ fn cancellation_releases_callback_owner_and_fences_late_or_stale_jobs() {
         registered_redirect: format!("http://127.0.0.1:{port}/mdreader-sync/callback"),
         recovery: None,
     };
-    let coordinator = Coordinator::new(owner.clone(), Some(setup), roots(temp.path())).unwrap();
+    let coordinator =
+        Arc::new(Coordinator::new(owner.clone(), Some(setup), roots(temp.path())).unwrap());
     let first = coordinator.begin(AccountIntent::SignIn {}).unwrap();
     receive.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(
@@ -175,6 +176,26 @@ fn cancellation_releases_callback_owner_and_fences_late_or_stale_jobs() {
         coordinator.begin(AccountIntent::SyncNow {}),
         Err(AccountError::Busy)
     ));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let operation = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    // Preservation cannot equate a timeout to logout or drained callback work.
+    assert!(matches!(
+        runtime.block_on(coordinator.freeze(
+            operation,
+            epoch,
+            Instant::now() + Duration::from_millis(20)
+        )),
+        Err(AccountError::Interrupted)
+    ));
+    assert!(!dropped.load(Ordering::SeqCst));
+    assert!(matches!(
+        coordinator.operation(first).unwrap().unwrap().state,
+        JobState::Running { .. }
+    ));
     coordinator.cancel(first).unwrap();
     assert!(matches!(
         settled(&coordinator, first).state,
@@ -183,6 +204,21 @@ fn cancellation_releases_callback_owner_and_fences_late_or_stale_jobs() {
     assert!(dropped.load(Ordering::SeqCst));
     let free = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
     drop(free);
+    let frozen = runtime
+        .block_on(coordinator.freeze(operation, epoch, Instant::now() + Duration::from_secs(1)))
+        .unwrap();
+    frozen.revalidate(&coordinator, operation, epoch).unwrap();
+    assert!(matches!(
+        frozen.revalidate(&coordinator, Uuid::new_v4(), epoch),
+        Err(AccountError::Conflict)
+    ));
+    assert!(matches!(
+        coordinator.begin(AccountIntent::SignIn {}),
+        Err(AccountError::Busy)
+    ));
+    assert!(matches!(coordinator.disconnect(), Err(AccountError::Busy)));
+    assert!(owner.try_lock().is_ok(), "freeze retained SQLite owner");
+    drop(frozen);
     let second = coordinator.begin(AccountIntent::SignIn {}).unwrap();
     receive.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(matches!(

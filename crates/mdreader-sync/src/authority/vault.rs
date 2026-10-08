@@ -15,6 +15,7 @@ enum Command {
     Get(SyncCredentialReference, Reply<Option<CustodyRecord>>),
     Create(CustodyRecord, Reply<()>),
     Exchange(u64, CustodyRecord, Reply<()>),
+    Barrier(Reply<()>),
 }
 #[derive(Clone)]
 pub struct SyncVaultClient {
@@ -44,11 +45,20 @@ impl SyncVaultClient {
                         Command::Exchange(g, r, reply) => {
                             let _ = reply.send(vault.compare_exchange(g, &r));
                         }
+                        Command::Barrier(reply) => {
+                            let _ = reply.send(Ok(()));
+                        }
                     }
                 }
             })
             .map_err(|_| AuthorityError::Custody)?;
         Ok(Self { sender })
+    }
+    /// FIFO proof that earlier issued OS mutations have actually returned, even
+    /// when their original async receiver timed out. This does not infer success
+    /// of those mutations and never reads/exports private records.
+    pub async fn settle(&self, deadline: Instant) -> AuthorityResult<()> {
+        self.request(deadline, Command::Barrier).await
     }
     async fn request<T>(
         &self,

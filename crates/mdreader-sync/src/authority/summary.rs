@@ -33,6 +33,10 @@ pub struct CustodySummary {
     pub pair_approval: PairApprovalSummary,
 }
 impl NativeAuthorityFactory {
+    /// Native preservation barrier only; no identity/status/logout shortcut.
+    pub async fn settle_custody(&self, deadline: Instant) -> AuthorityResult<()> {
+        self.vault.settle(deadline).await
+    }
     /// The service must share this exact controller with transport/projection,
     /// rather than supplying a second controller that cannot invalidate leases.
     pub fn session_controller(&self) -> Arc<SessionController> {
