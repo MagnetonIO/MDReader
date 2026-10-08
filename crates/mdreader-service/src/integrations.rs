@@ -19,8 +19,8 @@
 //! never log, sync, or expose them through ownership listing.
 //!
 //! Uninstall deliberately survives capture revocation and verifies only recorded
-//! filesystem/receipt ownership. Windows is unsupported before mutation. The
-//! underlying Unix installer still has the documented noncooperating editor
+//! filesystem/receipt ownership. Windows uses canonical SQLite phase receipts
+//! and retained local NTFS identity. The underlying configuration publisher still has the documented noncooperating editor
 //! compare/rename race; this transport does not claim to eliminate that gate.
 use mdreader_capture::ProjectPolicy;
 use mdreader_core::{ReaderError, ReaderStore, Result, SourceRoot, SourceRootIdentity};
@@ -127,6 +127,8 @@ struct ExecutableGrant {
     device: u64,
     inode: u64,
     mode: u32,
+    #[cfg(windows)]
+    identity: mdreader_capture::WindowsFileIdentity,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,7 +160,7 @@ fn encode<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|_| invalid())
 }
 fn host() -> Result<()> {
-    if cfg!(unix) {
+    if cfg!(any(unix, windows)) {
         Ok(())
     } else {
         Err(invalid())
@@ -203,7 +205,7 @@ fn grant(store: &ReaderStore, project: &str) -> Result<Option<StoredGrant>> {
 pub fn capture_policy(store: &ReaderStore, project_id: &str) -> Result<Option<ProjectPolicy>> {
     Ok(grant(store, project_id)?.map(|grant| grant.policy))
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn source_roots(store: &mut ReaderStore, ids: &[String]) -> Result<Vec<SelectedRoot>> {
     if ids.len() > 128 || ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len() {
         return Err(invalid());
@@ -222,9 +224,22 @@ fn source_roots(store: &mut ReaderStore, ids: &[String]) -> Result<Vec<SelectedR
         let [(path, identity)] = rows.as_slice() else {
             return Err(invalid());
         };
+        #[cfg(unix)]
         let path = {
             use std::os::unix::ffi::OsStringExt;
             PathBuf::from(std::ffi::OsString::from_vec(path.clone()))
+        };
+        #[cfg(windows)]
+        let path = {
+            use std::os::windows::ffi::OsStringExt;
+            if path.len() % 2 != 0 {
+                return Err(invalid());
+            }
+            let wide: Vec<u16> = path
+                .chunks_exact(2)
+                .map(|p| u16::from_le_bytes([p[0], p[1]]))
+                .collect();
+            PathBuf::from(std::ffi::OsString::from_wide(&wide))
         };
         let identity: SourceRootIdentity = serde_json::from_str(identity).map_err(|_| invalid())?;
         let root = SourceRoot::restore(path, identity)?;
@@ -236,7 +251,7 @@ fn source_roots(store: &mut ReaderStore, ids: &[String]) -> Result<Vec<SelectedR
     }
     Ok(result)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn source_roots(_: &mut ReaderStore, _: &[String]) -> Result<Vec<SelectedRoot>> {
     Err(invalid())
 }
@@ -255,7 +270,12 @@ fn authority(
     {
         return Err(invalid());
     }
+    #[cfg(windows)]
+    let selected = mdreader_capture::SelectedDirectory::open(&selection.worktree_root)
+        .map_err(|_| invalid())?;
     let worktree = SourceRoot::capture(selection.worktree_root.canonicalize()?)?;
+    #[cfg(windows)]
+    selected.verify().map_err(|_| invalid())?;
     if !grant
         .policy
         .worktree_roots
@@ -320,7 +340,61 @@ fn executable(path: &Path) -> Result<ExecutableGrant> {
         mode: metadata.mode(),
     })
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn executable(path: &Path) -> Result<ExecutableGrant> {
+    if !path.is_absolute()
+        || !path
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
+    {
+        return Err(invalid());
+    }
+    let leaf = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(invalid)?;
+    if leaf.contains(':') || leaf.ends_with(['.', ' ']) || leaf.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    let parent = path.parent().ok_or_else(invalid)?;
+    let selected = mdreader_capture::SelectedDirectory::open(parent).map_err(|_| invalid())?;
+    let root = SourceRoot::capture(parent.to_owned())?;
+    let name = PathBuf::from(path.file_name().ok_or_else(invalid)?);
+    let mut file = root
+        .open_optional_file_relative(&name)?
+        .ok_or_else(invalid)?;
+    let identity = mdreader_capture::selected_file_identity(&file).map_err(|_| invalid())?;
+    let metadata = file.metadata()?;
+    let mut magic = [0u8; 2];
+    file.read_exact(&mut magic)?;
+    if metadata.len() == 0 || magic != *b"MZ" {
+        return Err(invalid());
+    }
+    let named = root
+        .open_optional_file_relative(&name)?
+        .ok_or_else(invalid)?;
+    if mdreader_capture::selected_file_identity(&named).map_err(|_| invalid())? != identity {
+        return Err(ReaderError::Conflict);
+    }
+    selected.verify().map_err(|_| invalid())?;
+    root.verify()?;
+    Ok(ExecutableGrant {
+        directory: RootGrant::from_root(&root),
+        name,
+        length: metadata.len(),
+        modified_ns: metadata
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| invalid())?
+            .as_nanos()
+            .to_string(),
+        device: 0,
+        inode: 0,
+        mode: 0,
+        identity,
+    })
+}
+#[cfg(not(any(unix, windows)))]
 fn executable(_: &Path) -> Result<ExecutableGrant> {
     Err(invalid())
 }
@@ -342,6 +416,17 @@ fn request(directory: &Path, selection: &Selection) -> Result<InstallRequest> {
         },
     })
 }
+#[cfg(windows)]
+fn installer(directory: &Path) -> Result<Installer> {
+    let profile = mdreader_capture::PrivateDirectory::open(directory).map_err(|_| invalid())?;
+    let state = directory.join("integrations");
+    let state_guard = mdreader_capture::PrivateDirectory::create(&state).map_err(|_| invalid())?;
+    let installer = Installer::open(&state.join("settings")).map_err(integration_error)?;
+    profile.verify().map_err(|_| invalid())?;
+    state_guard.verify().map_err(|_| invalid())?;
+    Ok(installer)
+}
+#[cfg(not(windows))]
 fn installer(directory: &Path) -> Result<Installer> {
     let profile = SourceRoot::capture(directory.canonicalize()?)?;
     let state = profile.create_or_capture_directory_relative(Path::new("integrations"))?;

@@ -17,6 +17,10 @@ fs2 = "0.4"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+mdreader-core = { path = "../mdreader-core" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

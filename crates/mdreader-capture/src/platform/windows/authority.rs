@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 };
 
 #[derive(PartialEq, Eq)]
-pub(super) struct Identity(pub(super) u64, [u8; 16]);
+pub(super) struct Identity(pub(super) u64, pub(super) [u8; 16]);
 #[allow(unsafe_code)]
 pub(super) fn identity(file: &File) -> Result<Identity> {
     let mut info = FILE_ID_INFO::default();

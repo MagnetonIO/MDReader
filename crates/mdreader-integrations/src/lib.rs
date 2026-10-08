@@ -3,11 +3,14 @@ use mdreader_capture::ProjectPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+mod admission;
 mod config;
 mod durable;
 mod json;
 #[cfg(unix)]
 mod unixfs;
+#[cfg(windows)]
+mod windows;
 pub use durable::{Installer, PreparedChange};
 #[derive(Debug, Error)]
 pub enum IntegrationError {
@@ -25,6 +28,9 @@ pub enum IntegrationError {
     Bounds,
     #[error("integration state is busy")]
     Busy,
+    #[cfg(windows)]
+    #[error("integration database persistence failed")]
+    Database(#[from] rusqlite::Error),
     #[error("integration persistence failed")]
     Io(#[from] std::io::Error),
 }
