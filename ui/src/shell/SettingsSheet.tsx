@@ -31,7 +31,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
   const { dialogRef, closeRef, confirmDialogRef, confirmClear, confirmForget,
     setConfirmClear, setConfirmForget, failure, notice, onClose,
     onOpenProviderDocument, onLibraryChanged, localRoot } = controller;
-  const [category, setCategory] = useState<Category>('appearance');
+  const [category, setCategory] = useState<Category>(props.initialSection ?? 'appearance');
   const contentRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;
@@ -107,7 +107,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <h3>Preserve your documents</h3>
               <p>Back up your original Markdown folders with a tool you control. A complete native Library backup and restore workflow is not available in this panel.</p>
               <h3>Legacy records</h3>
-              <p>Existing legacy records remain accessible through the Library’s migration entry. Do not delete an old profile before its document bodies, history and edit receipts have been preserved.</p>
+              <p>Use Advanced → Migration to preserve selected offline legacy snapshots. Do not delete an old profile before its document bodies, history and edit receipts have been preserved.</p>
               <h3>Manage local copies</h3>
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
@@ -117,7 +117,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <IndexingPanel />
               <AgentCapturePanel root={localRoot} />
               <DiagnosticSettings controller={controller} />
-              <MigrationSettings controller={controller} />
+              <MigrationSettings />
             </section>
           </div>
         </div>
