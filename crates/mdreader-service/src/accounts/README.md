@@ -203,3 +203,11 @@ same-owner product catalog/asset read composition; real provider/user login and
 mobile lifecycle. Existing incoming owner regressions separately cover
 replacement, dirty-state CAS, pins, exact line positions, conflicts and deletions.
 Block/pixel positions remain a typed pending state rather than approximated lines.
+
+## Actual actor acceptance follow-up
+
+The actual synthetic HTTPS account actor→PKCE/recovery→typed incoming pump and
+cancellation/freeze gate is now exercised together. See the scoped
+[fixture and exact evidence](acceptance/README.md); the earlier checkpoint's
+separate-component limitation above is historical. Outgoing selection, product
+recovery adapters, cross-process backup and live/mobile acceptance remain gates.
