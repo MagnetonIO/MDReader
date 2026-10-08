@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle, NavigateEvent } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
@@ -13,7 +13,7 @@ import {
 import type { ReaderPosition } from '../reader-history/model';
 import { savedAnchor, restoreAnchor } from '../reader-history/positions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls }: {
   reference: ProviderReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
@@ -25,6 +25,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   onNavigateReference?: (reference: ProviderReaderReference) => void;
   onBack?: () => void; onForward?: () => void;
   canGoBack?: boolean; canGoForward?: boolean;
+  readingControls?: (scrollToLine: (line: number) => void) => ReactNode;
 }) {
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
@@ -141,6 +142,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <span>Read only</span>
       {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
+    {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Source evidence</summary>
       <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>

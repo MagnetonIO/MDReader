@@ -4,12 +4,18 @@ import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from '../
 import { assetTarget } from '../../mobile/device-assets';
 import { CanonicalReader } from '../reader/CanonicalReader';
 import { deviceReaderBackend, type DeviceReference, type DeviceReaderBackend } from './backend';
+import { DeviceReadingControls } from './DeviceReadingControls';
+import type { ReaderPosition } from '../reader-history/model';
+import type { DeviceReadingStateBackend } from './reading-state-backend';
 
 /** The normal inline reader, using the service's exact device owner and leases. */
-export function DeviceReader({ reference, onClose, backend = deviceReaderBackend, ...history }: {
-  reference: DeviceReference; onClose: () => void; backend?: DeviceReaderBackend;
+export function DeviceReader({ reference, onClose, backend = deviceReaderBackend, readingStateBackend, ...history }: {
+  reference: DeviceReference; onClose: () => void; backend?: DeviceReaderBackend; readingStateBackend?: DeviceReadingStateBackend;
 } & Pick<ComponentProps<typeof CanonicalReader>, 'position' | 'onPosition' | 'onBack' | 'onForward' | 'canGoBack' | 'canGoForward'>) {
   const [loaded, setLoaded] = useState<{ reference: DeviceReference; manifest: AssetManifest | null; error: string | null } | null>(null);
+  const [visible, setVisible] = useState<{ reference: DeviceReference; position: ReaderPosition } | null>(null);
+  const line = visible?.reference === reference ? visible.position.line : history.position?.revision === reference.revision
+    ? history.position.line : reference.line ?? 1;
   const manifest = loaded?.reference === reference ? loaded.manifest : null;
   const error = loaded?.reference === reference ? loaded.error : null;
   const assetBackend = useMemo(() => backend.images(reference), [backend, reference]);
@@ -37,6 +43,9 @@ export function DeviceReader({ reference, onClose, backend = deviceReaderBackend
   return <DeviceAssetProvider images={images}>
     {error ? <p role="alert">{error}</p> : null}
     <CanonicalReader reference={reference} backend={readerBackend} sourceKind="device"
-      imageComponent={Image} onClose={onClose} {...history} />
+      imageComponent={Image} onClose={onClose} {...history}
+      onPosition={(position) => { setVisible({ reference, position }); history.onPosition?.(position); }}
+      readingControls={(resume) => <DeviceReadingControls key={`${reference.documentId}:${reference.sourceId}:${reference.revision}`}
+        reference={reference} line={line} onResume={resume} backend={readingStateBackend} />} />
   </DeviceAssetProvider>;
 }

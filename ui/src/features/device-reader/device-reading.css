@@ -1,0 +1,10 @@
+.device-reading-controls { flex: none; padding: 8px 16px; border-bottom: 1px solid var(--color-border); }
+.device-reading-controls__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.device-reading-controls button { min-height: 36px; white-space: normal; }
+.device-reading-controls button[aria-pressed="true"] { font-weight: 600; }
+.device-reading-controls p { margin: 6px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .device-reading-controls { padding: 8px; }
+  .device-reading-controls__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .device-reading-controls button { min-height: 44px; }
+}
