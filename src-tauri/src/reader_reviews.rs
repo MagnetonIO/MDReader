@@ -78,7 +78,7 @@ pub async fn reader_archived_reviews(
     }
     // Capture the current local era once, never discover a source from a legacy locator.
     let needs_local = matches!(&request, ArchivedReviewsRequest::Current { .. })
-        || matches!(&request,ArchivedReviewsRequest::Compare{current,..} if !current.source_id.starts_with("provider:"));
+        || matches!(&request,ArchivedReviewsRequest::Compare{current,generation,..} if generation.is_some() && !current.source_id.starts_with("provider:"));
     let generation = match &request {
         ArchivedReviewsRequest::Current { generation, .. } => Some(*generation),
         ArchivedReviewsRequest::Compare { generation, .. } => *generation,
@@ -92,6 +92,17 @@ pub async fn reader_archived_reviews(
     let worker_epoch = epoch.clone();
     let backend = reader.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let local_membership = match &request {
+            ArchivedReviewsRequest::Compare {
+                current,
+                generation: None,
+                ..
+            } if !current.source_id.starts_with("provider:") => Some(
+                crate::reader_catalog::LocalMembership::capture(&app, &backend, &current.source_id)
+                    .map_err(|_| failure("conflict"))?,
+            ),
+            _ => None,
+        };
         let operation = match request {
             ArchivedReviewsRequest::Select {
                 export_id,
@@ -174,11 +185,17 @@ pub async fn reader_archived_reviews(
         let response: Envelope = backend
             .typed(Request::Reviews { request: operation })
             .map_err(|_| failure("unavailable"))?;
-        match (response.result, response.error) {
+        let result = match (response.result, response.error) {
             (Some(value), None) => reply(value),
             (None, Some(error)) => Err(error.into()),
             _ => Err(failure("unavailable")),
+        };
+        if let Some(membership) = local_membership {
+            membership
+                .revalidate(&app, &backend)
+                .map_err(|_| failure("conflict"))?;
         }
+        result
     })
     .await
     .map_err(|_| failure("storage"))?;

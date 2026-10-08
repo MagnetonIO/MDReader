@@ -66,6 +66,50 @@ fn revalidate(
     }
     Ok(())
 }
+/// Retain the existing native Library grant across another cached-only reader operation.
+/// A device source has no membership here and cannot acquire comparison authority.
+pub(crate) struct LocalMembership {
+    source_id: String,
+    member: LocalFolderSource,
+}
+impl LocalMembership {
+    pub(crate) fn capture(
+        app: &AppHandle,
+        backend: &ReaderBackend,
+        source_id: &str,
+    ) -> Result<Self, CatalogError> {
+        Self::from_members(backend, &members(app)?, source_id)
+    }
+    fn from_members(
+        backend: &ReaderBackend,
+        all: &[LocalFolderSource],
+        source_id: &str,
+    ) -> Result<Self, CatalogError> {
+        Ok(Self {
+            source_id: source_id.to_owned(),
+            member: local_member(backend, all, source_id)?,
+        })
+    }
+    pub(crate) fn revalidate(
+        &self,
+        app: &AppHandle,
+        backend: &ReaderBackend,
+    ) -> Result<(), CatalogError> {
+        self.verify(backend, &members(app)?)
+    }
+    fn verify(
+        &self,
+        backend: &ReaderBackend,
+        all: &[LocalFolderSource],
+    ) -> Result<(), CatalogError> {
+        if !all.contains(&self.member)
+            || local_member(backend, std::slice::from_ref(&self.member), &self.source_id).is_err()
+        {
+            return Err(failure("stale"));
+        }
+        Ok(())
+    }
+}
 fn execute(
     app: &AppHandle,
     backend: &ReaderBackend,
@@ -286,5 +330,55 @@ mod tests {
         let after: Vec<mdreader_core::Source> = backend.typed(Request::ListSources).unwrap();
         assert_eq!(after.len(), 1);
         assert!(!after[0].enabled);
+    }
+    #[test]
+    fn canonical_review_membership_checks_exact_read_and_final_retained_grant_without_workspace() {
+        let t = tempfile::tempdir().unwrap();
+        let notes = t.path().join("notes");
+        std::fs::create_dir(&notes).unwrap();
+        std::fs::write(notes.join("note.md"), "# Exact canonical revision").unwrap();
+        let mut registry = crate::library::LibraryRegistry::empty();
+        let member = registry.add_root(&notes).unwrap();
+        let backend = ReaderBackend::embedded(&t.path().join("profile")).unwrap();
+        let members = std::slice::from_ref(&member);
+        assert!(LocalMembership::from_members(&backend, members, "unknown").is_err());
+        let source_id = backend.admit(&member.root().unwrap()).unwrap();
+        let guard = LocalMembership::from_members(&backend, members, &source_id).unwrap();
+        let observed: mdreader_core::Document = backend
+            .typed(Request::Read {
+                source_id: source_id.clone(),
+                path: "note.md".into(),
+                revision: None,
+            })
+            .unwrap();
+        let exact: mdreader_core::Document = backend
+            .typed(Request::Read {
+                source_id: source_id.clone(),
+                path: observed.path.clone(),
+                revision: Some(observed.revision.clone()),
+            })
+            .unwrap();
+        assert_eq!(exact.revision, observed.revision);
+        guard.verify(&backend, members).unwrap();
+        // Missing Library membership, including service-only device sources, is no grant.
+        assert!(guard.verify(&backend, &[]).is_err());
+        assert!(LocalMembership::from_members(&backend, &[], &source_id).is_err());
+        let _: serde_json::Value = backend
+            .typed(Request::SetSourceEnabled {
+                source_id: source_id.clone(),
+                enabled: false,
+            })
+            .unwrap();
+        assert!(guard.verify(&backend, members).is_err());
+        assert!(LocalMembership::from_members(&backend, members, &source_id).is_err());
+        let _: serde_json::Value = backend
+            .typed(Request::SetSourceEnabled {
+                source_id,
+                enabled: true,
+            })
+            .unwrap();
+        std::fs::rename(&notes, t.path().join("original-notes")).unwrap();
+        std::fs::create_dir(&notes).unwrap();
+        assert!(guard.verify(&backend, members).is_err());
     }
 }
