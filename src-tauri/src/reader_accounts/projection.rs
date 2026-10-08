@@ -12,6 +12,12 @@ impl AccountRequest {
     pub(super) fn service(self) -> Result<service::rpc::AccountRequest, AccountError> {
         Ok(match self {
             Self::Status {} => service::rpc::AccountRequest::Status {},
+            Self::SyncSelected { selection } => service::rpc::AccountRequest::SyncSelected {
+                selection: selection.service()?,
+            },
+            Self::InspectSelected { selection } => service::rpc::AccountRequest::InspectSelected {
+                selection: selection.service()?,
+            },
             Self::Begin { intent } => service::rpc::AccountRequest::Begin {
                 intent: intent.service()?,
             },
@@ -86,6 +92,7 @@ impl From<service::AccountStatus> for AccountStatus {
                 device_approval: label(c.device_approval),
             }),
             latest_job: value.latest_job.map(Into::into),
+            selected_scope: value.selected_scope.map(Into::into),
         }
     }
 }
@@ -93,6 +100,7 @@ impl From<service::Job> for AccountJob {
     fn from(value: service::Job) -> Self {
         Self {
             id: value.id.to_string(),
+            selected_sync: value.selected_sync.map(Into::into),
             state: match value.state {
                 service::JobState::Running { phase } => JobState::Running {
                     phase: label(phase),
@@ -111,6 +119,15 @@ impl From<service::Job> for AccountJob {
 impl From<service::Outcome> for Outcome {
     fn from(value: service::Outcome) -> Self {
         match value {
+            service::Outcome::SelectedStatus { selection, disposition } => Self::SelectedStatus {
+                selection: selection.into(),
+                disposition: match disposition {
+                    mdreader_service::sync::outgoing::SelectedDisposition::Absent => SelectedDisposition::Absent,
+                    mdreader_service::sync::outgoing::SelectedDisposition::Queued => SelectedDisposition::Queued,
+                    mdreader_service::sync::outgoing::SelectedDisposition::Applied { sequence } => SelectedDisposition::Applied { sequence: sequence.to_string() },
+                    mdreader_service::sync::outgoing::SelectedDisposition::ReauthorizationRequired => SelectedDisposition::ReauthorizationRequired,
+                },
+            },
             service::Outcome::Connected => Self::Connected,
             service::Outcome::PublicPacket {
                 packet_kind,
@@ -163,4 +180,65 @@ impl From<service::rpc::AccountReply> for AccountReply {
             service::rpc::AccountReply::Complete => Self::Complete,
         }
     }
+}
+
+impl SelectedOperation {
+    fn service(self) -> Result<service::SelectedOperation, AccountError> {
+        let hash = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if !hash(&self.scope.account_digest)
+            || !thumbprint(&self.scope.device_id)
+            || !hash(&self.receipt.source_id)
+            || !hash(&self.receipt.revision)
+        {
+            return Err(error("invalid"));
+        }
+        Ok(service::SelectedOperation {
+            scope: service::SelectedScope {
+                account_digest: self.scope.account_digest,
+                library_id: id(self.scope.library_id)?,
+                device_id: self.scope.device_id,
+            },
+            receipt: mdreader_core::device::catalog::Receipt {
+                document_id: id(self.receipt.document_id)?.to_string(),
+                source_id: self.receipt.source_id,
+                revision: self.receipt.revision,
+            },
+            operation_id: id(self.operation_id)?,
+        })
+    }
+}
+impl From<service::SelectedScope> for SelectedScope {
+    fn from(value: service::SelectedScope) -> Self {
+        Self {
+            account_digest: value.account_digest,
+            library_id: value.library_id.to_string(),
+            device_id: value.device_id,
+        }
+    }
+}
+impl From<service::SelectedOperation> for SelectedOperation {
+    fn from(value: service::SelectedOperation) -> Self {
+        Self {
+            scope: value.scope.into(),
+            receipt: SelectedReceipt {
+                document_id: value.receipt.document_id,
+                source_id: value.receipt.source_id,
+                revision: value.receipt.revision,
+            },
+            operation_id: value.operation_id.to_string(),
+        }
+    }
+}
+
+fn thumbprint(value: &str) -> bool {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    value.len() == 43
+        && URL_SAFE_NO_PAD
+            .decode(value)
+            .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(bytes) == value)
 }

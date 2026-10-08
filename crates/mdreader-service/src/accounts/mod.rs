@@ -8,6 +8,8 @@ mod enrollment;
 mod freeze;
 mod interaction;
 mod operations;
+mod selection;
+pub use selection::{SelectedOperation, SelectedScope};
 pub mod rpc;
 mod state;
 mod storage;
@@ -101,16 +103,16 @@ impl Coordinator {
         intent.validate()?;
         self.begin_action(actor::Action::Account(intent))
     }
-    /// Trusted native selection only; no AccountIntent/RPC/renderer dispatch.
-    /// The serial actor retains queue materialization before foreground sync.
-    pub fn begin_selected_sync(&self, document: Uuid, operation: Uuid) -> Result<Uuid> {
-        if document.get_version_num() != 4 || operation.get_version_num() != 4 {
-            return Err(AccountError::Invalid);
-        }
-        self.begin_action(actor::Action::SelectedSync {
-            document,
-            operation,
-        })
+    /// Explicit exact selection. Neither queued status nor a selected UUID alone
+    /// authorizes uploading a newer revision than the caller actually selected.
+    pub fn begin_selected_sync(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::SelectedSync(selection))
+    }
+    /// Readonly reconciliation runs behind earlier issued/retained actor work.
+    pub fn inspect_selected_sync(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::InspectSelected(selection))
     }
     fn begin_action(&self, action: actor::Action) -> Result<Uuid> {
         let sender = self.sender.as_ref().ok_or(AccountError::Unconfigured)?;
@@ -123,6 +125,12 @@ impl Coordinator {
             return Err(AccountError::Busy);
         }
         let id = Uuid::new_v4();
+        let selected_sync = match &action {
+            actor::Action::SelectedSync(selection) | actor::Action::InspectSelected(selection) => {
+                Some(selection.clone())
+            }
+            _ => None,
+        };
         let command = actor::Command {
             id,
             epoch: state.epoch,
@@ -134,7 +142,7 @@ impl Coordinator {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => AccountError::Busy,
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => AccountError::Interrupted,
             })?;
-        state.start(id);
+        state.start(id, selected_sync);
         Ok(id)
     }
     pub fn status(&self) -> Result<AccountStatus> {

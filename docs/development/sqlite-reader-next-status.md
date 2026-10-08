@@ -626,3 +626,28 @@ all-target service Clippy passes for default and sync-native. See
 No remote database borrow, backup operation, native all-eight registration,
 selector activation, installed-profile migration or release acceptance is claimed.
 The actual server-owned staged backup and native owner composition are next.
+
+## Exact selected native document product action, 2026-10-08
+
+Native Settings now offers explicit sync for the currently opened On this device
+reading receipt (document/source/raw-byte revision), scoped to the current verified
+account/library/device. The production closed RPC uses the existing retained
+account actor and foreground pump. Stable opaque operation identity is retained
+before dispatch and across navigation/lost replies; only exact readonly same-actor
+absent/applied reconciliation settles it. Storage-only Web Locks serialize
+cooperating renderer writers; absent support disables upload while local reading
+remains available. No automatic selection/upload/retry or renderer secret input.
+
+The existing actual synthetic OIDC/PKCE/HTTPS Worker/SQLite/R2 case passes through
+the production selected RPC, stale expected-revision rejection, strict encrypted
+graph receipts, same-document echo and exact applied inspection, retaining prior
+cancel/freeze/interrupted-upload assertions. Omitting selected revision equality
+caused the expected RED; exact restoration returned GREEN. Accounts3/RPC1/
+incoming12, native projection1, source binding generator1, UI/storage11, typecheck,
+scoped lint and strict service/sync-native Clippy pass. See the
+[exact commands, failures and receipt](../../crates/mdreader-service/src/accounts/acceptance/README.md#exact-selected-document-product-rpc-checkpoint-2026-10-08).
+
+Actual OS keychain/live issuer/installed UI/mobile and cross-window WebView lock
+acceptance remain separate. Old admitted graph reauthorization, outgoing
+pin/position/deletion transfer, multiple-key policy and cleanup/export remain open.
+This does not merge or validate later preservation/Runtime-Arc composition.

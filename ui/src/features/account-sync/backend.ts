@@ -1,5 +1,5 @@
 import { commands, type AccountRequest, type AccountReply, type AccountError } from '../../bindings.js';
-export type { AccountRequest, AccountReply, AccountAction, AccountStatus, AccountJob } from '../../bindings.js';
+export type { AccountRequest, AccountReply, AccountAction, AccountStatus, AccountJob, SelectedOperation, SelectedScope } from '../../bindings.js';
 export interface AccountBackend { request(operation: AccountRequest): Promise<AccountReply> }
 export const accountBackend: AccountBackend = {
   async request(operation) {

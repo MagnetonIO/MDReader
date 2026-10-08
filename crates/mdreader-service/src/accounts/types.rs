@@ -135,6 +135,10 @@ pub enum PublicPacketKind {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
+    SelectedStatus {
+        selection: super::SelectedOperation,
+        disposition: crate::sync::outgoing::SelectedDisposition,
+    },
     Connected,
     PublicPacket {
         packet_kind: PublicPacketKind,
@@ -165,6 +169,8 @@ pub enum JobState {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,
+    #[serde(default)]
+    pub selected_sync: Option<super::SelectedOperation>,
     pub state: JobState,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +242,7 @@ pub struct AccountStatus {
     /// None means not inspected yet, not proof that OS material is absent.
     pub custody: Option<CustodyView>,
     pub latest_job: Option<Job>,
+    pub selected_scope: Option<super::SelectedScope>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncPending {

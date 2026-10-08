@@ -19,12 +19,13 @@ pub(super) struct View {
     pub projections: usize,
 }
 impl View {
-    pub fn start(&mut self, id: Uuid) {
+    pub fn start(&mut self, id: Uuid, selected_sync: Option<SelectedOperation>) {
         if self.jobs.len() == 8 {
             self.jobs.pop_front();
         }
         self.jobs.push_back(Job {
             id,
+            selected_sync,
             state: JobState::Running {
                 phase: Phase::Queued,
             },
@@ -81,6 +82,11 @@ impl Shared {
                 .is_some_and(|a| a.authority.scope().is_ok()),
             custody: state.custody.clone(),
             latest_job: state.jobs.back().cloned(),
+            selected_scope: state
+                .active
+                .as_ref()
+                .and_then(|a| a.authority.scope().ok())
+                .and_then(|scope| SelectedScope::current(&scope).ok()),
         })
     }
     pub fn invalidate(&self, requested: Option<Uuid>) -> Result<()> {

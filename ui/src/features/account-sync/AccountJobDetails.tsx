@@ -5,6 +5,9 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
   const outcome = job.state.state === 'completed' ? job.state.outcome : null;
   return (
     <div aria-label="Latest account operation">
+      {job.selectedSync ? <details><summary>Selected upload identity</summary>
+        <p>Document: {job.selectedSync.receipt.documentId}. Revision: {job.selectedSync.receipt.revision}. Request: {job.selectedSync.operationId}.</p>
+      </details> : null}
       {job.state.state === 'running' ? (
         <p role="status">Operation: {job.state.phase.replaceAll('_', ' ')}.</p>
       ) : null}

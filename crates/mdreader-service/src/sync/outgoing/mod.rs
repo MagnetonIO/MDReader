@@ -8,7 +8,10 @@ use uuid::Uuid;
 
 pub(in crate::sync) mod association;
 pub(in crate::sync) mod schema;
+mod selected;
 pub(in crate::sync) mod snapshot;
+pub use selected::SelectedDisposition;
+pub(crate) use selected::{matches_selected, validate_selected};
 
 /// Opaque native operation result. No body, private path, auth token or key.
 #[derive(Clone, Serialize, Deserialize)]

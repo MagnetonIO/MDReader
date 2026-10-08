@@ -12,6 +12,8 @@ pub enum AccountRequest {
     Poll { job_id: Uuid },
     Cancel { job_id: Uuid },
     Disconnect {},
+    SyncSelected { selection: super::SelectedOperation },
+    InspectSelected { selection: super::SelectedOperation },
 }
 // Request's diagnostic formatter must never print public packet contents either.
 impl std::fmt::Debug for AccountRequest {
@@ -22,6 +24,8 @@ impl std::fmt::Debug for AccountRequest {
             Self::Poll { .. } => "AccountPoll",
             Self::Cancel { .. } => "AccountCancel",
             Self::Disconnect {} => "AccountDisconnect",
+            Self::SyncSelected { .. } => "AccountSyncSelected",
+            Self::InspectSelected { .. } => "AccountInspectSelected",
         })
     }
 }
@@ -36,6 +40,12 @@ pub enum AccountReply {
 impl Coordinator {
     pub fn execute(&self, request: AccountRequest) -> Result<AccountReply> {
         match request {
+            AccountRequest::SyncSelected { selection } => self
+                .begin_selected_sync(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
+            AccountRequest::InspectSelected { selection } => self
+                .inspect_selected_sync(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
             AccountRequest::Status {} => {
                 self.status().map(|status| AccountReply::Status { status })
             }
@@ -117,10 +127,10 @@ mod tests {
                 .err(),
             Some(AccountError::Invalid)
         );
-        assert!(
-            serde_json::from_str::<AccountRequest>(r#"{"operation":"status","token":"secret"}"#)
-                .is_err()
-        );
+        assert!(serde_json::from_str::<AccountRequest>(
+            r#"{"operation":"status","token":"secret"}"#
+        )
+        .is_err());
         let oversized = AccountRequest::Begin {
             intent: AccountIntent::ApproveDevice {
                 packet: "x".repeat(8193),
@@ -131,6 +141,33 @@ mod tests {
             Some(AccountError::Limit)
         );
         assert_eq!(format!("{oversized:?}"), "AccountBegin");
+        let selection = super::super::SelectedOperation {
+            scope: super::super::SelectedScope {
+                account_digest: "a".repeat(64),
+                library_id: Uuid::new_v4(),
+                device_id: "A".repeat(43),
+            },
+            receipt: mdreader_core::device::catalog::Receipt {
+                document_id: Uuid::new_v4().to_string(),
+                source_id: "b".repeat(64),
+                revision: "c".repeat(64),
+            },
+            operation_id: Uuid::new_v4(),
+        };
+        let selected = AccountRequest::SyncSelected {
+            selection: selection.clone(),
+        };
+        assert_eq!(format!("{selected:?}"), "AccountSyncSelected");
+        assert_eq!(
+            coordinator.execute(selected).err(),
+            Some(AccountError::Unconfigured)
+        );
+        let mut malformed =
+            serde_json::to_value(AccountRequest::InspectSelected { selection }).unwrap();
+        malformed["selection"]["receipt"]["path"] =
+            serde_json::json!("/private/not-a-source-grant");
+        assert!(serde_json::from_value::<AccountRequest>(malformed).is_err());
+
         assert!(!directory.path().join("documents").exists());
         assert!(!directory.path().join("assets").exists());
     }

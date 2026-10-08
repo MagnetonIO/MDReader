@@ -133,3 +133,79 @@ product QueueDocument RPC/UI or packaging. Old queued intent reauthorization,
 outgoing user-state/deletions and cleanup remain gated. Repeated full graph proofs
 under owner access are still a responsiveness follow-up; this checkpoint does
 not intermingle the proposed transaction-bound proof reuse refactor.
+
+## Exact selected-document product RPC checkpoint (2026-10-08)
+
+The existing single case now dispatches production `AccountRequest::SyncSelected`
+and `InspectSelected`. Its explicit receipt binds the selected native UUID,
+source identity and raw-byte revision, plus actual verified account/library/device
+scope and stable operation UUID. It first rejects a stale expected revision
+without admitting a graph, then uploads the exact selected Markdown/PNG graph,
+proves strict dependency/root/commit receipts and same-document echo, and obtains
+an exact applied sequence through readonly same-actor inspection. The surrounding
+retained cancellation/freeze and interrupted immutable-upload assertions remain.
+No raw key getter, injected native authority, alternate TLS policy or new fixture
+was added. Existing pins and exact line remain unchanged by echo; this is not an
+outgoing user-state transfer claim.
+
+With the sole build slot, `CARGO_BUILD_JOBS=2`, locked/offline commands and the
+existing benchmark cache:
+
+```sh
+MDREADER_SYNC_WEB_WORKTREE=/ABS/REVIEWED_WEB_WORKTREE cargo test --locked --offline -p mdreader-service --features sync-native --lib accounts::acceptance::actual_actor_pkce_recovery_pump_and_retained_projection_cancel -- --exact --ignored --nocapture
+cargo test --locked --offline -p mdreader-service --features sync-native --lib accounts::tests:: -- --nocapture
+cargo test --locked --offline -p mdreader-service --features sync-native --lib accounts::rpc::tests:: -- --nocapture
+cargo test --locked --offline -p mdreader-service --features sync-native --lib sync::incoming::tests:: -- --nocapture
+cargo clippy --locked --offline -p mdreader-service --features sync-native --all-targets -- -D warnings
+```
+
+Final actual HTTPS result: **1 PASS**, 2.22s parent / 1.80s TLS child, 1.89s
+compilation. Removing only the selected revision equality produced meaningful
+**RED** at the stale-receipt conflict assertion (1 FAIL, 1.35s parent); exact file
+bytes were restored and the final case passed. Accounts **3 PASS** (0.35s),
+closed/redacted RPC **1 PASS** (0.01s), incoming module including selected
+association/self-echo **12 PASS** (0.46s), strict service Clippy **PASS** (5.30s).
+The first run exposed a new DTO mistake: device identity is the actual 43-character
+RFC7638 thumbprint, not a UUID. The closed service/native/UI representation was
+corrected before the final passing run; no protocol was changed.
+
+Using the compatible app cache (not the service cache):
+
+```sh
+cargo test --locked --offline -p mdreader-app --lib reader_accounts::tests::account_projection_closes_input_and_preserves_exact_counter_evidence -- --exact
+cargo test --locked --offline -p mdreader-app --lib tests::export_bindings_up_to_date -- --exact
+pnpm --dir ui exec vitest run src/features/account-sync/AccountSyncPanel.test.tsx src/features/account-sync/pending-selection.test.ts
+pnpm --filter @mdreader/markdown build
+pnpm --filter @mdreader/ui build
+pnpm --dir ui exec tsc --noEmit
+pnpm --dir ui exec eslint src/features/account-sync/*.ts src/features/account-sync/*.tsx src/features/settings/contracts.ts src/shell/AppShell.tsx src/shell/SettingsSheet.tsx
+```
+
+Native projection **1 PASS** (27.29s compile), source-owned binding generator
+**1 PASS** (4.62s compile / 0.05s test). A test-only `unwrap` initially required
+Debug on a deliberately non-Debug error; its fixed-label assertion was corrected
+without widening production diagnostics. The attempted app check in the service
+cache was interrupted on unexpected base-dependency compilation; both completed
+app commands used the existing compatible cache. They emitted two unchanged
+`cloud_documents` dead-code warnings (`ConnectorUnavailable`, `CachedOffline`);
+this checkpoint makes no strict whole-app Clippy claim.
+
+UI/storage **11 PASS** (884ms total): no automatic upload; exact receipt capture;
+lost reply retained across navigation/remount; explicit same-operation retry;
+other-account isolation; exact applied inspection settlement; post-lock scope
+change before dispatch; malformed/future bytes preserved; immutable scoped
+identities; exclusive storage-only admission, unchanged-write elision and missing
+Web Locks fail-closed behavior. IPC and lock boundary are synthetic in those UI
+tests. Typecheck and scoped lint **PASS** after generating absent ignored shared
+package declarations. pnpm materialized cached ignored dependencies (zero
+downloads); tracked dependency manifests and lockfiles are unchanged. No Vite
+build, full app test suite, browser matrix, model run, deployment or private data.
+
+Reviewed companion source: `8be2b785c1494703505cd6cab2c9541cb7ed5f06`;
+Worker bundle SHA256 `fb22baded8f9b9db8aaa44962bb021962c4f2dd9333780250825ce7950c98a22`.
+
+This accepts the synthetic product RPC/actor and focused UI boundaries, not a live
+OS-vault/provider, installed desktop/mobile or multi-window WebView acceptance.
+The [selected sync contract and remaining gates](../SELECTED-SYNC.md) remain
+explicit. Integration with later preservation/Runtime-Arc changes needs one
+coordinated combined checkpoint, not an inferred result from these tests.

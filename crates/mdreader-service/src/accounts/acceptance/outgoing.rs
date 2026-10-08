@@ -49,10 +49,41 @@ fn local(account: &Account, markdown: &str) -> (DeviceDocument, AssetReceipt) {
 pub(super) fn selected_roundtrip(account: &Account, markdown: &str) {
     let (document, asset) = local(account, markdown);
     let operation = Uuid::new_v4();
-    let id = account
+    let selection = selection(account, &document, operation);
+    let before = graph_counts(account);
+    let mut stale = selection.clone();
+    stale.receipt.revision = if stale.receipt.revision == "f".repeat(64) {
+        "e".repeat(64)
+    } else {
+        "f".repeat(64)
+    };
+    let rpc::AccountReply::Begun { job_id } = account
         .coordinator
-        .begin_selected_sync(Uuid::parse_str(&document.id).unwrap(), operation)
-        .unwrap();
+        .execute(rpc::AccountRequest::SyncSelected { selection: stale })
+        .unwrap()
+    else {
+        panic!("job");
+    };
+    assert!(matches!(
+        account.settled(job_id).state,
+        JobState::Failed {
+            error: AccountError::Conflict
+        }
+    ));
+    assert_eq!(
+        graph_counts(account),
+        before,
+        "stale exact selected revision admitted ciphertext"
+    );
+    let rpc::AccountReply::Begun { job_id: id } = account
+        .coordinator
+        .execute(rpc::AccountRequest::SyncSelected {
+            selection: selection.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("job");
+    };
     let job = account.settled(id);
     assert!(matches!(
         job.state,
@@ -68,6 +99,19 @@ pub(super) fn selected_roundtrip(account: &Account, markdown: &str) {
             }
         }
     ));
+    assert!(job.selected_sync.as_ref() == Some(&selection));
+    let rpc::AccountReply::Begun { job_id } = account
+        .coordinator
+        .execute(rpc::AccountRequest::InspectSelected {
+            selection: selection.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("inspect");
+    };
+    assert!(
+        matches!(account.settled(job_id).state, JobState::Completed { outcome: Outcome::SelectedStatus { selection: exact, disposition: crate::sync::outgoing::SelectedDisposition::Applied { sequence: 3 } } } if exact == selection)
+    );
     let mut owner = account.owner.lock().unwrap();
     let current = device::document(&mut owner, &document.id).unwrap();
     assert_eq!(current.id, document.id);
@@ -139,7 +183,7 @@ fn graph_counts(account: &Account) -> (u64, u64, u64) {
 }
 pub(super) fn cancel_retains_queue(account: &Account, origin: &str, markdown: &str) {
     let (document, _) = local(account, markdown);
-    let native = Uuid::parse_str(&document.id).unwrap();
+
     let coordinator = incoming(account);
     let before = graph_counts(account);
     let (entered, receive) = std::sync::mpsc::sync_channel(1);
@@ -155,9 +199,10 @@ pub(super) fn cancel_retains_queue(account: &Account, origin: &str, markdown: &s
             .map_err(|_| crate::sync::incoming::Error::Inactive)?;
         Ok(())
     })));
+    let pending = selection(account, &document, Uuid::new_v4());
     let id = account
         .coordinator
-        .begin_selected_sync(native, Uuid::new_v4())
+        .begin_selected_sync(pending.clone())
         .unwrap();
     receive
         .recv_timeout(Duration::from_secs(10))
@@ -168,9 +213,7 @@ pub(super) fn cancel_retains_queue(account: &Account, origin: &str, markdown: &s
     );
     account.coordinator.cancel(id).unwrap();
     assert!(matches!(
-        account
-            .coordinator
-            .begin_selected_sync(native, Uuid::new_v4()),
+        account.coordinator.begin_selected_sync(pending),
         Err(AccountError::Busy)
     ));
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -209,7 +252,7 @@ pub(super) fn cancel_retains_queue(account: &Account, origin: &str, markdown: &s
     let operation = Uuid::new_v4();
     let id = account
         .coordinator
-        .begin_selected_sync(native, operation)
+        .begin_selected_sync(selection(account, &document, operation))
         .unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -262,4 +305,16 @@ fn control(origin: &str, body: &str) -> serde_json::Value {
         false,
     ))
     .unwrap()
+}
+
+fn selection(
+    account: &Account,
+    document: &DeviceDocument,
+    operation_id: Uuid,
+) -> SelectedOperation {
+    SelectedOperation {
+        scope: SelectedScope::current(&account.scope()).unwrap(),
+        receipt: mdreader_core::device::catalog::receipt(document),
+        operation_id,
+    }
 }

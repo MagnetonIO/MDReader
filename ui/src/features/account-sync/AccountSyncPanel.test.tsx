@@ -1,12 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountSyncPanel } from './AccountSyncPanel.js';
 import type { AccountBackend, AccountReply, AccountStatus } from './backend.js';
 
-afterEach(cleanup);
+beforeEach(() => Object.defineProperty(navigator, 'locks', { configurable:true, value:{ request:vi.fn(async (_name: string, _options: unknown, action: (lock: unknown) => unknown) => action({name:'synthetic-pending',mode:'exclusive'})) } }));
+afterEach(() => { cleanup(); localStorage.clear(); });
 const JOB = '00000000-0000-4000-8000-000000000001';
+const SCOPE = { accountDigest:'a'.repeat(64), libraryId:JOB, deviceId:'A'.repeat(43) };
+const DOC = { documentId:'00000000-0000-4000-8000-000000000003',sourceId:'b'.repeat(64),revision:'c'.repeat(64),title:'Selected public document',path:'document.md',line:1 };
 const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
-  configured: true, connected: false, retainedLibrary: true, recoveryAvailable: false, custody: null, latestJob: null, ...patch,
+  configured: true, connected: false, retainedLibrary: true, recoveryAvailable: false, custody: null, latestJob: null,
+  selectedScope: patch.connected ? SCOPE : null, ...patch,
 });
 
 describe('native Account & sync controls', () => {
@@ -68,7 +72,7 @@ describe('native Account & sync controls', () => {
 
   it('reports actual pending sync counters without turning durable application into reader acceptance', async () => {
     let begun = false;
-    const completed: NonNullable<AccountStatus['latestJob']> = { id: JOB, state: { state: 'completed', outcome: {
+    const completed: NonNullable<AccountStatus['latestJob']> = { id: JOB, selectedSync:null, state: { state: 'completed', outcome: {
       kind: 'sync', committed: '2', conflicts: '1', received: '9007199254740993', applied: '0', acknowledged: '0', remotePending: true, localPending: false, pending: { sequence: '9007199254740993', reason: 'head_conflict' },
     } } };
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
@@ -98,7 +102,75 @@ describe('native Account & sync controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in / reconnect' }));
     await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'poll', jobId: JOB }));
     unmount();
-    await act(async () => resolve({ operation: 'job', job: { id: JOB, state: { state: 'completed', outcome: { kind: 'connected' } } } }));
+    await act(async () => resolve({ operation: 'job', job: { id: JOB, selectedSync:null, state: { state: 'completed', outcome: { kind: 'connected' } } } }));
     expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status', 'begin', 'poll']);
   });
+  it('uploads only an explicit exact selection and retains a lost reply across navigation and reload', async () => {
+    let connectedScope = SCOPE;
+    const request = vi.fn<AccountBackend['request']>(async (operation) => {
+      if (operation.operation === 'sync_selected') throw { kind:'unavailable' };
+      return { operation:'status', status:status({ connected:true, selectedScope:connectedScope }) };
+    });
+    const backend = { request };
+    const first = render(<AccountSyncPanel backend={backend} selectedDocument={DOC} />);
+    await screen.findByText('Connected to the retained library.');
+    expect(request.mock.calls.map(([op]) => op.operation)).toEqual(['status']);
+    fireEvent.click(screen.getByRole('button', { name:'Sync this document' }));
+    await screen.findByText(/outcome may be unknown/);
+    const dispatched = request.mock.calls.find(([op]) => op.operation === 'sync_selected')![0];
+    expect(dispatched).toMatchObject({ operation:'sync_selected', selection:{ scope:SCOPE, receipt:{ documentId:DOC.documentId, sourceId:DOC.sourceId, revision:DOC.revision } } });
+    const other = { ...DOC, documentId:'00000000-0000-4000-8000-000000000004',title:'Different public document' };
+    first.rerender(<AccountSyncPanel backend={backend} selectedDocument={other} />);
+    expect(screen.getByText(/Changing the selected document does not replace/)).toBeTruthy();
+    first.unmount();
+    render(<AccountSyncPanel backend={backend} selectedDocument={other} />);
+    await screen.findByRole('button', { name:'Retry retained upload' });
+    fireEvent.click(screen.getByRole('button', { name:'Retry retained upload' }));
+    await waitFor(() => expect(request.mock.calls.filter(([op]) => op.operation === 'sync_selected')).toHaveLength(2));
+    expect(request.mock.calls.filter(([op]) => op.operation === 'sync_selected').map(([op]) => op)).toEqual([dispatched,dispatched]);
+    connectedScope = { ...SCOPE, accountDigest:'d'.repeat(64) };
+    fireEvent.click(screen.getByRole('button', { name:'Refresh status' }));
+    await screen.findByText(/another account or library is retained/);
+    expect(localStorage.getItem('mdreader.selected-sync.v1')).toContain(DOC.documentId);
+    expect(request.mock.calls.filter(([op]) => op.operation === 'sync_selected')).toHaveLength(2);
+  });
+
+  it('clears a retained operation only after an exact readonly native disposition, not generic job completion', async () => {
+    const selection = { scope:SCOPE, receipt:{ documentId:DOC.documentId, sourceId:DOC.sourceId, revision:DOC.revision },operationId:'00000000-0000-4000-8000-000000000005' };
+    localStorage.setItem('mdreader.selected-sync.v1',JSON.stringify({version:1,operations:[selection]}));
+    let begun = false;
+    const job: NonNullable<AccountStatus['latestJob']> = { id:JOB,selectedSync:selection,state:{state:'completed',outcome:{kind:'selected_status',selection,disposition:{state:'applied',sequence:'3'}}} };
+    const request = vi.fn<AccountBackend['request']>(async (operation) => {
+      if (operation.operation === 'inspect_selected') { begun=true; return {operation:'begun',jobId:JOB}; }
+      if (operation.operation === 'poll') return {operation:'job',job};
+      return {operation:'status',status:status({connected:true,latestJob:begun?job:null})};
+    });
+    render(<AccountSyncPanel backend={{request}} selectedDocument={DOC} />);
+    await screen.findByRole('button',{name:'Check retained upload'});
+    expect(request).toHaveBeenCalledExactlyOnceWith({operation:'status'});
+    fireEvent.click(screen.getByRole('button',{name:'Check retained upload'}));
+    await screen.findByText('This exact document upload was applied. Other documents are unchanged.');
+    expect(JSON.parse(localStorage.getItem('mdreader.selected-sync.v1')!).operations).toEqual([]);
+    expect(request).toHaveBeenCalledWith({operation:'inspect_selected',selection});
+    expect(request.mock.calls.some(([op]) => op.operation === 'sync_selected')).toBe(false);
+  });
+
+  it('rechecks current verified scope after an asynchronous storage lock before dispatch', async () => {
+    let grant!: () => void;
+    const held = new Promise<void>((done) => { grant=done; });
+    Object.defineProperty(navigator,'locks',{configurable:true,value:{request:async (_name: string,_options:unknown,action:(lock:unknown)=>void) => { await held; action({name:'synthetic-pending',mode:'exclusive'}); }}});
+    let exactScope = SCOPE;
+    const request = vi.fn<AccountBackend['request']>(async () => ({operation:'status',status:status({connected:true,selectedScope:exactScope})}));
+    render(<AccountSyncPanel backend={{request}} selectedDocument={DOC} />);
+    await screen.findByRole('button',{name:'Sync this document'});
+    fireEvent.click(screen.getByRole('button',{name:'Sync this document'}));
+    exactScope = {...SCOPE,accountDigest:'e'.repeat(64)};
+    fireEvent.click(screen.getByRole('button',{name:'Refresh status'}));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await act(async () => grant());
+    await screen.findByText(/account changed before dispatch/);
+    expect(request.mock.calls.some(([op]) => op.operation === 'sync_selected')).toBe(false);
+    expect(localStorage.getItem('mdreader.selected-sync.v1')).toContain(SCOPE.accountDigest);
+  });
+
 });

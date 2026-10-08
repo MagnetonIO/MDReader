@@ -284,7 +284,7 @@ fn unconfigured_local_owner_rejects_secret_inputs_and_bounds_jobs() {
             epoch: 0,
             action: actor::Action::Account(AccountIntent::SignIn {}),
         };
-        shared.view.lock().unwrap().start(command.id);
+        shared.view.lock().unwrap().start(command.id, None);
         shared.finish(&command, Err(AccountError::Unconfigured));
     }
     assert_eq!(shared.view.lock().unwrap().jobs.len(), 8);

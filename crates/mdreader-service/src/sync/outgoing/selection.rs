@@ -11,11 +11,13 @@ impl IncomingCoordinator {
         &self,
         selected: &SelectedIncoming,
         authority: &NativeAuthority,
-        document: Uuid,
+        expected: &mdreader_core::device::catalog::Receipt,
         operation: Uuid,
     ) -> Result<QueuedDocument> {
         let _operation = self.operation.try_lock().map_err(|_| Error::Busy)?;
-        if document.get_version_num() != 4 || operation.get_version_num() != 4 {
+        outgoing::validate_selected(expected)?;
+        let document = Uuid::parse_str(&expected.document_id).map_err(|_| Error::Scope)?;
+        if operation.get_version_num() != 4 {
             return Err(Error::Scope);
         }
         let authority_permit = authority.projection_permit()?;
@@ -26,6 +28,16 @@ impl IncomingCoordinator {
         }
         let scope = selected.permit.scope();
         let key = identity::scope_key(scope)?;
+        // Metadata-only exact reading receipt fence precedes graph body reads,
+        // archive file reads, hashes and encryption. No newer unseen revision.
+        self.short(selected, |owner, _| {
+            let current = mdreader_core::device::catalog::document(owner, &expected.document_id)
+                .map_err(publication::PublicationError::from)?;
+            if !outgoing::matches_selected(expected, &current) {
+                return Err(Error::Conflict);
+            }
+            Ok(())
+        })?;
         // Replaying an already admitted intent never generates new ciphertext.
         if let Some(existing) = self.short(selected, |owner, session| {
             owner.with_library_connection(|db| -> Result<_> {
@@ -97,6 +109,11 @@ impl IncomingCoordinator {
                 session_epoch: selected.permit.session_token(),
                 selection_epoch: selected.token,
             };
+            let current = mdreader_core::device::catalog::document(owner, &expected.document_id)
+                .map_err(publication::PublicationError::from)?;
+            if !outgoing::matches_selected(expected, &current) {
+                return Err(Error::Conflict);
+            }
             let plan =
                 publication::prepare_current(owner, &document.to_string(), &assets, &origin)?;
             let archive =
@@ -148,6 +165,7 @@ impl IncomingCoordinator {
                     graph: &graph,
                     current: &current,
                     archive: &snapshot.archive,
+                    expected,
                 },
                 |_| {
                     session.check()?;
@@ -162,6 +180,7 @@ pub(super) struct Admission<'a> {
     pub graph: &'a mdreader_sync::outgoing::SealedGraph,
     pub current: &'a publication::VerifiedCurrent,
     pub archive: &'a publication::ArchivedDocument,
+    pub expected: &'a mdreader_core::device::catalog::Receipt,
 }
 pub(super) fn admit(
     owner: &mut ReaderStore,
@@ -174,9 +193,11 @@ pub(super) fn admit(
         graph,
         current,
         archive,
+        expected,
     } = admission;
     let key = identity::scope_key(scope)?;
-    if current.state().document.id != intent.native_document
+    if !outgoing::matches_selected(expected, &current.state().document)
+        || current.state().document.id != intent.native_document
         || current.state().document.revision != intent.native_revision
         || current.state().generation != intent.generation
     {

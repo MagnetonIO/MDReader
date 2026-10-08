@@ -128,6 +128,21 @@ impl IncomingCoordinator {
         selected: &SelectedIncoming,
         action: impl FnOnce(&mut ReaderStore, &ProjectionGuard<'_>) -> Result<T>,
     ) -> Result<T> {
+        self.short_mode(selected, false, action)
+    }
+    fn short_readonly<T>(
+        &self,
+        selected: &SelectedIncoming,
+        action: impl FnOnce(&mut ReaderStore, &ProjectionGuard<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.short_mode(selected, true, action)
+    }
+    fn short_mode<T>(
+        &self,
+        selected: &SelectedIncoming,
+        readonly: bool,
+        action: impl FnOnce(&mut ReaderStore, &ProjectionGuard<'_>) -> Result<T>,
+    ) -> Result<T> {
         if !selected
             .coordinator
             .upgrade()
@@ -143,7 +158,11 @@ impl IncomingCoordinator {
             let mut owner = self.owner.try_lock().map_err(|_| Error::Busy)?;
             owner.with_library_connection(|db| -> Result<()> {
                 let tx = db.transaction()?;
-                schema::require_library(&tx, &self.remote_library.to_string())?;
+                if readonly {
+                    schema::require_current_library(&tx, &self.remote_library.to_string())?;
+                } else {
+                    schema::require_library(&tx, &self.remote_library.to_string())?;
+                }
                 tx.commit()?;
                 Ok(())
             })?;
@@ -357,3 +376,6 @@ impl IncomingCoordinator {
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[path = "../outgoing/inspect.rs"]
+mod outgoing_inspection;

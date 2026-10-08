@@ -3,8 +3,10 @@ import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
 import { AccountEnrollment } from './AccountEnrollment.js';
+import type { DeviceReference } from '../device-reader/backend';
+import { SelectedDocumentSync } from './SelectedDocumentSync';
 
-export function AccountSyncPanel({ backend, active = true }: { backend?: AccountBackend; active?: boolean }) {
+export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
   const account = useAccountSync(backend, active);
   useEffect(() => {
     if (active) void account.refresh();
@@ -46,6 +48,7 @@ export function AccountSyncPanel({ backend, active = true }: { backend?: Account
             ) : null}
           </div>
           </div>
+          <SelectedDocumentSync account={account} selected={selectedDocument} />
           {status.configured ? <details className="settings-account-advanced">
             <summary>Security details</summary>
             {status.custody ? (
