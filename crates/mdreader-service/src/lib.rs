@@ -11,6 +11,7 @@ use std::time::Duration;
 pub mod capture;
 pub mod integrations;
 pub mod provider;
+pub mod reviews;
 mod runtime;
 pub mod sync;
 pub mod workload;
@@ -41,6 +42,9 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    Reviews {
+        request: reviews::ReviewRequest,
+    },
     Provider {
         request: provider::ProviderRequest,
     },
@@ -223,7 +227,8 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
-        Request::Provider { .. }
+        Request::Reviews { .. }
+        | Request::Provider { .. }
         | Request::ConfigureCapture { .. }
         | Request::CaptureBackfill { .. }
         | Request::CaptureStatus

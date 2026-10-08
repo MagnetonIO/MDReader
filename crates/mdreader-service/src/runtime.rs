@@ -18,6 +18,7 @@ pub(super) struct Runtime {
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
 }
@@ -130,7 +131,9 @@ impl Runtime {
                 }
             }
         });
+        let reviews = super::reviews::Coordinator::new(store.clone(), &directory);
         Ok(Self {
+            reviews,
             store,
             queries,
             model,
@@ -150,6 +153,17 @@ impl Runtime {
             .map_err(|_| protocol_error("reader query worker failed"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::Reviews { request } = request {
+            let result = self
+                .reviews
+                .as_ref()
+                .map_err(|error| *error)
+                .and_then(|reviews| reviews.execute(request));
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
         if let Request::Provider { request } = request {
             let result = self
                 .providers

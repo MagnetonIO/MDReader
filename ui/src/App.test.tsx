@@ -86,6 +86,14 @@ test('selected cloud revision opens in the shared reader and returns to source c
   expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
   expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(true);
   expect(read).toHaveBeenCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
+  fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
+  expect(await screen.findByRole('dialog', { name: 'Archived document reviews' })).toBeTruthy();
+  expect(screen.queryByRole('dialog', { name: 'Cloud document' })).toBeNull();
+  expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(true);
+  expect(screen.getByText('No archive selected.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Close archived reviews' }));
+  expect(await screen.findByRole('heading', { name: /Provider reading/ })).toBeTruthy();
+  expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
   fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
   expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Cloud document' })).toBeNull();

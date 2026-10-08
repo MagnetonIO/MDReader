@@ -78,6 +78,7 @@ import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
 import { ProviderReaderDialog } from './ProviderReaderDialog.js';
+import { ArchivedReviewsPanel, type ReviewTarget } from '../reviews/ArchivedReviewsPanel';
 import type { ProviderReaderReference } from '../platform/providers.js';
 import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
@@ -162,6 +163,8 @@ export function AppShell() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
+  const [archivedReviewTarget, setArchivedReviewTarget] = useState<ReviewTarget | null>(null);
+  const [archivedReviewReturn, setArchivedReviewReturn] = useState<ProviderReaderReference | null>(null);
   const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
@@ -1841,7 +1844,7 @@ export function AppShell() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       // The native modal dialog owns Escape, focus and document shortcuts.
-      if (providerDocument) return;
+      if (providerDocument || archivedReviewTarget) return;
       if (event.key === 'Escape') {
         if (paletteOpen) {
           setPaletteOpen(false);
@@ -1898,6 +1901,7 @@ export function AppShell() {
     sheetOpen,
     settingsOpen,
     providerDocument,
+    archivedReviewTarget,
     lensSheetOpen,
     constraintsOpen,
     explainOpen,
@@ -2288,7 +2292,7 @@ export function AppShell() {
   // streamed batches from a superseded workspace epoch are discarded.
   const adapter = useMemo(() => makeSearchAdapter(() => root ? watcherGenRef.current : 0, () => selectedProviderSources), [root, selectedProviderSources]);
   const searchScopeKey = `${root ?? ""}|${selectedProviderSources.join(",")}`;
-  const readerBlocked = Boolean(providerDocument || settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
+  const readerBlocked = Boolean(archivedReviewTarget || providerDocument || settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
@@ -2435,6 +2439,7 @@ export function AppShell() {
             {activeTab ? (
               <InspectorRail
                 adapter={semantics}
+                onArchivedReviews={activeDocPath ? () => { setArchivedReviewReturn(null); setArchivedReviewTarget({ kind: 'local', path: activeDocPath, generation: semanticWorkspaceGeneration }); } : undefined}
                 open={inspectorOpen}
                 onToggle={() => useSettingsStore.getState().toggleInspector()}
                 selection={inspected}
@@ -2505,7 +2510,8 @@ export function AppShell() {
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
-      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
+      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onArchivedReviews={(reference) => { setArchivedReviewReturn(reference); setProviderDocument(null); setArchivedReviewTarget({ kind: 'exact', reference }); }} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
+      {archivedReviewTarget ? <ArchivedReviewsPanel current={archivedReviewTarget} onClose={() => { setArchivedReviewTarget(null); if (archivedReviewReturn) setProviderDocument(archivedReviewReturn); }} /> : null}
       {lensSheetOpen ? (
         <LensSheet
           adapter={semantics}

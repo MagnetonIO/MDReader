@@ -45,6 +45,7 @@ import {
 import { DocumentInspector } from './DocumentInspector.js';
 
 export interface InspectorRailProps {
+  onArchivedReviews?: () => void;
   /** The semantic transport. */
   adapter: SemanticsAdapter;
   /** Whether the rail is expanded. */
@@ -78,6 +79,7 @@ export interface InspectorRailProps {
 type Status = 'idle' | 'loading' | 'ready' | 'error';
 
 export function InspectorRail({
+  onArchivedReviews,
   adapter,
   open,
   onToggle,
@@ -195,6 +197,7 @@ export function InspectorRail({
       </div>
 
       <div className="lens-rail__body">
+        {onArchivedReviews ? <button type="button" onClick={onArchivedReviews}>Archived reviews…</button> : null}
         {documentPath && queryDocument && cancelDocument ? (
           <>
             <DocumentInspector
