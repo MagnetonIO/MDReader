@@ -73,7 +73,7 @@ pub(crate) fn configure(
             .app_data_dir()
             .map_err(|_| "Reader profile unavailable")?,
     };
-    std::fs::create_dir_all(&path).map_err(|_| "Reader profile unavailable")?;
+    create_profile_directory(&path).map_err(|_| "Reader profile unavailable")?;
     let root = SourceRoot::capture(
         path.canonicalize()
             .map_err(|_| "Reader profile unavailable")?,
@@ -83,6 +83,40 @@ pub(crate) fn configure(
         return Err("Reader profile already selected".into());
     }
     Ok(())
+}
+
+fn create_profile_directory(path: &Path) -> std::io::Result<()> {
+    let mut directory = std::fs::DirBuilder::new();
+    directory.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory.create(path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn new_profile_is_private_without_changing_existing_directory_permissions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("new-profile");
+        create_profile_directory(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+        create_profile_directory(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+    }
 }
 pub(crate) fn directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(root) = app.try_state::<ProfileRoot>() {
