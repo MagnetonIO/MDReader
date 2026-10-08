@@ -152,26 +152,30 @@ portability blocker until migration removes it; do not claim fresh-clone readine
 
 ## Parallel worktrees, integration and cleanup
 
-- `dev` is the development destination. `dev-reader-next` is the current
-  reader migration integration branch; it is not a shared editing checkout.
+- `dev` is the development destination. Major feature branches may be retained
+  while the feature evolves. `dev-reader-next` is the retained reader migration
+  integration branch; it is not a shared editing checkout.
 - Give each parallel agent or independent feature/bug one named branch and its
   own worktree, based on the agreed integration commit. Never have agents edit
   the same worktree, share a Git index, or copy unfinished source between trees.
   The coordinator owns the integration worktree; implementation also belongs in
   a separate feature worktree. Record owner, branch, path, base and dependencies.
-- Commit only scoped, reviewed changes. Merge each completed feature/bug branch
-  into the integration branch after focused checks and review. Resolve dependent
-  changes there in order; do not merge unvalidated work directly into `dev`.
-  Run appropriate integration checks on the combined tree, then merge the
-  accepted integration branch into `dev`. Deployment acceptance remains a
+- Commit only scoped, reviewed changes. Minor feature/bug branches merge into
+  their owning major feature branch after focused checks and review. A reviewed
+  major feature branch then merges directly into `dev`, or into an integration
+  branch that merges into `dev`. Choose the route up front and resolve dependent
+  changes in order. Run appropriate combined-tree checks at each merge boundary;
+  do not merge unvalidated work into `dev`. Deployment acceptance remains a
   separate gate; a merge alone does not establish a successful release.
 - Keep the existing single heavyweight build/check slot across all worktrees.
   Reuse compatible caches with serialized writers; do not start a cold build or
   install another dependency tree merely because an agent got a new worktree.
-- After the feature/bug is accepted and its commits are reachable from the
-  integration branch, remove its clean, inactive worktree with `git worktree
-  remove`, then delete its merged local branch with `git branch -d`. After the
-  release reaches `dev`, clean up the integration worktree/branch similarly.
+- After a minor feature/bug is accepted and its commits are reachable from its
+  major feature or integration destination, remove its clean, inactive worktree
+  with `git worktree remove`, then delete its merged local branch with
+  `git branch -d`. Keep major feature branches intentionally while work continues;
+  clean up their unused worktrees independently. Retire an integration branch and
+  its worktree after it reaches `dev` only when no further integration is planned.
   Inspect status, untracked files and running processes first. Preserve private
   configuration and acceptance receipts before cleanup; never use forced removal
   or discard unmerged work to make cleanup pass. Prune stale Git worktree metadata

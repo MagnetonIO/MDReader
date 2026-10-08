@@ -1,7 +1,10 @@
 # Reader migration worktrees
 
 The original MDReader and MDReader-Web checkouts remain on `dev`. Each repository
-uses `dev-reader-next` as its migration integration branch. Only the coordinator
+uses `dev-reader-next` as its retained migration integration branch. Major feature
+branches may remain while their features evolve; minor feature/bug branches merge
+into a major branch, which merges directly into `dev` or through integration.
+Only the coordinator
 edits integration metadata and merges reviewed feature commits there. Feature
 implementation takes place in separate worktrees, including the coordinator's.
 
@@ -31,14 +34,17 @@ is required merely to isolate source. Keep all private configuration ignored.
 For each feature or bug:
 
 1. Finish scoped changes, focused tests and review in its owned worktree.
-2. Commit the reviewed paths and merge that branch into `dev-reader-next` in
-   dependency order. Run relevant combined-tree checks before accepting it.
+2. Commit reviewed minor changes and merge into their owning major feature or
+   integration branch in dependency order. Run relevant combined-tree checks.
+   For this migration the recorded destination is `dev-reader-next`.
 3. Confirm the feature commits are ancestors of integration, the feature tree
    is clean (including untracked files), and no process is using it. Preserve
    private configuration and receipts, then use `git worktree remove` and
    `git branch -d`; never force-remove unfinished work.
-4. Once the release integration gates pass, merge `dev-reader-next` into `dev`
-   and remove the clean integration worktree/merged branch by the same checks.
+4. Once release integration gates pass, merge `dev-reader-next` into `dev`.
+   Retain this branch if further migration integration is planned; retire its
+   clean worktree/merged branch when that work ends. Major feature branches may
+   likewise remain intentionally, while unused worktrees are cleaned separately.
    Push or deploy only to the intended target; merge is not deployment acceptance.
 
 Do not remove unrelated historical branches or worktrees during this cleanup.
