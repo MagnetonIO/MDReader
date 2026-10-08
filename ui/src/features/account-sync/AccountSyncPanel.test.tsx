@@ -18,7 +18,7 @@ describe('native Account & sync controls', () => {
     render(<AccountSyncPanel backend={{ request }} />);
     await screen.findByText('Not connected. Select a library explicitly to enroll.');
     fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
-    expect(screen.queryByRole('textbox', { name: 'Library ID', exact: true })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: /^Library ID$/ })).toBeNull();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
     fireEvent.click(screen.getByRole('button', { name: 'Create sync library' }));
     await screen.findByRole('alert');
