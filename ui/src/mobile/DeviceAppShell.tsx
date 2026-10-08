@@ -9,11 +9,15 @@ import { parseMarkdownAuto } from "@mdreader/markdown/worker";
 import { resolveHeading } from "@mdreader/markdown";
 import type { ParsedDoc } from "@mdreader/markdown";
 import { commands } from "../bindings";
-import type { DeviceDocument, DeviceHit, PendingDeviceImport } from "../bindings";
+import type { AssetManifest, DeviceDocument, DeviceHit, PendingDeviceImport } from "../bindings";
 import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
 import { resolveImportedLink } from "./imported-links";
+import { nativeAssetBackend } from "./device-assets";
+import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from "./DeviceAssetImage";
+import { DeviceAssetsSection } from "./DeviceAssetsSection";
+import { DeviceAssetStorage } from "./DeviceAssetStorage";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -29,39 +33,6 @@ function message(cause: unknown): string {
   return cause instanceof Error
     ? cause.message
     : "Device library operation failed";
-}
-
-function ConsentedImage({ src, alt = "" }: { src?: string; alt?: string }) {
-  const [approvedUrl, setApprovedUrl] = useState<string | null>(null);
-  let safe = false;
-  try {
-    const url = new URL(src ?? "");
-    safe = url.protocol === "https:" && !url.username && !url.password;
-  } catch {
-    /* relative assets need an explicit imported-asset grant */
-  }
-  if (safe && approvedUrl === src)
-    return (
-      <img
-        src={src}
-        alt={alt}
-        loading="lazy"
-        draggable={false}
-        style={{ maxWidth: "100%" }}
-      />
-    );
-  return (
-    <span className="mobile-state">
-      {alt || "Image"} —{" "}
-      {safe ? (
-        <button type="button" onClick={() => setApprovedUrl(src ?? null)}>
-          Load remote image
-        </button>
-      ) : (
-        "asset is not imported"
-      )}
-    </span>
-  );
 }
 
 /** Account-free mobile reading over the embedded SQLite owner. */
@@ -118,6 +89,28 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const activeId = active?.document.id;
   const activeRevision = active?.document.revision;
   const activeHeading = active?.heading ?? null;
+  const [assetResult, setAssetResult] = useState<AssetManifest | null>(null);
+  const [assetError, setAssetError] = useState<string | null>(null);
+  const [assetRefresh, setAssetRefresh] = useState(0);
+  const refreshAssets = useCallback(() => {
+    setAssetResult(null);
+    setAssetRefresh((value) => value + 1);
+  }, []);
+  const assetManifest = assetResult && assetResult.document_id === activeId && assetResult.document_revision === activeRevision ? assetResult : null;
+  const assetImages = useDeviceAssetImages(assetManifest);
+  useEffect(() => {
+    let current = true;
+    setAssetResult(null); setAssetError(null);
+    if (!activeId || !activeRevision) return;
+    void nativeAssetBackend({ operation: 'manifest', document_id: activeId, revision: activeRevision })
+      .then((reply) => {
+        if (!current) return;
+        if (reply.operation !== 'manifest' || reply.value.document_id !== activeId || reply.value.document_revision !== activeRevision)
+          throw new Error('The selected image manifest could not be verified.');
+        setAssetResult(reply.value);
+      }).catch((cause: unknown) => { if (current) setAssetError(message(cause)); });
+    return () => { current = false; };
+  }, [activeId, activeRevision, assetRefresh]);
   useEffect(() => {
     let current = true;
     void result(commands.mobileReaderList())
@@ -524,6 +517,9 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                   </dl>
                 </section>
               ) : null}
+              <DeviceAssetsSection key={`${active.document.id}:${active.document.revision}`} documentId={active.document.id}
+                revision={active.document.revision} manifest={assetManifest} onRefresh={refreshAssets} />
+              {assetError ? <p className="mobile-state" role="alert">{assetError} <button type="button" onClick={refreshAssets}>Reload selected images</button></p> : null}
               {outline && parsed ? (
                 <nav aria-label="Document outline">
                   {parsed.outline.map((item) => (
@@ -542,6 +538,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               ) : null}
               <div ref={readerHost} className="mobile-reader__document">
                 {parsed ? (
+                  <DeviceAssetProvider images={assetImages}>
                   <PlatformProvider platform={readerPlatform}>
                     <MarkdownReader
                       key={active.document.id}
@@ -553,7 +550,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                         }
                       }}
                       doc={parsed}
-                      components={{ img: ConsentedImage }}
+                      components={{ img: DeviceAssetImage }}
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
                         if (event.kind === "anchor") {
@@ -577,6 +574,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       }}
                     />
                   </PlatformProvider>
+                  </DeviceAssetProvider>
                 ) : readError ? (
                   <div className="mobile-state">
                     <p role="alert">{readError}</p>
@@ -644,6 +642,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 Imports do not grant access to device folders.
               </p>
             </article>
+            <DeviceAssetStorage onChanged={refreshAssets} />
             {["Google Drive", "Dropbox", "Encrypted cloud sync"].map((name) => (
               <article key={name} className="mobile-source">
                 <h2>{name}</h2>

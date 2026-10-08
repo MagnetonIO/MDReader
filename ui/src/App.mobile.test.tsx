@@ -57,6 +57,17 @@ function installTauriRuntime(): void {
     value: {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
+        if (command === "mobile_reader_assets") {
+          const request = args?.request as { operation: string; document_id?: string; revision?: string };
+          if (request.operation === "manifest") return { operation: "manifest", value: {
+            document_id: request.document_id, document_revision: request.revision,
+            manifest: "b".repeat(64), assets: [], pending: [], targets: [], targets_truncated: false,
+          } };
+          if (request.operation === "inventory") return { operation: "inventory", value: {
+            items: [], reserved_bytes: 0, max_bytes: 32 * 1024 * 1024, max_items: 512,
+          } };
+          throw new Error(`Unexpected asset operation: ${request.operation}`);
+        }
         if (command === "mobile_reader_list")
           return {documents: nativeDeviceConfigured ? [{ ...deviceDocument }, ...(extraDocument ? [{ ...secondDocument }] : [])] : [], pending: [...pendingImports]};
         if (command === "mobile_reader_discard_import") {
