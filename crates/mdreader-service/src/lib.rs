@@ -2,7 +2,6 @@
 use mdreader_core::{ReaderError, ReaderStore, Result, SourceRoot, SourceRootIdentity};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -196,16 +195,6 @@ fn protocol_error(message: &str) -> ReaderError {
 }
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|_| protocol_error("invalid protocol value"))
-}
-fn private_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(false).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    Ok(options.open(path)?)
 }
 fn read_frame(reader: &mut impl BufRead, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -424,12 +413,7 @@ fn serve_configured(
     options: ServiceOptions,
     adapters: NativeAdapters,
 ) -> Result<()> {
-    std::fs::create_dir_all(directory)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
-    }
+    ipc::prepare_directory(directory)?;
     let startup = daemon::StartupOwner::acquire(directory)
         .map_err(|_| protocol_error("reader service owner is unavailable"))?;
     let mut owner = ReaderStore::open(directory)?;
@@ -456,12 +440,7 @@ fn serve_configured(
         token: token.clone(),
         pid: std::process::id(),
     };
-    let temporary = directory.join(format!(".endpoint-{}", uuid::Uuid::new_v4()));
-    let mut file = private_file(&temporary)?;
-    file.write_all(&encode(&endpoint)?)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&temporary, directory.join(ENDPOINT))?;
+    ipc::publish_endpoint(directory, &encode(&endpoint)?)?;
     for stream in listener.incoming() {
         let stream = stream?;
         let token = token.clone();
@@ -487,13 +466,7 @@ fn serve_configured(
     Ok(())
 }
 pub fn call(directory: &Path, request: &Request) -> Result<Value> {
-    let mut bytes = Vec::new();
-    File::open(directory.join(ENDPOINT))?
-        .take(4097)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 4096 {
-        return Err(protocol_error("invalid service endpoint"));
-    }
+    let bytes = ipc::read_endpoint(directory)?;
     let endpoint: Endpoint =
         serde_json::from_slice(&bytes).map_err(|_| protocol_error("invalid service endpoint"))?;
     if endpoint.protocol != PROTOCOL {

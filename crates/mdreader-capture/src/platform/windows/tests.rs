@@ -2,16 +2,57 @@ use super::*;
 use fs2::FileExt;
 
 #[test]
-fn unsupported_spool_durability_never_creates_a_namespace() {
+fn sqlite_journal_reopens_and_restores_acknowledged_markdown() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("not-created");
+    let project = temp.path().join("selected-project");
+    fs::create_dir(&project).unwrap();
+    let policy = ProjectPolicy {
+        enabled: true,
+        project_id: "selected".into(),
+        project_root: project.clone(),
+        repository_root: project.clone(),
+        worktree_roots: vec![project],
+        capture_subagents: false,
+        excluded_paths: vec![],
+        excluded_sessions: vec![],
+        selected_backfill_sessions: vec![],
+    };
+    let root = temp.path().join("spool");
+    let spool = Spool::open(&root, Limits::default()).unwrap();
+    let event=serde_json::to_vec(&serde_json::json!({"hook_event_name":"Stop","session_id":"synthetic-session","turn_id":"turn","cwd":policy.project_root,"last_assistant_message":"# Exact visible output\nNo imported history."})).unwrap();
+    let id = match spool
+        .enqueue(Adapter::ClaudeCode, &event, &policy, CaptureOrigin::Live)
+        .unwrap()
+    {
+        EnqueueOutcome::Queued { id } => id,
+        other => panic!("{other:?}"),
+    };
+    drop(spool);
+    let spool = Spool::open(&root, Limits::default()).unwrap();
+    assert_eq!(spool.pending(8).unwrap(), vec![id.clone()]);
+    let projected = spool.project(&id, &policy).unwrap();
+    let exact = read_bounded(&projected.path, MAX_MARKDOWN_BYTES).unwrap();
+    spool.acknowledge(&id).unwrap();
+    fs::remove_file(&projected.path).unwrap();
+    drop(spool);
+    let spool = Spool::open(&root, Limits::default()).unwrap();
+    assert!(spool.pending(8).unwrap().is_empty());
+    assert_eq!(
+        spool.repair_projections(&[policy.clone()], 2).unwrap(),
+        vec![policy.project_id.clone()]
+    );
+    assert_eq!(
+        read_bounded(&projected.path, MAX_MARKDOWN_BYTES).unwrap(),
+        exact
+    );
     assert!(matches!(
-        Spool::open(&path, Limits::default()),
-        Err(CaptureError::UnsupportedPlatform)
+        spool
+            .enqueue(Adapter::ClaudeCode, &event, &policy, CaptureOrigin::Live)
+            .unwrap(),
+        EnqueueOutcome::Duplicate { .. }
     ));
-    assert!(!path.exists());
     assert!(matches!(
-        sync_directory(temp.path()),
+        sync_directory(&root),
         Err(CaptureError::UnsupportedPlatform)
     ));
 }
