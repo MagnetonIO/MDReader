@@ -46,6 +46,7 @@ pub(super) fn decode(
         lifecycle: Lifecycle::Legacy(bytes),
         intent: None,
         pending_recovery: None,
+        pairing: None,
     };
     record.validate(reference)?;
     Ok(record)

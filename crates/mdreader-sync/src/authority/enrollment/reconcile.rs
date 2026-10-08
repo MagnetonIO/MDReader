@@ -110,6 +110,10 @@ impl NativeAuthorityFactory {
                         .reconcile_recovery(login, reference, library, true)
                         .await
                         .map(|authority| EnrollmentProgress::Enrolled(Box::new(authority))),
+                    Kind::Pair => self
+                        .reconcile_pair(login, reference, library, true)
+                        .await
+                        .map(|authority| EnrollmentProgress::Enrolled(Box::new(authority))),
                 }
             }
             Err(AuthorityError::Enrollment) => {}
@@ -117,6 +121,11 @@ impl NativeAuthorityFactory {
         }
         self.check_controller(&login.controller, login.epoch)?;
         record.check_identity(&login.identity, &self.client.registration, library)?;
+        if kind == Kind::Pair {
+            // A denied probe cannot prove that the original pair was not approved.
+            // Retain its OOB identity instead of issuing a replacement challenge.
+            return Err(AuthorityError::LifecycleGated);
+        }
         let response = challenge::fetch(self, &record, kind).await?;
         self.check_controller(&login.controller, login.epoch)?;
         record.check_identity(&login.identity, &self.client.registration, library)?;
@@ -131,6 +140,9 @@ impl NativeAuthorityFactory {
                 expires: response.expires,
             },
             Kind::Recover => super::super::recovery::renew_intent(&record, response)?,
+            // Preserve the original request/OOB identity after expiry. A new pair
+            // attempt requires its own explicitly selected trusted-channel exchange.
+            Kind::Pair => return Err(AuthorityError::LifecycleGated),
         };
         next.renew_from(record.intent.as_ref().ok_or(AuthorityError::Custody)?)?;
         let generation = record.generation;

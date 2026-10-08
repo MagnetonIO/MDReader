@@ -15,8 +15,10 @@ The reported hidden Connect action is fixed and deployed (`5bb05b2`, receipt
 `c09c0cb` in the web integration). Three focused deployed checks passed, including
 200% text at desktop/mobile widths, real Auth0 navigation and offline reopen.
 The separate enlarged-text empty-panel fix (`b25bc33`, receipt `5eedd56`) is also
-deployed and merged. Four affected deployed checks pass in17.5 seconds. Live credential
-login, enrollment and authenticated transfer remain pending. These do not
+deployed and merged. Four affected deployed checks pass in17.5 seconds. Live browser identity verification has now been observed; the user also reports
+a Connected state. Authenticated encrypted transfer remains unverified. The new
+standard web Settings panel is passing deployed keyboard/mobile/zoom checks;
+its final shared-Preview promotion is recorded in the web receipt. These do not
 establish production release acceptance.
 
 Native desktop callback ownership is merged as `a4607b4`. It binds the exact
@@ -420,3 +422,20 @@ the prior cache. Focused mutation RED/GREEN checks passed; deployment acceptance
 is in progress. An already loaded old client lacks the new explicit worker-update
 call; tests must disclose any browser lifecycle update they invoke rather than
 claim that old first-click behavior was retroactively repaired.
+
+
+## Settings and native preservation checkpoint, 2026-10-08
+
+Native primary catalog cutover `be4be70`, profile preservation foundation
+`a705958`, verified pairing `a7824dd` and categorized Settings `720ef12` are
+merged into reader integration. Native Settings has five standard categories,
+with legacy connections under Advanced/Migration. All 26 focused Settings
+cases passed; the final own-element visibility adjustment passed the two
+navigation/focus cases again. Packaged native visual acceptance remains open.
+
+Profile preservation is a guarded foundation, not installed-profile migration:
+real participant writer freeze/handoff, selector startup, activation and rollback
+remain unavailable until their actual owners are connected. Pairing passes its
+focused authority/actual local HTTPS Worker/JOSE cases but has no shipping native
+account coordinator/UI yet. CatDB removal, live provider/device acceptance and
+release packaging remain open.

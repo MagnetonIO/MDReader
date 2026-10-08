@@ -4,6 +4,7 @@ use super::*;
 pub(in super::super) enum Kind {
     Bootstrap,
     Recover,
+    Pair,
 }
 /// Stored only inside the native vault record. No bearer/login tokens or PKCE data.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,11 +61,14 @@ impl Intent {
         claims.check_record(record)?;
         if !matches!(
             (self.kind, claims.kind.as_str()),
-            (Kind::Bootstrap, "bootstrap") | (Kind::Recover, "recover")
+            (Kind::Bootstrap, "bootstrap") | (Kind::Recover, "recover") | (Kind::Pair, "pair")
         ) {
             return Err(AuthorityError::Custody);
         }
         let expected = match self.kind {
+            Kind::Pair if self.recovery_grant.is_none() => {
+                super::super::pairing::request_body(record, &self.challenge)?
+            }
             Kind::Bootstrap if self.recovery_grant.is_none() => {
                 bootstrap::body(record, &self.challenge)?
             }
@@ -126,7 +130,7 @@ struct Receipt {
     account: String,
     library: String,
     device: String,
-    recovery_thumb: String,
+    recovery_thumb: Option<String>,
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -173,18 +177,20 @@ impl Intent {
         Ok(false)
     }
     fn receipt(record: &CustodyRecord) -> AuthorityResult<Receipt> {
-        let custody::Lifecycle::V2 {
-            recovery: Some(raw),
-            ..
-        } = &record.lifecycle
-        else {
+        let custody::Lifecycle::V2 { recovery, .. } = &record.lifecycle else {
             return Err(AuthorityError::Custody);
         };
+        if recovery.is_none() && record.intent.as_ref().is_none_or(|i| i.kind != Kind::Pair) {
+            return Err(AuthorityError::Custody);
+        }
         Ok(Receipt {
             account: record.scope.account_digest().into(),
             library: record.scope.library_id().into(),
             device: record.scope.device_id().into(),
-            recovery_thumb: signing::SigningKey::load(raw)?.device,
+            recovery_thumb: recovery
+                .as_ref()
+                .map(|raw| signing::SigningKey::load(raw).map(|s| s.device))
+                .transpose()?,
         })
     }
     pub(in super::super) fn confirm(&mut self, record: &CustodyRecord) -> AuthorityResult<()> {

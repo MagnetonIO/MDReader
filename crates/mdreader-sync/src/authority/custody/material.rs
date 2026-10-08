@@ -95,7 +95,7 @@ impl Lifecycle {
         }
         Ok(())
     }
-    pub(super) fn same_keys(&self, other: &Self) -> bool {
+    pub(in super::super) fn same_keys(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Legacy(a), Self::Legacy(b)) => a == b,
             (

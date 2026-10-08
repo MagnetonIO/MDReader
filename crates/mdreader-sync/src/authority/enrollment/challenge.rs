@@ -90,6 +90,12 @@ impl Claims {
                     Phase::CandidatePending(CandidateKind::Recover) | Phase::Enrolled
                 ) && self.recovery_thumb.is_none()
             }
+            "pair" => {
+                matches!(
+                    phase,
+                    Phase::CandidatePending(CandidateKind::Pair) | Phase::Enrolled
+                ) && self.recovery_thumb.is_none()
+            }
             _ => false,
         };
         if !purpose_ok
@@ -130,6 +136,7 @@ pub(in super::super) async fn fetch(
     let kind_text = match kind {
         Kind::Bootstrap => "bootstrap",
         Kind::Recover => "recover",
+        Kind::Pair => "pair",
     };
     let request=zeroize::Zeroizing::new(serde_json::to_vec(&serde_json::json!({"kind":kind_text,"libraryId":record.scope.library_id(),"signingJwk":signing,"wrappingJwk":wrapping,"recoveryJwk":if kind==Kind::Bootstrap {recovery}else{serde_json::Value::Null}})).map_err(|_|AuthorityError::Custody)?);
     let url = factory

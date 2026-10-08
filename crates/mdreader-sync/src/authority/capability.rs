@@ -34,7 +34,7 @@ impl NativeAuthority {
             expires: self.identity.expires,
         })
     }
-    fn check(&self) -> AuthorityResult<()> {
+    pub(super) fn check(&self) -> AuthorityResult<()> {
         let result = (|| {
             self.controller.check(&self.lease)?;
             self.identity.check(&self.registration)?;

@@ -48,6 +48,7 @@ pub struct CustodyRecord {
     pub(super) lifecycle: Lifecycle,
     pub(super) intent: Option<super::enrollment::Intent>,
     pub(super) pending_recovery: Option<Zeroizing<Vec<u8>>>,
+    pub(super) pairing: Option<super::pairing::Slot>,
 }
 impl std::fmt::Debug for CustodyRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -127,6 +128,7 @@ impl CustodyRecord {
             lifecycle: self.lifecycle.clone(),
             intent: self.intent.clone(),
             pending_recovery: self.pending_recovery.clone(),
+            pairing: self.pairing.clone(),
         }
     }
     pub(super) fn validate(&self, reference: &SyncCredentialReference) -> AuthorityResult<()> {
@@ -156,6 +158,7 @@ impl CustodyRecord {
         self.lifecycle
             .validate(self.state, self.keys.len(), &signer.device)?;
         super::recovery::validate_pending(self)?;
+        super::pairing::validate_slot(self)?;
         if let Some(intent) = &self.intent {
             intent.validate(self)?;
         }
@@ -172,6 +175,7 @@ impl CustodyRecord {
             && self.lifecycle.same_phase(&other.lifecycle)
             && self.intent == other.intent
             && self.pending_recovery == other.pending_recovery
+            && self.pairing == other.pairing
     }
     fn same_keys(&self, other: &Self) -> bool {
         self.reference == other.reference
@@ -236,6 +240,7 @@ impl PendingCustody {
             lifecycle: Lifecycle::candidate(kind)?,
             intent: None,
             pending_recovery: None,
+            pairing: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
@@ -266,6 +271,7 @@ impl PendingCustody {
             lifecycle: Lifecycle::bootstrap()?,
             intent: None,
             pending_recovery: None,
+            pairing: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
