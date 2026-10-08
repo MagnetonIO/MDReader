@@ -4,15 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "pnpm run build:shared && vite",
+    "build": "pnpm run build:shared && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:settings-browser": "playwright test --config playwright.settings.config.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "tauri": "node ../scripts/development/tauri.mjs"
+    "tauri": "node ../scripts/development/tauri.mjs",
+    "build:shared": "pnpm --filter @mdreader/config build && pnpm --filter @mdreader/markdown build && pnpm --filter @mdreader/ui build"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
