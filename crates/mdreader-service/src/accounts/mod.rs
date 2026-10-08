@@ -13,7 +13,7 @@ mod tests;
 mod types;
 
 pub use interaction::{NativeRecovery, RecoveryInput};
-use mdreader_core::ReaderStore;
+use mdreader_core::{device::assets::AssetRuntime, ReaderStore};
 use mdreader_sync::authority::{
     CandidateKind, CustodyLifecycle, CustodySummary, EnrollmentLogin, EnrollmentProgress,
     NativeAuthority, NativeAuthorityFactory, NativeBrowser, PendingCustody, SessionController,
@@ -53,6 +53,16 @@ impl Coordinator {
         setup: Option<NativeSetup>,
         roots: CacheRoots,
     ) -> Result<Self> {
+        Self::with_asset_runtime(owner, setup, roots, AssetRuntime::default())
+    }
+    /// Native product composition supplies one runtime shared with its exact
+    /// reader owner and read-only device asset adapter; no renderer capability.
+    pub fn with_asset_runtime(
+        owner: Arc<Mutex<ReaderStore>>,
+        setup: Option<NativeSetup>,
+        roots: CacheRoots,
+        runtime: AssetRuntime,
+    ) -> Result<Self> {
         let binding = {
             let mut store = owner.try_lock().map_err(|_| AccountError::Busy)?;
             storage::load(&mut store)?
@@ -66,15 +76,15 @@ impl Coordinator {
         ));
         let sender = if let Some(setup) = setup {
             // Build before publishing the coordinator; failure cannot leave a running job.
-            let runtime = tokio::runtime::Builder::new_current_thread()
+            let actor_runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|_| AccountError::Interrupted)?;
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
-            let actor = actor::Actor::new(owner, setup, roots, binding, shared.clone());
+            let actor = actor::Actor::new(owner, setup, roots, runtime, binding, shared.clone());
             std::thread::Builder::new()
                 .name("mdreader-account".into())
-                .spawn(move || runtime.block_on(actor.run(receiver)))
+                .spawn(move || actor_runtime.block_on(actor.run(receiver)))
                 .map_err(|_| AccountError::Interrupted)?;
             Some(sender)
         } else {
