@@ -235,3 +235,10 @@ accepted separately before enabling production sync.
   existing base plist's three macOS folder descriptions, merged automatically by
   Tauri; no new access or permission configuration was authored. The canonical
   tracked output must pass a subsequent clean-HEAD packaging check.
+- That subsequent wrapper check passed from clean committed `1b6a556`:
+  [source-stamp receipt](../benchmarks/2026-10-07-ios-source-stamp-smoke.json).
+  The final executable embeds the exact commit; post-build source remains clean
+  and the owned handoff is removed. Launch on the disposable simulator preserved
+  both synthetic documents and the existing pin. This verifies unsigned debug
+  simulator source identity, not signed release acceptance. New image-layout
+  interaction remains unaccepted because Device Hub capture was distorted.

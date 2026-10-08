@@ -105,5 +105,19 @@ separate from the immutable bundle above.
 
 Android packaging of this feature, JPEG picker, physical devices, app-replacement
 asset-root relocation, exhaustive visibility/memory acceptance, sync projection,
-original-image export/share and release source identity remain open. No production
+original-image export/share and signed release acceptance remain open. No production
 cloud deployment follows from this probe.
+
+The source handoff was subsequently fixed in `760747e`. After explicitly reviewing
+and committing Tauri's canonical generated project/plist output, the standalone
+mobile wrapper built clean committed source `1b6a556` successfully, checked the
+same clean HEAD afterward and removed its owned handoff. The final executable
+contains that exact nonzero source identity; its SHA256 is
+`2c515752513e0d90ad63e4f9e32b7c471a281d0a1abddb70bd9d64d98c6dfe5c`.
+This is unsigned debug simulator provenance, not a signed distribution release.
+The [receipt](../benchmarks/2026-10-07-ios-source-stamp-smoke.json) records launch
+and preservation of both synthetic documents and the existing pin across this
+app update. Device Hub capture returned distorted miniature views during the
+follow-up; new image-layout interaction acceptance remains open. The copied app,
+log, receipt and simulator screenshot are outside Git at
+`/tmp/mdreader-reader-next-gui/ios-stamped-clean/`.

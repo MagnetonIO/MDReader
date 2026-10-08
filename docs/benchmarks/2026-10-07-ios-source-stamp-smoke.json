@@ -1,0 +1,23 @@
+{
+  "sourceCommit": "1b6a5562e778c14ee801df0f9464c25447bfa4ce",
+  "embeddedSourceCommit": "1b6a5562e778c14ee801df0f9464c25447bfa4ce",
+  "releaseIdentityVerified": true,
+  "wrapperExitCode": 0,
+  "postBuildSourceClean": true,
+  "handoffRemoved": true,
+  "binarySha256": "2c515752513e0d90ad63e4f9e32b7c471a281d0a1abddb70bd9d64d98c6dfe5c",
+  "binaryBytes": 252421352,
+  "platforms": [
+    "iPhoneSimulator"
+  ],
+  "minimumOS": "15.0",
+  "artifactKind": "unsigned debug simulator app, not a signed release",
+  "guiAcceptance": {
+    "launchOnOwnedSimulator": true,
+    "existingSyntheticDocumentsVisibleAfterAppUpdate": true,
+    "existingPinVisibleAfterAppUpdate": true,
+    "newImageLayoutInteraction": false,
+    "captureLimitation": "Device Hub capture returned distorted miniature window; no layout interaction accepted",
+    "physicalDevice": false
+  }
+}
