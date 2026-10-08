@@ -157,8 +157,8 @@ configuration contract, not guessed legacy `.env` names.
 Setup documentation must provide prerequisites, exact root-relative commands,
 expected readiness, stopping/cleanup and common failures. Keep it updated when
 scripts/configuration change. Verify a fresh-clone startup at release checkpoints.
-The current legacy SDK still has a machine-local Git dependency: record this
-portability blocker until migration removes it; do not claim fresh-clone readiness.
+The shipping reader no longer depends on the machine-local legacy SDK. Fresh-clone
+readiness still requires an actual locked install and startup at the release checkpoint.
 
 ## Parallel worktrees, integration and cleanup
 
