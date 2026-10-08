@@ -20,6 +20,9 @@ use super::{
     SourceRecordKey,
 };
 
+mod rows;
+use rows::{CachedBodyKey, SnapshotPins};
+
 const MAX_IDENTIFIER_BYTES: usize = 4 * 1024;
 const MAX_RECEIPT_BYTES: usize = (2 * 1024 * 1024) + (64 * 1024);
 const MAX_WRITE_REPAIR_PAGE_ROWS: usize = 256;
@@ -828,18 +831,22 @@ impl CloudDocumentStore {
         let transaction = connection
             .unchecked_transaction()
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        let published: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = transaction
+        let published: Option<SnapshotPins> = transaction
             .query_row(
                 "SELECT generation, schema_version_id, mapping_version_id, source_version_id
                  FROM mdreader_cloud_snapshot
                  WHERE source_id = ?1 AND state = 'published'",
                 params![&source_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                SnapshotPins::read,
             )
             .optional()
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        let Some((published_generation, schema_version_id, mapping_version_id, source_version_id)) =
-            published
+        let Some(SnapshotPins {
+            generation: published_generation,
+            schema_version_id,
+            mapping_version_id,
+            source_version_id,
+        }) = published
         else {
             return Err(CloudDocumentStoreError::ForeignSource);
         };
@@ -934,17 +941,23 @@ impl CloudDocumentStore {
         let transaction = connection
             .unchecked_transaction()
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        let published: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = transaction
+        let published: Option<SnapshotPins> = transaction
             .query_row(
                 "SELECT generation, schema_version_id, mapping_version_id, source_version_id
                  FROM mdreader_cloud_snapshot
                  WHERE source_id = ?1 AND state = 'published'",
                 params![source_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                SnapshotPins::read,
             )
             .optional()
             .map_err(|_| CloudDocumentStoreError::CorruptStore)?;
-        let Some((generation, schema, mapping, source)) = published else {
+        let Some(SnapshotPins {
+            generation,
+            schema_version_id: schema,
+            mapping_version_id: mapping,
+            source_version_id: source,
+        }) = published
+        else {
             return Ok(false);
         };
         if mapping != pins.mapping_version_id || source != pins.source_version_id {
@@ -2102,26 +2115,25 @@ fn evict_bodies(transaction: &Transaction<'_>, cache_limit_bytes: u64) -> StoreR
     let cache_limit =
         i64::try_from(cache_limit_bytes).map_err(|_| CloudDocumentStoreError::Persistence)?;
     while total_bytes > cache_limit {
-        let oldest: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64)> = transaction
+        let oldest: Option<CachedBodyKey> = transaction
             .query_row(
                 "SELECT source_id, source_version_id, record_key, revision, size_bytes
                  FROM mdreader_cloud_body_cache
                  ORDER BY last_access_ms, source_id, source_version_id, record_key, revision
                  LIMIT 1",
                 [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                CachedBodyKey::read,
             )
             .optional()
             .map_err(|_| CloudDocumentStoreError::Persistence)?;
-        let Some((source_id, source_version_id, record_key, revision, size_bytes)) = oldest else {
+        let Some(CachedBodyKey {
+            source_id,
+            source_version_id,
+            record_key,
+            revision,
+            size_bytes,
+        }) = oldest
+        else {
             return Err(CloudDocumentStoreError::CorruptStore);
         };
         if size_bytes < 0 {
