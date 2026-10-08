@@ -64,7 +64,7 @@ use paths::*;
 pub use runtime::{AssetRuntime, PreparedSnapshot, ReadPermit, ValidationPermit, VerifiedSnapshot};
 pub use store::AssetStore;
 pub use types::*;
-pub use validation::{PreparedAsset, ValidatedAsset};
+pub use validation::{validate_raster, PreparedAsset, RasterMetadata, ValidatedAsset};
 
 #[cfg(test)]
 mod tests;

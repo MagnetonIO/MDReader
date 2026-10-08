@@ -17,6 +17,12 @@ pub(super) fn failure(kind: &str) -> CatalogError {
     deny_unknown_fields
 )]
 pub enum CatalogRequest {
+    Image {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+    },
     EditLocal {
         source_id: String,
         path: String,
@@ -106,6 +112,14 @@ pub struct CatalogReference {
     rename_all_fields = "camelCase"
 )]
 pub enum CatalogReply {
+    Image {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+        mime: String,
+        base64: String,
+    },
     EditLocal {
         source_id: String,
         library_source_id: String,

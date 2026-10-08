@@ -1,5 +1,6 @@
 //! Native membership adapter. Catalog reads never admit or regrant a folder.
 mod edit;
+mod image;
 mod model;
 mod resolve;
 use crate::{
@@ -116,6 +117,15 @@ pub(crate) fn execute(
     backend: &ReaderBackend,
     request: CatalogRequest,
 ) -> Result<CatalogReply, CatalogError> {
+    if let CatalogRequest::Image {
+        source_id,
+        path,
+        revision,
+        target,
+    } = &request
+    {
+        return image::local(app, backend, source_id, path, revision, target);
+    }
     let capture = match &request {
         CatalogRequest::Read { source_id, .. }
         | CatalogRequest::Resolve { source_id, .. }
@@ -288,6 +298,7 @@ pub(crate) fn execute(
         CatalogRequest::Close { cursor } => service::CatalogRequest::Close { cursor },
         CatalogRequest::Read { .. }
         | CatalogRequest::Resolve { .. }
+        | CatalogRequest::Image { .. }
         | CatalogRequest::EditLocal { .. } => {
             return Err(failure("invalid"));
         }
