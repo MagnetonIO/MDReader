@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::file_lock::AdvisoryFileLock;
-use mdreader_ingest::SourceRoot;
+use mdreader_core::SourceRoot;
 
 const DIAGNOSTIC_SETTINGS_VERSION: u32 = 1;
 const DIAGNOSTIC_RECORD_SCHEMA: &str = "mdreader.diagnostics";
@@ -843,8 +843,7 @@ fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, Diagno
 }
 
 pub(crate) fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, DiagnosticError> {
-    app.path()
-        .app_data_dir()
+    app.path().app_data_dir()
         .map(|directory| directory.join("diagnostics"))
         .map_err(|_| DiagnosticError::WriteFailed {
             reason: DiagnosticFailureReason::AuthorityUnavailable,

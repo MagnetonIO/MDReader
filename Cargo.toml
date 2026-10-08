@@ -13,10 +13,6 @@ members = [
     "crates/mdreader-profile",
     "crates/mdreader-connector-dropbox",
     "crates/mdreader-connector-google-drive",
-    "crates/mdreader-connector-local",
-    "crates/mdreader-domain",
-    "crates/mdreader-ingest",
-    "crates/mdreader-presentation",
     "scripts/release/verifier",
     "src-tauri",
 ]
@@ -27,10 +23,7 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/catdb-project/mdreader"
 
-# Shared basics only, carried over from the monorepo workspace this repo was
-# extracted from. The platform crates are no longer members here -- they arrive
-# as a single versioned `catdb-sdk` dependency, which is the whole point of the
-# split: MDReader consumes CatDB the way any other application would.
+# MDReader-owned portable crates share only basic dependencies.
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

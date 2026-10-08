@@ -70,39 +70,6 @@ export const commands = {
 	 *  main thread; the dialog plugin pumps the picker on the event loop.
 	 */
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
-	listCloudSources: () => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("list_cloud_sources")),
-	connectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("connect_cloud_source", { provider })),
-	setCloudSourceEnabled: (provider: CloudProvider, enabled: boolean) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("set_cloud_source_enabled", { provider, enabled })),
-	disconnectCloudSource: (provider: CloudProvider) => typedError<CloudSourcesSnapshot, CloudSourceError>(__TAURI_INVOKE("disconnect_cloud_source", { provider })),
-	/**  Establish and verify the cloud Library catalog before renderer reads begin. */
-	prepareCloudCatalog: () => typedError<CloudCatalogReady, CloudSourceError>(__TAURI_INVOKE("prepare_cloud_catalog")),
-	/**  Run a cloud Library read through CatDB's shared typed entity-query contract. */
-	entityQuery: (requestId: string, provider: CloudProvider, request: EntityQueryRequest_Deserialize) => typedError<EntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("entity_query", { requestId, provider, request })),
-	queryLibraryDocuments: (requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, CloudSourceError>(__TAURI_INVOKE("query_library_documents", { requestId, request })),
-	queryCloudDocuments: (requestId: string, provider: CloudProvider, filters: CloudFilterInput[], fields: string[]) => typedError<CloudDocumentQueryResponse, CloudSourceError>(__TAURI_INVOKE("query_cloud_documents", { requestId, provider, filters, fields })),
-	cancelCloudDocumentQuery: (requestId: string) => typedError<boolean, CloudSourceError>(__TAURI_INVOKE("cancel_cloud_document_query", { requestId })),
-	/**  Reads one published cloud Markdown record through the admitted native owner. */
-	readCloudMarkdown: (sourceId: string, recordKey: string) => typedError<CloudMarkdownDocument, CloudDocumentError>(__TAURI_INVOKE("read_cloud_markdown", { sourceId, recordKey })),
-	/**  Saves one cloud Markdown body through its signed native edit authority. */
-	saveCloudMarkdown: (editToken: string, content: string) => typedError<CloudMarkdownSaveOutcome, CloudDocumentError>(__TAURI_INVOKE("save_cloud_markdown", { editToken, content })),
-	/**  Open one allowlisted provider URL with the operating system's browser. */
-	openCloudOriginal: (url: string) => typedError<null, CloudDocumentError>(__TAURI_INVOKE("open_cloud_original", { url })),
-	/**  Ask for a destination and save one bounded Markdown copy outside the cache. */
-	exportMarkdownCopy: (suggestedName: string, content: string) => typedError<boolean, CloudDocumentError>(__TAURI_INVOKE("export_markdown_copy", { suggestedName, content })),
-	connectedCatdbState: () => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_state")),
-	enrollConnectedCatdb: (serverOrigin: string, bearerToken: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("enroll_connected_catdb", { serverOrigin, bearerToken })),
-	setConnectedCatdbSourceEnabled: (connectionId: string, sourceId: string, enabled: boolean) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("set_connected_catdb_source_enabled", { connectionId, sourceId, enabled })),
-	disconnectConnectedCatdb: (connectionId: string) => typedError<ConnectedCatdbState, MobileEnterpriseError>(__TAURI_INVOKE("disconnect_connected_catdb", { connectionId })),
-	connectedCatdbEntityQuery: (connectionId: string, request: EntityQueryRequest_Deserialize) => typedError<MobileEnterpriseResponse, MobileEnterpriseError>(__TAURI_INVOKE("connected_catdb_entity_query", { connectionId, request })),
-	/**  Query one authenticated Connected CatDB membership as an exact Library evidence group. */
-	queryConnectedLibraryDocuments: (connectionId: string, requestId: string, request: EntityQueryRequest_Deserialize) => typedError<LibraryEntityQueryResponse_Serialize, MobileEnterpriseError>(__TAURI_INVOKE("query_connected_library_documents", { connectionId, requestId, request })),
-	/**  Cancel one renderer-owned Connected CatDB Library query before it publishes evidence. */
-	cancelConnectedCatdbQuery: (requestId: string) => typedError<boolean, MobileEnterpriseError>(__TAURI_INVOKE("cancel_connected_catdb_query", { requestId })),
-	mobileEnterpriseConnection: () => typedError<{
-	connection_id: string,
-	label: string,
-} | null, MobileEnterpriseError>(__TAURI_INVOKE("mobile_enterprise_connection")),
-	mobileEnterpriseRequest: (connectionId: string, operation: MobileEnterpriseOperation, bodyJson: string | null) => typedError<MobileEnterpriseResponse, MobileEnterpriseError>(__TAURI_INVOKE("mobile_enterprise_request", { connectionId, operation, bodyJson })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -184,88 +151,11 @@ export const commands = {
 	 *  confirmation check so a UI regression cannot clear them silently.
 	 */
 	clearDiagnostics: (confirmed: boolean) => typedError<DiagnosticInfo, DiagnosticError>(__TAURI_INVOKE("clear_diagnostics", { confirmed })),
-	/**
-	 *  List the workspace's markdown files. Once an import has finished the rows come
-	 *  from the engine's index (gitignored files already dropped, so none are dimmed);
-	 *  before then — or if the index is somehow empty — a live filesystem scan fills
-	 *  in, marking gitignored files so the tree can dim them. `root` must be within
-	 *  the granted workspace.
-	 */
 	listWorkspaceFiles: (root: string) => typedError<WorkspaceListing, ListingError>(__TAURI_INVOKE("list_workspace_files", { root })),
-	/**
-	 *  Open (or reuse) the workspace index and run an incremental import, streaming
-	 *  coarse progress on `on_event` (`loading` → `importing` → `done`, or
-	 *  `model-unavailable`/`error`) and returning the final status.
-	 *
-	 *  The two preconditions are separate on purpose: the **index** opens first and
-	 *  needs no model, so the workspace is readable from that moment on; the
-	 *  **model** is loaded second and only gates the import itself and the semantic
-	 *  search arm. A model that cannot load therefore yields `model-unavailable`
-	 *  (with the reason) over a fully open workspace — never an empty one, and never
-	 *  the generic `error` an actual index-build failure reports.
-	 *  Captures the current [`Epoch`] once at entry — root, generation, engine, and
-	 *  status travel together. `root` is validated against the epoch's grant (a
-	 *  foreign path is a hard error). Every request queues a durable job generation.
-	 *  A second progress listener for the same epoch returns its current status. At each
-	 *  commit point (model install, every publish) it re-checks the epoch is still
-	 *  current; a switch mid-import abandons silently-clean, its late status landing
-	 *  only in its own (superseded, unread) slot. The frontend fires this without
-	 *  awaiting (progress flows on the channel) but the resolved value is
-	 *  authoritative, so a mocked IPC (which need not drive the channel) still lands
-	 *  the StatusBar on `done`.
-	 */
 	startImport: (root: string, onEvent: Channel<ImportProgress>) => typedError<ImportProgress, string>(__TAURI_INVOKE("start_import", { root, onEvent })),
-	/**
-	 *  The latest import status for the CURRENT workspace epoch — for the StatusBar's
-	 *  initial render and any poll. A superseded epoch's status is never read, so a
-	 *  switch leaves this reading `idle` until the new epoch's import publishes.
-	 */
 	importStatus: () => typedError<ImportProgress, string>(__TAURI_INVOKE("import_status")),
-	/**
-	 *  Resolve a `[[wikilink]]` against the index. `from_doc` is the absolute path of
-	 *  the document the link sits in — it must live inside the granted workspace;
-	 *  `target` is the raw link text; `heading` (optional) is the `#heading` suffix,
-	 *  resolved to a source line in the target document. Matching is filename-first
-	 *  (stem, case-insensitive), then document title; several matches yield
-	 *  `ambiguous` with the candidate set. Captures the epoch once (engine + root
-	 *  consistent) and re-checks it is current AT THE RETURN — after the heading
-	 *  lookup and result construction — so a switch mid-resolution can never surface
-	 *  a previous workspace's document.
-	 */
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
-	/**
-	 *  Hybrid search over the workspace index, streamed in two honest phases on
-	 *  `on_event` and returned as the final hit list plus whether that list is the
-	 *  full ranking.
-	 *
-	 *  The typed filter language is honored as-is (`tag:` `path:` `linked-to:`
-	 *  `after:` bare terms, RRF-fused): a parse/validation failure returns the
-	 *  schema-derived error text as the command error (the palette shows it inline
-	 *  under the input). Phase one is `lexical_only` (streamed as `"lexical"`);
-	 *  phase two is the full hybrid pass (streamed as `"final"` and returned).
-	 *  `options.lexical_only` (the `Exact` intent) skips the second pass. Before
-	 *  the engine is installed (no import yet) both phases are empty.
-	 *
-	 *  **Degrading honestly.** The lexical arm needs no embedder, so when the model
-	 *  could not be loaded this still searches — and says so: the second pass is
-	 *  skipped and [`SearchResults::semantic_unavailable`] carries the reason, on the
-	 *  streamed batches as well as the returned value. What it never does is run a
-	 *  lexical-only pass and hand it back as though the vector arm had contributed.
-	 *
-	 *  Epoch-guarded: a workspace switch mid-search supersedes the captured epoch,
-	 *  discarding its hits rather than surfacing a previous workspace's documents.
-	 */
 	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
-	/**
-	 *  Documents related to `doc_path` (an absolute path in the granted
-	 *  workspace), using directed Markdown links, explicit shared tags, and stored
-	 *  vector evidence. Availability and migration gaps are carried even when empty.
-	 *
-	 *  The absolute path is mapped back to its source-relative stored form and
-	 *  resolved against the index; an unknown document (or an index not yet built)
-	 *  yields an empty list rather than an error, so the rail simply shows nothing
-	 *  until the import lands. Epoch-guarded like [`search`].
-	 */
 	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
 	agentCaptureState: (expectedRoot: string) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("agent_capture_state", { expectedRoot })),
 	setAgentCapture: (expectedRoot: string, update: AgentCaptureUpdate) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("set_agent_capture", { expectedRoot, update })),
@@ -274,98 +164,6 @@ export const commands = {
 	prepareAgentIntegration: (expectedRoot: string, selection: AgentIntegrationSelection) => typedError<AgentIntegrationReview, string>(__TAURI_INVOKE("prepare_agent_integration", { expectedRoot, selection })),
 	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
 	uninstallAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("uninstall_agent_integration", { expectedRoot, preparationId })),
-	/**
-	 *  One hybrid pass with the full score breakdown attached to every hit — the
-	 *  **Query Explanation** surface's read.
-	 *
-	 *  It is [`search`]'s second phase with `explain` forced on and no channel:
-	 *  the same engine call, the same [`ExplainDto`], surfaced as a plain
-	 *  request/response because an explanation panel has nothing to stream. Each
-	 *  hit carries its lexical and semantic ranks, the fused RRF score, every
-	 *  boost's recorded contribution, the final ordering key, the index version
-	 *  and embedding model the semantic arm used, and the
-	 *  chunk → section → document → file → source provenance chain.
-	 *
-	 *  Before the engine is installed (no import yet) the list is honestly empty.
-	 *  Epoch-guarded like [`search`].
-	 *
-	 *  Unlike [`search`] this has no honest degraded form: the thing being explained
-	 *  IS the fused hybrid ranking, so when the semantic arm cannot run there is no
-	 *  ranking to explain and the command says exactly that rather than presenting a
-	 *  lexical-only breakdown as the explanation.
-	 */
-	explainQuery: (query: string, limit: number) => typedError<SearchHitDto[], string>(__TAURI_INVOKE("explain_query", { query, limit })),
-	/**  Query the active document through the three local physical sources. */
-	queryFederatedDocument: (path: string, invocation: string, request: string) => typedError<FederatedDocumentResponse, string>(__TAURI_INVOKE("query_federated_document", { path, invocation, request })),
-	/**  Cancel one Inspector invocation, including a query waiting for a permit. */
-	cancelFederatedDocument: (invocation: string, request: string) => typedError<null, string>(__TAURI_INVOKE("cancel_federated_document", { invocation, request })),
-	/**
-	 *  Every schema this workspace can be viewed through — persisted version and
-	 *  checksum included — with live counts of what the graph and the proposal
-	 *  store hold for each.
-	 *
-	 *  Before the engine is installed (no import yet) the shape is still complete
-	 *  — the schemas are known from the registration — while the version, the
-	 *  checksum, and the counts are absent or `0`, which is the truth rather than
-	 *  a placeholder. See [`known_schemas`].
-	 */
-	listSchemas: () => typedError<SchemaSummary[], string>(__TAURI_INVOKE("list_schemas")),
-	/**
-	 *  The corpus projected through one schema: its committed objects (with
-	 *  provenance) and typed edges.
-	 *
-	 *  This is the *graph*, not the proposal store — so for an overlay it shows
-	 *  exactly the facts a human approved, which is what "the semantic view of
-	 *  this corpus" means. `limit` caps the object list; [`Projection::truncated`]
-	 *  says whether it bit.
-	 */
-	projectCorpus: (schema: string, limit: number) => typedError<Projection, string>(__TAURI_INVOKE("project_corpus", { schema, limit })),
-	/**
-	 *  Introspect one registered schema: entities with their attributes, arrows
-	 *  with domain and codomain, and the path equations it imposes — read back
-	 *  from what the engine persisted, and carrying that version's ordinal and
-	 *  checksum (see [`known_schemas`]).
-	 */
-	describeSchema: (schema: string) => typedError<SchemaDetail, string>(__TAURI_INVOKE("describe_schema", { schema })),
-	/**
-	 *  The extracted facts derived from a span of a document — every object and
-	 *  typed morphism whose cited range overlaps `query`'s selection.
-	 *
-	 *  Each carries its full derivation record (file, lines, content hash,
-	 *  schema version, extractor, confidence), the rule that fired, its approval
-	 *  state and reviewer, and whether it is currently in the graph.
-	 */
-	inspectSpan: (query: SpanQuery) => typedError<InspectedFact[], string>(__TAURI_INVOKE("inspect_span", { query })),
-	/**
-	 *  Accept a proposed fact and promote it into the overlay graph.
-	 *
-	 *  The promotion runs through `Extraction::approved_operations` — the only
-	 *  method that yields engine operations, and only for facts a human accepted
-	 *  — so the engine's approval check passes because the fact genuinely *was*
-	 *  approved, with `reviewer` stamped on its provenance.
-	 *
-	 *  A blank reviewer is refused here rather than at the engine: a
-	 *  whitespace-only name counts as unapproved, so accepting it would produce a
-	 *  confusing rejection two layers down.
-	 */
-	approveFact: (factId: string, reviewer: string) => typedError<ApprovalOutcomeDto, string>(__TAURI_INVOKE("approve_fact", { factId, reviewer })),
-	/**
-	 *  Reject a fact, and retract it if a previous approval had already committed
-	 *  it.
-	 *
-	 *  Rejecting an approved object cascades to every approved morphism it
-	 *  anchors: an edge whose endpoint a human ruled out cannot stand.
-	 */
-	rejectFact: (factId: string, reviewer: string) => typedError<RejectionOutcomeDto, string>(__TAURI_INVOKE("reject_fact", { factId, reviewer })),
-	/**
-	 *  Run every registered schema's path equations over the committed graph and
-	 *  return the violations **as the engine located them** — schema, law, both
-	 *  paths, the offending object, and the markdown span it came from.
-	 *
-	 *  Nothing is re-rendered to prose: a violation that knows which line of which
-	 *  file caused it is the entire value of the surface.
-	 */
-	checkConstraints: () => typedError<ConstraintReport, string>(__TAURI_INVOKE("check_constraints")),
 	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
 	checkForUpdate: () => typedError<{
 	version: string,
@@ -392,6 +190,7 @@ export type AccountError = {
 export type AccountJob = {
 	id: string,
 	selectedSync: SelectedOperation | null,
+	selected_purpose: SelectedPurpose | null,
 	state: JobState,
 };
 
@@ -402,7 +201,7 @@ export type AccountPending = {
 
 export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
 
-export type AccountRequest = { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+export type AccountRequest = { operation: "sync_selected_state"; selection: SelectedOperation } | { operation: "inspect_selected_state"; selection: SelectedOperation } | { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
 
 export type AccountStatus = {
 	configured: boolean,
@@ -491,19 +290,6 @@ export type AgentIntegrationsState = {
 export type AgentSourceChoice = {
 	id: string,
 	name: string,
-};
-
-/**  What approving a fact wrote. */
-export type ApprovalOutcomeDto = {
-	/**  The fact that was approved. */
-	fact_id: string,
-	/**
-	 *  Ids newly asserted into the overlay graph. More than one when
-	 *  approving an object also released morphisms it was the missing
-	 *  endpoint of; empty when the fact is an edge still waiting on an
-	 *  endpoint.
-	 */
-	promoted: string[],
 };
 
 export type ArchivedReviewComparison = {
@@ -641,9 +427,9 @@ export type CatalogReference = {
 	line: number,
 };
 
-export type CatalogReply = { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
+export type CatalogReply = { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
 
-export type CatalogRequest = { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogRequest = { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,
@@ -674,179 +460,7 @@ export type CloseAndForgetStatus =
 /**  The workspace is closed, but membership remains available for retry. */
 { kind: "inactive"; error: LibraryError };
 
-/**  Provenance of the body returned by one cloud Markdown point read. */
-export type CloudCacheState =
-/**  The provider returned and the native cache published this exact revision. */
-"provider-fresh" |
-/**  The presently published revision was already present in the native cache. */
-"cached" |
-/**  The presently published revision was served from cache while offline. */
-"cached-offline";
-
-/**  Explicit readiness proof for the Library-owned cloud CatDB catalog. */
-export type CloudCatalogReady = {
-	workspace_id: string,
-	catalog_revision_id: string,
-	schema_version_id: string,
-};
-
-export type CloudCompleteness = "complete";
-
-export type CloudConnectionState = "disconnected" | "connected" | "reauthorize";
-
-export type CloudConsideredProvider = {
-	provider: CloudProvider,
-	source_id: string,
-	record_key: string,
-	mapping_version: string,
-	/**  Exact physical provider attribute selected by the validated mapping. */
-	physical_attribute: string | null,
-	observation: CloudObservation,
-	observed_at_ms: number | null,
-};
-
-/**  Closed application-level outcomes for cloud document operations. */
-export type CloudDocumentError = { kind: "unauthorized" } | { kind: "reconnect-required" } | { kind: "credential-unavailable" } | { kind: "source-paused" } | { kind: "source-disconnected" } | { kind: "sync-in-progress" } | { kind: "offline-uncached" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "rate-limited"; retry_after_ms: number | null } | { kind: "reset-cursor" } | { kind: "not-found" } | { kind: "conflict" } | { kind: "too-large" } | { kind: "invalid-utf8" } | { kind: "identity-mismatch" } | { kind: "connector-unavailable" } | { kind: "protocol-failed" } | { kind: "write-capability-pending-acceptance" } | { kind: "write-outcome-unknown" } | { kind: "local-publication-pending" };
-
-export type CloudDocumentQueryResponse = {
-	query_id: string,
-	provider: CloudProvider,
-	workspace_id: string,
-	schema_version: string,
-	version_pins: CloudVersionPins,
-	completeness: CloudCompleteness,
-	sources: CloudSourceReport[],
-	scanned: number,
-	rows: CloudDocumentRow[],
-};
-
-export type CloudDocumentRow = {
-	source_id: string,
-	record_key: string,
-	fields: unknown,
-	provenance: CloudFieldProvenance[],
-};
-
-export type CloudExecutionMode = "virtual";
-
-export type CloudFieldProvenance = {
-	field: string,
-	selected: number | null,
-	providers: CloudConsideredProvider[],
-};
-
-export type CloudFilterInput = {
-	field: string,
-	operator: CloudFilterOperator,
-	value: string,
-};
-
-export type CloudFilterOperator = "eq" | "lt" | "le" | "gt" | "ge" | "glob";
-
-/**  One validated Markdown body returned through the native desktop boundary. */
-export type CloudMarkdownDocument = {
-	/**  Opaque renderer identity derived from Library, source, and record identity. */
-	document_key: string,
-	/**  Published display title. */
-	title: string,
-	/**  Validated UTF-8 Markdown content. */
-	content: string,
-	/**  Short-lived opaque authority for guarded editing. */
-	edit_token: string | null,
-	/**  Whether this exact revision came from the provider or native cache. */
-	cache_state: CloudCacheState,
-	/**  Provider modification timestamp retained from published metadata. */
-	modified_at_ms: number | null,
-};
-
-/**  Closed renderer-visible result of one guarded cloud Markdown save. */
-export type CloudMarkdownSaveOutcome =
-/**
- *  The provider accepted the guarded revision and local receipt durability
- *  was established.
- */
-{ kind: "saved";
-/**  Fresh authority anchored to the accepted provider revision. */
-edit_token: string;
-/**  Provider modification time, when the provider supplies one. */
-modified_at_ms: number | null } |
-/**  The provider record no longer has the revision that was opened. */
-{ kind: "conflict" };
-
-export type CloudObservation = { kind: "observed-value"; value: unknown } | { kind: "observed-null" } | { kind: "observed-nothing"; reason: string } | { kind: "unobservable"; reason: string };
-
 export type CloudProvider = "google-drive" | "dropbox";
-
-export type CloudQueryRefusal = "unavailable" | "unknown-entity" | "unobservable-attribute" | "unsupported-filter" | "unsupported-ordering" | "unsupported-limit" | "unsupported-policy";
-
-export type CloudSourceDto = {
-	id: string,
-	provider: CloudProvider,
-	label: string,
-	connection: CloudConnectionState,
-	enabled: boolean,
-};
-
-export type CloudSourceError = { kind: "invalid-configuration" } | { kind: "source-not-found" } | { kind: "credential-unavailable" } | { kind: "credential-missing" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "client-configuration-missing" } | { kind: "oauth-callback-unavailable" } | { kind: "oauth-invalid-callback" } | { kind: "oauth-state-mismatch" } | { kind: "oauth-denied" } | { kind: "oauth-timeout" } | { kind: "oauth-cancelled" } | { kind: "oauth-transport" } | { kind: "oauth-token-rejected" } | { kind: "oauth-offline-grant-missing" } | { kind: "oauth-rate-limited"; retry_after_ms: number | null } | { kind: "provider-rejected" } | { kind: "source-paused" } | { kind: "query-invalid"; detail: string } | { kind: "query-cancelled" } | { kind: "query-retired" } | { kind: "query-catalog-unavailable" } | { kind: "query-catalog-invalid" } | { kind: "query-authorization-denied" } | { kind: "query-all-sources-refused" } | { kind: "query-deadline-exceeded" } | { kind: "query-timeout"; source_id: string } | { kind: "query-authentication"; source_id: string } | { kind: "query-rate-limited"; source_id: string; retry_after_ms: number | null } | { kind: "query-incomplete"; source_id: string } | { kind: "query-incomplete-sources"; source_ids: string[] } | { kind: "query-stale-sources"; source_ids: string[] } | { kind: "query-transport"; source_id: string } | { kind: "query-source-cancelled"; source_id: string } | { kind: "query-limit-exceeded" } | { kind: "query-not-found"; source_id: string; record_key: string } | { kind: "query-refused"; source_id: string; reason: CloudQueryRefusal } | { kind: "query-read-failed"; source_id: string } | { kind: "query-source-protocol"; source_id: string } | { kind: "query-schema-drift"; source_id: string; expected: string; observed: string } | { kind: "query-execution-failed"; sources: SourceExecution[] } | { kind: "query-invalid-response" } | { kind: "query-failed"; detail: string };
-
-export type CloudSourceOutcome = { kind: "ran"; mode: CloudExecutionMode; scanned: number; returned: number; pushed: string[]; residual: string[] };
-
-export type CloudSourceReport = {
-	source_id: string,
-	freshness_ms: number | null,
-	outcome: CloudSourceOutcome,
-};
-
-export type CloudSourcesSnapshot = {
-	version: number,
-	sources: CloudSourceDto[],
-};
-
-export type CloudVersionPins = {
-	catalog_version: string,
-	schema_version: string,
-	schema_checksum: string,
-	source_schema_version: string,
-	source_schema_checksum: string,
-	mapping_version: string,
-	mapping_checksum: string,
-	connector_version: string,
-	source_version: string,
-	source_checksum: string,
-	policy_version: string,
-	policy_checksum: string,
-	provenance_rule_version: string,
-	provenance_rule_checksum: string,
-};
-
-/**  Derived answer completeness. */
-export type Completeness =
-/**  Every authorized source answered. */
-{ state: "complete" } |
-/**  Explicitly opted-in answer with visible authorized exclusions. */
-{ state: "partial";
-/**  Authorized sources that refused. */
-excluded_source_ids: string[] };
-
-export type ConnectedCatdbKind = "connected-catdb";
-
-export type ConnectedCatdbSourceView = {
-	source_id: string,
-	source_version_id: string,
-	runtime_bound: boolean,
-	connector_id: string | null,
-	enabled: boolean,
-};
-
-export type ConnectedCatdbState = { state: "disconnected"; kind: ConnectedCatdbKind } | { state: "connected"; kind: ConnectedCatdbKind; connection_id: string; label: string; server_origin: string; workspace_id: string; catalog_revision_id: string; sources: ConnectedCatdbSourceView[]; contract: LibrarySourceContract };
-
-/**  The result of running every registered schema's laws over the graph. */
-export type ConstraintReport = {
-	/**  How many schemas were checked. */
-	schemas_checked: number,
-	/**  Every violation found, unmodified. */
-	violations: ViolationDto[],
-};
 
 export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
 
@@ -896,9 +510,9 @@ export type DeviceReceipt = {
 	revision: string,
 };
 
-export type DeviceReply = { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+export type DeviceReply = { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
-export type DeviceRequest = { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
+export type DeviceRequest = { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 
@@ -946,150 +560,6 @@ export type DropboxSelection = {
 	recursive: boolean,
 };
 
-/**  An opaque, versioned entity-query continuation cursor. */
-export type EntityCursor = string;
-
-/**  One explicitly ANDed entity filter. */
-export type EntityFilter = {
-	/**  Field name. */
-	field: string,
-	/**  Comparison operator. */
-	operator: FilterOperator,
-	/**  Lexical value parsed against the pinned semantic schema. */
-	value: string,
-};
-
-/**  Transport-neutral entity query. */
-export type EntityQueryRequest = EntityQueryRequest_Serialize | EntityQueryRequest_Deserialize;
-
-/**  Transport-neutral entity query. */
-export type EntityQueryRequest_Deserialize = {
-	/**  Workspace being queried. */
-	workspace_id: string,
-	/**  Exact catalog revision, or `None` to resolve the authoritative head once. */
-	catalog_revision_id: string | null,
-	/**  Exact semantic schema version, or `None` to use the revision's default. */
-	schema_version_id: string | null,
-	/**  Qualified semantic entity name. */
-	entity: string,
-	/**  Explicit response fields. */
-	select: string[],
-	/**  Filters combined with logical AND. */
-	filters: EntityFilter[],
-	/**
-	 *  Explicit ordering. Record key and source identity are implicit stable
-	 *  tie-breakers.
-	 */
-	order_by: OrderBy[],
-	/**  Optional source selection. */
-	source_ids: string[] | null,
-	/**  Maximum acceptable source age in milliseconds. */
-	max_staleness_ms: number | null,
-	/**  Whether every authorized source must answer. `None` means `true`. */
-	require_complete: boolean | null,
-	/**  Number of reconciled rows returned in this page. */
-	page_size: number,
-	/**  Maximum reconciled rows in the whole logical query. */
-	limit: number,
-	/**  Server-issued logical query identity required only with a continuation. */
-	query_id?: string | null,
-	/**  Opaque continuation from an earlier page. */
-	cursor: EntityCursor | null,
-};
-
-/**  Transport-neutral entity query. */
-export type EntityQueryRequest_Serialize = {
-	/**  Workspace being queried. */
-	workspace_id: string,
-	/**  Exact catalog revision, or `None` to resolve the authoritative head once. */
-	catalog_revision_id: string | null,
-	/**  Exact semantic schema version, or `None` to use the revision's default. */
-	schema_version_id: string | null,
-	/**  Qualified semantic entity name. */
-	entity: string,
-	/**  Explicit response fields. */
-	select: string[],
-	/**  Filters combined with logical AND. */
-	filters: EntityFilter[],
-	/**
-	 *  Explicit ordering. Record key and source identity are implicit stable
-	 *  tie-breakers.
-	 */
-	order_by: OrderBy[],
-	/**  Optional source selection. */
-	source_ids: string[] | null,
-	/**  Maximum acceptable source age in milliseconds. */
-	max_staleness_ms: number | null,
-	/**  Whether every authorized source must answer. `None` means `true`. */
-	require_complete: boolean | null,
-	/**  Number of reconciled rows returned in this page. */
-	page_size: number,
-	/**  Maximum reconciled rows in the whole logical query. */
-	limit: number,
-	/**  Server-issued logical query identity required only with a continuation. */
-	query_id?: string | null,
-	/**  Opaque continuation from an earlier page. */
-	cursor: EntityCursor | null,
-};
-
-/**  Transport-neutral entity-query answer. */
-export type EntityQueryResponse = EntityQueryResponse_Serialize | EntityQueryResponse_Deserialize;
-
-/**  Transport-neutral entity-query answer. */
-export type EntityQueryResponse_Deserialize = {
-	/**  Query execution identity. */
-	query_id: string,
-	/**  Exact immutable versions used. */
-	pins: PinnedVersions,
-	/**  One deterministic page of reconciled rows. */
-	rows: EntityRow_Deserialize[],
-	/**  Visible authorized source reports in deterministic order. */
-	sources: SourceExecution[],
-	/**  Completeness derived from [`Self::sources`]. */
-	completeness: Completeness,
-	/**  Continuation bound to this request, authorization, and pin set. */
-	next_cursor: EntityCursor | null,
-};
-
-/**  Transport-neutral entity-query answer. */
-export type EntityQueryResponse_Serialize = {
-	/**  Query execution identity. */
-	query_id: string,
-	/**  Exact immutable versions used. */
-	pins: PinnedVersions,
-	/**  One deterministic page of reconciled rows. */
-	rows: EntityRow_Serialize[],
-	/**  Visible authorized source reports in deterministic order. */
-	sources: SourceExecution[],
-	/**  Completeness derived from [`Self::sources`]. */
-	completeness: Completeness,
-	/**  Continuation bound to this request, authorization, and pin set. */
-	next_cursor: EntityCursor | null,
-};
-
-/**  One typed, reconciled semantic row. */
-export type EntityRow = EntityRow_Serialize | EntityRow_Deserialize;
-
-/**  One typed, reconciled semantic row. */
-export type EntityRow_Deserialize = {
-	/**  Stable source record key. */
-	record_key: string,
-	/**  Explicitly selected fields; absent remains different from JSON null. */
-	fields: { [key in string]: unknown },
-	/**  Provenance for every selected field. */
-	provenance: { [key in string]: FieldProvenance_Deserialize },
-};
-
-/**  One typed, reconciled semantic row. */
-export type EntityRow_Serialize = {
-	/**  Stable source record key. */
-	record_key: string,
-	/**  Explicitly selected fields; absent remains different from JSON null. */
-	fields: { [key in string]: unknown },
-	/**  Provenance for every selected field. */
-	provenance: { [key in string]: FieldProvenance_Serialize },
-};
-
 /**  The full per-hit score breakdown (see [`SearchQuery::explain`]). */
 export type ExplainDto = {
 	/**  1-based lexical rank, when the chunk appeared in the FTS results. */
@@ -1108,168 +578,6 @@ export type ExplainDto = {
 	embedding_model: string | null,
 	/**  The provenance chain. */
 	provenance: ProvenanceDto,
-};
-
-/**  A fact's derivation record — every field the extractor stamped, unmodified. */
-export type FactProvenanceDto = {
-	/**  Repo-relative source file. */
-	file: string | null,
-	/**  First cited line (1-based, inclusive). */
-	start_line: number | null,
-	/**  Last cited line (1-based, inclusive). */
-	end_line: number | null,
-	/**  blake3 of exactly the lines the range names. */
-	content_hash: string | null,
-	/**  Version of the schema the fact is typed against. */
-	schema_version: string | null,
-	/**  Extractor id and version (e.g. `mdreader.decision@1`). */
-	extractor: string | null,
-	/**  Extractor confidence in `[0, 1]`. */
-	confidence: number | null,
-	/**  The reviewer stamped at approval time; `None` until a human accepts it. */
-	approved_by: string | null,
-};
-
-/**  The one assembled semantic `Document`. */
-export type FederatedDocumentDto = {
-	/**  Workspace-relative natural key. */
-	path: string,
-	/**  Every canonical Document schema field in stable name order. */
-	fields: FederatedFieldDto[],
-};
-
-/**  The shipping response shown by MDReader's Semantic Inspector. */
-export type FederatedDocumentResponse = {
-	/**  Stable identity of this execution. */
-	query_id: string,
-	/**  Persisted schema version/checksum when the engine has catalogued it. */
-	schema: FederatedSchemaDto,
-	/**  `complete` or `partial`; derived from the source reports. */
-	completeness: string,
-	/**  The exact requested document. */
-	document: FederatedDocumentDto,
-	/**  One report for filesystem, Git, and frontmatter, in execution order. */
-	sources: FederatedSourceDto[],
-};
-
-/**  One semantic field and its complete source attribution. */
-export type FederatedFieldDto = {
-	/**  Semantic field name. */
-	name: string,
-	/**  Selected JSON value, or `None` when every provider was absent. */
-	value: unknown | null,
-	/**  Winning source, or `None` when the field is absent. */
-	winner: string | null,
-	/**  Every declared provider, including losers and absences. */
-	providers: FederatedProviderDto[],
-	/**  Human-readable explanation derived from the same attribution record. */
-	explanation: string,
-};
-
-/**  One provider considered for one field, in declared precedence order. */
-export type FederatedProviderDto = {
-	/**  Physical source name. */
-	source: string,
-	/**  Attribute name as the source declares it. */
-	attribute: string,
-	/**  `observed`, `observed-nothing`, `did-not-see-document`, or `not-asked`. */
-	verdict: string,
-	/**  Observed JSON value, when present. */
-	value: unknown | null,
-	/**  Why the provider was not asked, when applicable. */
-	reason: string | null,
-	/**  Adapter-internal fallback declaration. */
-	declared_fallback: string[],
-};
-
-/**  Catalog-persisted identity of the schema used for this response. */
-export type FederatedSchemaDto = {
-	/**  Stable schema name. */
-	name: string,
-	/**  Persisted catalog version. */
-	version: string,
-	/**  Persisted content checksum for that exact version. */
-	checksum: string,
-	/**  Entity names in the persisted schema. */
-	entities: string[],
-	/**  Arrow count. */
-	arrow_count: number,
-	/**  Attribute count. */
-	attribute_count: number,
-	/**  Equation count. */
-	equation_count: number,
-	/**  Whether facts in the schema require approval. */
-	approval_required: boolean,
-	/**  Objects currently committed to the graph. */
-	object_count: number,
-	/**  Review proposals currently retained. */
-	proposal_count: number,
-};
-
-/**  What became of one physical source. */
-export type FederatedSourceDto = {
-	/**  Stable connector name. */
-	source: string,
-	/**  `ran` or `refused`. */
-	outcome: string,
-	/**  `virtual` or `materialized` when the source ran. */
-	execution: string | null,
-	/**  `fresh`, `cached`, or `None` when refused. */
-	freshness: string | null,
-	/**  Cached-answer age; zero for a fresh read. */
-	age_ms: number | null,
-	/**  Physical candidates examined. */
-	scanned: number,
-	/**  Rows surviving residual filtering. */
-	returned: number,
-	/**  Filters executed by the source. */
-	pushed: string[],
-	/**  Filters executed by CatDB after the source answered. */
-	residual: string[],
-	/**  Typed refusal rendered for the user when the source did not run. */
-	refusal: string | null,
-};
-
-/**  One source's evidence for one field on one source record. */
-export type FieldObservation = FieldObservation_Serialize | FieldObservation_Deserialize;
-
-/**  One source's evidence for one field on one source record. */
-export type FieldObservation_Deserialize = {
-	source_version_id: string,
-	record_key: string,
-	mapping_version_id: string,
-	physical_attribute?: string | null,
-	observed_at_ms: number | null,
-	state: WireObservationState,
-};
-
-/**  One source's evidence for one field on one source record. */
-export type FieldObservation_Serialize = {
-	source_version_id: string,
-	record_key: string,
-	mapping_version_id: string,
-	physical_attribute?: string | null,
-	observed_at_ms: number | null,
-	state: WireObservationState,
-};
-
-/**  Provenance for one resolved field. */
-export type FieldProvenance = FieldProvenance_Serialize | FieldProvenance_Deserialize;
-
-/**  Provenance for one resolved field. */
-export type FieldProvenance_Deserialize = {
-	provenance_rule_version_id: string,
-	field: string,
-	selected: number | null,
-	considered: FieldObservation_Deserialize[],
-};
-
-/**  Provenance for one resolved field. */
-export type FieldProvenance_Serialize = {
-	provenance_rule_version_id: string,
-	field: string,
-	selected: number | null,
-	considered: FieldObservation_Serialize[],
 };
 
 /**
@@ -1298,21 +606,6 @@ export type FileEntry = {
 	 */
 	ignored: boolean,
 };
-
-/**  One V1 comparison operator. */
-export type FilterOperator =
-/**  Equality. */
-"eq" |
-/**  Strictly less than. */
-"lt" |
-/**  Less than or equal. */
-"le" |
-/**  Strictly greater than. */
-"gt" |
-/**  Greater than or equal. */
-"ge" |
-/**  Glob matching over a text field. */
-"glob";
 
 export type FlushRequest = {
 	requestId: string,
@@ -1376,59 +669,6 @@ export type ImportProgress = {
 	error: string | null,
 };
 
-/**
- *  One extracted fact derived from a span of a document, with everything the
- *  Inspector renders about it.
- */
-export type InspectedFact = {
-	/**  The fact's id — the object id or the morphism id (uuid string). */
-	fact_id: string,
-	/**  `"object"` or `"morphism"`. */
-	kind: string,
-	/**  The overlay schema the fact is typed against. */
-	schema: string,
-	/**  Qualified entity (objects) or arrow (morphisms) name. */
-	name: string,
-	/**  The object's payload as compact JSON; `None` for a morphism. */
-	value: string | null,
-	/**  Source endpoint (uuid string); `None` for an object. */
-	source_id: string | null,
-	/**  Target endpoint (uuid string); `None` for an object. */
-	target_id: string | null,
-	/**  The rule that fired (e.g. `D1`), so a reviewer can see *why*. */
-	rule: string,
-	/**  Extractor id and version that proposed it. */
-	extractor: string,
-	/**  Full derivation record. */
-	provenance: FactProvenanceDto,
-	/**  `"proposed"`, `"approved"`, or `"rejected"`. */
-	state: string,
-	/**  Who set that state, when anyone has. */
-	reviewer: string | null,
-	/**
-	 *  Whether the fact is *actually* committed to the overlay graph right
-	 *  now — read from storage, not inferred from [`Self::state`].
-	 */
-	in_graph: boolean,
-	/**
-	 *  blake3 of the cited text **as it stood when the reviewer ruled on it**;
-	 *  `None` while the fact is unreviewed.
-	 */
-	reviewed_content_hash: string | null,
-	/**
-	 *  The cited text has changed since the review was made.
-	 *
-	 *  Only ever true for a **preserved rejection**: a re-import keeps a
-	 *  rejection rather than silently re-proposing the claim a human ruled
-	 *  out, and raises this instead. Render it as an explicit affordance —
-	 *  *"previously rejected; the source has since changed — review again?"* —
-	 *  so un-rejecting stays a deliberate act. (An approval whose text changed
-	 *  is reset to `proposed` outright, which clears the review, so this stays
-	 *  false for it.)
-	 */
-	source_changed_since_review: boolean,
-};
-
 export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
 
 export type JsonKind = "session" | "settings";
@@ -1457,53 +697,11 @@ export type LibraryConnectedCatdbDto = {
 	contract: LibrarySourceContract,
 };
 
-/**  One exact CatDB answer plus the membership boundary used to produce it. */
-export type LibraryEntityQueryResponse = LibraryEntityQueryResponse_Serialize | LibraryEntityQueryResponse_Deserialize;
-
-/**  One exact CatDB answer plus the membership boundary used to produce it. */
-export type LibraryEntityQueryResponse_Deserialize = {
-	answer: EntityQueryResponse_Deserialize,
-	memberships: LibrarySourceExecution[],
-	/**
-	 *  The bounded result window reached its limit or CatDB returned a
-	 *  continuation.
-	 *
-	 *  CatDB continuation cursors remain native execution authority: they are
-	 *  authenticated to an immutable runtime snapshot and never cross into the
-	 *  renderer. This conservative flag preserves the difference between a
-	 *  complete source execution and proof that every matching row was
-	 *  enumerated; callers must not interpret `false` source failures from a
-	 *  saturated window.
-	 */
-	window_truncated: boolean,
-};
-
-/**  One exact CatDB answer plus the membership boundary used to produce it. */
-export type LibraryEntityQueryResponse_Serialize = {
-	answer: EntityQueryResponse_Serialize,
-	memberships: LibrarySourceExecution[],
-	/**
-	 *  The bounded result window reached its limit or CatDB returned a
-	 *  continuation.
-	 *
-	 *  CatDB continuation cursors remain native execution authority: they are
-	 *  authenticated to an immutable runtime snapshot and never cross into the
-	 *  renderer. This conservative flag preserves the difference between a
-	 *  complete source execution and proof that every matching row was
-	 *  enumerated; callers must not interpret `false` source failures from a
-	 *  saturated window.
-	 */
-	window_truncated: boolean,
-};
-
-export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" };
+export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" };
 
 export type LibraryIndexPolicy = "managed" | "read-through";
 
 export type LibraryIndexState = "present" | "not-created" | "unknown";
-
-/**  Source family for one Library membership. */
-export type LibraryQueryMemberKind = "local-folder" | "google-drive" | "dropbox" | "connected-catdb";
 
 export type LibrarySnapshot = {
 	version: number,
@@ -1540,17 +738,6 @@ export type LibrarySourceDto = {
 	restore_candidate: boolean,
 };
 
-/**  How a returned physical source relates to the user-selected Library member. */
-export type LibrarySourceExecution = {
-	membership_id: string,
-	registry_id: string,
-	name: string,
-	kind: LibraryQueryMemberKind,
-	source_ids: string[],
-	editable: boolean,
-	active: boolean,
-};
-
 /**
  *  Why a workspace listing could not be produced.
  *
@@ -1583,20 +770,6 @@ remedy: string } |
 /**  The failure, as text. */
 message: string };
 
-export type MobileEnterpriseConnection = {
-	connection_id: string,
-	label: string,
-};
-
-export type MobileEnterpriseError = { kind: "connection-not-found" } | { kind: "credential-unavailable" } | { kind: "invalid-configuration" } | { kind: "invalid-request" } | { kind: "transport-unavailable" } | { kind: "timed-out" } | { kind: "response-too-large" } | { kind: "invalid-response" } | { kind: "permission-denied" } | { kind: "connection-identity-changed" } | { kind: "already-configured" } | { kind: "no-sources-selected" } | { kind: "persist-failed" } | { kind: "rollback-failed" } | { kind: "cancelled" };
-
-export type MobileEnterpriseOperation = "session" | "entity-query";
-
-export type MobileEnterpriseResponse = {
-	status: number,
-	body_json: string,
-};
-
 export type MutationDto = {
 	operationId: string,
 	state: MutationStateDto,
@@ -1622,22 +795,7 @@ export type NativeProviderRequest = { operation: "resolve_link"; sourceId: strin
 
 export type NativeProviderResult = { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
 
-/**  One explicit ordering key. */
-export type OrderBy = {
-	/**  Field name. */
-	field: string,
-	/**  Sort direction. */
-	direction: OrderDirection,
-};
-
-/**  Sort direction for one ordering field. */
-export type OrderDirection =
-/**  Lowest value first. */
-"ascending" |
-/**  Highest value first. */
-"descending";
-
-export type Outcome = { kind: "selected_status"; selection: SelectedOperation; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+export type Outcome = { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,
@@ -1679,67 +837,6 @@ export type PingResponse = {
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
-};
-
-/**  Exact immutable versions used by one answer. */
-export type PinnedVersions = {
-	/**  Stable identity of the catalog authority that resolved the revision. */
-	catalog_resolver_id: string,
-	/**  Catalog revision resolved once at query start. */
-	catalog_revision_id: string,
-	/**  Semantic schema version. */
-	schema_version_id: string,
-	/**  Physical schema versions used, in source-report order. */
-	physical_schema_version_ids: string[],
-	/**  Mapping versions used, in source-report order. */
-	mapping_version_ids: string[],
-	/**  Source versions used, in source-report order. */
-	source_version_ids: string[],
-	/**  Policy versions in authoritative revision order. */
-	policy_version_ids: string[],
-	/**  Exact provenance rule version used to reconcile every field. */
-	provenance_rule_version_id: string,
-};
-
-/**
- *  One typed edge in a projection.
- *
- *  It carries no provenance and no id: the engine's morphism read
- *  (`morphisms_with_arrow_prefix`) returns `(arrow, source, target)` and
- *  nothing else. Rather than invent the missing fields, the projection says
- *  only what storage actually knows.
- */
-export type ProjectedMorphism = {
-	/**  Qualified arrow name (e.g. `architecture_overlay.exposes`). */
-	arrow: string,
-	/**  Source object id (uuid string). */
-	source: string,
-	/**  Target object id (uuid string). */
-	target: string,
-};
-
-/**  One object in a projection of the corpus through a schema. */
-export type ProjectedObject = {
-	/**  Object id (uuid string). */
-	id: string,
-	/**  Qualified entity name (e.g. `decision_overlay.Decision`). */
-	entity: string,
-	/**  The object's payload, as compact JSON (specta has no `Value` type). */
-	value: string,
-	/**  Where the fact came from. */
-	provenance: FactProvenanceDto,
-};
-
-/**  The corpus seen through one schema. */
-export type Projection = {
-	/**  The schema projected through. */
-	schema: string,
-	/**  Its objects, ordered by entity then id. */
-	objects: ProjectedObject[],
-	/**  Its morphisms, ordered by arrow then endpoints. */
-	morphisms: ProjectedMorphism[],
-	/**  True when `limit` cut the object list short. */
-	truncated: boolean,
 };
 
 export type ProjectionDto = {
@@ -1804,22 +901,6 @@ export type RegistrationAvailability = {
 	configured: boolean,
 	supported: boolean,
 	diagnostic: string | null,
-};
-
-/**  What rejecting a fact wrote. */
-export type RejectionOutcomeDto = {
-	/**  The fact that was rejected. */
-	fact_id: string,
-	/**
-	 *  Ids retracted from the overlay graph. Empty when the fact had never
-	 *  been approved — nothing was written, so nothing is undone.
-	 */
-	retracted: string[],
-	/**
-	 *  Morphisms rejected alongside an object rejection (an edge whose
-	 *  endpoint is rejected cannot stand).
-	 */
-	cascaded: string[],
 };
 
 export type RelatedAvailabilityDto = {
@@ -1918,115 +999,6 @@ export type SaveOutcome = {
 	current_hash: string | null,
 };
 
-/**  One generating arrow, with its domain and codomain. */
-export type SchemaArrowDto = {
-	/**  Arrow name. */
-	name: string,
-	/**  Domain entity. */
-	dom: string,
-	/**  Codomain entity. */
-	cod: string,
-};
-
-/**  One attribute of an entity. */
-export type SchemaAttributeDto = {
-	/**  Attribute name. */
-	name: string,
-	/**  Typeside type of its values. */
-	ty: string,
-	/**  Whether it may be absent on a row. */
-	nullable: boolean,
-};
-
-/**  A registered schema, fully introspected. */
-export type SchemaDetail = {
-	/**  Schema name. */
-	name: string,
-	/**
-	 *  The engine's persisted version ordinal; `None` before the index has
-	 *  been opened (see [`SchemaSummary::version`]).
-	 */
-	version: number | null,
-	/**
-	 *  `blake3:` checksum of the persisted schema; `None` under the same
-	 *  condition.
-	 */
-	checksum: string | null,
-	/**  Typeside type names the attributes draw from, sorted. */
-	typeside: string[],
-	/**  Entities with their attributes. */
-	entities: SchemaEntityDto[],
-	/**  Generating arrows with domain and codomain. */
-	arrows: SchemaArrowDto[],
-	/**  Path equations. */
-	equations: SchemaEquationDto[],
-	/**  Whether the engine requires approval for facts in this schema. */
-	approval_required: boolean,
-};
-
-/**  One entity, with the attributes observed on it. */
-export type SchemaEntityDto = {
-	/**  Entity name (schema-local, as the schema declares it). */
-	name: string,
-	/**  Its attributes, sorted by name. */
-	attributes: SchemaAttributeDto[],
-};
-
-/**  One path equation the schema imposes. */
-export type SchemaEquationDto = {
-	/**  The law as the kernel renders it (`Dependency.via.exposes = Dependency.provider`). */
-	law: string,
-	/**  Entity both sides start at. */
-	start: string,
-	/**  Arrows composed on the left, in application order. */
-	lhs: string[],
-	/**  Arrows composed on the right, in application order. */
-	rhs: string[],
-};
-
-/**  One registered schema, as the **Semantic view** picker lists it. */
-export type SchemaSummary = {
-	/**  Schema name (e.g. `decision_overlay`). */
-	name: string,
-	/**
-	 *  The engine's persisted version ordinal for this schema, counting from
-	 *  1 in order of first appearance — `None` before the index has been
-	 *  opened, when the shape is known from the registration but no version
-	 *  has been assigned to it yet.
-	 */
-	version: number | null,
-	/**
-	 *  `blake3:` checksum of the persisted schema. Two versions are identical
-	 *  exactly when these match. `None` under the same condition as
-	 *  [`Self::version`].
-	 */
-	checksum: string | null,
-	/**  Its entities, sorted. */
-	entities: string[],
-	/**  How many generating arrows it declares. */
-	arrow_count: number,
-	/**  How many attributes it declares. */
-	attribute_count: number,
-	/**  How many path equations (laws) it imposes. */
-	equation_count: number,
-	/**
-	 *  Whether the engine requires human approval before a fact may be
-	 *  asserted into this schema — true exactly for the overlays.
-	 */
-	approval_required: boolean,
-	/**
-	 *  How many objects of this schema are currently committed to the graph.
-	 *  For an approval-required schema this is the count of *approved* facts,
-	 *  because nothing else can be in there.
-	 */
-	object_count: number,
-	/**
-	 *  How many claims the proposal store holds for this schema, in any review
-	 *  state. Always `0` for a schema that carries no reviewable assertions.
-	 */
-	proposal_count: number,
-};
-
 export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "imported_legacy_broad" };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
@@ -2094,16 +1066,12 @@ export type SearchHitDto = {
 	explain: ExplainDto | null,
 };
 
-/**
- *  Options for [`search`], mirrored from the engine's [`SearchOptions`] with
- *  the fields the palette drives.
- */
 export type SearchQuery = {
 	/**  Maximum hits per phase. */
 	limit: number,
 	/**  Skip the vector arm entirely (the `Exact` intent) — one phase only. */
 	lexical_only: boolean,
-	/**  Attach the full [`HitExplain`] breakdown to every hit. */
+	/**  Attach the full per-hit explanation breakdown to every hit. */
 	explain: boolean,
 	intent?: string | null,
 	/**  Explicit enabled canonical provider sources; absence retains local-only search. */
@@ -2131,6 +1099,12 @@ export type SearchResults = {
 	semantic_unavailable: string | null,
 };
 
+export type SelectedDeviceReceipt = {
+	documentId: string,
+	sourceId: string,
+	revision: string,
+};
+
 export type SelectedDisposition = { state: "absent" } | { state: "queued" } | { state: "applied"; sequence: string } | { state: "reauthorization_required" };
 
 export type SelectedOperation = {
@@ -2138,6 +1112,8 @@ export type SelectedOperation = {
 	receipt: SelectedReceipt,
 	operationId: string,
 };
+
+export type SelectedPurpose = "content" | "user_state";
 
 export type SelectedReceipt = {
 	documentId: string,
@@ -2158,129 +1134,10 @@ export type SelectedScope = {
  */
 export type ShowSettings = Record<string, never>;
 
-/**  One visible source execution and freshness report. */
-export type SourceExecution = {
-	/**  Stable source identity. */
-	source_id: string,
-	/**  Exact immutable source version. */
-	source_version_id: string,
-	/**  Typed execution outcome. */
-	outcome: SourceOutcome,
-	/**  Provider-requested delay before retrying a rate-limited source. */
-	retry_after_ms: number | null,
-	/**  Age at execution time, or `None` when the source did not run. */
-	freshness_ms: number | null,
-	/**  Candidates examined across all source pages. */
-	scanned: number | null,
-	/**  Rows surviving this source's pushed and residual predicates. */
-	returned: number | null,
-};
-
-/**  Outcome of one authorized source execution. */
-export type SourceOutcome =
-/**  Source ran successfully, including a successful empty result. */
-"ran" |
-/**  Source refused at compilation. */
-"refused" |
-/**
- *  Source executed, but its measured readable view exceeded the caller's
- *  maximum staleness.
- */
-"stale" |
-/**  Source refused after compilation, while entering or performing a read. */
-"runtime_refused" |
-/**  Source exhausted its bounded work or serialized-byte allocation. */
-"budget_exceeded" |
-/**  The source rejected or could not refresh its runtime credential. */
-"authentication_failed" |
-/**
- *  The physical source rejected the read because its request rate was
- *  exceeded.
- */
-"rate_limited" |
-/**
- *  The source returned a successful-looking page while reporting that
- *  some storage domains were omitted.
- */
-"incomplete_search" |
-/**  Communication with the physical source failed. */
-"transport_failed" |
-/**  The physical source cancelled its own work independently of CatDB. */
-"source_cancelled" |
-/**  The physical source no longer matched its pinned schema identity. */
-"schema_drift" |
-/**  Source failed while performing an authorized read. */
-"source_failed" |
-/**  Source violated the connector protocol. */
-"protocol_failed" |
-/**  Source did not finish before the absolute query deadline. */
-"timed_out" |
-/**  A source-local statement timeout fired before the CatDB deadline. */
-"source_timed_out" |
-/**  Source did not finish because cooperative cancellation fired. */
-"cancelled";
-
-/**  A source span, exactly as the engine located it. */
-export type SourceSpanDto = {
-	/**  Repo-relative file. */
-	file: string,
-	/**  First line (1-based, inclusive). */
-	start_line: number | null,
-	/**  Last line (1-based, inclusive). */
-	end_line: number | null,
-	/**  blake3 of exactly those lines. */
-	content_hash: string | null,
-};
-
-/**
- *  A document span to inspect. Absolute path (the shape the reader holds) plus
- *  an inclusive 1-based line range; a fact is returned when its cited span
- *  **overlaps** the range.
- */
-export type SpanQuery = {
-	/**  Absolute path of the document, inside the granted workspace. */
-	path: string,
-	/**  First line of the selection (1-based, inclusive). */
-	start_line: number,
-	/**  Last line of the selection (1-based, inclusive). */
-	end_line: number,
-};
-
 export type UpdateInfo = {
 	version: string,
 	currentVersion: string,
 	notes: string | null,
-};
-
-/**  An object named by a violation. */
-export type ViolatingObjectDto = {
-	/**  Object id (uuid string). */
-	id: string,
-	/**  Qualified entity name. */
-	entity: string,
-	/**  The markdown the object was derived from, when it carries a span. */
-	source: SourceSpanDto | null,
-};
-
-/**  One violated law, field for field from the engine. */
-export type ViolationDto = {
-	/**  The schema whose law failed. */
-	schema: string,
-	/**  The law, as the kernel renders it. */
-	law: string,
-	/**  Arrows composed on the left. */
-	lhs_path: string[],
-	/**  Arrows composed on the right. */
-	rhs_path: string[],
-	/**  The object the two paths disagree on — located in the markdown. */
-	subject: ViolatingObjectDto,
-	/**
-	 *  Where the left path lands; `None` when a morphism on that side is
-	 *  missing, which is itself the failure.
-	 */
-	lhs: ViolatingObjectDto | null,
-	/**  Where the right path lands; `None` as above. */
-	rhs: ViolatingObjectDto | null,
 };
 
 /**
@@ -2327,10 +1184,6 @@ export type WikiResolution = {
 	/**  The matches when `status == "ambiguous"`. */
 	candidates: WikiCandidate[],
 };
-
-export type WireObservationState = { state: "observed_value"; value: unknown } | { state: "observed_null" } | { state: "field_unseen" } | { state: "record_unseen" } | { state: "not_asked"; value: {
-	reason: string,
-} };
 
 /**
  *  The canonical grant plus the generation the watcher was armed under, returned

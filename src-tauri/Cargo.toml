@@ -41,7 +41,7 @@ mdreader-mcp = { path = "../crates/mdreader-mcp" }
 tauri = { version = "2", features = ["specta"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-specta = "=2.0.0-rc.25"
+specta = { version = "=2.0.0-rc.25", features = ["uuid"] }
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tauri-plugin-store = "2.4.4"
@@ -68,29 +68,10 @@ fs2 = "0.4"
 walkdir = "2.5.0"
 same-file = "1.0.6"
 rusqlite = { version = "0.37", features = ["bundled"] }
-# The embedded CatDB engine and the MDReader domain registration compose the
-# real index the shell drives. `catdb-embed` is pulled WITH `local-embed` on so
-# the app builds the real semantic embedder (`bge-small-en-v1.5` via ONNX): an
-# index is search-ready and the first-run model download is a visible one-time
-# cost. The deterministic `HashEmbedder` remains available behind the
-# `MDREADER_DEV_HASH_EMBED` runtime flag (dev/CI: no download). `mdreader-ingest`
-# stays default-features off to keep its `catdb` bin's ORT *binary* out of the
-# app build; we consume only its `registration()` and `scan_root` (public API).
-# The platform as one versioned dependency. `specta` turns on TypeScript type
-# generation for the API and provenance types the shell renders.
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["engine", "specta"] }
+# Provider kernels and the MDReader SQLite owner are independent of legacy SDKs.
 mdreader-connector-google-drive = { path = "../crates/mdreader-connector-google-drive", optional = true }
 mdreader-connector-dropbox = { path = "../crates/mdreader-connector-dropbox", optional = true }
-# Schema introspection (the View As / Schema View surfaces) and the kernel
-# provenance the Semantic Inspector renders. Read-only: nothing here builds a
-# fact, it only describes ones the engine and the extractors produced.
-mdreader-connector-local = { path = "../crates/mdreader-connector-local" }
-mdreader-domain = { path = "../crates/mdreader-domain" }
-mdreader-ingest = { path = "../crates/mdreader-ingest", default-features = false }
 uuid = { workspace = true }
-# The shell implements `catdb_sdk::embed::Embedder` once, for the `DeferredEmbedder`
-# that lets the index open before (or without) the model — and that trait is
-# `#[async_trait]`, so the impl needs the same macro.
 async-trait = { workspace = true }
 # `time` for the model-load deadline (a never-finishing download must surface a
 # timeout, not hang the import forever).
@@ -101,30 +82,22 @@ time = { version = "0.3", features = ["formatting"] }
 mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
 mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
 mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["windows-native"] }
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
 mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["sync-secret-service"] }
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["storage-sqlite-test-migrations"] }
-# Index-version rows, so a test can manufacture the reported situation — a
-# workspace whose ACTIVE index was embedded by a different model — through the
-# storage lifecycle instead of a stand-in embedder.
 # Parses `commands.rs` into an AST so the structural test can assert the public
 # `save_doc` command body is EXACTLY one bare call to the guarded core (a grep can
 # be defeated by a method-chain like `save_doc_guarded(..).inspect(..)`).
 syn = { version = "2", features = ["full"] }
-# The engine-module tests open an in-memory engine and drive a real import (an
-# async runtime to block on), and exercise the model-load deadline (`time`).
+# Native async command tests use the existing service owner.
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
