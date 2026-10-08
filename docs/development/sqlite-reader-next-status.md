@@ -1,10 +1,12 @@
 # SQLite reader implementation status
 
-Development branches: `dev-reader-next` in isolated MDReader and MDReader-Web
-worktrees. This is an implementation checkpoint, **not release acceptance**.
+Integration branches: `dev-reader-next` in MDReader and MDReader-Web. Parallel
+features use separate branches/worktrees; see [ownership and cleanup](worktree-workflow.md). This is an implementation checkpoint, **not release acceptance**.
 The approved scope remains [the development plan](../plans/sqlite-reader-next.md).
-Original checkouts and the installed baseline are preserved. Nothing has merged
-or published; the new sync protocol has not deployed.
+Original `dev` checkouts and the installed baseline are preserved. Migration
+changes have not merged into `dev`. A development sync Worker is deployed but
+remains unconfigured for live identity. A Vercel Preview is Ready; its browser
+acceptance is in progress. These do not establish production release acceptance.
 
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |
