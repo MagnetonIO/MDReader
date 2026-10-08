@@ -24,6 +24,16 @@ impl std::fmt::Debug for NativeAuthority {
     }
 }
 impl NativeAuthority {
+    /// Capture this exact live activation, including same-scope replacement and
+    /// process-restart fencing. It carries no credential or decryption material.
+    pub fn projection_permit(&self) -> AuthorityResult<ProjectionPermit> {
+        self.check()?;
+        Ok(ProjectionPermit {
+            controller: self.controller.clone(),
+            lease: self.lease.clone(),
+            expires: self.identity.expires,
+        })
+    }
     fn check(&self) -> AuthorityResult<()> {
         let result = (|| {
             self.controller.check(&self.lease)?;

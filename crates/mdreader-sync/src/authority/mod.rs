@@ -7,6 +7,7 @@ mod http;
 mod identity;
 mod keyring;
 mod oidc;
+mod projection;
 mod request;
 mod session;
 mod signing;
@@ -17,6 +18,7 @@ pub use factory::{NativeAuthorityFactory, NativeLogin, VerifiedLogin};
 pub use identity::VerifiedIdentity;
 pub use keyring::SyncKeyringVault;
 pub use oidc::{NativeBrowser, OidcClient, OidcEndpoints, PendingLogin, ReviewedOidcRegistration};
+pub use projection::{ProjectionGuard, ProjectionPermit};
 pub use session::SessionController;
 use std::{
     fmt,

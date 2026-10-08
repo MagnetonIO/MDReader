@@ -42,6 +42,33 @@ a replacement. Expiry, explicit logout and dropping the active capability clear
 its owner binding. Keys and offline records remain intact. No owner/database lock
 is held while awaiting OIDC, enrollment, keyring or transport work.
 
+## Synchronous incoming publication fence
+
+A current verified `NativeAuthority` can mint a `ProjectionPermit`. It carries
+no credentials or decryption material. Every activation has a fresh UUID token,
+including same-scope login and controller restart; a matching scope alone does
+not authorize an old operation.
+
+`with_current` holds the existing session binding barrier across short synchronous
+owner work. Call `ProjectionGuard::check` after all owner/receipt/cursor SQL,
+immediately before COMMIT. Keep network, custody, copies and pixel decoding outside
+this closure; do not call logout/reactivation or drop the active authority inside
+it. The host must independently fence the concrete selected owner and its operation
+lifetime. This API grants no library selection or document mutation by itself.
+
+`SyncStore::mark_applied_guarded` accepts typed application errors and a final
+transaction-aware fence. The fence sees provisional owner writes and runs even on
+already-applied replay. Failure rolls back application writes and the applied
+cursor together. Wall-clock expiry can still make a committed operation's return
+uncertain; reconcile durable receipts before retry/acknowledgment. The existing
+`mark_applied` API remains available for owners with their own authority boundary.
+
+Focused evidence: two native projection tests passed (same-scope replacement,
+controller restart, session barrier and expiry); one real temporary SQLite test
+passed (precommit refusal rolls back owner receipt/cursor through reopen; replay
+still checks the fence). Strict all-target Clippy with `native-authority` passed.
+These checks do not establish native product incoming integration or live login.
+
 ## Custody record and crash/restart
 
 `prepare_pending` creates a random opaque `native-sync-v1-<UUIDv4>` reference,
