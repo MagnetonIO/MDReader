@@ -9,9 +9,22 @@ contract; unauthenticated requests and exact browser-origin boundaries were chec
 reading, tab contention and hostile-Markdown checks. Auth0 development registrations
 now share one issuer/API audience with separate public browser/native clients;
 native/browser/Worker access-token integration passed focused checks and two local
-HTTPS native interoperability cases; configured Preview deployment and live login
-remain under validation. These do not
+HTTPS native interoperability cases. Configured Preview deployment now passes
+five deployed browser checks, including navigation to the registered Auth0 login.
+The user reported that explanatory text hid Connect below the visible panel;
+a focused layout fix is being verified in its own web worktree. Live credential
+login, enrollment and authenticated transfer remain pending. These do not
 establish production release acceptance.
+
+Native desktop callback ownership is merged as `a4607b4`. It binds the exact
+IPv4 loopback listener before browser dispatch, bounds HTTP bytes and login time,
+and cancels on logout/replacement. Three focused callback cases, 14 affected
+authority cases, one actual local HTTPS/TCP callback case, strict affected Clippy
+and a production library check passed; independent source review found no blocker.
+OS browser integration, persistent wrapping/bootstrap/pair/recovery and native
+account UI remain separate gates. The web deployment receipt is merged as
+`88abc58` in the companion integration; its Worker version is
+`7e985862-cf00-449e-86ad-30b2b6245fa3`. Production was not promoted.
 
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |

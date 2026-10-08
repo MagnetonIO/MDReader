@@ -20,13 +20,15 @@ feature's review or acceptance receipt.
 | Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea`, then `fa3f577` | Auth0 access-token contract and bounded native loopback |
 | Coordinator | Web | `MDReader-Web-reader-next` | `dev-reader-next` | `e2c86d5` | Integration only |
 | cloud_sync | Web | `MDReader-Web-public-oidc` | `feat/reader-public-oidc` | `7f352a8` | One Auth0 issuer, API audience and separate public clients |
+| cloud_sync | Web | `MDReader-Web-sync-connect-layout` | `fix/reader-sync-connect-layout` | `88abc58` | Visible primary action at enlarged text/short viewports; Preview only |
 
 Completed and merged into integration: capture/platform extraction (`72ecd9b`),
 core incoming publication (`1ecf76f`), session and atomic cursor fence (`c13a6ad`),
 default-feature lint fix (`0a1787f`) and deployed Preview acceptance (`1501489`).
 Further accepted slices: new-content service incoming (`48c647f`), actual client/
 installed extension acceptance (`554f450`), native auth-v2 (`20fbf70`) and companion
-web auth-v2 (`65bf43f`). The client-acceptance worktree was removed after preserving
+web auth-v2 (`65bf43f`), native bounded callback ownership (`a4607b4`) and the
+configured development deployment receipt (`88abc58`). The client-acceptance worktree was removed after preserving
 the tested VSIX and receipts; its major branch remains. Incoming work now starts
 from `bce887e` for core state/retirement and service v2 transitions.
 Their clean, inactive worktrees and merged minor branches were removed after
