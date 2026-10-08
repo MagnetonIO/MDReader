@@ -522,3 +522,13 @@ SQLite row decoding now uses small named types. Six focused actual-app cases and
 the real profile outer-bundle regression pass; generated bindings are unchanged.
 The actual production Clippy probe exposed broader dormant/unwired code debt, so
 full-native lint remains open. See [the receipt](native-legacy-warning-retirement-2026-10-08.md).
+
+## Selected archive final file fence, 2026-10-08
+
+Archive snapshots now retain actual opened Markdown/asset file evidence, owner
+identity and asset metadata through final caller-transaction validation. Changed
+or replaced images cause provisional association rollback. Two new real-SQLite
+cases, a meaningful omitted-fence RED, restored thirteen-case publication GREEN
+and strict core/device-assets all-target Clippy pass. See [the core receipt](../../crates/mdreader-core/src/device/publication/README.md).
+Service association/self-echo adoption and acceptance remain in progress; this
+does not enable native QueueDocument RPC/UI or claim cross-device acceptance.

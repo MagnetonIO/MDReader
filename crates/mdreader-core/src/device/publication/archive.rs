@@ -3,17 +3,20 @@ use super::{current::source_root, files::FileEvidence, *};
 use crate::{
     device::{
         self,
-        assets::{ArchivedAssetPlan, AssetRuntime, AssetStore, ReadPermit},
+        assets::{ArchivedAssetPlan, AssetRuntime, AssetStore, CurrentAssets, ReadPermit},
         state::DocumentState,
     },
     ReaderStore,
 };
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 pub struct ArchivePlan {
     state: DocumentState,
     root: crate::SourceRoot,
     assets: Vec<ArchivedAssetPlan>,
+    asset_store: AssetStore,
+    asset_state: CurrentAssets,
+    owner: Arc<()>,
     permit: ReadPermit,
 }
 pub struct ArchivedAsset {
@@ -35,9 +38,13 @@ impl ArchivedAsset {
 }
 /// Not Debug/Serialize/Clone; caller explicitly chooses where to export originals.
 pub struct ArchivedDocument {
-    state: DocumentState,
+    pub(super) state: DocumentState,
     markdown: Vec<u8>,
     assets: Vec<ArchivedAsset>,
+    pub(super) asset_store: AssetStore,
+    pub(super) asset_state: CurrentAssets,
+    pub(super) owner: Arc<()>,
+    pub(super) evidence: Vec<FileEvidence>,
     _permit: ReadPermit,
 }
 impl ArchivedDocument {
@@ -75,6 +82,9 @@ pub fn prepare_archive(
         state,
         root,
         assets: assets.archived_asset_plans(&records),
+        asset_store: assets.clone(),
+        asset_state: records,
+        owner: store.device_owner_session(),
         permit,
     })
 }
@@ -129,13 +139,17 @@ impl ArchivePlan {
                 bytes,
             });
         }
-        for proof in evidence {
+        for proof in &evidence {
             proof.verify()?;
         }
         Ok(ArchivedDocument {
             state: self.state,
             markdown,
             assets,
+            asset_store: self.asset_store,
+            asset_state: self.asset_state,
+            owner: self.owner,
+            evidence,
             _permit: self.permit,
         })
     }

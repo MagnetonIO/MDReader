@@ -435,3 +435,6 @@ mod transitions;
 
 #[path = "current_fence_tests.rs"]
 mod current_fence;
+
+#[path = "archive_fence_tests.rs"]
+mod archive_fence;
