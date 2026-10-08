@@ -11,6 +11,16 @@ fn id(value: String) -> Result<uuid::Uuid, AccountError> {
 impl AccountRequest {
     pub(super) fn service(self) -> Result<service::rpc::AccountRequest, AccountError> {
         Ok(match self {
+            Self::SyncSelectedDelete { selection } => {
+                service::rpc::AccountRequest::SyncSelectedDelete {
+                    selection: selection.service()?,
+                }
+            }
+            Self::InspectSelectedDelete { selection } => {
+                service::rpc::AccountRequest::InspectSelectedDelete {
+                    selection: selection.service()?,
+                }
+            }
             Self::Status {} => service::rpc::AccountRequest::Status {},
             Self::SyncSelectedState { selection } => {
                 service::rpc::AccountRequest::SyncSelectedState {

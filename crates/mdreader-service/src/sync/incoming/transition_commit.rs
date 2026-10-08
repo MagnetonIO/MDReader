@@ -6,10 +6,7 @@ use super::{
     types::*,
 };
 use mdreader_core::{
-    device::{
-        publication::{self, IncomingOrigin},
-        state::{RetirementKind, RetirementRecord},
-    },
+    device::publication::{self, IncomingOrigin},
     ReaderStore,
 };
 use mdreader_sync::SyncScope;
@@ -125,55 +122,18 @@ pub(super) fn commit(
                 )
             })?
         }
-        Kind::DocumentDelete { target, receipt } => {
-            let current = plan.current.as_ref().ok_or(Error::Conflict)?;
-            publication::with_transition(owner, current, origin, |db, guard| {
-                let proof = std::cell::RefCell::new(None);
-                storage::commit_on(
-                    db,
-                    scope,
-                    identity,
-                    origin,
-                    |tx| {
-                        heads::verify(tx, &key, target)?;
-                        if Some(current.state().generation) != target.generation {
-                            return Err(Error::Conflict);
-                        }
-                        let record = RetirementRecord {
-                            kind: RetirementKind::Deleted,
-                            operation_id: origin.wire_revision,
-                            replacement: None,
-                        };
-                        let retired =
-                            publication::retire_current(tx, &guard, current, record.clone())?;
-                        let mut applied = base(identity, receipt, Operation::DocumentDeleted);
-                        applied.document = retired.state().document.clone();
-                        applied.generation = Some(retired.state().generation);
-                        applied.retirement = Some(record);
-                        let mut head = target.clone();
-                        head.revision = identity.change.revision_id.clone();
-                        head.generation = applied.generation;
-                        heads::save(tx, &key, Some(target), &head)?;
-                        *proof.borrow_mut() = Some(retired);
-                        Ok(applied)
-                    },
-                    |tx, applied| {
-                        let mut head = target.clone();
-                        head.revision = identity.change.revision_id.clone();
-                        head.generation = applied.generation;
-                        heads::verify(tx, &key, &head)?;
-                        publication::revalidate_retirement(
-                            tx,
-                            &guard,
-                            current,
-                            proof.borrow().as_ref().ok_or(Error::Conflict)?,
-                        )?;
-                        Ok(())
-                    },
-                    final_fence,
-                )
-            })?
-        }
+        Kind::DocumentDelete { target, receipt } => super::delete_commit::commit(
+            owner,
+            scope,
+            identity,
+            origin,
+            super::delete_commit::Deletion {
+                current: plan.current.as_ref().ok_or(Error::Conflict)?,
+                target,
+                previous: receipt,
+            },
+            final_fence,
+        ),
         Kind::StateDelete { previous, receipt } => owner.with_library_connection(|db| {
             storage::commit_on(
                 db,
