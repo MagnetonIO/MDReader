@@ -26,6 +26,15 @@ impl From<DeviceReceipt> for mdreader_core::device::catalog::Receipt {
     deny_unknown_fields
 )]
 pub enum DeviceRequest {
+    State {
+        receipt: DeviceReceipt,
+    },
+    SetState {
+        receipt: DeviceReceipt,
+        expected_generation: String,
+        pinned: Option<bool>,
+        line: Option<u32>,
+    },
     Read {
         receipt: DeviceReceipt,
     },
@@ -45,27 +54,52 @@ pub enum DeviceRequest {
         session_id: String,
     },
 }
-impl From<DeviceRequest> for service::DeviceRequest {
-    fn from(value: DeviceRequest) -> Self {
-        match value {
-            DeviceRequest::Read { receipt } => Self::Read {
+impl DeviceRequest {
+    pub(super) fn service(self) -> Result<service::DeviceRequest, DeviceError> {
+        let value = self;
+        Ok(match value {
+            DeviceRequest::State { receipt } => service::DeviceRequest::State {
                 receipt: receipt.into(),
             },
-            DeviceRequest::Manifest { receipt } => Self::Manifest {
+            DeviceRequest::SetState {
+                receipt,
+                expected_generation,
+                pinned,
+                line,
+            } => {
+                let generation: u64 = expected_generation.parse().map_err(|_| unavailable())?;
+                if generation.to_string() != expected_generation
+                    || generation > 9_007_199_254_740_991
+                {
+                    return Err(unavailable());
+                }
+                service::DeviceRequest::SetState {
+                    receipt: receipt.into(),
+                    expected_generation: generation,
+                    pinned,
+                    line,
+                }
+            }
+            DeviceRequest::Read { receipt } => service::DeviceRequest::Read {
+                receipt: receipt.into(),
+            },
+            DeviceRequest::Manifest { receipt } => service::DeviceRequest::Manifest {
                 receipt: receipt.into(),
             },
             DeviceRequest::Open {
                 receipt,
                 asset_id,
                 manifest,
-            } => Self::Open {
+            } => service::DeviceRequest::Open {
                 receipt: receipt.into(),
                 asset_id,
                 manifest,
             },
-            DeviceRequest::Chunk { session_id, offset } => Self::Chunk { session_id, offset },
-            DeviceRequest::Close { session_id } => Self::Close { session_id },
-        }
+            DeviceRequest::Chunk { session_id, offset } => {
+                service::DeviceRequest::Chunk { session_id, offset }
+            }
+            DeviceRequest::Close { session_id } => service::DeviceRequest::Close { session_id },
+        })
     }
 }
 #[derive(Debug, Serialize, Type)]
@@ -101,6 +135,13 @@ impl From<service::DeviceError> for DeviceError {
     rename_all_fields = "camelCase"
 )]
 pub enum DeviceReply {
+    State {
+        receipt: SelectedDeviceReceipt,
+        pinned: bool,
+        line: u32,
+        line_end: u32,
+        generation: String,
+    },
     ReadDocument {
         document_id: String,
         source_id: String,
@@ -127,6 +168,23 @@ pub enum DeviceReply {
 impl DeviceReply {
     pub(super) fn project(value: service::DeviceReply) -> Result<Self, DeviceError> {
         Ok(match value {
+            service::DeviceReply::State {
+                receipt,
+                pinned,
+                line,
+                line_end,
+                generation,
+            } => Self::State {
+                receipt: SelectedDeviceReceipt {
+                    document_id: receipt.document_id,
+                    source_id: receipt.source_id,
+                    revision: receipt.revision,
+                },
+                pinned,
+                line,
+                line_end,
+                generation: generation.to_string(),
+            },
             service::DeviceReply::ReadDocument {
                 receipt, markdown, ..
             } => {
@@ -164,4 +222,12 @@ impl DeviceReply {
             service::DeviceReply::Complete => Self::Complete,
         })
     }
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedDeviceReceipt {
+    pub document_id: String,
+    pub source_id: String,
+    pub revision: String,
 }

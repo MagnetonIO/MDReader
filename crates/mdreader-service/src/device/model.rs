@@ -15,6 +15,15 @@ pub enum DeviceError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceRequest {
+    State {
+        receipt: Receipt,
+    },
+    SetState {
+        receipt: Receipt,
+        expected_generation: u64,
+        pinned: Option<bool>,
+        line: Option<u32>,
+    },
     Read {
         receipt: Receipt,
     },
@@ -44,7 +53,23 @@ impl DeviceRequest {
         };
         let id = |value: &str| uuid::Uuid::parse_str(value).is_ok();
         let receipt = match self {
-            Self::Read { receipt } | Self::Manifest { receipt } => Some(receipt),
+            Self::Read { receipt } | Self::Manifest { receipt } | Self::State { receipt } => {
+                Some(receipt)
+            }
+            Self::SetState {
+                receipt,
+                expected_generation,
+                pinned,
+                line,
+            } => {
+                if *expected_generation > 9_007_199_254_740_991
+                    || (pinned.is_none() && line.is_none())
+                    || line.is_some_and(|n| n == 0 || n > 1_000_000)
+                {
+                    return Err(DeviceError::Invalid);
+                }
+                Some(receipt)
+            }
             Self::Open {
                 receipt,
                 asset_id,
@@ -79,6 +104,13 @@ impl DeviceRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceReply {
+    State {
+        receipt: Receipt,
+        pinned: bool,
+        line: u32,
+        line_end: u32,
+        generation: u64,
+    },
     ReadDocument {
         receipt: Receipt,
         name: String,
