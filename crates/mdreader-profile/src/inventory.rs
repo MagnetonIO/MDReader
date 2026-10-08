@@ -21,7 +21,7 @@ pub struct Inventory {
     #[cfg(unix)]
     pub(crate) root: Root,
     #[cfg(unix)]
-    pub(crate) files: Vec<(PathBuf, std::fs::File, Stamp)>,
+    pub(crate) files: Vec<(PathBuf, Option<std::fs::File>, Stamp)>,
     #[cfg(unix)]
     pub(crate) directories: Vec<(PathBuf, Stamp)>,
 }
@@ -70,8 +70,18 @@ impl Inventory {
             let mut total = 0u64;
             for path in paths {
                 let disposition = *requested.get(&path).ok_or(Error::Unclassified)?;
-                let file = root.open(&path)?;
-                let metadata = stamp(&file)?;
+                let metadata = root.named_stamp(&path)?;
+                // Only raw bytes need a retained descriptor. Live SQLite and
+                // excluded recovery/lock files must never be opened here.
+                let file = if disposition == Disposition::Raw {
+                    let file = root.open(&path)?;
+                    if stamp(&file)? != metadata {
+                        return Err(Error::Conflict);
+                    }
+                    Some(file)
+                } else {
+                    None
+                };
                 if metadata.2 > limits.max_file_bytes {
                     return Err(Error::Bounds);
                 }
@@ -134,7 +144,13 @@ impl Inventory {
         {
             self.root.verify()?;
             for (path, original, expected) in &self.files {
-                if stamp(original)? != *expected || stamp(&self.root.open(path)?)? != *expected {
+                if original
+                    .as_ref()
+                    .map(stamp)
+                    .transpose()?
+                    .is_some_and(|s| s != *expected)
+                    || self.root.named_stamp(path)? != *expected
+                {
                     return Err(Error::Conflict);
                 }
             }

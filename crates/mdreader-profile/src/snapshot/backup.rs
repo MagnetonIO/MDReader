@@ -3,27 +3,13 @@ use rusqlite::Connection;
 use std::path::Path;
 
 #[cfg(unix)]
-pub(super) fn check_database(
+pub(crate) fn check_database(
     source: &Connection,
     root: &crate::platform::Root,
     path: &Path,
     expected: &crate::platform::Stamp,
 ) -> Result<()> {
-    let actual: String = source
-        .query_row(
-            "SELECT file FROM pragma_database_list WHERE name='main'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|_| Error::Storage)?;
-    let named = std::fs::File::open(&actual).map_err(|_| Error::Storage)?;
-    let stamp = crate::platform::stamp(&named)?;
-    if (stamp.0, stamp.1) != (expected.0, expected.1)
-        || crate::platform::stamp(&root.open(path)?)? != *expected
-    {
-        return Err(Error::Conflict);
-    }
-    Ok(())
+    crate::live_database::check(source, root, path, expected)
 }
 #[cfg(unix)]
 pub(super) fn backup(

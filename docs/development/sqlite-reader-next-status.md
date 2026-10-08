@@ -578,3 +578,19 @@ AccountIntent/RPC/renderer DTO/UI are unchanged; QueueDocument remains a product
 integration gate. Actual OS-keychain/live issuer/mobile/installed acceptance,
 old-intent reauthorization, outgoing user-state/deletions and cleanup remain open.
 Repeated full graph proof owner cost is documented and not optimized in this slice.
+
+## Profile SQLite lock and identity correction, 2026-10-08
+
+Candidate, inventory and snapshot verification no longer open/close extra live
+SQLite/recovery descriptors. Actual borrowed connection movement checks and
+nofollow directory-relative stamps reject replaced handles/roots while preserving
+SQLite's process locks. Candidate receipts receive a final actual-handle fence;
+snapshots revalidate before and after owner-connection backup.
+
+Five original-behavior regressions exposed lock loss or false file identity. The
+final affected profile suite passes all twelve cases, including a completed
+snapshot challenged by an actual competing SQLite process; strict all-target
+profile Clippy passes. See [the exact receipt](profile-sqlite-lock-verification-2026-10-08.md).
+This does not activate migration. Exact native SQLite/recovery classification,
+all-owner freeze composition, installed preservation/conversion/rollback and
+cross-host release acceptance remain open.

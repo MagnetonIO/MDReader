@@ -503,3 +503,19 @@ fn future_or_malformed_namespace_and_interrupted_candidate_leave_existing_state_
         0
     );
 }
+
+#[test]
+fn completed_snapshot_retains_the_real_owners_read_lock() {
+    if crate::live_database_tests::competing_writer() {
+        return;
+    }
+    let mut fixture = Fixture::new();
+    fixture.owner.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; BEGIN; SELECT * FROM unknown_records;").unwrap();
+    let snapshot = fixture.stage("locked-archive");
+    snapshot.revalidate(&Limits::default()).unwrap();
+    crate::live_database_tests::assert_locked(
+        "tests::completed_snapshot_retains_the_real_owners_read_lock",
+        &fixture.profile.join("library.db"),
+    );
+    fixture.owner.db.execute_batch("ROLLBACK").unwrap();
+}
