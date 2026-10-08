@@ -359,7 +359,7 @@ impl Manifest {
         Ok(())
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum KnownRecord {
     Proposal {
@@ -378,7 +378,7 @@ pub(crate) enum KnownRecord {
         value: serde_json::Value,
     },
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub(crate) enum SqlValue {
     Null,

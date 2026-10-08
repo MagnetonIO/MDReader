@@ -100,3 +100,20 @@ other Unix hosts without the implemented no-replace primitive are unsupported.
 No multi-file activation, import, credential reconnection, rollback switch or
 installed-profile rehearsal is included. Existing source snapshots and new
 reader state remain the rollback authority.
+
+## Archival document reviews
+
+The library-only `reviews` module provides `stage_reviews(archive,
+expected_identity, NEW_destination, limits)` and read-only
+`ReviewArchive::{open,list,get,raw_record}`. It revalidates the selected
+export/manifest identity and re-derives typed proposal records from raw SQLite
+before one transaction imports exact rows into a separate `reviews.sqlite`.
+The private completed stage is idempotent for that exact archive identity;
+it cannot replace reader state or a different completed stage.
+
+Known decision/architecture assertions become archival span candidates;
+unsupported or malformed assertions and unknown review states remain archived.
+Reviewer, rejected tombstones and v1 missing-review-hash semantics are preserved.
+Current graph membership, review chronology and current-source evidence are not
+available. The completed raw export must remain retained for unknown tables and
+schemas. See the [schema/read contract](../../docs/development/legacy-document-reviews.md).

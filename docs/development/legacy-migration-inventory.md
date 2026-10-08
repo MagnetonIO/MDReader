@@ -101,19 +101,25 @@ explicit retention decision; do not dual-write indefinitely.
    alongside `reader-v1` ([setup](../../src-tauri/src/lib.rs#L312)). Remove generic
    administration only after export; port useful document review/evidence APIs.
 3. Local [`start_import`](../../src-tauri/src/engine.rs#L1129), listing, search and
-   Related now use the service. However [legacy Library hydration](../../ui/src/shell/library-documents.ts#L254)
-   still performs CatDB catalog/entity queries; Settings still exposes [Connected
-   CatDB](../../ui/src/shell/SettingsSheet.tsx#L810). The new selected-provider
-   panel/dialog is a shipped separate path, not completed sidebar/global-search
-   migration. Root owns that cutover; provider link navigation is a separate slice.
-4. Useful legacy insights have no new durable schema/importer yet.
+   Related now use the service. At `35cccd1`, the shipped
+   [provider sidebar](../../ui/src/shell/ProviderSourcesSidebar.tsx#L1) and native
+   [canonical provider search](../../src-tauri/src/search.rs#L1) also browse/read
+   selected provider sources and include admitted cached bodies in search.
+   [Legacy Library hydration](../../ui/src/shell/library-documents.ts#L254) and
+   [Connected CatDB Settings](../../ui/src/shell/SettingsSheet.tsx#L810) still
+   retain catalog/entity administration paths. Standard provider reading/search
+   is integrated; complete legacy administration/dependency removal is pending.
+4. Useful legacy insights now have a separate, CatDB-free
+   [archival review staging/read contract](legacy-document-reviews.md), preserving
+   exact proposal rows and interpreted document-span candidates. It is not wired
+   into current reader evidence or review actions.
    [`inspect_span_guarded`](../../src-tauri/src/overlay.rs#L825) returns an empty
    list if the epoch has no proposal store; [`review_target`](../../src-tauri/src/overlay.rs#L990)
    requires the legacy engine/store. Core [Related](../../crates/mdreader-core/src/related.rs#L1)
    explicitly labels knowledge/concept/insight migration gaps. Introduce bounded
    MDReader-owned document insight/review DTOs with exact span/hash provenance
-   and honest unavailable/stale states before claiming useful behavior retained.
-5. No owner-coordinated multi-file snapshot, durable import/activation journal,
+   and honest unavailable/stale states before claiming current useful behavior retained.
+5. No owner-coordinated multi-file snapshot, profile activation/reconciliation journal,
    source-ID alias mapping, profile rollback flow or migration rehearsal exists.
    Settings/session loaders currently sanitize/drop malformed entries. New core
    bookmarks and mobile reading position are not automatic imports of old tabs,

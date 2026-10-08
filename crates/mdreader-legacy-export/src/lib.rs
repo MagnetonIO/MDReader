@@ -2,6 +2,7 @@
 //! Never discovers a profile, opens an SDK, imports data, or accesses a vault.
 mod model;
 mod records;
+pub mod reviews;
 #[cfg(unix)]
 mod unixfs;
 pub use model::*;

@@ -133,6 +133,15 @@ fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 fn sqlite(role: Role, path: &Path, output: &mut File, limits: &Limits) -> Result<Converted> {
+    let c = open_snapshot(path)?;
+    c.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")?;
+    sqlite_connection(role, &c, output, limits)
+}
+pub(crate) fn open_snapshot(path: &Path) -> Result<Connection> {
+    // Resolve system parent aliases (e.g. macOS /var -> /private/var) while
+    // keeping the leaf subject to SQLite's NOFOLLOW check.
+    let path = std::fs::canonicalize(path.parent().ok_or(Error::Invalid)?)?
+        .join(path.file_name().ok_or(Error::Invalid)?);
     #[cfg(unix)]
     let native = {
         use std::os::unix::ffi::OsStrExt;
@@ -146,14 +155,20 @@ fn sqlite(role: Role, path: &Path, output: &mut File, limits: &Limits) -> Result
         .iter()
         .map(|b| format!("%{b:02X}"))
         .collect::<String>();
-    let c = Connection::open_with_flags(
+    Ok(Connection::open_with_flags(
         format!("file:{encoded}?immutable=1&mode=ro"),
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_URI
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    c.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")?;
+    )?)
+}
+fn sqlite_connection(
+    role: Role,
+    c: &Connection,
+    output: &mut File,
+    limits: &Limits,
+) -> Result<Converted> {
     let integrity = match c.query_row::<String, _, _>("PRAGMA integrity_check(1)", [], |r| r.get(0))
     {
         Ok(check) if check == "ok" => SqliteIntegrity::Checked,

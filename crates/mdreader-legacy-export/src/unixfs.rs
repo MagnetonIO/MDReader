@@ -256,7 +256,7 @@ impl Source {
     pub fn identity(&self) -> (u64, u64) {
         identity(&self.original)
     }
-    fn check_path(&self) -> Result<()> {
+    pub(crate) fn check_path(&self) -> Result<()> {
         let parent = directory(self.path.parent().ok_or(Error::Invalid)?)?;
         if identity(&parent.metadata()?) != identity(&self.parent.metadata()?) {
             return Err(Error::Conflict);
