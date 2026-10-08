@@ -111,7 +111,7 @@ impl LocalMembership {
         Ok(())
     }
 }
-fn execute(
+pub(crate) fn execute(
     app: &AppHandle,
     backend: &ReaderBackend,
     request: CatalogRequest,
