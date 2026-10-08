@@ -1,9 +1,6 @@
 use super::signing::SigningKey;
 use super::*;
-use crate::{
-    crypto::{decode_canonical, validate_uuid},
-    LibraryKey, SyncScope,
-};
+use crate::{crypto::validate_uuid, LibraryKey, SyncScope};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::{
     rand::SystemRandom,
@@ -48,6 +45,7 @@ pub struct CustodyRecord {
     pub(super) state: EnrollmentState,
     pub(super) pkcs8: Zeroizing<Vec<u8>>,
     pub(super) keys: BTreeMap<String, Zeroizing<Vec<u8>>>,
+    lifecycle: Lifecycle,
 }
 impl std::fmt::Debug for CustodyRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,6 +53,58 @@ impl std::fmt::Debug for CustodyRecord {
     }
 }
 impl CustodyRecord {
+    #[cfg(test)]
+    pub(super) fn test_public_material(&self) -> (serde_json::Value, serde_json::Value) {
+        let Lifecycle::V2 {
+            wrapping,
+            recovery: Some(recovery),
+            ..
+        } = &self.lifecycle
+        else {
+            panic!("synthetic bootstrap material required")
+        };
+        let key = super::wrapping::WrappingKey::from_bytes(Zeroizing::new(
+            wrapping.as_slice().try_into().unwrap(),
+        ))
+        .unwrap();
+        (
+            serde_json::to_value(key.public().unwrap()).unwrap(),
+            SigningKey::load(recovery).unwrap().jwk,
+        )
+    }
+    pub(super) fn confirm_bootstrap(&mut self) -> AuthorityResult<()> {
+        self.lifecycle.confirm_bootstrap()?;
+        self.state = EnrollmentState::Confirmed;
+        Ok(())
+    }
+    pub(super) fn can_resume(&self) -> AuthorityResult<()> {
+        match &self.lifecycle {
+            Lifecycle::Legacy(_) if self.state == EnrollmentState::Pending => {
+                Err(AuthorityError::LifecycleGated)
+            }
+            Lifecycle::V2 {
+                phase: Phase::CandidatePending(_),
+                ..
+            } => Err(AuthorityError::LifecycleGated),
+            _ => Ok(()),
+        }
+    }
+    pub(super) fn check_recovery_anchor(&self, anchor: &serde_json::Value) -> AuthorityResult<()> {
+        if let Lifecycle::V2 {
+            recovery: Some(pkcs8),
+            ..
+        } = &self.lifecycle
+        {
+            let expected = SigningKey::load(pkcs8)?.device;
+            let public = super::wrapping::PublicJwk::parse(
+                &serde_json::to_vec(anchor).map_err(|_| AuthorityError::Custody)?,
+            )?;
+            if expected != public.thumbprint()? {
+                return Err(AuthorityError::Scope);
+            }
+        }
+        Ok(())
+    }
     pub(super) fn copy(&self) -> Self {
         Self {
             reference: self.reference.clone(),
@@ -64,6 +114,7 @@ impl CustodyRecord {
             state: self.state,
             pkcs8: self.pkcs8.clone(),
             keys: self.keys.clone(),
+            lifecycle: self.lifecycle.clone(),
         }
     }
     pub(super) fn validate(&self, reference: &SyncCredentialReference) -> AuthorityResult<()> {
@@ -76,7 +127,6 @@ impl CustodyRecord {
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
             || self.generation == 0
             || self.pkcs8.len() > 1024
-            || self.keys.is_empty()
             || self.keys.len() > 16
         {
             return Err(AuthorityError::Custody);
@@ -91,6 +141,8 @@ impl CustodyRecord {
         if expected != self.scope {
             return Err(AuthorityError::Scope);
         }
+        self.lifecycle
+            .validate(self.state, self.keys.len(), &signer.device)?;
         for (id, raw) in &self.keys {
             validate_uuid(id).map_err(|_| AuthorityError::Custody)?;
             if raw.len() != 32 {
@@ -100,11 +152,15 @@ impl CustodyRecord {
         Ok(())
     }
     pub(super) fn same_material(&self, other: &Self) -> bool {
+        self.same_keys(other) && self.lifecycle.same_phase(&other.lifecycle)
+    }
+    fn same_keys(&self, other: &Self) -> bool {
         self.reference == other.reference
             && self.registration == other.registration
             && self.scope == other.scope
             && self.pkcs8 == other.pkcs8
             && self.keys == other.keys
+            && self.lifecycle.same_keys(&other.lifecycle)
     }
     pub(super) fn check_identity(
         &self,
@@ -137,6 +193,32 @@ impl PendingCustody {
     pub fn reference(&self) -> SyncCredentialReference {
         self.record.reference.clone()
     }
+    pub(super) fn candidate(
+        identity: &VerifiedIdentity,
+        registration: &ReviewedOidcRegistration,
+        library: &str,
+        kind: CandidateKind,
+    ) -> AuthorityResult<Self> {
+        identity.check(registration)?;
+        validate_uuid(library).map_err(|_| AuthorityError::Scope)?;
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .map_err(|_| AuthorityError::Custody)?;
+        let signer = SigningKey::load(pkcs8.as_ref())?;
+        let record = CustodyRecord {
+            reference: SyncCredentialReference(format!("{PREFIX}{}", uuid::Uuid::new_v4())),
+            registration: registration.digest.clone(),
+            scope: SyncScope::new(identity.account.clone(), library.into(), signer.device)
+                .map_err(|_| AuthorityError::Scope)?,
+            generation: 1,
+            state: EnrollmentState::Pending,
+            pkcs8: Zeroizing::new(pkcs8.as_ref().to_vec()),
+            keys: BTreeMap::new(),
+            lifecycle: Lifecycle::candidate(kind)?,
+        };
+        record.validate(&record.reference)?;
+        Ok(Self { record })
+    }
     pub(super) fn prepare(
         identity: &VerifiedIdentity,
         registration: &ReviewedOidcRegistration,
@@ -160,116 +242,38 @@ impl PendingCustody {
             state: EnrollmentState::Pending,
             pkcs8,
             keys: BTreeMap::from([(library_key.id.clone(), library_key.bytes.clone())]),
+            lifecycle: Lifecycle::bootstrap()?,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
     }
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireKey {
-    key_id: String,
-    raw: String,
-}
-impl Drop for WireKey {
-    fn drop(&mut self) {
-        self.raw.zeroize();
-    }
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Wire {
-    v: u8,
-    reference: String,
-    registration: String,
-    scope: SyncScope,
-    generation: u64,
-    enrollment: EnrollmentState,
-    signing_pkcs8: String,
-    keys: Vec<WireKey>,
-}
-impl Drop for Wire {
-    fn drop(&mut self) {
-        self.signing_pkcs8.zeroize();
-    }
-}
-pub(super) fn encode(record: &CustodyRecord) -> AuthorityResult<Zeroizing<Vec<u8>>> {
-    record.validate(&record.reference)?;
-    let wire = Wire {
-        v: 1,
-        reference: record.reference.0.clone(),
-        registration: record.registration.clone(),
-        scope: record.scope.clone(),
-        generation: record.generation,
-        enrollment: record.state,
-        signing_pkcs8: URL_SAFE_NO_PAD.encode(record.pkcs8.as_slice()),
-        keys: record
-            .keys
-            .iter()
-            .map(|(id, raw)| WireKey {
-                key_id: id.clone(),
-                raw: URL_SAFE_NO_PAD.encode(raw.as_slice()),
-            })
-            .collect(),
-    };
-    let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| AuthorityError::Custody)?);
-    if bytes.len() > MAX_RECORD {
-        return Err(AuthorityError::Bounds);
-    }
-    Ok(bytes)
-}
-pub(super) fn decode(
-    reference: &SyncCredentialReference,
-    bytes: Zeroizing<Vec<u8>>,
-) -> AuthorityResult<CustodyRecord> {
-    if bytes.len() > MAX_RECORD {
-        return Err(AuthorityError::Bounds);
-    }
-    let wire: Wire = serde_json::from_slice(&bytes).map_err(|_| AuthorityError::Custody)?;
-    if wire.v != 1 || wire.keys.is_empty() || wire.keys.len() > 16 {
-        return Err(AuthorityError::Custody);
-    }
-    let mut keys = BTreeMap::new();
-    for key in &wire.keys {
-        if keys
-            .insert(
-                key.key_id.clone(),
-                Zeroizing::new(decode_canonical(&key.raw).map_err(|_| AuthorityError::Custody)?),
-            )
-            .is_some()
-        {
-            return Err(AuthorityError::Custody);
-        }
-    }
-    let record = CustodyRecord {
-        reference: SyncCredentialReference::parse(&wire.reference)?,
-        registration: wire.registration.clone(),
-        scope: wire.scope.clone(),
-        generation: wire.generation,
-        state: wire.enrollment,
-        pkcs8: Zeroizing::new(
-            decode_canonical(&wire.signing_pkcs8).map_err(|_| AuthorityError::Custody)?,
-        ),
-        keys,
-    };
-    record.validate(reference)?;
-    Ok(record)
-}
+pub(super) use wire::{decode, encode};
+mod material;
+mod wire;
+pub use material::CandidateKind;
+use material::{Lifecycle, Phase};
 pub(super) fn admission(
     old: &CustodyRecord,
     new: &CustodyRecord,
     expected: Option<u64>,
 ) -> AuthorityResult<()> {
-    if !old.same_material(new) {
+    if !old.same_keys(new) {
         return Err(AuthorityError::Generation);
     }
     match expected {
-        None if old.generation == new.generation && old.state == new.state => Ok(()),
+        None if old.generation == new.generation
+            && old.state == new.state
+            && old.lifecycle.same_phase(&new.lifecycle) =>
+        {
+            Ok(())
+        }
         Some(g)
             if old.generation == g
                 && new.generation == g.checked_add(1).ok_or(AuthorityError::Generation)?
                 && old.state == EnrollmentState::Pending
-                && new.state == EnrollmentState::Confirmed =>
+                && new.state == EnrollmentState::Confirmed
+                && old.lifecycle.can_confirm_to(&new.lifecycle) =>
         {
             Ok(())
         }

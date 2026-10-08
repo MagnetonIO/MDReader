@@ -107,6 +107,17 @@ impl NativeAuthorityFactory {
             .create(pending, Instant::now() + Duration::from_secs(5))
             .await
     }
+    /// Candidate has no library keys and cannot become a transport authority.
+    /// Network enrollment/verified transfer remain separately gated.
+    pub fn prepare_candidate(
+        &self,
+        login: &VerifiedLogin,
+        library: &str,
+        kind: CandidateKind,
+    ) -> AuthorityResult<PendingCustody> {
+        self.check_controller(&login.controller, login.epoch)?;
+        PendingCustody::candidate(&login.identity, &self.client.registration, library, kind)
+    }
     /// No server bootstrap is attempted. A new/unpaired device remains inactive until the
     /// separately reviewed wrapping/recovery lifecycle can authorize it on the server.
     pub async fn resume(
@@ -123,6 +134,7 @@ impl NativeAuthorityFactory {
             .ok_or(AuthorityError::Custody)?;
         self.check_controller(&login.controller, login.epoch)?;
         record.check_identity(&login.identity, &self.client.registration, local_library_id)?;
+        record.can_resume()?;
         let signer = SigningKey::load(&record.pkcs8)?;
         let url = self
             .client
@@ -164,8 +176,9 @@ impl NativeAuthorityFactory {
             return Err(AuthorityError::Scope);
         }
         validate_public_anchor(&receipt.recovery_jwk)?;
-        // The remote public anchor proves server enrollment only. It does NOT establish
-        // local recovery-key possession or permit native recovery export/activation.
+        record.check_recovery_anchor(&receipt.recovery_jwk)?;
+        // V2 compares this anchor to persisted private material. A legacy V1 server
+        // anchor does not establish local recovery possession. Product export remains gated.
         let current = self
             .vault
             .get(reference, Instant::now() + Duration::from_secs(5))
@@ -182,7 +195,7 @@ impl NativeAuthorityFactory {
             record.generation = generation
                 .checked_add(1)
                 .ok_or(AuthorityError::Generation)?;
-            record.state = EnrollmentState::Confirmed;
+            record.confirm_bootstrap()?;
             self.vault
                 .exchange(generation, &record, Instant::now() + Duration::from_secs(5))
                 .await?;
