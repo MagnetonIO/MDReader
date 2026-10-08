@@ -383,7 +383,7 @@ fn exact_staged_identity_contiguous_sequence_and_payload_gates_preserve_cursor()
     let state = f.prepared(3, 2);
     assert_eq!(
         identity::unsupported(&state),
-        Some(PendingReason::UserStateUnsupported)
+        Some(PendingReason::PositionUnsupported)
     );
     assert_eq!(
         storage::classify(&mut f.owner, &f.scope, state.change()).unwrap(),
@@ -399,10 +399,7 @@ fn exact_staged_identity_contiguous_sequence_and_payload_gates_preserve_cursor()
         })
         .collect::<Vec<_>>();
     let parents = incoming::prepare(&f.scope, &revision, &[&f.key()], &resources).unwrap();
-    assert_eq!(
-        identity::unsupported(&parents),
-        Some(PendingReason::ParentsUnsupported)
-    );
+    assert_eq!(identity::unsupported(&parents), None);
     assert_eq!(
         storage::classify(&mut f.owner, &f.scope, parents.change()).unwrap(),
         Some(PendingReason::Unstaged)
@@ -412,10 +409,7 @@ fn exact_staged_identity_contiguous_sequence_and_payload_gates_preserve_cursor()
     revision.change.parents.clear();
     revision.envelope_utf8 = None;
     let tombstone = incoming::prepare(&f.scope, &revision, &[], &[]).unwrap();
-    assert_eq!(
-        identity::unsupported(&tombstone),
-        Some(PendingReason::TombstoneUnresolved)
-    );
+    assert_eq!(identity::unsupported(&tombstone), None);
     assert_eq!(f.cursor().applied, 0);
     // Authenticated bytes alone cannot admit the content into a different scope.
     let other = SyncScope::new(
@@ -451,7 +445,7 @@ fn future_or_malformed_service_namespace_fails_without_resetting_rows() {
         )
         .unwrap()
     });
-    f.owner.with_library_connection(|db|db.execute_batch("PRAGMA ignore_check_constraints=ON;UPDATE native_incoming_schema_v1 SET version=2;PRAGMA ignore_check_constraints=OFF;").unwrap());
+    f.owner.with_library_connection(|db|db.execute_batch("PRAGMA ignore_check_constraints=ON;UPDATE native_incoming_schema_v1 SET version=3;PRAGMA ignore_check_constraints=OFF;").unwrap());
     let failed = f.owner.with_library_connection(|db| -> Result<()> {
         let tx = db.transaction()?;
         schema::initialize(&tx)?;
@@ -471,7 +465,7 @@ fn future_or_malformed_service_namespace_fails_without_resetting_rows() {
     );
     assert_eq!(f.cursor().applied, 0);
     assert_eq!(f.count("device_documents_v1"), 0);
-    f.owner.with_library_connection(|db|db.execute_batch("PRAGMA ignore_check_constraints=ON;UPDATE native_incoming_schema_v1 SET version=1;PRAGMA ignore_check_constraints=OFF;ALTER TABLE native_incoming_items_v1 RENAME COLUMN identity TO unknown_identity;").unwrap());
+    f.owner.with_library_connection(|db|db.execute_batch("PRAGMA ignore_check_constraints=ON;UPDATE native_incoming_schema_v1 SET version=2;PRAGMA ignore_check_constraints=OFF;ALTER TABLE native_incoming_items_v1 RENAME COLUMN identity TO unknown_identity;").unwrap());
     let malformed = f.owner.with_library_connection(|db| -> Result<()> {
         let tx = db.transaction()?;
         schema::initialize(&tx)?;
@@ -490,3 +484,6 @@ fn future_or_malformed_service_namespace_fails_without_resetting_rows() {
         snapshot
     );
 }
+
+#[path = "transition_tests.rs"]
+mod transitions;

@@ -13,26 +13,48 @@ pub(super) struct Identity {
     pub title: String,
     pub markdown_sha256: String,
     pub assets: Vec<AssetIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_state: Option<mdreader_sync::codec::UserStatePayload>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
 }
 impl Identity {
     pub fn from_prepared(input: &PreparedIncoming) -> Result<Self> {
-        let IncomingPayload::Content(content) = input.payload() else {
-            return Err(Error::Conflict);
+        let (title, markdown_sha256, assets, user_state, deleted) = match input.payload() {
+            IncomingPayload::Content(content) => (
+                content.title().to_owned(),
+                content.sha256().to_owned(),
+                content
+                    .assets()
+                    .iter()
+                    .map(|a| AssetIdentity {
+                        target: a.path().into(),
+                        mime: a.mime().into(),
+                        sha256: a.sha256().into(),
+                        bytes: a.bytes().len() as u32,
+                    })
+                    .collect(),
+                None,
+                false,
+            ),
+            IncomingPayload::UserState(state) => (
+                String::new(),
+                String::new(),
+                Vec::new(),
+                Some(state.clone()),
+                false,
+            ),
+            IncomingPayload::OpaqueTombstone => {
+                (String::new(), String::new(), Vec::new(), None, true)
+            }
         };
         let identity = Self {
             change: input.change().clone(),
-            title: content.title().into(),
-            markdown_sha256: content.sha256().into(),
-            assets: content
-                .assets()
-                .iter()
-                .map(|a| AssetIdentity {
-                    target: a.path().into(),
-                    mime: a.mime().into(),
-                    sha256: a.sha256().into(),
-                    bytes: a.bytes().len() as u32,
-                })
-                .collect(),
+            title,
+            markdown_sha256,
+            assets,
+            user_state,
+            deleted,
         };
         if identity.encode()?.len() > 16384 {
             return Err(Error::Limit);
@@ -89,11 +111,14 @@ pub(super) fn origin(
 }
 pub(super) fn unsupported(input: &PreparedIncoming) -> Option<PendingReason> {
     match input.payload() {
-        IncomingPayload::UserState(_) => Some(PendingReason::UserStateUnsupported),
-        IncomingPayload::OpaqueTombstone => Some(PendingReason::TombstoneUnresolved),
-        IncomingPayload::Content(_) if !input.change().parents.is_empty() => {
-            Some(PendingReason::ParentsUnsupported)
+        IncomingPayload::UserState(state)
+            if matches!(
+                state.position,
+                Some(mdreader_sync::codec::ReadingPosition::BlockPixels { .. })
+            ) =>
+        {
+            Some(PendingReason::PositionUnsupported)
         }
-        IncomingPayload::Content(_) => None,
+        _ => None,
     }
 }
