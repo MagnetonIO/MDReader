@@ -14,6 +14,7 @@ import {
   type NativeProvidersBackend,
 } from '../../platform/providers';
 import type { CanonicalReaderReference } from '../reader/contracts';
+import { CatalogDocumentList } from './CatalogDocumentList';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -219,8 +220,8 @@ export function CatalogSidebar({
         <button type="button" disabled={busy} onClick={() => setReload((n) => n + 1)}>
           Reload catalog
         </button>
+        <button type="button" onClick={onManage}>Manage catalog sources</button>
       </header>
-      <p>Existing folders, device documents and selected cloud metadata. Browsing does not grant access or contact providers.</p>
       {onProviderSelectionChange ? (
         <p role="status">{selectedProviderSources.length
           ? `${selectedProviderSources.length} cloud sources included in search with the active folder.`
@@ -233,13 +234,13 @@ export function CatalogSidebar({
       {sources.map((source) => {
         const readerSourceId = searchSources[source.catalogId.slice(7)];
         return (
-          <div key={source.catalogId}>
+          <div className="reader-catalog__source" key={source.catalogId}>
             <strong>{source.name}</strong>
             <small>
               {source.kind === 'device' ? 'Device library' : source.kind === 'local' ? 'Folder'
                 : source.kind === 'google_drive' ? 'Google Drive'
                   : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
-              {' · '}{source.coverage.replaceAll('_', ' ')}
+              {' · '}{coverageLabel(source.coverage)}
             </small>
             {onProviderSelectionChange && source.catalogId.startsWith('remote:') ? (
               <label>
@@ -260,6 +261,7 @@ export function CatalogSidebar({
             ) : (
               <button
                 type="button"
+                aria-pressed={page?.source.catalogId === source.catalogId}
                 disabled={busy || !source.enabled || Boolean(source.failure)}
                 onClick={() => void browse(source)}
               >Browse catalog {source.name}</button>
@@ -267,50 +269,17 @@ export function CatalogSidebar({
           </div>
         );
       })}
-      {page ? (
-        <section aria-label={`Catalog documents ${page.source.name}`}>
-          <p>{page.source.kind === 'local'
-            ? 'Indexed observation; exact reads verify the current retained source bytes.'
-            : page.source.kind === 'device' ? 'Published device metadata; exact reads verify the retained copy. This list does not contact sync or claim remote freshness.'
-            : 'Selected metadata coverage; admitted cached revisions only. Remote freshness has not been checked.'}
-          </p>
-          <p>Author and Git provenance were not observed by this catalog.</p>
-          {page.source.observedAtMs === null
-            ? <p>Observation time unknown.</p>
-            : <p>Observed {new Date(page.source.observedAtMs).toLocaleString()}</p>}
-          {page.documents.map((document) => (
-            <div key={document.open.kind === 'exact'
-              ? `${document.open.sourceId}:${document.open.path}` : document.open.documentId}>
-              <strong>{document.name}</strong>
-              <small>{document.displayPath}</small>
-              <small>
-                {document.modifiedAtMs === null ? 'Modified time unknown'
-                  : `Modified ${new Date(document.modifiedAtMs).toLocaleString()}`}
-                {' · '}{document.sizeBytes === null ? 'Size unknown' : `${document.sizeBytes} bytes`}
-              </small>
-              <button type="button" disabled={busy} onClick={() => void open(document)}>
-                {document.open.kind === 'selected_uncached' ? 'Fetch current' : 'Read exact'} {document.name}
-              </button>
-            </div>
-          ))}
-          {!page.documents.length ? (
-            <p>{page.source.coverage === 'not_indexed'
-              ? 'Index this folder explicitly in Settings before browsing.'
-              : page.source.coverage === 'historical_index_coverage_unknown'
-                ? 'No observed documents. Historical scan coverage is unknown.'
-                : 'No documents in this completed observation.'}
-            </p>
-          ) : null}
-          {page.nextCursor && page.documents.length < 1000 ? (
-            <button type="button" disabled={busy} onClick={() => void browse(page.source, true)}>
-              More catalog documents
-            </button>
-          ) : null}
-          {page.nextCursor && page.documents.length >= 1000
-            ? <p>Showing the first 1,000 documents. Use search for other documents.</p> : null}
-        </section>
-      ) : null}
-      <button type="button" onClick={onManage}>Manage catalog sources</button>
+      {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy}
+        onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} /> : null}
     </section>
   );
+}
+
+function coverageLabel(coverage: string) {
+  const labels: Record<string, string> = {
+    needs_activation: 'Activate to browse', not_indexed: 'Index needed', indexed_observation: 'Indexed',
+    historical_index_coverage_unknown: 'Refresh index needed', metadata_complete_selected: 'Selected documents',
+    metadata_partial_selected: 'More metadata available', published_device_documents: 'Local copies',
+  };
+  return labels[coverage] ?? coverage.replaceAll('_', ' ');
 }

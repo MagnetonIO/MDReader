@@ -4,6 +4,13 @@
 .reader-catalog small { color: var(--color-muted); }
 .reader-catalog p { font-size: 12px; }
 .reader-catalog button { white-space: normal; }
+.reader-catalog__source { padding: 8px 0; border-bottom: 1px solid var(--color-border); }
+.reader-catalog__source button[aria-pressed="true"] { font-weight: 600; }
+.reader-catalog__documents h3 { margin: 12px 0 8px; font-size: 14px; }
+.reader-catalog__filter { display: grid; gap: 4px; font-size: 12px; }
+.reader-catalog__filter input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; }
+.reader-catalog__evidence { margin: 8px 0; font-size: 12px; }
+.reader-catalog__document { padding: 6px 0; }
 
 /* The primary reader uses the same exact-body navigation as Settings browsing. */
 .canonical-reader { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
