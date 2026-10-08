@@ -7,3 +7,6 @@
 # Ephemeral, exact-commit handoff used by nested Tauri mobile builds. The
 # native harness creates it with exclusive ownership and removes it afterward.
 /.e2e-source-commit
+
+# Exclusive clean-HEAD handoff for nested Xcode/Gradle release-source stamping.
+/.release-source-commit

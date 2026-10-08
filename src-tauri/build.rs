@@ -1,3 +1,6 @@
+#[path = "build_support/release_identity.rs"]
+mod release_identity;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     // Fresh narrow native provider registrations are independent of legacy
@@ -63,17 +66,16 @@ fn main() {
         );
     }
 
-    let unset_release_commit = "0000000000000000000000000000000000000000";
-    let release_source_commit = std::env::var("MDREADER_RELEASE_SOURCE_COMMIT")
-        .unwrap_or_else(|_| unset_release_commit.to_owned());
-    assert!(
-        release_source_commit.len() == 40
-            && release_source_commit
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
-        "MDREADER_RELEASE_SOURCE_COMMIT must be a lowercase 40-character Git SHA"
-    );
+    let unset_release_commit = release_identity::UNSET;
+    let release_handoff_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".release-source-commit");
     println!("cargo:rerun-if-env-changed=MDREADER_RELEASE_SOURCE_COMMIT");
+    println!("cargo:rerun-if-changed={}", release_handoff_path.display());
+    let release_source_commit = release_identity::resolve(
+        std::env::var_os("MDREADER_RELEASE_SOURCE_COMMIT").as_deref(),
+        &release_handoff_path,
+    )
+    .expect("invalid release source-identity configuration");
     println!("cargo:rustc-env=MDREADER_RELEASE_SOURCE_COMMIT={release_source_commit}");
 
     let source_commit = if e2e_build {
