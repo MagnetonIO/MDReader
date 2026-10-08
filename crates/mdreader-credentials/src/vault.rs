@@ -294,7 +294,8 @@ mod tests {
         assert_eq!(loaded.secret().generation(), 2);
         assert_eq!(loaded.configuration_digest(), grant.configuration_digest());
         assert_eq!(loaded.secret().cursor_key(), [1; 32]);
-        assert!(decode(Zeroizing::new(wire.replace("\"v\":3", "\"v\":9"))).is_err());
+        assert!(wire.contains("\"v\":4"));
+        assert!(decode(Zeroizing::new(wire.replace("\"v\":4", "\"v\":9"))).is_err());
         assert!(!format!("{grant:?}").contains("refresh"));
     }
 }

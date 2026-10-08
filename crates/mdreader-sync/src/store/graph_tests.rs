@@ -365,7 +365,7 @@ fn aggregate_quota_and_future_graph_schema_fail_without_partial_admission_or_res
             Err(SyncError::Bounds)
         ));
     }
-    f.db.execute("UPDATE mdreader_sync_graph_schema SET version=2", [])
+    f.db.execute("UPDATE mdreader_sync_graph_schema SET version=99", [])
         .unwrap();
     let another = id();
     {
@@ -381,7 +381,7 @@ fn aggregate_quota_and_future_graph_schema_fail_without_partial_admission_or_res
             r.get::<_, u64>(0)
         })
         .unwrap(),
-        2
+        99
     );
     assert_eq!(
         f.db.query_row(
