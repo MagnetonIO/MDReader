@@ -16,6 +16,9 @@ import "./mobile.css";
 import { resolveImportedLink } from "./imported-links";
 import { nativeAssetBackend } from "./device-assets";
 import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from "./DeviceAssetImage";
+import { DocumentActions } from "../features/document-transfer/DocumentActions";
+import { ReadingLinkOpen } from "../features/document-transfer/ReadingLinkOpen";
+import type { CanonicalReaderReference } from "../features/reader/contracts";
 import { DeviceAssetsSection } from "./DeviceAssetsSection";
 import { DeviceAssetStorage } from "./DeviceAssetStorage";
 
@@ -86,6 +89,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setDocuments(value.documents);
     setPending(value.pending);
   }, []);
+  const transferReference = useMemo(() => active ? ({ documentId: active.document.id, sourceId: active.document.source_id, revision: active.document.revision, path: "document.md", title: active.document.name }) : null, [active?.document.id, active?.document.source_id, active?.document.revision, active?.document.name]);
   const activeId = active?.document.id;
   const activeRevision = active?.document.revision;
   const activeHeading = active?.heading ?? null;
@@ -265,6 +269,15 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     }
     setActive({ document: doc, line, heading });
   };
+  const openReadingLink = async (reference: CanonicalReaderReference) => {
+    if (!reference.documentId) throw new Error("This mobile library can open imported-device reading links only.");
+    const epoch = ++navigationEpoch.current;
+    const value = await result(commands.mobileReaderRead(reference.documentId, reference.revision));
+    if (epoch !== navigationEpoch.current) return;
+    if (value.document.id !== reference.documentId || value.document.source_id !== reference.sourceId || value.document.revision !== reference.revision)
+      throw new Error("The exact device receipt is unavailable. No newer copy was opened.");
+    await open(value.document, reference.line ?? 1);
+  };
   const close = async () => {
     const epoch = ++navigationEpoch.current;
     await flushPosition();
@@ -357,6 +370,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         <span className="mobile-eyebrow">On this device</span>
         <h1>Your Markdown</h1>
       </div>
+      <ReadingLinkOpen onOpen={openReadingLink} />
       <label className="mobile-touch">
         Import Markdown
         <input
@@ -501,6 +515,14 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                   Outline
                 </button>
               </header>
+              {transferReference ? <DocumentActions reference={transferReference} line={active.line}
+                getLine={() => position.current?.id === active.document.id && position.current.revision === active.document.revision ? position.current.line : active.line}
+                read={async () => {
+                  const value = await result(commands.mobileReaderRead(active.document.id, active.document.revision));
+                  if (value.document.id !== active.document.id || value.document.source_id !== active.document.source_id || value.document.revision !== active.document.revision)
+                    throw new Error("The exact device revision could not be verified.");
+                  return { operation: "read_document", sourceId: value.document.source_id, path: "document.md", revision: value.document.revision, markdown: value.markdown, lineStart: 1, lineEnd: value.markdown.split("\n").length };
+                }} /> : null}
               {evidence ? (
                 <section className="mobile-state">
                   <h2>Original imported Markdown</h2>

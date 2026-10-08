@@ -91,6 +91,7 @@ import { isDeviceReference } from '../features/device-reader/backend';
 import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/useCatalogEditing';
 import { useProviderEditing } from '../features/provider-editing/useProviderEditing';
 import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
+import { ReadingLinkOpen } from '../features/document-transfer/ReadingLinkOpen';
 import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
 import './shell.css';
@@ -1661,7 +1662,7 @@ export function AppShell() {
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => setSettingsOpen(true)}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
+            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /><ReadingLinkOpen onOpen={openCatalogDocument} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
