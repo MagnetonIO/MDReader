@@ -513,3 +513,12 @@ The same isolated composition includes `6076cce` bounded per-dependency receipt
 validation, retaining full graph publication checks. All three affected sync
 graph cases pass on the combined tree; selected native upload remains unavailable
 until durable association and same-document echo acceptance.
+
+## Native legacy import-wrapper retirement, 2026-10-08
+
+Uncalled native model/index startup wrappers and obsolete status constructors are
+removed; current import work continues through the headless service. Cloud raw
+SQLite row decoding now uses small named types. Six focused actual-app cases and
+the real profile outer-bundle regression pass; generated bindings are unchanged.
+The actual production Clippy probe exposed broader dormant/unwired code debt, so
+full-native lint remains open. See [the receipt](native-legacy-warning-retirement-2026-10-08.md).

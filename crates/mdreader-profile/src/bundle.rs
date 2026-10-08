@@ -110,7 +110,7 @@ pub fn stage_bundle(
         let original = source.locator.restore()?;
         if parent.path.starts_with(&original)
             || original.starts_with(
-                &parent
+                parent
                     .path
                     .join(destination.file_name().ok_or(Error::Invalid)?),
             )
