@@ -44,8 +44,8 @@ impl IncomingCoordinator {
                 let current = current.verify()?;
                 let snapshot = Snapshot::new(archive.read()?, &current)?;
                 if !snapshot.matches(&intent)
-                    || !snapshot.matches_prepared(input)
-                    || !matches_identity(&snapshot, identity)
+                    || !matches_prepared(&snapshot, &intent, input)
+                    || !matches_identity(&snapshot, &intent, identity)
                 {
                     return Ok(Some(Outcome::Pending(PendingReason::LocalStateChanged)));
                 }
@@ -187,7 +187,13 @@ fn start(
         archive: Box::new(archive),
     })
 }
-fn matches_identity(snapshot: &Snapshot, identity: &identity::Identity) -> bool {
+fn matches_identity(snapshot: &Snapshot, intent: &Intent, identity: &identity::Identity) -> bool {
+    if let Some(state) = &intent.state {
+        return identity.user_state.as_ref() == Some(&state.payload())
+            && !identity.deleted
+            && snapshot.archive.state().document.pinned == state.pinned
+            && snapshot.archive.state().document.line == state.line;
+    }
     snapshot.archive.state().document.name == identity.title
         && snapshot.markdown_sha256 == identity.markdown_sha256
         && snapshot
@@ -214,3 +220,11 @@ pub(super) fn publication_proof(
 #[path = "self_echo_commit.rs"]
 mod publication_commit;
 pub(super) use publication_commit::{commit, Echo};
+
+fn matches_prepared(snapshot: &Snapshot, intent: &Intent, input: &PreparedIncoming) -> bool {
+    if let Some(state) = &intent.state {
+        matches!(input.payload(), mdreader_sync::incoming::IncomingPayload::UserState(actual) if actual == &state.payload())
+    } else {
+        snapshot.matches_prepared(input)
+    }
+}

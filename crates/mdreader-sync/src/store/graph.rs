@@ -61,7 +61,7 @@ pub(super) fn insert_resources(
     limits.validate()?;
     validate_uuid(operation)?;
     graph.validate()?;
-    if graph.root.context.library_id != scope.library_id || graph.resources.is_empty() {
+    if graph.root.context.library_id != scope.library_id {
         return Err(SyncError::Scope);
     }
     graph_schema::initialize(tx)?;

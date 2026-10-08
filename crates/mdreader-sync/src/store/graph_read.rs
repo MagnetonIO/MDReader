@@ -1,5 +1,5 @@
 //! Bounded durable graph reads. No malformed graph degrades to legacy admission.
-use super::graph::{StoredDependency, has_root, validate_receipt};
+use super::graph::{has_root, validate_receipt, StoredDependency};
 use super::*;
 
 pub(super) struct Snapshot {
@@ -41,7 +41,7 @@ pub(super) fn snapshot_on(db: &Connection, scope: &SyncScope, operation: &str) -
         |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
     ).map_err(|_| SyncError::Schema)?;
     validate_digest(&root_blob)?;
-    if count == 0 || count > crate::codec::MAX_RESOURCES {
+    if count > crate::codec::MAX_RESOURCES {
         return Err(SyncError::Schema);
     }
     let root = outbox_read::snapshot_on(db, scope, operation)?.ok_or(SyncError::Schema)?;

@@ -10,8 +10,8 @@ pub(super) struct Command {
 /// Private actor actions. Only closed, validated public selection DTOs enter.
 pub(super) enum Action {
     Account(AccountIntent),
-    SelectedSync(SelectedOperation),
-    InspectSelected(SelectedOperation),
+    SelectedSync(SelectedOperation, SelectedPurpose),
+    InspectSelected(SelectedOperation, SelectedPurpose),
 }
 pub(super) enum Message {
     Run(Command),
@@ -96,7 +96,7 @@ impl Actor {
             // Cancelled operations cannot publish status or establish a replacement.
             // Any persisted uncertain enrollment/approval remains intact in the vault.
             if shared.check(&command).is_ok()
-                && !matches!(&command.action, Action::InspectSelected(_))
+                && !matches!(&command.action, Action::InspectSelected(..))
             {
                 let _ = self.refresh_custody(&command).await;
             }

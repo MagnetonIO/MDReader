@@ -20,7 +20,7 @@ pub(in crate::sync::incoming) fn commit(
         current,
         snapshot,
     } = echo;
-    if !snapshot.matches(intent) || !matches_identity(snapshot, identity) {
+    if !snapshot.matches(intent) || !matches_identity(snapshot, intent, identity) {
         return Err(Error::Conflict);
     }
     publication::with_transition(owner, current, origin, |db, guard| {
@@ -46,22 +46,41 @@ pub(in crate::sync::incoming) fn commit(
                 wire_item_id: identity.change.item_id.clone(),
                 wire_revision: identity.change.revision_id.clone(),
                 document: current.state().document.clone(),
-                markdown_sha256: identity.markdown_sha256.clone(),
-                assets: identity.assets.clone(),
+                markdown_sha256: snapshot.markdown_sha256.clone(),
+                assets: snapshot
+                    .materialized
+                    .iter()
+                    .map(|a| a.identity.clone())
+                    .collect(),
                 materialized_assets: snapshot.materialized.clone(),
-                operation: Operation::Content,
+                operation: if intent.state.is_some() {
+                    Operation::UserState
+                } else {
+                    Operation::Content
+                },
                 generation: Some(current.state().generation),
                 retirement: None,
             };
             let key = identity::scope_key(scope)?;
-            heads::save(tx, &key, intent.head.as_ref(), &head(&receipt))?;
+            let published = head(&receipt, intent);
+            if let Some(state) = &intent.state {
+                let mut target = state.target.clone();
+                target.generation = receipt.generation;
+                heads::save(tx, &key, Some(&state.target), &target)?;
+            }
+            heads::save(tx, &key, intent.head.as_ref(), &published)?;
             association::complete(tx, scope, intent, identity.change.sequence)?;
             ledger::complete(tx, &key, identity, origin, &receipt)?;
             advance.advance()?;
             commit::verify_applied(tx, scope, identity, origin, &receipt)?;
             association::verify(tx, scope, intent, Some(identity.change.sequence))?;
             proof.revalidate()?;
-            heads::verify(tx, &key, &head(&receipt))?;
+            heads::verify(tx, &key, &published)?;
+            if let Some(state) = &intent.state {
+                let mut target = state.target.clone();
+                target.generation = receipt.generation;
+                heads::verify(tx, &key, &target)?;
+            }
             publication::revalidate_current_archive(tx, &guard, current, &snapshot.archive)?;
             final_fence(tx)?;
             Ok(receipt)
@@ -69,13 +88,18 @@ pub(in crate::sync::incoming) fn commit(
     })?
 }
 
-fn head(receipt: &Receipt) -> Head {
+fn head(receipt: &Receipt, intent: &Intent) -> Head {
     Head {
         item: receipt.wire_item_id.clone(),
-        kind: "content".into(),
+        kind: if intent.state.is_some() {
+            "user_state"
+        } else {
+            "content"
+        }
+        .into(),
         revision: receipt.wire_revision.clone(),
         document: receipt.document.id.clone(),
-        target: None,
+        target: intent.state.as_ref().map(|state| state.target.item.clone()),
         generation: receipt.generation,
         tombstone: None,
     }

@@ -84,6 +84,7 @@ impl Local {
         )
         .unwrap();
         let intent = Intent {
+            state: None,
             operation: mdreader_sync::CommitOperation {
                 operation_id: Uuid::new_v4().to_string(),
                 item_id: context.item_id,

@@ -10,6 +10,7 @@ impl IncomingCoordinator {
         selected: &SelectedIncoming,
         expected: &ReadingReceipt,
         operation: Uuid,
+        user_state: bool,
     ) -> Result<SelectedDisposition> {
         let _operation = self.operation.try_lock().map_err(|_| Error::Busy)?;
         outgoing::validate_selected(expected)?;
@@ -30,7 +31,7 @@ impl IncomingCoordinator {
             })?;
             let Some(stored) = stored else { session.check()?; return Ok(SelectedDisposition::Absent); };
             let intent = &stored.intent;
-            if intent.native_document != expected.document_id || intent.native_revision != expected.revision {
+            if intent.state.is_some() != user_state || intent.native_document != expected.document_id || intent.native_revision != expected.revision {
                 return Err(Error::Conflict);
             }
             if let Some(sequence) = stored.applied {
@@ -85,10 +86,16 @@ fn applied(
         device: scope.device_id().into(),
     };
     ledger::validate_receipt(&identity, &receipt)?;
-    if identity.change != change
+    if identity.user_state != intent.state.as_ref().map(|state| state.payload())
+        || identity.change != change
         || raw_origin != serde_json::to_string(&intent.origin)?
         || !outgoing::matches_selected(expected, &receipt.document)
-        || receipt.operation != Operation::Content
+        || receipt.operation
+            != if intent.state.is_some() {
+                Operation::UserState
+            } else {
+                Operation::Content
+            }
         || receipt.generation != Some(intent.generation)
         || receipt.markdown_sha256 != intent.markdown_sha256
         || mdreader_sync::blob_digest(&serde_json::to_vec(&receipt.materialized_assets)?)

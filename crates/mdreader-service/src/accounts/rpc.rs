@@ -12,6 +12,8 @@ pub enum AccountRequest {
     Poll { job_id: Uuid },
     Cancel { job_id: Uuid },
     Disconnect {},
+    SyncSelectedState { selection: super::SelectedOperation },
+    InspectSelectedState { selection: super::SelectedOperation },
     SyncSelected { selection: super::SelectedOperation },
     InspectSelected { selection: super::SelectedOperation },
 }
@@ -24,6 +26,8 @@ impl std::fmt::Debug for AccountRequest {
             Self::Poll { .. } => "AccountPoll",
             Self::Cancel { .. } => "AccountCancel",
             Self::Disconnect {} => "AccountDisconnect",
+            Self::SyncSelectedState { .. } => "AccountSyncSelectedState",
+            Self::InspectSelectedState { .. } => "AccountInspectSelectedState",
             Self::SyncSelected { .. } => "AccountSyncSelected",
             Self::InspectSelected { .. } => "AccountInspectSelected",
         })
@@ -40,6 +44,12 @@ pub enum AccountReply {
 impl Coordinator {
     pub fn execute(&self, request: AccountRequest) -> Result<AccountReply> {
         match request {
+            AccountRequest::SyncSelectedState { selection } => self
+                .begin_selected_state(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
+            AccountRequest::InspectSelectedState { selection } => self
+                .inspect_selected_state(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
             AccountRequest::SyncSelected { selection } => self
                 .begin_selected_sync(selection)
                 .map(|job_id| AccountReply::Begun { job_id }),
