@@ -1,10 +1,12 @@
 //! Native-only, default-off OIDC and signing custody. No renderer DTO, provider grant,
 //! production bootstrap, pairing, recovery or mobile custody is supplied here.
+mod access;
 mod capability;
 mod custody;
 mod factory;
 mod http;
 mod identity;
+mod jwt;
 mod keyring;
 mod oidc;
 mod projection;

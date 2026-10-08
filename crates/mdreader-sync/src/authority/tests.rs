@@ -11,6 +11,7 @@ use ring::{
     signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
 };
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Write},
@@ -20,6 +21,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 const ISSUER: &str = "https://native-synthetic-issuer.example.test";
+const API_AUDIENCE: &str = "https://mdreader.dev/sync";
 const REDIRECT: &str = "http://127.0.0.1:43871/mdreader-sync/callback";
 static LOGIN_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn registration(origin: &str) -> ReviewedOidcRegistration {
@@ -32,6 +34,7 @@ fn registration(origin: &str) -> ReviewedOidcRegistration {
             jwks: format!("{origin}/__synthetic/keys"),
         },
         origin,
+        API_AUDIENCE,
     )
     .unwrap()
 }
@@ -60,16 +63,33 @@ impl Issuer {
         header.kid = Some("synthetic".into());
         Zeroizing::new(jsonwebtoken::encode(&header, claims, &self.key).unwrap())
     }
+    fn access_claims() -> Value {
+        let now = super::now().unwrap();
+        json!({"iss":ISSUER,"sub":"synthetic-alice","aud":API_AUDIENCE,"client_id":"native-synthetic","scope":"sync:read sync:write","iat":now,"exp":now+300,"jti":uuid::Uuid::new_v4().to_string()})
+    }
+    fn access_token(&self, claims: &Value) -> Zeroizing<String> {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/support/public-test-rsa.json")).unwrap();
+        let key = EncodingKey::from_rsa_pem(fixture["pem"].as_str().unwrap().as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("synthetic-access".into());
+        header.typ = Some("at+jwt".into());
+        Zeroizing::new(jsonwebtoken::encode(&header, claims, &key).unwrap())
+    }
     fn jwks(&self) -> Vec<u8> {
-        serde_json::to_vec(&json!({"keys":[self.jwk]})).unwrap()
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/support/public-test-rsa.json")).unwrap();
+        serde_json::to_vec(&json!({"keys":[self.jwk, fixture["jwk"]]})).unwrap()
     }
     fn identity(&self) -> VerifiedIdentity {
-        identity::verify(
+        access::verify_pair(
             &registration("https://sync.example.test"),
             self.token(&Self::claims()),
+            self.access_token(&Self::access_claims()),
             &self.jwks(),
             "synthetic-nonce",
             super::now().unwrap(),
+            super::now().unwrap() + 300,
         )
         .unwrap()
     }
@@ -179,7 +199,8 @@ async fn native_login_uses_fresh_pkce_and_consumes_invalid_callback_without_netw
         .query_pairs()
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
-    assert_eq!(query["scope"], "openid");
+    assert_eq!(query["scope"], "openid sync:read sync:write");
+    assert_eq!(query["audience"], API_AUDIENCE);
     assert_eq!(query["response_type"], "code");
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(query["nonce"].len(), 43);
@@ -286,6 +307,7 @@ async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
             jwks: "https://sync.example.test/keys".into(),
         },
         "https://sync.example.test",
+        API_AUDIENCE,
     )
     .unwrap();
     assert!(restored
@@ -795,4 +817,110 @@ fn signing_policy_requires_exact_origin_query_envelope_hash_and_scope() {
             &[]
         )
         .is_err());
+}
+
+#[test]
+fn api_access_token_is_bound_to_login_subject_client_resource_and_scopes() {
+    let issuer = Issuer::new();
+    let reg = registration("https://sync.example.test");
+    let now = super::now().unwrap();
+    let id = issuer.token(&Issuer::claims());
+    let claims = Issuer::access_claims();
+    let verify = |token| {
+        access::verify_pair(
+            &reg,
+            id.clone(),
+            token,
+            &issuer.jwks(),
+            "synthetic-nonce",
+            now,
+            now + 300,
+        )
+    };
+    let access = issuer.access_token(&claims);
+    let identity = verify(access.clone()).unwrap();
+    assert_eq!(identity.token.as_str(), access.as_str());
+    assert_eq!(identity.login_token.as_str(), id.as_str());
+    assert!(
+        verify(id.clone()).is_err(),
+        "ID token cannot authorize the API"
+    );
+    let mut unsupported = Header::new(Algorithm::ES256);
+    unsupported.kid = Some("synthetic".into());
+    unsupported.typ = Some("at+jwt".into());
+    assert!(
+        verify(Zeroizing::new(
+            jsonwebtoken::encode(&unsupported, &claims, &issuer.key).unwrap()
+        ))
+        .is_err(),
+        "API signing algorithm is pinned to RS256"
+    );
+    for (field, value) in [
+        ("sub", json!("another-user")),
+        ("client_id", json!("other-client")),
+        ("aud", json!("native-synthetic")),
+        ("scope", json!("sync:read")),
+        ("azp", json!("other-client")),
+        ("exp", json!(now - 1)),
+        ("iat", json!(now - 600)),
+        ("jti", json!("")),
+    ] {
+        let mut bad = claims.clone();
+        bad[field] = value;
+        assert!(verify(issuer.access_token(&bad)).is_err(), "{field}");
+    }
+    assert!(access::verify_pair(
+        &reg,
+        id.clone(),
+        access.clone(),
+        &issuer.jwks(),
+        "synthetic-nonce",
+        now,
+        now
+    )
+    .is_err());
+    let pending =
+        PendingCustody::prepare(&identity, &reg, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let signer = SigningKey::load(&pending.record.pkcs8).unwrap();
+    let normal = signer
+        .authorize(
+            &identity,
+            "GET",
+            "https://sync.example.test/v1/enrollment",
+            &[],
+        )
+        .unwrap()
+        .into_headers();
+    assert_eq!(
+        normal.0.to_str().unwrap(),
+        format!("Bearer {}", access.as_str())
+    );
+    assert!(normal.2.is_none());
+    let payload = |header: &reqwest::header::HeaderValue| -> Value {
+        serde_json::from_slice(
+            &crypto::decode_canonical(header.to_str().unwrap().split('.').nth(1).unwrap()).unwrap(),
+        )
+        .unwrap()
+    };
+    let proof = payload(&normal.1);
+    assert_eq!(proof["v"], 2);
+    assert_eq!(
+        proof["ath"],
+        URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(access.as_bytes()))
+    );
+    assert!(proof.get("lth").is_none());
+    let candidate = signer
+        .authorize(
+            &identity,
+            "POST",
+            "https://sync.example.test/v1/enrollment/bootstrap",
+            b"{}",
+        )
+        .unwrap()
+        .into_headers();
+    assert_eq!(candidate.2.unwrap().to_str().unwrap(), id.as_str());
+    assert_eq!(
+        payload(&candidate.1)["lth"],
+        URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(id.as_bytes()))
+    );
 }

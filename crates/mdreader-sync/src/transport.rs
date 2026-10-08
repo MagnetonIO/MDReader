@@ -2,7 +2,7 @@
 //! Receiving authenticated root envelopes does not apply their content or acknowledge them.
 use crate::*;
 use reqwest::{
-    header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_TYPE},
     Method,
 };
 use std::{
@@ -95,33 +95,9 @@ pub trait Authority: Send + Sync {
         body: &[u8],
     ) -> TransportResult<PreparedRevision>;
 }
-/// Sensitive headers have no Debug/Serialize/getters; only the transport consumes them.
-pub struct Authorization {
-    bearer: HeaderValue,
-    proof: HeaderValue,
-}
-impl Authorization {
-    #[cfg(feature = "native-authority")]
-    pub(crate) fn into_headers(self) -> (HeaderValue, HeaderValue) {
-        (self.bearer, self.proof)
-    }
-    pub fn new(bearer_token: &str, proof_jwt: &str) -> TransportResult<Self> {
-        if bearer_token.len() > 16 * 1024
-            || bearer_token.is_empty()
-            || proof_jwt.len() > 4096
-            || proof_jwt.is_empty()
-        {
-            return Err(TransportError::Authority);
-        }
-        let bearer_text = zeroize::Zeroizing::new(format!("Bearer {bearer_token}"));
-        let mut bearer =
-            HeaderValue::from_str(&bearer_text).map_err(|_| TransportError::Authority)?;
-        let mut proof = HeaderValue::from_str(proof_jwt).map_err(|_| TransportError::Authority)?;
-        bearer.set_sensitive(true);
-        proof.set_sensitive(true);
-        Ok(Self { bearer, proof })
-    }
-}
+mod authorization;
+pub use authorization::Authorization;
+
 /// Only short synchronous closures borrow the ONE reader-owner connection. Implementations
 /// validate expected scope while holding the same barrier that changes their active binding.
 pub trait Owner: Send + Sync {
@@ -204,7 +180,7 @@ impl Transport {
     pub fn new(origin: &str) -> TransportResult<Self> {
         Self::build(origin, None)
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-authority"))]
     pub(crate) fn test_with_root(
         origin: &str,
         root: reqwest::Certificate,

@@ -36,6 +36,7 @@ struct TestAuthority {
     encoding: jsonwebtoken::EncodingKey,
     jwk: Value,
     token: zeroize::Zeroizing<String>,
+    login_token: zeroize::Zeroizing<String>,
     library: LibraryKey,
     epoch: std::sync::atomic::AtomicU64,
 }
@@ -55,6 +56,7 @@ impl TestAuthority {
             encoding: jsonwebtoken::EncodingKey::from_ec_der(der.as_ref()),
             jwk,
             token: zeroize::Zeroizing::new(String::new()),
+            login_token: zeroize::Zeroizing::new(String::new()),
             library: LibraryKey::generate().unwrap(),
             epoch: std::sync::atomic::AtomicU64::new(1),
         }
@@ -71,7 +73,11 @@ impl Authority for TestAuthority {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
         header.typ = Some("mdreader-proof+jwt".into());
         header.jwk = Some(serde_json::from_value(self.jwk.clone()).unwrap());
-        let payload = json!({"htm":method,"htu":url,"ath":URL_SAFE_NO_PAD.encode(Sha256::digest(self.token.as_bytes())),"bht":URL_SAFE_NO_PAD.encode(Sha256::digest(body)),"iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),"jti":uuid::Uuid::new_v4().to_string()});
+        let mut payload = json!({"v":2,"htm":method,"htu":url,"ath":URL_SAFE_NO_PAD.encode(Sha256::digest(self.token.as_bytes())),"bht":URL_SAFE_NO_PAD.encode(Sha256::digest(body)),"iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),"jti":uuid::Uuid::new_v4().to_string()});
+        if method == "POST" && url.ends_with("/v1/enrollment/bootstrap") {
+            payload["lth"] =
+                json!(URL_SAFE_NO_PAD.encode(Sha256::digest(self.login_token.as_bytes())));
+        }
         let proof = zeroize::Zeroizing::new(
             jsonwebtoken::encode(&header, &payload, &self.encoding).unwrap(),
         );
@@ -170,6 +176,8 @@ impl Fixture {
             .json("/__synthetic/token", json!({"nonce":c["nonce"]}))
             .await;
         authority.token = zeroize::Zeroizing::new(token["token"].as_str().unwrap().into());
+        authority.login_token =
+            zeroize::Zeroizing::new(token["loginToken"].as_str().unwrap().into());
         let body=serde_json::to_vec(&json!({"challenge":c["challenge"],"signingJwk":authority.jwk,"wrappingJwk":wrap.jwk,"recoveryJwk":recovery.jwk})).unwrap();
         let url = format!("{}/v1/enrollment/bootstrap", self.origin);
         let auth = authority.authorize("POST", &url, &body).unwrap();
@@ -178,6 +186,7 @@ impl Fixture {
             .post(url)
             .header(AUTHORIZATION, auth.bearer)
             .header("mdreader-proof", auth.proof)
+            .header("mdreader-login-token", authority.login_token.as_str())
             .body(body)
             .send()
             .await
