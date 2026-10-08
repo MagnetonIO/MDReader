@@ -48,12 +48,30 @@ impl SigningKey {
         header.typ = Some("mdreader-proof+jwt".into());
         header.jwk =
             Some(serde_json::from_value(self.jwk.clone()).map_err(|_| AuthorityError::Custody)?);
-        let claims = serde_json::json!({"htm":method,"htu":url,"ath":URL_SAFE_NO_PAD.encode(Sha256::digest(identity.token.as_bytes())),"bht":URL_SAFE_NO_PAD.encode(Sha256::digest(body)),"iat":now()?,"jti":uuid::Uuid::new_v4().to_string()});
+        let mut claims = serde_json::json!({"v":2,"htm":method,"htu":url,"ath":URL_SAFE_NO_PAD.encode(Sha256::digest(identity.token.as_bytes())),"bht":URL_SAFE_NO_PAD.encode(Sha256::digest(body)),"iat":now()?,"jti":uuid::Uuid::new_v4().to_string()});
+        let candidate = method == "POST"
+            && url::Url::parse(url).ok().is_some_and(|u| {
+                matches!(
+                    u.path(),
+                    "/v1/enrollment/bootstrap" | "/v1/pairings" | "/v1/enrollment/recover"
+                )
+            });
+        if candidate {
+            claims["lth"] = serde_json::json!(
+                URL_SAFE_NO_PAD.encode(Sha256::digest(identity.login_token.as_bytes()))
+            );
+        }
         let jwt = Zeroizing::new(
             jsonwebtoken::encode(&header, &claims, &self.encoding)
                 .map_err(|_| AuthorityError::Custody)?,
         );
-        crate::transport::Authorization::new(&identity.token, &jwt)
-            .map_err(|_| AuthorityError::Identity)
+        let auth = crate::transport::Authorization::new(&identity.token, &jwt)
+            .map_err(|_| AuthorityError::Identity)?;
+        if candidate {
+            auth.with_login_token(&identity.login_token)
+                .map_err(|_| AuthorityError::Identity)
+        } else {
+            Ok(auth)
+        }
     }
 }

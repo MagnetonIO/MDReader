@@ -50,10 +50,13 @@ impl Http {
             .request(method, url)
             .header(CONTENT_TYPE, content_type);
         if let Some(auth) = auth {
-            let (bearer, proof) = auth.into_headers();
+            let (bearer, proof, login) = auth.into_headers();
             request = request
                 .header(AUTHORIZATION, bearer)
                 .header("mdreader-proof", proof);
+            if let Some(login) = login {
+                request = request.header("mdreader-login-token", login);
+            }
         }
         // reqwest owns a transient copy; never claim comprehensive library-buffer wiping.
         let mut response = request

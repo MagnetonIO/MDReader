@@ -1,7 +1,5 @@
-use super::identity::verify;
 use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -14,7 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 use url::Url;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
+
+mod exchange;
 
 /// Native-reviewed endpoints. No Deserialize and no implicit discovery from a callback/token.
 pub struct OidcEndpoints {
@@ -25,6 +25,7 @@ pub struct OidcEndpoints {
 pub struct ReviewedOidcRegistration {
     pub(super) issuer: String,
     pub(super) client_id: String,
+    pub(super) api_audience: String,
     pub(super) authorization: Url,
     pub(super) token: Url,
     pub(super) jwks: Url,
@@ -42,6 +43,7 @@ impl ReviewedOidcRegistration {
         client_id: &str,
         endpoints: OidcEndpoints,
         sync_origin: &str,
+        api_audience: &str,
     ) -> AuthorityResult<Self> {
         http::https(issuer, false)?;
         if client_id.is_empty()
@@ -52,6 +54,10 @@ impl ReviewedOidcRegistration {
         {
             return Err(AuthorityError::Configuration);
         }
+        http::https(api_audience, false)?;
+        if api_audience == client_id {
+            return Err(AuthorityError::Configuration);
+        }
         let authorization = http::https(&endpoints.authorization, false)?;
         let token = http::https(&endpoints.token, false)?;
         let jwks = http::https(&endpoints.jwks, false)?;
@@ -59,9 +65,10 @@ impl ReviewedOidcRegistration {
         let digest = crate::blob_digest(
             &serde_json::to_vec(&(
                 "mdreader-native-oidc",
-                1,
+                2,
                 issuer,
                 client_id,
+                api_audience,
                 authorization.as_str(),
                 token.as_str(),
                 jwks.as_str(),
@@ -72,6 +79,7 @@ impl ReviewedOidcRegistration {
         Ok(Self {
             issuer: issuer.into(),
             client_id: client_id.into(),
+            api_audience: api_audience.into(),
             authorization,
             token,
             jwks,
@@ -187,59 +195,9 @@ impl OidcClient {
             return Err(AuthorityError::Identity);
         }
         let code = pending.callback(callback_target)?;
-        let form = Zeroizing::new(
-            url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("grant_type", "authorization_code")
-                .append_pair("client_id", &self.registration.client_id)
-                .append_pair("redirect_uri", pending.redirect.as_str())
-                .append_pair("code", &code)
-                .append_pair("code_verifier", &pending.verifier)
-                .finish()
-                .into_bytes(),
-        );
-        let response = self
-            .http
-            .send(
-                reqwest::Method::POST,
-                self.registration.token.clone(),
-                form,
-                None,
-                "application/x-www-form-urlencoded",
-                64 * 1024,
-            )
-            .await?;
-        let mut wire: TokenResponse =
-            serde_json::from_slice(&response).map_err(|_| AuthorityError::Identity)?;
-        if !wire.token_type.eq_ignore_ascii_case("Bearer")
-            || wire.access_token.is_empty()
-            || wire.access_token.len() > 16 * 1024
-            || wire.id_token.len() >= 16 * 1024
-        {
-            return Err(AuthorityError::Identity);
-        }
-        let token = Zeroizing::new(std::mem::take(&mut wire.id_token));
-        let jwks = self
-            .http
-            .send(
-                reqwest::Method::GET,
-                self.registration.jwks.clone(),
-                Zeroizing::new(Vec::new()),
-                None,
-                "application/json",
-                64 * 1024,
-            )
-            .await?;
-        if Instant::now() >= pending.expires {
-            return Err(AuthorityError::Identity);
-        }
-        verify(
-            &self.registration,
-            token,
-            &jwks,
-            &pending.nonce,
-            pending.created,
-        )
+        self.exchange(&pending, &code).await
     }
+
     #[cfg(test)]
     pub(super) fn test_with_root(
         registration: ReviewedOidcRegistration,
@@ -274,7 +232,8 @@ impl PendingLogin {
             .append_pair("client_id", &self.registration.client_id)
             .append_pair("redirect_uri", self.redirect.as_str())
             .append_pair("response_type", "code")
-            .append_pair("scope", "openid")
+            .append_pair("scope", "openid sync:read sync:write")
+            .append_pair("audience", &self.registration.api_audience)
             .append_pair("state", &self.state)
             .append_pair("nonce", &self.nonce)
             .append_pair(
@@ -342,22 +301,5 @@ impl PendingLogin {
             return Err(AuthorityError::Identity);
         }
         Ok(code)
-    }
-}
-#[derive(Deserialize)]
-struct TokenResponse {
-    id_token: String,
-    access_token: String,
-    token_type: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-}
-impl Drop for TokenResponse {
-    fn drop(&mut self) {
-        self.id_token.zeroize();
-        self.access_token.zeroize();
-        if let Some(refresh) = &mut self.refresh_token {
-            refresh.zeroize();
-        }
     }
 }

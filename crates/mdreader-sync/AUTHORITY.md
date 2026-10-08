@@ -7,10 +7,22 @@ production enrollment, deployment or live credential access is supplied. The
 previous bounded transport evidence in [TRANSPORT.md](TRANSPORT.md) is distinct
 from the authority checks below; neither establishes real issuer/host acceptance.
 
+Auth-v2 focused validation passed: one token-pair regression (including RS256
+pinning), all 11 ordinary authority cases, strict all-target Clippy for native
+authority and transport-only features, and two actual local HTTPS Worker cases.
+The PKCE/custody/reconnect/revocation case passed in 2.24 s; transport immutable
+retry/receipts/staging/applied-only acknowledgment passed in 1.44 s. Both used the
+companion `feat/reader-public-oidc` auth-v2 dry-run bundle and disposable profiles.
+No live Auth0 login, OS vault or deployment acceptance is established by these
+synthetic cases. The historical counts below refer to the earlier checkpoint.
+The new contract was implemented before its native regression; no native
+pre-implementation behavioral RED is claimed. The coordinated Worker regression
+did reproduce rejection of valid resource access tokens before its migration.
+
 ## Native ownership and interface
 
 The native service explicitly constructs `ReviewedOidcRegistration` from reviewed
-issuer, public-client audience, authorization/token/JWKS endpoints and exact HTTPS
+issuer, public client ID, separate API audience, authorization/token/JWKS endpoints and exact HTTPS
 sync origin. It cannot deserialize this registration from renderer JSON, discover
 an issuer from a token/callback, or use an insecure injected HTTP client. Native
 `NativeBrowser` dispatches an authorization URL to the system browser. The native
@@ -25,12 +37,17 @@ state, nonce and verifier. Only one attempt can exist in-process. Opening is
 one-shot. `verify_login` consumes the attempt on success or failure, validates the
 exact callback path, duplicate parameters, state and optional issuer, exchanges
 code natively and fetches only the pinned JWKS endpoint. RS256/ES256 signature,
-issuer, audience/authorized-party, subject, nonce, expiry and fresh issuance are
+issuer, client audience/authorized-party, subject, nonce, expiry and fresh issuance are
 verified before computing account SHA256 over compact UTF8 `[issuer,subject]`.
 Unsupported critical JOSE extensions and remote key references are rejected.
 The resulting `VerifiedLogin`/`VerifiedIdentity` cannot be constructed or serialized
-by external callers. Access/refresh tokens are discarded; the verified ID token
-exists only in native session memory and signs Worker bearer-bound proofs.
+by external callers. Login requests `openid sync:read sync:write` for the reviewed
+API audience. API authorization requires a separate RS256 `at+jwt` access token
+with matching issuer, subject, client ID, resource audience, fresh issuance, expiry,
+bounded nonempty jti and both sync scopes. Contradictory authorized parties fail
+closed. Session expiry is the earliest ID-token, access-token or token-response
+expiry. Access and ID tokens remain in zeroizing native session memory; refresh
+tokens are discarded. ID tokens never serve as API bearer credentials.
 
 `SessionController` exposes the exact active-scope `RwLock` barrier required by the
 borrowed native `TransportOwner`. The owner installs it; it must not invent a
@@ -117,7 +134,12 @@ is explicitly unsupported. No secrets enter SQLite, logs or renderer objects.
 
 Content envelope/AAD v1 is unchanged. Proofs are standard ES256
 `mdreader-proof+jwt` with public JWK, fresh UUID jti/time, exact method and HTTPS
-URL including query, SHA256 bearer and SHA256 exact body. Native signing policy
+URL including query, SHA256 access-token bearer and SHA256 exact body. Proof
+version 2 is required. Only the three candidate POST routes (bootstrap, pairing
+and recovery) carry a separate `mdreader-login-token` header and signed SHA256
+`lth`; ordinary requests omit both. The private signer can construct those
+candidate proofs, but public production authority still refuses candidate routes
+until the complete lifecycle is implemented. Native signing policy
 allows bounded changes, encrypted blob GET/PUT, commit and ack only. Uploads bind
 canonical operation/library query and exact envelope hash. Transport still stages
 only **received** roots: no typed chunks/assets projection, `mark_applied`, or ack
@@ -131,13 +153,17 @@ review. Test-only enrollment may use synthetic wrapping/recovery keys and a
 challenge-bound synthetic issuer token; those constructors/routes are inaccessible
 in production authority code.
 
-The current Worker accepts a single configured `OIDC_CLIENT_ID`, also used for
-its challenge audience. Native and browser public clients generally require
-separate registration identifiers. Exact standard issuer/client compatibility and
-a reviewed server acceptance contract remain a gate; this slice does not widen
-Worker acceptance. Real issuer/browser/listener dispatch, refresh/relogin UX,
-OS-vault runtime/restart, supported-host/mobile and multi-device acceptance,
-projection/conflict/quota UI and production deployment remain separate gates.
+The coordinated auth-v2 Worker contract uses one issuer, a shared API audience
+and an exact public-client-ID allowlist. Browser and native applications have
+separate public client registrations under that issuer. Candidate enrollment also
+validates the independent ID token, same subject/client and challenge nonce;
+challenge audience is the shared API resource. The native test bridge follows this
+contract; an old single-client/ID-bearer Worker is incompatible. Content encryption,
+AAD and custody record formats remain unchanged. Registration digest version 2
+includes the API audience, so old pending custody cannot be silently adopted.
+Real issuer/browser/listener dispatch, refresh/relogin UX, OS-vault runtime/restart,
+supported-host/mobile and multi-device acceptance, projection/conflict/quota UI
+and production deployment remain separate gates.
 
 ## Observed focused checks and reproduction
 
@@ -186,3 +212,5 @@ Primary standards: [OIDC ID-token validation](https://openid.net/specs/openid-co
 [Google native OAuth registration](https://developers.google.com/identity/protocols/oauth2/native-app),
 [jsonwebtoken 9.3 validation](https://docs.rs/jsonwebtoken/9.3.1/jsonwebtoken/struct.Validation.html).
 These standards guide the contract; no real issuer acceptance is claimed.
+
+Auth-v2 profile: [Auth0 access-token profiles](https://auth0.com/docs/secure/tokens/access-tokens/access-token-profiles), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html).
