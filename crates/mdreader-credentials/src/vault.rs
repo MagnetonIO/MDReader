@@ -1,7 +1,7 @@
 use crate::*;
 use mdreader_provider::{IoContext, ProviderError, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 /// Existing references have one service custodian. OS keyrings do not offer
 /// cross-process CAS; existing references must only be mutated by that owner.
@@ -22,6 +22,7 @@ enum Command {
     Create(CredentialReference, ProviderGrant, Reply<()>),
     Exchange(CredentialReference, u64, ProviderGrant, Reply<()>),
     Delete(CredentialReference, Reply<()>),
+    Barrier(Reply<()>),
 }
 /// Exactly one native worker and one queued operation. A hung OS call cannot
 /// spawn unbounded replacement workers. A timed-out mutation may still finish;
@@ -49,6 +50,9 @@ impl VaultClient {
                         }
                         Command::Delete(r, reply) => {
                             let _ = reply.send(vault.delete(&r));
+                        }
+                        Command::Barrier(reply) => {
+                            let _ = reply.send(Ok(()));
                         }
                     }
                 }
@@ -104,6 +108,23 @@ impl VaultClient {
     pub async fn delete(&self, r: &CredentialReference, c: &IoContext) -> Result<()> {
         self.request(c, |reply| Command::Delete(r.clone(), reply))
             .await
+    }
+    /// After caller admission is denied, positively join every earlier issued
+    /// OS operation, including a mutation whose caller timed out or cancelled.
+    /// Failure provides no settlement proof and never starts another worker.
+    pub async fn settle(&self, context: &IoContext) -> Result<()> {
+        loop {
+            match self.request(context, Command::Barrier).await {
+                // Only a full, not-yet-dispatched queue produces Unavailable
+                // for this no-op command. A timed-out issued barrier is never
+                // redispatched and cannot count as successful settlement.
+                Err(ProviderError::Unavailable) => {
+                    context.check()?;
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                result => return result,
+            }
+        }
     }
 }
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]

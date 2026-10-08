@@ -4,6 +4,8 @@ mod client;
 #[cfg(feature = "sync-native")]
 mod guards;
 #[cfg(feature = "sync-native")]
+pub(crate) use guards::Owners;
+#[cfg(feature = "sync-native")]
 mod session;
 mod types;
 pub use client::{Attempt, Client};

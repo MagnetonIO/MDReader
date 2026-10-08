@@ -130,11 +130,14 @@ impl Runtime {
                     .clone();
                 super::preservation::Session::new(
                     &runtime.directory,
-                    owner.clone(),
-                    daemon,
-                    accounts,
-                    devices,
-                    capture,
+                    super::preservation::Owners {
+                        store: owner.clone(),
+                        daemon,
+                        accounts,
+                        devices,
+                        capture,
+                        providers: adapters.factory.clone(),
+                    },
                 )
             })();
         }

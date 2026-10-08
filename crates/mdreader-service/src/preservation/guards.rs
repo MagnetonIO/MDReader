@@ -7,12 +7,13 @@ use std::{
     time::Instant,
 };
 
-pub(super) struct Owners {
+pub(crate) struct Owners {
     pub store: Arc<Mutex<ReaderStore>>,
     pub daemon: Arc<daemon::Coordinator>,
     pub accounts: Arc<accounts::Coordinator>,
     pub devices: Arc<device::Coordinator>,
     pub capture: Arc<capture::Coordinator>,
+    pub providers: Option<Arc<dyn crate::provider::ProviderFactory>>,
 }
 // Explicit release order: independent producers first, scheduler last. A
 // quarantined session retains this whole value until actual service teardown.
@@ -43,6 +44,22 @@ impl Owners {
                 .enable_all()
                 .build()
                 .map_err(|_| Error::Unavailable)?;
+            if let Some(providers) = &self.providers {
+                let context = mdreader_provider::IoContext::new(
+                    scope.operation,
+                    deadline,
+                    1,
+                    1,
+                    mdreader_provider::Cancellation::default(),
+                )
+                .map_err(|_| Error::Invalid)?;
+                executor
+                    .block_on(providers.settle(&context))
+                    .map_err(|error| match error {
+                        mdreader_provider::ProviderError::Unsupported => Error::Unsupported,
+                        _ => Error::Unavailable,
+                    })?;
+            }
             guards.accounts = Some(
                 executor
                     .block_on(

@@ -13,6 +13,11 @@ use std::{
 use zeroize::Zeroizing;
 #[async_trait::async_trait]
 pub trait ProviderFactory: Send + Sync {
+    /// Called only after real request admission/drain. Custom factories must
+    /// explicitly supply their custody barrier; absence is not readiness.
+    async fn settle(&self, _context: &IoContext) -> Result<()> {
+        Err(ProviderError::Unsupported)
+    }
     async fn describe(
         &self,
         library: LibraryId,
@@ -76,6 +81,9 @@ impl NativeFactory {
 }
 #[async_trait::async_trait]
 impl ProviderFactory for NativeFactory {
+    async fn settle(&self, context: &IoContext) -> Result<()> {
+        self.vault.settle(context).await
+    }
     async fn describe(
         &self,
         library: LibraryId,

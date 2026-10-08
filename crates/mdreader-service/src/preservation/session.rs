@@ -46,28 +46,18 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new(
         directory: &std::path::Path,
-        store: Arc<Mutex<mdreader_core::ReaderStore>>,
-        daemon: Arc<crate::daemon::Coordinator>,
-        accounts: Arc<crate::accounts::Coordinator>,
-        devices: Arc<crate::device::Coordinator>,
-        capture: Arc<crate::capture::admission::Coordinator>,
+        owners: Owners,
     ) -> Result<Arc<Self>> {
         if !cfg!(unix) {
             return Err(Error::Unsupported);
         }
         let root = SourceRoot::capture(directory.to_owned()).map_err(|_| Error::StaleOwner)?;
         // Bind the current actual startup owner after capturing this root.
-        let _issued = daemon.enter().map_err(|_| Error::Unavailable)?;
+        let _issued = owners.daemon.enter().map_err(|_| Error::Unavailable)?;
         Ok(Arc::new(Self {
             root,
             boot: Uuid::new_v4(),
-            owners: Owners {
-                store,
-                daemon,
-                accounts,
-                devices,
-                capture,
-            },
+            owners,
             state: Mutex::new(State {
                 active: None,
                 completed: Vec::new(),

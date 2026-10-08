@@ -575,6 +575,10 @@ fn profile_namespace(profile: &Path, identifier: &str) -> Result<String> {
 struct UnconfiguredFactory;
 #[async_trait::async_trait]
 impl ProviderFactory for UnconfiguredFactory {
+    async fn settle(&self, context: &IoContext) -> ProviderResult<()> {
+        // This exact compiled factory owns no vault or provider kernels.
+        context.check()
+    }
     async fn describe(
         &self,
         _: LibraryId,
