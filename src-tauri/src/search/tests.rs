@@ -7,10 +7,6 @@ fn workspace_dir() -> (TempDir, std::path::PathBuf) {
     (dir, root)
 }
 
-fn retained(path: &Path) -> SourceRoot {
-    SourceRoot::capture(path.to_path_buf()).expect("capture source root")
-}
-
 #[test]
 fn basename_takes_the_final_component() {
     assert_eq!(basename("notes/deep/page.md"), "page.md");

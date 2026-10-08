@@ -18,7 +18,7 @@ enum Transport {
         executable: PathBuf,
     },
     #[cfg(any(mobile, test))]
-    Embedded(Mutex<mdreader_core::ReaderStore>),
+    Embedded(Box<Mutex<mdreader_core::ReaderStore>>),
 }
 impl ReaderBackend {
     /// Preserve typed service failures at native owner boundaries. Renderer
@@ -80,9 +80,9 @@ impl ReaderBackend {
     }
     #[cfg(any(mobile, test))]
     pub(crate) fn embedded(directory: &Path) -> Result<Self, String> {
-        Ok(Self(Arc::new(Transport::Embedded(Mutex::new(
+        Ok(Self(Arc::new(Transport::Embedded(Box::new(Mutex::new(
             mdreader_core::ReaderStore::open(directory).map_err(|e| e.to_string())?,
-        )))))
+        ))))))
     }
     pub(crate) fn call(&self, request: Request) -> Result<Value, String> {
         match self.0.as_ref() {
