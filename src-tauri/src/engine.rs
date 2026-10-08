@@ -1,89 +1,19 @@
-//! The *engine* half of the command surface: the embedded CatDB index the shell
-//! reads its sources, live import progress, and wikilink resolution from.
+//! Native workspace authority, service indexing progress and file navigation.
 //!
-//! ## What this owns (and what it deliberately does not)
+//! Current indexing, model construction and search belong to the headless reader
+//! service. `start_import` queues that owner and observes its durable job status;
+//! its bounded listener does not own or cancel the underlying model work.
+//! Reading and filesystem listing require no embedding-model construction.
 //!
-//! This module wires the shell to `catdb-engine`'s **existing** public API — it
-//! never reaches into the engine's internals (a parallel lane owns those). It
-//! opens (or creates) one [`EmbeddedCatDb`] per granted workspace, runs the
-//! MDReader ingest pipeline (`mdreader-ingest`'s registered domain) in the
-//! background, streams coarse progress to the StatusBar, and answers two reads:
-//! the file listing (index-backed once an import finishes, live fs scan before
-//! then) and wikilink resolution (filename then title match, ambiguity → the
-//! candidate set).
+//! A selected workspace is one retained `Arc<Epoch>` containing its original
+//! source root and generation. Every native read and progress publication checks
+//! that object identity and current epoch, including after asynchronous work.
+//! A same-path replacement is never a new grant.
 //!
-//! ## Where the database lives
-//!
-//! Not inside the user's notes. Each workspace's index is a private SQLite file
-//! at `<app-data-dir>/workspaces/<blake3(native root + object identity)>/catdb.db`, so a corpus
-//! is never littered with an engine sidecar and two aliases of one folder share
-//! one index. [`read_doc`](crate::commands::read_doc) still reads straight off
-//! disk — the index is for *finding*, never the source of truth for *content*.
-//!
-//! ## Embedder (fastembed by default), and why it is NOT on the read path
-//!
-//! The app builds the real semantic embedder — [`FastembedEmbedder`]
-//! (`bge-small-en-v1.5`, 384-d, via ONNX Runtime) — so an index is search-ready
-//! and the first-run model download is a visible, one-time cost. Construction is
-//! blocking (it deserializes the ONNX graph, downloading weights on first use),
-//! so it runs off the command thread via [`FastembedEmbedder::load`] and is
-//! surfaced as a distinct `"loading"` import phase before scanning begins.
-//!
-//! **Reading a workspace does not need vectors.** Opening the folder, listing
-//! the tree, and reading a document are pure filesystem work; wikilink
-//! resolution and the lexical (FTS) search arm are index reads that never touch
-//! the embedder. Only *indexing* and the *semantic* search arm do. So the model
-//! load is deliberately **not** a precondition for opening a workspace: the
-//! index is opened first, through a [`DeferredEmbedder`] that knows the
-//! configured model's identity (which is static) while its weights are still
-//! loading — or never load at all. A model that cannot load therefore costs the
-//! semantic arm and the index build, and nothing else; it is reported as the
-//! distinct [`"model-unavailable"`](ImportProgress::model_unavailable) phase,
-//! never as an empty workspace and never as a generic index failure.
-//!
-//! The deterministic [`HashEmbedder`] is used **only** when the
-//! `MDREADER_DEV_HASH_EMBED` environment variable is set — an explicit dev/CI
-//! escape hatch that keeps imports offline and instant (no model download).
-//! Unit/e2e tests run under that flag (or drive the engine directly with a
-//! `HashEmbedder`), so CI never downloads a model. It is **never** a fallback:
-//! [`DeferredEmbedder::install`] refuses any model whose identity differs from
-//! the configured one, so a failed fastembed load can never be quietly served by
-//! test vectors.
-//!
-//! ## Progress granularity (honest)
-//!
-//! `catdb-engine`'s `import` is one atomic call — it exposes no per-file
-//! callback — so progress is coarse by construction: a `"loading"` phase covers
-//! model construction, a pre-scan yields the file *total*, the StatusBar spins
-//! through the `importing` phase, and the final report fills in files/chunks on
-//! `done` (or the message on `error`). Finer streaming would need engine
-//! changes, which are out of this lane's scope.
-//!
-//! One import is not like the others, though, and says so: when the workspace
-//! was embedded by a *different* model than the one now configured, the engine
-//! rotates the index — re-embedding the entire corpus, a one-time cost
-//! proportional to the workspace rather than to what changed on disk. That pass
-//! publishes the distinct `"reembedding"` phase (see
-//! [`EmbeddedCatDb::pending_model_rotation`]) so the StatusBar can say what is
-//! actually happening instead of an understated `Indexing N files…`.
-//!
-//! ## Workspace epoch (the revocation barrier)
-//!
-//! Switching workspaces is a *revocation barrier*, not a set of independent
-//! field updates. A workspace is one immutable [`Epoch`] — its canonical root,
-//! generation, engine, per-epoch import status, and coalescing flag — held as an
-//! `Arc<Epoch>` behind a single lock in [`WorkspaceState`]. A switch **creates a
-//! new epoch and swaps it in**; that swap is the barrier.
-//!
-//! Every command captures the current `Arc<Epoch>` **once** at entry, so root,
-//! generation, engine, and status always travel together — never sampled at
-//! different instants (the race this design closes). At each commit point
-//! (publishing status, installing the engine after the async model load,
-//! returning a listing/resolution) it re-checks [`WorkspaceState::is_current`]
-//! (`Arc::ptr_eq`); a stale epoch discards its work silently-clean. An old
-//! import's progress lands only in its **own** epoch's status slot, which
-//! nobody reads once superseded — [`import_status`] reads the *current* epoch's
-//! slot only. Foreign roots (outside the epoch's grant) are a hard error.
+//! Legacy CatDB engine handles and regression helpers remain while archival
+//! migration and rollback are incomplete. They are not the current import path.
+//! The unused native model-loading/index-opening wrappers have been retired;
+//! legacy identity/open fixtures do not authorize opening an installed profile.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -100,7 +30,9 @@ use tauri::{AppHandle, Manager, State};
 #[cfg(not(mobile))]
 use catdb_sdk::embed::FastembedEmbedder;
 use catdb_sdk::embed::{EmbedError, EmbedResult, Embedder, HashEmbedder, ModelInfo};
-use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig, ImportOptions, ImportReport};
+use catdb_sdk::engine::{EmbeddedCatDb, EngineConfig};
+#[cfg(test)]
+use catdb_sdk::engine::ImportOptions;
 use catdb_sdk::storage::DocumentRow;
 use mdreader_ingest::{
     registration_with_proposals_and_source_root, scan_source_root, ProposalStore, ScanOptions,
@@ -116,9 +48,8 @@ use mdreader_ingest::SourceRootIdentity;
 /// bound so the two views agree on what counts as a document.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
-/// Deadline for the one-time embedding-model construction (download + ONNX
-/// graph deserialize). A never-finishing download must surface a timeout error
-/// the user can retry, not hang the import forever.
+/// Bound the native progress listener. Indexing and model work remain owned by
+/// the headless service and may continue after this listener returns.
 const MODEL_LOAD_DEADLINE: Duration = Duration::from_secs(120);
 
 // --------------------------------------------------------------------------
@@ -244,13 +175,13 @@ impl Embedder for DeferredEmbedder {
 
 /// The identity of the model this app is configured for — known WITHOUT loading
 /// it, which is exactly what lets a workspace open before (or without) the
-/// weights. Mirrors [`build_embedder`]'s choice: the dev/CI hash embedder under
-/// the flag, the real fastembed model otherwise.
+/// weights. Used by the retained legacy-engine regression fixtures; current
+/// indexing and model construction belong to the reader service.
 fn configured_model_info() -> ModelInfo {
     model_info_for(dev_hash_embed())
 }
 
-/// The identity of the model each branch of [`build_embedder`] produces. Split
+/// The model identity retained by legacy engine fixtures. Split
 /// out from the environment read so both branches are testable without mutating
 /// the process environment.
 fn model_info_for(hash_embed: bool) -> ModelInfo {
@@ -298,7 +229,7 @@ pub struct Epoch {
     /// `Arc::ptr_eq` is the authoritative identity.
     pub(crate) generation: u64,
     /// The opened engine, installed once — as soon as the *index* opens, which
-    /// needs no model (see [`ensure_index`]). Per-epoch, so a stale epoch
+    /// needs no model. Per-epoch, so a stale epoch
     /// installing its engine can never leak into the current one.
     engine: OnceLock<Arc<EmbeddedCatDb>>,
     /// The [`DeferredEmbedder`] this epoch's engine was opened with, installed
@@ -565,18 +496,6 @@ impl Default for ImportProgress {
 }
 
 impl ImportProgress {
-    /// The model is being constructed (deserialized, and downloaded on first
-    /// run). Published before the scan so the first-run download is visible.
-    fn loading() -> Self {
-        Self {
-            phase: "loading".to_string(),
-            files_done: 0,
-            files_total: 0,
-            chunks_embedded: 0,
-            error: None,
-        }
-    }
-
     fn importing(files_total: u32) -> Self {
         Self {
             phase: "importing".to_string(),
@@ -597,17 +516,6 @@ impl ImportProgress {
             files_done: 0,
             files_total,
             chunks_embedded: 0,
-            error: None,
-        }
-    }
-
-    fn done(report: &ImportReport) -> Self {
-        let files = report.files_scanned as u32;
-        Self {
-            phase: "done".to_string(),
-            files_done: files,
-            files_total: files,
-            chunks_embedded: report.chunks_embedded as u32,
             error: None,
         }
     }
@@ -832,31 +740,6 @@ fn dev_hash_embed() -> bool {
     std::env::var_os("MDREADER_DEV_HASH_EMBED").is_some()
 }
 
-/// Build the embedder for the app, off the command thread. Default: the local
-/// fastembed model (`bge-small-en-v1.5`), constructed — and downloaded on first
-/// run — via [`FastembedEmbedder::load`] inside `spawn_blocking`. Only when the
-/// `MDREADER_DEV_HASH_EMBED` flag is set does it fall back to the deterministic
-/// [`HashEmbedder`] (no model download; dev/CI only).
-async fn build_embedder() -> Result<Arc<dyn Embedder>, String> {
-    if dev_hash_embed() {
-        return Ok(Arc::new(HashEmbedder::new()) as Arc<dyn Embedder>);
-    }
-    #[cfg(mobile)]
-    {
-        Err(
-            "local semantic embedding is unavailable on mobile; no fallback model was selected"
-                .to_string(),
-        )
-    }
-    #[cfg(not(mobile))]
-    {
-        let embedder = FastembedEmbedder::load(None)
-            .await
-            .map_err(|err| format!("load embedding model: {err}"))?;
-        Ok(Arc::new(embedder) as Arc<dyn Embedder>)
-    }
-}
-
 /// Open (creating if needed) the engine at `db_path` and the overlay proposal
 /// store beside it, composed with the MDReader domain and `embedder`.
 ///
@@ -915,33 +798,8 @@ where
 /// it was opened through (the one the model is installed into later).
 type OpenIndex = (Arc<EmbeddedCatDb>, Arc<DeferredEmbedder>);
 
-/// Ensure `epoch`'s **index** is open and installed. Deliberately independent of
-/// the embedding model: opening the database, listing its documents, resolving
-/// wikilinks and running the lexical arm need no vectors, so this step must never
-/// be gated on a download. It is opened through a [`DeferredEmbedder`] carrying
-/// the configured model's identity, so the index is keyed exactly as it would be
-/// had the model loaded first, and the weights can be installed into it later.
-///
-/// `Ok(Some(pair))` to proceed, `Ok(None)` when a switch superseded this epoch
-/// (abandon clean), `Err` when the index itself could not be opened.
-fn ensure_index(
-    epoch: &Arc<Epoch>,
-    workspace: &WorkspaceState,
-    app: &AppHandle,
-) -> Result<Option<OpenIndex>, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("no app data dir: {err}"))?;
-    open_index_at(
-        epoch,
-        workspace,
-        &db_path_under(&base, &epoch.source_root()),
-    )
-}
-
-/// [`ensure_index`] with the database path already resolved — the app-handle-free
-/// core, so a test drives exactly the same open + install sequence.
+/// Open the retained legacy index for migration/authority regression fixtures.
+/// Current imports use the headless reader service instead of this sequence.
 fn open_index_at(
     epoch: &Arc<Epoch>,
     workspace: &WorkspaceState,
@@ -984,35 +842,6 @@ fn open_index_at(
         epoch.engine.get().map_or(db, Arc::clone),
         epoch.embedder.get().map_or(embedder, Arc::clone),
     )))
-}
-
-/// Ensure the embedding model is loaded into `embedder`, publishing the
-/// `"loading"` phase across the (slow, possibly downloading) construction.
-/// Returns the failure reason — already phrased for a human — when it cannot be
-/// loaded; a subsequent call genuinely re-attempts the load, which is what makes
-/// the status bar's retry mean something.
-async fn ensure_model(
-    epoch: &Arc<Epoch>,
-    workspace: &WorkspaceState,
-    channel: &Channel<ImportProgress>,
-    embedder: &Arc<DeferredEmbedder>,
-) -> Result<(), String> {
-    if embedder.semantic() == Semantic::Ready {
-        return Ok(());
-    }
-    publish(epoch, workspace, channel, ImportProgress::loading());
-    let loaded = load_embedder_with_deadline(MODEL_LOAD_DEADLINE, build_embedder).await;
-    match loaded {
-        // `install` is the choke-point that refuses a model which is not the one
-        // the index was opened under — the structural reason a failed load can
-        // never be served by the test-only hash embedder.
-        Ok(model) => embedder.install(model).map_err(model_load_failure),
-        Err(reason) => {
-            let reason = model_load_failure(reason);
-            embedder.fail(reason.clone());
-            Err(reason)
-        }
-    }
 }
 
 /// The one phrasing of a model-load failure, so the status bar, the search
@@ -1082,14 +911,6 @@ fn resolve_request_root(epoch: &Epoch, requested: &str) -> Result<PathBuf, Strin
 
 fn display_names_root(root: &Path, requested: &str) -> bool {
     root.to_string_lossy() == requested
-}
-
-/// Best-effort pre-scan for the file total shown while importing. A scan failure
-/// (e.g. permissions) just yields an unknown total, never an import failure.
-fn scan_count(root: &SourceRoot) -> u32 {
-    scan_source_root(root, &scan_options(true))
-        .map(|files| files.len() as u32)
-        .unwrap_or(0)
 }
 
 fn scan_options(respect_gitignore: bool) -> ScanOptions {
@@ -2335,7 +2156,7 @@ mod tests {
     /// itself, not as an empty workspace and not as a generic index failure.
     ///
     /// Revert-RED: make `start_import` require the model before the index (open
-    /// the index only after `ensure_model` succeeds, as it did before) and the
+    /// the index only after model construction succeeds) and the
     /// `db()` / listing assertions below fail — the workspace has no engine and
     /// nothing to serve.
     #[test]
@@ -2470,7 +2291,7 @@ mod tests {
     }
 
     /// The configured model's identity is knowable WITHOUT loading it — the fact
-    /// that lets the index open first. It must match what `build_embedder`
+    /// that lets the legacy index open first. It must match what the configuration
     /// actually produces on each branch, or the index would be keyed to a model
     /// name no embedder ever answers to.
     #[test]
