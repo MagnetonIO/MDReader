@@ -155,7 +155,6 @@ export function AppShell() {
     setSettingsOpen(true);
   }, []);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
-  const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
 
@@ -222,12 +221,11 @@ export function AppShell() {
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
 
-  const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
-    setProviderReturnToSettings(returnToSettings);
-    setProviderDocument(reference);
+  const openProviderDocument = useCallback((reference: ProviderReaderReference) => {
+    setCanonicalDocument(reference);
     setSettingsOpen(false);
     setPaletteOpen(false);
-  }, []);
+  }, [setCanonicalDocument]);
 
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null;
@@ -1797,7 +1795,7 @@ export function AppShell() {
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
           onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); }}
-          onOpenProviderDocument={async (reference) => openProviderDocument(reference, true)}
+          onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
@@ -1812,7 +1810,7 @@ export function AppShell() {
           } : undefined}
           onClose={() => {
             setProviderDocument(null);
-            setSettingsOpen(providerReturnToSettings);
+
           }}
         />
       ) : null}

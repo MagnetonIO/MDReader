@@ -176,7 +176,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       {snapshot ? <>
         <fieldset disabled={busy || loading}>
           <legend>New connections</legend>
-          <p>Google Drive includes only the files you select in the native Picker.</p>
+          <p>Google Drive includes only the files you select in the native Picker. Reconnect starts a new explicit selection; it does not broaden the old grant automatically.</p>
           <button type="button" disabled={!canConnect('google_drive')} onClick={() => connect('google_drive')}>Choose Google Drive files</button>
           {snapshot.availability.find((value) => value.provider === 'google_drive')?.diagnostic ? <p>{snapshot.availability.find((value) => value.provider === 'google_drive')?.diagnostic}</p> : null}
           <p>Dropbox uses the registered MDReader App Folder. This selection also applies when reconnecting a Dropbox source.</p>
@@ -190,6 +190,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
         {!snapshot.error && !snapshot.sources.length ? <p>No selected cloud sources are connected.</p> : null}
         <ul>{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
           <h3>{source.name}</h3><p>{providerName(source.kind)} · {source.enabled ? source.health.replaceAll('_', ' ') : 'paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
+          <p>{source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
           <button type="button" disabled={busy || !source.enabled || source.selectedScope.kind === 'imported_legacy_broad'} onClick={() => { setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1); }}>Browse documents</button>
           <button type="button" disabled={busy || !source.enabled || !source.capabilities.list} onClick={() => refresh(source)}>Refresh metadata</button>
           <button type="button" disabled={busy || !source.enabled} onClick={() => changeSource(source, false)}>Pause source</button>
