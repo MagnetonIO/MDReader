@@ -112,7 +112,10 @@ class SecureVault(private val activity: Activity) {
                 val published = Os.lstat(file.baseFile.path)
                 require(published.st_dev == opened.st_dev && published.st_ino == opened.st_ino && published.st_nlink == 1L)
                 val directory = file.baseFile.parentFile!!
-                val dir = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
+                // Android's public Os API has no O_DIRECTORY. Open without
+                // following links or blocking, then require the actual directory.
+                val dir = Os.open(directory.path,
+                    OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
                 try {
                     val retained = Os.fstat(dir); val current = Os.lstat(directory.path)
                     require(retained.st_dev == current.st_dev && retained.st_ino == current.st_ino && OsConstants.S_ISDIR(retained.st_mode))
