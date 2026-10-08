@@ -10,7 +10,7 @@ or published; the new sync protocol has not deployed.
 | --- | --- | --- |
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. | Whole app still contains legacy CatDB paths; transport cancellation, migration and host acceptance remain. |
-| 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
+| 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings, review/apply/remove configuration and explicit selected-event backfill UI implemented. | Actual supported-client installation/trust, desktop backfill UX and live cross-agent acceptance; Windows capture implementation and broader echo cases. |
 | 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, portable incoming owner projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks. | Final cross-engine matrix for subsequent web features, native/mobile image device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
@@ -216,3 +216,22 @@ accepted separately before enabling production sync.
   This does not prove release source identity, physical devices or whole-plan
   mobile acceptance. The system picker/control layout exposed a usability issue;
   follow-up selection-first layout has separate verification and packaging gates.
+- `ead4dca` adds explicit review/enqueue/deselect of one bounded final-output JSON
+  event. It never discovers or reads history/transcript paths. Selection retains
+  existing root identities and exclusions; metadata deselection remains possible
+  after root revocation. Exact reviewed replay recovers only its matching policy
+  artifact after an interrupted SQLite save, and stale capture settings cannot
+  undo a later selection change. Both regressions observed RED then GREEN.
+  Capture checks (25), latest affected service checks (nine including a real
+  restart process), two focused app/bindings tests, 19 affected UI tests,
+  TypeScript, scoped lint and strict crate Clippy passed. Desktop GUI and actual
+  supported-agent installation remain separate gates.
+- `760747e` adds an exclusive source-commit handoff for nested Xcode/Gradle builds,
+  with strict parsing, literal arguments, bounded cancellation and owned cleanup.
+  Four actual temporary-Git/fake-builder subprocess tests and three std-only Rust
+  helper tests passed. A real iOS archive embedded the correct nonzero commit,
+  but the wrapper rejected generated project/plist drift. That attempt is not
+  verified provenance. The reviewed output is two product-name quotes and the
+  existing base plist's three macOS folder descriptions, merged automatically by
+  Tauri; no new access or permission configuration was authored. The canonical
+  tracked output must pass a subsequent clean-HEAD packaging check.

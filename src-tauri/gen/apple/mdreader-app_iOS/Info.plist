@@ -40,5 +40,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>MDReader needs access to your Documents folder to list and read the markdown files in the workspace folder you choose.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>MDReader needs access to your Desktop folder to list and read the markdown files in the workspace folder you choose.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>MDReader needs access to your Downloads folder to list and read the markdown files in the workspace folder you choose.</string>
 </dict>
 </plist>
