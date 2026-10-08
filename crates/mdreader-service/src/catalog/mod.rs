@@ -2,6 +2,7 @@
 #[cfg(feature = "sync-native")]
 mod device;
 mod model;
+mod observation;
 use crate::provider;
 use mdreader_core::ReaderStore;
 use mdreader_provider::SourceId;
@@ -138,13 +139,7 @@ impl Coordinator {
             });
         }
         drop(queries);
-        let providers = match self.owner.try_lock() {
-            Ok(mut owner) => owner
-                .with_library_connection(provider::catalog::catalog_sources)
-                .map_err(provider_error),
-            Err(std::sync::TryLockError::WouldBlock) => Err(CatalogError::Busy),
-            Err(std::sync::TryLockError::Poisoned(_)) => Err(CatalogError::Persistence),
-        };
+        let providers = observation::providers(&self.owner);
         let provider_failure = match providers {
             Ok(rows) => {
                 sources.extend(rows);
