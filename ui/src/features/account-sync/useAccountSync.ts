@@ -33,7 +33,7 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
     } finally { if (current(version)) setBusy(false); }
   }, [backend]);
 
-  const begin = useCallback(async (request: Extract<AccountRequest, { operation: 'begin' | 'sync_selected' | 'inspect_selected' | 'sync_selected_state' | 'inspect_selected_state' }>) => {
+  const begin = useCallback(async (request: Extract<AccountRequest, { operation: 'begin' | 'sync_selected' | 'inspect_selected' | 'sync_selected_state' | 'inspect_selected_state' | 'sync_selected_delete' | 'inspect_selected_delete' }>) => {
     const version = ++epoch.current;
     setBusy(true);
     setError(null);

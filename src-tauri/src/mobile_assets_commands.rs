@@ -173,7 +173,7 @@ pub async fn mobile_reader_assets(
     if !cfg!(mobile) {
         return Err("Selected device assets are supported by the native mobile reader.".into());
     }
-    let directory = crate::reader_profile::directory(app)
+    let directory = crate::reader_profile::directory(&app)
         .map_err(|_| "Device asset directory is unavailable.".to_string())?
         .join("device-assets-v1");
     dispatch(

@@ -162,3 +162,63 @@ async fn mixed_selected_scope_is_ranked_together_and_unselected_provider_is_excl
         == Some(receipt.reader_source_id.as_str())
         && h.abs_path == receipt.path));
 }
+
+/// Rust owns the actual indexed hit's line; the UI golden only consumes it.
+/// Keep this exact name stable for scripts/check-bindings.sh's nonzero gate.
+#[tokio::test]
+async fn search_over_a_real_corpus_returns_provenance_bearing_hits() {
+    let (notes, root) = workspace_dir();
+    let profile = TempDir::new().unwrap();
+    let doc = "guide.md";
+    let fixture = "# Guide\n\nIntro.\n\n## Storage engine\n\nThe storage engine persists chunks.\n";
+    fs::write(notes.path().join(doc), fixture).unwrap();
+    let reader = crate::reader::ReaderBackend::embedded(profile.path()).unwrap();
+    let workspace = WorkspaceState::granted(root.clone());
+    let source = reader
+        .admit_async(workspace.current().unwrap().source_root())
+        .await
+        .unwrap();
+    reader
+        .with_mobile_store(|store| store.index_source(&source).map_err(|e| e.to_string()))
+        .unwrap();
+    let options = SearchQuery {
+        limit: 8,
+        lexical_only: true,
+        explain: true,
+        intent: Some("exact".into()),
+        provider_sources: None,
+    };
+    let hits = search_reader(&reader, &workspace, "persists chunks", &options, |_| {})
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(hits.len(), 1);
+    let hit = &hits[0];
+    assert_eq!(hit.file_path, doc);
+    assert_eq!(hit.source_id.as_deref(), Some(source.as_str()));
+    assert_eq!(hit.abs_path, root.join(doc).to_string_lossy());
+    assert!(hit.start_line > 0 && hit.end_line >= hit.start_line);
+    assert!(hit
+        .heading_path
+        .iter()
+        .any(|heading| heading == "Storage engine"));
+    let exact: mdreader_core::Document = reader
+        .typed(mdreader_service::Request::Read {
+            source_id: source,
+            path: doc.into(),
+            revision: hit.revision.clone(),
+        })
+        .unwrap();
+    assert_eq!(exact.markdown, fixture);
+    let provenance = &hit.explain.as_ref().unwrap().provenance;
+    assert_eq!(provenance.file_path, doc);
+    assert_eq!(provenance.chunk_id, hit.chunk_id);
+    assert_eq!(provenance.document_id, hit.document_id);
+    let golden = serde_json::json!({"doc":doc,"fixture":fixture,"startLine":hit.start_line});
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/goldens/provenance.json");
+    fs::write(
+        output,
+        format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+    )
+    .unwrap();
+}

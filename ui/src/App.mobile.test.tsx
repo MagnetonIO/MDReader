@@ -26,14 +26,14 @@ let deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
 const deviceDocument = {
   id: "11111111-1111-4111-8111-111111111111",
   name: "architecture.md",
-  source_id: "device-source-1",
+  source_id: "b".repeat(64),
   revision: "a".repeat(64),
   bytes: 128,
   pinned: false,
   line: 1,
   indexed: true,
 };
-const secondDocument = { ...deviceDocument, id: "33333333-3333-4333-8333-333333333333", name: "second.md", source_id: "device-source-2" };
+const secondDocument = { ...deviceDocument, id: "33333333-3333-4333-8333-333333333333", name: "second.md", source_id: "c".repeat(64) };
 const nativeCalls = vi.fn();
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -57,6 +57,7 @@ function installTauriRuntime(): void {
     value: {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
+        if (command === "native_profile_persistence_host") return "legacy_host";
         if (command === "mobile_reader_assets") {
           const request = args?.request as { operation: string; document_id?: string; revision?: string };
           if (request.operation === "manifest") return { operation: "manifest", value: {

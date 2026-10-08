@@ -104,7 +104,7 @@ pub async fn mobile_reader_list(
     app: tauri::AppHandle,
     backend: tauri::State<'_, ReaderBackend>,
 ) -> Result<DeviceLibrary, String> {
-    let directory = crate::reader_profile::directory(app)
+    let directory = crate::reader_profile::directory(&app)
         .map_err(|_| "Device library directory is unavailable".to_string())?
         .join("device-markdown-v1");
     invoke(backend.inner().clone(), move |store| {
@@ -119,7 +119,7 @@ pub async fn mobile_reader_discard_import(
     backend: tauri::State<'_, ReaderBackend>,
     id: String,
 ) -> Result<(), String> {
-    let directory = crate::reader_profile::directory(app)
+    let directory = crate::reader_profile::directory(&app)
         .map_err(|_| "Device library directory is unavailable".to_string())?
         .join("device-markdown-v1");
     invoke(backend.inner().clone(), move |store| {
@@ -135,7 +135,7 @@ pub async fn mobile_reader_import(
     name: String,
     content: String,
 ) -> Result<DeviceDocument, String> {
-    let directory: PathBuf = crate::reader_profile::directory(app)
+    let directory: PathBuf = crate::reader_profile::directory(&app)
         .map_err(|_| "Device library directory is unavailable".to_string())?
         .join("device-markdown-v1");
     invoke(backend.inner().clone(), move |store| {

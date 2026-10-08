@@ -16,15 +16,16 @@ export const commands = {
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
 	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
+	readerExportDocument: (reference: ExportReference) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_document", { reference })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
 	recursive: boolean,
-} | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_connect", { provider, selection })),
+} | null, allowEditing: boolean | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_connect", { provider, selection, allowEditing })),
 	nativeProviderReconnect: (sourceId: string, selection: {
 	path: string,
 	recursive: boolean,
-} | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconnect", { sourceId, selection })),
+} | null, allowEditing: boolean | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconnect", { sourceId, selection, allowEditing })),
 	nativeProviderReconcile: (attemptId: string) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconcile", { attemptId })),
 	nativeProviderRequest: (request: NativeProviderRequest) => typedError<NativeProviderResult, NativeProviderError>(__TAURI_INVOKE("native_provider_request", { request })),
 	readerEmbeddingPolicy: () => typedError<string, string>(__TAURI_INVOKE("reader_embedding_policy")),
@@ -190,7 +191,7 @@ export type AccountError = {
 export type AccountJob = {
 	id: string,
 	selectedSync: SelectedOperation | null,
-	selected_purpose: SelectedPurpose | null,
+	selectedPurpose: SelectedPurpose | null,
 	state: JobState,
 };
 
@@ -201,7 +202,7 @@ export type AccountPending = {
 
 export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
 
-export type AccountRequest = { operation: "sync_selected_state"; selection: SelectedOperation } | { operation: "inspect_selected_state"; selection: SelectedOperation } | { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+export type AccountRequest = { operation: "sync_selected_delete"; selection: SelectedOperation } | { operation: "inspect_selected_delete"; selection: SelectedOperation } | { operation: "sync_selected_state"; selection: SelectedOperation } | { operation: "inspect_selected_state"; selection: SelectedOperation } | { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
 
 export type AccountStatus = {
 	configured: boolean,
@@ -580,6 +581,23 @@ export type ExplainDto = {
 	provenance: ProvenanceDto,
 };
 
+export type ExportError = {
+	kind: string,
+};
+
+export type ExportReference = {
+	documentId: string | null,
+	sourceId: string,
+	path: string,
+	revision: string,
+};
+
+export type ExportReply = {
+	state: ExportState,
+};
+
+export type ExportState = "exported" | "cancelled";
+
 /**
  *  One markdown file surfaced to the sidebar tree. Produced either from the
  *  engine's index (after an import) or, before the first import finishes, from a
@@ -775,7 +793,7 @@ export type MutationDto = {
 	state: MutationStateDto,
 };
 
-export type MutationStateDto = "prepared" | "dispatched" | "unknown" | "accepted" | "published" | "conflict";
+export type MutationStateDto = "absent" | "prepared" | "dispatched" | "unknown" | "accepted" | "published" | "conflict";
 
 export type NativeLinkCandidate = {
 	sourceId: string,
@@ -791,9 +809,9 @@ export type NativeProviderError = { kind: "unsupported" } | { kind: "unconfigure
 
 export type NativeProviderKind = "google_drive" | "dropbox";
 
-export type NativeProviderRequest = { operation: "resolve_link"; sourceId: string; path: string; revision: string; kind: NativeLinkKind; target: string } | { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
+export type NativeProviderRequest = { operation: "resolve_link"; sourceId: string; path: string; revision: string; kind: NativeLinkKind; target: string } | { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit_exact"; sourceId: string; path: string; revision: string } | { operation: "inspect_save"; sourceId: string; operationId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
 
-export type NativeProviderResult = { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
+export type NativeProviderResult = { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit_exact"; writeSourceId: string; editId: string; markdown: string; expiresAtMs: number | null; projection: ProjectionDto } | { operation: "inspect_save"; operationId: string; state: MutationStateDto; projection: ProjectionDto | null } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
 
 export type Outcome = { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
@@ -1113,7 +1131,7 @@ export type SelectedOperation = {
 	operationId: string,
 };
 
-export type SelectedPurpose = "content" | "user_state";
+export type SelectedPurpose = "delete" | "content" | "user_state";
 
 export type SelectedReceipt = {
 	documentId: string,
