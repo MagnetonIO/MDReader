@@ -35,6 +35,10 @@ impl Workspace {
         }
         let original = ClosedOwner::acquire(&marker.receipt.original.locator.restore()?)?;
         let candidate = ClosedOwner::acquire(&candidate_path)?;
+        // Old/unknown stores introduced since preparation are not granted a
+        // closed-owner claim by the known reader locks.
+        super::super::super::backup_inventory::selections(original.path(), &Limits::default())?;
+        super::super::super::backup_inventory::selections(candidate.path(), &Limits::default())?;
         if original.binding() != &marker.receipt.original
             || candidate.binding() != &marker.receipt.candidate
         {

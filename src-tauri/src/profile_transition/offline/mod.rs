@@ -1,5 +1,7 @@
 //! Native offline migration. Current live-profile activation is never performed
 //! inside the backup callback. Only selected, actually closed owners are admitted.
+#[cfg(unix)]
+mod archive_fence;
 pub(crate) mod commands;
 #[cfg(unix)]
 mod conversion;

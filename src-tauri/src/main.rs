@@ -39,6 +39,21 @@ fn main() {
         }
         return;
     }
+    #[cfg(unix)]
+    if first
+        .as_ref()
+        .is_some_and(|arg| arg == "--reader-selection")
+    {
+        let Some(journal) = args.next().filter(|_| args.next().is_none()) else {
+            eprintln!("Profile selection unavailable; originals retained");
+            std::process::exit(2);
+        };
+        if mdreader_app_lib::run_profile_selection(std::path::PathBuf::from(journal)).is_err() {
+            eprintln!("Profile selection unavailable; originals retained");
+            std::process::exit(1);
+        }
+        return;
+    }
     if first.as_ref().is_some_and(|arg| arg == "--reader-profile") {
         let Some(profile) = args.next().filter(|_| args.next().is_none()) else {
             eprintln!("usage: MDReader --reader-profile ABS_PREPARED_PROFILE");

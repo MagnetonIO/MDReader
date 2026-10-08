@@ -31,6 +31,9 @@ pub(crate) enum MigrationRequest {
     Activate {
         operation_id: String,
     },
+    Rollback {
+        operation_id: String,
+    },
     Close {
         operation_id: String,
     },
@@ -216,7 +219,8 @@ fn execute(
         MigrationRequest::Export { operation_id }
         | MigrationRequest::Prepare { operation_id, .. }
         | MigrationRequest::Activate { operation_id }
-        | MigrationRequest::Close { operation_id } => operation_id,
+        | MigrationRequest::Close { operation_id }
+        | MigrationRequest::Rollback { operation_id } => operation_id,
         MigrationRequest::Preview | MigrationRequest::Resume => return Err(Error::Invalid),
     };
     let id = Uuid::parse_str(operation).map_err(|_| Error::Invalid)?;
@@ -272,27 +276,35 @@ fn execute(
                 .imported()?;
             Ok(result)
         }
-        MigrationRequest::Activate { .. } => {
-            let path = active
-                .workspace
-                .as_mut()
-                .ok_or(Error::Conflict)?
-                .activate()?;
-            // Selector CAS happened under both closed-owner capabilities. Drop
-            // those locks before launching the independently owned new profile.
-            // Keep the current GUI and any drafts untouched; this is a separate
-            // profile launch, not an in-place replacement or auto-resume switch.
+        MigrationRequest::Activate { .. } | MigrationRequest::Rollback { .. } => {
+            let rollback = matches!(request, MigrationRequest::Rollback { .. });
+            let workspace = active.workspace.as_mut().ok_or(Error::Conflict)?;
+            let directory = workspace.launch_directory();
+            if rollback {
+                workspace.rollback()?;
+            } else {
+                workspace.activate()?;
+            }
+            // Actual closed-owner guards end before the independently owned
+            // selected profile starts. Current GUI/drafts remain untouched.
             active.workspace.take();
             let executable = std::env::current_exe().map_err(|_| Error::Storage)?;
             std::process::Command::new(executable)
-                .arg("--reader-profile")
-                .arg(path)
+                .arg("--reader-selection")
+                .arg(directory)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .map_err(|_| Error::ReconciliationRequired)?;
-            Ok(reply("launch_requested", Some(id)))
+            Ok(reply(
+                if rollback {
+                    "rollback_launch_requested"
+                } else {
+                    "launch_requested"
+                },
+                Some(id),
+            ))
         }
         MigrationRequest::Preview | MigrationRequest::Resume => Err(Error::Invalid),
     }

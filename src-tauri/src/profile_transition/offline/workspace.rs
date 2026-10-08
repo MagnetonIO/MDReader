@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 #[path = "recovery.rs"]
 mod recovery;
+#[path = "rollback.rs"]
+mod rollback;
 const DATABASE: &str = "reader-v1/library.sqlite";
 const MARKER: &str = "native-reader-profile.json";
 pub(super) struct Workspace {
@@ -164,6 +166,7 @@ impl Workspace {
         let mut owners = Owners {
             original: &mut self.original,
             candidate: &mut self.candidate,
+            rollback: None,
         };
         let result = action(&mut Journal::attach(&mut self.journal)?, &mut owners)?;
         self.root.verify().map_err(|_| Error::Conflict)?;
@@ -207,6 +210,7 @@ impl Workspace {
 struct Owners<'a> {
     original: &'a mut ClosedOwner,
     candidate: &'a mut ClosedOwner,
+    rollback: Option<&'a rollback::PreservedWrites>,
 }
 impl ActivationOwner for Owners<'_> {
     fn with_frozen<T>(
@@ -242,10 +246,17 @@ impl FrozenActivation for Owners<'_> {
                 candidate::verify_committed_at_database(db, receipt, Path::new(DATABASE))
             })
     }
-    fn verify_rollback_preservation(&mut self, _: &ActivationReceipt) -> Result<()> {
-        // Rollback must export all writes since activation; a stale initial
-        // archive cannot authorize it. No caller "unchanged" flag is accepted.
-        Err(Error::ReconciliationRequired)
+    fn verify_rollback_preservation(&mut self, activation: &ActivationReceipt) -> Result<()> {
+        let proof = self.rollback.ok_or(Error::ReconciliationRequired)?;
+        if activation.kind != ReceiptKind::Activation
+            || activation.operation != proof.operation
+            || self.candidate.binding() != &activation.selected_root
+            || &proof.snapshot.manifest().original != self.candidate.binding()
+            || activation.to_generation != proof.generation
+        {
+            return Err(Error::Conflict);
+        }
+        proof.fence.verify()
     }
 }
 /// Explicit native prepared-profile startup. Validates exact root and committed
@@ -306,4 +317,55 @@ pub(crate) fn verify_prepared(path: &Path) -> Result<()> {
         return Err(Error::Conflict);
     }
     root.verify().map_err(|_| Error::Conflict)
+}
+
+/// Startup follows only an explicit existing native selector, with exact
+/// generation/root identity. Rollback opens the retained original in place;
+/// no archive bytes/grants/vault entries are copied back into it.
+pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
+    if std::fs::symlink_metadata(&root.path)
+        .map_err(|_| Error::Storage)?
+        .permissions()
+        .mode()
+        & 0o077
+        != 0
+    {
+        return Err(Error::Invalid);
+    }
+    let mut connection = Connection::open_with_flags(
+        root.path.join("selection.sqlite"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| Error::Storage)?;
+    let mut journal = Journal::attach(&mut connection)?;
+    let selection = journal.selection()?;
+    let transitions = journal.recover(None, 2)?;
+    if transitions.len() != 1 {
+        return Err(Error::Conflict);
+    }
+    let transition = &transitions[0];
+    let selected = SourceRoot::restore(
+        selection.root.locator.restore()?,
+        mdreader_core::SourceRootIdentity::Unix {
+            device: selection.root.device,
+            inode: selection.root.inode,
+        },
+    )
+    .map_err(|_| Error::Conflict)?;
+    match selection.mode {
+        SelectionMode::ReaderOnly => verify_prepared(&selected.path)?,
+        SelectionMode::LegacyCurrent
+            if transition.state == State::RolledBack
+                && selection.root == transition.original
+                && Some(selection.generation) == transition.rollback_generation =>
+        {
+            rollback::verify_record(&root, transition)?;
+        }
+        _ => return Err(Error::Conflict),
+    }
+    root.verify().map_err(|_| Error::Conflict)?;
+    selected.verify().map_err(|_| Error::Conflict)?;
+    Ok(selected)
 }

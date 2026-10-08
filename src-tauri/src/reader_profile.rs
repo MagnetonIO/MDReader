@@ -5,7 +5,50 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 struct ProfileRoot(SourceRoot);
 
-pub(crate) fn configure(app: &tauri::AppHandle, selected: Option<&Path>) -> Result<(), String> {
+#[cfg(all(unix, not(mobile)))]
+pub(crate) struct SelectionLaunch {
+    root: SourceRoot,
+    journal: PathBuf,
+}
+#[cfg(all(unix, not(mobile)))]
+pub(crate) fn selection_launch(journal: PathBuf) -> Result<SelectionLaunch, String> {
+    let root = crate::profile_transition::offline::workspace::selected_for_launch(&journal)
+        .map_err(|_| "Selected profile integrity failed")?;
+    Ok(SelectionLaunch { root, journal })
+}
+#[cfg(not(all(unix, not(mobile))))]
+pub(crate) struct SelectionLaunch;
+
+pub(crate) fn configure(
+    app: &tauri::AppHandle,
+    selected: Option<&Path>,
+    transition: Option<&SelectionLaunch>,
+) -> Result<(), String> {
+    #[cfg(all(unix, not(mobile)))]
+    if let Some(transition) = transition {
+        if selected.is_some() {
+            return Err("Conflicting profile selection".into());
+        }
+        let current =
+            crate::profile_transition::offline::workspace::selected_for_launch(&transition.journal)
+                .map_err(|_| "Selected profile integrity failed")?;
+        transition
+            .root
+            .verify()
+            .map_err(|_| "Selected profile changed")?;
+        if current.path != transition.root.path || current.identity != transition.root.identity {
+            return Err("Selected profile changed".into());
+        }
+        if !app.manage(ProfileRoot(current)) {
+            return Err("Reader profile already selected".into());
+        }
+        return Ok(());
+    }
+    #[cfg(not(all(unix, not(mobile))))]
+    if transition.is_some() {
+        return Err("Selected profiles unavailable on this platform".into());
+    }
+
     let path = match selected {
         Some(path) => {
             #[cfg(all(unix, not(mobile)))]
