@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../../App';
 import { catalogBackend, type CatalogDocument, type CatalogSource } from './backend';
+import { deviceReaderBackend } from '../device-reader/backend';
 import { nativeProvidersBackend } from '../../platform/providers';
 import { useTabsStore } from '../../stores/tabs';
 import { useSourcesStore } from '../../stores/sources';
@@ -76,6 +77,24 @@ test('primary startup lists canonical sources only and reads the exact selection
   expect(documentElement('.shell__reader-content').hasAttribute('inert')).toBe(false);
   expect(catalogBackend.readDocument).toHaveBeenCalledWith({ sourceId, path: 'current.md', revision, title: 'Current note', line: 1 });
   expect(legacy.read).not.toHaveBeenCalled();
+});
+
+test('published device receipts open inline through the service device reader without local folder or legacy reads', async () => {
+  const deviceId = '00000000-0000-4000-8000-000000000001';
+  const deviceSource = { ...source, catalogId: 'device:library', name: 'On this device', kind: 'device', coverage: 'published_device_metadata', librarySourceId: null };
+  vi.mocked(catalogBackend.list).mockResolvedValue({ operation: 'list', sources: [deviceSource], providerFailure: null, localFailure: null });
+  vi.mocked(catalogBackend.page).mockResolvedValue({ operation: 'page', source: deviceSource, nextCursor: null, documents: [{ ...document,
+    name: 'Received copy', displayPath: 'received.md', observation: 'published_device', open: { kind: 'device', documentId: deviceId, sourceId, revision, line: 1 } }] });
+  const read = vi.spyOn(deviceReaderBackend, 'read').mockResolvedValue({ operation: 'read_document', documentId: deviceId, sourceId, path: 'document.md', revision, markdown: '# Received device copy', lineStart: 1, lineEnd: 1 });
+  vi.spyOn(deviceReaderBackend, 'manifest').mockResolvedValue(null);
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse catalog On this device' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Read exact Received copy' }));
+  expect(await within(screen.getByRole('main')).findByRole('heading', { name: /Received device copy/ })).toBeTruthy();
+  expect(read).toHaveBeenCalledWith({ documentId: deviceId, sourceId, path: 'document.md', revision, title: 'Received copy', line: 1 });
+  expect(catalogBackend.readDocument).not.toHaveBeenCalled();
+  expect(legacy.read).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Device document' })).toBeNull();
 });
 function documentElement(selector: string): Element {
   const element = window.document.querySelector(selector);

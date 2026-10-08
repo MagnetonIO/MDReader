@@ -1,4 +1,6 @@
 //! Short, local-only catalog observations and bounded opaque continuations.
+#[cfg(feature = "sync-native")]
+mod device;
 mod model;
 use crate::provider;
 use mdreader_core::ReaderStore;
@@ -13,6 +15,8 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, CatalogError>;
 #[derive(Clone)]
 enum Snapshot {
+    #[cfg(feature = "sync-native")]
+    Device(mdreader_core::device::catalog::Snapshot),
     Local(mdreader_core::catalog::Snapshot),
     Provider(provider::catalog::CatalogSnapshot),
 }
@@ -25,6 +29,8 @@ struct Cursor {
     created: Instant,
 }
 pub struct Coordinator {
+    #[cfg(feature = "sync-native")]
+    device: Option<Arc<crate::device::Coordinator>>,
     owner: Arc<Mutex<ReaderStore>>,
     queries: Arc<Mutex<ReaderStore>>,
     cursors: Mutex<HashMap<Uuid, Cursor>>,
@@ -32,10 +38,16 @@ pub struct Coordinator {
 impl Coordinator {
     pub fn new(owner: Arc<Mutex<ReaderStore>>, queries: Arc<Mutex<ReaderStore>>) -> Self {
         Self {
+            #[cfg(feature = "sync-native")]
+            device: None,
             owner,
             queries,
             cursors: Mutex::new(HashMap::new()),
         }
+    }
+    #[cfg(feature = "sync-native")]
+    pub fn enable_device_catalog(&mut self, device: Arc<crate::device::Coordinator>) {
+        self.device = Some(device);
     }
     pub fn execute(&self, request: CatalogRequest) -> Result<CatalogReply> {
         match request {
@@ -65,6 +77,16 @@ impl Coordinator {
         }
         let queries = self.queries.lock().map_err(|_| CatalogError::Persistence)?;
         let mut sources = Vec::new();
+        #[cfg(feature = "sync-native")]
+        if let Some(device) = &self.device {
+            match device.with_catalog(|directory| self::device::source(&queries, directory)) {
+                Ok(Some(source)) => sources.push(source),
+                Ok(None) => {}
+                Err(error) => sources.push(self::device::header(Some(
+                    self::device::service_error(error),
+                ))),
+            }
+        }
         for id in local {
             let source = match queries.catalog_source(&id) {
                 Ok(source) => source,
@@ -233,6 +255,42 @@ impl Coordinator {
                     ))
                 })
                 .map_err(provider_error)?
+        } else if id == "device:library" {
+            #[cfg(feature = "sync-native")]
+            {
+                let device = self.device.as_ref().ok_or(CatalogError::Unsupported)?;
+                let expected = match previous.as_ref().map(|p| &p.snapshot) {
+                    Some(Snapshot::Device(s)) => Some(s),
+                    Some(_) => return Err(CatalogError::Invalid),
+                    None => None,
+                };
+                let queries = self.queries.try_lock().map_err(|_| CatalogError::Busy)?;
+                let page = device
+                    .with_catalog(|directory| {
+                        mdreader_core::device::catalog::page_in(
+                            &queries,
+                            directory,
+                            after,
+                            expected,
+                            limit as usize,
+                        )
+                    })
+                    .map_err(self::device::service_error)?
+                    .map_err(self::device::error)?;
+                let source = device::header(None);
+                let documents = page.documents.into_iter().map(device::document).collect();
+                (
+                    source,
+                    documents,
+                    page.next_after
+                        .zip(page.snapshot)
+                        .map(|(after, snapshot)| (after, Snapshot::Device(snapshot))),
+                )
+            }
+            #[cfg(not(feature = "sync-native"))]
+            {
+                return Err(CatalogError::Unsupported);
+            }
         } else {
             return Err(CatalogError::Invalid);
         };

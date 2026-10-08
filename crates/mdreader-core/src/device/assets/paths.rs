@@ -49,12 +49,23 @@ pub(super) fn document(store: &mut ReaderStore, id: &str, revision: &str) -> Res
     {
         return Err(unavailable());
     }
-    crate::device::read(store, id, Some(revision))
-        .map(|body| body.markdown)
-        .map_err(|error| match error {
-            crate::device::Error::UnsupportedSchema => Error::UnsupportedDocumentSchema,
-            _ => unavailable(),
-        })
+    let metadata = crate::device::catalog::document(store, id).map_err(|error| match error {
+        crate::device::Error::UnsupportedSchema => Error::UnsupportedDocumentSchema,
+        _ => unavailable(),
+    })?;
+    crate::device::catalog::read(
+        store,
+        &crate::device::catalog::Receipt {
+            document_id: id.into(),
+            source_id: metadata.source_id,
+            revision: revision.into(),
+        },
+    )
+    .map(|body| body.markdown)
+    .map_err(|error| match error {
+        crate::device::Error::UnsupportedSchema => Error::UnsupportedDocumentSchema,
+        _ => unavailable(),
+    })
 }
 pub(super) fn image_targets(markdown: &str) -> Vec<String> {
     let parsed = crate::parse_markdown(markdown, "document.md");

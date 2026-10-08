@@ -2,6 +2,9 @@ use super::*;
 
 #[path = "migrations/validation.rs"]
 mod validation;
+#[path = "schema_readonly.rs"]
+#[cfg(feature = "device-assets")]
+pub(super) mod readonly;
 const TABLES: &str = include_str!("migrations/001-device-documents.sql");
 const ADOPTION: &str = include_str!("migrations/002-adopt-document-namespace.sql");
 const STATE: &str = include_str!("migrations/003-device-state.sql");

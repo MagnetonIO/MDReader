@@ -12,8 +12,8 @@ import {
 import {
   nativeProvidersBackend,
   type NativeProvidersBackend,
-  type ProviderReaderReference,
 } from '../../platform/providers';
+import type { CanonicalReaderReference } from '../reader/contracts';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -24,7 +24,7 @@ type CatalogSidebarProps = {
     Partial<Pick<NativeProvidersBackend, 'state'>>;
   selectedProviderSources?: readonly string[];
   onProviderSelectionChange?: (sources: string[]) => void;
-  onOpen: (reference: ProviderReaderReference) => void;
+  onOpen: (reference: CanonicalReaderReference) => void;
   onManage: () => void;
   refreshKey?: number | string;
 };
@@ -172,7 +172,7 @@ export function CatalogSidebar({
 
   async function open(document: CatalogDocument) {
     if (busy || !page) return;
-    if (document.open.kind === 'exact') {
+    if (document.open.kind === 'exact' || document.open.kind === 'device') {
       try {
         onOpen(catalogReference(document.open, document.name));
       } catch (cause) {
@@ -220,7 +220,7 @@ export function CatalogSidebar({
           Reload catalog
         </button>
       </header>
-      <p>Existing folders and selected cloud metadata. Browsing does not grant access or contact providers.</p>
+      <p>Existing folders, device documents and selected cloud metadata. Browsing does not grant access or contact providers.</p>
       {onProviderSelectionChange ? (
         <p role="status">{selectedProviderSources.length
           ? `${selectedProviderSources.length} cloud sources included in search with the active folder.`
@@ -236,7 +236,7 @@ export function CatalogSidebar({
           <div key={source.catalogId}>
             <strong>{source.name}</strong>
             <small>
-              {source.kind === 'local' ? 'Folder'
+              {source.kind === 'device' ? 'Device library' : source.kind === 'local' ? 'Folder'
                 : source.kind === 'google_drive' ? 'Google Drive'
                   : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
               {' · '}{source.coverage.replaceAll('_', ' ')}
@@ -271,6 +271,7 @@ export function CatalogSidebar({
         <section aria-label={`Catalog documents ${page.source.name}`}>
           <p>{page.source.kind === 'local'
             ? 'Indexed observation; exact reads verify the current retained source bytes.'
+            : page.source.kind === 'device' ? 'Published device metadata; exact reads verify the retained copy. This list does not contact sync or claim remote freshness.'
             : 'Selected metadata coverage; admitted cached revisions only. Remote freshness has not been checked.'}
           </p>
           <p>Author and Git provenance were not observed by this catalog.</p>
@@ -288,7 +289,7 @@ export function CatalogSidebar({
                 {' · '}{document.sizeBytes === null ? 'Size unknown' : `${document.sizeBytes} bytes`}
               </small>
               <button type="button" disabled={busy} onClick={() => void open(document)}>
-                {document.open.kind === 'exact' ? 'Read exact' : 'Fetch current'} {document.name}
+                {document.open.kind === 'selected_uncached' ? 'Fetch current' : 'Read exact'} {document.name}
               </button>
             </div>
           ))}

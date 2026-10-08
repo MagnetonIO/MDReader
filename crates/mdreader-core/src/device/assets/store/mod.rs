@@ -1,6 +1,7 @@
 use super::*;
 
 mod cleanup;
+mod existing;
 mod manifest;
 mod read;
 mod schema;
