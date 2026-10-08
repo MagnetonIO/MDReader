@@ -14,6 +14,7 @@ import type { Element, Root as HastRoot } from 'hast';
 import type { Heading, Root as MdastRoot } from 'mdast';
 
 import { extractFrontmatter } from './frontmatter.js';
+import { recognizeCaptureFrontmatter } from './capture-frontmatter.js';
 import { rehypeReconcileFragments } from './reconcile-fragments.js';
 import { readerSanitizeSchema, USER_CONTENT_PREFIX } from './sanitize-schema.js';
 import { rehypeStampBlockMath, stampSourceLines } from './source-lines.js';
@@ -195,6 +196,7 @@ function buildOutline(mdast: MdastRoot, hast: HastRoot): OutlineItem[] {
 export function parseMarkdown(source: string, opts: ParseOptions = {}): ParsedDoc {
   const processor = buildProcessor(opts);
   const mdast = processor.parse(source) as MdastRoot;
+  recognizeCaptureFrontmatter(mdast, source);
   const hast = processor.runSync(mdast) as unknown as HastRoot;
 
   stampSourceLines(hast);
