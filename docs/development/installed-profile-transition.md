@@ -281,3 +281,23 @@ Next implementation order:
    rehearsal, then separately audit the explicitly selected installed profile.
    Retain originals/archive and verify restart/uncertain-reply recovery. Only
    after those gates can generic CatDB runtime/dependencies be removed.
+
+## Registry/admission source checkpoint
+
+The reviewed portable foundation was committed as `a705958` and merged into
+`e766942`. Its five focused fixtures and crate-only strict Clippy passed; the
+README records the exact scope and observed final-selector RED/restored GREEN.
+No native or installed-profile acceptance follows from that foundation.
+
+The next unregistered native registry/admission draft is in
+[`profile_transition`](../../src-tauri/src/profile_transition/README.md), based on
+`e766942`. It has a fixed eight-owner registry, noncloneable ordinary effect and
+frozen-participant capabilities, bounded exclusive drain and post-flush inventory
+capture. Final capability invalidation quarantines admission even on a failed
+callback, including partial acquisition failure. Two exact-native-module harness
+fixtures passed (3.09s compile / 0.09s tests), and strict all-target harness Clippy
+passed (0.93s), using the warm cache/two jobs and existing locked dependency
+versions. This did not compile/start the shipped native app or installed owners.
+Existing writer hooks, startup registration and selector handoff are still
+missing. Preservation may resume valid old owners; activation must keep both
+owners denied through durable selection reconciliation/restart instead.
