@@ -19,6 +19,14 @@ pub(in super::super) struct Intent {
     pub(in super::super) body: String,
 }
 impl Intent {
+    pub(in super::super) fn owner_summary(
+        &self,
+    ) -> AuthorityResult<super::super::EnrollmentSummary> {
+        Ok(super::super::EnrollmentSummary {
+            uncertain: self.progress.state == State::Uncertain,
+            expired: self.expires <= now()?,
+        })
+    }
     pub(in super::super) fn digest(&self) -> String {
         crate::blob_digest(self.body.as_bytes())
     }

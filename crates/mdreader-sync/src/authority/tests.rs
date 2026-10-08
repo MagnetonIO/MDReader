@@ -260,7 +260,17 @@ async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
     memory
         .delay
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    // This get waits behind the ONE still-running OS mutation; no replacement worker.
+    // A preservation FIFO barrier must wait for the actual OS mutation even
+    // after its original receiver timed out. It never infers mutation success.
+    vault
+        .settle(Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(memory
+        .records
+        .lock()
+        .unwrap()
+        .contains_key(reference.opaque_reference()));
     let restored = vault
         .get(&reference, Instant::now() + Duration::from_secs(2))
         .await
@@ -275,6 +285,34 @@ async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
     let reopened = memory.get(&reference).unwrap().unwrap();
     assert!(reopened.same_material(&restored));
     assert!(reopened.keys == restored.keys);
+    let factory = NativeAuthorityFactory::new(
+        OidcClient::new(registration("https://sync.example.test")).unwrap(),
+        vault.clone(),
+        SessionController::new(),
+    );
+    let summary = factory
+        .custody_summary(&reference, &library)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.lifecycle, CustodyLifecycle::BootstrapPending);
+    assert_eq!(summary.enrollment, None);
+    assert_eq!(summary.pair_approval, PairApprovalSummary::None);
+    assert_eq!(
+        factory
+            .custody_summary(&reference, &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap_err(),
+        AuthorityError::Scope
+    );
+    let absent =
+        SyncCredentialReference::parse(&format!("native-sync-v1-{}", uuid::Uuid::new_v4()))
+            .unwrap();
+    assert!(factory
+        .custody_summary(&absent, &library)
+        .await
+        .unwrap()
+        .is_none());
     let before = memory.records.lock().unwrap()[reference.opaque_reference()].clone();
     let mut bytes: Value = serde_json::from_slice(&before).unwrap();
     bytes["scope"]["device_id"] = json!(URL_SAFE_NO_PAD.encode([8; 32]));

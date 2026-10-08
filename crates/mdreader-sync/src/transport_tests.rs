@@ -310,6 +310,34 @@ async fn actual_worker_immutable_retry_scoped_receipts_staging_and_applied_only_
     assert!(hashes.iter().all(|h| h == &hashes[0]));
     assert_eq!(stats["commitHashes"][0], stats["commitHashes"][1]);
     assert_eq!(stats["acks"], json!([]));
+    let blob = entry.operation.blob.clone().unwrap();
+    let body = entry.envelope_utf8.as_ref().unwrap();
+    let downloaded = transport
+        .download_resources(&owner, &auth, std::slice::from_ref(&blob), body.len())
+        .await
+        .unwrap();
+    assert_eq!(downloaded[0].blob, blob);
+    assert_eq!(&downloaded[0].envelope_utf8, body);
+    assert!(matches!(
+        transport
+            .download_resources(&owner, &auth, std::slice::from_ref(&blob), body.len() - 1)
+            .await,
+        Err(TransportError::Quota)
+    ));
+    assert!(matches!(
+        transport
+            .download_resources(&owner, &auth, &[blob.clone(), blob], body.len() * 2)
+            .await,
+        Err(TransportError::Protocol)
+    ));
+    assert_eq!(
+        owner.with_store(&auth.scope, |s| s.cursors()).unwrap(),
+        CursorState {
+            received: 1,
+            applied: 0,
+            server_acknowledged: 0
+        }
+    );
     drop(owner);
     let owner = self::owner(&temp, &auth.scope);
     assert_eq!(

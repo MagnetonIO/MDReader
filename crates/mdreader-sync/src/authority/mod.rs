@@ -7,6 +7,7 @@ mod enrollment;
 mod factory;
 mod http;
 mod identity;
+mod incoming;
 mod jwt;
 mod keyring;
 mod loopback;
@@ -17,6 +18,7 @@ mod recovery;
 mod request;
 mod session;
 mod signing;
+mod summary;
 mod vault;
 pub mod wrapping;
 pub use capability::NativeAuthority;
@@ -34,6 +36,7 @@ use std::{
     fmt,
     time::{SystemTime, UNIX_EPOCH},
 };
+pub use summary::{CustodyLifecycle, CustodySummary, EnrollmentSummary, PairApprovalSummary};
 pub use vault::{SyncVault, SyncVaultClient};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

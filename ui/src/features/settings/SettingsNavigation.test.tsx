@@ -28,10 +28,10 @@ describe('Settings category lifecycle', () => {
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Manage selected provider' })).toBeNull();
     const nav = within(screen.getByRole('navigation', { name: 'Settings sections' }));
-    fireEvent.click(nav.getByRole('button', { name: 'Account & sync' }));
+    fireEvent.click(nav.getByRole('button', { name: 'Library & sources' }));
     expect(screen.getByRole('button', { name: 'Manage selected provider' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Appearance' })).toBeNull();
-    expect(nav.getByRole('button', { name: 'Account & sync' }).getAttribute('aria-current')).toBe('page');
+    expect(nav.getByRole('button', { name: 'Library & sources' }).getAttribute('aria-current')).toBe('page');
     fireEvent.click(nav.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByText('Capture controls')).toBeTruthy();
     expect(screen.getByText('Indexing controls')).toBeTruthy();
