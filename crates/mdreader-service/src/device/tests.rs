@@ -301,6 +301,15 @@ fn runtime_routes_device_catalog_and_read_without_requiring_configured_cloud_cre
         .unwrap()
         .iter()
         .any(|s| s["catalogId"] == "device:library"));
+    let owned: crate::catalog::ReaderOwnedSources =
+        serde_json::from_value(runtime.execute(crate::Request::ReaderOwnedSources).unwrap())
+            .unwrap();
+    assert!(
+        owned.devices.len() == 1
+            && owned.devices[0].document_id == f.receipt.document_id
+            && owned.devices[0].source_id == f.receipt.source_id
+            && owned.devices[0].revision == f.receipt.revision
+    );
     let body = runtime
         .execute(crate::Request::Device {
             request: DeviceRequest::Read { receipt: f.receipt },
