@@ -38,9 +38,9 @@ checks were repeated. `git diff --check` passed.
 After review, the focus filter also checks each element's own computed display
 and visibility, in addition to hidden/inert/closed-disclosure ancestors. The
 existing focus case was extended with direct display:none and visibility:hidden
-controls. This final narrow adjustment has not been rerun because the coordinating
-agent holds the sole heavyweight-check slot. Earlier 26-test evidence precedes
-that adjustment.
+controls. The coordinator reran the two navigation/focus tests against this final
+source: both passed in 131 ms (726 ms runner duration). Earlier 24 existing
+Settings cases and types/lint passed before that narrow adjustment.
 
 ## Remaining acceptance
 
