@@ -42,12 +42,14 @@ export function useSelectedSync(account: Account, selected: DeviceReference | un
       // An older native job must not replace a later dispatched request.
       if (retained && !sameUpload(retained, exact)) return;
       const outcome = observed.state.state === 'completed' ? observed.state.outcome : null;
-      const settled = outcome?.kind === 'selected_status' && sameSelection(outcome.selection, identity)
+      const purposeMatches = (outcome as typeof outcome & { purpose?: SelectedPurpose } | null)?.purpose === jobPurpose
+        || jobPurpose === 'content' && !(outcome && 'purpose' in outcome);
+      const settled = outcome?.kind === 'selected_status' && purposeMatches && sameSelection(outcome.selection, identity)
         && (outcome.disposition.state === 'absent' || outcome.disposition.state === 'applied');
       // Recover a lost begin reply, but never resurrect a settled inspection.
       if (!settled) await retainUpload(exact);
       if (cancelled) return;
-      if (outcome?.kind === 'selected_status' && sameSelection(outcome.selection, identity)) {
+      if (outcome?.kind === 'selected_status' && purposeMatches && sameSelection(outcome.selection, identity)) {
         if (outcome.disposition.state === 'absent' || outcome.disposition.state === 'applied') {
           if (retained) await settleUpload(exact);
           if (cancelled) return;

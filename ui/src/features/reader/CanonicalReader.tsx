@@ -13,7 +13,7 @@ import {
 import type { ReaderPosition } from '../reader-history/model';
 import { savedAnchor, restoreAnchor } from '../reader-history/positions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
   reference: ProviderReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
@@ -26,6 +26,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   onBack?: () => void; onForward?: () => void;
   canGoBack?: boolean; canGoForward?: boolean;
   readingControls?: (scrollToLine: (line: number) => void) => ReactNode;
+  onEdit?: (reference: ProviderReaderReference) => void;
+  editBusy?: boolean;
 }) {
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
@@ -140,6 +142,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
       <span>Read only</span>
+      {sourceKind === 'local' && onEdit ? <button type="button" disabled={!doc || editBusy}
+        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : 'Edit local file'}</button> : null}
       {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
