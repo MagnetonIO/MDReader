@@ -9,6 +9,8 @@ export type CanonicalReaderReference = ProviderReaderReference & { documentId?: 
 export interface LocalImageBytes {
   mime: 'image/png' | 'image/jpeg';
   base64: string;
+  width: number;
+  height: number;
 }
 
 /** Exact local candidates never carry provider handles or invented job receipts. */

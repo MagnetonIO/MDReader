@@ -13,11 +13,14 @@ export async function readCatalogImage(reference: ProviderReaderReference, targe
     const value = response.data;
     if (!value || value.operation !== 'image' || value.sourceId !== reference.sourceId
       || value.path !== reference.path || value.revision !== reference.revision || value.target !== target
-      || !['image/png', 'image/jpeg'].includes(value.mime) || typeof value.base64 !== 'string'
-      || !value.base64.length || value.base64.length > 5_592_408) {
+      || (value.mime !== 'image/png' && value.mime !== 'image/jpeg') || typeof value.base64 !== 'string'
+      || !value.base64.length || value.base64.length > 5_592_408
+      || !Number.isInteger(value.width) || !Number.isInteger(value.height)
+      || value.width < 1 || value.height < 1 || value.width > 4096 || value.height > 4096
+      || value.width * value.height > 4_000_000) {
       throw new Error('Invalid local image receipt.');
     }
-    return { mime: value.mime, base64: value.base64 };
+    return { mime: value.mime, base64: value.base64, width: value.width, height: value.height };
   } catch {
     throw new Error('This local image is unavailable, unsupported, or its source changed. Your document is unchanged.');
   }
