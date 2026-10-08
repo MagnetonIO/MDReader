@@ -49,6 +49,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   const [notice, setNotice] = useState<string | null>(null);
   const [dropboxPath, setDropboxPath] = useState('/');
   const [recursive, setRecursive] = useState(false);
+  const [dropboxEditing, setDropboxEditing] = useState(false);
   const lifecycle = useRef(0);
   const loadedProfile = useRef<string | null>(null);
   const documentRequest = useRef(0);
@@ -60,7 +61,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     loadedProfile.current = null;
     documentRequest.current += 1;
     action.current += 1;
-    setSnapshot(null); setSelected(null); setPage(null); setError(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
+    setDropboxEditing(false); setSnapshot(null); setSelected(null); setPage(null); setError(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
     if (!expanded) { setLoading(false); return; }
     setLoading(true);
     void backend.state().then((value) => { if (lifecycle.current === epoch) { loadedProfile.current = profileKey; setSnapshot(value); } })
@@ -117,11 +118,11 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   }
   function connect(kind: NativeProviderKind) {
     if (!canConnect(kind) || kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection()), epoch));
+    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), kind === 'dropbox' && dropboxEditing), epoch));
   }
   function reconnect(source: ProviderSource) {
     if (!canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection()), epoch));
+    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), source.kind === 'dropbox' && dropboxEditing), epoch));
   }
   function changeSource(source: ProviderSource, forget: boolean) {
     void run(async (epoch) => {
@@ -182,6 +183,8 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
           <p>Dropbox uses the registered MDReader App Folder. This selection also applies when reconnecting a Dropbox source.</p>
           <label>Dropbox App Folder path<input value={dropboxPath} onChange={(event) => setDropboxPath(event.target.value)} maxLength={4096} /></label>
           <label><input type="checkbox" checked={recursive} onChange={(event) => setRecursive(event.target.checked)} /> Include Dropbox subfolders</label>
+          <label><input type="checkbox" checked={dropboxEditing} onChange={(event) => setDropboxEditing(event.target.checked)} /> Allow guarded edits to selected Dropbox files</label>
+          <p>Leave unchecked for read-only access. Connecting or reconnecting with editing enabled asks Dropbox for write permission; an existing read-only grant is never upgraded automatically. Reconnect replaces the source’s old selection and authorization. Unsaved editor buffers remain yours to keep or download.</p>
           {!validDropboxPath(dropboxPath) ? <p>Enter an absolute App Folder path without parent traversal, such as /Notes.</p> : null}
           <button type="button" disabled={!canConnect('dropbox') || !validDropboxPath(dropboxPath)} onClick={() => connect('dropbox')}>Connect Dropbox App Folder</button>
           {snapshot.availability.find((value) => value.provider === 'dropbox')?.diagnostic ? <p>{snapshot.availability.find((value) => value.provider === 'dropbox')?.diagnostic}</p> : null}

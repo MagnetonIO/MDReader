@@ -54,8 +54,8 @@ export type ProviderLinkResolution =
 export interface ProviderDocumentBody { operation: 'read_document'; markdown: string; sourceId: string; path: string; revision: string; lineStart: number; lineEnd: number }
 export interface NativeProvidersBackend {
   state(): Promise<NativeProvidersSnapshot>;
-  connect(provider: NativeProviderKind, selection: DropboxSelection | null): Promise<ProviderAdmission>;
-  reconnect(sourceId: string, selection: DropboxSelection | null): Promise<ProviderAdmission>;
+  connect(provider: NativeProviderKind, selection: DropboxSelection | null, allowEditing?: boolean): Promise<ProviderAdmission>;
+  reconnect(sourceId: string, selection: DropboxSelection | null, allowEditing?: boolean): Promise<ProviderAdmission>;
   reconcile(attemptId: string): Promise<ProviderAdmission>;
   documents(sourceId: string, offset: number, limit: number): Promise<ProviderDocuments>;
   refresh(sourceId: string): Promise<ProviderRefresh>;
@@ -75,8 +75,8 @@ async function native<T>(command: string, args?: Record<string, unknown>): Promi
 }
 export const nativeProvidersBackend: NativeProvidersBackend = {
   state: () => native('native_provider_status'),
-  connect: (provider, selection) => native('native_provider_connect', { provider, selection }),
-  reconnect: (sourceId, selection) => native('native_provider_reconnect', { sourceId, selection }),
+  connect: (provider, selection, allowEditing = false) => native('native_provider_connect', { provider, selection, allowEditing }),
+  reconnect: (sourceId, selection, allowEditing = false) => native('native_provider_reconnect', { sourceId, selection, allowEditing }),
   reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
   documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
   refresh: (sourceId) => native('native_provider_request', { request: { operation: 'refresh', sourceId } }),
