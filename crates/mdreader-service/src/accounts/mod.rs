@@ -10,6 +10,8 @@ mod state;
 mod storage;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod acceptance;
 mod types;
 
 pub use freeze::FrozenAccounts;

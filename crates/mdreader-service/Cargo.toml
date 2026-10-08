@@ -32,6 +32,7 @@ uuid = { workspace = true }
 fs2 = "0.4"
 
 [dev-dependencies]
+keyring = "=3.6.3"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

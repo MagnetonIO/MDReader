@@ -6,10 +6,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { accountPeer } from './account-peer.mjs';
 const [web, temp] = process.argv.slice(2);
 const require = createRequire(path.join(web, 'package.json'));
 const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
-const { generateKeyPair, exportJWK, SignJWT } = await import(require.resolve('jose'));
+const jose = await import(require.resolve('jose'));
+const { generateKeyPair, exportJWK, SignJWT } = jose;
 const key=path.join(temp,'tls-key.pem'),cert=path.join(temp,'tls-cert.pem'),root=path.join(temp,'tls-root.pem'),rootKey=path.join(temp,'tls-root-key.pem'),csr=path.join(temp,'tls.csr'),ext=path.join(temp,'tls.ext');
 writeFileSync(ext,'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n');
 for(const args of [
@@ -21,16 +23,26 @@ const issuerURL='https://native-synthetic-issuer.example.test';
 const apiAudience='https://mdreader.dev/sync';
 const issuer=await generateKeyPair('RS256',{extractable:true});
 const jwk={...await exportJWK(issuer.publicKey),alg:'RS256',kid:'synthetic'};
-const runtime=new Miniflare(convertV4MiniflareOptions({modules:true,scriptPath:path.join(web,'.worker-build/sync/index.js'),compatibilityDate:'2026-10-01',durableObjects:{READER_ACCOUNTS:{className:'ReaderAccount',useSQLite:true}},r2Buckets:['ENCRYPTED_BLOBS'],bindings:{SYNC_ENABLED:'development',BROWSER_ORIGIN:'https://reader.example.test',OIDC_ISSUER:issuerURL,OIDC_AUDIENCE:apiAudience,OIDC_CLIENT_IDS:JSON.stringify(['native-synthetic']),OIDC_JWKS_URL:issuerURL+'/keys',ENROLLMENT_SECRET:'synthetic-only-server-secret-at-least-32-bytes'},outboundService:async request=>{if(request.url!==issuerURL+'/keys')return new Response(null,{status:404});return Response.json({keys:[jwk]});}}));
+const runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script:readFileSync(path.join(web,'.worker-build/sync/index.js'),'utf8'),compatibilityDate:'2026-10-01',durableObjects:{READER_ACCOUNTS:{className:'ReaderAccount',useSQLite:true}},r2Buckets:['ENCRYPTED_BLOBS'],bindings:{SYNC_ENABLED:'development',BROWSER_ORIGIN:'https://reader.example.test',OIDC_ISSUER:issuerURL,OIDC_AUDIENCE:apiAudience,OIDC_CLIENT_IDS:JSON.stringify(['native-synthetic']),OIDC_JWKS_URL:issuerURL+'/keys',ENROLLMENT_SECRET:'synthetic-only-server-secret-at-least-32-bytes'},outboundService:async request=>{if(request.url!==issuerURL+'/keys')return new Response(null,{status:404});return Response.json({keys:[jwk]});}}));
 await runtime.ready;
 const codes=new Map();
 let origin, dropBootstrap=false, dropRecover=false, dropPairApproval=false, dropPairEnrollment=false, dropCommit=false, dropAck=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
 const stats={oauthExchanges:0,pkceRejected:0,uploadHashes:[],commitHashes:[],pairApprovalHashes:[],acks:[],waiting:false};
 const hash=b=>createHash('sha256').update(b).digest('hex');
+const tokens=async nonce=>({
+  loginToken:await new SignJWT(nonce?{nonce}:{}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey),
+  token:await new SignJWT({client_id:'native-synthetic',scope:'sync:read sync:write'}).setProtectedHeader({alg:'RS256',kid:'synthetic',typ:'at+jwt'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience(apiAudience).setJti(randomUUID()).setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey)
+});
+const peer=accountPeer({runtime,jose,origin:()=>origin,issuer:issuerURL,tokens});
+
 const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(req,res)=>{
   try {
     const chunks=[];let n=0;for await(const c of req){n+=c.length;if(n>2*1024*1024+8192){res.writeHead(413).end();return;}chunks.push(c);}
     const body=Buffer.concat(chunks),url=new URL(req.url,origin);
+    if(url.pathname==='/__synthetic/account-peer'){
+      if(req.method!=='POST'){res.writeHead(405).end();return;}
+      res.setHeader('content-type','application/json');res.end(JSON.stringify(await peer(JSON.parse(body.toString()))));return;
+    }
     if(url.pathname==='/__synthetic/keys'){res.setHeader('content-type','application/json');res.end(JSON.stringify({keys:[jwk]}));return;}
     if(url.pathname==='/__synthetic/oauth/authorize'){
       const q=url.searchParams,redirect=new URL(q.get('redirect_uri'));

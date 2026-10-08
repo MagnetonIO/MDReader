@@ -4934,6 +4934,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "fs2",
+ "keyring",
  "mdreader-capture",
  "mdreader-connector-dropbox",
  "mdreader-connector-google-drive",
