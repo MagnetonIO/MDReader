@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Error, Limits, RelativeLocator, Result,
+    Error, Limits, Result,
     platform::{Root, Stage, stamp},
 };
 use std::{
@@ -21,9 +21,7 @@ impl DatabaseBackupTarget {
         stage: &Stage,
         member: &str,
         file: File,
-        source_root: &Root,
-        source: &Path,
-        expected: FileStamp,
+        source: BackupSource,
         bound: u64,
         limits: &Limits,
     ) -> Result<Self> {
@@ -33,11 +31,7 @@ impl DatabaseBackupTarget {
         }
         let request = BackupRequest {
             id: uuid::Uuid::new_v4(),
-            source: BackupSource {
-                root: source_root.binding.clone(),
-                relative: RelativeLocator::capture(source)?,
-                stamp: expected,
-            },
+            source,
             destination: BackupDestination {
                 root: root.binding.clone(),
                 member: member.into(),
