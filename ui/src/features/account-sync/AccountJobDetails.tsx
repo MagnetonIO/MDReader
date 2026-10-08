@@ -20,6 +20,7 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
           Acknowledged: {outcome.acknowledged}.
           {outcome.remotePending ? ' Remote work remains pending.' : ''}
           {outcome.localPending ? ' Local work remains pending.' : ''}
+          {outcome.pending ? ` Incoming item ${outcome.pending.sequence}: ${outcome.pending.reason.replaceAll('_', ' ')}.` : ''}
           {' '}These counts do not prove that every document is visible in the desktop reader.
         </p>
       ) : null}

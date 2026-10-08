@@ -13,6 +13,9 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
     mounted.current = true;
     return () => { mounted.current = false; epoch.current++; };
   }, []);
+  useEffect(() => {
+    if (!observing) { epoch.current++; setBusy(false); }
+  }, [observing]);
   const current = (version: number) => mounted.current && epoch.current === version;
 
   const refresh = useCallback(async () => {

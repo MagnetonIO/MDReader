@@ -1,20 +1,18 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
 import { AccountEnrollment } from './AccountEnrollment.js';
 
 export function AccountSyncPanel({ backend, active = true }: { backend?: AccountBackend; active?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const account = useAccountSync(backend, expanded && active);
+  const account = useAccountSync(backend, active);
+  useEffect(() => {
+    if (active) void account.refresh();
+  }, [active, account.refresh]);
   const status = account.status;
   const running = account.running || status?.latestJob?.state.state === 'running';
   const disabled = account.busy || running || !status?.configured;
 
-  function open() {
-    setExpanded((value) => !value);
-    if (!expanded) void account.refresh();
-  }
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
       <h3 id="settings-device-sync">Encrypted device sync</h3>
@@ -22,10 +20,6 @@ export function AccountSyncPanel({ backend, active = true }: { backend?: Account
         Sign in through the native browser, then explicitly enroll a library.
         Local documents and pending work remain on this device when disconnected.
       </p>
-      <button type="button" aria-expanded={expanded} onClick={open}>
-        {expanded ? 'Hide sync controls' : 'Manage encrypted sync'}
-      </button>
-      {expanded ? <>
         <button type="button" disabled={account.busy} onClick={() => void account.refresh()}>
           Refresh account state
         </button>
@@ -60,7 +54,6 @@ export function AccountSyncPanel({ backend, active = true }: { backend?: Account
           <AccountJobDetails job={status.latestJob} />
           <AccountEnrollment status={status} disabled={disabled} act={account.act} />
         </>}
-      </> : null}
     </section>
   );
 }

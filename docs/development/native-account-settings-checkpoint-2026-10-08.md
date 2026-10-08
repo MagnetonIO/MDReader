@@ -49,3 +49,26 @@ same-owner device catalog/read/asset adapter before claiming a useful complete
 synced-document reader workflow. No implicit folder grants or provider reads may
 bridge that gap. Live native OIDC registration, secure custody/recovery dialogs,
 packaged Settings geometry and actual multi-device acceptance remain separate.
+
+## Reviewed source correction checkpoint
+
+The public wire bridge `3ab167b` was cherry-picked as dependency `886bb6b`.
+Empty Status/Disconnect RPC commands and all empty native input actions now use
+empty struct variants, retaining extra-field rejection fixtures. The projection
+includes actual recoveryAvailable and typed pending sequence/reason evidence;
+all counters and sequences preserve precision as decimal strings.
+
+Account category activation reads metadata immediately, without authorization.
+There is no extra management accordion before connection state. Set up sync
+contains separate Devices, Recovery and Troubleshooting disclosures. Recovery
+controls are disabled with an explanation when the native adapter is absent.
+Background observation retires when the category becomes inactive; it never
+cancels the service actor implicitly.
+
+Authored focused cases remain four UI lifecycle/evidence tests, one native closed
+input/precision projection test, one RPC bounds/closed-input/unconfigured test
+and one runtime failure-isolation test. The first UI case also proves an actually
+configured account cannot offer recovery without its native capability. The
+native precision fixture uses actual HeadConflict pending evidence. These source
+corrections have not been executed here; root owns the next coherent validation
+and actual binding generation slot.
