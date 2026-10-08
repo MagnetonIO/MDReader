@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
 import '../features/settings/providers.css';
 import {
-  nativeProvidersBackend, NativeProviderError, providerErrorMessage,
+  nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
   type NativeProvidersBackend, type NativeProvidersSnapshot, type ProviderReaderReference,
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
   type DropboxSelection, type ProviderDocument, type ProviderCoverage,
@@ -98,13 +98,20 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       }
     }
   }
-  async function run(work: (epoch: number) => Promise<void>) {
+  async function run(work: (epoch: number) => Promise<void>, connection?: NativeProviderKind) {
     if (busy) return;
     const epoch = lifecycle.current;
     const id = ++action.current;
-    setBusy(true); setError(null); setNotice(null);
+    setBusy(true); setError(null);
+    setNotice(connection === 'google_drive' ? 'Finish signing in and selecting one or more files in your browser, then return here.'
+      : connection === 'dropbox' ? 'Finish signing in to Dropbox in your browser, then return here.' : null);
     try { await work(epoch); }
-    catch (cause) { if (lifecycle.current === epoch && action.current === id) setError(message(cause)); }
+    catch (cause) {
+      if (lifecycle.current === epoch && action.current === id) {
+        setNotice(null);
+        setError(connection ? providerConnectionErrorMessage(cause, connection) : message(cause));
+      }
+    }
     finally { if (lifecycle.current === epoch && action.current === id) setBusy(false); }
   }
   async function acceptAdmission(result: ProviderAdmission, epoch: number) {
@@ -120,11 +127,11 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   }
   function connect(kind: NativeProviderKind) {
     if (!canConnect(kind) || kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), kind === 'dropbox' && dropboxEditing), epoch));
+    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), kind === 'dropbox' && dropboxEditing), epoch), kind);
   }
   function reconnect(source: ProviderSource) {
     if (!canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), source.kind === 'dropbox' && dropboxEditing), epoch));
+    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), source.kind === 'dropbox' && dropboxEditing), epoch), source.kind);
   }
   function changeSource(source: ProviderSource, forget: boolean) {
     void run(async (epoch) => {
