@@ -1,135 +1,120 @@
 # MDReader
 
-A desktop Markdown library that indexes your notes — local folders, Google Drive,
-Dropbox — and lets you search them semantically, with every answer able to say
-where it came from.
+An offline-first Markdown reader for desktop, mobile and web. The reader-owned
+SQLite core indexes local folders, agent outputs and selected Google Drive or
+Dropbox documents. Search results retain source, revision and line evidence.
+Local reading does not require a cloud account.
 
-MDReader is the reference application for [CatDB](https://github.com/MagnetonIO/CatDB),
-and it consumes CatDB the way any other application would: as one versioned SDK
-dependency, from outside the platform repository.
+The reader migration is under development on `dev-reader-next`. Source changes,
+combined-candidate verification, packaged upgrades and deployment acceptance are
+separate milestones. See the [approved plan](docs/plans/sqlite-reader-next.md)
+and [status ledger](docs/development/sqlite-reader-next-status.md) for remaining
+release gates. Do not use historical validation receipts as proof of this tree.
 
----
+## Start the desktop app
 
-## What it is
+Install Node 24, pnpm as pinned in `package.json`, the pinned Rust toolchain and
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+From this repository root:
 
-A [Tauri 2](https://tauri.app) app — a Rust core with a React/CodeMirror
-front end — that builds a searchable index over Markdown you already have.
-
-- **Your files stay yours.** Sources are read-only. No adapter writes to a
-  source, ever; the trait it implements has no write operation, so that is a
-  property of the type system rather than a rule someone remembered to follow.
-- **Cloud without lock-in.** Google Drive and Dropbox connect through OAuth
-  PKCE. Credentials go to the OS keychain, never to a config file.
-- **Answers carry provenance.** Search results name the source that supplied
-  each field, and a value the app could not observe is *absent* — never a
-  guessed default.
-
-## Sources
-
-| Source | Reads | Observes |
-| --- | --- | --- |
-| Filesystem | a directory tree | `path`, `size`, `modifiedAt` |
-| Git | `rev-parse` / `ls-files` / `log` | `path`, `modifiedAt`, `author` |
-| Frontmatter | the YAML block in each file | `path`, `title`, `author`, `body` |
-| Google Drive | a Drive folder or file selection | Markdown documents + revisions |
-| Dropbox | a Dropbox path | Markdown documents + revisions |
-
-The first three read one local directory three different ways, which is why
-they live here rather than in CatDB: they are document-library sources, not
-enterprise data connectors.
-
-## Layout
-
-```
-crates/
-  mdreader-domain              CatDB schemas + mappings for the FS -> MD -> KN -> RX pipeline
-  mdreader-ingest              scanner, parser/chunker, incremental ingestor; hosts the `catdb` binary
-  mdreader-presentation        DTO shaping for the Tauri command layer
-  mdreader-connector-local     filesystem / git / frontmatter sources
-  mdreader-connector-google-drive
-  mdreader-connector-dropbox
-src-tauri/                     the desktop shell (commands, library, cloud accounts)
-ui/                            React + CodeMirror front end
-packages/                      shared TypeScript: config, markdown, ui
-catdb/sdk/typescript/          `@catdb/client` — talks to a CatDB endpoint
-fixtures/corpus/               a committed Markdown corpus the tests index
-demo/                          curated corpus for the demo runtime
+```sh
+pnpm install --frozen-lockfile
+pnpm desktop:dev
 ```
 
-`mdreader-ingest` is the composition root: the platform boundary runs one way
-(`catdb/*` never depends on `mdreader-*`), so the application side is where the
-domain registers itself into the engine.
+This starts the native Tauri application and its frontend development server.
+`pnpm dev` starts only the Vite frontend; it does not supply native commands.
+Stop development with Ctrl-C. The launcher uses Node rather than POSIX shell
+assignments, defaults Cargo to two jobs, and preserves the caller's environment.
+It does not download models or log private configuration itself.
 
-## Build
+If `target` is an old cache symlink, its destination must exist. Restore that
+cache directory or remove only the broken symlink. Do not delete a working Cargo
+cache as routine troubleshooting. Fresh clones use Cargo's ordinary target
+directory unless the developer deliberately configures another one.
 
-Requires the pinned Rust toolchain (`rust-toolchain.toml`, currently 1.94.0),
-Node with pnpm, and the Tauri prerequisites for your platform.
+The headless reader can run separately without model loading:
 
-```bash
-pnpm install
-pnpm --filter @mdreader/app tauri build
+```sh
+cargo run --locked -p mdreader-service -- --no-model /ABSOLUTE/PRIVATE/READER-DATA
 ```
 
-**Provider sign-in is compiled in.** The OAuth client IDs are read with
-`option_env!`, so a build without them produces an app that reports
-`client-configuration-missing` when you try to connect — correctly, but the
-button will not work. Supply them first:
+Choose a new private development directory, not an installed legacy profile.
+The service owns SQLite and source grants. It does not infer access to your home
+directory or agent histories. Desktop startup owns its own service configuration;
+this explicit command is useful for headless/MCP development.
 
-```bash
-set -a; source .env; set +a     # cargo does not read .env
-pnpm --filter @mdreader/app tauri build
+## Storage and source access
+
+`library.sqlite` holds durable library state; `index.sqlite` holds rebuildable
+search data. Original local/provider Markdown and durable captured outputs stay
+authoritative. Source reads and search leave Markdown unchanged; the editor
+writes only on an explicit guarded save. Cloud credentials remain in private
+platform custody. Optional encrypted sync transfers selected records and remains
+a development preview pending release acceptance.
+
+Keep backups of Markdown and durable state. Rebuilding a search index is not a
+library backup. Legacy CatDB data requires explicit offline export/migration;
+retain the original profile and use a separate destination for rollback. Do not
+point the new reader at a legacy database and assume it will upgrade in place.
+
+## Source layout
+
+| Directory | Responsibility |
+| --- | --- |
+| `crates/mdreader-core` | SQLite library, indexing, search and exact evidence |
+| `crates/mdreader-service` | Headless owner, scheduling and bounded IPC |
+| `crates/mdreader-provider`, `mdreader-connector-*` | Selected Drive/Dropbox access and guarded operations |
+| `crates/mdreader-capture`, `mdreader-mcp`, `mdreader-integrations` | Agent output capture and read-only client retrieval |
+| `crates/mdreader-sync` | Encrypted client protocol and durable sync state |
+| `crates/mdreader-legacy-export` | Offline legacy preservation and export |
+| `src-tauri` | Native composition and platform adapters |
+| `ui/src`, `packages` | App features and shared Markdown/reader presentation |
+| `extensions/vscode` | Local desktop VS Code extension |
+| `scripts`, `docs` | Development, packaging and maintained contracts |
+
+The companion [MDReader-Web](https://github.com/MagnetonIO/MDReader-Web) repository
+owns the Next.js website, browser SQLite reader and Cloudflare sync server. Run
+its `pnpm dev` from that checkout for `/app`; it is not hosted by this Vite app.
+
+## Providers and packaging
+
+Local reading needs no OAuth configuration. Google Drive/Dropbox sign-in needs
+the configured provider application identifiers and exact callbacks. The native
+build reads compile-time configuration; exporting variables after compilation
+does not change an existing app. Keep private `.env` configuration ignored and
+never print it. The release helper checks configured public identifiers against
+`scripts/release/public-oauth-authority.json`.
+
+```sh
+pnpm tauri build
 ```
 
-`.env` holds `MDREADER_GOOGLE_DRIVE_CLIENT_ID`,
-`MDREADER_GOOGLE_DRIVE_CLIENT_SECRET`, `MDREADER_DROPBOX_CLIENT_ID` and
-`MDREADER_DROPBOX_REDIRECT_URI`. It is gitignored. The committed
-`scripts/release/public-oauth-authority.json` carries SHA-256 hashes of the
-public values, so a build can prove it used the right ones without the repo
-ever holding them.
+That builds a native package, not a verified release. On macOS, release builds
+need the configured Developer ID signing identity and notarization; the launcher
+puts system tools ahead of Python shims for signing. Windows/Linux and mobile
+packages have their own host, signing and lifecycle acceptance requirements.
+See `scripts/release/` and the platform workflows for reproducible delivery.
 
-### macOS signing
+## Verification workflow
 
-Bundles must be signed with a real Developer ID
-(`tauri.conf.json` → `bundle.macOS.signingIdentity`). Ad-hoc signing makes the
-designated requirement the executable's *hash*, so every rebuild looks like a
-brand-new app to macOS and every privacy grant you have granted is orphaned.
+Builders implement and integrate usable source slices without per-feature
+review/testing cycles. One combined integration candidate receives independent
+review, appropriate tests, browser/native acceptance and bug fixes before `dev`.
+Use affected suites at that stage and keep one heavyweight command across the
+team. Do not default to `cargo test --workspace` for a local change.
 
-The `tauri` script puts `/usr/bin` ahead of pyenv shims on purpose — if `xattr`
-resolves to a shim, signing fails silently and falls back to ad-hoc.
+Relevant commands at that checkpoint include:
 
-## Test
-
-```bash
-cargo test --workspace
-pnpm --filter @mdreader/app test        # vitest
-pnpm --filter @mdreader/app test:e2e    # Playwright, real browser engines
+```sh
+cargo test --locked -p mdreader-core
+pnpm --filter @mdreader/app typecheck
+pnpm --filter @mdreader/app test
 ```
 
-Browser e2e runs the real UI in real engines, which is the only place CSS and
-selection are real — jsdom cannot see either. Know which mode a spec is in:
-mocked IPC proves rendering, real-engine proves answers.
-
-**Known failures: 15.** They are inherited, not new, and cluster on a single
-invariant — *an ambiguous cloud write must stay `WriteOutcomeUnknown`*. Twelve
-are in the Drive and Dropbox connectors, three in the shell. They are tracked;
-a green run today means 15 failures, not 0.
-
-## Relationship to CatDB
-
-CatDB is the platform: the semantic layer, the query engine, the storage, the
-federation. MDReader is an application built on it.
-
-The dependency is a single `catdb-sdk` git dependency — the whole platform
-behind one versioned facade, with connectors behind off-by-default features.
-MDReader's own connectors implement CatDB's `DataSource` trait from *outside*
-the platform repository, which is the check that the facade is actually
-complete rather than merely present. (It has already earned its keep: moving
-them out found two pieces of the surface that were private for exactly as long
-as every connector happened to be a sibling crate.)
-
-MDReader can also talk to a running CatDB deployment over HTTP through
-`@catdb/client`, which is what the **Connected CatDB** section in Settings
-configures.
+Select additional service/provider/sync/client/platform checks for the actual
+candidate. Unit results do not establish provider OAuth, installed-client trust,
+physical mobile behavior, a deployed sync roundtrip or a signed upgrade.
 
 ## License
 

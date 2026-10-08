@@ -6,6 +6,7 @@
     "node": "^24.0.0"
   },
   "scripts": {
+    "desktop:dev": "pnpm tauri dev",
     "dev": "pnpm --filter @mdreader/app dev",
     "build": "pnpm --filter @mdreader/app build",
     "test": "pnpm --filter @mdreader/app test",
