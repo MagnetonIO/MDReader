@@ -110,6 +110,17 @@ manifest generation to the live owner and exact incoming activation/selection.
 
 Inside one caller transaction:
 
+- `revalidate_current` is the read-only final fence for an external selected-document
+  association/outbox record. It requires the already-adopted exact v2 namespace;
+  old, future, missing or partial namespaces are rejected without migration or
+  repair. It delegates complete owner/connection/origin, retained file/root,
+  source permission/cache separation, document generation/state and asset
+  metadata/generation checks to the existing current-state validator. It does
+  not publish, regrant, update pins/positions, commit, index or authenticate a
+  remote session. Call it before admission and again after **all** caller SQL,
+  immediately before commit; any error requires whole-transaction rollback.
+  The service must separately retain its actual current authority/selection
+  lease through that commit and verify selected asset bytes outside the lock.
 - `publish_state` applies a `StateUpdate` under generation CAS. Positions are
   `Preserve`, `Start` or a bounded exact line. Local `device::pin` and `position`
   use the same monotonic generation rule, so changing a pin and changing it back
@@ -219,3 +230,28 @@ this transition slice. Default-core combined-tree checks, native schema fixture
 update, service replacement/state/deletion orchestration, archive relocation and
 product/live acceptance remain separate gates. No full-workspace or model tests
 were run for this checkpoint.
+
+## Read-only selected-association fence checkpoint (2026-10-08)
+
+Focused synthetic real-SQLite evidence, warm target, `CARGO_BUILD_JOBS=2`:
+
+```sh
+cargo test --locked --offline -p mdreader-core --features device-assets --lib device::publication::tests::current_fence:: -- --nocapture
+cargo test --locked --offline -p mdreader-core --features device-assets --lib device::publication::tests:: -- --nocapture
+cargo clippy --locked --offline -p mdreader-core --features device-assets --all-targets -- -D warnings
+```
+
+The new two cases passed in 0.08s (compile 3.45s). They prove that provisional
+caller associations roll back with changed source grants, asset state or document
+generation; successful association/reopen preserves the existing document, exact
+BOM/CRLF bytes and user state. The final fence itself changes neither SQLite's
+write count nor schema version. A coherent old v1 layout, future marker, missing
+marker and partial namespace are all rejected without repair.
+
+Temporarily removing only the v2 precondition produced the expected RED (0.06s):
+the compatibility initializer silently upgraded the coherent v1 namespace and
+accepted the fence. The exact source was restored byte-for-byte; the affected
+publication module then passed all 11 cases in 0.32s (compile 0.97s). Strict
+all-target core/device-assets Clippy passed in 2.57s. No schema migration,
+dependency, lockfile or protocol changed. This seam does not itself implement
+outgoing native-to-wire association, self-echo, QueueDocument RPC or UI.

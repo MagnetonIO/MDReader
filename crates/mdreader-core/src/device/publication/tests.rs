@@ -432,3 +432,6 @@ fn incoming_quota_dropping_fence_and_future_schema_are_shared_with_local_imports
 
 #[path = "transition_tests.rs"]
 mod transitions;
+
+#[path = "current_fence_tests.rs"]
+mod current_fence;
