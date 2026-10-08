@@ -1,20 +1,21 @@
 //! Explicit profile preservation and selection. No SDK, source grants or vault.
 //! Real native freeze participants must be registered before activation exists.
-pub mod candidate;
 pub mod bundle;
+pub mod candidate;
+pub mod database_backup;
 mod inventory;
 pub mod lifecycle;
-mod model;
-#[cfg(unix)]
-mod platform;
 #[cfg(unix)]
 mod live_database;
 mod locator;
+mod model;
+#[cfg(unix)]
+mod platform;
 mod snapshot;
 pub use inventory::{Inventory, InventorySelection};
-pub use model::*;
 pub use locator::{RelativeLocator, RootLocator};
-pub use snapshot::{stage, verify, FreezeOwner, FrozenProfile, VerifiedSnapshot};
+pub use model::*;
+pub use snapshot::{FreezeOwner, FrozenProfile, VerifiedSnapshot, stage, verify};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -40,6 +41,6 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(all(test, unix))]
-mod tests;
-#[cfg(all(test, unix))]
 mod live_database_tests;
+#[cfg(all(test, unix))]
+mod tests;

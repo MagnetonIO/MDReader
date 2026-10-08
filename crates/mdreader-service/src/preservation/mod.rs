@@ -10,7 +10,9 @@ pub use client::{Attempt, Client};
 #[cfg(feature = "sync-native")]
 pub(crate) use session::Session;
 pub(crate) use types::MAX_CONTROL_BYTES;
-pub use types::{ControlReply, ControlRequest, Error, Phase, Result, Scope, SelectedRoot, Status};
+pub use types::{
+    BackupStatus, ControlReply, ControlRequest, Error, Phase, Result, Scope, SelectedRoot, Status,
+};
 
 pub(crate) fn dispatch(runtime: &crate::runtime::Runtime, request: ControlRequest) -> ControlReply {
     #[cfg(feature = "sync-native")]

@@ -163,6 +163,7 @@ impl Client {
             scope,
             duration_ms,
             lease: None,
+            backup: None,
         })
     }
 }
@@ -171,6 +172,8 @@ pub struct Attempt {
     scope: Scope,
     duration_ms: u32,
     lease: Option<Uuid>,
+    // Retain issued target identity even when its dispatch reply is lost.
+    backup: Option<mdreader_profile::database_backup::BackupRequest>,
 }
 impl Attempt {
     fn receive(&mut self, request: ControlRequest) -> Result<Status> {
@@ -219,6 +222,8 @@ impl Attempt {
     }
 }
 
+#[path = "backup_client.rs"]
+mod backup_client;
 #[cfg(all(test, unix, feature = "sync-native"))]
 #[path = "tests.rs"]
 mod tests;

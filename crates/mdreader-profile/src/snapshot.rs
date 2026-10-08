@@ -1,10 +1,10 @@
 #[cfg(unix)]
 pub(crate) mod backup;
+#[cfg(unix)]
+use crate::database_backup::DatabaseBackupTarget;
 use crate::{
     Disposition, Error, Inventory, Limits, Manifest, Result, RootBinding, SnapshotIdentity,
 };
-#[cfg(unix)]
-use backup::{backup, check_database};
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -36,6 +36,22 @@ pub trait FrozenProfile {
     /// existing current-snapshot archives keep their protocol unchanged.
     fn preflush_json(&mut self) -> Result<Vec<crate::bundle::PreflushArtifact>> {
         Err(Error::NotQuiescent)
+    }
+    /// Local default borrows the real owner; remote participants override this
+    /// exact staged-target operation without pretending to yield a Connection.
+    fn backup_database(
+        &mut self,
+        target: &mut crate::database_backup::DatabaseBackupTarget,
+    ) -> Result<crate::database_backup::BackupReceipt> {
+        #[cfg(unix)]
+        {
+            target.local(self)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = target;
+            Err(Error::Unsupported)
+        }
     }
     fn with_database(
         &mut self,
@@ -85,7 +101,7 @@ pub fn stage(
     }
     #[cfg(unix)]
     {
-        use crate::platform::{copy_file, hash_file, stamp, Stage};
+        use crate::platform::{Stage, copy_file, hash_file};
         if inventory
             .entries
             .iter()
@@ -117,28 +133,20 @@ pub fn stage(
                         copy_file(input.as_mut().ok_or(Error::Invalid)?, &mut output, bound)?
                     }
                     Disposition::Sqlite => {
-                        let mut invoked = false;
-                        frozen.with_database(path, &mut |source| {
-                            if invoked {
-                                return Err(Error::Invalid);
-                            }
-                            invoked = true;
-                            check_database(source, &inventory.root, path, expected)?;
-                            backup(source, &stage.root.path.join(&name), bound, limits)?;
-                            check_database(source, &inventory.root, path, expected)?;
-                            Ok(())
-                        })?;
-                        if !invoked {
-                            return Err(Error::NotQuiescent);
-                        }
-                        let reopened = stage.root.open(Path::new(&name))?;
-                        let retained = stamp(&output)?;
-                        let current = stamp(&reopened)?;
-                        if (retained.0, retained.1) != (current.0, current.1) {
-                            return Err(Error::Conflict);
-                        }
-                        output.sync_all().map_err(|_| Error::Storage)?;
-                        hash_file(&mut output, bound)?
+                        let retained = output.try_clone().map_err(|_| Error::Storage)?;
+                        let mut target = DatabaseBackupTarget::new(
+                            &stage,
+                            &name,
+                            retained,
+                            &inventory.root,
+                            path,
+                            *expected,
+                            bound,
+                            limits,
+                        )?;
+                        let receipt = frozen.backup_database(&mut target)?;
+                        target.accept(&receipt)?;
+                        (receipt.bytes, receipt.sha256)
                     }
                     _ => return Err(Error::Invalid),
                 };
@@ -205,7 +213,7 @@ pub fn verify(
     }
     #[cfg(unix)]
     {
-        use crate::platform::{hash_file, stamp, Root};
+        use crate::platform::{Root, hash_file, stamp};
         use std::io::Read;
         let root = Root::private(archive)?;
         let mut file = root.open(Path::new("manifest.json"))?;

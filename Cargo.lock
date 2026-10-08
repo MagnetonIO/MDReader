@@ -3559,6 +3559,7 @@ dependencies = [
  "mdreader-credentials",
  "mdreader-integrations",
  "mdreader-legacy-export",
+ "mdreader-profile",
  "mdreader-provider",
  "mdreader-sync",
  "rusqlite",

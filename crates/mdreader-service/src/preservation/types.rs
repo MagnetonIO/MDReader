@@ -67,11 +67,34 @@ impl Scope {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlRequest {
-    Inspect { root: SelectedRoot },
-    Begin { scope: Scope, duration_ms: u32 },
-    Reconcile { scope: Scope },
-    Revalidate { scope: Scope, lease: Uuid },
-    Release { scope: Scope, lease: Uuid },
+    Inspect {
+        root: SelectedRoot,
+    },
+    Begin {
+        scope: Scope,
+        duration_ms: u32,
+    },
+    Reconcile {
+        scope: Scope,
+    },
+    Revalidate {
+        scope: Scope,
+        lease: Uuid,
+    },
+    Release {
+        scope: Scope,
+        lease: Uuid,
+    },
+    Backup {
+        scope: Scope,
+        lease: Uuid,
+        request: Box<mdreader_profile::database_backup::BackupRequest>,
+    },
+    ReconcileBackup {
+        scope: Scope,
+        lease: Uuid,
+        request: Box<mdreader_profile::database_backup::BackupRequest>,
+    },
 }
 impl fmt::Debug for ControlRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -82,6 +105,7 @@ impl fmt::Debug for ControlRequest {
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Acquiring,
+    BackingUp,
     Held,
     Released,
     Failed,
@@ -107,7 +131,20 @@ impl fmt::Debug for Status {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlReply {
+    Backup { status: BackupStatus },
     Hello { boot: Uuid },
     Status { status: Status },
     Failure { error: Error },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BackupStatus {
+    Running,
+    Completed {
+        receipt: Box<mdreader_profile::database_backup::BackupReceipt>,
+    },
+    Failed {
+        error: Error,
+    },
 }

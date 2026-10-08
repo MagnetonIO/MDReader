@@ -70,6 +70,18 @@ impl Owners {
     }
 }
 impl Guards {
+    pub fn with_main<T>(
+        &self,
+        action: impl FnOnce(&rusqlite::Connection) -> mdreader_profile::Result<T>,
+    ) -> Result<T> {
+        self.daemon
+            .as_ref()
+            .ok_or(Error::NotHeld)?
+            .with_library(|connection| Ok(action(connection)))
+            .map_err(daemon_error)?
+            .map_err(profile_error)
+    }
+
     pub fn release(
         mut self: Box<Self>,
         owners: &Owners,
@@ -146,5 +158,17 @@ fn capture_error(error: capture::Error) -> Error {
         capture::Error::Conflict => Error::StaleOwner,
         capture::Error::Unsupported => Error::Unsupported,
         capture::Error::Unavailable => Error::Unavailable,
+    }
+}
+
+pub(super) fn profile_error(error: mdreader_profile::Error) -> Error {
+    match error {
+        mdreader_profile::Error::Unsupported => Error::Unsupported,
+        mdreader_profile::Error::Bounds => Error::Bounds,
+        mdreader_profile::Error::Conflict | mdreader_profile::Error::Integrity => Error::StaleOwner,
+        mdreader_profile::Error::NotQuiescent => Error::Deadline,
+        mdreader_profile::Error::Invalid | mdreader_profile::Error::Unclassified => Error::Invalid,
+        mdreader_profile::Error::Storage => Error::Unavailable,
+        mdreader_profile::Error::ReconciliationRequired => Error::Uncertain,
     }
 }

@@ -3,7 +3,7 @@
 use super::admission::{Admission, DeniedLease, EffectLease, MAX_FREEZE_WAIT};
 use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
 use mdreader_profile::{
-    Error, FrozenProfile, Inventory, Participant, Result, RootBinding, REQUIRED_PARTICIPANTS,
+    Error, FrozenProfile, Inventory, Participant, REQUIRED_PARTICIPANTS, Result, RootBinding,
 };
 use rusqlite::Connection;
 use std::{
@@ -52,10 +52,31 @@ pub(crate) trait LiveParticipant: Send + Sync {
 pub(crate) trait FrozenParticipant {
     /// Bind exact native owner, root, operation and epoch, and reject replacement.
     fn revalidate(&mut self, scope: &FreezeScope<'_>) -> Result<()>;
+    /// Explicitly confirm remote release before global admission can resume.
+    /// Default local capabilities release through their retained RAII guards.
+    fn release(&mut self, _scope: &FreezeScope<'_>) -> Result<()> {
+        Ok(())
+    }
     /// Output-only archival evidence, not files to be restored into the current
     /// installed profile. Only the two real JSON participants supply entries.
     fn preflush_json(&mut self) -> Result<Vec<mdreader_profile::bundle::PreflushArtifact>> {
         Ok(Vec::new())
+    }
+    /// A service owner writes only the stage-created exact target; it does not
+    /// pretend to lend its SQLite connection across a process boundary.
+    fn backup_database(
+        &mut self,
+        target: &mut mdreader_profile::database_backup::DatabaseBackupTarget,
+    ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
+        #[cfg(unix)]
+        {
+            target.with_local_database(|relative, action| self.with_database(relative, action))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = target;
+            Err(Error::Unsupported)
+        }
     }
     /// Yield the actual registered owner's connection, or the specifically
     /// authorized fully closed legacy backup connection. Never reopen an SDK.
@@ -203,10 +224,15 @@ impl Registry {
         };
         // Keep the panic/quarantine guard armed through participant destruction
         // and resumption. No participant Drop may emit an early release notice.
-        drop(handles);
         if matches!(&result, Err(Error::ReconciliationRequired)) {
             return result;
         }
+        for (_, handle) in handles.iter_mut() {
+            handle
+                .release(&scope)
+                .inspect_err(|_| denied.quarantine())?;
+        }
+        drop(handles);
         denied.resume()?;
         for registered in self.participants.iter().flatten() {
             registered.owner.post_resume(&scope)?;
@@ -254,6 +280,26 @@ impl FrozenProfile for Frozen<'_, '_> {
         }
         self.revalidate()?;
         Ok(artifacts)
+    }
+    fn backup_database(
+        &mut self,
+        target: &mut mdreader_profile::database_backup::DatabaseBackupTarget,
+    ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
+        self.revalidate()?;
+        let relative = target.request().source.relative.restore()?;
+        let (_, handle) = self
+            .handles
+            .iter_mut()
+            .find(|(registered, _)| {
+                registered.databases.iter().any(|database| {
+                    database.relative == relative && matches!(database.kind, DatabaseKind::Durable)
+                })
+            })
+            .ok_or(Error::Invalid)?;
+        let receipt = handle.backup_database(target)?;
+        target.accept(&receipt)?;
+        self.revalidate()?;
+        Ok(receipt)
     }
     fn with_database(
         &mut self,

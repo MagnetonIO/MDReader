@@ -1,4 +1,4 @@
-use crate::{Error, Limits, Result};
+use crate::{Error, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -12,18 +12,14 @@ pub(crate) fn check_database(
     crate::live_database::check(source, root, path, expected)
 }
 #[cfg(unix)]
-pub(super) fn backup(
+pub(crate) fn backup(
     source: &Connection,
-    destination: &Path,
+    output: &mut Connection,
     bound: u64,
-    limits: &Limits,
+    max_steps: usize,
+    mut before_step: impl FnMut() -> Result<()>,
 ) -> Result<()> {
     use rusqlite::backup::{Backup, StepResult};
-    let mut output = Connection::open_with_flags(
-        destination,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| Error::Storage)?;
     let page_size: u64 = source
         .query_row("PRAGMA page_size", [], |r| r.get(0))
         .map_err(|_| Error::Storage)?;
@@ -36,9 +32,10 @@ pub(super) fn backup(
     if pages.checked_mul(page_size).ok_or(Error::Bounds)? > bound {
         return Err(Error::Bounds);
     }
-    let backup = Backup::new(source, &mut output).map_err(|_| Error::Storage)?;
+    let backup = Backup::new(source, output).map_err(|_| Error::Storage)?;
     let mut done = false;
-    for _ in 0..limits.max_backup_steps {
+    for _ in 0..max_steps {
+        before_step()?;
         match backup.step(128).map_err(|_| Error::Storage)? {
             StepResult::Done => {
                 done = true;
@@ -61,14 +58,5 @@ pub(super) fn backup(
         return Err(Error::Bounds);
     }
     drop(backup);
-    // The immutable archive is standalone. Do not inherit WAL mode from the
-    // source and let a subsequent read create members outside its manifest.
-    let mode: String = output
-        .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
-        .map_err(|_| Error::Storage)?;
-    if mode != "delete" {
-        return Err(Error::Integrity);
-    }
-    output.close().map_err(|_| Error::Storage)?;
     Ok(())
 }

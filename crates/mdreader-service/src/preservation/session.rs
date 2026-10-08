@@ -1,4 +1,7 @@
 //! One server-held operation, no renew/rebind and no release by client Drop.
+#[cfg(unix)]
+#[path = "backup.rs"]
+mod backup;
 use super::{
     guards::{Guards, Owners},
     types::MAX_DURATION_MS,
@@ -20,6 +23,8 @@ struct Active {
     phase: Phase,
     guards: Option<Box<Guards>>,
     failure: Option<Error>,
+    #[cfg(unix)]
+    backup: Option<backup::Record>,
 }
 struct Completed {
     scope: Scope,
@@ -111,6 +116,40 @@ impl Session {
     }
     pub(crate) fn execute(&self, request: ControlRequest) -> Result<ControlReply> {
         let status = match request {
+            ControlRequest::Backup {
+                scope,
+                lease,
+                request,
+            } => {
+                #[cfg(unix)]
+                {
+                    return self
+                        .backup(scope, lease, *request)
+                        .map(|status| ControlReply::Backup { status });
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (scope, lease, request);
+                    return Err(Error::Unsupported);
+                }
+            }
+            ControlRequest::ReconcileBackup {
+                scope,
+                lease,
+                request,
+            } => {
+                #[cfg(unix)]
+                {
+                    return self
+                        .reconcile_backup(&scope, lease, &request)
+                        .map(|status| ControlReply::Backup { status });
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (scope, lease, request);
+                    return Err(Error::Unsupported);
+                }
+            }
             ControlRequest::Inspect { root } => {
                 self.validate_root(&root)?;
                 if self.lock().broken {
@@ -174,6 +213,8 @@ impl Session {
                 phase: Phase::Acquiring,
                 guards: None,
                 failure: None,
+                #[cfg(unix)]
+                backup: None,
             });
         }
         // NO control/ReaderStore lock spans native drain, account/vault await,
@@ -262,6 +303,9 @@ impl Session {
                 active.phase = Phase::Quarantined;
                 active.failure = Some(error);
             }
+        }
+        if release && active.phase == Phase::BackingUp {
+            return Err(Error::Busy);
         }
         if release && (active.phase != Phase::Held || lease.is_none()) {
             return Err(Error::Quarantined);

@@ -1,12 +1,13 @@
 //! Bind the ordinary JSON writer before the first renderer invoke. This does
 //! not inventory/export a profile or make the other writer participants ready.
 use super::{
+    DatabaseKind, DatabaseRegistration, NativeProfileTransition,
     persistence::{
+        JsonOwner, PersistenceError,
         bridge::{FlushBridge, FlushChannel},
         commands::{PersistenceState, TauriFlushChannel},
-        JsonOwner, PersistenceError,
     },
-    NativeProfileTransition,
+    service::ServiceParticipant,
 };
 use mdreader_core::{SourceRoot, SourceRootIdentity};
 use mdreader_profile::{RootBinding, RootLocator};
@@ -37,13 +38,31 @@ fn compose(
     let owner = Arc::new(JsonOwner::new(root)?);
     let mut transition = NativeProfileTransition::for_root(binding.clone())
         .map_err(|_| PersistenceError::Conflict)?;
-    let flush = FlushBridge::new(owner.clone(), binding, channel)
+    let flush = FlushBridge::new(owner.clone(), binding.clone(), channel)
         .map_err(|_| PersistenceError::Conflict)?;
     for participant in flush.participants() {
         transition
             .register(participant, Vec::new())
             .map_err(|_| PersistenceError::Conflict)?;
     }
+    transition
+        .register(
+            Arc::new(
+                ServiceParticipant::new(binding, &directory.join("reader-v1"))
+                    .map_err(|_| PersistenceError::Conflict)?,
+            ),
+            vec![
+                DatabaseRegistration {
+                    relative: "reader-v1/library.sqlite".into(),
+                    kind: DatabaseKind::Durable,
+                },
+                DatabaseRegistration {
+                    relative: "reader-v1/index.sqlite".into(),
+                    kind: DatabaseKind::Rebuildable,
+                },
+            ],
+        )
+        .map_err(|_| PersistenceError::Conflict)?;
     Ok(PersistenceState {
         owner,
         transition: Arc::new(transition),
@@ -84,7 +103,7 @@ mod tests {
         let original = br#"{"settings":{"theme":"dark","unknown":1e999999}}"#;
         std::fs::write(root.join("settings.json"), original).unwrap();
         let state = compose(&root, Arc::new(NoFreeze)).unwrap();
-        assert_eq!(state.transition.missing_participants().len(), 6);
+        assert_eq!(state.transition.missing_participants().len(), 5);
         assert!(matches!(
             compose(&root, Arc::new(NoFreeze)),
             Err(PersistenceError::Unavailable)
@@ -108,9 +127,11 @@ mod tests {
                 r#"{"theme":"light"}"#,
             )
             .unwrap();
-        assert!(std::fs::read_to_string(root.join("settings.json"))
-            .unwrap()
-            .contains("1e999999"));
+        assert!(
+            std::fs::read_to_string(root.join("settings.json"))
+                .unwrap()
+                .contains("1e999999")
+        );
         assert_eq!(
             std::fs::read(root.join("unclassified.bin")).unwrap(),
             b"retained original"

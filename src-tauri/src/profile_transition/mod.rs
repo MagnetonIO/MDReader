@@ -4,8 +4,9 @@
 mod admission;
 pub(crate) mod persistence;
 mod registry;
+#[cfg(all(unix, not(mobile)))]
+mod service;
 mod storage_layout;
-#[cfg(test)]
 pub(crate) use storage_layout::DatabaseKind;
 pub(crate) use storage_layout::DatabaseRegistration;
 #[cfg(all(unix, not(mobile)))]
