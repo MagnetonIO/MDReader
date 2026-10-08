@@ -25,10 +25,21 @@ cd "$repo_root"
 
 # Reuse one compiled library-test artifact, without running unrelated app tests.
 # Exact filters keep provenance generation distinct from other search tests.
-cargo test --locked --package mdreader-app --lib --quiet \
-  tests::export_bindings_up_to_date -- --exact
-cargo test --locked --package mdreader-app --lib --quiet \
-  search::tests::search_over_a_real_corpus_returns_provenance_bearing_hits -- --exact
+GENERATOR_LOG="$(mktemp)"
+trap 'rm -f "$GENERATOR_LOG"' EXIT
+run_generator() {
+  local generator="$1"
+  cargo test --locked --package mdreader-app --lib --quiet \
+    "$generator" -- --exact | tee "$GENERATOR_LOG"
+  # Cargo exits successfully for an exact filter matching zero tests. A removed
+  # generator must fail this gate instead of silently accepting stale artifacts.
+  grep -Eq '^test result: ok\. 1 passed; 0 failed;' "$GENERATOR_LOG" || {
+    echo "expected exactly one successful generator: $generator" >&2
+    exit 1
+  }
+}
+run_generator tests::export_bindings_up_to_date
+run_generator search::tests::search_over_a_real_corpus_returns_provenance_bearing_hits
 
 git diff --exit-code HEAD -- \
   ui/src/bindings.ts \
