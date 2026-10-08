@@ -47,13 +47,15 @@ mod file_lock;
 mod library;
 mod library_query;
 mod mapping;
+mod mobile_assets;
+mod mobile_assets_commands;
 mod mobile_enterprise;
 mod mobile_reader;
 #[cfg(not(mobile))]
 mod native_providers;
+mod overlay;
 #[cfg(not(mobile))]
 mod provider_oauth;
-mod overlay;
 mod reader;
 mod reader_agents;
 mod reader_workload;
@@ -113,6 +115,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_rebuild,
             mobile_reader::mobile_reader_pin,
             mobile_reader::mobile_reader_position,
+            mobile_assets_commands::mobile_reader_assets,
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
@@ -191,8 +194,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         ])
 }
 
-/// The mobile webview can inspect semantic state but cannot invoke document,
-/// approval, local-source, or updater mutations.
+/// Mobile owns explicit private document/asset copies and reading state. It
+/// cannot mutate provider originals, legacy approvals, source folders or updates.
 #[cfg(mobile)]
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
@@ -205,6 +208,7 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_rebuild,
         mobile_reader::mobile_reader_pin,
         mobile_reader::mobile_reader_position,
+        mobile_assets_commands::mobile_reader_assets,
         cloud_accounts::list_cloud_sources,
         cloud_accounts::query_cloud_documents,
         mobile_enterprise::connected_catdb_state,
@@ -308,11 +312,11 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .manage(LibraryState::default())
         .manage(cloud_accounts::CloudAccountsState::default())
         .manage(mobile_enterprise::MobileEnterpriseState::default())
+        .manage(mobile_assets::AssetRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
-            let reader_backend = reader::ReaderBackend::open(
-                app.path().app_data_dir()?.join("reader-v1"),
-            )?;
+            let reader_backend =
+                reader::ReaderBackend::open(app.path().app_data_dir()?.join("reader-v1"))?;
             #[cfg(not(mobile))]
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {

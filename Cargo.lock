@@ -4533,6 +4533,7 @@ dependencies = [
  "catdb-sdk",
  "fs2",
  "hmac 0.12.1",
+ "image",
  "keyring",
  "mdreader-capture",
  "mdreader-connector-dropbox",

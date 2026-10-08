@@ -28,6 +28,7 @@ export const commands = {
 	mobileReaderRebuild: () => typedError<null, string>(__TAURI_INVOKE("mobile_reader_rebuild")),
 	mobileReaderPin: (id: string, pinned: boolean) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_pin", { id, pinned })),
 	mobileReaderPosition: (id: string, revision: string, line: number) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_position", { id, revision, line })),
+	mobileReaderAssets: (request: AssetRequest) => typedError<AssetReply, string>(__TAURI_INVOKE("mobile_reader_assets", { request })),
 	/**
 	 *  Read a single markdown document from within the granted workspace. Thin:
 	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
@@ -503,6 +504,57 @@ export type ArrowMoveDto = {
 	/**  Other source arrows landing on the same path. */
 	shared_with: string[],
 };
+
+export type AssetInventory = {
+	items: AssetInventoryItem[],
+	reserved_bytes: number,
+	max_bytes: number,
+	max_items: number,
+};
+
+export type AssetInventoryItem = {
+	asset_id: string,
+	document_id: string,
+	document_revision: string,
+	target: string,
+	bytes: number,
+	received: number,
+	state: string,
+};
+
+export type AssetManifest = {
+	document_id: string,
+	document_revision: string,
+	manifest: string,
+	assets: AssetReceipt[],
+	pending: AssetPending[],
+	targets: string[],
+	targets_truncated: boolean,
+};
+
+export type AssetPending = {
+	intent_id: string,
+	target: string,
+	bytes: number,
+	received: number,
+	state: string,
+};
+
+export type AssetReceipt = {
+	asset_id: string,
+	document_id: string,
+	document_revision: string,
+	target: string,
+	content_hash: string,
+	mime: string,
+	bytes: number,
+	width: number,
+	height: number,
+};
+
+export type AssetReply = { operation: "inventory"; value: AssetInventory } | { operation: "manifest"; value: AssetManifest } | { operation: "intent"; intent_id: string; received: number } | { operation: "published"; receipt: AssetReceipt; manifest: string } | { operation: "opened"; session_id: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+
+export type AssetRequest = { operation: "inventory" } | { operation: "forget"; asset_id: string } | { operation: "manifest"; document_id: string; revision: string } | { operation: "begin"; document_id: string; revision: string; target: string; bytes: number; expected_manifest: string } | { operation: "write"; intent_id: string; offset: number; base64: string } | { operation: "commit"; intent_id: string } | { operation: "discard"; intent_id: string } | { operation: "remove"; document_id: string; revision: string; asset_id: string; expected_manifest: string } | { operation: "open"; document_id: string; revision: string; asset_id: string; manifest: string } | { operation: "chunk"; session_id: string; offset: number } | { operation: "close"; session_id: string };
 
 /**  The recorded contribution of each ranking boost to a hit's score. */
 export type BoostsDto = {
