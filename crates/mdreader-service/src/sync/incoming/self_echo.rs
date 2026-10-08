@@ -23,6 +23,14 @@ impl IncomingCoordinator {
         identity: &identity::Identity,
         origin: &publication::IncomingOrigin,
     ) -> Result<Option<Outcome>> {
+        if identity.deleted {
+            return self.short(selected, |owner, _| {
+                Ok(
+                    super::delete_echo::check(owner, input.scope(), identity, origin)?
+                        .map(Outcome::Pending),
+                )
+            });
+        }
         let start = self.short(selected, |owner, _| {
             start(owner, input.scope(), identity, origin, self)
         })?;

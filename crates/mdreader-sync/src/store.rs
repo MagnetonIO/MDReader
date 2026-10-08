@@ -20,6 +20,8 @@ mod outbox_read;
 use outbox_read::entry_on;
 #[cfg(test)]
 mod graph_tests;
+mod tombstone;
+pub use tombstone::{enqueue_tombstone_in, published_tombstone_proof_in, PublishedTombstoneProof};
 mod upload;
 pub use graph::{enqueue_graph_in, StoredDependency};
 

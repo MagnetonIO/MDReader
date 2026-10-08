@@ -12,6 +12,24 @@ impl IncomingCoordinator {
         operation: Uuid,
         user_state: bool,
     ) -> Result<SelectedDisposition> {
+        self.inspect_selected_kind(selected, expected, operation, user_state, false)
+    }
+    pub fn inspect_selected_delete(
+        &self,
+        selected: &SelectedIncoming,
+        expected: &ReadingReceipt,
+        operation: Uuid,
+    ) -> Result<SelectedDisposition> {
+        self.inspect_selected_kind(selected, expected, operation, false, true)
+    }
+    fn inspect_selected_kind(
+        &self,
+        selected: &SelectedIncoming,
+        expected: &ReadingReceipt,
+        operation: Uuid,
+        user_state: bool,
+        deleted: bool,
+    ) -> Result<SelectedDisposition> {
         let _operation = self.operation.try_lock().map_err(|_| Error::Busy)?;
         outgoing::validate_selected(expected)?;
         if operation.get_version_num() != 4 {
@@ -31,7 +49,7 @@ impl IncomingCoordinator {
             })?;
             let Some(stored) = stored else { session.check()?; return Ok(SelectedDisposition::Absent); };
             let intent = &stored.intent;
-            if intent.state.is_some() != user_state || intent.native_document != expected.document_id || intent.native_revision != expected.revision {
+            if intent.operation.deleted != deleted || intent.state.is_some() != user_state || intent.native_document != expected.document_id || intent.native_revision != expected.revision {
                 return Err(Error::Conflict);
             }
             if let Some(sequence) = stored.applied {
@@ -81,29 +99,48 @@ fn applied(
         revision_id: intent.operation.revision_id.clone(),
         item_id: intent.operation.item_id.clone(),
         blob: intent.operation.blob.clone(),
-        deleted: false,
+        deleted: intent.operation.deleted,
         parents: intent.operation.parents.clone(),
         device: scope.device_id().into(),
     };
     ledger::validate_receipt(&identity, &receipt)?;
-    if identity.user_state != intent.state.as_ref().map(|state| state.payload())
+    if intent.operation.deleted {
+        let proof = mdreader_sync::published_tombstone_proof_in(
+            tx,
+            scope,
+            &intent.operation.operation_id,
+            &change,
+        )?;
+        if proof.entry().operation != intent.operation {
+            return Err(Error::Conflict);
+        }
+    }
+    if identity.deleted != intent.operation.deleted
+        || identity.user_state != intent.state.as_ref().map(|state| state.payload())
         || identity.change != change
         || raw_origin != serde_json::to_string(&intent.origin)?
         || !outgoing::matches_selected(expected, &receipt.document)
         || receipt.operation
-            != if intent.state.is_some() {
+            != if intent.operation.deleted {
+                Operation::DocumentDeleted
+            } else if intent.state.is_some() {
                 Operation::UserState
             } else {
                 Operation::Content
             }
-        || receipt.generation != Some(intent.generation)
+        || receipt.generation
+            != Some(if intent.operation.deleted {
+                intent.generation.checked_add(1).ok_or(Error::Conflict)?
+            } else {
+                intent.generation
+            })
         || receipt.markdown_sha256 != intent.markdown_sha256
         || mdreader_sync::blob_digest(&serde_json::to_vec(&receipt.materialized_assets)?)
             != intent.assets_sha256
     {
         return Err(Error::Conflict);
     }
-    let staged:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM mdreader_sync_remote r JOIN mdreader_sync_cursors c USING(account,library,device) WHERE r.account=?1 AND r.library=?2 AND r.device=?3 AND r.sequence=?4 AND r.revision=?5 AND r.item=?6 AND r.blob=?7 AND r.deleted=0 AND r.parents=?8 AND r.source_device=?3 AND c.applied>=?4)", rusqlite::params![scope.account_digest(),scope.library_id(),scope.device_id(),sequence,change.revision_id,change.item_id,change.blob,serde_json::to_string(&change.parents)?], |r|r.get(0))?;
+    let staged:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM mdreader_sync_remote r JOIN mdreader_sync_cursors c USING(account,library,device) WHERE r.account=?1 AND r.library=?2 AND r.device=?3 AND r.sequence=?4 AND r.revision=?5 AND r.item=?6 AND r.blob IS ?7 AND r.deleted=?9 AND r.parents=?8 AND r.source_device=?3 AND c.applied>=?4)", rusqlite::params![scope.account_digest(),scope.library_id(),scope.device_id(),sequence,change.revision_id,change.item_id,change.blob,serde_json::to_string(&change.parents)?,change.deleted], |r|r.get(0))?;
     let (raw_operation,raw_commit):(String,String)=tx.query_row("SELECT operation,receipt FROM mdreader_sync_outbox WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND revision_id=?5 AND state='acknowledged' AND typeof(operation)='text' AND length(CAST(operation AS BLOB))<=4096 AND typeof(receipt)='text' AND length(CAST(receipt AS BLOB))<=4096",rusqlite::params![scope.account_digest(),scope.library_id(),scope.device_id(),intent.operation.operation_id,change.revision_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(Error::Conflict)?;
     let operation: mdreader_sync::CommitOperation = serde_json::from_str(&raw_operation)?;
     let commit: mdreader_sync::CommitReceipt = serde_json::from_str(&raw_commit)?;

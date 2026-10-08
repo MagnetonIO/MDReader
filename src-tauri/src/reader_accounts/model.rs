@@ -34,6 +34,8 @@ pub enum AccountAction {
     deny_unknown_fields
 )]
 pub enum AccountRequest {
+    SyncSelectedDelete { selection: SelectedOperation },
+    InspectSelectedDelete { selection: SelectedOperation },
     SyncSelectedState { selection: SelectedOperation },
     InspectSelectedState { selection: SelectedOperation },
     SyncSelected { selection: SelectedOperation },
@@ -193,12 +195,14 @@ impl From<service::AccountError> for AccountError {
 #[derive(Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectedPurpose {
+    Delete,
     Content,
     UserState,
 }
 impl From<service::SelectedPurpose> for SelectedPurpose {
     fn from(value: service::SelectedPurpose) -> Self {
         match value {
+            service::SelectedPurpose::Delete => Self::Delete,
             service::SelectedPurpose::Content => Self::Content,
             service::SelectedPurpose::UserState => Self::UserState,
         }

@@ -134,6 +134,20 @@ impl Coordinator {
             SelectedPurpose::UserState,
         ))
     }
+    pub fn begin_selected_delete(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::SelectedSync(
+            selection,
+            SelectedPurpose::Delete,
+        ))
+    }
+    pub fn inspect_selected_delete(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::InspectSelected(
+            selection,
+            SelectedPurpose::Delete,
+        ))
+    }
     fn begin_action(&self, action: actor::Action) -> Result<Uuid> {
         let sender = self.sender.as_ref().ok_or(AccountError::Unconfigured)?;
         let mut state = self

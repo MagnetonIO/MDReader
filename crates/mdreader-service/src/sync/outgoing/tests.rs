@@ -115,7 +115,7 @@ impl Local {
             &self.f.scope,
             Admission {
                 intent: &self.intent,
-                graph: &self.graph,
+                graph: Some(&self.graph),
                 current: &self.current,
                 archive: &self.snapshot.archive,
                 expected: &mdreader_core::device::catalog::receipt(&self.current.state().document),
@@ -250,7 +250,7 @@ fn selected_association_and_ciphertext_graph_rollback_and_reopen_as_one_unit() {
         &local.f.scope,
         Admission {
             intent: &local.intent,
-            graph: &local.graph,
+            graph: Some(&local.graph),
             current: &local.current,
             archive: &local.snapshot.archive,
             expected: &mdreader_core::device::catalog::receipt(&local.current.state().document),

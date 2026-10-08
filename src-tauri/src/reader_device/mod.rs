@@ -11,7 +11,10 @@ struct Envelope {
     result: Option<service::DeviceReply>,
     error: Option<service::DeviceError>,
 }
-fn request(reader: &ReaderBackend, operation: DeviceRequest) -> Result<DeviceReply, DeviceError> {
+pub(crate) fn request(
+    reader: &ReaderBackend,
+    operation: DeviceRequest,
+) -> Result<DeviceReply, DeviceError> {
     let response: Envelope = reader
         .typed(Request::Device {
             request: operation.service()?,

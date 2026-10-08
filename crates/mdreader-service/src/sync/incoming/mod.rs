@@ -17,6 +17,8 @@ use uuid::Uuid;
 
 mod commit;
 mod content_commit;
+mod delete_commit;
+mod delete_echo;
 mod heads;
 pub(in crate::sync) use heads::Head;
 pub(in crate::sync) use identity::scope_key;

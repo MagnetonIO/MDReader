@@ -17,6 +17,12 @@ impl Actor {
         self.blocking(move || {
             let _lease = lease;
             match purpose {
+                SelectedPurpose::Delete => active.incoming.queue_selected_delete(
+                    &active.selected,
+                    &active.authority,
+                    &selection.receipt,
+                    selection.operation_id,
+                )?,
                 SelectedPurpose::Content => active.incoming.queue_selected_document(
                     &active.selected,
                     &active.authority,
@@ -52,6 +58,13 @@ impl Actor {
         let disposition = self
             .blocking(move || {
                 let _lease = lease;
+                if purpose == SelectedPurpose::Delete {
+                    return Ok(active.incoming.inspect_selected_delete(
+                        &active.selected,
+                        &inspect.receipt,
+                        inspect.operation_id,
+                    )?);
+                }
                 Ok(active.incoming.inspect_selected_document(
                     &active.selected,
                     &inspect.receipt,

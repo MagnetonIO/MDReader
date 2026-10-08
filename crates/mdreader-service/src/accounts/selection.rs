@@ -69,6 +69,7 @@ fn hash(value: &str) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectedPurpose {
+    Delete,
     Content,
     UserState,
 }

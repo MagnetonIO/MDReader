@@ -38,8 +38,8 @@ pub(in crate::sync) struct Intent {
 impl Intent {
     pub fn validate(&self, scope: &SyncScope) -> Result<()> {
         self.operation.wire_bytes()?;
-        if self.operation.deleted
-            || self.operation.blob.is_none()
+        if self.operation.deleted != self.operation.blob.is_none()
+            || self.operation.deleted && (self.state.is_some() || self.head.is_none())
             || self.native_document.len() != 36
             || !Uuid::parse_str(&self.native_document)
                 .is_ok_and(|id| id.get_version_num() == 4 && id.to_string() == self.native_document)

@@ -3,6 +3,13 @@ use super::*;
 use crate::sync::outgoing::{self, association, snapshot::Snapshot, Intent, QueuedDocument};
 use mdreader_sync::{outgoing::OutgoingContent, CommitOperation, SyncLimits};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueueKind {
+    Content,
+    State,
+    Delete,
+}
+
 impl IncomingCoordinator {
     /// Native blocking-worker seam only. The product exposes no QueueDocument
     /// RPC/UI until real admission, self-echo and cancellation acceptance pass.
@@ -14,7 +21,7 @@ impl IncomingCoordinator {
         expected: &mdreader_core::device::catalog::Receipt,
         operation: Uuid,
     ) -> Result<QueuedDocument> {
-        self.queue_selected(selected, authority, expected, operation, false)
+        self.queue_selected(selected, authority, expected, operation, QueueKind::Content)
     }
     pub fn queue_selected_state(
         &self,
@@ -23,7 +30,16 @@ impl IncomingCoordinator {
         expected: &mdreader_core::device::catalog::Receipt,
         operation: Uuid,
     ) -> Result<QueuedDocument> {
-        self.queue_selected(selected, authority, expected, operation, true)
+        self.queue_selected(selected, authority, expected, operation, QueueKind::State)
+    }
+    pub fn queue_selected_delete(
+        &self,
+        selected: &SelectedIncoming,
+        authority: &NativeAuthority,
+        expected: &mdreader_core::device::catalog::Receipt,
+        operation: Uuid,
+    ) -> Result<QueuedDocument> {
+        self.queue_selected(selected, authority, expected, operation, QueueKind::Delete)
     }
     fn queue_selected(
         &self,
@@ -31,8 +47,10 @@ impl IncomingCoordinator {
         authority: &NativeAuthority,
         expected: &mdreader_core::device::catalog::Receipt,
         operation: Uuid,
-        user_state: bool,
+        kind: QueueKind,
     ) -> Result<QueuedDocument> {
+        let user_state = kind == QueueKind::State;
+        let deleted = kind == QueueKind::Delete;
         let _operation = self.operation.try_lock().map_err(|_| Error::Busy)?;
         outgoing::validate_selected(expected)?;
         let document = Uuid::parse_str(&expected.document_id).map_err(|_| Error::Scope)?;
@@ -66,6 +84,7 @@ impl IncomingCoordinator {
                     let intent = &stored.intent;
                     if intent.native_document != document.to_string()
                         || intent.state.is_some() != user_state
+                        || intent.operation.deleted != deleted
                     {
                         return Err(Error::Conflict);
                     }
@@ -74,7 +93,16 @@ impl IncomingCoordinator {
                     {
                         return Err(Error::Inactive);
                     }
-                    let graph = mdreader_sync::graph_entry_in(&tx, scope, &operation.to_string())?;
+                    let graph = if deleted {
+                        mdreader_sync::outbox_revision_in(
+                            &tx,
+                            scope,
+                            &intent.operation.revision_id,
+                        )?
+                        .ok_or(Error::Conflict)?
+                    } else {
+                        mdreader_sync::graph_entry_in(&tx, scope, &operation.to_string())?
+                    };
                     if graph.operation != intent.operation {
                         return Err(Error::Conflict);
                     }
@@ -160,17 +188,26 @@ impl IncomingCoordinator {
             pinned: current.state().document.pinned,
             line: current.state().document.line,
         });
-        let graph = if let Some(state) = &state {
+        if deleted
+            && head
+                .as_ref()
+                .is_none_or(|head| head.generation != Some(current.state().generation))
+        {
+            return Err(Error::Conflict);
+        }
+        let graph = if deleted {
+            None
+        } else if let Some(state) = &state {
             if state.line == 0 || state.line > current.max_line() {
                 return Err(Error::Conflict);
             }
-            authority.seal_selected_state(
+            Some(authority.seal_selected_state(
                 &origin.item_id.to_string(),
                 &origin.wire_revision.to_string(),
                 &state.payload(),
-            )?
+            )?)
         } else {
-            authority.seal_selected_content(
+            Some(authority.seal_selected_content(
                 &origin.item_id.to_string(),
                 &origin.wire_revision.to_string(),
                 OutgoingContent {
@@ -178,7 +215,7 @@ impl IncomingCoordinator {
                     markdown: snapshot.archive.markdown(),
                     assets: &asset_inputs,
                 },
-            )?
+            )?)
         };
         let intent = Intent {
             state,
@@ -190,8 +227,8 @@ impl IncomingCoordinator {
                     .as_ref()
                     .map(|h| vec![h.revision.clone()])
                     .unwrap_or_default(),
-                blob: Some(graph.root().blob_id().into()),
-                deleted: false,
+                blob: graph.as_ref().map(|graph| graph.root().blob_id().into()),
+                deleted,
             },
             native_document: document.to_string(),
             native_revision: current.state().document.revision.clone(),
@@ -209,7 +246,7 @@ impl IncomingCoordinator {
                 scope,
                 Admission {
                     intent: &intent,
-                    graph: &graph,
+                    graph: graph.as_ref(),
                     current: &current,
                     archive: &snapshot.archive,
                     expected,
@@ -224,7 +261,7 @@ impl IncomingCoordinator {
 }
 pub(super) struct Admission<'a> {
     pub intent: &'a Intent,
-    pub graph: &'a mdreader_sync::outgoing::SealedGraph,
+    pub graph: Option<&'a mdreader_sync::outgoing::SealedGraph>,
     pub current: &'a publication::VerifiedCurrent,
     pub archive: &'a publication::ArchivedDocument,
     pub expected: &'a mdreader_core::device::catalog::Receipt,
@@ -255,14 +292,23 @@ pub(super) fn admit(
         publication::revalidate_current_archive(&tx, &guard, current, archive)?;
         verify_head(&tx, &key, intent)?;
         association::insert(&tx, scope, intent)?;
-        let entry = mdreader_sync::enqueue_graph_in(
-            &tx,
-            scope,
-            &SyncLimits::default(),
-            &intent.operation.operation_id,
-            &intent.operation.parents,
-            graph,
-        )?;
+        let entry = match graph {
+            Some(graph) if !intent.operation.deleted => mdreader_sync::enqueue_graph_in(
+                &tx,
+                scope,
+                &SyncLimits::default(),
+                &intent.operation.operation_id,
+                &intent.operation.parents,
+                graph,
+            )?,
+            None if intent.operation.deleted => mdreader_sync::enqueue_tombstone_in(
+                &tx,
+                scope,
+                &SyncLimits::default(),
+                &intent.operation,
+            )?,
+            _ => return Err(Error::Conflict),
+        };
         if entry.operation != intent.operation {
             return Err(Error::Conflict);
         }

@@ -7,6 +7,8 @@ use uuid::Uuid;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AccountRequest {
+    SyncSelectedDelete { selection: super::SelectedOperation },
+    InspectSelectedDelete { selection: super::SelectedOperation },
     Status {},
     Begin { intent: AccountIntent },
     Poll { job_id: Uuid },
@@ -21,6 +23,8 @@ pub enum AccountRequest {
 impl std::fmt::Debug for AccountRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::SyncSelectedDelete { .. } => "AccountSyncSelectedDelete",
+            Self::InspectSelectedDelete { .. } => "AccountInspectSelectedDelete",
             Self::Status {} => "AccountStatus",
             Self::Begin { .. } => "AccountBegin",
             Self::Poll { .. } => "AccountPoll",
@@ -44,6 +48,12 @@ pub enum AccountReply {
 impl Coordinator {
     pub fn execute(&self, request: AccountRequest) -> Result<AccountReply> {
         match request {
+            AccountRequest::SyncSelectedDelete { selection } => self
+                .begin_selected_delete(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
+            AccountRequest::InspectSelectedDelete { selection } => self
+                .inspect_selected_delete(selection)
+                .map(|job_id| AccountReply::Begun { job_id }),
             AccountRequest::SyncSelectedState { selection } => self
                 .begin_selected_state(selection)
                 .map(|job_id| AccountReply::Begun { job_id }),
