@@ -1,0 +1,24 @@
+[package]
+name = "mdreader-profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+sha2 = "0.11"
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+mdreader-legacy-export = { path = "../mdreader-legacy-export" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
