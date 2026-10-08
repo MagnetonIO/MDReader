@@ -594,3 +594,16 @@ profile Clippy passes. See [the exact receipt](profile-sqlite-lock-verification-
 This does not activate migration. Exact native SQLite/recovery classification,
 all-owner freeze composition, installed preservation/conversion/rollback and
 cross-host release acceptance remain open.
+
+## Native profile storage classification, 2026-10-08
+
+Native owner registration now distinguishes durable SQLite from rebuildable
+indexes and reserves their recovery sidecars. Both preservation entry points
+reject raw-copy misclassification, missing durable main files and unknown
+SQLite/index/recovery claims before any participant flush. Two new actual native
+regressions and the affected eleven-case profile-transition suite pass. See
+[the scoped receipt](profile-storage-layout-verification-2026-10-08.md).
+
+All actual owners must still declare their databases. Complete writer/custody
+composition, cross-process backup and installed migration/activation/rollback
+remain open; this change does not enable migration.
