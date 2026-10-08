@@ -22,6 +22,7 @@ import type {
 } from '../bindings';
 import { SettingsCommandError, type SettingsBackend } from '../platform/settings.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { visibleSettingsControls } from '../features/settings/focus.js';
 import {
   SettingsSheet as RequiredSettingsSheet,
   type SettingsSheetProps,
@@ -37,6 +38,11 @@ function SettingsSheet(
       onForgetActiveSource={props.onForgetActiveSource ?? (async () => {})}
     />
   );
+}
+
+function selectSettingsSection(name: string, migration = false) {
+  fireEvent.click(screen.getByRole('button', { name }));
+  if (migration) fireEvent.click(screen.getByText('Migration / legacy connections', { selector: 'summary' }));
 }
 
 const SOURCE_ID = 'a'.repeat(64);
@@ -171,8 +177,11 @@ describe('Settings sheet', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     expect(within(dialog).getByRole('heading', { name: 'Settings', level: 1 })).toBeTruthy();
     expect(within(dialog).getByRole('heading', { name: 'Appearance', level: 2 })).toBeTruthy();
-    expect(within(dialog).getByRole('heading', { name: 'Library', level: 2 })).toBeTruthy();
+    selectSettingsSection('Library & sources');
+    expect(within(dialog).getByRole('heading', { name: 'Library & sources', level: 2 })).toBeTruthy();
+    selectSettingsSection('Advanced');
     expect(within(dialog).getByRole('heading', { name: 'Diagnostics', level: 2 })).toBeTruthy();
+    selectSettingsSection('Appearance');
     expect(within(dialog).getByRole('button', { name: 'System' })).toBeTruthy();
     expect(within(dialog).getByRole('button', { name: 'Light' })).toBeTruthy();
     expect(within(dialog).getByRole('button', { name: 'Dark' })).toBeTruthy();
@@ -246,6 +255,7 @@ describe('Settings sheet', () => {
       }
 
       render(<Harness />);
+      selectSettingsSection('Advanced', true);
       fireEvent.click(
         await screen.findByRole('button', { name: 'Disconnect Google Drive' }),
       );
@@ -275,12 +285,15 @@ describe('Settings sheet', () => {
 
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Appearance' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
+    selectSettingsSection('Library & sources');
+    expect(screen.getByRole('heading', { name: 'Library & sources' })).toBeTruthy();
+    selectSettingsSection('Advanced');
     expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
     expect(screen.getByText('Local Markdown folders', { selector: 'strong' })).toBeTruthy();
     expect(screen.getByText(/stay on this device/i)).toBeTruthy();
     expect(screen.queryByText(/Google Drive|Dropbox|Notion|connector/i)).toBeNull();
 
+    selectSettingsSection('Appearance');
     fireEvent.click(screen.getByRole('button', { name: 'Dark' }));
     expect(useSettingsStore.getState().theme).toBe('dark');
     expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark');
@@ -324,6 +337,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     const includeDrive = await screen.findByRole('switch', {
       name: 'Include Google Drive in Library',
@@ -381,6 +395,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Connect Dropbox' }));
     const includeDropbox = await screen.findByRole('switch', {
@@ -435,6 +450,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
 
@@ -470,6 +486,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     await screen.findByRole('img', { name: 'Google Drive' });
     expect(screen.getByRole('img', { name: 'Google Drive' })).toBeTruthy();
@@ -540,6 +557,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     expect(await screen.findByRole('heading', { name: 'Connected CatDB' })).toBeTruthy();
     const origin = screen.getByRole('textbox', { name: 'CatDB server URL' });
@@ -581,6 +599,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     expect(
       await screen.findByText(/did not record a verified schema version/i),
@@ -641,6 +660,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced', true);
 
     const toggle = await screen.findByRole('switch', {
       name: `Include ${sourceId} in Connected CatDB queries`,
@@ -665,6 +685,7 @@ describe('Settings sheet', () => {
         onClose={close}
       />,
     );
+    selectSettingsSection('Library & sources');
 
     await screen.findByText('Research notes');
     await act(async () => {
@@ -693,6 +714,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Library & sources');
 
     await screen.findByText('Research notes');
     fireEvent.click(screen.getByRole('button', { name: 'Forget Research notes' }));
@@ -752,6 +774,7 @@ describe('Settings sheet', () => {
         onClose={onClose}
       />,
     );
+    selectSettingsSection('Library & sources');
 
     await screen.findByText('Archive');
     expect(screen.getByText('Folder not found')).toBeTruthy();
@@ -791,6 +814,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced');
 
     await screen.findByText(/256 KiB per file/i);
     fireEvent.click(screen.getByRole('button', { name: 'Clear logs' }));
@@ -819,6 +843,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced');
 
     await screen.findByText(/up to 3 files/i);
     expect(screen.queryByText('/Users/alex/Library/Logs/MDReader')).toBeNull();
@@ -842,6 +867,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Library & sources');
 
     await screen.findByText('Research notes');
     fireEvent.click(screen.getByRole('button', { name: 'Forget Research notes' }));
@@ -868,6 +894,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Library & sources');
 
     await screen.findByText(/finishing local cleanup for 2 sources/i);
   });
@@ -885,6 +912,7 @@ describe('Settings sheet', () => {
         onClose={vi.fn()}
       />,
     );
+    selectSettingsSection('Advanced');
 
     await screen.findByText(new RegExp(`up to ${maximum} ${maximum === 1 ? 'file' : 'files'}`, 'i'));
   });
@@ -908,9 +936,7 @@ describe('Settings sheet', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
 
-    const focusable = Array.from(
-      dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'),
-    );
+    const focusable = visibleSettingsControls(dialog);
     focusable.at(-1)!.focus();
     fireEvent.keyDown(dialog, { key: 'Tab' });
     expect(document.activeElement).toBe(focusable[0]);

@@ -1,0 +1,33 @@
+/* Categorized Settings keeps the reader behind the modal stationary. */
+.settings-sheet.settings-sheet--categorized {
+  width: min(960px, calc(100vw - 48px));
+  height: min(780px, calc(100dvh - 48px));
+  max-height: none;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+.settings-sheet--categorized .settings-sheet__close { width: 44px; height: 44px; flex: none; }
+.settings-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); min-height: 0; }
+.settings-mobile-navigation { display: none; }
+.settings-navigation { display: flex; flex-direction: column; gap: 6px; padding: 20px 12px; overflow-y: auto; border-right: 1px solid var(--color-border); background: var(--color-surface-raised); }
+.settings-navigation button { min-height: 44px; padding: 10px 12px; text-align: left; font: inherit; font-size: 14px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--color-fg); cursor: pointer; }
+.settings-navigation button[aria-current="page"] { border-color: var(--color-border); background: var(--color-surface); color: var(--color-accent); font-weight: 600; }
+.settings-mobile-navigation select:focus-visible, .settings-navigation button:focus-visible, .settings-migration > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.settings-content { padding: 24px 28px 32px; min-width: 0; overflow-wrap: anywhere; }
+.settings-content > section > h2 { margin: 4px 0 16px; font-size: 24px; font-weight: 500; }
+.settings-content > section > p { font-size: 14px; line-height: 1.6; }
+.settings-content .settings-section:first-child { padding-top: 0; }
+.settings-content .settings-section__intro { display: block; }
+.settings-content .settings-section__intro p { margin-top: 8px; }
+.settings-content .settings-stepper output { min-width: 50px; text-align: center; font-size: 13px; }
+.settings-migration { margin-top: 24px; border-top: 1px solid var(--color-border); padding-top: 16px; }
+.settings-migration > summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-weight: 600; }
+.settings-migration > p { color: var(--color-muted); font-size: 13px; line-height: 1.6; }
+@media (max-width: 700px) {
+  .settings-sheet.settings-sheet--categorized { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-navigation { display: none; }
+  .settings-mobile-navigation { display: flex; align-items: center; gap: 12px; padding: 8px 18px; border-bottom: 1px solid var(--color-border); font-size: 13px; }
+  .settings-mobile-navigation select { min-width: 0; flex: 1; min-height: 44px; font: inherit; padding: 8px; color: var(--color-fg); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; }
+  .settings-content { padding: 20px 18px 28px; }
+}
+@media (prefers-reduced-motion: reduce) { .settings-content { scroll-behavior: auto; } }
