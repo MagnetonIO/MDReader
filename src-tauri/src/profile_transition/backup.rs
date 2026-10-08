@@ -5,7 +5,7 @@ use mdreader_core::SourceRoot;
 use mdreader_profile::{Error, Inventory, Limits, Result, bundle::VerifiedBundle};
 use serde::Serialize;
 use std::{path::Path, time::Duration};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize, specta::Type)]
@@ -38,17 +38,26 @@ impl NativeProfileTransition {
         &self,
         destination: &Path,
         limits: &Limits,
+        diagnostics: &crate::diagnostics::DiagnosticsState,
     ) -> Result<VerifiedBundle> {
         self.registry
             .with_frozen(Duration::from_secs(30), |frozen| {
                 frozen.revalidate()?;
                 let root = frozen.binding().locator.restore()?;
-                // Discover after real writers have drained, never before flush.
-                let choices = super::backup_inventory::selections(&root, limits)?;
-                self.registry.validate_choices(&choices)?;
-                let inventory = Inventory::capture(&root, &choices, limits)?;
-                let mut owner = BorrowedFreeze { frozen };
-                mdreader_profile::bundle::stage_bundle(&mut owner, inventory, destination, limits)
+                // Acquire diagnostics only after renderer/owner flush, so a
+                // renderer awaiting its diagnostic event cannot block that flush.
+                diagnostics.with_preservation(&root, || {
+                    let choices = super::backup_inventory::selections(&root, limits)?;
+                    self.registry.validate_choices(&choices)?;
+                    let inventory = Inventory::capture(&root, &choices, limits)?;
+                    let mut owner = BorrowedFreeze { frozen };
+                    mdreader_profile::bundle::stage_bundle(
+                        &mut owner,
+                        inventory,
+                        destination,
+                        limits,
+                    )
+                })
             })
     }
 }
@@ -102,7 +111,11 @@ pub(crate) async fn native_profile_backup(
         parent.verify().map_err(|_| failure(Error::Conflict))?;
         let limits = Limits::default();
         let bundle = transition
-            .preserve_current_bundle(&directory.join("bundle"), &limits)
+            .preserve_current_bundle(
+                &directory.join("bundle"),
+                &limits,
+                &app.state::<crate::diagnostics::DiagnosticsState>(),
+            )
             .map_err(failure)?;
         bundle.revalidate(&limits).map_err(failure)?;
         parent.verify().map_err(|_| failure(Error::Conflict))?;
