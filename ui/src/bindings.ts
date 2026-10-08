@@ -1686,13 +1686,23 @@ export type MutationDto = {
 
 export type MutationStateDto = "prepared" | "dispatched" | "unknown" | "accepted" | "published" | "conflict";
 
+export type NativeLinkCandidate = {
+	sourceId: string,
+	documentId: string,
+	title: string,
+};
+
+export type NativeLinkKind = "relative" | "wikilink";
+
+export type NativeLinkResolution = { state: "resolved"; candidate: NativeLinkCandidate; projection: ProjectionDto; line: number; heading: string | null } | { state: "selected_uncached"; candidate: NativeLinkCandidate; heading: string | null } | { state: "ambiguous"; candidates: NativeLinkCandidate[]; heading: string | null } | { state: "missing" } | { state: "heading_missing"; candidate: NativeLinkCandidate; heading: string };
+
 export type NativeProviderError = { kind: "unsupported" } | { kind: "unconfigured" } | { kind: "busy" } | { kind: "invalid" } | { kind: "invalid_response" } | { kind: "storage" } | { kind: "service_unavailable" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "reconnect_required" } | { kind: "unauthorized" } | { kind: "conflict" } | { kind: "too_large" } | { kind: "unknown_write"; operationId: string } | { kind: "local_publication_pending"; operationId: string };
 
 export type NativeProviderKind = "google_drive" | "dropbox";
 
-export type NativeProviderRequest = { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
+export type NativeProviderRequest = { operation: "resolve_link"; sourceId: string; path: string; revision: string; kind: NativeLinkKind; target: string } | { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
 
-export type NativeProviderResult = { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
+export type NativeProviderResult = { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
 
 /**  One explicit ordering key. */
 export type OrderBy = {

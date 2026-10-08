@@ -36,7 +36,12 @@ export function MdLink({ href = '', children, id }: MdLinkProps) {
         id={id}
         draggable={false}
         style={{ color: 'var(--color-accent)' }}
-        onClick={() => onNavigate?.({ kind: 'anchor', slug })}
+        onClick={(event) => {
+          if (onNavigate) {
+            event.preventDefault();
+            onNavigate({ kind: 'anchor', slug });
+          }
+        }}
       >
         {children}
       </a>

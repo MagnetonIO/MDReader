@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProviderReaderDialog } from './ProviderReaderDialog';
-import type { ProviderDocumentBody, ProviderReaderReference } from '../platform/providers';
+import type { ProviderDocumentBody, ProviderReaderReference, ProviderLinkResolution } from '../platform/providers';
 
 afterEach(cleanup);
 const reference: ProviderReaderReference = { sourceId: `provider:${'a'.repeat(64)}`, path: `records/${'b'.repeat(64)}.md`, revision: 'c'.repeat(64), title: 'Selected note' };
@@ -32,4 +32,66 @@ test('rejects a mismatched revision and ignores a late previous selection', asyn
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'The selected document revision is no longer available.');
   expect(screen.queryByRole('heading', { name: /Wrong revision/ })).toBeNull();
   expect(screen.queryByText('Reading Markdown…')).toBeNull();
+});
+const candidate = { sourceId: '11111111-1111-4111-8111-111111111111', documentId: '22222222-2222-4222-8222-222222222222', title: 'Linked note' };
+const projection = { jobId: 'synthetic-job', readerSourceId: reference.sourceId, path: `records/${'e'.repeat(64)}.md`, revision: 'f'.repeat(64) };
+const linked = { sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: candidate.title, line: 1 };
+test('follows a cached logical link using its exact receipt and returns to the previous document', async () => {
+  const backend = {
+    readDocument: vi.fn(async (ref: ProviderReaderReference) => ref.path === reference.path ? body(ref, '# Original\n\n[Next](Next.md)') : body(ref, '# Linked content')),
+    resolveLink: vi.fn(async (): Promise<ProviderLinkResolution> => ({ state: 'resolved', candidate, projection, line: 1, heading: null })),
+  };
+  render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
+  await screen.findByRole('heading', { name: /Linked content/ });
+  expect(backend.resolveLink).toHaveBeenCalledWith(reference, 'relative', 'Next.md');
+  expect(backend.readDocument).toHaveBeenCalledWith(linked);
+  fireEvent.click(screen.getByRole('button', { name: 'Previous document' }));
+  await screen.findByRole('heading', { name: /Original/ });
+});
+test('requires an explicit fetch for a selected uncached link', async () => {
+  const backend = {
+    readDocument: vi.fn(async (ref: ProviderReaderReference) => ref.path === reference.path ? body(ref, '# Original\n\n[Next](Next.md)') : body(ref, '# Downloaded content')),
+    resolveLink: vi.fn(async (): Promise<ProviderLinkResolution> => ({ state: 'selected_uncached', candidate, heading: 'downloaded-content' })),
+    fetchCurrent: vi.fn(async () => projection),
+  };
+  render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
+  const fetch = await screen.findByRole('button', { name: 'Fetch current Linked note' });
+  expect(backend.fetchCurrent).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: /Original/ })).toBeTruthy();
+  fireEvent.click(fetch);
+  await screen.findByRole('heading', { name: /Downloaded content/ });
+  expect(screen.queryByText(/requested heading is unavailable/)).toBeNull();
+  expect(backend.fetchCurrent).toHaveBeenCalledOnce();
+  expect(backend.fetchCurrent).toHaveBeenCalledWith(candidate.sourceId, candidate.documentId);
+});
+test('ignores a late link resolution after the parent selects another document', async () => {
+  let finish!: (value: ProviderLinkResolution) => void;
+  const next = { ...reference, revision: 'd'.repeat(64) };
+  const backend = {
+    readDocument: vi.fn(async (ref: ProviderReaderReference) => body(ref, ref === reference ? '# Original\n\n[Next](Next.md)' : '# New parent selection')),
+    resolveLink: vi.fn(() => new Promise<ProviderLinkResolution>((resolve) => { finish = resolve; })),
+  };
+  const view = render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
+  view.rerender(<ProviderReaderDialog reference={next} backend={backend} onClose={() => {}} />);
+  await screen.findByRole('heading', { name: /New parent selection/ });
+  await act(async () => finish({ state: 'resolved', candidate, projection, line: 1, heading: null }));
+  expect(backend.readDocument).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('heading', { name: /New parent selection/ })).toBeTruthy();
+});
+test('a newer in-document jump supersedes a pending linked-document action', async () => {
+  let finish!: (value: ProviderLinkResolution) => void;
+  const backend = {
+    readDocument: vi.fn(async (ref: ProviderReaderReference) => body(ref, '# Original\n\n[Next](Next.md) [Stay here](#section)\n\n## Section')),
+    resolveLink: vi.fn(() => new Promise<ProviderLinkResolution>((resolve) => { finish = resolve; })),
+  };
+  render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
+  fireEvent.click(screen.getByRole('link', { name: 'Stay here' }));
+  await act(async () => finish({ state: 'resolved', candidate, projection, line: 1, heading: null }));
+  expect(backend.readDocument).toHaveBeenCalledOnce();
+  expect(screen.queryByText('Opening linked document…')).toBeNull();
+  expect(screen.getByRole('heading', { name: /Original/ })).toBeTruthy();
 });

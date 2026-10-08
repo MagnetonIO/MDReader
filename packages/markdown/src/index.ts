@@ -13,7 +13,7 @@ export {
   shouldUseWorker,
 } from './thresholds.js';
 export { isFrontmatterError } from './types.js';
-export { readerSanitizeSchema } from './sanitize-schema.js';
+export { readerSanitizeSchema, USER_CONTENT_PREFIX } from './sanitize-schema.js';
 
 export type {
   ParsedDoc,

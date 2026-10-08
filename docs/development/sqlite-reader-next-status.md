@@ -13,7 +13,7 @@ or published; the new sync protocol has not deployed.
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
 | 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. | Native transport/custody, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. | Final cross-engine matrix for subsequent web features, native/mobile assets/export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
-| 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. | Logical provider links, sidebar/global-search integration and guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
+| 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. | Sidebar/global-search integration and guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
 | 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. | Actual extension-host acceptance; useful insights/reviews migration, lossless export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
 
 ## Measured retrieval
@@ -60,6 +60,22 @@ tests (two existing skips), plus targeted authority/progress regressions. The
 default build stays unconfigured; live issuer and deployment acceptance remain
 open. Details and limitations are recorded in the web repository's
 `lib/sync/FOREGROUND-SYNC.md`.
+
+Provider link checkpoint `a8d8b18` passes 17 affected service tests and six native
+wrappers. Its renderer integration passes six dialog, seven provider-panel and
+seven App tests. Three local link tests exercise selected metadata and exact
+current grants without network access. Metadata scans are bounded at 16,384 rows,
+ambiguity at 16 choices and target input at 4 KiB; this is not an indexed link
+scalability claim. Drive links support flat selected filenames, not inferred
+folder hierarchy. Shared renderer anchor handling passes 12 focused tests and
+prevents handled links from additionally invoking browser fragment navigation.
+
+The [legacy migration inventory](legacy-migration-inventory.md) identifies
+durable reviews, graph/operation history and accepted-write repair records.
+CatDB removal requires lossless raw snapshots plus typed exports, validation and
+a separate-profile rollback; it cannot discard these databases as search indexes.
+The first implementation slice exports only explicitly supplied offline snapshots
+and does not discover, migrate or activate an installed library.
 
 The [actual iOS smoke receipt](../benchmarks/2026-10-07-ios-reader-smoke.md)
 records standard file-picker import, exact original bytes, reading, pinning,

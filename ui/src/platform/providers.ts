@@ -20,6 +20,7 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
     case 'cancelled': return 'The operation was cancelled.';
     case 'rate_limited': return 'The provider is rate limiting requests. Try again later.';
     case 'invalid': return 'The selected provider scope is invalid.';
+    case 'too_large': return 'This link has too many matches or exceeds the supported size. Open the intended document from Sources.';
     default: return 'The provider operation is unavailable. Try a read of cached content or review the source connection.';
   }
 }
@@ -42,7 +43,14 @@ export type ProviderAdmission = { state: 'admitted'; sourceId: string; enabled: 
 export interface DropboxSelection { path: string; recursive: boolean }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }
-export interface ProviderReaderReference { sourceId: string; path: string; revision: string; title?: string; line?: number }
+export interface ProviderReaderReference { sourceId: string; path: string; revision: string; title?: string; line?: number; heading?: string }
+export interface ProviderLinkCandidate { sourceId: string; documentId: string; title: string }
+export type ProviderLinkResolution =
+  | { state: 'resolved'; candidate: ProviderLinkCandidate; projection: ProviderProjection; line: number; heading: string | null }
+  | { state: 'selected_uncached'; candidate: ProviderLinkCandidate; heading: string | null }
+  | { state: 'ambiguous'; candidates: ProviderLinkCandidate[]; heading: string | null }
+  | { state: 'missing' }
+  | { state: 'heading_missing'; candidate: ProviderLinkCandidate; heading: string };
 export interface ProviderDocumentBody { operation: 'read_document'; markdown: string; sourceId: string; path: string; revision: string; lineStart: number; lineEnd: number }
 export interface NativeProvidersBackend {
   state(): Promise<NativeProvidersSnapshot>;
@@ -54,6 +62,7 @@ export interface NativeProvidersBackend {
   fetchCurrent(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readCached(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
+  resolveLink(reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string): Promise<ProviderLinkResolution>;
   disable(sourceId: string): Promise<void>;
   forget(sourceId: string): Promise<void>;
 }
@@ -74,6 +83,7 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   async fetchCurrent(sourceId, documentId) { const result = await native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } }); return result.projection; },
   async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },
   readDocument: (reference) => native('native_provider_request', { request: { operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } }),
+  async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>('native_provider_request', { request: { operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target } }); return result.resolution; },
   async disable(sourceId) { await native('native_provider_request', { request: { operation: 'disable', sourceId } }); },
   async forget(sourceId) { await native('native_provider_request', { request: { operation: 'forget', sourceId } }); },
 };

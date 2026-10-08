@@ -59,6 +59,18 @@ describe('MarkdownReader', () => {
     });
   });
 
+  test('a handled anchor does not also invoke browser fragment navigation', () => {
+    const onNavigate = vi.fn();
+    const doc = parseMarkdown('# Target\n\n[Jump](#target)\n');
+    const view = render(<MarkdownReader doc={doc} onNavigate={onNavigate} />);
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Jump' }))).toBe(false);
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Link to this section' }))).toBe(false);
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'anchor', slug: doc.outline[0]!.slug });
+    view.unmount();
+    render(<MarkdownReader doc={doc} />);
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Jump' }))).toBe(true);
+  });
+
   test('scrollToLine scrolls the containing source block without moving ancestor scroll containers', () => {
     const doc = parseMarkdown('# One\n\nPara two.\n\n## Three\n\nPara four.\n');
     const ref = createRef<MarkdownReaderHandle>();

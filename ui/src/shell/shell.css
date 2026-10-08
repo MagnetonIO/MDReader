@@ -186,6 +186,8 @@ body {
 .provider-reader-dialog__evidence { padding: 0.5rem 1rem; max-height: 25%; overflow: auto; flex: none; overflow-wrap: anywhere; }
 .provider-reader-dialog__document { min-height: 0; flex: 1; overflow: hidden; }
 .provider-reader-dialog__document > .mdreader { height: 100%; }
+.provider-reader-dialog__choices { padding: 0.5rem 1rem; max-height: 30%; overflow: auto; flex: none; overflow-wrap: anywhere; }
+.provider-reader-dialog__choices button { margin: 0.25rem 0.5rem 0.25rem 0; }
 
 .settings-sheet__header {
   display: flex;

@@ -40,7 +40,7 @@ export function makeHeading(level: HeadingLevel) {
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const revealed = hovered || focused;
-    const { activeSlug, registerHeading } = useReaderContext();
+    const { activeSlug, registerHeading, onNavigate } = useReaderContext();
     const isActive = Boolean(id) && id === activeSlug;
     const ref = useRef<HTMLHeadingElement | null>(null);
 
@@ -75,6 +75,12 @@ export function makeHeading(level: HeadingLevel) {
             draggable={false}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
+            onClick={(event) => {
+              if (onNavigate) {
+                event.preventDefault();
+                onNavigate({ kind: 'anchor', slug: id });
+              }
+            }}
             style={{
               position: 'absolute',
               left: '-1.1em',
