@@ -73,7 +73,13 @@ test('three visible local images load without clicks while external images remai
     constructor(private callback: IntersectionObserverCallback) {}
     observe(target: Element) {
       queueMicrotask(() => {
-        if (!this.disconnected) this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+        const rect = target.getBoundingClientRect();
+        const entry: IntersectionObserverEntry = {
+          target, isIntersecting: true, intersectionRatio: 1,
+          boundingClientRect: rect, intersectionRect: rect,
+          rootBounds: null, time: performance.now(),
+        };
+        if (!this.disconnected) this.callback([entry], this as unknown as IntersectionObserver);
       });
     }
     disconnect() { this.disconnected = true; }
