@@ -19,13 +19,19 @@ pub(super) struct View {
     pub projections: usize,
 }
 impl View {
-    pub fn start(&mut self, id: Uuid, selected_sync: Option<SelectedOperation>) {
+    pub fn start(
+        &mut self,
+        id: Uuid,
+        selected_sync: Option<SelectedOperation>,
+        selected_purpose: Option<SelectedPurpose>,
+    ) {
         if self.jobs.len() == 8 {
             self.jobs.pop_front();
         }
         self.jobs.push_back(Job {
             id,
             selected_sync,
+            selected_purpose,
             state: JobState::Running {
                 phase: Phase::Queued,
             },

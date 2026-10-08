@@ -193,14 +193,14 @@ impl IncomingCoordinator {
             selected.permit.session_token(),
             selected.token,
         )?;
+        if let Some(outcome) = self.apply_self_echo(selected, input, &identity, &origin)? {
+            return Ok(outcome);
+        }
         if !matches!(
             input.payload(),
             mdreader_sync::incoming::IncomingPayload::Content(_)
         ) {
             return self.apply_transition(selected, input, &identity, &origin);
-        }
-        if let Some(outcome) = self.apply_self_echo(selected, input, &identity, &origin)? {
-            return Ok(outcome);
         }
         let document = identity::document(input)?;
         let start = self.short(selected, |owner, _| {

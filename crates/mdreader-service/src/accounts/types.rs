@@ -137,6 +137,7 @@ pub enum PublicPacketKind {
 pub enum Outcome {
     SelectedStatus {
         selection: super::SelectedOperation,
+        purpose: super::SelectedPurpose,
         disposition: crate::sync::outgoing::SelectedDisposition,
     },
     Connected,
@@ -171,6 +172,8 @@ pub struct Job {
     pub id: Uuid,
     #[serde(default)]
     pub selected_sync: Option<super::SelectedOperation>,
+    #[serde(default)]
+    pub selected_purpose: Option<super::SelectedPurpose>,
     pub state: JobState,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

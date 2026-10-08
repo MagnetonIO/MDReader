@@ -9,7 +9,7 @@ mod freeze;
 mod interaction;
 mod operations;
 mod selection;
-pub use selection::{SelectedOperation, SelectedScope};
+pub use selection::{SelectedOperation, SelectedPurpose, SelectedScope};
 pub mod rpc;
 mod state;
 mod storage;
@@ -107,12 +107,32 @@ impl Coordinator {
     /// authorizes uploading a newer revision than the caller actually selected.
     pub fn begin_selected_sync(&self, selection: SelectedOperation) -> Result<Uuid> {
         selection.validate()?;
-        self.begin_action(actor::Action::SelectedSync(selection))
+        self.begin_action(actor::Action::SelectedSync(
+            selection,
+            SelectedPurpose::Content,
+        ))
     }
     /// Readonly reconciliation runs behind earlier issued/retained actor work.
     pub fn inspect_selected_sync(&self, selection: SelectedOperation) -> Result<Uuid> {
         selection.validate()?;
-        self.begin_action(actor::Action::InspectSelected(selection))
+        self.begin_action(actor::Action::InspectSelected(
+            selection,
+            SelectedPurpose::Content,
+        ))
+    }
+    pub fn begin_selected_state(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::SelectedSync(
+            selection,
+            SelectedPurpose::UserState,
+        ))
+    }
+    pub fn inspect_selected_state(&self, selection: SelectedOperation) -> Result<Uuid> {
+        selection.validate()?;
+        self.begin_action(actor::Action::InspectSelected(
+            selection,
+            SelectedPurpose::UserState,
+        ))
     }
     fn begin_action(&self, action: actor::Action) -> Result<Uuid> {
         let sender = self.sender.as_ref().ok_or(AccountError::Unconfigured)?;
@@ -126,9 +146,8 @@ impl Coordinator {
         }
         let id = Uuid::new_v4();
         let selected_sync = match &action {
-            actor::Action::SelectedSync(selection) | actor::Action::InspectSelected(selection) => {
-                Some(selection.clone())
-            }
+            actor::Action::SelectedSync(selection, _)
+            | actor::Action::InspectSelected(selection, _) => Some(selection.clone()),
             _ => None,
         };
         let command = actor::Command {
@@ -136,13 +155,18 @@ impl Coordinator {
             epoch: state.epoch,
             action,
         };
+        let purpose = match &command.action {
+            actor::Action::SelectedSync(_, purpose)
+            | actor::Action::InspectSelected(_, purpose) => Some(*purpose),
+            _ => None,
+        };
         sender
             .try_send(actor::Message::Run(command))
             .map_err(|error| match error {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => AccountError::Busy,
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => AccountError::Interrupted,
             })?;
-        state.start(id, selected_sync);
+        state.start(id, selected_sync, purpose);
         Ok(id)
     }
     pub fn status(&self) -> Result<AccountStatus> {

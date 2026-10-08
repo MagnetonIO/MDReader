@@ -110,7 +110,7 @@ pub(super) fn selected_roundtrip(account: &Account, markdown: &str) {
         panic!("inspect");
     };
     assert!(
-        matches!(account.settled(job_id).state, JobState::Completed { outcome: Outcome::SelectedStatus { selection: exact, disposition: crate::sync::outgoing::SelectedDisposition::Applied { sequence: 3 } } } if exact == selection)
+        matches!(account.settled(job_id).state, JobState::Completed { outcome: Outcome::SelectedStatus { selection: exact, purpose: SelectedPurpose::Content, disposition: crate::sync::outgoing::SelectedDisposition::Applied { sequence: 3 } } } if exact == selection)
     );
     let mut owner = account.owner.lock().unwrap();
     let current = device::document(&mut owner, &document.id).unwrap();

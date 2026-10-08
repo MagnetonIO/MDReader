@@ -70,6 +70,7 @@ fn account_projection_closes_input_and_preserves_exact_counter_evidence() {
     assert!(serde_json::from_value::<SelectedOperation>(value).is_err());
     let projected: Outcome = service::Outcome::SelectedStatus {
         selection,
+        purpose: service::SelectedPurpose::Content,
         disposition: mdreader_service::sync::outgoing::SelectedDisposition::Applied {
             sequence: u64::MAX,
         },
