@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import type { AssetManifest } from '../../bindings';
 import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from '../../mobile/DeviceAssetImage';
 import { assetTarget } from '../../mobile/device-assets';
@@ -6,9 +6,9 @@ import { CanonicalReader } from '../reader/CanonicalReader';
 import { deviceReaderBackend, type DeviceReference, type DeviceReaderBackend } from './backend';
 
 /** The normal inline reader, using the service's exact device owner and leases. */
-export function DeviceReader({ reference, onClose, backend = deviceReaderBackend }: {
+export function DeviceReader({ reference, onClose, backend = deviceReaderBackend, ...history }: {
   reference: DeviceReference; onClose: () => void; backend?: DeviceReaderBackend;
-}) {
+} & Pick<ComponentProps<typeof CanonicalReader>, 'position' | 'onPosition' | 'onBack' | 'onForward' | 'canGoBack' | 'canGoForward'>) {
   const [loaded, setLoaded] = useState<{ reference: DeviceReference; manifest: AssetManifest | null; error: string | null } | null>(null);
   const manifest = loaded?.reference === reference ? loaded.manifest : null;
   const error = loaded?.reference === reference ? loaded.error : null;
@@ -37,6 +37,6 @@ export function DeviceReader({ reference, onClose, backend = deviceReaderBackend
   return <DeviceAssetProvider images={images}>
     {error ? <p role="alert">{error}</p> : null}
     <CanonicalReader reference={reference} backend={readerBackend} sourceKind="device"
-      imageComponent={Image} onClose={onClose} />
+      imageComponent={Image} onClose={onClose} {...history} />
   </DeviceAssetProvider>;
 }

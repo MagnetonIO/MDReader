@@ -8,10 +8,12 @@ import { useSourcesStore } from './stores/sources';
 import { useSettingsStore } from './stores/settings';
 import { sessionWriter } from './shell/persistence';
 import { nativeProvidersBackend } from './platform/providers';
+import { useReaderHistoryStore } from './features/reader-history/store';
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  useReaderHistoryStore.getState().reset();
   useTabsStore.getState().reset();
   useSettingsStore.getState().reset();
   useSourcesStore.getState().reset();
@@ -59,7 +61,9 @@ test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
 
   act(() => modKeyDown(','));
   await waitFor(() => expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy());
-  expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
+  expect(screen.getByRole('heading', { name: 'Library & sources' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
   expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
   const readerContent = document.querySelector('.shell__reader-content');
   expect(readerContent?.hasAttribute('inert')).toBe(true);
@@ -79,6 +83,7 @@ test('selected cloud revision opens in the shared reader and returns to source c
   const read = vi.spyOn(nativeProvidersBackend, 'readDocument').mockResolvedValue({ operation: 'read_document', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, markdown: '# Provider reading\n\nSelected original.', lineStart: 1, lineEnd: 3 });
   render(<App />);
   act(() => modKeyDown(','));
+  fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Manage cloud sources' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Browse documents' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
@@ -145,5 +150,7 @@ test('flushes the latest session synchronously when the window is going away', a
   expect(writeSpy).toHaveBeenCalledTimes(1);
   const data = writeSpy.mock.calls[0]![0];
   expect(data.root).toBe('/wsX');
+  expect(data.tabs).toBeDefined();
+  if (!data.tabs) throw new Error('The changed legacy tabs must be included in the close patch');
   expect(data.tabs.map((tab) => tab.docRef.path)).toContain('/wsX/note.md');
 });

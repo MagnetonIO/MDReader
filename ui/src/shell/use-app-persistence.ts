@@ -6,6 +6,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useTabsStore } from '../stores/tabs.js';
 import { useSourcesStore } from '../stores/sources.js';
 import { useEditorStore } from '../stores/editor.js';
+import { useReaderHistoryStore } from '../features/reader-history/store';
+import { createSessionTracker } from '../features/reader-history/session-patches';
 import { serializeSession } from '../stores/session.js';
 import { useSettingsStore, type SettingsSnapshot } from '../stores/settings.js';
 import { isTauri, saveSettings, sessionWriter } from './persistence.js';
@@ -31,6 +33,8 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
 }): void {
   const sessionShape = useTabsStore(useShallow((s) => [s.tabs, s.activeTabId]));
   const sourceShape = useSourcesStore(useShallow((s) => [s.root, s.recent]));
+  const readerShape = useReaderHistoryStore((s) => s.data);
+  const tracker = useRef<ReturnType<typeof createSessionTracker> | null>(null);
   const settingsShape = useSettingsStore(useShallow((s) => [
     s.theme, s.readingFont, s.textScaleIndex, s.sidebarCollapsed, s.outlineVisible,
     s.relatedRailOpen, s.inspectorOpen, s.lensSchema, s.reviewer,
@@ -45,9 +49,16 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
   const flushSession = useCallback(() => {
     const t = useTabsStore.getState();
     const s = useSourcesStore.getState();
-    sessionWriter.write(serializeSession({
-      root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent,
-    }));
+    const legacy = serializeSession({ root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent });
+    const reader = useReaderHistoryStore.getState();
+    // Capture restored legacy state once. Canonical activity never normalizes old arrays.
+    tracker.current ??= createSessionTracker(legacy, reader.persisted);
+    if (reader.mode === 'transient') {
+      sessionWriter.write(legacy);
+      return;
+    }
+    const patch = tracker.current.next(legacy, reader.mode === 'native_atomic' ? reader.data : null);
+    if (patch) sessionWriter.write(patch);
   }, []);
   flushSessionRef.current = flushSession;
   const flushAll = useCallback(async () => {
@@ -58,12 +69,16 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
 
   useEffect(() => {
     if (!persistenceReady) return;
+    if (!tracker.current) {
+      const t = useTabsStore.getState(), s = useSourcesStore.getState();
+      tracker.current = createSessionTracker(serializeSession({ root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent }), useReaderHistoryStore.getState().persisted);
+    }
     const timer = window.setTimeout(() => {
       flushSession();
       void sessionWriter.drain().then(() => { failureShown.current = false; }, failed);
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [persistenceReady, flushSession, failed, sessionShape, sourceShape]);
+  }, [persistenceReady, flushSession, failed, sessionShape, sourceShape, readerShape]);
 
   useEffect(() => {
     if (!persistenceReady) return;

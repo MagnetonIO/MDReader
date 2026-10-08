@@ -10,25 +10,34 @@ import {
   type ProviderLinkResolution, type ProviderLinkCandidate, type ProviderProjection,
 } from '../../platform/providers';
 
+import type { ReaderPosition } from '../reader-history/model';
+import { savedAnchor, restoreAnchor } from '../reader-history/positions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false }: {
   reference: ProviderReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
   onClose: () => void;
   onArchivedReviews?: (reference: ProviderReaderReference) => void;
+  position?: ReaderPosition | null;
+  onPosition?: (position: ReaderPosition) => void;
+  onNavigateReference?: (reference: ProviderReaderReference) => void;
+  onBack?: () => void; onForward?: () => void;
+  canGoBack?: boolean; canGoForward?: boolean;
 }) {
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
   const action = useRef(0);
   const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as ProviderReaderReference[] });
   // A new parent selection takes effect immediately, including before effects.
-  const currentReference = navigation.origin === reference ? navigation.current : reference;
+  const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
   const history = navigation.origin === reference ? navigation.history : [];
-  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; line: number } | null>(null);
+  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
   const line = loaded?.reference === currentReference ? loaded.line : 1;
+  const positionRef = useRef(position);
+  positionRef.current = position;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | null>(null);
@@ -39,6 +48,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     setLoaded(null);
     restored.current = false;
     setError(null); setNotice(null); setLinks(null); setBusy(false);
+    const savedPosition = positionRef.current;
     void backend.readDocument(currentReference).then(async (value) => {
       if (value.sourceId !== currentReference.sourceId || value.path !== currentReference.path || value.revision !== currentReference.revision)
         throw new Error('The selected document revision is no longer available.');
@@ -50,7 +60,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         if (heading) targetLine = heading.lineStart;
         else setNotice('The requested heading is unavailable in this revision. Showing the beginning of the document.');
       }
-      setLoaded({ reference: currentReference, doc: parsed, line: targetLine });
+      const restoredPosition = restoreAnchor(parsed, currentReference.revision, value.lineEnd, savedPosition);
+      if (restoredPosition.notice) setNotice(restoredPosition.notice);
+      setLoaded({ reference: currentReference, doc: parsed, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
     }).catch((cause: unknown) => {
       if (current) setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
     });
@@ -59,6 +71,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   function close() { action.current++; onClose(); }
   function previous() {
     action.current++;
+    if (onBack) { onBack(); return; }
     const target = history.at(-1);
     if (target) setNavigation({ origin: reference, current: target, history: history.slice(0, -1) });
   }
@@ -67,14 +80,16 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       throw new Error('The linked document source could not be verified.');
     }
     action.current++;
-    setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
+    if (onNavigateReference) onNavigateReference(next);
+    else setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
   }
   function openProjection(projection: ProviderProjection, candidate: ProviderLinkCandidate, targetLine = 1, heading?: string | null) {
     if (projection.readerSourceId !== currentReference.sourceId || !Number.isSafeInteger(targetLine) || targetLine < 1)
       throw new Error('The linked document source could not be verified.');
     const next: ProviderReaderReference = { sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: candidate.title, line: targetLine };
     if (heading) next.heading = heading;
-    setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
+    if (onNavigateReference) onNavigateReference(next);
+    else setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
   }
   async function navigate(event: NavigateEvent) {
     if (event.kind === 'anchor') {
@@ -120,7 +135,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
     <header className="provider-reader-dialog__bar">
       <button type="button" autoFocus onClick={close}>Back to sources</button>
-      {history.length ? <button type="button" onClick={previous}>Previous document</button> : null}
+      {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
+      {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
       <span>Read only</span>
       {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
@@ -172,11 +188,17 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
           ref={(handle) => {
             reader.current = handle;
             if (handle && !restored.current) {
-              handle.scrollToLine(line);
+              if (loaded?.anchor) handle.scrollToBlock(loaded.anchor.block, loaded.anchor.offset);
+              else handle.scrollToLine(line);
               restored.current = true;
             }
           }}
           doc={doc}
+          onScrollAnchorChange={onPosition ? (anchor) => {
+            if (loaded?.reference !== currentReference) return;
+            const position = savedAnchor(doc, currentReference.revision, anchor);
+            if (position) onPosition(position);
+          } : undefined}
           components={{ img: Image ?? (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>) }}
           onNavigate={(event) => void navigate(event)} />
       </PlatformProvider> : !error ? <p role="status">Reading Markdown…</p> : null}

@@ -5,6 +5,11 @@ import { catalogBackend, type CatalogDocument, type CatalogSource } from './back
 import { deviceReaderBackend } from '../device-reader/backend';
 import { archivedReviewsBackend, type ArchivedReviewRecord, type ArchivedReviewComparison } from '../../reviews/adapter';
 import { nativeProvidersBackend } from '../../platform/providers';
+import { detectMac } from '../../keymap/registry';
+import { restoreReaderHistory } from '../reader-history/serialization';
+import * as filesystem from '../../platform/fs';
+import * as settingsPlatform from '../../platform/settings';
+import { useReaderHistoryStore } from '../reader-history/store';
 import { useTabsStore } from '../../stores/tabs';
 import { useSourcesStore } from '../../stores/sources';
 import { useSettingsStore } from '../../stores/settings';
@@ -12,7 +17,7 @@ import { useEditorStore } from '../../stores/editor';
 import type { HydratedLibrarySelection } from '../../shell/library-documents';
 import { legacyEvidence, legacySelection } from '../legacy-records/test-fixture';
 
-const legacy = vi.hoisted(() => ({ hydrate: vi.fn(), read: vi.fn() }));
+const legacy = vi.hoisted(() => ({ hydrate: vi.fn(), read: vi.fn(), load: vi.fn() }));
 vi.mock('../../shell/library-documents', async (original) => ({
   ...await original<typeof import('../../shell/library-documents')>(),
   hydrateLibrary: legacy.hydrate,
@@ -21,7 +26,7 @@ vi.mock('../../shell/library-documents', async (original) => ({
 vi.mock('../../shell/persistence', async (original) => ({
   ...await original<typeof import('../../shell/persistence')>(),
   isTauri: () => true,
-  loadPersisted: async () => ({ session: null, settings: {} }),
+  loadPersisted: legacy.load,
   saveSettings: async () => {},
 }));
 vi.mock('@tauri-apps/api/window', () => ({
@@ -40,6 +45,7 @@ const document: CatalogDocument = {
 };
 
 beforeEach(() => {
+  legacy.load.mockResolvedValue({ session: null, settings: {}, readerHistory: restoreReaderHistory(undefined, true) });
   legacy.hydrate.mockResolvedValue({ evidence: [legacyEvidence], failures: [] });
   legacy.read.mockResolvedValue(legacySelection);
   vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ availability: [], sources: [], pendingAdmissions: [], error: null });
@@ -56,6 +62,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   legacy.hydrate.mockReset();
   legacy.read.mockReset();
+  useReaderHistoryStore.getState().reset();
   useTabsStore.getState().reset();
   useSourcesStore.getState().reset();
   useSettingsStore.getState().reset();
@@ -224,4 +231,33 @@ test('a new canonical selection closes its archive and a late comparison cannot 
     observation: 'local_current_read', currentSpanHash: 'blake3:span', currentPassage: 'Old late passage', recordedCurrent: 'unknown', reviewedCurrent: 'unknown' }));
   expect(screen.queryByText('Old late passage')).toBeNull();
   expect(screen.getByRole('heading', { name: /New exact selection/ })).toBeTruthy();
+});
+
+
+test('restored canonical tabs retain unavailable exact receipts without reopening old folders or falling back to latest', async () => {
+  const store = useReaderHistoryStore.getState();
+  store.open({ kind: 'local', sourceId, path: 'saved.md', revision }, 'Saved exact copy');
+  const saved = JSON.parse(JSON.stringify(useReaderHistoryStore.getState().data));
+  store.reset();
+  legacy.load.mockResolvedValue({ settings: {}, readerHistory: restoreReaderHistory(saved, true),
+    session: { root: '/previously-selected', activeTabId: null, tabs: [], recent: [] } });
+  const reconcile = vi.spyOn(settingsPlatform, 'reconcileLibraryRestore');
+  const filesystemRead = vi.spyOn(filesystem, 'readDoc');
+  vi.mocked(catalogBackend.readDocument).mockRejectedValue(new Error('The exact saved revision is unavailable.'));
+  render(<App />);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'The exact saved revision is unavailable.');
+  expect(screen.getByRole('tab', { name: /Saved exact copy/ }).getAttribute('aria-selected')).toBe('true');
+  expect(useReaderHistoryStore.getState().data.tabs[0]!.entries[0]!.reference).toEqual(saved.tabs[0].entries[0].reference);
+  expect(catalogBackend.readDocument).toHaveBeenCalledOnce();
+  expect(catalogBackend.readDocument).toHaveBeenCalledWith({ sourceId, path: 'saved.md', revision, title: 'Saved exact copy', line: 1 });
+  expect(reconcile).not.toHaveBeenCalled();
+  expect(filesystemRead).not.toHaveBeenCalled();
+  const mac = detectMac();
+  fireEvent.keyDown(window, { key: 'w', metaKey: mac, ctrlKey: !mac });
+  expect(screen.queryByRole('tab', { name: /Saved exact copy/ })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Saved exact copy' })).toBeTruthy();
+  fireEvent.keyDown(window, { key: 'T', shiftKey: true, metaKey: mac, ctrlKey: !mac });
+  expect(await screen.findByRole('tab', { name: /Saved exact copy/ })).toBeTruthy();
+  expect(filesystemRead).not.toHaveBeenCalled();
+  expect(reconcile).not.toHaveBeenCalled();
 });

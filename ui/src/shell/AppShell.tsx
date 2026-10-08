@@ -70,7 +70,12 @@ import { Sidebar } from './Sidebar.js';
 import { CatalogSidebar } from '../features/catalog/CatalogSidebar.js';
 import { catalogBackend } from '../features/catalog/backend.js';
 import { providerTarget } from './provider-reading.js';
-import { TabStrip } from './TabStrip.js';
+import { ReaderTabs } from '../features/reader-history/ReaderTabs';
+import { ReaderRecents } from '../features/reader-history/ReaderRecents';
+import { useCanonicalHistory } from '../features/reader-history/useCanonicalHistory';
+import { useReaderHistoryStore } from '../features/reader-history/store';
+import { restoreReaderHistory } from '../features/reader-history/serialization';
+import { closeReaderTab, createTabCycle, readerActive, stepReaderTab } from '../features/reader-history/tab-actions';
 import { ReaderPane } from './ReaderPane.js';
 import type { JumpTarget } from './ReaderPane.js';
 import { RelatedRail } from './RelatedRail.js';
@@ -87,7 +92,6 @@ import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
 import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
 import { CanonicalReader } from '../features/reader/CanonicalReader';
-import type { CanonicalReaderReference } from '../features/reader/contracts';
 import { DeviceReader } from '../features/device-reader/DeviceReader';
 import { isDeviceReference } from '../features/device-reader/backend';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
@@ -181,7 +185,8 @@ export function AppShell() {
     };
   }, []);
   const [cloudSaving, setCloudSaving] = useState(false);
-  const [canonicalDocument, setCanonicalDocument] = useState<CanonicalReaderReference | null>(null);
+  const canonicalHistory = useCanonicalHistory();
+  const { reference: canonicalDocument, setReference: setCanonicalDocument } = canonicalHistory;
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
   const archivedReviewTarget = archivedReviews.target;
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
@@ -195,8 +200,9 @@ export function AppShell() {
   const clearLibraryDocument = useCallback(() => {
     setCanonicalDocument(null);
     legacy.clearLibraryDocument();
-  }, [legacy.clearLibraryDocument]);
-  useEffect(() => { setCanonicalDocument(null); }, [activeTabId]);
+  }, [legacy.clearLibraryDocument, setCanonicalDocument]);
+  const canonicalTabIntent = useCallback(() => legacy.suspend(), [legacy.suspend]);
+  const tabCycle = useMemo(() => createTabCycle(clearLibraryDocument, canonicalTabIntent), [clearLibraryDocument, canonicalTabIntent]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -245,7 +251,7 @@ export function AppShell() {
     legacy.suspend();
     setCanonicalDocument(reference);
     setPaletteOpen(false);
-  }, [legacy.suspend]);
+  }, [legacy.suspend, setCanonicalDocument]);
 
   const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
     legacy.suspend();
@@ -801,7 +807,7 @@ export function AppShell() {
         if (!opened) toast('This historical document is unavailable in Legacy records.');
       });
     },
-    [legacy.openRecent, openRef],
+    [legacy.openRecent, openRef, setCanonicalDocument],
   );
 
   const openFile = useCallback(
@@ -1274,7 +1280,7 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
-    clearLibraryDocument();
+    if (!readerActive()) clearLibraryDocument();
     useEditorStore.getState().removeTab(tabId);
     useTabsStore.getState().closeTab(tabId);
   }, [clearLibraryDocument]);
@@ -1284,7 +1290,7 @@ export function AppShell() {
   // click) routes through here, so a dirty buffer is never silently discarded.
   const requestCloseTab = useCallback(
     (tabId: string) => {
-      clearLibraryDocument();
+      if (!readerActive()) clearLibraryDocument();
       if (useEditorStore.getState().tabIsDirty(tabId)) setCloseGuard({ kind: 'tab', tabId });
       else closeTabAndBuffer(tabId);
     },
@@ -1506,6 +1512,7 @@ export function AppShell() {
         description: 'Close tab',
         group: 'Tabs',
         run: () => {
+          if (closeReaderTab()) return;
           const id = tabsApi().activeTabId;
           if (id) requestCloseTab(id); // dirty → unsaved-changes guard
         },
@@ -1515,35 +1522,38 @@ export function AppShell() {
         keys: 'Mod+Shift+T',
         description: 'Reopen closed tab',
         group: 'Tabs',
-        run: () => tabsApi().reopenClosedTab(),
+        run: () => {
+          if (useReaderHistoryStore.getState().reopen()) canonicalTabIntent();
+          else { clearLibraryDocument(); tabsApi().reopenClosedTab(); }
+        },
       },
       {
         id: 'edit-source',
         keys: 'Mod+E',
         description: 'Toggle source view',
         group: 'Editing',
-        run: toggleSourceMode,
+        run: () => { if (!readerActive()) toggleSourceMode(); },
       },
       {
         id: 'save',
         keys: 'Mod+S',
         description: 'Save document',
         group: 'Editing',
-        run: () => void saveActiveDoc(false),
+        run: () => { if (!readerActive()) void saveActiveDoc(false); },
       },
       {
         id: 'mru-next',
         keys: 'Ctrl+Tab',
         description: 'Next tab (recent)',
         group: 'Tabs',
-        run: () => tabsApi().cycleMru(1),
+        run: () => tabCycle.cycle(1),
       },
       {
         id: 'mru-prev',
         keys: 'Ctrl+Shift+Tab',
         description: 'Previous tab (recent)',
         group: 'Tabs',
-        run: () => tabsApi().cycleMru(-1),
+        run: () => tabCycle.cycle(-1),
       },
       {
         id: 'back',
@@ -1551,6 +1561,7 @@ export function AppShell() {
         description: 'Back',
         group: 'Navigation',
         run: () => {
+          if (stepReaderTab(-1)) return;
           const id = tabsApi().activeTabId;
           if (id) tabsApi().back(id);
         },
@@ -1561,6 +1572,7 @@ export function AppShell() {
         description: 'Forward',
         group: 'Navigation',
         run: () => {
+          if (stepReaderTab(1)) return;
           const id = tabsApi().activeTabId;
           if (id) tabsApi().forward(id);
         },
@@ -1604,7 +1616,7 @@ export function AppShell() {
     ];
     map.registerAll(bindings);
     return map;
-  }, [isMac, focusOutline, toggleSourceMode, saveActiveDoc, requestCloseTab]);
+  }, [isMac, focusOutline, toggleSourceMode, saveActiveDoc, requestCloseTab, canonicalTabIntent, clearLibraryDocument, tabCycle]);
 
   const shortcutGroups = useMemo<ShortcutGroup[]>(
     () =>
@@ -1666,7 +1678,7 @@ export function AppShell() {
       if (registry.dispatch(event, { inEditable })) event.preventDefault();
     }
     function onKeyUp(event: KeyboardEvent) {
-      if (event.key === 'Control') useTabsStore.getState().endMruCycle();
+      if (event.key === 'Control') tabCycle.finish();
     }
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -1676,6 +1688,7 @@ export function AppShell() {
     };
   }, [
     registry,
+    tabCycle,
     paletteOpen,
     sheetOpen,
     settingsOpen,
@@ -1690,6 +1703,7 @@ export function AppShell() {
   useEffect(() => {
     let active = true;
     const startupIntent = sourceIntentRef.current;
+    const readerChanges = useReaderHistoryStore.getState().changes;
     const startupIsCurrent = () =>
       active && sourceIntentRef.current === startupIntent;
     void (async () => {
@@ -1708,11 +1722,11 @@ export function AppShell() {
         if (active) setHydrated(true);
         return;
       }
-      if (active) setPersistenceReady(true);
       const { session, settings } = persisted;
       if (Object.keys(settings).length > 0) useSettingsStore.getState().hydrate(settings);
+      if (active) useReaderHistoryStore.getState().hydrate(persisted.readerHistory ?? restoreReaderHistory(undefined, false), readerChanges);
       if (!startupIsCurrent()) {
-        if (active) setHydrated(true);
+        if (active) { setPersistenceReady(true); setHydrated(true); }
         return;
       }
       if (session) {
@@ -1721,10 +1735,10 @@ export function AppShell() {
         // metadata, but leave the live root empty until backend-owned membership
         // confirms this exact source still exists and is available.
         useSourcesStore.getState().hydrate({ root: null, recent: session.recent });
-        if (session.root && isTauri()) {
+        if (session.root && isTauri() && !readerActive()) {
           try {
             const member = await reconcileLibraryRestore(session.root);
-            if (startupIsCurrent() && member) {
+            if (startupIsCurrent() && member && !readerActive()) {
               // The registry returns its current canonical path. Route that member
               // through the SAME watch/epoch transaction as an interactive switch,
               // then mark it active only after the grant commits.
@@ -1738,7 +1752,7 @@ export function AppShell() {
         }
       }
       if (isTauri()) recordDiagnosticEventNonBlocking({ kind: 'application-started' });
-      setHydrated(true);
+      if (active) { setPersistenceReady(true); setHydrated(true); }
     })();
     return () => {
       active = false;
@@ -1970,13 +1984,13 @@ export function AppShell() {
           listingError={listingError}
           onPickFolder={onPickFolder}
           providerSources={isTauri() ? (
-            <CatalogSidebar
+            <><CatalogSidebar
               selectedProviderSources={selectedProviderSources}
               onProviderSelectionChange={setSelectedProviderSources}
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => setSettingsOpen(true)}
-            />
+            /><ReaderRecents onOpen={openCatalogDocument} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
@@ -1995,6 +2009,7 @@ export function AppShell() {
           libraryHasMore={legacy.enabled && Boolean(libraryHydration.continuations?.length)}
           onLibrarySearch={legacy.enabled ? setLibrarySearch : undefined}
           onOpenLibrary={(member, row) => {
+            setCanonicalDocument(null);
             setLibraryError(null);
             void openLibraryDocument(member, row);
           }}
@@ -2003,10 +2018,11 @@ export function AppShell() {
         />
 
         <main className="shell__main">
-          {!canonicalDocument ? <TabStrip
+          <ReaderTabs
             onLocalIntent={clearLibraryDocument}
+            onCanonicalIntent={canonicalTabIntent}
             onRequestClose={requestCloseTab}
-          /> : null}
+          />
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
@@ -2016,13 +2032,26 @@ export function AppShell() {
             {canonicalDocument ? (
               isDeviceReference(canonicalDocument) ? <DeviceReader
                 reference={canonicalDocument}
-                onClose={() => setCanonicalDocument(null)}
+                position={canonicalHistory.entry?.position}
+                onPosition={canonicalHistory.savePosition}
+                onBack={canonicalHistory.back}
+                onForward={canonicalHistory.forward}
+                canGoBack={Boolean(canonicalHistory.tab && canonicalHistory.tab.index > 0)}
+                canGoForward={Boolean(canonicalHistory.tab && canonicalHistory.tab.index + 1 < canonicalHistory.tab.entries.length)}
+                onClose={closeReaderTab}
               /> : <CanonicalReader
                 reference={canonicalDocument}
+                position={canonicalHistory.entry?.position}
+                onPosition={canonicalHistory.savePosition}
+                onNavigateReference={canonicalHistory.navigate}
+                onBack={canonicalHistory.back}
+                onForward={canonicalHistory.forward}
+                canGoBack={Boolean(canonicalHistory.tab && canonicalHistory.tab.index > 0)}
+                canGoForward={Boolean(canonicalHistory.tab && canonicalHistory.tab.index + 1 < canonicalHistory.tab.entries.length)}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
                 onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
-                onClose={() => setCanonicalDocument(null)}
+                onClose={closeReaderTab}
               />
             ) : libraryDocument ? (
               <LibraryDocumentPane

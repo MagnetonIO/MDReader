@@ -1,0 +1,14 @@
+.reader-recents { flex: 0 1 auto; min-height: 0; }
+.reader-recents ul { list-style: none; padding: 0; margin: 0; }
+.reader-recents li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.reader-recents li > button:last-child {
+  font: inherit;
+  font-size: var(--text--1);
+  color: var(--color-muted);
+  background: transparent;
+  border: none;
+  padding: var(--space-1);
+  cursor: pointer;
+}
+.reader-recents li > button:last-child:hover { color: var(--color-fg); background: var(--color-surface-raised); }
+.reader-recents > p { padding: 0 var(--space-3); overflow-wrap: anywhere; font-size: var(--text--1); }

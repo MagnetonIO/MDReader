@@ -138,7 +138,11 @@ test('native hydration failure keeps default rendering read-only until explicit 
   await expect(persistence.saveSession(session)).rejects.toThrow('not hydrated');
   expect(writes).toBe(0);
   mismatchedIdentity = false;
-  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: { theme: 'dark' } });
+  expect(await persistence.loadPersisted()).toEqual({
+    session: null, settings: { theme: 'dark' },
+    readerHistory: { mode: 'native_atomic', diagnostic: null,
+      data: { version: 1, activeTabId: null, tabs: [], recent: [], mru: [] } },
+  });
   await persistence.saveSession(session);
   await persistence.saveSettings(DEFAULT_SETTINGS);
   expect(writes).toBe(2);

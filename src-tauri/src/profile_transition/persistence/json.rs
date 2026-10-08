@@ -6,6 +6,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{value::RawValue, Value};
 use std::collections::{BTreeMap, VecDeque};
 
+mod legacy_session;
+mod reader_history;
+
 type Object = BTreeMap<String, Box<RawValue>>;
 
 struct UniqueObject(Object);
@@ -110,28 +113,42 @@ pub(super) fn merge(kind: JsonKind, original: Option<&[u8]>, patch: &str) -> Res
             return Err(Error::UnsupportedSchema);
         }
     }
-    let merged = merge_object(old, patch)?;
+    if incoming.get("readerHistory").is_some() {
+        if let Some(prior) = old_fields.get("readerHistory") {
+            reader_history::validate_existing(prior.get())?;
+        }
+    }
+    let merged = merge_object(old, patch, false)?;
     outer.insert(kind.key().to_owned(), raw(&merged)?);
     let bytes = encode(&outer)?.into_bytes();
     validate(&bytes)?;
     Ok(bytes)
 }
 
-fn merge_object(old: &str, patch: &str) -> Result<String> {
+fn merge_object(old: &str, patch: &str, reader_scope: bool) -> Result<String> {
     let mut out = object(old)?;
     for (key, next) in object(patch)? {
+        let scope = reader_scope || key == "readerHistory";
         let merged = match out.get(&key) {
             Some(prior) if next.get().trim_start().starts_with('{') => {
-                let same_reference = key != "docRef"
-                    || identity(prior.get(), "history")? == identity(next.get(), "history")?;
+                let same_reference = if scope && key == "reference" {
+                    reader_history::identity(prior.get(), "reference")?
+                        == reader_history::identity(next.get(), "reference")?
+                } else {
+                    key != "docRef"
+                        || identity(prior.get(), "history")? == identity(next.get(), "history")?
+                };
                 if same_reference && prior.get().trim_start().starts_with('{') {
-                    merge_object(prior.get(), next.get())?
+                    merge_object(prior.get(), next.get(), scope)?
                 } else {
                     next.get().to_owned()
                 }
             }
-            Some(prior) if matches!(key.as_str(), "tabs" | "recent" | "history") => {
-                merge_array(prior.get(), next.get(), &key)?
+            Some(prior)
+                if matches!(key.as_str(), "tabs" | "recent" | "history")
+                    || scope && key == "entries" =>
+            {
+                merge_array(prior.get(), next.get(), &key, scope)?
             }
             _ => next.get().to_owned(),
         };
@@ -173,16 +190,23 @@ fn identity(row: &str, context: &str) -> Result<Option<String>> {
             .and_then(|path| serde_json::to_string(&("local", path, string("root"))).ok()),
     )
 }
-fn merge_array(old: &str, patch: &str, context: &str) -> Result<String> {
+fn merge_array(old: &str, patch: &str, context: &str, reader_scope: bool) -> Result<String> {
     let prior = if old.trim_start().starts_with('[') {
         array(old)?
     } else {
         Vec::new()
     };
+    let row_identity = |raw: &str| {
+        if reader_scope {
+            reader_history::identity(raw, context)
+        } else {
+            identity(raw, context)
+        }
+    };
     let mut keyed: BTreeMap<String, VecDeque<Box<RawValue>>> = BTreeMap::new();
     for entry in prior {
         // Unrepresentable/removed originals remain in exact preflush evidence.
-        if let Some(key) = identity(entry.get(), context)? {
+        if let Some(key) = row_identity(entry.get())? {
             let occurrences = keyed.entry(key).or_default();
             if context == "tabs" && !occurrences.is_empty() {
                 return Err(Error::Invalid);
@@ -192,9 +216,9 @@ fn merge_array(old: &str, patch: &str, context: &str) -> Result<String> {
     }
     let mut out = Vec::new();
     for entry in array(patch)? {
-        let key = identity(entry.get(), context)?.ok_or(Error::Invalid)?;
+        let key = row_identity(entry.get())?.ok_or(Error::Invalid)?;
         let merged = match keyed.get_mut(&key).and_then(VecDeque::pop_front) {
-            Some(prior) => merge_object(prior.get(), entry.get())?,
+            Some(prior) => merge_object(prior.get(), entry.get(), reader_scope)?,
             None => entry.get().to_owned(),
         };
         out.push(raw(&merged)?);
@@ -244,81 +268,23 @@ fn validate_patch(kind: JsonKind, v: &Value) -> Result<()> {
             }
         }
         JsonKind::Session => {
-            keys(v, &["version", "root", "activeTabId", "tabs", "recent"])?;
+            keys(
+                v,
+                &[
+                    "version",
+                    "root",
+                    "activeTabId",
+                    "tabs",
+                    "recent",
+                    "readerHistory",
+                ],
+            )?;
             if v.get("version") != Some(&Value::from(1)) {
                 return Err(Error::UnsupportedSchema);
             }
-            if !string_or_null(v.get("root")) || !string_or_null(v.get("activeTabId")) {
-                return Err(Error::Invalid);
-            }
-            let tabs = v
-                .get("tabs")
-                .and_then(Value::as_array)
-                .ok_or(Error::Invalid)?;
-            let recent = v
-                .get("recent")
-                .and_then(Value::as_array)
-                .ok_or(Error::Invalid)?;
-            if tabs.len() > 512 || recent.len() > 2048 {
-                return Err(Error::TooLarge);
-            }
-            let mut ids = std::collections::BTreeSet::new();
-            for tab in tabs {
-                keys(
-                    tab,
-                    &[
-                        "id",
-                        "docRef",
-                        "history",
-                        "historyIndex",
-                        "scroll",
-                        "pinned",
-                        "originRoot",
-                    ],
-                )?;
-                let id = tab
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .ok_or(Error::Invalid)?;
-                if id.is_empty() || id.len() > 1024 || !ids.insert(id) {
-                    return Err(Error::Invalid);
-                }
-                reference(tab.get("docRef").ok_or(Error::Invalid)?)?;
-                let history = tab
-                    .get("history")
-                    .and_then(Value::as_array)
-                    .ok_or(Error::Invalid)?;
-                if history.is_empty() || history.len() > 256 {
-                    return Err(Error::Invalid);
-                }
-                for entry in history {
-                    reference(entry)?;
-                }
-                if tab
-                    .get("historyIndex")
-                    .and_then(Value::as_u64)
-                    .is_none_or(|i| i >= history.len() as u64)
-                    || !tab.get("pinned").is_some_and(Value::is_boolean)
-                    || !string_or_null(tab.get("originRoot"))
-                {
-                    return Err(Error::Invalid);
-                }
-                let scroll = tab.get("scroll").ok_or(Error::Invalid)?;
-                keys(scroll, &["block", "offset"])?;
-                if !scroll
-                    .get("block")
-                    .and_then(Value::as_f64)
-                    .is_some_and(|v| v >= 0.0)
-                    || !scroll
-                        .get("offset")
-                        .and_then(Value::as_f64)
-                        .is_some_and(f64::is_finite)
-                {
-                    return Err(Error::Invalid);
-                }
-            }
-            for entry in recent {
-                reference(entry)?;
+            legacy_session::validate(v)?;
+            if let Some(reader) = v.get("readerHistory") {
+                reader_history::validate(reader)?;
             }
         }
     }
