@@ -1,6 +1,8 @@
 //! OS presentation only. The app's existing document owner prepares/authorizes
 //! the private copy. No renderer body, destination or filesystem grant enters
 //! this plugin, and presentation is never a remote delivery receipt.
+mod accounts;
+pub use accounts::{authenticate, cancel_authentication, vault_read, vault_write};
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Mutex};
 #[cfg(mobile)]
@@ -64,7 +66,7 @@ fn receive<R: Runtime>(app: &AppHandle<R>, url: &str) {
         }
         queue.0.push_back(url.into());
         let _ = app.emit("mdreader://reading-link-open", url);
-    }
+    };
 }
 pub fn take_links<R: Runtime>(app: &AppHandle<R>) -> Result<PendingLinks, &'static str> {
     let links = app.try_state::<Links>().ok_or("unsupported")?;

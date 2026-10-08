@@ -47,6 +47,8 @@ mod mobile_assets;
 mod mobile_assets_commands;
 mod mobile_reader;
 mod mobile_transfer;
+#[cfg(mobile)]
+mod mobile_accounts;
 #[cfg(not(mobile))]
 mod native_browser;
 #[cfg(not(mobile))]
@@ -57,7 +59,6 @@ mod profile_transition;
 #[cfg(not(mobile))]
 mod provider_oauth;
 mod reader;
-#[cfg(not(mobile))]
 mod reader_accounts;
 mod reader_agents;
 mod reader_backfill;
@@ -191,6 +192,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 #[cfg(mobile)]
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
+        reader_accounts::reader_account,
         commands::ping,
         profile_transition::persistence::commands::native_profile_persistence_host,
         mobile_reader::mobile_reader_list,
@@ -307,6 +309,10 @@ fn launch_application_with_profile(
                     app.manage(std::sync::Arc::new(providers));
                 }
                 Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
+            }
+            #[cfg(mobile)]
+            if mobile_accounts::configure(app.handle(), &reader_backend).is_err() {
+                eprintln!("Mobile account owner is unavailable; local reading remains available");
             }
             app.manage(reader_backend);
             #[cfg(all(unix, not(mobile)))]

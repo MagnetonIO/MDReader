@@ -42,6 +42,8 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: Reader document links
             CFBundleURLSchemes: [mdreader]
+          - CFBundleURLName: Reader account sign-in
+            CFBundleURLSchemes: ["$(PRODUCT_BUNDLE_IDENTIFIER).auth"]
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]

@@ -434,3 +434,10 @@
       color 140ms ease;
   }
 }
+
+.mobile-account-settings { min-width: 0; margin-block: 1.5rem; }
+.mobile-account-settings .settings-section { margin: 0; padding-inline: 0; min-width: 0; }
+.mobile-account-settings :is(input, textarea, select) { max-width: 100%; box-sizing: border-box; }
+.mobile-account-settings .settings-account-actions { flex-wrap: wrap; }
+.mobile-account-settings button { min-height: 44px; }
+.mobile-account-settings details { min-width: 0; overflow-wrap: anywhere; }

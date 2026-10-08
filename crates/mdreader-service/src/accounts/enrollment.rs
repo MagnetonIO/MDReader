@@ -22,7 +22,7 @@ impl Actor {
         Ok(self
             .setup
             .factory
-            .login_desktop(
+            .login_native(
                 &self.setup.registered_redirect,
                 self.setup.browser.as_ref(),
                 Instant::now() + Duration::from_secs(300),
@@ -38,7 +38,7 @@ impl Actor {
         Ok(self
             .setup
             .factory
-            .login_enrollment_desktop(
+            .login_enrollment_native(
                 enrollment,
                 &self.setup.registered_redirect,
                 self.setup.browser.as_ref(),

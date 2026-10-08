@@ -1,4 +1,4 @@
-// swift-tools-version:5.3
+// swift-tools-version:5.5
 import PackageDescription
 let package = Package(name: "tauri-plugin-mdreader-transfer", platforms: [.iOS(.v15)], products: [
   .library(name: "tauri-plugin-mdreader-transfer", type: .static, targets: ["tauri-plugin-mdreader-transfer"])

@@ -18,6 +18,7 @@ pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 #[path = "catalog/mod.rs"]
 pub mod catalog;
 mod local_source;
+mod profile;
 mod identity;
 pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;
