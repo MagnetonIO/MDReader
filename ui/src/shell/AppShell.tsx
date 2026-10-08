@@ -94,6 +94,7 @@ import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
 import { CanonicalReader } from '../features/reader/CanonicalReader';
 import { DeviceReader } from '../features/device-reader/DeviceReader';
 import { isDeviceReference } from '../features/device-reader/backend';
+import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/useCatalogEditing';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -105,6 +106,8 @@ import { useSchemas } from './lens/use-schemas.js';
 import { resolveSourcePath, spanFromSelection } from './lens/source-span.js';
 import './shell.css';
 import './lens/lens.css';
+
+type WorkspaceSwitchResume = { kind: 'library-edit'; member: LibrarySourceExecution; row: EntityRow } | CatalogEditResume;
 
 function isEditable(element: Element | null): boolean {
   if (!element) return false;
@@ -217,11 +220,7 @@ export function AppShell() {
         folder: string;
         sourceId?: string;
         expectedSourceIntent: number;
-        resume?: {
-          kind: 'library-edit';
-          member: LibrarySourceExecution;
-          row: EntityRow;
-        };
+        resume?: WorkspaceSwitchResume;
       }
     | {
         kind: 'forget';
@@ -284,6 +283,7 @@ export function AppShell() {
       expectedSourceIntent?: number,
     ) => Promise<void>
   >(() => Promise.resolve());
+  const editCatalogRef = useRef<(reference: ProviderReaderReference, intent: number, selection: number) => Promise<void>>(() => Promise.resolve());
   // Native watch/grant commands commit the backend epoch before their IPC
   // promise resolves. Serialize the complete frontend transaction so a newer
   // request cannot supersede an already-committed response and then fail while
@@ -743,11 +743,7 @@ export function AppShell() {
     (
       folder: string,
       sourceId?: string,
-      resume?: {
-        kind: 'library-edit';
-        member: LibrarySourceExecution;
-        row: EntityRow;
-      },
+      resume?: WorkspaceSwitchResume,
       existingSourceIntent?: number,
     ): Promise<boolean> => {
       const expectedSourceIntent = existingSourceIntent ?? beginSourceIntent();
@@ -918,6 +914,14 @@ export function AppShell() {
     [beginSourceIntent, openRef, setEditorMode, switchWorkspace],
   );
   editLibraryDocumentRef.current = editLibraryDocument;
+  const catalogEditing = useCatalogEditing({
+    beginIntent: beginSourceIntent,
+    isIntentCurrent: (intent) => sourceIntentRef.current === intent,
+    switchWorkspace,
+    openLocal: (path, name) => openRef({ path, name }),
+    notify: toast,
+  });
+  editCatalogRef.current = catalogEditing.edit;
 
   // The palette's file open (Cmd+P mode): foreground focuses the tab; ⌘↵ opens
   // it in the background (the palette itself decides when to close).
@@ -1360,11 +1364,7 @@ export function AppShell() {
             folder: string;
             sourceId?: string;
             expectedSourceIntent: number;
-            resume?: {
-              kind: 'library-edit';
-              member: LibrarySourceExecution;
-              row: EntityRow;
-            };
+            resume?: WorkspaceSwitchResume;
           }
         | {
             kind: 'forget';
@@ -1378,6 +1378,7 @@ export function AppShell() {
         void commitForgetRef.current(guard.source, guard.expectedSourceIntent);
       } else {
         void (async () => {
+          if (guard.resume?.kind === 'catalog-edit' && useReaderHistoryStore.getState().selection !== guard.resume.selection) return;
           const committed = await commitSwitchRef.current(
             guard.folder,
             guard.sourceId,
@@ -1393,6 +1394,9 @@ export function AppShell() {
               guard.resume.row,
               guard.expectedSourceIntent,
             );
+          }
+          if (committed && guard.resume?.kind === 'catalog-edit' && sourceIntentRef.current === guard.expectedSourceIntent) {
+            await editCatalogRef.current(guard.resume.reference, guard.expectedSourceIntent, guard.resume.selection);
           }
         })();
       }
@@ -2057,6 +2061,8 @@ export function AppShell() {
                 canGoForward={Boolean(canonicalHistory.tab && canonicalHistory.tab.index + 1 < canonicalHistory.tab.entries.length)}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
+                onEdit={(reference) => void catalogEditing.edit(reference)}
+                editBusy={catalogEditing.opening === canonicalDocument}
                 onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
                 onClose={closeReaderTab}
               />
