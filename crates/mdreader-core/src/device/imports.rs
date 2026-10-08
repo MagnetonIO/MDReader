@@ -39,7 +39,8 @@ pub(super) fn reserve_import(
         let (count, bytes): (u64,u64) = tx.query_row(
             "SELECT count(*),coalesce(sum(bytes),0) FROM (SELECT bytes FROM device_documents_v1 UNION ALL SELECT bytes FROM device_import_intents_v1 WHERE state='reserved')",
             [], |r| Ok((r.get(0)?,r.get(1)?)))?;
-        if count >= MAX_DOCUMENTS || bytes + u64::from(intent.bytes) > MAX_LIBRARY_BYTES {
+        let (incoming_count, incoming_bytes) = publication::reserved_usage(&tx)?;
+        if count + incoming_count >= MAX_DOCUMENTS || bytes + incoming_bytes + u64::from(intent.bytes) > MAX_LIBRARY_BYTES {
             return Err(Error::Quota);
         }
         tx.execute("INSERT INTO device_import_intents_v1(id,name,revision,bytes,parent_identity,state) VALUES(?1,?2,?3,?4,?5,'reserved')",

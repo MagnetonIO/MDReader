@@ -3,7 +3,7 @@ use super::{decode_path, encode_path, invalid, revision, ReaderStore, Result, So
 use crate::SourceRoot;
 use rusqlite::{params, OptionalExtension, Transaction};
 
-fn validate_root(transaction: &Transaction<'_>, root: &SourceRoot) -> Result<()> {
+pub(crate) fn validate_root(transaction: &Transaction<'_>, root: &SourceRoot) -> Result<()> {
     root.verify()?;
     let private: Option<Vec<u8>> = transaction
         .query_row(
