@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ReleasePlatform } from '../../apps/web/lib/release-manifest';
+import type { ReleasePlatform } from './release-manifest';
 
 const SOURCE_COMMIT = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;

@@ -4,19 +4,19 @@ set -euo pipefail
 TARGET="${1:?target is required}"
 BUNDLES="${2:?bundles are required}"
 CONFIG="${3:?release config is required}"
-ROOT="$(pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 case "$CONFIG" in
   /*) ;;
   *) CONFIG="$ROOT/$CONFIG" ;;
 esac
 
-cd apps/mdreader/ui
+cd "$ROOT/src-tauri"
 
 # Replace the reviewed shell with the Tauri signer/bundler. No frontend,
 # TypeScript, package-manager, Cargo, verifier, or scanner process runs inside
 # this credential-bearing step.
-exec node node_modules/@tauri-apps/cli/tauri.js bundle \
+exec node "$ROOT/ui/node_modules/@tauri-apps/cli/tauri.js" bundle \
   --target "$TARGET" \
   --bundles "$BUNDLES" \
   --config "$CONFIG"

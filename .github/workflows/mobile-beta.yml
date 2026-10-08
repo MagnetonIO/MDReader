@@ -166,7 +166,7 @@ jobs:
           MOBILE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
         run: |
           set -euo pipefail
-          grep -F 'PRODUCT_BUNDLE_IDENTIFIER: dev.mdreader.app' apps/mdreader/src-tauri/gen/apple/project.yml
+          grep -F 'PRODUCT_BUNDLE_IDENTIFIER: dev.mdreader.app' src-tauri/gen/apple/project.yml
           mkdir -p target/mobile-beta
           node -e '
             const fs = require("node:fs");
@@ -193,7 +193,7 @@ jobs:
           set -euo pipefail
           archives=()
           while IFS= read -r -d '' path; do archives+=("$path"); done < <(
-            find apps/mdreader/src-tauri/gen/apple -type d -name '*.xcarchive' -print0
+            find src-tauri/gen/apple -type d -name '*.xcarchive' -print0
           )
           test "${#archives[@]}" -eq 1
           mkdir -p target/mobile-beta/ios-handoff
@@ -259,12 +259,12 @@ jobs:
           MDREADER_RELEASE_SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
         run: |
           set -euo pipefail
-          grep -F 'applicationId = "dev.mdreader.app"' apps/mdreader/src-tauri/gen/android/app/build.gradle.kts
-          mkdir -p apps/mdreader/src-tauri/gen/android/app
+          grep -F 'applicationId = "dev.mdreader.app"' src-tauri/gen/android/app/build.gradle.kts
+          mkdir -p src-tauri/gen/android/app
           {
             printf 'tauri.android.versionCode=%s\n' '${{ needs.prepare.outputs.build_number }}'
             printf 'tauri.android.versionName=%s\n' '${{ needs.prepare.outputs.version }}'
-          } > apps/mdreader/src-tauri/gen/android/app/tauri.properties
+          } > src-tauri/gen/android/app/tauri.properties
           pnpm --filter "@mdreader/app..." run build
           pnpm --filter @mdreader/app tauri android build \
             --target aarch64 \
@@ -277,7 +277,7 @@ jobs:
           set -euo pipefail
           bundles=()
           while IFS= read -r -d '' path; do bundles+=("$path"); done < <(
-            find apps/mdreader/src-tauri/gen/android -type f -name '*.aab' -print0
+            find src-tauri/gen/android -type f -name '*.aab' -print0
           )
           test "${#bundles[@]}" -eq 1
           if zipinfo -1 "${bundles[0]}" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then
