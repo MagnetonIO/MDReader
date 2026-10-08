@@ -31,6 +31,12 @@ pub trait FreezeOwner {
 pub trait FrozenProfile {
     fn binding(&self) -> &RootBinding;
     fn revalidate(&mut self) -> Result<()>;
+    /// Exact preflush JSON issued by real renderer persistence participants.
+    /// This optional seam is required only by the output-only outer bundle;
+    /// existing current-snapshot archives keep their protocol unchanged.
+    fn preflush_json(&mut self) -> Result<Vec<crate::bundle::PreflushArtifact>> {
+        Err(Error::NotQuiescent)
+    }
     fn with_database(
         &mut self,
         relative: &Path,

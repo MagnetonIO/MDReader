@@ -2,6 +2,7 @@
 //! is protected until its real participant and effect leases are wired. Selector
 //! activation stays unavailable until durable restart/handoff is implemented.
 mod admission;
+pub(crate) mod persistence;
 mod registry;
 #[cfg(all(test, unix))]
 mod tests;
@@ -50,6 +51,22 @@ impl NativeProfileTransition {
             let inventory = Inventory::capture(&root, choices, limits)?;
             let mut owner = BorrowedFreeze { frozen };
             mdreader_profile::stage(&mut owner, inventory, destination, limits)
+        })
+    }
+    /// Production installed-profile preservation uses the outer envelope so
+    /// exact preflush originals are never mistaken for latest current JSON.
+    pub(crate) fn preserve_bundle(
+        &self,
+        choices: &[InventorySelection],
+        destination: &Path,
+        limits: &Limits,
+        timeout: Duration,
+    ) -> Result<mdreader_profile::bundle::VerifiedBundle> {
+        self.registry.with_frozen(timeout, |frozen| {
+            let root = frozen.binding().locator.restore()?;
+            let inventory = Inventory::capture(&root, choices, limits)?;
+            let mut owner = BorrowedFreeze { frozen };
+            mdreader_profile::bundle::stage_bundle(&mut owner, inventory, destination, limits)
         })
     }
     // Durable import/startup selector and both-owner shutdown handoff are not

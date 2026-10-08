@@ -1,13 +1,13 @@
 /**
  * A GENUINE settings-persistence round-trip for the Related rail: the app writes
- * `relatedRailOpen` through the REAL persistence path (real `saveSettings` → an
- * in-memory tauri-plugin-store), then a FRESH AppShell mount reads it back through
+ * `relatedRailOpen` through the REAL persistence path (real `saveSettings` → the
+ * fixed native command boundary), then a FRESH AppShell mount reads it back through
  * the REAL `loadPersisted` (NOT a stubbed `{}`), so a regression anywhere on the
  * save→store→load→sanitize→hydrate→UI chain is caught. This is deliberately NOT
  * the pattern in edit-integration.test.tsx (which mocks `loadPersisted`/`saveSettings`
  * to no-ops) — that cannot prove a preference survives an actual relaunch.
  *
- * Only the OS/IPC boundary is faked: the tauri store (in-memory, shared across the
+ * Only the OS/IPC boundary is faked: the native JSON owner (shared across the
  * two mounts), the tauri window, the fs IPC, and the CodeMirror leaf. `persistence.ts`
  * itself runs for real, guarded on `isTauri()` — so we set `__TAURI_INTERNALS__` to
  * make the real guard pass.
@@ -16,19 +16,26 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The in-memory backing for the mocked tauri store, keyed `${file}::${key}`. Shared
-// across mounts within a test (persistence.ts memoizes the store handle), cleared
+// The in-memory backing for native IPC, keyed `${file}::${key}`. Shared
+// across mounts within a test (persistence.ts memoizes registration), cleared
 // between tests.
 const h = vi.hoisted(() => ({ store: new Map<string, unknown>() }));
 
-vi.mock('@tauri-apps/plugin-store', () => ({
-  load: async (name: string) => ({
-    get: async (key: string) => h.store.get(`${name}::${key}`),
-    set: async (key: string, value: unknown) => {
-      h.store.set(`${name}::${key}`, value);
-    },
-    save: async () => {},
-  }),
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: async (command: string, args?: { kind: string; generation: number; identity: { ownerEpoch: string; rendererEpoch: string }; json: string }) => {
+    const identity = { ownerEpoch: 'owner', rendererEpoch: 'renderer' };
+    if (command === 'native_profile_persistence_host') return 'native_atomic';
+    if (command === 'native_profile_persistence_load' || command === 'native_profile_persistence_read') return {
+      identity,
+      sessionJson: h.store.has('session.json::session') ? JSON.stringify({ session: h.store.get('session.json::session') }) : null,
+      settingsJson: h.store.has('settings.json::settings') ? JSON.stringify({ settings: h.store.get('settings.json::settings') }) : null,
+    };
+    if (command === 'native_profile_persistence_write' && args) {
+      h.store.set(`${args.kind}.json::${args.kind}`, JSON.parse(args.json));
+      return { ...args.identity, kind: args.kind, generation: args.generation, sha256: 'a'.repeat(64) };
+    }
+    throw new Error('Unsupported synthetic command');
+  },
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({
