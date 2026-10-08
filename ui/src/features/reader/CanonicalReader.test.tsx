@@ -4,7 +4,7 @@ import { CanonicalReader } from './CanonicalReader';
 import type { CanonicalReaderBackend } from './contracts';
 import type { ProviderReaderReference } from '../../platform/providers';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 test('inline local links expose exact ambiguous candidates and preserve shared previous navigation', async () => {
   const origin: ProviderReaderReference = {
     sourceId: 'a'.repeat(64), path: 'origin.md', revision: 'b'.repeat(64), title: 'Origin',
@@ -58,4 +58,29 @@ test('an exact capture read disables local editing and archive comparison even a
   expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
   expect(screen.getByText(/exact captured visible-output revision/)).toBeTruthy();
   expect(edit).not.toHaveBeenCalled(); expect(reviews).not.toHaveBeenCalled();
+});
+
+test('an exact local reader loads only relative images through native receipts and releases them on close', async () => {
+  const NativeURL = URL;
+  const revoke = vi.fn();
+  vi.stubGlobal('URL', class extends NativeURL {
+    static createObjectURL = vi.fn(() => 'blob:guarded-local-image');
+    static revokeObjectURL = revoke;
+  });
+  vi.stubGlobal('IntersectionObserver', undefined);
+  const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+  const reference = { sourceId: 'a'.repeat(64), path: 'welcome.md', revision: 'b'.repeat(64), title: 'Welcome' };
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async () => ({ operation: 'read_document' as const, ...reference,
+      sourceKind: 'local' as const, markdown: '# Welcome\n\n![Pixel](images/pixel.png)\n\n![Remote](https://example.invalid/pixel.png)', lineStart: 1, lineEnd: 5 })),
+    readImage: vi.fn(async () => ({ mime: 'image/png' as const, base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=' })),
+  };
+  const view = render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Load local image' }));
+  expect((await screen.findByRole('img', { name: 'Pixel' })).getAttribute('src')).toBe('blob:guarded-local-image');
+  expect(backend.readImage).toHaveBeenCalledExactlyOnceWith(reference, 'images/pixel.png');
+  expect(screen.queryByRole('img', { name: 'Remote' })).toBeNull();
+  expect(fetch).not.toHaveBeenCalled();
+  view.unmount();
+  expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:guarded-local-image');
 });
