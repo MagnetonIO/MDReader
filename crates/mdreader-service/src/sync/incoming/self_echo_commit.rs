@@ -24,49 +24,51 @@ pub(in crate::sync::incoming) fn commit(
         return Err(Error::Conflict);
     }
     publication::with_transition(owner, current, origin, |db, guard| {
-        commit::commit_on(
-            db,
-            scope,
-            identity,
-            origin,
-            |tx| {
-                association::verify(tx, scope, intent, None)?;
-                publication_proof(tx, scope, intent, &identity.change)?;
-                outgoing_selection::verify_head(tx, &identity::scope_key(scope)?, intent)?;
-                publication::revalidate_current_archive(tx, &guard, current, &snapshot.archive)?;
-                // The native UUID/source/BLAKE3 revision/asset UUIDs remain unchanged.
-                let receipt = Receipt {
-                    sequence: identity.change.sequence,
-                    wire_item_id: identity.change.item_id.clone(),
-                    wire_revision: identity.change.revision_id.clone(),
-                    document: current.state().document.clone(),
-                    markdown_sha256: identity.markdown_sha256.clone(),
-                    assets: identity.assets.clone(),
-                    materialized_assets: snapshot.materialized.clone(),
-                    operation: Operation::Content,
-                    generation: Some(current.state().generation),
-                    retirement: None,
-                };
-                heads::save(
-                    tx,
-                    &identity::scope_key(scope)?,
-                    intent.head.as_ref(),
-                    &head(&receipt),
-                )?;
-                association::complete(tx, scope, intent, identity.change.sequence)?;
-                Ok(receipt)
-            },
-            |tx, receipt| {
-                association::verify(tx, scope, intent, Some(identity.change.sequence))?;
-                publication_proof(tx, scope, intent, &identity.change)?;
-                heads::verify(tx, &identity::scope_key(scope)?, &head(receipt))?;
-                publication::revalidate_current_archive(tx, &guard, current, &snapshot.archive)?;
-                Ok(())
-            },
-            final_fence,
-        )
+        let mut sync = mdreader_sync::SyncStore::attach(db, scope.clone())?;
+        sync.with_applied_transaction(&identity.change, |tx, advance| -> Result<Receipt> {
+            commit::require_start(tx, scope, identity, origin)?;
+            association::verify(tx, scope, intent, None)?;
+            // This proof genuinely borrows this transaction and stays on this
+            // callback's stack through cursor writes and the final byte fence.
+            let proof = mdreader_sync::published_graph_proof_in(
+                tx,
+                scope,
+                &intent.operation.operation_id,
+                &identity.change,
+            )?;
+            if proof.entry().operation != intent.operation {
+                return Err(Error::Conflict);
+            }
+            outgoing_selection::verify_head(tx, &identity::scope_key(scope)?, intent)?;
+            publication::revalidate_current_archive(tx, &guard, current, &snapshot.archive)?;
+            let receipt = Receipt {
+                sequence: identity.change.sequence,
+                wire_item_id: identity.change.item_id.clone(),
+                wire_revision: identity.change.revision_id.clone(),
+                document: current.state().document.clone(),
+                markdown_sha256: identity.markdown_sha256.clone(),
+                assets: identity.assets.clone(),
+                materialized_assets: snapshot.materialized.clone(),
+                operation: Operation::Content,
+                generation: Some(current.state().generation),
+                retirement: None,
+            };
+            let key = identity::scope_key(scope)?;
+            heads::save(tx, &key, intent.head.as_ref(), &head(&receipt))?;
+            association::complete(tx, scope, intent, identity.change.sequence)?;
+            ledger::complete(tx, &key, identity, origin, &receipt)?;
+            advance.advance()?;
+            commit::verify_applied(tx, scope, identity, origin, &receipt)?;
+            association::verify(tx, scope, intent, Some(identity.change.sequence))?;
+            proof.revalidate()?;
+            heads::verify(tx, &key, &head(&receipt))?;
+            publication::revalidate_current_archive(tx, &guard, current, &snapshot.archive)?;
+            final_fence(tx)?;
+            Ok(receipt)
+        })
     })?
 }
+
 fn head(receipt: &Receipt) -> Head {
     Head {
         item: receipt.wire_item_id.clone(),

@@ -2,9 +2,9 @@
 use super::*;
 use crate::sync::{
     incoming::outgoing_selection::{self, Admission},
-    outgoing::{association, scope_digest, snapshot::Snapshot, Intent},
+    outgoing::{Intent, association, scope_digest, snapshot::Snapshot},
 };
-use mdreader_sync::outgoing::{seal_content, OutgoingContent, SealedGraph};
+use mdreader_sync::outgoing::{OutgoingContent, SealedGraph, seal_content};
 
 struct Local {
     f: Fixture,
@@ -319,21 +319,23 @@ fn selected_association_and_ciphertext_graph_rollback_and_reopen_as_one_unit() {
             entry.envelope_utf8.as_deref(),
             Some(graph.root().envelope_utf8())
         );
-        assert!(mdreader_sync::published_graph_in(
-            &tx,
-            &f.scope,
-            &intent.operation.operation_id,
-            &RemoteChange {
-                sequence: 1,
-                revision_id: intent.operation.revision_id.clone(),
-                item_id: intent.operation.item_id.clone(),
-                blob: intent.operation.blob.clone(),
-                deleted: false,
-                parents: vec![],
-                device: f.scope.device_id().into()
-            }
-        )
-        .is_err());
+        assert!(
+            mdreader_sync::published_graph_in(
+                &tx,
+                &f.scope,
+                &intent.operation.operation_id,
+                &RemoteChange {
+                    sequence: 1,
+                    revision_id: intent.operation.revision_id.clone(),
+                    item_id: intent.operation.item_id.clone(),
+                    blob: intent.operation.blob.clone(),
+                    deleted: false,
+                    parents: vec![],
+                    device: f.scope.device_id().into()
+                }
+            )
+            .is_err()
+        );
     });
     assert_eq!(f.cursor(), CursorState::default());
     let current = device::state::current(&mut f.owner, &intent.native_document).unwrap();
@@ -363,9 +365,11 @@ fn exact_self_echo_receipts_apply_to_same_document_and_late_fence_rolls_back() {
         },
     )
     .unwrap();
-    assert!(!local
-        .snapshot
-        .matches_prepared(&local.prepared_graph(&changed)));
+    assert!(
+        !local
+            .snapshot
+            .matches_prepared(&local.prepared_graph(&changed))
+    );
     local.admit().unwrap();
     local.stage();
     // Uploaded/ack status alone or an absent receipt can never authorize apply.
@@ -424,18 +428,68 @@ fn exact_self_echo_receipts_apply_to_same_document_and_late_fence_rolls_back() {
             [&local.intent.operation.operation_id],
         )
         .unwrap();
-        assert!(mdreader_sync::graph_entry_in(
-            &tx,
-            &local.f.scope,
-            &local.intent.operation.operation_id
-        )
-        .is_err());
-        assert!(mdreader_sync::outbox_revision_in(
-            &tx,
-            &local.f.scope,
-            &local.intent.operation.revision_id
-        )
-        .is_err());
+        assert!(
+            mdreader_sync::graph_entry_in(
+                &tx,
+                &local.f.scope,
+                &local.intent.operation.operation_id
+            )
+            .is_err()
+        );
+        assert!(
+            mdreader_sync::outbox_revision_in(
+                &tx,
+                &local.f.scope,
+                &local.intent.operation.revision_id
+            )
+            .is_err()
+        );
+    });
+    local.f.owner.with_library_connection(|db| {
+        let mut sync = SyncStore::attach(db, local.f.scope.clone()).unwrap();
+        let incomplete: std::result::Result<(), mdreader_sync::SyncError> = sync.with_applied_transaction(&change, |tx, _advance| {
+            tx.execute("UPDATE native_outgoing_intents_v1 SET state='applied',sequence=1 WHERE operation_id=?1", [&local.intent.operation.operation_id])?;
+            Ok(())
+        });
+        assert!(incomplete.is_err(), "publication cannot commit without consuming the exact cursor advance");
+    });
+    assert_eq!(local.f.cursor().applied, 0);
+    local.f.owner.with_library_connection(|db| {
+        assert_eq!(association::get(db, &local.f.scope, &local.intent.operation.operation_id).unwrap().unwrap().applied, None);
+        for sql in [
+            "DELETE FROM mdreader_sync_graph_dependencies WHERE operation_id=?1 AND ordinal=0",
+            "UPDATE mdreader_sync_graph_dependencies SET rowid=rowid+100000 WHERE operation_id=?1 AND ordinal=0",
+            "INSERT INTO mdreader_sync_graph_dependencies SELECT account,library,device,operation_id,ordinal+2,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',context,envelope,bytes,receipt FROM mdreader_sync_graph_dependencies WHERE operation_id=?1 AND ordinal=0",
+            "UPDATE mdreader_sync_graph_roots SET root_receipt=root_receipt||' ' WHERE operation_id=?1",
+            "UPDATE mdreader_sync_graph_schema SET version=2 WHERE EXISTS(SELECT 1 FROM mdreader_sync_graph_roots WHERE operation_id=?1)",
+        ] {
+            let tx = db.transaction().unwrap();
+            let proof = mdreader_sync::published_graph_proof_in(
+                &tx, &local.f.scope, &local.intent.operation.operation_id, &change,
+            ).unwrap();
+            proof.revalidate().unwrap();
+            tx.execute(sql, [&local.intent.operation.operation_id]).unwrap();
+            assert!(proof.revalidate().is_err(), "changed graph membership/identity/receipt/schema is not reusable");
+            // Drop proof before rolling back this isolated mutation.
+        }
+        db.execute_batch(&format!("CREATE TEMP TRIGGER self_echo_graph_mutation AFTER UPDATE OF applied ON mdreader_sync_cursors BEGIN UPDATE mdreader_sync_graph_dependencies SET context=context||' ' WHERE operation_id='{}' AND ordinal=0; END", local.intent.operation.operation_id)).unwrap();
+    });
+    assert!(
+        local.echo(|_| Ok(())).is_err(),
+        "post-cursor trigger changed validated raw context bytes"
+    );
+    assert_eq!(local.f.cursor().applied, 0);
+    assert_eq!(local.f.count("native_incoming_heads_v2"), 0);
+    local.f.owner.with_library_connection(|db| {
+        assert_eq!(
+            association::get(db, &local.f.scope, &local.intent.operation.operation_id)
+                .unwrap()
+                .unwrap()
+                .applied,
+            None
+        );
+        db.execute_batch("DROP TRIGGER self_echo_graph_mutation")
+            .unwrap();
     });
     let before_assets = local
         .snapshot

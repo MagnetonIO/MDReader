@@ -26,18 +26,62 @@ pub(super) fn commit_on(
     }
     let result = std::cell::RefCell::new(None);
     let mut sync = SyncStore::attach(db, scope.clone())?;
-    sync.mark_applied_guarded(identity.change.sequence,|tx|->Result<()> {
-        let current:u64=tx.query_row("SELECT applied FROM mdreader_sync_cursors WHERE account=?1 AND library=?2 AND device=?3",rusqlite::params![scope.account_digest(),scope.library_id(),scope.device_id()],|r|r.get(0))?;
-        if current.checked_add(1)!=Some(identity.change.sequence) || !matches!(ledger::inspect(tx,&key,identity,origin)?,Some(Entry::Reserved)) {return Err(Error::Conflict);}
-        let receipt=apply(tx)?;ledger::complete(tx,&key,identity,origin,&receipt)?;*result.borrow_mut()=Some(receipt);Ok(())
-    },|tx|->Result<()> {
-        super::schema::require_library(tx,scope.library_id())?;verify_staged_commit(tx,scope,&identity.change)?;
-        let value=result.borrow();let receipt=value.as_ref().ok_or(Error::Conflict)?;
-        ledger::verify(tx,&key,identity,origin,receipt)?;final_validate(tx,receipt)?;final_fence(tx)
-    })?;
+    sync.mark_applied_guarded(
+        identity.change.sequence,
+        |tx| -> Result<()> {
+            require_start(tx, scope, identity, origin)?;
+            let receipt = apply(tx)?;
+            ledger::complete(tx, &key, identity, origin, &receipt)?;
+            *result.borrow_mut() = Some(receipt);
+            Ok(())
+        },
+        |tx| -> Result<()> {
+            let value = result.borrow();
+            let receipt = value.as_ref().ok_or(Error::Conflict)?;
+            verify_applied(tx, scope, identity, origin, receipt)?;
+            final_validate(tx, receipt)?;
+            final_fence(tx)
+        },
+    )?;
     result.into_inner().ok_or(Error::Conflict)
 }
 
+pub(super) fn require_start(
+    tx: &Transaction<'_>,
+    scope: &SyncScope,
+    identity: &Identity,
+    origin: &IncomingOrigin,
+) -> Result<()> {
+    let current: u64 = tx.query_row(
+        "SELECT applied FROM mdreader_sync_cursors WHERE account=?1 AND library=?2 AND device=?3",
+        rusqlite::params![
+            scope.account_digest(),
+            scope.library_id(),
+            scope.device_id()
+        ],
+        |r| r.get(0),
+    )?;
+    if current.checked_add(1) != Some(identity.change.sequence)
+        || !matches!(
+            ledger::inspect(tx, &identity::scope_key(scope)?, identity, origin)?,
+            Some(Entry::Reserved)
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+pub(super) fn verify_applied(
+    tx: &Transaction<'_>,
+    scope: &SyncScope,
+    identity: &Identity,
+    origin: &IncomingOrigin,
+    receipt: &Receipt,
+) -> Result<()> {
+    super::schema::require_library(tx, scope.library_id())?;
+    verify_staged_commit(tx, scope, &identity.change)?;
+    ledger::verify(tx, &identity::scope_key(scope)?, identity, origin, receipt)
+}
 fn verify_staged_commit(
     tx: &Transaction<'_>,
     scope: &SyncScope,

@@ -66,11 +66,53 @@ commit. Missing, partial or nonready asset snapshots are rejected. The readonly
 fence compares retained and current exact-path file identity/change stamps; it
 does not hash bodies, decode pixels or write files under the transaction.
 
-The publication proof currently validates a full bounded graph at start and again
-at pre/final commit. This is bounded but still body hashing/allocation under owner
-access, up to the existing 32 MiB graph limit per proof. Per-dependency receipt
-admission was separately fixed to read one row; that linear fix does not remove
-this remaining repeated full-proof owner cost.
+The accepted storage checkpoint below validated a full bounded graph at start
+and again at pre/final commit, with body hashing/allocation under owner access up
+to the existing 32 MiB graph limit per proof. Per-dependency receipt admission was
+separately fixed to read one row.
+
+## Transaction-bound proof reuse checkpoint (2026-10-08)
+
+Self-echo uses one `with_applied_transaction` callback. It retains an opaque
+`PublishedGraphProof` borrowing that actual transaction, along with the raw root,
+ordered dependency bodies/contexts and exact upload/commit receipts collected in
+the existing validation pass. There is no second snapshot hash/capture pass and
+no proof transfer to another transaction. A consuming `AppliedAdvance` is bound
+to the same transaction, scope, prior cursor and exact next staged change. Missing
+advancement, changed staged identity/cursors or any callback error rolls back
+association/head/ledger/cursor writes together. The outer boundary verifies the
+advance and performs only reads before COMMIT; compatibility incoming APIs remain
+unchanged.
+
+After provisional owner/receipt/cursor writes, the proof checks exact SQLite
+bytes, row identities, complete membership/count/order and unchanged schema. It
+rejects trigger mutation even when altered JSON remains semantically equivalent.
+The final staged/ledger/head, retained current/archive and live session/selection
+fences remain mandatory. This removes duplicate ciphertext extraction, JSON
+parsing and hashing within that commit transaction; SQLite still compares up to
+32 MiB of retained bytes under owner access. The separate preparation transaction
+continues to establish its own proof. This is not a claim of zero allocation,
+zero owner cost, measured responsiveness or product QueueDocument acceptance.
+
+The existing self-echo regression exercises missing-advance rollback,
+changed/deleted/replaced graph rows and schema/receipt mutation, and a real SQLite
+cursor trigger changing raw dependency context after the first proof. With the
+sole assigned check slot, jobs=2, locked/offline dependencies and the compatible
+warm benchmark target, the two self-echo cases passed in 0.15s (10.77s compile).
+Omitting only `proof.revalidate()` produced the expected RED at the post-cursor
+trigger assertion: 1 failed case in 0.08s (2.35s compile). The exact reviewed
+source was restored byte-for-byte before the affected incoming module passed
+all 12 cases in 0.44s (1.17s compile). The three existing graph cases passed in
+0.52s (4.57s compile). Strict all-target sync/native-authority Clippy passed in
+1.99s, and service/sync-native Clippy passed in 7.75s. The commands are the same
+focused commands shown below; the mutation ran only the exact self-echo case.
+
+The service test artifact was `mdreader_service-7f0e66053bcfb897`; the sync graph
+artifact was `mdreader_sync-049799ec158f3392`. There were no unexpected compile
+failures, dependency/lock changes, model runs, packaging, deployment or live
+accounts. Actual actor HTTPS acceptance remains the separately recorded prior
+checkpoint, not a newly rerun claim. This proof checkpoint does not expose a
+QueueDocument RPC/UI or measure owner responsiveness.
 
 ## Focused checkpoint evidence (2026-10-08)
 
