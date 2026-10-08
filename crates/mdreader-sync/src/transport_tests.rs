@@ -13,8 +13,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-struct TestOwner {
-    db: Mutex<rusqlite::Connection>,
+pub(super) struct TestOwner {
+    pub(super) db: Mutex<rusqlite::Connection>,
     scope: RwLock<Option<SyncScope>>,
 }
 impl Owner for TestOwner {
@@ -31,13 +31,13 @@ impl Owner for TestOwner {
         Ok(action(&mut SyncStore::attach(&mut db, expected.clone())?)?)
     }
 }
-struct TestAuthority {
-    scope: SyncScope,
+pub(super) struct TestAuthority {
+    pub(super) scope: SyncScope,
     encoding: jsonwebtoken::EncodingKey,
     jwk: Value,
     token: zeroize::Zeroizing<String>,
     login_token: zeroize::Zeroizing<String>,
-    library: LibraryKey,
+    pub(super) library: LibraryKey,
     epoch: std::sync::atomic::AtomicU64,
 }
 impl TestAuthority {
@@ -102,7 +102,7 @@ impl Authority for TestAuthority {
         )?)
     }
 }
-struct Fixture {
+pub(super) struct Fixture {
     child: Child,
     _temp: tempfile::TempDir,
     origin: String,
@@ -151,7 +151,7 @@ impl Fixture {
             .build()
             .unwrap()
     }
-    async fn json(&self, path: &str, body: Value) -> Value {
+    pub(super) async fn json(&self, path: &str, body: Value) -> Value {
         let result = self
             .client()
             .post(format!("{}{path}", self.origin))
@@ -218,7 +218,7 @@ impl Drop for Fixture {
         let _ = self.child.wait();
     }
 }
-fn owner(temp: &tempfile::TempDir, scope: &SyncScope) -> TestOwner {
+pub(super) fn owner(temp: &tempfile::TempDir, scope: &SyncScope) -> TestOwner {
     let mut db = rusqlite::Connection::open(temp.path().join("synthetic-owner.sqlite")).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;CREATE TABLE IF NOT EXISTS owner_projection(value TEXT);").unwrap();
     migrate(&mut db).unwrap();
@@ -494,6 +494,8 @@ async fn actual_worker_immutable_retry_scoped_receipts_staging_and_applied_only_
         .unwrap();
     assert_eq!(heads.len(), 1);
     assert!(heads[0].change.deleted);
+    super::graph_upload_tests::exercise(&fixture, owner, &auth, &transport, &temp).await;
+    let owner = self::owner(&temp, &auth.scope);
     let url = format!("{}/v1/devices/{}", fixture.origin, auth.scope.device_id());
     let signed = auth.authorize("DELETE", &url, b"").unwrap();
     let revoked = fixture

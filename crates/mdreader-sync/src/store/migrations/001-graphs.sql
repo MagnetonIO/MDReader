@@ -1,0 +1,4 @@
+CREATE TABLE mdreader_sync_graph_schema(singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL);
+CREATE TABLE mdreader_sync_graph_roots(account TEXT NOT NULL,library TEXT NOT NULL,device TEXT NOT NULL,operation_id TEXT NOT NULL,root_blob TEXT NOT NULL,dependency_count INTEGER NOT NULL CHECK(dependency_count BETWEEN 1 AND 72),root_receipt TEXT,PRIMARY KEY(account,library,device,operation_id));
+CREATE TABLE mdreader_sync_graph_dependencies(account TEXT NOT NULL,library TEXT NOT NULL,device TEXT NOT NULL,operation_id TEXT NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 0 AND 71),blob TEXT NOT NULL,context TEXT NOT NULL,envelope BLOB NOT NULL,bytes INTEGER NOT NULL CHECK(bytes BETWEEN 1 AND 524288),receipt TEXT,PRIMARY KEY(account,library,device,operation_id,blob),UNIQUE(account,library,device,operation_id,ordinal));
+INSERT INTO mdreader_sync_graph_schema VALUES(1,1);

@@ -12,6 +12,7 @@ mod jwt;
 mod keyring;
 mod loopback;
 mod oidc;
+mod outgoing;
 mod pairing;
 mod projection;
 mod recovery;
