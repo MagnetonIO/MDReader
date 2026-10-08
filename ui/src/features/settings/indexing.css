@@ -1,0 +1,64 @@
+.indexing-settings h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.indexing-settings p {
+  max-width: 60ch;
+  margin: 0 0 20px;
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.indexing-settings__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  max-width: 540px;
+}
+.indexing-settings__field {
+  display: grid;
+  flex: 1 1 220px;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.indexing-settings__select { position: relative; display: block; }
+.indexing-settings__select::after {
+  content: '';
+  position: absolute;
+  right: 16px;
+  top: calc(50% - 5px);
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--color-muted);
+  border-bottom: 1.5px solid var(--color-muted);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.indexing-settings select,
+.indexing-settings__apply {
+  box-sizing: border-box;
+  min-height: 44px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 14px;
+}
+.indexing-settings select { appearance: none; width: 100%; padding: 10px 40px 10px 12px; cursor: pointer; }
+.indexing-settings__apply { padding: 10px 16px; font-weight: 500; cursor: pointer; }
+.indexing-settings__apply:not(:disabled) { border-color: var(--color-accent); }
+.indexing-settings :is(select, button):not(:disabled):hover { border-color: var(--color-accent); }
+.indexing-settings :is(select, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.indexing-settings :is(select, button):disabled { opacity: .55; cursor: default; }
+.indexing-settings .indexing-settings__hint { margin: 8px 0 16px; font-size: 12px; }
+.indexing-settings .indexing-settings__status { margin: 0; font-size: 12px; }
+.indexing-settings [role='alert'] { margin-top: 12px; color: var(--color-fg); }
+@media (forced-colors: active) {
+  .indexing-settings select { appearance: auto; }
+  .indexing-settings__select::after { display: none; }
+}
