@@ -12,6 +12,8 @@ use std::time::Duration;
 pub mod accounts;
 pub mod capture;
 pub mod catalog;
+#[cfg(feature = "sync-native")]
+pub mod device;
 pub mod integrations;
 pub mod provider;
 pub mod reviews;
@@ -47,6 +49,8 @@ const ENDPOINT: &str = "reader-endpoint.json";
 pub enum Request {
     #[cfg(feature = "sync-native")]
     Account { request: accounts::rpc::AccountRequest },
+    #[cfg(feature = "sync-native")]
+    Device { request: device::DeviceRequest },
     Catalog { request: catalog::CatalogRequest },
     Reviews {
         request: reviews::ReviewRequest,
@@ -235,6 +239,8 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
         #[cfg(feature = "sync-native")]
         Request::Account { .. } => return Err(protocol_error("Accounts require the desktop service")),
+        #[cfg(feature = "sync-native")]
+        Request::Device { .. } => return Err(protocol_error("Device reading requires the desktop service")),
         Request::Catalog { .. } => return Err(protocol_error("Catalog requires the desktop service")),
         Request::Reviews { .. }
         | Request::Provider { .. }

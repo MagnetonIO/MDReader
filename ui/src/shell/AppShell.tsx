@@ -86,6 +86,9 @@ import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
 import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
 import { CanonicalReader } from '../features/reader/CanonicalReader';
+import type { CanonicalReaderReference } from '../features/reader/contracts';
+import { DeviceReader } from '../features/device-reader/DeviceReader';
+import { isDeviceReference } from '../features/device-reader/backend';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -179,7 +182,7 @@ export function AppShell() {
     };
   }, []);
   const [cloudSaving, setCloudSaving] = useState(false);
-  const [canonicalDocument, setCanonicalDocument] = useState<ProviderReaderReference | null>(null);
+  const [canonicalDocument, setCanonicalDocument] = useState<CanonicalReaderReference | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
   const legacy = useLegacyRecords(activeTabId, semanticWorkspaceGeneration);
   const {
@@ -2010,7 +2013,10 @@ export function AppShell() {
             }`}
           >
             {canonicalDocument ? (
-              <CanonicalReader
+              isDeviceReference(canonicalDocument) ? <DeviceReader
+                reference={canonicalDocument}
+                onClose={() => setCanonicalDocument(null)}
+              /> : <CanonicalReader
                 reference={canonicalDocument}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}

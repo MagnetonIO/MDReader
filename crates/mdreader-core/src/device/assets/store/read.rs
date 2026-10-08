@@ -32,6 +32,8 @@ impl AssetStore {
         manifest: &str,
         permit: ReadPermit,
     ) -> Result<PreparedSnapshot> {
+        let document_epoch =
+            crate::device::catalog::document_epoch(store, doc).map_err(|_| unavailable())?;
         let current = self.manifest(store, doc, revision)?;
         let item = self.item(store, id)?;
         if current.manifest != manifest
@@ -48,6 +50,7 @@ impl AssetStore {
             manifest: manifest.into(),
             root: self.root.clone(),
             owner: self.owner.clone(),
+            document_epoch,
         })
     }
 }

@@ -482,6 +482,15 @@ impl ReaderStore {
     pub fn with_library_connection<T>(&mut self, operation: impl FnOnce(&mut Connection) -> T) -> T {
         operation(&mut self.library)
     }
+    /// Internal read-only device observations use the existing connection.
+    #[cfg(feature = "device-assets")]
+    pub(crate) fn device_connection(&self) -> &Connection {
+        &self.library
+    }
+    #[cfg(feature = "device-assets")]
+    pub(crate) fn device_source_root(&self, source: &str) -> Result<SourceRoot> {
+        self.stored_root(source, true)
+    }
     /// Look up an exact persisted binding without admitting or reopening it.
     /// This also permits revocation after a directory disappears or is replaced.
     pub fn find_local_source(&self, path: &Path, identity: &SourceRootIdentity) -> Result<Option<Source>> {
