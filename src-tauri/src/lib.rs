@@ -118,6 +118,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             profile_transition::persistence::commands::native_profile_persistence_write,
             profile_transition::persistence::commands::native_profile_persistence_flush,
             profile_transition::persistence::editor::native_profile_editor_submit,
+            profile_transition::backup::native_profile_backup,
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
             reader_accounts::reader_account,
