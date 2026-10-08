@@ -1,7 +1,8 @@
 # Reader-owned catalog boundary
 
-This foundation adds one native catalog list and exact reader opens; the primary
-legacy hydrate/body adapter remains transitional until the next cutover slice.
+The primary Library list and exact reader opens use the MDReader catalog.
+Legacy metadata/body reads are available only through an explicit migration/history
+action; startup and catalog browsing never hydrate the legacy Library.
 The native Library catalog observes existing retained Library folders and
 explicitly selected provider metadata. It never admits/regrants a folder, reads
 credentials, enumerates remote metadata or fetches a body while listing. A folder
@@ -34,22 +35,31 @@ not turn a valid local catalog into empty success. No public DTO includes folder
 roots, cache roots, credential references or opaque provider record/version keys.
 
 Exact opens carry canonical reader source ID, relative path and revision. Local
-opens use a shared read-only dialog and recheck retained Library membership/root
-before and after the exact reader call. They do not construct an absolute path or
+opens use the normal main reader and shared read-only rendering/navigation. They
+recheck retained Library membership/root before and after the exact reader call. They do not construct an absolute path or
 activate a workspace. Provider rows without a current admitted receipt offer only
 an explicit **Fetch current** action using a service-minted document handle; its
 returned canonical binding must match the expected source. Stale UI replies are
 ignored, and unused cursors are released. Images remain unavailable in this
-read-only catalog dialog; existing explicit device asset support is separate.
+read-only catalog reader; existing explicit device asset support is separate.
 
 Existing legacy document bodies, edit receipts, recents, history, exports and
 rollback remain untouched. Their lossless preservation/mapping is still an
 activation gate before removing the legacy SDK paths. Generic CatDB
 schema/mapping/law/Enterprise administration is retired by the approved reader
 plan; this feature does not introduce a replacement generic entity query API.
-The current legacy Library adapter remains transitional until that gate. This
-slice adds the reader catalog and canonical reads; it does not claim full CatDB
+The retained legacy adapter is hidden behind **Legacy records (migration)** by
+default. Existing historical Recents explicitly re-enter that adapter with their
+original identity and edit receipt; they are never relabeled as canonical revision
+evidence. New canonical selections invalidate pending legacy replies and appear
+in the normal main reader. Settings source browsing retains a modal wrapper over
+the same rendering/navigation implementation. Local relative/wiki navigation
+wraps the existing source-scoped resolver with exact origin and retained membership
+checks; ambiguity requires a choice. Canonical selections are currently volatile
+read-only views; persistent canonical tabs/Recents and guarded catalog editing
+remain follow-up work. This cutover does not claim full CatDB
 removal or installed-profile migration acceptance.
 
-Focused evidence is recorded in [the validation receipt](reader-catalog-validation-2026-10-08.md).
+Focused evidence is recorded in the [foundation receipt](reader-catalog-validation-2026-10-08.md)
+and [primary cutover receipt](reader-catalog-primary-validation-2026-10-08.md).
 No provider/network/model/installed-profile fixture is required for these tests.

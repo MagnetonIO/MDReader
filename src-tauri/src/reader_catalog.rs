@@ -1,5 +1,6 @@
 //! Native membership adapter. Catalog reads never admit or regrant a folder.
 mod model;
+mod resolve;
 use crate::{
     library::{LibraryStore, LocalFolderSource},
     reader::ReaderBackend,
@@ -74,7 +75,10 @@ fn execute(
         CatalogRequest::Page { catalog_id, .. } => {
             catalog_id.strip_prefix("local:").map(str::to_owned)
         }
-        CatalogRequest::Read { source_id, .. } if !source_id.starts_with("provider:") => {
+        CatalogRequest::Read { source_id, .. }
+        | CatalogRequest::Resolve { source_id, .. }
+            if !source_id.starts_with("provider:") =>
+        {
             Some(source_id.clone())
         }
         _ => None,
@@ -93,6 +97,14 @@ fn execute(
         .as_deref()
         .map(|id| local_member(backend, &all, id))
         .transpose()?;
+    if let CatalogRequest::Resolve {
+        source_id, path, revision, target,
+    } = &request
+    {
+        let references = resolve::local(backend, source_id, path, revision, target)?;
+        revalidate(app, backend, selected.as_ref(), selected_source.as_deref())?;
+        return Ok(CatalogReply::Resolved { references });
+    }
     if let CatalogRequest::Read {
         source_id,
         path,
@@ -177,7 +189,9 @@ fn execute(
             limit,
         },
         CatalogRequest::Close { cursor } => service::CatalogRequest::Close { cursor },
-        CatalogRequest::Read { .. } => return Err(failure("invalid")),
+        CatalogRequest::Read { .. } | CatalogRequest::Resolve { .. } => {
+            return Err(failure("invalid"));
+        }
     };
     #[derive(serde::Deserialize)]
     struct Envelope {

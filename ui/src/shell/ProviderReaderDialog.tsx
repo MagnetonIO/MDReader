@@ -1,156 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
-import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
-import type { MarkdownReaderHandle, NavigateEvent } from '@mdreader/ui';
-import { parseMarkdownAuto } from '@mdreader/markdown/worker';
-import { resolveHeading } from '@mdreader/markdown';
-import type { ParsedDoc } from '@mdreader/markdown';
-import {
-  nativeProvidersBackend, type NativeProvidersBackend, type ProviderReaderReference,
-  type ProviderLinkResolution, type ProviderLinkCandidate, type ProviderProjection,
-} from '../platform/providers';
+/** Modal owner for explicit Settings source browsing; primary catalog reads inline. */
+import { useEffect, useRef } from 'react';
+import { CanonicalReader } from '../features/reader/CanonicalReader';
+import type { ComponentProps } from 'react';
 
-type ReaderBackend = Pick<NativeProvidersBackend, 'readDocument'> & Partial<Pick<NativeProvidersBackend, 'resolveLink' | 'readCached' | 'fetchCurrent'>>;
-export function ProviderReaderDialog({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider' }: {
-  reference: ProviderReaderReference;
-  sourceKind?: 'provider' | 'local';
-  backend?: ReaderBackend;
-  onClose: () => void;
-  onArchivedReviews?: (reference: ProviderReaderReference) => void;
-}) {
+export function ProviderReaderDialog(props: ComponentProps<typeof CanonicalReader>) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const reader = useRef<MarkdownReaderHandle | null>(null);
-  const restored = useRef(false);
-  const action = useRef(0);
-  const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as ProviderReaderReference[] });
-  // A new parent selection takes effect immediately, including before effects.
-  const currentReference = navigation.origin === reference ? navigation.current : reference;
-  const history = navigation.origin === reference ? navigation.history : [];
-  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; line: number } | null>(null);
-  const doc = loaded?.reference === currentReference ? loaded.doc : null;
-  const line = loaded?.reference === currentReference ? loaded.line : 1;
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [links, setLinks] = useState<ProviderLinkResolution | null>(null);
-  const [busy, setBusy] = useState(false);
   useEffect(() => {
     const element = dialog.current;
     if (element?.showModal) element.showModal();
     else element?.setAttribute('open', '');
   }, []);
-  useEffect(() => {
-    let current = true;
-    action.current++;
-    setLoaded(null);
-    restored.current = false;
-    setError(null); setNotice(null); setLinks(null); setBusy(false);
-    void backend.readDocument(currentReference).then(async (value) => {
-      if (value.sourceId !== currentReference.sourceId || value.path !== currentReference.path || value.revision !== currentReference.revision)
-        throw new Error('The selected document revision is no longer available.');
-      const parsed = await parseMarkdownAuto(value.markdown);
-      if (!current) return;
-      let targetLine = currentReference.line ?? 1;
-      if (currentReference.heading) {
-        const heading = resolveHeading(parsed.outline, currentReference.heading);
-        if (heading) targetLine = heading.lineStart;
-        else setNotice('The requested heading is unavailable in this revision. Showing the beginning of the document.');
-      }
-      setLoaded({ reference: currentReference, doc: parsed, line: targetLine });
-    }).catch((cause: unknown) => {
-      if (current) setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
-    });
-    return () => { current = false; action.current++; };
-  }, [backend, currentReference]);
-  function close() { action.current++; onClose(); }
-  function previous() {
-    action.current++;
-    const target = history.at(-1);
-    if (target) setNavigation({ origin: reference, current: target, history: history.slice(0, -1) });
-  }
-  function openProjection(projection: ProviderProjection, candidate: ProviderLinkCandidate, targetLine = 1, heading?: string | null) {
-    if (projection.readerSourceId !== currentReference.sourceId || !Number.isSafeInteger(targetLine) || targetLine < 1)
-      throw new Error('The linked document source could not be verified.');
-    const next: ProviderReaderReference = { sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: candidate.title, line: targetLine };
-    if (heading) next.heading = heading;
-    setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
-  }
-  async function navigate(event: NavigateEvent) {
-    if (event.kind === 'anchor') {
-      action.current++;
-      setBusy(false); setLinks(null); setError(null); setNotice(null);
-      const heading = doc?.outline.find((item) => item.slug === event.slug);
-      if (heading) reader.current?.scrollToLine(heading.lineStart);
-      else setNotice('The requested heading is unavailable in this revision.');
-      return;
-    }
-    const epoch = ++action.current;
-    setError(null); setNotice(null); setLinks(null); setBusy(true);
-    try {
-      if (!backend.resolveLink) throw new Error('Link resolution is unavailable in this reader.');
-      const target = event.kind === 'relative' ? event.href : `${event.target}${event.heading ? `#${event.heading}` : ''}`;
-      const resolution = await backend.resolveLink(currentReference, event.kind, target);
-      if (action.current !== epoch) return;
-      if (resolution.state === 'resolved') openProjection(resolution.projection, resolution.candidate, resolution.line);
-      else setLinks(resolution);
-    } catch (cause) {
-      if (action.current === epoch) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
-    } finally {
-      if (action.current === epoch) setBusy(false);
-    }
-  }
-  async function choose(candidate: ProviderLinkCandidate, fetch: boolean, heading: string | null) {
-    if (busy) return;
-    const epoch = ++action.current;
-    setError(null); setNotice(null); setBusy(true);
-    try {
-      const operation = fetch ? backend.fetchCurrent : backend.readCached;
-      if (!operation) throw new Error('This document operation is unavailable in this reader.');
-      const projection = await operation(candidate.sourceId, candidate.documentId);
-      if (action.current === epoch) openProjection(projection, candidate, 1, heading);
-    } catch (cause) {
-      if (action.current === epoch) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
-    } finally {
-      if (action.current === epoch) setBusy(false);
-    }
-  }
-  return <dialog ref={dialog} className="provider-reader-dialog" aria-label={sourceKind === 'local' ? 'Catalog document' : 'Cloud document'} onCancel={(event) => { event.preventDefault(); close(); }}>
-    <header className="provider-reader-dialog__bar">
-      <button type="button" autoFocus onClick={close}>Back to sources</button>
-      {history.length ? <button type="button" onClick={previous}>Previous document</button> : null}
-      <strong>{currentReference.title || currentReference.path}</strong>
-      <span>Read only</span>
-      {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
-    </header>
-    <details className="provider-reader-dialog__evidence">
-      <summary>Source evidence</summary>
-      <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
-      <p>{sourceKind === 'local' ? 'This is the exact retained-source revision. External edits require a new index observation; this reader does not grant folder editing access.' : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}</p>
-    </details>
-    {error ? <p role="alert">{error}</p> : null}
-    {notice ? <p role="status">{notice}</p> : null}
-    {busy ? <p role="status">Opening linked document…</p> : null}
-    {links?.state === 'missing' ? <p role="status">No matching document is available in the current selected metadata. Refresh or select it in Sources.</p> : null}
-    {links?.state === 'selected_uncached' ? <div className="provider-reader-dialog__choices">
-      <p>This selected document is not cached. Fetch it explicitly to read it.</p>
-      <button type="button" disabled={busy} onClick={() => void choose(links.candidate, true, links.heading)}>Fetch current {links.candidate.title}</button>
-    </div> : null}
-    {links?.state === 'ambiguous' ? <div className="provider-reader-dialog__choices">
-      <p>This link matches more than one selected document. Choose a copy to read.</p>
-      {links.candidates.map((candidate, index) => <div key={`${candidate.sourceId}/${candidate.documentId}`}>
-        <span>{candidate.title} (choice {index + 1})</span>
-        <button type="button" disabled={busy} onClick={() => void choose(candidate, false, links.heading)}>Read cached {candidate.title} (choice {index + 1})</button>
-        <button type="button" disabled={busy} onClick={() => void choose(candidate, true, links.heading)}>Fetch current {candidate.title} (choice {index + 1})</button>
-      </div>)}
-    </div> : null}
-    {links?.state === 'heading_missing' ? <div className="provider-reader-dialog__choices">
-      <p>The requested heading is unavailable in the cached revision.</p>
-      <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
-    </div> : null}
-    <div className="provider-reader-dialog__document">
-      {doc ? <PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) { if (/^https:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer'); } }}>
-        <MarkdownReader ref={(handle) => { reader.current = handle; if (handle && !restored.current) { handle.scrollToLine(line); restored.current = true; } }} doc={doc}
-          components={{ img: ({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span> }}
-          onNavigate={(event) => void navigate(event)} />
-      </PlatformProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
-    </div>
-  </dialog>;
+  return (
+    <dialog
+      ref={dialog}
+      className="provider-reader-dialog"
+      aria-label={props.sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}
+      onCancel={(event) => { event.preventDefault(); props.onClose(); }}
+    >
+      <CanonicalReader {...props} />
+    </dialog>
+  );
 }

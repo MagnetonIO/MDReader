@@ -1,3 +1,4 @@
+import type { LocalLinkResolution } from '../reader/contracts';
 import type { ProviderReaderReference, ProviderDocumentBody } from '../../platform/providers';
 import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen } from '../../bindings';
 export type { CatalogSource, CatalogDocument, CatalogOpen } from '../../bindings';
@@ -8,6 +9,9 @@ export interface CatalogBackend {
   list(): Promise<CatalogList>;
   page(catalogId: string, cursor: string | null, limit: number): Promise<CatalogPage>;
   close(cursor: string): Promise<void>;
+  resolveLink?(
+    reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
+  ): Promise<LocalLinkResolution>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
 }
 
@@ -46,6 +50,15 @@ export const catalogBackend: CatalogBackend = {
     request({ operation: 'page', catalogId, cursor, limit }, 'page'),
   async close(cursor) {
     await request({ operation: 'close', cursor }, 'complete');
+  },
+  async resolveLink(reference, _kind, target) {
+    const response = await request({
+      operation: 'resolve', sourceId: reference.sourceId, path: reference.path,
+      revision: reference.revision, target,
+    }, 'resolved');
+    return { state: 'local_matches', references: response.references.map((value) => ({
+      ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line,
+    })) };
   },
   readDocument: (reference) => request({
     operation: 'read',

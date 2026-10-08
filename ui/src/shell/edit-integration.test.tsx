@@ -398,6 +398,9 @@ async function openDirtyDoc() {
 
   render(<App />);
   await act(async () => {}); // settle hydration
+  if (h.libraryEvidence) {
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
+  }
 
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
@@ -710,6 +713,7 @@ describe('library source identity follows the committed backend epoch', () => {
   it('records a cloud open in Recent and reopens it through provider identity', async () => {
     installRapidCloudLibraryDocuments();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
 
     fireEvent.click(
       await screen.findByRole('button', {
@@ -748,6 +752,7 @@ describe('library source identity follows the committed backend epoch', () => {
   it('loads a later Dropbox Markdown page after an empty first provider page', async () => {
     installDropboxContinuationPages();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
 
     await screen.findByText('No documents found.');
     fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
@@ -774,6 +779,7 @@ describe('library source identity follows the committed backend epoch', () => {
     h.libraryQueryQueue.pop();
     h.libraryQueryFails = true;
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
 
     await screen.findByText('No documents found.');
     fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
@@ -792,6 +798,7 @@ describe('library source identity follows the committed backend epoch', () => {
   it('starts only the newest document query after rapid selections share a pending cancellation', async () => {
     installRapidCloudLibraryDocuments();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     const first = await screen.findByRole('button', {
       name: 'Open First note from Google Drive',
     });
@@ -871,6 +878,7 @@ describe('library source identity follows the committed backend epoch', () => {
     h.markGate = deferred();
 
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     await waitFor(() => expect(h.libraryQueryPhases).toEqual(['pre-mark']));
 
     fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
@@ -918,6 +926,7 @@ describe('library source identity follows the committed backend epoch', () => {
   it('invalidates listed and open evidence when a refresh can no longer verify it', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     const open = await screen.findByRole('button', {
       name: 'Open Local note from Second workspace',
     });
@@ -937,6 +946,7 @@ describe('library source identity follows the committed backend epoch', () => {
   it('does not resume an older Edit after a newer source switch starts', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -971,6 +981,7 @@ describe('library source identity follows the committed backend epoch', () => {
     h.gatedReadPath = documentPath;
     h.failedReadPath = documentPath;
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -996,6 +1007,7 @@ describe('library source identity follows the committed backend epoch', () => {
     installSecondWorkspaceLibraryDocument();
 
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -1121,6 +1133,7 @@ describe('library source identity follows the committed backend epoch', () => {
 
   it('attributes a new watcher failure to the new source while its listing is still pending', async () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     await act(async () => {});
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
@@ -1159,6 +1172,7 @@ describe('library source identity follows the committed backend epoch', () => {
 
   it('serializes a committed A response ahead of a newer failing B request', async () => {
     render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     await act(async () => {});
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));

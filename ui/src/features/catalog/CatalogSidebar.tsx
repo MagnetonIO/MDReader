@@ -26,7 +26,7 @@ type CatalogSidebarProps = {
   onProviderSelectionChange?: (sources: string[]) => void;
   onOpen: (reference: ProviderReaderReference) => void;
   onManage: () => void;
-  refreshKey?: number;
+  refreshKey?: number | string;
 };
 
 export function CatalogSidebar({
