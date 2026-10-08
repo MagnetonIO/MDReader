@@ -106,3 +106,11 @@ accept at most 100 rows and at most 4 MiB serialized records, with explicit
 pagination rather than silent loss. Raw-record reads remain bounded separately.
 Windows is fail-closed pending private ACL/durable publication support; no live
 profile or application/service/core integration is part of this slice.
+
+The standalone CLI now exposes `stage-reviews`, `list-reviews` and `get-review`
+with explicit export UUID and manifest SHA-256 on every invocation. See the
+[tool commands and output bounds](../../crates/mdreader-legacy-export/README.md#archival-document-reviews).
+Read output explicitly labels current-document evidence unavailable and binding
+not performed; record discriminants preserve the candidate/unavailable distinction.
+Raw tagged rows remain separate from interpreted JSON responses. The CLI does
+not change the authority or retention requirements above.

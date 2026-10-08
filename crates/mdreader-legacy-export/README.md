@@ -103,7 +103,7 @@ reader state remain the rollback authority.
 
 ## Archival document reviews
 
-The library-only `reviews` module provides `stage_reviews(archive,
+The `reviews` module provides `stage_reviews(archive,
 expected_identity, NEW_destination, limits)` and read-only
 `ReviewArchive::{open,list,get,raw_record}`. It revalidates the selected
 export/manifest identity and re-derives typed proposal records from raw SQLite
@@ -117,3 +117,35 @@ Reviewer, rejected tombstones and v1 missing-review-hash semantics are preserved
 Current graph membership, review chronology and current-source evidence are not
 available. The completed raw export must remain retained for unknown tables and
 schemas. See the [schema/read contract](../../docs/development/legacy-document-reviews.md).
+
+The CLI exposes the same separate staging/read boundary:
+
+```text
+mdreader-legacy-export stage-reviews ABS_ARCHIVE EXPORT_UUID MANIFEST_SHA256 ABS_NEW_DEST
+mdreader-legacy-export list-reviews ABS_STAGE EXPORT_UUID MANIFEST_SHA256 OFFSET LIMIT
+mdreader-legacy-export get-review ABS_STAGE EXPORT_UUID MANIFEST_SHA256 RECORD_ID
+```
+
+Use the export UUID returned by `export`/`verify` and the SHA-256 of the explicitly
+selected archive's `manifest.json` (for example, `shasum -a 256
+/ABS/ARCHIVE/manifest.json` on macOS). UUID and hash are mandatory on every review
+command; read commands never infer them from a staging directory. Hex arguments
+are canonicalized to lowercase. From the repository root, the pinned Rust
+toolchain can run the tool with `cargo run --locked -p mdreader-legacy-export --
+COMMAND ...`; it requires no GUI, SDK initialization, provider login or model.
+
+Start listing at offset `0`, choose limit `1`–`100`, and use the returned
+`page.nextOffset` until null. `get-review` uses a `recordId` from that page and
+returns `record: null` if it is absent. Both responses have `scope:
+archival_only`, `currentDocumentEvidence: unavailable` and `sourceBinding:
+not_performed`. The record's assertion discriminant distinguishes an internally
+consistent **archival** span candidate from an unavailable interpretation; neither
+is a present-day citation. Exact tagged raw rows remain separately available
+through `ReviewArchive::raw_record` and the retained original archive, and are
+never automatically included in read-command output.
+
+Receipt output is capped at 4 KiB; list/get JSON is capped at 4 MiB plus 4 KiB
+for the envelope and terminator. Serialization is bounded and completes before
+stdout begins. Validation failures exit nonzero with empty stdout and sanitized
+errors that do not echo arguments, paths, reviewer identities or row contents.
+Review commands perform no activation, source binding, grant or graph action.
