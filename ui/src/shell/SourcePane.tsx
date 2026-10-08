@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { EditorState, type Extension } from '@codemirror/state';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
   EditorView,
   keymap,
@@ -36,6 +36,7 @@ import { tags } from '@lezer/highlight';
 
 import { detectMac } from '../keymap/registry.js';
 import { sourceChord } from './source-chord.js';
+import { editorAdmission } from '../features/editor-preservation/admission';
 
 export interface SourcePaneProps {
   /** The document buffer to edit (a controlled value; external changes — reload,
@@ -141,6 +142,7 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       },
       keydown: (event) => {
         const chord = sourceChord(isMac, event);
+        if (chord && editorAdmission.denied()) { event.preventDefault(); return true; }
         if (chord === 'save') {
           event.preventDefault();
           onSaveRef.current();
@@ -155,7 +157,18 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       },
     });
 
+    const admission = new Compartment();
+    const admissionExtensions = () => [
+      EditorState.readOnly.of(editorAdmission.denied()),
+      EditorView.editable.of(!editorAdmission.denied()),
+      EditorView.contentAttributes.of({ 'aria-readonly': String(editorAdmission.denied()) }),
+    ];
     const extensions: Extension[] = [
+      admission.of(admissionExtensions()),
+      // Synchronous store admission also fences changes before a view effect or
+      // React render could disable contenteditable (including paste/undo/IME).
+      EditorState.transactionFilter.of((transaction) =>
+        transaction.docChanged && editorAdmission.denied() ? [] : transaction),
       lineNumbers(),
       highlightActiveLine(),
       highlightActiveLineGutter(),
@@ -178,7 +191,11 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       parent: hostRef.current,
     });
     viewRef.current = view;
+    const unsubscribe = editorAdmission.subscribe(() => {
+      view.dispatch({ effects: admission.reconfigure(admissionExtensions()) });
+    });
     return () => {
+      unsubscribe();
       view.destroy();
       viewRef.current = null;
     };
