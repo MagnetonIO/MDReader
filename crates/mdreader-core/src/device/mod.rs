@@ -11,6 +11,8 @@ use std::{
 #[cfg(feature = "device-assets")]
 pub mod assets;
 
+pub mod publication;
+
 mod documents;
 mod error;
 mod imports;

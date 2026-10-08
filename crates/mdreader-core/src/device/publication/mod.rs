@@ -1,0 +1,34 @@
+//! Explicit incoming reservations on the existing device owner.
+//! Reserved incoming bytes never participate in ordinary local-import recovery.
+//! This namespace is available without image decoding so local quotas remain shared.
+//! Older clients unaware of this namespace cannot enforce its reservations: do not
+//! downgrade an active incoming profile without resolving/exporting its intents.
+//! New documents only; replacement, user-state and tombstone application are absent.
+use super::{Error, Result};
+use rusqlite::{OptionalExtension, Transaction};
+
+mod schema;
+pub(crate) use schema::reserved_usage;
+
+#[cfg(feature = "device-assets")]
+mod types;
+#[cfg(feature = "device-assets")]
+pub use types::*;
+#[cfg(feature = "device-assets")]
+mod input;
+#[cfg(feature = "device-assets")]
+mod reservation;
+#[cfg(feature = "device-assets")]
+pub use reservation::{reserve_new, resume};
+#[cfg(feature = "device-assets")]
+mod files;
+#[cfg(feature = "device-assets")]
+mod publish;
+#[cfg(feature = "device-assets")]
+pub use publish::{publish_new, revalidate_publication, with_publication, PublicationGuard};
+#[cfg(feature = "device-assets")]
+mod drop_intent;
+#[cfg(feature = "device-assets")]
+pub use drop_intent::{finish_drop, prepare_drop, DropPlan, RemovedIncoming};
+#[cfg(all(test, feature = "device-assets", unix))]
+mod tests;

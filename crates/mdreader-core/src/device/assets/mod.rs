@@ -48,6 +48,7 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 mod error;
+mod incoming;
 mod model;
 mod paths;
 mod runtime;
@@ -65,3 +66,11 @@ pub use validation::{PreparedAsset, ValidatedAsset};
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::device) use validation::{decode_incoming, IncomingRaster};
+pub(in crate::device) fn incoming_target(target: &str) -> Result<String> {
+    canonical_target(target)
+}
+pub(in crate::device) fn incoming_targets(markdown: &str) -> Vec<String> {
+    image_targets(markdown)
+}
