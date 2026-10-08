@@ -190,8 +190,9 @@ Vercel practices are recorded in both worktrees' `AGENTS.md`. Web commit `84e446
 replaces stale parent-monorepo/Turborepo commands with frozen root installation
 and `pnpm build`; its README describes the local SQLite reader and separate
 Cloudflare sync boundary. Root commands, generated-asset build path, ignored
-local secrets/config and setup links pass static checks. Remote Vercel project
-settings and actual Preview deployment acceptance have not been verified.
+local secrets/config and setup links pass static checks. At that earlier
+documentation checkpoint, remote settings and actual Preview acceptance were
+unverified. The later October 8 deployment receipts above supersede that status.
 
 The [actual iOS smoke receipt](../benchmarks/2026-10-07-ios-reader-smoke.md)
 records standard file-picker import, exact original bytes, reading, pinning,
@@ -392,3 +393,30 @@ and synthetic library. Old open-page CSS paths returned404 on the new deployment
 A focused manifest-owned-generation fix passed its meaningful RED/GREEN checks
 and independent review; its new Preview exists but old-to-new runtime acceptance
 is still failing and being diagnosed. Do not count that release gate as passed.
+
+## Catalog and enrollment integration
+
+Integration `118a49f` includes catalog foundation `e488b5b` and native enrollment /
+recovery `ba561d9`. Catalog browsing has bounded, snapshot-fenced pages and exact
+reader opens; it uses the existing read-only owner, separates historical index
+coverage from completed observations, and reports provider failures independently.
+The obsolete second provider sidebar is removed. Focused core/service/process/
+provider/UI and native binding checks passed; see [the catalog receipt](reader-catalog-validation-2026-10-08.md).
+The primary legacy Library hydrate/body path is still being replaced. This
+foundation is not evidence that CatDB dependencies or installed migration are gone.
+
+Native enrollment now persists nonce-bound exact intents and uncertainty before
+dispatch, reconciles lost bootstrap/recovery replies, and preserves same-material
+retry history. The actual local HTTPS Worker case exercises bootstrap, recovery,
+restart and revoked-device refusal. Twenty-one authority checks, two explicit
+browser JOSE gates and strict affected Clippy passed. See [native enrollment](../../crates/mdreader-sync/NATIVE-ENROLLMENT.md).
+Native product UI, pairing, real OS-vault and live issuer acceptance remain open.
+Combined integration verification still awaits its coherent serialized checkpoint.
+
+The deployed offline-upgrade probe additionally observed a mixed generation:
+previous deployment HTML with a newer manifest. The next web fix fingerprints
+build-owned HTML/worker/assets and rejects incoherent downloads while retaining
+the prior cache. Focused mutation RED/GREEN checks passed; deployment acceptance
+is in progress. An already loaded old client lacks the new explicit worker-update
+call; tests must disclose any browser lifecycle update they invoke rather than
+claim that old first-click behavior was retroactively repaired.
