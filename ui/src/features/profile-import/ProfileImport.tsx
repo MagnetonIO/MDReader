@@ -9,6 +9,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
+  const [confirmRollback, setConfirmRollback] = useState(false);
   const running = useRef(false);
   const mounted = useRef(true);
   const latestOperation = useRef(reply.operationId);
@@ -16,6 +17,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const operationId = reply.operationId;
   const prepared = reply.state === 'prepared';
   const opening = reply.state === 'activated' || reply.state === 'launch_requested';
+  const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
   const preview = reply.state === 'preview' || reply.state === 'exported';
   useEffect(() => {
     mounted.current = true;
@@ -57,7 +59,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   }
 
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
-    <h3 id="profile-import-title">{prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
+    <h3 id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
     {preview ? <>
       <p>Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves the selected library’s supported records, including records that are not shown as documents here.</p>
@@ -81,6 +83,16 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     {reply.state === 'exported' ? <p role="status">The original records were exported. Keep that copy with your original library.</p> : null}
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
     {opening ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
+    {returning ? <p role="status">The original library was selected again{reply.state === 'rollback_launch_requested' ? ', and opening it was requested' : ''}. The separate library and the backed-up changes were kept. Check the original library before closing this window.</p> : null}
+    {confirmRollback && reply.state === 'activated' ? <fieldset className="profile-import__confirmation">
+      <legend>Return to the original library?</legend>
+      <p>Close the separate imported app first. MDReader will back up all changes in that library before selecting and opening the original. The separate library and its copies are kept.</p>
+      <div className="settings-account-actions">
+        <button type="button" className="settings-link-button" disabled={busy !== null || uncertain || !operationId}
+          onClick={() => { if (operationId) void perform({ operation: 'rollback', operationId }, 'Backing up changes and requesting the original library…'); }}>Back up changes and open original library</button>
+        <button type="button" className="settings-link-button" disabled={busy !== null} onClick={() => setConfirmRollback(false)}>Keep separate library</button>
+      </div>
+    </fieldset> : null}
     <div className="settings-account-actions">
       {preview && operationId ? <>
         <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
@@ -90,6 +102,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </> : null}
       {prepared && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
         onClick={() => { void perform({ operation: 'activate', operationId }, 'Requesting open…'); }}>Open separate library</button> : null}
+      {reply.state === 'activated' && operationId && !confirmRollback ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
+        onClick={() => setConfirmRollback(true)}>Return to original library…</button> : null}
       <button type="button" className="settings-link-button" disabled={busy !== null}
         onClick={() => { if (operationId) void perform({ operation: 'close', operationId }, 'Closing import…'); else onClose(); }}>Done</button>
     </div>

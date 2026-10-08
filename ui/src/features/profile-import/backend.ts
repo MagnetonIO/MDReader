@@ -10,14 +10,14 @@ export type ImportDocument = {
   line: number;
 };
 export type ImportReply = {
-  state: 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'cancelled' | 'closed';
+  state: 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
   operationId: string | null;
   documents: ImportDocument[];
   imported: number;
 };
 export type ImportRequest =
   | { operation: 'preview' | 'resume' }
-  | { operation: 'export' | 'activate' | 'close'; operationId: string }
+  | { operation: 'export' | 'activate' | 'rollback' | 'close'; operationId: string }
   | { operation: 'prepare'; operationId: string; documents: { documentId: string; revision: string }[] };
 
 const errors: Record<string, string> = {
@@ -36,7 +36,7 @@ export class ImportFailure extends Error {
 function checked(value: ImportReply): ImportReply {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
-  if (!value || !['preview', 'exported', 'prepared', 'activated', 'launch_requested', 'cancelled', 'closed'].includes(value.state)
+  if (!value || !['preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
     || !uint(value.imported, 1000) || !Array.isArray(value.documents) || value.documents.length > 1000) throw new ImportFailure('migration_unconfirmed');
   const ids = new Set<string>();
