@@ -14,7 +14,7 @@
  *     an in-flight save both leave the tab open; the dirty-quit hook preventDefaults.
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function deferred<T = void>() {
@@ -73,19 +73,9 @@ const h = vi.hoisted(() => ({
   backendRoot: null as string | null,
   backendGeneration: 0,
   searchRoots: [] as (string | null)[],
-  libraryEvidence: null as null | Record<string, unknown>,
-  libraryQueryFails: false,
-  libraryQueryQueue: [] as Promise<Record<string, unknown>>[],
-  libraryQueryPhases: [] as Array<'pre-mark' | 'post-mark'>,
-  libraryQueryRecordKeys: [] as Array<string | null>,
-  libraryQueryContinuations: [] as Array<
-    { queryId: string; cursor: string } | undefined
-  >,
-  libraryCancelGate: null as null | { promise: Promise<void>; resolve: () => void },
-  libraryCancelCalls: [] as string[],
-  cloudReadQueue: [] as Promise<Record<string, unknown>>[],
-  cloudReadCalls: [] as Array<{ sourceId: string; recordKey: string }>,
-  cloudSaveCalls: [] as Array<{ token: string; content: string }>,
+  canonicalFixture: false,
+  canonicalReads: [] as string[],
+  canonicalQueue: [] as Promise<Record<string, unknown>>[],
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
   markStarted: false,
   markSucceeded: false,
@@ -119,15 +109,34 @@ const h = vi.hoisted(() => ({
   }),
 }));
 
-// These editor scenarios do not select canonical/provider documents. Isolate the
-// newly mounted read-only listing boundaries instead of manufacturing unrelated
-// service-unavailable alerts alongside the conflict being asserted below.
+// Listing has its own catalog tests; this fixture drives the real canonical
+// selection, exact body and guarded local-editor handoff through AppShell.
+vi.mock('../features/catalog/CatalogSidebar', () => ({
+  CatalogSidebar: ({ onOpen }: { onOpen(reference: object): void }) => h.canonicalFixture
+    ? <button onClick={() => onOpen({ sourceId: 'b'.repeat(64), path: 'notes/local.md',
+      revision: 'd'.repeat(64), title: 'Local note', line: 1 })}>Open Local note from Second workspace</button>
+    : null,
+}));
 vi.mock('../features/catalog/backend', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../features/catalog/backend')>();
   return { ...actual, catalogBackend: { ...actual.catalogBackend,
-    list: vi.fn(async () => ({ operation: 'list', sources: [], providerFailure: null, localFailure: null })),
+    readDocument: vi.fn(async (reference: { sourceId: string; path: string; revision: string }) => {
+      h.canonicalReads.push(reference.revision);
+      const queued = h.canonicalQueue.shift();
+      return queued ? await queued : { operation: 'read_document', ...reference,
+        markdown: '# Local note', lineStart: 1, lineEnd: 1 };
+    }),
   } };
 });
+vi.mock('../features/catalog/edit-local-backend', () => ({
+  resolveLocalEdit: vi.fn(async (reference: { sourceId: string; path: string; revision: string }) => {
+    h.sourceListCalls += 1;
+    if (h.sourceListGate) await h.sourceListGate.promise;
+    h.editResolutions.push({ sourceId: reference.sourceId, relativePath: reference.path });
+    return { ...reference, librarySourceId: reference.sourceId, root: '/ws-b',
+      path: `/ws-b/${reference.path}`, relativePath: reference.path };
+  }),
+}));
 vi.mock('../platform/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/providers')>();
   return { ...actual, nativeProvidersBackend: { ...actual.nativeProvidersBackend,
@@ -231,26 +240,6 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       cleanup: { kind: 'complete' as const },
     };
   });
-  const emptyLibraryEvidence = {
-    answer: {
-      query_id: '00000000-0000-4000-8000-000000000001',
-      pins: {
-        catalog_resolver_id: '00000000-0000-4000-8000-000000000002',
-        catalog_revision_id: '00000000-0000-4000-8000-000000000003',
-        schema_version_id: '00000000-0000-4000-8000-000000000004',
-        physical_schema_version_ids: [],
-        mapping_version_ids: [],
-        source_version_ids: [],
-        policy_version_ids: ['00000000-0000-4000-8000-000000000005'],
-        provenance_rule_version_id: '00000000-0000-4000-8000-000000000006',
-      },
-      rows: [],
-      sources: [],
-      completeness: { state: 'complete' as const },
-      next_cursor: null,
-    },
-    memberships: [],
-  };
   const settingsBackend = {
     listSources,
     pickAndAddSource,
@@ -285,61 +274,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
       max_retained_files: 3,
       max_export_bytes: 512 * 1024,
     })),
-    prepareCloudCatalog: vi.fn(async () => ({
-      workspace_id: '00000000-0000-4000-8000-000000000006',
-      catalog_revision_id: '00000000-0000-4000-8000-000000000007',
-      schema_version_id: '00000000-0000-4000-8000-000000000008',
-    })),
-    queryLibraryDocuments: vi.fn(
-      async (
-        _workspaceId: string,
-        filters: Array<{ field: string; operator: string; value: string }>,
-        _fields: string[],
-        _requestId: string,
-        _sourceIds?: string[],
-        continuation?: { queryId: string; cursor: string },
-      ) => {
-      h.libraryQueryRecordKeys.push(filters[0]?.value ?? null);
-      h.libraryQueryContinuations.push(continuation);
-      h.libraryQueryPhases.push(h.markSucceeded ? 'post-mark' : 'pre-mark');
-      const queued = h.libraryQueryQueue.shift();
-      if (queued) return queued;
-      if (h.libraryQueryFails) throw new Error('injected Library refresh failure');
-      return h.libraryEvidence ?? emptyLibraryEvidence;
-      },
-    ),
-    cancelCloudDocumentQuery: vi.fn(async (requestId: string) => {
-      h.libraryCancelCalls.push(requestId);
-      if (h.libraryCancelGate) await h.libraryCancelGate.promise;
-      return true;
-    }),
-    readCloudMarkdown: vi.fn(async (sourceId: string, recordKey: string) => {
-      h.cloudReadCalls.push({ sourceId, recordKey });
-      const queued = h.cloudReadQueue.shift();
-      if (queued) return queued;
-      const title =
-        recordKey === 'drive-first'
-          ? 'First note'
-          : recordKey.split(/[\\/]/).pop() ?? recordKey;
-      return {
-        document_key: `${sourceId}:${recordKey}`,
-        title,
-        content: `# ${title}`,
-        edit_token: `edit:${sourceId}:${recordKey}`,
-        cache_state: 'provider-fresh' as const,
-        modified_at_ms: 1,
-      };
-    }),
-    saveCloudMarkdown: vi.fn(async (token: string, content: string) => {
-      h.cloudSaveCalls.push({ token, content });
-      if (h.gate) await h.gate.promise;
-      return { kind: 'saved' as const, edit_token: 'saved-cloud-token', modified_at_ms: 2 };
-    }),
-    resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
-      h.editResolutions.push({ sourceId, relativePath });
-      const root = sourceId === 'b'.repeat(64) ? '/ws-b' : '/ws';
-      return `${root}/${relativePath}`;
-    }),
+
   };
   return {
     ...actual,
@@ -405,6 +340,7 @@ import { detectMac } from '../keymap/registry';
 import { useTabsStore } from '../stores/tabs';
 import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
+import { useReaderHistoryStore } from '../features/reader-history/store';
 import { useEditorStore } from '../stores/editor';
 import { editorAdmission } from '../features/editor-preservation/admission';
 import { saveSettings, sessionWriter } from './persistence.js';
@@ -422,9 +358,6 @@ async function openDirtyDoc() {
 
   render(<App />);
   await act(async () => {}); // settle hydration
-  if (h.libraryEvidence) {
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-  }
 
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
@@ -454,196 +387,8 @@ async function confirmActiveSourceForget() {
 }
 
 function installSecondWorkspaceLibraryDocument() {
-  const sourceId = '00000000-0000-4000-8000-000000000011';
-  const sourceVersionId = '00000000-0000-4000-8000-000000000012';
-  const mappingVersionId = '00000000-0000-4000-8000-000000000013';
-  h.libraryEvidence = {
-    memberships: [
-      {
-        membership_id: '00000000-0000-4000-8000-000000000010',
-        registry_id: 'b'.repeat(64),
-        name: 'Second workspace',
-        kind: 'local-folder',
-        source_ids: [sourceId],
-        editable: true,
-        active: false,
-      },
-    ],
-    answer: {
-      query_id: '00000000-0000-4000-8000-000000000014',
-      pins: {
-        catalog_resolver_id: '00000000-0000-4000-8000-000000000015',
-        catalog_revision_id: '00000000-0000-4000-8000-000000000016',
-        schema_version_id: '00000000-0000-4000-8000-000000000017',
-        physical_schema_version_ids: ['00000000-0000-4000-8000-000000000018'],
-        mapping_version_ids: [mappingVersionId],
-        source_version_ids: [sourceVersionId],
-        policy_version_ids: ['00000000-0000-4000-8000-000000000019'],
-        provenance_rule_version_id: '00000000-0000-4000-8000-000000000020',
-      },
-      rows: [
-        {
-          record_key: 'notes/local.md',
-          fields: {
-            path: 'notes/local.md',
-            title: 'Local note',
-            body: '# Local note',
-          },
-          provenance: {
-            path: {
-              field: 'path',
-              provenance_rule_version_id: '00000000-0000-4000-8000-000000000020',
-              selected: 0,
-              considered: [
-                {
-                  source_version_id: sourceVersionId,
-                  record_key: 'notes/local.md',
-                  mapping_version_id: mappingVersionId,
-                  physical_attribute: 'path',
-                  observed_at_ms: 1,
-                  state: { state: 'observed_value', value: 'notes/local.md' },
-                },
-              ],
-            },
-          },
-        },
-      ],
-      sources: [
-        {
-          source_id: sourceId,
-          source_version_id: sourceVersionId,
-          outcome: 'ran',
-          freshness_ms: 0,
-          scanned: 1,
-          returned: 1,
-        },
-      ],
-      completeness: { state: 'complete' },
-      next_cursor: null,
-    },
-  };
-  h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'local-hash' });
-}
-
-function installRapidCloudLibraryDocuments() {
-  installSecondWorkspaceLibraryDocument();
-  const fixture = h.libraryEvidence as {
-    memberships: Array<{
-      registry_id: string;
-      name: string;
-      kind: string;
-      editable: boolean;
-    }>;
-    answer: {
-      rows: Array<{
-        record_key: string;
-        fields: Record<string, unknown>;
-        provenance: {
-          path: {
-            considered: Array<{
-              record_key: string;
-              state: { state: string; value: string };
-            }>;
-          };
-        };
-      }>;
-    };
-  };
-  Object.assign(fixture.memberships[0]!, {
-    registry_id: 'google-drive',
-    name: 'Google Drive',
-    kind: 'google-drive',
-    editable: false,
-  });
-  const template = fixture.answer.rows[0]!;
-  fixture.answer.rows = [
-    ['drive-first', 'First note'],
-    ['drive-second', 'Second note'],
-    ['drive-third', 'Third note'],
-  ].map(([recordKey, title]) => {
-    const row = structuredClone(template);
-    row.record_key = recordKey!;
-    row.fields = {
-      path: recordKey,
-      title,
-      body: `# ${title}`,
-    };
-    row.provenance.path.considered[0]!.record_key = recordKey!;
-    row.provenance.path.considered[0]!.state.value = recordKey!;
-    return row;
-  });
-}
-
-function installDropboxContinuationPages() {
-  installSecondWorkspaceLibraryDocument();
-  const pageOne = structuredClone(h.libraryEvidence!) as {
-    window_truncated?: boolean;
-    memberships: Array<{
-      registry_id: string;
-      name: string;
-      kind: string;
-      editable: boolean;
-      source_ids: string[];
-    }>;
-    answer: {
-      query_id: string;
-      rows: Array<{
-        record_key: string;
-        fields: Record<string, unknown>;
-        provenance: {
-          path: {
-            considered: Array<{
-              record_key: string;
-              state: { state: string; value: string };
-            }>;
-          };
-        };
-      }>;
-      next_cursor: string | null;
-      sources: Array<{
-        source_id: string;
-        outcome: string;
-      }>;
-      completeness:
-        | { state: 'complete' }
-        | { state: 'partial'; excluded_source_ids: string[] };
-    };
-  };
-  Object.assign(pageOne.memberships[0]!, {
-    registry_id: 'dropbox',
-    name: 'Dropbox',
-    kind: 'dropbox',
-    editable: false,
-  });
-  const pageTwo = structuredClone(pageOne);
-  const unavailableSourceId = '00000000-0000-4000-8000-000000000099';
-  pageOne.memberships[0]!.source_ids.push(unavailableSourceId);
-  pageOne.answer.sources.push({
-    ...pageOne.answer.sources[0]!,
-    source_id: unavailableSourceId,
-    outcome: 'source_failed',
-  });
-  pageOne.answer.completeness = {
-    state: 'partial',
-    excluded_source_ids: [unavailableSourceId],
-  };
-  pageOne.answer.rows = [];
-  pageOne.answer.next_cursor = 'opaque-application-page-2';
-  pageOne.window_truncated = true;
-  pageTwo.answer.rows[0]!.record_key = '/notes/later.md';
-  pageTwo.answer.rows[0]!.fields = {
-    path: '/notes/later.md',
-    title: 'Later Dropbox note.md',
-  };
-  pageTwo.answer.rows[0]!.provenance.path.considered[0]!.record_key =
-    '/notes/later.md';
-  pageTwo.answer.rows[0]!.provenance.path.considered[0]!.state.value =
-    '/notes/later.md';
-  pageTwo.answer.next_cursor = null;
-  pageTwo.answer.sources = pageTwo.answer.sources.slice(0, 1);
-  pageTwo.answer.completeness = { state: 'complete' };
-  pageTwo.window_truncated = false;
-  h.libraryQueryQueue.push(Promise.resolve(pageOne), Promise.resolve(pageTwo));
+  h.canonicalFixture = true;
+  h.disk.set('/ws-b/notes/local.md', { content: '# Local note', hash: 'd'.repeat(64) });
 }
 
 beforeEach(() => {
@@ -676,17 +421,9 @@ beforeEach(() => {
   h.backendRoot = null;
   h.backendGeneration = 0;
   h.searchRoots.length = 0;
-  h.libraryEvidence = null;
-  h.libraryQueryFails = false;
-  h.libraryQueryQueue.length = 0;
-  h.libraryQueryPhases.length = 0;
-  h.libraryQueryRecordKeys.length = 0;
-  h.libraryQueryContinuations.length = 0;
-  h.libraryCancelGate = null;
-  h.libraryCancelCalls.length = 0;
-  h.cloudReadCalls.length = 0;
-  h.cloudSaveCalls.length = 0;
-  h.cloudReadQueue.length = 0;
+  h.canonicalFixture = false;
+  h.canonicalReads.length = 0;
+  h.canonicalQueue.length = 0;
   h.markGate = null;
   h.markStarted = false;
   h.markSucceeded = false;
@@ -704,6 +441,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  useReaderHistoryStore.getState().reset();
   useTabsStore.getState().reset();
   useSourcesStore.getState().reset();
   useSettingsStore.getState().reset();
@@ -731,31 +469,7 @@ describe('actual save ownership during renderer editor admission', () => {
     } finally { held.release(); }
   });
 
-  it('joins the actual cloud save without deleting or replacing the held cloud buffer', async () => {
-    installRapidCloudLibraryDocuments();
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open First note from Google Drive' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Source view' }));
-    const entry = Object.values(useEditorStore.getState().entries).find((entry) => entry.path.startsWith('cloud:'))!;
-    act(() => useEditorStore.getState().edit(entry.tabId, entry.path, 'selected cloud edit'));
-    h.gate = deferred();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(h.cloudSaveCalls).toHaveLength(1));
-    const held = editorAdmission.hold()!;
-    try {
-      let drained = false;
-      const drain = held.drain().then(() => { drained = true; });
-      act(() => useEditorStore.getState().reset());
-      await Promise.resolve(); expect(drained).toBe(false);
-      await act(async () => { h.gate!.resolve(); await drain; });
-      expect(h.cloudSaveCalls[0]).toEqual({ token: entry.baseHash, content: 'selected cloud edit' });
-      expect(useEditorStore.getState().entry(entry.tabId, entry.path)).toMatchObject({
-        buffer: 'selected cloud edit', savedContent: 'selected cloud edit', baseHash: 'saved-cloud-token', dirty: false,
-      });
-      expect(drained).toBe(true);
-    } finally { held.release(); }
-  });
+
 });
 
 describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppression', () => {
@@ -785,243 +499,37 @@ describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppres
 });
 
 describe('library source identity follows the committed backend epoch', () => {
-  it('records a cloud open in Recent and reopens it through provider identity', async () => {
-    installRapidCloudLibraryDocuments();
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: 'Open First note from Google Drive',
-      }),
-    );
-    await waitFor(() =>
-      expect(h.cloudReadCalls).toEqual([
-        { sourceId: 'google-drive', recordKey: 'drive-first' },
-      ]),
-    );
-    expect(useSourcesStore.getState().recent).toMatchObject([
-      {
-        kind: 'cloud',
-        sourceId: 'google-drive',
-        recordKey: 'drive-first',
-        name: 'First note',
-      },
-    ]);
-
-    const tabId = useTabsStore.getState().activeTabId;
-    expect(tabId).not.toBeNull();
-    act(() => useTabsStore.getState().closeTab(tabId!));
-    const recent = await screen.findByRole('navigation', {
-      name: 'Recent documents',
-    });
-    fireEvent.click(within(recent).getByRole('button', { name: 'First note' }));
-
-    await waitFor(() => expect(h.cloudReadCalls).toHaveLength(2));
-    expect(h.cloudReadCalls[1]).toEqual({
-      sourceId: 'google-drive',
-      recordKey: 'drive-first',
-    });
-  });
-
-  it('loads a later Dropbox Markdown page after an empty first provider page', async () => {
-    installDropboxContinuationPages();
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-
-    await screen.findByText('No documents found.');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
-
-    expect(
-      await screen.findByRole('button', {
-        name: 'Open Later Dropbox note.md from Dropbox',
-      }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText('Showing the last published snapshot; Dropbox needs attention.'),
-    ).toBeTruthy();
-    expect(h.libraryQueryContinuations).toEqual([
-      undefined,
-      {
-        queryId: '00000000-0000-4000-8000-000000000014',
-        cursor: 'opaque-application-page-2',
-      },
-    ]);
-  });
-
-  it('clears a consumed continuation after Load more fails and keeps Refresh recovery', async () => {
-    installDropboxContinuationPages();
-    h.libraryQueryQueue.pop();
-    h.libraryQueryFails = true;
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-
-    await screen.findByText('No documents found.');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more Dropbox' }));
-
-    expect(
-      await screen.findByText(
-        'More Library documents could not be loaded. Refresh the Library.',
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole('button', { name: 'Load more Dropbox' }),
-    ).toBeNull();
-    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
-  });
-
-  it('starts only the newest document query after rapid selections share a pending cancellation', async () => {
-    installRapidCloudLibraryDocuments();
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-    const first = await screen.findByRole('button', {
-      name: 'Open First note from Google Drive',
-    });
-    const second = screen.getByRole('button', {
-      name: 'Open Second note from Google Drive',
-    });
-    const third = screen.getByRole('button', {
-      name: 'Open Third note from Google Drive',
-    });
-    h.libraryQueryRecordKeys.length = 0;
-    const firstBody = deferred<Record<string, unknown>>();
-    h.cloudReadQueue.push(firstBody.promise);
-
-    fireEvent.click(first);
-    await waitFor(() => expect(h.cloudReadCalls.map(call => call.recordKey)).toEqual(['drive-first']));
-
-    h.libraryCancelGate = deferred();
-    fireEvent.click(second);
-    await waitFor(() => expect(h.libraryCancelCalls).toHaveLength(1));
-    fireEvent.click(third);
-    await waitFor(() => expect(h.libraryCancelCalls).toHaveLength(2));
-
-    await act(async () => {
-      h.libraryCancelGate!.resolve();
-      await h.libraryCancelGate!.promise;
-    });
-    await waitFor(() => expect(h.cloudReadCalls.map(call => call.recordKey)).toContain('drive-third'));
-
-    expect(h.cloudReadCalls.map(call => call.recordKey)).toEqual(['drive-first', 'drive-third']);
-  });
-
-  it('publishes only the post-mark Library hydration after workspace activation', async () => {
-    installSecondWorkspaceLibraryDocument();
-    const preActivation = structuredClone(h.libraryEvidence!) as {
-      memberships: Array<{
-        membership_id: string;
-        registry_id: string;
-        name: string;
-        kind: 'local-folder';
-        source_ids: string[];
-        editable: boolean;
-        active: boolean;
-      }>;
-      answer: {
-        rows: Array<{ fields: Record<string, unknown> }>;
-        sources: Array<Record<string, unknown>>;
-        pins: { source_version_ids: string[] };
-      };
-    };
-    preActivation.answer.rows[0]!.fields.title = 'Pre-activation note';
-
-    const postMark = structuredClone(preActivation);
-    postMark.answer.rows[0]!.fields.title = 'Post-mark note';
-    const activePhysicalSourceId = '00000000-0000-4000-8000-000000000021';
-    const activeSourceVersionId = '00000000-0000-4000-8000-000000000022';
-    postMark.memberships.push({
-      ...postMark.memberships[0]!,
-      membership_id: '00000000-0000-4000-8000-000000000023',
-      registry_id: 'a'.repeat(64),
-      name: 'Workspace',
-      source_ids: [activePhysicalSourceId],
-      active: true,
-    });
-    postMark.answer.sources.push({
-      ...postMark.answer.sources[0],
-      source_id: activePhysicalSourceId,
-      source_version_id: activeSourceVersionId,
-      scanned: 0,
-      returned: 0,
-    });
-    postMark.answer.pins.source_version_ids.push(activeSourceVersionId);
-
-    const startupRead = deferred<Record<string, unknown>>();
-    const preMarkRead = deferred<Record<string, unknown>>();
-    const liveRead = deferred<Record<string, unknown>>();
-    h.libraryQueryQueue.push(startupRead.promise, preMarkRead.promise, liveRead.promise);
-    h.markGate = deferred();
-
-    render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-    await waitFor(() => expect(h.libraryQueryPhases).toEqual(['pre-mark']));
-
-    fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
-    await waitFor(() => expect(h.markStarted).toBe(true));
-    await waitFor(() =>
-      expect(h.libraryQueryPhases).toEqual(['pre-mark', 'pre-mark']),
-    );
-
-    await act(async () => {
-      h.markGate!.resolve();
-      await h.markGate!.promise;
-    });
-    await waitFor(() =>
-      expect(h.libraryQueryPhases).toEqual(['pre-mark', 'pre-mark', 'post-mark']),
-    );
-
-    await act(async () => {
-      liveRead.resolve(postMark);
-      await liveRead.promise;
-    });
-    expect(
-      await screen.findByRole('button', {
-        name: 'Open Post-mark note from Second workspace',
-      }),
-    ).toBeTruthy();
-
-    await act(async () => {
-      startupRead.resolve(preActivation);
-      preMarkRead.resolve(preActivation);
-      await Promise.all([startupRead.promise, preMarkRead.promise]);
-    });
-
-    expect(
-      screen.queryByRole('button', {
-        name: 'Open Pre-activation note from Second workspace',
-      }),
-    ).toBeNull();
-    expect(
-      screen.getByRole('button', {
-        name: 'Open Post-mark note from Second workspace',
-      }),
-    ).toBeTruthy();
-  });
-
-  it('invalidates listed and open evidence when a refresh can no longer verify it', async () => {
+  it('retains an exact canonical recent without turning it into a filesystem read', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-    const open = await screen.findByRole('button', {
-      name: 'Open Local note from Second workspace',
-    });
-    fireEvent.click(open);
-    await screen.findByRole('button', { name: 'Edit local file' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Local note from Second workspace' }));
+    await screen.findByRole('heading', { name: /Local note/ });
+    const reference = { kind: 'local', sourceId: 'b'.repeat(64), path: 'notes/local.md', revision: 'd'.repeat(64) };
+    expect(useReaderHistoryStore.getState().data.recent[0]!.reference).toEqual(reference);
+    expect(h.canonicalReads).toEqual([reference.revision]);
+    expect(h.readCalls).toEqual([]);
+    const id = useReaderHistoryStore.getState().data.activeTabId!;
+    act(() => useReaderHistoryStore.getState().close(id));
+    act(() => useReaderHistoryStore.getState().reopen());
+    await waitFor(() => expect(h.canonicalReads).toEqual([reference.revision, reference.revision]));
+    expect(h.readCalls).toEqual([]);
+  });
 
-    h.libraryQueryFails = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-
-    await screen.findByText('Library sources could not be read.');
-    expect(
-      screen.queryByRole('button', { name: 'Open Local note from Second workspace' }),
-    ).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Edit local file' })).toBeNull();
+  it('keeps an unavailable exact canonical receipt without substituting a latest file', async () => {
+    installSecondWorkspaceLibraryDocument();
+    h.canonicalQueue.push(Promise.resolve({ operation: 'read_document', sourceId: 'b'.repeat(64),
+      path: 'notes/local.md', revision: 'e'.repeat(64), markdown: '# Wrong revision', lineStart: 1, lineEnd: 1 }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Local note from Second workspace' }));
+    await screen.findByText('The selected document revision is no longer available.');
+    expect(screen.queryByRole('heading', { name: /Wrong revision/ })).toBeNull();
+    expect(useReaderHistoryStore.getState().data.recent[0]!.reference.revision).toBe('d'.repeat(64));
+    expect(h.readCalls).toEqual([]);
   });
 
   it('does not resume an older Edit after a newer source switch starts', async () => {
     installSecondWorkspaceLibraryDocument();
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -1045,7 +553,7 @@ describe('library source identity follows the committed backend epoch', () => {
 
     expect(h.libraryWatch).not.toHaveBeenCalledWith('b'.repeat(64));
     expect(useSourcesStore.getState().root).toBe('/ws-c');
-    expect(h.editResolutions).toEqual([]);
+    expect(h.editResolutions).toEqual([{ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' }]);
     expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
   });
 
@@ -1056,7 +564,6 @@ describe('library source identity follows the committed backend epoch', () => {
     h.gatedReadPath = documentPath;
     h.failedReadPath = documentPath;
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -1074,7 +581,7 @@ describe('library source identity follows the committed backend epoch', () => {
       await Promise.resolve();
     });
 
-    expect(screen.queryByText(/Could not open for editing/i)).toBeNull();
+    expect(screen.queryByText('injected stale read failure')).toBeNull();
     expect(useSourcesStore.getState().root).toBe('/ws-c');
   });
 
@@ -1082,7 +589,6 @@ describe('library source identity follows the committed backend epoch', () => {
     installSecondWorkspaceLibraryDocument();
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Open Local note from Second workspace',
@@ -1091,9 +597,7 @@ describe('library source identity follows the committed backend epoch', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit local file' }));
 
     await waitFor(() => expect(h.readCalls).toContain('/ws-b/notes/local.md'));
-    expect(h.editResolutions).toEqual([
-      { sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' },
-    ]);
+    expect(h.editResolutions).toEqual(Array.from({ length: 2 }, () => ({ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' })));
     expect(h.readCalls).not.toContain('notes/local.md');
     await waitFor(() =>
       expect(
@@ -1126,18 +630,14 @@ describe('library source identity follows the committed backend epoch', () => {
       });
 
       await waitFor(() =>
-        expect(h.editResolutions).toEqual([
-          { sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' },
-        ]),
+        expect(h.editResolutions).toEqual(Array.from({ length: 3 }, () => ({ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' }))),
       );
       expect(useSourcesStore.getState().root).toBe('/ws-b');
-      const activeTabId = useTabsStore.getState().activeTabId;
-      expect(activeTabId).not.toBeNull();
-      await waitFor(() =>
-        expect(
-          useEditorStore.getState().entry(activeTabId!, '/ws-b/notes/local.md')?.mode,
-        ).toBe('source'),
-      );
+      await waitFor(() => {
+        const activeTabId = useTabsStore.getState().activeTabId;
+        expect(activeTabId).not.toBeNull();
+        expect(useEditorStore.getState().entry(activeTabId!, '/ws-b/notes/local.md')?.mode).toBe('source');
+      });
     },
   );
 
@@ -1155,7 +655,7 @@ describe('library source identity follows the committed backend epoch', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
 
-    expect(h.editResolutions).toEqual([]);
+    expect(h.editResolutions).toEqual([{ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' }]);
     expect(useSourcesStore.getState().root).toBe('/ws');
     expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
     expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
@@ -1178,7 +678,7 @@ describe('library source identity follows the committed backend epoch', () => {
     });
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
 
-    expect(h.editResolutions).toEqual([]);
+    expect(h.editResolutions).toEqual([{ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' }]);
     expect(useSourcesStore.getState().root).toBe('/ws');
     expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
     expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
@@ -1200,7 +700,7 @@ describe('library source identity follows the committed backend epoch', () => {
     await waitFor(() => expect(h.libraryWatch).toHaveBeenCalledWith('b'.repeat(64)));
     await act(async () => {});
 
-    expect(h.editResolutions).toEqual([]);
+    expect(h.editResolutions).toEqual([{ sourceId: 'b'.repeat(64), relativePath: 'notes/local.md' }]);
     expect(useSourcesStore.getState().root).toBe('/ws');
     expect(useEditorStore.getState().isDirty(dirtyTabId, NOTE)).toBe(true);
     expect(h.readCalls).not.toContain('/ws-b/notes/local.md');
@@ -1208,7 +708,6 @@ describe('library source identity follows the committed backend epoch', () => {
 
   it('attributes a new watcher failure to the new source while its listing is still pending', async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     await act(async () => {});
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));
@@ -1248,7 +747,6 @@ describe('library source identity follows the committed backend epoch', () => {
 
   it('serializes a committed A response ahead of a newer failing B request', async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
     await act(async () => {});
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Open folder/i }));

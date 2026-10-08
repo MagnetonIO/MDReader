@@ -75,7 +75,7 @@ test('Mod+, opens Settings and Escape returns focus to the shell', async () => {
   expect(readerContent?.hasAttribute('aria-hidden')).toBe(false);
 });
 
-test('selected cloud revision opens in the shared reader and returns to source controls', async () => {
+test('selected cloud revision opens in the main reader and returns from archive without replacing its receipt', async () => {
   const projection = { jobId: 'synthetic-job', readerSourceId: `provider:${'a'.repeat(64)}`, path: `records/${'b'.repeat(64)}.md`, revision: 'c'.repeat(64) };
   vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ availability: [], pendingAdmissions: [], error: null, sources: [{ sourceId: 'selected-source', readerSourceId: projection.readerSourceId, name: 'Selected plans', kind: 'google_drive', enabled: true, selectedScope: { kind: 'exact_documents', count: 1 }, capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: false }, health: 'ready', coverage: { kind: 'complete_selected', observedAtMs: 1 } }] });
   vi.spyOn(nativeProvidersBackend, 'documents').mockResolvedValue({ operation: 'documents', offset: 0, nextOffset: null, documents: [{ documentId: 'opaque-handle', name: 'Plan.md', displayPath: 'Plan.md', modifiedAtMs: null, sizeBytes: 20, cached: true, cachedObservedAtMs: 1, admitted: true, projection }] });
@@ -89,7 +89,7 @@ test('selected cloud revision opens in the shared reader and returns to source c
   fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
   expect(await screen.findByRole('heading', { name: /Provider reading/ })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
-  expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(true);
+  expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(false);
   expect(read).toHaveBeenCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
   fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
   expect(await screen.findByRole('dialog', { name: 'Archived document reviews' })).toBeTruthy();
@@ -100,8 +100,10 @@ test('selected cloud revision opens in the shared reader and returns to source c
   expect(await screen.findByRole('heading', { name: /Provider reading/ })).toBeTruthy();
   expect(read).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
   fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
+  await waitFor(() => expect(useReaderHistoryStore.getState().data.activeTabId).toBeNull());
+  expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+  act(() => modKeyDown(','));
   expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeTruthy();
-  expect(screen.queryByRole('dialog', { name: 'Cloud document' })).toBeNull();
 });
 
 test('Mod+\\ toggles the sidebar collapsed state', async () => {

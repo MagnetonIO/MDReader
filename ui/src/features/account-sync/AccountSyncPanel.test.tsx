@@ -72,7 +72,7 @@ describe('native Account & sync controls', () => {
 
   it('reports actual pending sync counters without turning durable application into reader acceptance', async () => {
     let begun = false;
-    const completed: NonNullable<AccountStatus['latestJob']> = { id: JOB, selectedSync:null, state: { state: 'completed', outcome: {
+    const completed: NonNullable<AccountStatus['latestJob']> = { id: JOB, selectedSync:null,selectedPurpose:null, state: { state: 'completed', outcome: {
       kind: 'sync', committed: '2', conflicts: '1', received: '9007199254740993', applied: '0', acknowledged: '0', remotePending: true, localPending: false, pending: { sequence: '9007199254740993', reason: 'head_conflict' },
     } } };
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
@@ -102,7 +102,7 @@ describe('native Account & sync controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in / reconnect' }));
     await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'poll', jobId: JOB }));
     unmount();
-    await act(async () => resolve({ operation: 'job', job: { id: JOB, selectedSync:null, state: { state: 'completed', outcome: { kind: 'connected' } } } }));
+    await act(async () => resolve({ operation: 'job', job: { id: JOB, selectedSync:null,selectedPurpose:null, state: { state: 'completed', outcome: { kind: 'connected' } } } }));
     expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status', 'begin', 'poll']);
   });
   it('uploads only an explicit exact selection and retains a lost reply across navigation and reload', async () => {
@@ -124,8 +124,8 @@ describe('native Account & sync controls', () => {
     expect(screen.getByText(/Changing the selected document does not replace/)).toBeTruthy();
     first.unmount();
     render(<AccountSyncPanel backend={backend} selectedDocument={other} />);
-    await screen.findByRole('button', { name:'Retry retained upload' });
-    fireEvent.click(screen.getByRole('button', { name:'Retry retained upload' }));
+    await screen.findByRole('button', { name:'Retry retained sync' });
+    fireEvent.click(screen.getByRole('button', { name:'Retry retained sync' }));
     await waitFor(() => expect(request.mock.calls.filter(([op]) => op.operation === 'sync_selected')).toHaveLength(2));
     expect(request.mock.calls.filter(([op]) => op.operation === 'sync_selected').map(([op]) => op)).toEqual([dispatched,dispatched]);
     connectedScope = { ...SCOPE, accountDigest:'d'.repeat(64) };
@@ -139,16 +139,16 @@ describe('native Account & sync controls', () => {
     const selection = { scope:SCOPE, receipt:{ documentId:DOC.documentId, sourceId:DOC.sourceId, revision:DOC.revision },operationId:'00000000-0000-4000-8000-000000000005' };
     localStorage.setItem('mdreader.selected-sync.v1',JSON.stringify({version:1,operations:[selection]}));
     let begun = false;
-    const job: NonNullable<AccountStatus['latestJob']> = { id:JOB,selectedSync:selection,state:{state:'completed',outcome:{kind:'selected_status',selection,disposition:{state:'applied',sequence:'3'}}} };
+    const job: NonNullable<AccountStatus['latestJob']> = { id:JOB,selectedSync:selection,selectedPurpose:"content",state:{state:'completed',outcome:{kind:'selected_status',selection,purpose:'content',disposition:{state:'applied',sequence:'3'}}} };
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'inspect_selected') { begun=true; return {operation:'begun',jobId:JOB}; }
       if (operation.operation === 'poll') return {operation:'job',job};
       return {operation:'status',status:status({connected:true,latestJob:begun?job:null})};
     });
     render(<AccountSyncPanel backend={{request}} selectedDocument={DOC} />);
-    await screen.findByRole('button',{name:'Check retained upload'});
+    await screen.findByRole('button',{name:'Check retained sync'});
     expect(request).toHaveBeenCalledExactlyOnceWith({operation:'status'});
-    fireEvent.click(screen.getByRole('button',{name:'Check retained upload'}));
+    fireEvent.click(screen.getByRole('button',{name:'Check retained sync'}));
     await screen.findByText('This exact document upload was applied. Other documents are unchanged.');
     expect(JSON.parse(localStorage.getItem('mdreader.selected-sync.v1')!).operations).toEqual([]);
     expect(request).toHaveBeenCalledWith({operation:'inspect_selected',selection});

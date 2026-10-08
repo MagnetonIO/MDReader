@@ -5,7 +5,7 @@ const operation = { scope:{accountDigest:'a'.repeat(64),libraryId:'00000000-0000
 beforeEach(() => Object.defineProperty(navigator, 'locks', { configurable:true, value:{ request:vi.fn(async (_name: string, _options: unknown, action: (lock: unknown) => unknown) => action({name:KEY,mode:'exclusive'})) } }));
 afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); });
 it('preserves malformed/future retained bytes instead of replacing an unknown operation', async () => {
-  for (const raw of ['{"version":2,"operations":[]}', '{broken', '{"version":1,"version":1,"operations":[]}']) {
+  for (const raw of ['{"version":4,"operations":[]}', '{broken', '{"version":1,"version":1,"operations":[]}']) {
     localStorage.setItem(KEY,raw);
     expect(() => pendingSelections()).toThrow();
     await expect(retainSelection(operation)).rejects.toThrow();

@@ -1156,7 +1156,11 @@ export function AppShell() {
   // evicts clean buffers for docs a tab has navigated away from — so a long-lived
   // tab that has viewed many docs in source mode does not grow unbounded.
   useEffect(() => {
-    const activePathByTab = new Map(tabs.map((tab) => [tab.id, documentKey(tab.docRef)]));
+    // Local editor entries use the native path, while tab identities carry a
+    // local: prefix. Compare like keys, using the live tab snapshot so a queued
+    // effect cannot evict an editor seeded by a newer explicit handoff.
+    const activePathByTab = new Map(useTabsStore.getState().tabs.map((tab) =>
+      [tab.id, isLocalDocument(tab.docRef) ? tab.docRef.path : documentKey(tab.docRef)]));
     useEditorStore
       .getState()
       .retain((tabId, path, dirty) => dirty || retainedProviderEntry(tabId, path) || activePathByTab.get(tabId) === path);
@@ -1751,7 +1755,7 @@ export function AppShell() {
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
               onArchivedReviews={activeTab && isLocalDocument(activeTab.docRef)
-                ? () => archivedReviews.openLocal(activeTab.docRef.path, semanticWorkspaceGeneration)
+                ? () => archivedReviews.openLocal(activeTab.docRef.path!, semanticWorkspaceGeneration)
                 : undefined}
               />
             {activeTab ? (
