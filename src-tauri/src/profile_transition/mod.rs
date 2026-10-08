@@ -1,6 +1,5 @@
-//! Native preservation admission. Unix desktop startup registers the two strict
-//! JSON owners. Other actual writers are still missing; installed preservation
-//! and selector activation remain unavailable until they are composed.
+//! Native preservation admission and actual owner composition. Backup exports
+//! copies only; selector activation is a separate offline profile lifecycle.
 mod admission;
 pub(crate) mod backup;
 mod backup_inventory;
@@ -17,12 +16,13 @@ pub(crate) mod startup;
 #[cfg(all(test, unix))]
 mod tests;
 pub(crate) use admission::EffectLease;
-use mdreader_profile::{
-    Error, FreezeOwner, FrozenProfile, Inventory, InventorySelection, Limits, Participant, Result,
-    RootBinding, VerifiedSnapshot,
-};
+use mdreader_profile::{Error, FreezeOwner, FrozenProfile, Participant, Result, RootBinding};
+#[cfg(test)]
+use mdreader_profile::{Inventory, InventorySelection, Limits, VerifiedSnapshot};
 pub(crate) use registry::{FreezeScope, FrozenParticipant, LiveParticipant};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(test)]
+use std::{path::Path, time::Duration};
 
 pub(crate) struct NativeProfileTransition {
     registry: registry::Registry,
@@ -36,6 +36,7 @@ impl NativeProfileTransition {
             registry: registry::Registry::for_root(root),
         })
     }
+    #[cfg(test)]
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self {
             registry: registry::Registry::new(inventory),
@@ -57,6 +58,7 @@ impl NativeProfileTransition {
     /// Call on a bounded blocking worker. Strict flush finishes before this
     /// inventory is captured; participant capabilities remain held throughout
     /// copying/backups/hash verification/publication. No selector changes.
+    #[cfg(test)]
     pub(crate) fn preserve(
         &self,
         choices: &[InventorySelection],
@@ -72,8 +74,9 @@ impl NativeProfileTransition {
             mdreader_profile::stage(&mut owner, inventory, destination, limits)
         })
     }
-    /// Production installed-profile preservation uses the outer envelope so
-    /// exact preflush originals are never mistaken for latest current JSON.
+    /// Fixture composition with explicit inventory; production backup owns its
+    /// classification after freeze and uses the same portable outer envelope.
+    #[cfg(test)]
     pub(crate) fn preserve_bundle(
         &self,
         choices: &[InventorySelection],
@@ -91,12 +94,15 @@ impl NativeProfileTransition {
     }
     // Durable import/startup selector and both-owner shutdown handoff are not
     // registered. A complete participant list never grants these operations.
+    #[cfg(test)]
     pub(crate) fn prepare(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
+    #[cfg(test)]
     pub(crate) fn activate(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
+    #[cfg(test)]
     pub(crate) fn rollback(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
