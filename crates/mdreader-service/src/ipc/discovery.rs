@@ -2,7 +2,7 @@
 use crate::{protocol_error, Result, ENDPOINT};
 use std::path::Path;
 
-pub(super) fn prepare(directory: &Path) -> Result<()> {
+pub(crate) fn prepare(directory: &Path) -> Result<()> {
     #[cfg(windows)]
     mdreader_capture::PrivateDirectory::create(directory)
         .map_err(|_| protocol_error("reader service private directory is unavailable"))?;
@@ -15,7 +15,7 @@ pub(super) fn prepare(directory: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn publish(directory: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn publish(directory: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(windows)]
     mdreader_capture::PrivateDirectory::open(directory)
         .and_then(|private| private.publish(Path::new(ENDPOINT), bytes))
@@ -39,7 +39,7 @@ pub(super) fn publish(directory: &Path, bytes: &[u8]) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn read(directory: &Path) -> Result<Vec<u8>> {
+pub(crate) fn read(directory: &Path) -> Result<Vec<u8>> {
     #[cfg(windows)]
     let bytes = mdreader_capture::PrivateDirectory::open(directory)
         .and_then(|root| root.read(Path::new(ENDPOINT), 4096))
