@@ -120,3 +120,29 @@ pub(super) fn provider_error(e: mdreader_provider::ProviderError) -> CatalogErro
         _ => CatalogError::Persistence,
     }
 }
+
+/// Existing service-owned capture/device scopes, without native root paths.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderOwnedSources {
+    pub captures: Vec<mdreader_core::Source>,
+    pub devices: Vec<DeviceSearchReceipt>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSearchReceipt {
+    pub document_id: String,
+    pub source_id: String,
+    pub revision: String,
+}
+#[cfg(feature = "sync-native")]
+impl From<mdreader_core::device::catalog::Receipt> for DeviceSearchReceipt {
+    fn from(r: mdreader_core::device::catalog::Receipt) -> Self {
+        Self {
+            document_id: r.document_id,
+            source_id: r.source_id,
+            revision: r.revision,
+        }
+    }
+}

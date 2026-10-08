@@ -195,3 +195,32 @@ pub async fn reader_export_document(
     .await
     .map_err(|_| failure("write_unconfirmed"))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn export_copies_exact_utf8_and_never_replaces_an_existing_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let original = root.join("original.md");
+        let bytes = "\u{feff}# Original\r\n\r\nPreserve UTF-8: λ.\r\n".as_bytes();
+        std::fs::write(&original, bytes).unwrap();
+        let exported = root.join("copy.md");
+        write_new(&exported, bytes).unwrap();
+        assert_eq!(std::fs::read(&exported).unwrap(), bytes);
+        assert!(write_new(&original, b"replacement").is_err());
+        let hardlink = root.join("hardlink.md");
+        std::fs::hard_link(&original, &hardlink).unwrap();
+        assert!(write_new(&hardlink, b"replacement").is_err());
+        #[cfg(unix)]
+        {
+            let link = root.join("link.md");
+            std::os::unix::fs::symlink(&original, &link).unwrap();
+            assert!(write_new(&link, b"replacement").is_err());
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+        assert_eq!(std::fs::read(&original).unwrap(), bytes);
+        assert_eq!(std::fs::read(&hardlink).unwrap(), bytes);
+    }
+}

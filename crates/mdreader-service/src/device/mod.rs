@@ -2,6 +2,7 @@
 //! This adapter never initializes a namespace or creates a cache directory.
 mod lifecycle;
 mod model;
+mod search;
 mod state;
 pub use lifecycle::FrozenDevices;
 use mdreader_core::{

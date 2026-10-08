@@ -33,13 +33,16 @@ pub async fn search(
 fn reader_hit(
     root: Option<&SourceRoot>,
     hit: mdreader_core::Evidence,
+    device: Option<&mdreader_service::catalog::DeviceSearchReceipt>,
     explain: bool,
 ) -> SearchHitDto {
-    let document_id = uuid::Uuid::new_v5(
-        &uuid::Uuid::NAMESPACE_URL,
-        format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),
-    )
-    .to_string();
+    let document_id = device.map(|r| r.document_id.clone()).unwrap_or_else(|| {
+        uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),
+        )
+        .to_string()
+    });
     let chunk_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
         format!(
@@ -80,6 +83,8 @@ fn reader_hit(
         },
     });
     SearchHitDto {
+        device_document_id: device.map(|r| r.document_id.clone()),
+        source_kind: None,
         source_id: Some(hit.source_id),
         revision: Some(hit.revision),
         chunk_id,
@@ -168,8 +173,18 @@ pub(crate) async fn search_reader(
     } else {
         None
     };
+    let owned: mdreader_service::catalog::ReaderOwnedSources =
+        reader.invoke(Request::ReaderOwnedSources).await?;
+    sources.extend(owned.captures.iter().map(|s| s.id.clone()));
+    sources.extend(owned.devices.iter().map(|s| s.source_id.clone()));
+    if sources.len() > 128 {
+        return Err("Selected search scope exceeds the 128-source budget".into());
+    }
     if sources.is_empty() {
-        return Err("Open a folder or select a cloud source for search".into());
+        return Err(
+            "Import Markdown, enable captures, open a folder or select a cloud source for search"
+                .into(),
+        );
     }
     let sources: Vec<_> = sources.into_iter().collect();
     let mode = match options.intent.as_deref() {
@@ -196,7 +211,22 @@ pub(crate) async fn search_reader(
                 } else {
                     None
                 };
-                Ok(reader_hit(root.as_ref(), hit, options.explain))
+                let device = owned.devices.iter().find(|d| d.source_id == hit.source_id);
+                if device.is_some_and(|d| d.revision != hit.revision) {
+                    return Err("Imported document changed during search".into());
+                }
+                let kind = if device.is_some() {
+                    "device"
+                } else if owned.captures.iter().any(|s| s.id == hit.source_id) {
+                    "capture"
+                } else if canonical_provider_source(&hit.source_id) {
+                    "provider"
+                } else {
+                    "local"
+                };
+                let mut value = reader_hit(root.as_ref(), hit, device, options.explain);
+                value.source_kind = Some(kind.into());
+                Ok(value)
             })
             .collect()
     };
@@ -230,6 +260,10 @@ pub(crate) async fn search_reader(
                 },
             })
             .await?;
+        let current = reader.invoke(Request::ReaderOwnedSources).await?;
+        if !crate::reader_owned::same(&owned, &current) {
+            return Err("Reader-owned search scope changed".into());
+        }
         let hits = map_hits(lexical.hits.clone())?;
         emit("lexical", &hits, None)?;
         lexical_outcome = Some(lexical);
@@ -251,6 +285,10 @@ pub(crate) async fn search_reader(
             })
             .await?
     };
+    let current = reader.invoke(Request::ReaderOwnedSources).await?;
+    if !crate::reader_owned::same(&owned, &current) {
+        return Err("Reader-owned search scope changed".into());
+    }
     let hits = map_hits(outcome.hits)?;
     emit("final", &hits, outcome.semantic_unavailable.as_deref())?;
     if !reader_scope_current(epoch.as_ref(), workspace)? {

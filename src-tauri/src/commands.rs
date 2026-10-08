@@ -2550,8 +2550,28 @@ mod tests {
                 if EXEMPT.contains(&name) {
                     continue;
                 }
+                // Engine commands are intentionally thin after the SDK cutover.
+                // Check their exact delegation, then the actual guarded module.
+                let delegated = match name {
+                    "start_import" | "import_status" => {
+                        Some(("index", include_str!("engine/index.rs")))
+                    }
+                    "list_workspace_files" | "resolve_wikilink" => {
+                        Some(("navigation", include_str!("engine/navigation.rs")))
+                    }
+                    _ => None,
+                };
+                let guarded = if let Some((module, implementation)) = delegated {
+                    assert!(
+                        block.contains(&format!("{module}::{name}(")),
+                        "thin command must call its guarded implementation"
+                    );
+                    implementation.contains(".finish(")
+                } else {
+                    block.contains(".finish(")
+                };
                 assert!(
-                    block.contains(".finish("),
+                    guarded,
                     "command `{name}` returns workspace data but never reaches the \
                      Epoch::finish choke-point — route its result through it (// EPOCH-GUARDED)"
                 );

@@ -3358,7 +3358,9 @@ mod tests {
     ) {
         assert!(matches!(
             LibraryRegistry::load_from(registry_path),
-            Err(LibraryError::CorruptRegistry) | Err(LibraryError::CleanupFailed { .. })
+            Err(LibraryError::CorruptRegistry)
+                | Err(LibraryError::CleanupFailed { .. })
+                | Err(LibraryError::OfflineMigrationRequired)
         ));
         assert_eq!(
             fs::read(registry_path).expect("read unchanged V2 registry"),

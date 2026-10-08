@@ -318,3 +318,102 @@ fn selection(
         operation_id,
     }
 }
+
+/// Real production AccountRequest lifecycle after the existing roundtrip/cancel
+/// cases: capture actual local state, prove echo, then opaque selected deletion.
+pub(super) fn state_and_deletion(account: &Account) {
+    let document = device::list(&mut account.owner.lock().unwrap())
+        .unwrap()
+        .remove(0);
+    let original = account.documents.join(&document.id).join("document.md");
+    let original_bytes = std::fs::read(&original).unwrap();
+    {
+        let mut owner = account.owner.lock().unwrap();
+        device::pin(&mut owner, &document.id, false).unwrap();
+        device::position(&mut owner, &document.id, &document.revision, 2).unwrap();
+    }
+    let state = selection(account, &document, Uuid::new_v4());
+    let rpc::AccountReply::Begun { job_id } = account
+        .coordinator
+        .execute(rpc::AccountRequest::SyncSelectedState {
+            selection: state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("state job");
+    };
+    let job = account.settled(job_id);
+    assert!(
+        matches!(
+            job.state,
+            JobState::Completed {
+                outcome: Outcome::Sync {
+                    committed: 1,
+                    conflicts: 0,
+                    applied: 5,
+                    acknowledged: 5,
+                    pending: None,
+                    ..
+                }
+            }
+        ),
+        "state roundtrip failed"
+    );
+    assert!(job.selected_purpose == Some(SelectedPurpose::UserState));
+    let current = device::document(&mut account.owner.lock().unwrap(), &document.id).unwrap();
+    assert_eq!(current.revision, document.revision);
+    assert!(!current.pinned);
+    assert_eq!(current.line, 2);
+    let deleted = selection(account, &current, Uuid::new_v4());
+    let rpc::AccountReply::Begun { job_id } = account
+        .coordinator
+        .execute(rpc::AccountRequest::SyncSelectedDelete {
+            selection: deleted.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("delete job");
+    };
+    let job = account.settled(job_id);
+    assert!(
+        matches!(
+            job.state,
+            JobState::Completed {
+                outcome: Outcome::Sync {
+                    committed: 1,
+                    conflicts: 0,
+                    applied: 6,
+                    acknowledged: 6,
+                    pending: None,
+                    ..
+                }
+            }
+        ),
+        "delete roundtrip failed"
+    );
+    assert!(job.selected_purpose == Some(SelectedPurpose::Delete));
+    let rpc::AccountReply::Begun { job_id } = account
+        .coordinator
+        .execute(rpc::AccountRequest::InspectSelectedDelete {
+            selection: deleted.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("delete inspect");
+    };
+    assert!(
+        matches!(account.settled(job_id).state, JobState::Completed {
+        outcome: Outcome::SelectedStatus { selection: exact, purpose: SelectedPurpose::Delete,
+            disposition: crate::sync::outgoing::SelectedDisposition::Applied { sequence:6 } }
+    } if exact == deleted)
+    );
+    assert!(device::read(&mut account.owner.lock().unwrap(), &document.id, None).is_err());
+    assert_eq!(
+        std::fs::read(&original).unwrap(),
+        original_bytes,
+        "retirement removed original"
+    );
+    assert!(device::list(&mut account.owner.lock().unwrap())
+        .unwrap()
+        .is_empty());
+}

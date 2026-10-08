@@ -75,6 +75,11 @@ pub struct ExplainDto {
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct SearchHitDto {
     #[specta(optional)]
+    pub source_kind: Option<String>,
+    /// Exact native device identity when this hit belongs to the imported library.
+    #[specta(optional)]
+    pub device_document_id: Option<String>,
+    #[specta(optional)]
     pub source_id: Option<String>,
     #[specta(optional)]
     pub revision: Option<String>,

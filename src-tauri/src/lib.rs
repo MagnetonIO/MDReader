@@ -66,6 +66,7 @@ mod reader_catalog;
 mod reader_device;
 #[cfg(not(mobile))]
 mod reader_export;
+mod reader_owned;
 mod reader_profile;
 #[cfg(not(mobile))]
 mod reader_reviews;
