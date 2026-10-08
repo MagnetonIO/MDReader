@@ -92,10 +92,9 @@ fn entry(v: &Value) -> Result<()> {
     fields(v, &["reference", "title", "heading", "position"])?;
     let reference_value = v.get("reference").ok_or(Error::Invalid)?;
     reference(reference_value)?;
-    if !v
-        .get("title")
+    if v.get("title")
         .and_then(Value::as_str)
-        .is_some_and(|s| s.len() <= 512)
+        .is_none_or(|s| s.len() > 512)
     {
         return Err(Error::Invalid);
     }

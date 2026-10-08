@@ -375,6 +375,16 @@ pub fn run() {
 #[cfg(test)]
 mod generated_artifacts;
 
+/// Native CLI entry; never accepts a renderer path or activates an old profile.
+pub fn run_prepared_profile(directory: std::path::PathBuf) -> Result<(), String> {
+    if !directory.is_absolute() {
+        return Err("Prepared profile must be absolute".into());
+    }
+    // Setup validates the immutable archive before constructing any owner.
+    launch_application_with_profile(Some(directory), run_tauri);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
@@ -606,14 +616,4 @@ mod tests {
             "only {checked} commands were scanned — the attribute marker has drifted"
         );
     }
-}
-
-/// Native CLI entry; never accepts a renderer path or activates an old profile.
-pub fn run_prepared_profile(directory: std::path::PathBuf) -> Result<(), String> {
-    if !directory.is_absolute() {
-        return Err("Prepared profile must be absolute".into());
-    }
-    // Setup validates the immutable archive before constructing any owner.
-    launch_application_with_profile(Some(directory), run_tauri);
-    Ok(())
 }

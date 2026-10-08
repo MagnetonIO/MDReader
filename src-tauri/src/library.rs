@@ -19,7 +19,9 @@ use tauri::{AppHandle, Manager};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tauri_plugin_dialog::DialogExt;
 
-use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, CloudSourceRecord};
+#[cfg(test)]
+use crate::cloud_accounts::CloudSourceError;
+use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceRecord};
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_core::{SourceRoot, SourceRootIdentity};
 
@@ -196,7 +198,6 @@ pub(crate) struct CloseAndForgetLibrarySourceOutcome {
 #[derive(Debug, Clone)]
 pub(crate) struct LibraryQuerySnapshot {
     pub local_sources: Vec<LocalFolderSource>,
-    pub cloud_sources: Vec<CloudSourceRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -424,16 +425,6 @@ impl LibrarySourceContract {
             index_policy: LibraryIndexPolicy::ReadThrough,
         }
     }
-
-    pub(crate) fn connector_version(&self) -> &str {
-        &self.connector_version
-    }
-
-    pub(crate) fn permits_read_only(&self) -> bool {
-        self.capabilities.read
-            && !self.capabilities.write
-            && self.index_policy == LibraryIndexPolicy::ReadThrough
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
@@ -445,6 +436,7 @@ pub(crate) struct ConnectedCatdbSourceDescriptor {
     pub connector_id: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ConnectedCatdbAuthority {
     pub(crate) deployment_id: uuid::Uuid,
@@ -489,6 +481,7 @@ impl std::fmt::Debug for ConnectedCatdbSourceRecord {
 }
 
 impl ConnectedCatdbSourceRecord {
+    #[cfg(test)]
     pub(crate) fn new(
         label: String,
         server_origin: String,
@@ -513,10 +506,6 @@ impl ConnectedCatdbSourceRecord {
 
     fn refresh_contract(&mut self) {
         self.contract = LibrarySourceContract::connected_catdb(self.catalog_revision_id);
-    }
-
-    pub(crate) fn selected_source_ids(&self) -> &[uuid::Uuid] {
-        &self.selected_source_ids
     }
 }
 
@@ -607,13 +596,6 @@ impl LibrarySource {
     }
 
     fn connected_catdb(&self) -> Option<&ConnectedCatdbSourceRecord> {
-        match self {
-            Self::ConnectedCatdb(source) => Some(source),
-            Self::LocalFolder(_) | Self::GoogleDrive(_) | Self::Dropbox(_) => None,
-        }
-    }
-
-    fn connected_catdb_mut(&mut self) -> Option<&mut ConnectedCatdbSourceRecord> {
         match self {
             Self::ConnectedCatdb(source) => Some(source),
             Self::LocalFolder(_) | Self::GoogleDrive(_) | Self::Dropbox(_) => None,
@@ -892,6 +874,7 @@ impl LibraryRegistry {
         Ok(source)
     }
 
+    #[cfg(test)]
     pub(crate) fn add_connected_catdb(
         &mut self,
         source: ConnectedCatdbSourceRecord,
@@ -908,57 +891,6 @@ impl LibraryRegistry {
         self.sources.push(LibrarySource::ConnectedCatdb(source));
         self.connected_catdb_rediscovery_required = false;
         Ok(())
-    }
-
-    pub(crate) fn set_connected_catdb_source_enabled(
-        &mut self,
-        connection_id: &str,
-        source_id: uuid::Uuid,
-        enabled: bool,
-    ) -> Result<(), LibraryError> {
-        let source = self
-            .sources
-            .iter_mut()
-            .filter_map(LibrarySource::connected_catdb_mut)
-            .find(|source| source.id == connection_id)
-            .ok_or(LibraryError::SourceNotFound)?;
-        let descriptor = source
-            .permitted_sources
-            .iter()
-            .find(|descriptor| descriptor.source_id == source_id)
-            .ok_or(LibraryError::SourceNotFound)?;
-        if enabled && !descriptor.runtime_bound {
-            return Err(LibraryError::SourceUnavailable);
-        }
-        source
-            .selected_source_ids
-            .retain(|selected| *selected != source_id);
-        if enabled {
-            source.selected_source_ids.push(source_id);
-            source.selected_source_ids.sort_unstable();
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove_connected_catdb(
-        &mut self,
-        connection_id: &str,
-    ) -> Result<ConnectedCatdbSourceRecord, LibraryError> {
-        let index = self
-            .sources
-            .iter()
-            .position(|source| {
-                source
-                    .connected_catdb()
-                    .is_some_and(|source| source.id == connection_id)
-            })
-            .ok_or(LibraryError::SourceNotFound)?;
-        match self.sources.remove(index) {
-            LibrarySource::ConnectedCatdb(source) => Ok(source),
-            LibrarySource::LocalFolder(_)
-            | LibrarySource::GoogleDrive(_)
-            | LibrarySource::Dropbox(_) => Err(LibraryError::CorruptRegistry),
-        }
     }
 
     pub(crate) fn source_state(&self, source_id: &str) -> Result<LibrarySourceState, LibraryError> {
@@ -2061,17 +1993,11 @@ fn rollback_managed_moves(moves: &[(PathBuf, PathBuf)]) -> Result<(), ()> {
 #[derive(Debug, Clone)]
 pub(crate) struct LibraryStore {
     registry_path: PathBuf,
-    #[cfg(test)]
-    fail_next_cloud_persist: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LibraryStore {
     pub(crate) fn new(registry_path: PathBuf) -> Self {
-        Self {
-            registry_path,
-            #[cfg(test)]
-            fail_next_cloud_persist: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
+        Self { registry_path }
     }
 
     #[cfg(any(test, feature = "e2e-build"))]
@@ -2101,10 +2027,6 @@ impl LibraryStore {
         Ok(source)
     }
 
-    pub(crate) fn registry_path(&self) -> &Path {
-        &self.registry_path
-    }
-
     fn lock_path(&self) -> Result<PathBuf, LibraryError> {
         self.registry_path
             .parent()
@@ -2128,59 +2050,29 @@ impl LibraryStore {
         operation(&registry)
     }
 
-    /// Capture local and enabled cloud membership under one registry lease.
-    ///
-    /// Credential material is deliberately absent. The caller first validates
-    /// `EntityQueryRequest.source_ids` against this snapshot and only then
-    /// resolves credentials for the selected cloud members.
+    /// Capture existing local membership under one registry lease.
+    /// Provider scopes are resolved by the separate MDReader provider owner.
     pub(crate) fn read_query_snapshot(&self) -> Result<LibraryQuerySnapshot, LibraryError> {
         self.read(|registry| {
             Ok(LibraryQuerySnapshot {
                 local_sources: registry.local_sources().cloned().collect(),
-                cloud_sources: registry
-                    .sources
-                    .iter()
-                    .filter_map(LibrarySource::cloud)
-                    .filter(|source| source.enabled())
-                    .cloned()
-                    .collect(),
             })
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn read_connected_catdb(
         &self,
     ) -> Result<Option<ConnectedCatdbSourceRecord>, LibraryError> {
         self.read(|registry| Ok(registry.connected_catdb().cloned()))
     }
 
+    #[cfg(test)]
     pub(crate) fn add_connected_catdb(
         &self,
         source: ConnectedCatdbSourceRecord,
     ) -> Result<(), LibraryError> {
         self.update(|registry| registry.add_connected_catdb(source))
-    }
-
-    pub(crate) fn set_connected_catdb_source_enabled(
-        &self,
-        connection_id: &str,
-        source_id: uuid::Uuid,
-        enabled: bool,
-    ) -> Result<ConnectedCatdbSourceRecord, LibraryError> {
-        self.update(|registry| {
-            registry.set_connected_catdb_source_enabled(connection_id, source_id, enabled)?;
-            registry
-                .connected_catdb()
-                .cloned()
-                .ok_or(LibraryError::CorruptRegistry)
-        })
-    }
-
-    pub(crate) fn remove_connected_catdb(
-        &self,
-        connection_id: &str,
-    ) -> Result<ConnectedCatdbSourceRecord, LibraryError> {
-        self.update(|registry| registry.remove_connected_catdb(connection_id))
     }
 
     fn update<T>(
@@ -2197,28 +2089,7 @@ impl LibraryStore {
         Ok(result)
     }
 
-    pub(crate) fn read_cloud<T>(
-        &self,
-        operation: impl FnOnce(&[CloudSourceRecord]) -> Result<T, CloudSourceError>,
-    ) -> Result<T, CloudSourceError> {
-        let _lease = self
-            .acquire()
-            .map_err(|_| CloudSourceError::PersistFailed)?;
-        let mut registry =
-            LibraryRegistry::load_from(&self.registry_path).map_err(map_library_cloud_error)?;
-        let app_data = self.app_data().map_err(map_library_cloud_error)?;
-        let mut cleanup = |path: &Path| fs::remove_dir_all(path);
-        self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)
-            .map_err(map_library_cloud_error)?;
-        let sources = registry
-            .sources
-            .iter()
-            .filter_map(LibrarySource::cloud)
-            .cloned()
-            .collect::<Vec<_>>();
-        operation(&sources)
-    }
-
+    #[cfg(test)]
     pub(crate) fn update_cloud<T>(
         &self,
         operation: impl FnOnce(&mut Vec<CloudSourceRecord>) -> Result<T, CloudSourceError>,
@@ -2249,23 +2120,10 @@ impl LibraryStore {
         registry
             .sources
             .extend(cloud_sources.into_iter().map(LibrarySource::from_cloud));
-        #[cfg(test)]
-        if self
-            .fail_next_cloud_persist
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(CloudSourceError::PersistFailed);
-        }
         registry
             .save_to(&self.registry_path)
             .map_err(map_library_cloud_error)?;
         Ok(result)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_next_cloud_persist(&self) {
-        self.fail_next_cloud_persist
-            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn app_data(&self) -> Result<PathBuf, LibraryError> {
@@ -2332,7 +2190,7 @@ impl LibraryStore {
             Err(_) => {
                 return Err(LibraryError::CleanupFailed {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
-                })
+                });
             }
         };
         let Some(metadata) = metadata else {
@@ -2364,7 +2222,7 @@ impl LibraryStore {
             _ => {
                 return Err(LibraryError::CleanupFailed {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
-                })
+                });
             }
         }
         rename(&managed, &staged).map_err(|_| LibraryError::CleanupFailed {
@@ -2506,7 +2364,7 @@ impl LibraryStore {
             Err(_) => {
                 return Err(LibraryError::CleanupFailed {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
-                })
+                });
             }
         };
         if managed_metadata
@@ -2538,7 +2396,7 @@ impl LibraryStore {
                 _ => {
                     return Err(LibraryError::CleanupFailed {
                         reason: LibraryCleanupReason::ManagedStateUnavailable,
-                    })
+                    });
                 }
             }
             Some(staged)
@@ -2677,7 +2535,7 @@ impl LibraryStore {
                 Err(_) => {
                     return Err(LibraryError::CleanupFailed {
                         reason: LibraryCleanupReason::ManagedStateUnavailable,
-                    })
+                    });
                 }
             };
             if staged_metadata.file_type().is_symlink() || !staged_metadata.is_dir() {
@@ -2706,7 +2564,7 @@ impl LibraryStore {
                 Err(_) => {
                     return Err(LibraryError::CleanupFailed {
                         reason: LibraryCleanupReason::ManagedStateUnavailable,
-                    })
+                    });
                 }
             }
         }
@@ -2763,6 +2621,7 @@ impl LibraryStore {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
     match error {
         LibraryError::CorruptRegistry => CloudSourceError::CorruptRegistry,
@@ -3308,46 +3167,6 @@ mod tests {
             &root.identity,
         );
         (old, new)
-    }
-
-    fn mutate_catalog_without_leaving_sidecars(path: &Path, sql: &str) {
-        let connection = rusqlite::Connection::open(path).expect("open catalog for mutation");
-        connection
-            .execute_batch(sql)
-            .expect("apply controlled catalog mutation");
-        let _: (i64, i64, i64) = connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .expect("checkpoint controlled mutation");
-        let journal_mode = connection
-            .query_row("PRAGMA journal_mode=DELETE", [], |row| {
-                row.get::<_, String>(0)
-            })
-            .expect("leave controlled mutation in the main database");
-        assert_eq!(journal_mode, "delete");
-        drop(connection);
-        assert_no_sqlite_sidecars(path);
-    }
-
-    fn assert_no_sqlite_sidecars(path: &Path) {
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let mut sidecar = path.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            assert!(
-                !PathBuf::from(sidecar).exists(),
-                "fixture must not leave a {suffix} sidecar"
-            );
-        }
-    }
-
-    fn v2_source(root: &SourceRoot) -> super::LibrarySourceV2 {
-        let path = NativePath::capture(&root.path);
-        super::LibrarySourceV2 {
-            id: path.source_id(),
-            path,
-            identity: Some(root.identity.clone()),
-        }
     }
 
     fn assert_v2_refusal_preserves_managed_state(

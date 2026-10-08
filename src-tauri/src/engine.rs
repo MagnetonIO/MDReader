@@ -22,6 +22,7 @@ use std::{
 use tauri::{ipc::Channel, AppHandle, Manager, State};
 // Legacy managed paths are identifiers for explicit offline preservation/cleanup,
 // never a database opener or a new source permission.
+#[cfg(test)]
 pub(crate) fn db_path_under(base: &Path, root: &SourceRoot) -> PathBuf {
     mdreader_core::source_root::workspace_index_path(base, root)
 }

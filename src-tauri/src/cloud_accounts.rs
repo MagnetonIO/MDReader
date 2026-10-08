@@ -217,7 +217,12 @@ fn valid_credential_reference(reference: &str) -> bool {
 pub(crate) enum CloudSourceError {
     InvalidConfiguration,
     CorruptRegistry,
-    UnsupportedVersion { found: u32, expected: u32 },
+    #[cfg(test)]
+    UnsupportedVersion {
+        found: u32,
+        expected: u32,
+    },
+    #[cfg(test)]
     PersistFailed,
 }
 impl fmt::Display for CloudSourceError {
