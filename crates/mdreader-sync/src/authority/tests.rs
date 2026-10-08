@@ -314,6 +314,101 @@ async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
         .check_identity(&identity, &other_registration, &library)
         .is_err());
 }
+
+#[test]
+fn legacy_bytes_are_lossless_and_candidates_never_invent_library_authority() {
+    let issuer = Issuer::new();
+    let identity = issuer.identity();
+    let reg = registration("https://sync.example.test");
+    let library = uuid::Uuid::new_v4().to_string();
+    let pending = PendingCustody::prepare(&identity, &reg, &library).unwrap();
+    let encoded = custody::encode(&pending.record).unwrap();
+    let mut old: Value = serde_json::from_slice(&encoded).unwrap();
+    old["v"] = json!(1);
+    for field in ["wrapping_private", "recovery_private", "phase"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    let original = Zeroizing::new(
+        format!(" \n{}\n ", serde_json::to_string_pretty(&old).unwrap()).into_bytes(),
+    );
+    let legacy = custody::decode(&pending.reference(), original.clone()).unwrap();
+    assert_eq!(
+        custody::encode(&legacy).unwrap().as_slice(),
+        original.as_slice()
+    );
+    assert_eq!(
+        legacy.can_resume().unwrap_err(),
+        AuthorityError::LifecycleGated
+    );
+    let mut changed = legacy.copy();
+    changed.generation += 1;
+    assert_eq!(
+        custody::encode(&changed).unwrap_err(),
+        AuthorityError::Generation
+    );
+    for kind in [CandidateKind::Pair, CandidateKind::Recover] {
+        let mut candidate = PendingCustody::candidate(&identity, &reg, &library, kind).unwrap();
+        assert!(candidate.record.keys.is_empty());
+        let bytes = custody::encode(&candidate.record).unwrap();
+        let restored = custody::decode(&candidate.reference(), bytes).unwrap();
+        assert!(restored.same_material(&candidate.record));
+        assert_eq!(
+            restored.can_resume().unwrap_err(),
+            AuthorityError::LifecycleGated
+        );
+        assert_eq!(
+            candidate.record.confirm_bootstrap().unwrap_err(),
+            AuthorityError::LifecycleGated
+        );
+        candidate.record.keys.insert(
+            uuid::Uuid::new_v4().to_string(),
+            Zeroizing::new(vec![7; 32]),
+        );
+        assert!(custody::encode(&candidate.record).is_err());
+    }
+}
+
+#[test]
+fn v2_custody_reopens_persistent_anchors_and_cas_preserves_uncertain_material() {
+    let issuer = Issuer::new();
+    let identity = issuer.identity();
+    let reg = registration("https://sync.example.test");
+    let library = uuid::Uuid::new_v4().to_string();
+    let pending = PendingCustody::prepare(&identity, &reg, &library).unwrap();
+    let reference = pending.reference();
+    let memory = MemoryVault::new();
+    memory.create(&pending.record).unwrap();
+    let before = memory.records.lock().unwrap()[reference.opaque_reference()].clone();
+    let mut reopened = memory.get(&reference).unwrap().unwrap();
+    assert!(reopened.same_material(&pending.record));
+    assert_eq!(
+        reopened.test_public_material(),
+        pending.record.test_public_material()
+    );
+    reopened
+        .check_recovery_anchor(&reopened.test_public_material().1)
+        .unwrap();
+    assert!(reopened.check_recovery_anchor(&Issuer::new().jwk).is_err());
+    reopened.generation += 1;
+    reopened.confirm_bootstrap().unwrap();
+    assert_eq!(
+        memory.compare_exchange(9, &reopened).unwrap_err(),
+        AuthorityError::Generation
+    );
+    assert_eq!(
+        memory.records.lock().unwrap()[reference.opaque_reference()].as_slice(),
+        before.as_slice()
+    );
+    memory.compare_exchange(1, &reopened).unwrap();
+    let confirmed = memory.get(&reference).unwrap().unwrap();
+    assert!(confirmed.same_material(&reopened));
+    confirmed.can_resume().unwrap();
+    assert_eq!(
+        confirmed.test_public_material(),
+        pending.record.test_public_material()
+    );
+    assert!(memory.compare_exchange(1, &reopened).is_err());
+}
 #[test]
 fn private_records_and_identities_never_diagnose_key_or_token_content() {
     let issuer = Issuer::new();
@@ -566,14 +661,10 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
     )
     .unwrap();
     factory.persist_pending(&pending).await.unwrap();
-    // No production bootstrap constructor exists. Only this test owns separate valid
-    // P-256 candidate wrapping/recovery keys and drives actual server enrollment.
+    // No production bootstrap operation exists. The synthetic driver enrolls the
+    // exact persistent native wrapping/recovery keys, never throwaway anchors.
     let signing = SigningKey::load(&pending.record.pkcs8).unwrap();
-    let wrapping = Issuer::new();
-    let recovery = Issuer::new();
-    let public = |key: &Value| json!({"kty":key["kty"],"crv":key["crv"],"x":key["x"],"y":key["y"]});
-    let wrapping = public(&wrapping.jwk);
-    let recovery = public(&recovery.jwk);
+    let (wrapping, recovery) = pending.record.test_public_material();
     let challenge=fixture.json("/v1/enrollment/challenge",json!({"kind":"bootstrap","libraryId":library,"signingJwk":signing.jwk,"wrappingJwk":wrapping,"recoveryJwk":recovery})).await;
     drop(discovery);
     let login = fixture
@@ -778,7 +869,7 @@ fn late_401_and_drop_of_old_capability_preserve_same_scope_replacement() {
     )
     .unwrap()
     .record;
-    record.state = custody::EnrollmentState::Confirmed;
+    record.confirm_bootstrap().unwrap();
     let old = synthetic_capability(&issuer, controller.clone(), record.copy());
     let old_generation = old.generation().unwrap();
     let replacement = synthetic_capability(&issuer, controller.clone(), record);
@@ -805,7 +896,7 @@ fn expiry_and_capability_drop_clear_owner_binding_without_erasing_keys() {
     )
     .unwrap()
     .record;
-    record.state = custody::EnrollmentState::Confirmed;
+    record.confirm_bootstrap().unwrap();
     let mut active = synthetic_capability(&issuer, controller.clone(), record.copy());
     active.identity.expires = super::now().unwrap();
     assert!(active.scope().is_err());
@@ -827,7 +918,7 @@ fn signing_policy_requires_exact_origin_query_envelope_hash_and_scope() {
     )
     .unwrap()
     .record;
-    record.state = custody::EnrollmentState::Confirmed;
+    record.confirm_bootstrap().unwrap();
     let active = synthetic_capability(&issuer, controller, record);
     let key_id = active.record.keys.keys().next().unwrap();
     let key = LibraryKey::from_bytes(key_id.clone(), active.record.keys[key_id].clone()).unwrap();

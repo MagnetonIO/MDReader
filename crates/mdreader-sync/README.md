@@ -75,3 +75,7 @@ implementation and exact remaining gates are documented in web
 `lib/sync/PAYLOAD-PROTOCOL.md`. The codec slice adds no auth/provider/keychain behavior; the optional transport
 foundation is separately described in [TRANSPORT.md](TRANSPORT.md). Current focused transport/owner checks and exact remaining gates are recorded in
 [TRANSPORT.md](TRANSPORT.md); no cross-device native acceptance is claimed.
+
+## Native custody and standard wrapping checkpoint
+
+Optional `native-authority` now includes persistent custody v2 and strict browser-compatible pair/recovery JWE primitives. [KEY-LIFECYCLE.md](KEY-LIFECYCLE.md) records the wire profiles, v1 preservation, executed synthetic conformance checks and remaining enrollment/pairing/recovery gates. This does not enable a native product key lifecycle or reuse the raw-key legacy recovery artifact.

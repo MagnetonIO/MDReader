@@ -8,13 +8,13 @@ repository.workspace = true
 [features]
 default = []
 transport = ["dep:reqwest", "dep:url", "dep:tokio"]
-native-authority = ["transport", "dep:ring", "dep:jsonwebtoken", "dep:keyring", "tokio/net", "tokio/io-util", "tokio/macros"]
+native-authority = ["transport", "dep:ring", "dep:jsonwebtoken", "dep:keyring", "dep:p256", "dep:aes-kw", "tokio/net", "tokio/io-util", "tokio/macros"]
 
 [dependencies]
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 base64 = "0.23"
 getrandom = "0.4"
-sha2 = "0.11"
+sha2 = { version = "0.11", features = ["zeroize"] }
 zeroize = "1.9"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,6 +28,8 @@ tokio = { workspace = true, features = ["sync", "time"], optional = true }
 
 ring = { version = "0.17", optional = true }
 jsonwebtoken = { version = "9.3.1", optional = true }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdh", "std"], optional = true }
+aes-kw = { version = "=0.3.1", features = ["zeroize"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"], optional = true }
