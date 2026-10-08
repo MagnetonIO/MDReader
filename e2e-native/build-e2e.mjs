@@ -1,17 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, '..', '..', '..');
-const MOBILE_SOURCE_COMMIT_FILE = resolve(
-  REPO_ROOT,
-  'apps',
-  'mdreader',
-  'src-tauri',
-  '.e2e-source-commit',
-);
+import { REPO_ROOT, MOBILE_SOURCE_COMMIT_FILE } from './repository.mjs';
 
 export function resolveSourceCommit(
   configured = process.env.MDREADER_SOURCE_COMMIT,

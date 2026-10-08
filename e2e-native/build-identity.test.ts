@@ -1,20 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { REPO_ROOT, MOBILE_SOURCE_COMMIT_FILE } from './repository.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, '..', '..', '..');
 const SOURCE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
-const MOBILE_SOURCE_COMMIT_FILE = resolve(
-  REPO_ROOT,
-  'apps',
-  'mdreader',
-  'src-tauri',
-  '.e2e-source-commit',
-);
 const CARGO_ARGS = [
   'check',
   '-p',

@@ -28,8 +28,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import { remote } from 'webdriverio';
 
 import { E2E_PROCESS_NAME, E2E_PRODUCT_NAME, FLOW_CONFIG } from '../flows.ts';
@@ -58,10 +57,8 @@ import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
 import { consoleLog, runFlow } from '../drivers/runner.ts';
 import { startMobileFixtureServer } from '../mobile-fixture.ts';
+import { E2E_ROOT, REPO_ROOT } from '../repository.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const E2E_ROOT = resolve(HERE, '..');
-const REPO_ROOT = resolve(E2E_ROOT, '..', '..', '..');
 const APPIUM_HOME = join(E2E_ROOT, '.appium');
 const APPIUM_PORT = Number(process.env.APPIUM_PORT ?? 4723);
 const APPIUM_BASE = `http://127.0.0.1:${APPIUM_PORT}`;
@@ -204,7 +201,7 @@ async function main(): Promise<number> {
 
   if (!existsSync(opts.binary)) {
     console.error(`\nFAIL: app binary not found: ${opts.binary}`);
-    console.error('Build it first: pnpm --dir apps/mdreader/e2e-native run build:e2e');
+    console.error('Build it first: pnpm --dir e2e-native run build:e2e');
     return 1;
   }
   if (!existsSync(opts.corpus)) {
