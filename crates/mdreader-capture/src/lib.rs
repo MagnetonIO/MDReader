@@ -20,7 +20,7 @@ use platform::{
 };
 use projection::parse_projection;
 pub use projection::read_projection;
-pub use spool::Spool;
+pub use spool::{FrozenSpool, Spool};
 
 pub const RETRIEVAL_MARKER: &str = "<!-- mdreader-retrieval -->";
 pub const CAPTURE_MARKER: &str = "<!-- mdreader-capture:v1 -->";

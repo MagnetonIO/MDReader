@@ -405,7 +405,11 @@ pub fn serve_with_provider_factory(
     options: ServiceOptions,
     factory: Arc<dyn provider::ProviderFactory>,
 ) -> Result<()> {
-    serve_configured(directory, options, NativeAdapters { factory: Some(factory), ..NativeAdapters::default() })
+    serve_configured(directory, options, NativeAdapters {
+        factory: Some(factory),
+        #[cfg(feature = "sync-native")]
+        accounts: None,
+    })
 }
 /// Trusted native registration and private cache layout, never renderer data.
 #[cfg(feature = "sync-native")]

@@ -79,6 +79,53 @@ fn real_hook_processes_enqueue_both_agents_without_reader_window_or_model() {
         2
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn preservation_lock_fences_real_hooks_and_keeps_interrupted_receipt_bytes() {
+    let (_temp, policy, path, root) = setup();
+    let spool = Spool::open(&root, Limits::default()).unwrap();
+    let event = serde_json::to_vec(&json!({"hook_event_name":"Stop","cwd":policy.project_root,"session_id":"retained","last_assistant_message":"# Retained visible plan"})).unwrap();
+    spool
+        .enqueue(Adapter::ClaudeCode, &event, &policy, CaptureOrigin::Live)
+        .unwrap();
+    let id = spool.pending(1).unwrap().remove(0);
+    let projection = spool.project(&id, &policy).unwrap();
+    // Model an interrupted acknowledgement: receipt publication may have
+    // completed while the same durable event is still pending. Preserve both.
+    let receipt = root.join("receipts").join(&id);
+    fs::write(&receipt, projection.record.content_id.as_bytes()).unwrap();
+    fs::File::open(&receipt).unwrap().sync_all().unwrap();
+    fs::File::open(root.join("receipts"))
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    let temporary = root.join("temporary").join("public-interrupted.tmp");
+    fs::write(&temporary, b"incomplete public synthetic write").unwrap();
+    let paths = [
+        root.join("pending").join(format!("{id}.json")),
+        projection.path,
+        receipt,
+        temporary,
+    ];
+    let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+    let mut frozen = spool.freeze().unwrap();
+    let started = std::time::Instant::now();
+    let blocked = run("hook", "claude", &path, &root, &event);
+    assert!(!blocked.status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    frozen.revalidate().unwrap();
+    for (path, bytes) in paths.iter().zip(&before) {
+        assert_eq!(fs::read(path).unwrap(), *bytes);
+    }
+    frozen.release().unwrap();
+    assert!(run("hook", "claude", &path, &root, &event).status.success());
+    let reopened = Spool::open(&root, Limits::default()).unwrap();
+    assert_eq!(reopened.pending(10).unwrap(), vec![id]);
+    for (path, bytes) in paths.iter().zip(&before) {
+        assert_eq!(fs::read(path).unwrap(), *bytes);
+    }
+}
 #[cfg(unix)]
 #[test]
 fn hook_survives_brief_daemon_lock_contention_and_bounds_permanent_contention() {

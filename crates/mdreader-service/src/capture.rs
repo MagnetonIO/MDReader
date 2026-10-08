@@ -1,5 +1,6 @@
 //! Service-owned admission bridge. Hooks never open library.sqlite.
 pub mod backfill;
+pub mod admission;
 use mdreader_capture::{Limits, ProjectPolicy, Spool};
 use mdreader_core::{ReaderStore, Result, SourceRoot, SourceRootIdentity};
 use serde::{Deserialize, Serialize};

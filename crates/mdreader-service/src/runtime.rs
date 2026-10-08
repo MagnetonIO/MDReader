@@ -1,6 +1,9 @@
 #[cfg_attr(not(feature = "local-embed"), allow(dead_code))]
 #[path = "model.rs"]
 mod model;
+#[cfg(all(test, unix))]
+#[path = "capture/runtime_tests.rs"]
+mod capture_admission_tests;
 use super::SearchOutcome;
 use super::{execute, protocol_error, Request, SearchMode};
 use mdreader_core::{ReaderError, ReaderStore, Result};
@@ -18,6 +21,7 @@ pub(super) struct Runtime {
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    capture_admission: super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
     #[cfg(feature = "sync-native")]
     accounts: super::accounts::Result<super::accounts::Coordinator>,
@@ -40,7 +44,11 @@ impl Runtime {
         options: super::ServiceOptions,
         factory: Option<Arc<dyn super::provider::ProviderFactory>>,
     ) -> Result<Self> {
-        Self::new_with_adapters(store, cache, options, super::NativeAdapters { factory, ..super::NativeAdapters::default() })
+        Self::new_with_adapters(store, cache, options, super::NativeAdapters {
+            factory,
+            #[cfg(feature = "sync-native")]
+            accounts: None,
+        })
     }
     pub(super) fn new_with_adapters(
         store: Arc<Mutex<ReaderStore>>,
@@ -107,6 +115,9 @@ impl Runtime {
             .to_path_buf();
         let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
         let worker_directory = directory.clone();
+        let capture_admission = super::capture::admission::Coordinator::new(store.clone(), &directory)
+            .map(Arc::new);
+        let worker_capture = capture_admission.clone();
         std::thread::spawn(move || {
             if let Some(model) = &worker_model {
                 // Persisted vectors need query inference after a service restart.
@@ -129,8 +140,15 @@ impl Runtime {
             let mut scheduler = Scheduler::default();
             loop {
                 // Admission does not wait for initialization or inference.
-                if let Ok(mut store) = worker_store.lock() {
-                    let _ = super::capture::drain(&mut store, &worker_directory);
+                if let Ok(lease) = worker_capture
+                    .as_ref()
+                    .map_err(|error| *error)
+                    .and_then(|admission| admission.enter())
+                {
+                    let _lease = lease;
+                    if let Ok(mut store) = worker_store.lock() {
+                        let _ = super::capture::drain(&mut store, &worker_directory);
+                    }
                 }
                 let activity = scheduler.tick(&worker_store, worker_model.as_ref());
                 // Continue fair progress immediately. A zero timeout still
@@ -162,6 +180,7 @@ impl Runtime {
             model,
             wake,
             directory,
+            capture_admission,
             providers: Ok(None),
             #[cfg(feature = "sync-native")]
             accounts: Err(super::accounts::AccountError::Unconfigured),
@@ -176,6 +195,18 @@ impl Runtime {
         self.queries
             .lock()
             .map_err(|_| protocol_error("reader query worker failed"))
+    }
+    /// Real server-owned participant; never construct a second admission gate
+    /// to stand in for this Runtime during cross-process preservation.
+    pub(super) fn capture_participant(
+        &self,
+    ) -> super::capture::admission::Result<&Arc<super::capture::admission::Coordinator>> {
+        self.capture_admission.as_ref().map_err(|error| *error)
+    }
+    fn capture_effect(&self) -> Result<super::capture::admission::EffectLease> {
+        self.capture_participant()
+            .and_then(|admission| admission.enter())
+            .map_err(|_| protocol_error("Capture producers are paused or unavailable"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
         #[cfg(feature = "sync-native")]
@@ -232,12 +263,14 @@ impl Runtime {
                 .map_err(|_| protocol_error("invalid embedding policy"));
         }
         if let Request::ConfigureCapture { policy } = request {
+            let _lease = self.capture_effect()?;
             let path = super::capture::policy_path(&self.directory, &policy.project_id);
             super::capture::configure(&mut *self.store()?, &self.directory, policy)?;
             let _ = self.wake.try_send(());
             return Ok(serde_json::json!({"configured":true,"policyPath":path}));
         }
         if let Request::CaptureBackfill { project_id, request } = request {
+            let _lease = self.capture_effect()?;
             let mutation = request.is_mutation();
             let reply = super::capture::backfill::execute(
                 &mut *self.store()?,
@@ -252,6 +285,7 @@ impl Runtime {
                 .map_err(|_| protocol_error("invalid backfill reply"));
         }
         if matches!(request, Request::CaptureStatus) {
+            let _lease = self.capture_effect()?;
             return serde_json::to_value(super::capture::status(
                 &*self.queries()?,
                 &self.directory,
@@ -274,6 +308,7 @@ impl Runtime {
                 | Request::ApplyIntegration { .. }
                 | Request::UninstallIntegration { .. }
         ) {
+            let _lease = self.capture_effect()?;
             return super::integrations::execute(&mut *self.store()?, &self.directory, request);
         }
         if let Request::SearchRanked {
