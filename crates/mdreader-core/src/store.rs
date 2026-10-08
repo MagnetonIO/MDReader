@@ -20,6 +20,7 @@ pub mod catalog;
 mod local_source;
 mod profile;
 mod identity;
+mod parser_version;
 pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;
 #[cfg(feature = "device-assets")]
@@ -223,7 +224,7 @@ INSERT INTO embedding_memberships(chunk_id,source_id)
  CROSS JOIN chunks c ON c.id=v.rowid
  CROSS JOIN documents d ON d.id=c.document_id;
 PRAGMA user_version=5;";
-const INDEX_VERSION: i64 = 5;
+const INDEX_VERSION: i64 = 6;
 const LIBRARY_VERSION: i64 = 4;
 const MAX_REFERENCE_MATCHES: usize = 10_000;
 const REFERENCE_AMBIGUITY_BUDGET: &str = "reference ambiguity exceeds budget";
@@ -280,6 +281,11 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
         // Public vec0 rowid iteration only. CROSS JOIN keeps vectors outermost
         // so migration scans membership rather than fetching each payload.
         tx.execute_batch(EMBEDDING_MEMBERSHIP_SCHEMA)?;
+        tx.commit()?;
+    }
+    if index && version < 6 {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(parser_version::MIGRATION)?;
         tx.commit()?;
     }
     if !index && version < 2 {
@@ -372,25 +378,30 @@ fn vector_bytes(vector: &[f32]) -> Result<Vec<u8>> {
     Ok(vector.iter().flat_map(|x| x.to_le_bytes()).collect())
 }
 fn index_markdown(tx: &rusqlite::Transaction<'_>, id: &str, path: &str, hash: &str, markdown: &str, modified: i64, scan: &str) -> Result<bool> {
-    let known: Option<(i64, String)> = tx
+    let known: Option<(i64, String, i64)> = tx
         .query_row(
-            "SELECT id,revision FROM documents WHERE source_id=?1 AND path=?2",
+            "SELECT id,revision,parser_version FROM documents WHERE source_id=?1 AND path=?2",
             params![id, path],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    if let Some((document, old)) = &known {
-        if old == hash {
+    if let Some((document, old, parser)) = &known {
+        // Parser v2 only changes the capture envelope. Ordinary documents keep
+        // their existing chunks/vectors when marking that version transition.
+        let compatible_parse = *parser == crate::parse::PARSER_VERSION
+            || (*parser == 1
+                && crate::parse::capture_frontmatter::metadata_line(markdown).is_none());
+        if old == hash && compatible_parse {
             tx.execute(
-                "UPDATE documents SET scan=?2,modified_ms=?3 WHERE id=?1",
-                params![document, scan, modified],
+                "UPDATE documents SET scan=?2,modified_ms=?3,parser_version=?4 WHERE id=?1",
+                params![document, scan, modified, crate::parse::PARSER_VERSION],
             )?;
             return Ok(false);
         }
         tx.execute("DELETE FROM documents WHERE id=?1", [document])?;
     }
     let parsed = parse_markdown(markdown, path);
-    tx.execute("INSERT INTO documents(source_id,path,revision,title,modified_ms,scan) VALUES(?1,?2,?3,?4,?5,?6)",params![id,path,hash,parsed.title,modified,scan])?;
+    tx.execute("INSERT INTO documents(source_id,path,revision,title,modified_ms,scan,parser_version) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,path,hash,parsed.title,modified,scan,crate::parse::PARSER_VERSION])?;
     let document = tx.last_insert_rowid();
     add_document_aliases(tx, document, id, path, &parsed.title)?;
     for (key,value) in &parsed.frontmatter {
@@ -465,6 +476,7 @@ impl ReaderStore {
         identity::verify_connection(&library, library_identity.as_ref())?;
         identity::verify_connection(&index, index_identity.as_ref())?;
         identity::verify_attached(&index, library_identity.as_ref())?;
+        parser_version::queue_stale(&library, &index)?;
         Ok(Self {
             library,
             library_identity,

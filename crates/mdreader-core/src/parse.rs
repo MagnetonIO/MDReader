@@ -9,10 +9,12 @@
 use comrak::nodes::NodeValue;
 use comrak::{parse_document, Arena, Options};
 use serde::Serialize;
+pub(crate) mod capture_frontmatter;
 
 /// Version tag of this parser/chunker, recorded on index versions: bump it
 /// whenever section or chunk boundaries change so re-imports re-embed.
-pub const CHUNKER_VERSION: &str = "mdreader-chunker@1";
+pub const CHUNKER_VERSION: &str = "mdreader-chunker@2";
+pub(crate) const PARSER_VERSION: i64 = 2;
 
 /// Sections longer than this (estimated tokens) are split at paragraph
 /// boundaries into multiple chunks (the default for [`parse_markdown`] and
@@ -312,6 +314,7 @@ pub fn parse_markdown_with_limit(
     let arena = Arena::new();
     let options = comrak_options();
     let root = parse_document(&arena, source, &options);
+    let capture_metadata = capture_frontmatter::extract(root, source);
 
     let lines: Vec<&str> = source.lines().collect();
     let last_line = lines.len() as u32;
@@ -326,7 +329,10 @@ pub fn parse_markdown_with_limit(
         Heading(HeadingItem),
         Block(ParsedBlock),
     }
-    let mut frontmatter = Vec::new();
+    let mut frontmatter = capture_metadata
+        .as_deref()
+        .map(parse_frontmatter)
+        .unwrap_or_default();
     let mut items: Vec<Item> = Vec::new();
     for child in root.children() {
         let data = child.data.borrow();
