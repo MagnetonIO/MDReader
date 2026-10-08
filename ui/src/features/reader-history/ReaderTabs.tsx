@@ -18,7 +18,7 @@ export function ReaderTabs({ onLocalIntent, onCanonicalIntent, onRequestClose }:
   }));
   const readerTabs = reader.data.tabs.map((tab) => ({
     id: `reader:${tab.id}`, label: tab.entries[tab.index]!.title,
-    title: 'Exact read-only revision', pinned: tab.pinned, dirty: false,
+    title: 'Exact reading revision', pinned: tab.pinned, dirty: editor.tabIsDirty(`reader:${tab.id}`),
   }));
   const tabs = [...oldTabs, ...readerTabs];
   return <TabStripView tabs={tabs}
@@ -32,10 +32,7 @@ export function ReaderTabs({ onLocalIntent, onCanonicalIntent, onRequestClose }:
         legacy.setActiveTab(id);
       }
     }}
-    onClose={(id) => {
-      if (id.startsWith('reader:')) reader.close(id.slice(7));
-      else onRequestClose(id);
-    }}
+    onClose={onRequestClose}
     onPin={(id) => id.startsWith('reader:') ? reader.pin(id.slice(7)) : legacy.togglePin(id)}
     onReorder={(from, to) => {
       if (from < oldTabs.length && to < oldTabs.length) legacy.reorderTabs(from, to);

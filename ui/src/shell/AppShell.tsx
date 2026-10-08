@@ -70,7 +70,7 @@ import { ReaderRecents } from '../features/reader-history/ReaderRecents';
 import { useCanonicalHistory } from '../features/reader-history/useCanonicalHistory';
 import { useReaderHistoryStore } from '../features/reader-history/store';
 import { restoreReaderHistory } from '../features/reader-history/serialization';
-import { closeReaderTab, createTabCycle, readerActive, stepReaderTab } from '../features/reader-history/tab-actions';
+import { createTabCycle, readerActive, stepReaderTab } from '../features/reader-history/tab-actions';
 import { ReaderPane } from './ReaderPane.js';
 import type { JumpTarget } from './ReaderPane.js';
 import { RelatedRail } from './RelatedRail.js';
@@ -89,6 +89,10 @@ import { CanonicalReader } from '../features/reader/CanonicalReader';
 import { DeviceReader } from '../features/device-reader/DeviceReader';
 import { isDeviceReference } from '../features/device-reader/backend';
 import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/useCatalogEditing';
+import { useProviderEditing } from '../features/provider-editing/useProviderEditing';
+import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
+import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
+import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
 import './shell.css';
 
 type WorkspaceSwitchResume = CatalogEditResume;
@@ -175,6 +179,7 @@ export function AppShell() {
   }, []);
   const canonicalHistory = useCanonicalHistory();
   const { reference: canonicalDocument, setReference: setCanonicalDocument } = canonicalHistory;
+  const providerEditing = useProviderEditing(canonicalDocument, canonicalHistory.tab?.id, toast);
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
   const archivedReviewTarget = archivedReviews.target;
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
@@ -653,7 +658,7 @@ export function AppShell() {
         setSemanticWorkspaceGeneration(outcome.workspace_generation);
         setCanonicalDocument(null);
         useTabsStore.getState().closeAll();
-        useEditorStore.getState().reset();
+        useEditorStore.getState().retain((tabId, path) => retainedProviderEntry(tabId, path));
         useSourcesStore.getState().forgetRoot(closingRoot);
         flushSessionRef.current();
         await boundedPersistenceDrain(sessionWriter.drain());
@@ -898,11 +903,16 @@ export function AppShell() {
   // --- light editing (source/split, hash-guarded save, conflicts) --------
   // Cmd+E: toggle read ↔ source for the active tab's current doc.
   const toggleSourceMode = useCallback(() => {
+    if (readerActive()) {
+      if (providerEditing.activeKey) providerEditing.read();
+      else if (canonicalDocument?.sourceId.startsWith('provider:')) void providerEditing.edit(canonicalDocument);
+      return;
+    }
     const tab = selectActiveTab(useTabsStore.getState());
     if (!tab) return;
     const current = useEditorStore.getState().mode(tab.id, documentKey(tab.docRef));
     void setEditorMode(current === 'read' ? 'source' : 'read');
-  }, [setEditorMode]);
+  }, [setEditorMode, providerEditing, canonicalDocument]);
 
   // Save the (tab, doc) entry under the hash guard (or forced, from the conflict
   // banner's explicit overwrite). A `saved` outcome re-anchors the buffer to the
@@ -947,18 +957,24 @@ export function AppShell() {
   // the tab left is never written to the doc it now shows.
   const saveActiveDoc = useCallback(
     (force: boolean) => {
+      if (readerActive()) {
+        const id = useReaderHistoryStore.getState().data.activeTabId;
+        const edit = id && canonicalDocument ? findProviderEdit(`reader:${id}`, canonicalDocument) : null;
+        return edit ? saveProviderEdit(edit.key) : Promise.resolve('noop' as const);
+      }
       const tab = selectActiveTab(useTabsStore.getState());
       if (!tab) return Promise.resolve('noop' as const);
       if (!isLocalDocument(tab.docRef)) return Promise.resolve('noop' as const);
       return saveDocEntry(tab.id, tab.docRef.path, force);
     },
-    [saveDocEntry],
+    [saveDocEntry, canonicalDocument],
   );
 
   // Historical cloud buffers cannot be saved through a retired runtime. Keep
   // them dirty and available for explicit recovery instead of treating a key as
   // a filesystem path or manufacturing a successful save.
-  const saveCloudEntry = useCallback(async (): Promise<'error'> => {
+  const saveCloudEntry = useCallback(async (key: string): Promise<'saved' | 'error' | 'noop'> => {
+    if (useProviderEdits.getState().edits[key]) return saveProviderEdit(key);
     toast('This historical edit needs offline migration. The unsaved buffer was kept.');
     return 'error';
   }, []);
@@ -985,9 +1001,14 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
-    if (!readerActive()) clearLibraryDocument();
+    if (providerTabSaving(tabId)) { toast('This cloud save is still running. Wait for its outcome before closing.'); return; }
     useEditorStore.getState().removeTab(tabId);
-    useTabsStore.getState().closeTab(tabId);
+    if (Object.values(useEditorStore.getState().entries).some((entry) => entry.tabId === tabId)) {
+      toast('Editing is paused. The tab and its buffers were kept.'); return;
+    }
+    forgetProviderTab(tabId);
+    if (tabId.startsWith('reader:')) useReaderHistoryStore.getState().close(tabId.slice(7));
+    else { if (!readerActive()) clearLibraryDocument(); useTabsStore.getState().closeTab(tabId); }
   }, [clearLibraryDocument]);
 
   // Request a tab close: a tab with ANY unsaved document prompts the guard first;
@@ -1008,7 +1029,7 @@ export function AppShell() {
       let allClean = true;
       for (const entry of useEditorStore.getState().allDirtyEntries().filter((e) => e.tabId === tabId)) {
         const kind = entry.path.startsWith('cloud:')
-          ? await saveCloudEntry()
+          ? await saveCloudEntry(entry.path)
           : await saveDocEntry(entry.tabId, entry.path, false);
         if (kind !== 'saved' && kind !== 'noop') allClean = false;
       }
@@ -1022,7 +1043,7 @@ export function AppShell() {
     let allClean = true;
     for (const entry of useEditorStore.getState().allDirtyEntries()) {
       const kind = entry.path.startsWith('cloud:')
-        ? await saveCloudEntry()
+        ? await saveCloudEntry(entry.path)
         : await saveDocEntry(entry.tabId, entry.path, false);
       if (kind !== 'saved' && kind !== 'noop') allClean = false;
     }
@@ -1127,7 +1148,7 @@ export function AppShell() {
     const activePathByTab = new Map(tabs.map((tab) => [tab.id, documentKey(tab.docRef)]));
     useEditorStore
       .getState()
-      .retain((tabId, path, dirty) => dirty || activePathByTab.get(tabId) === path);
+      .retain((tabId, path, dirty) => dirty || retainedProviderEntry(tabId, path) || activePathByTab.get(tabId) === path);
   }, [tabs]);
 
   // --- the one keymap registry (dispatch + sheet) -----------------------
@@ -1178,7 +1199,8 @@ export function AppShell() {
         description: 'Close tab',
         group: 'Tabs',
         run: () => {
-          if (closeReaderTab()) return;
+          const readerId = useReaderHistoryStore.getState().data.activeTabId;
+          if (readerId) { requestCloseTab(`reader:${readerId}`); return; }
           const id = tabsApi().activeTabId;
           if (id) requestCloseTab(id); // dirty → unsaved-changes guard
         },
@@ -1198,14 +1220,14 @@ export function AppShell() {
         keys: 'Mod+E',
         description: 'Toggle source view',
         group: 'Editing',
-        run: () => { if (!readerActive()) toggleSourceMode(); },
+        run: () => toggleSourceMode(),
       },
       {
         id: 'save',
         keys: 'Mod+S',
         description: 'Save document',
         group: 'Editing',
-        run: () => { if (!readerActive()) void saveActiveDoc(false); },
+        run: () => { void saveActiveDoc(false); },
       },
       {
         id: 'mru-next',
@@ -1641,7 +1663,7 @@ export function AppShell() {
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => setSettingsOpen(true)}
-            /><ReaderRecents onOpen={openCatalogDocument} /></>
+            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
@@ -1670,7 +1692,12 @@ export function AppShell() {
                 onForward={canonicalHistory.forward}
                 canGoBack={Boolean(canonicalHistory.tab && canonicalHistory.tab.index > 0)}
                 canGoForward={Boolean(canonicalHistory.tab && canonicalHistory.tab.index + 1 < canonicalHistory.tab.entries.length)}
-                onClose={closeReaderTab}
+                onClose={() => { if (canonicalHistory.tab) requestCloseTab(`reader:${canonicalHistory.tab.id}`); }}
+              /> : providerEditing.activeKey ? <ProviderEditor
+                key={providerEditing.activeKey}
+                editKey={providerEditing.activeKey}
+                onRead={providerEditing.read}
+                onPublished={(selection) => { if (providerEditing.activeKey) providerEditing.published(providerEditing.activeKey, selection); refreshLibrary(); }}
               /> : <CanonicalReader
                 reference={canonicalDocument}
                 position={canonicalHistory.entry?.position}
@@ -1682,10 +1709,10 @@ export function AppShell() {
                 canGoForward={Boolean(canonicalHistory.tab && canonicalHistory.tab.index + 1 < canonicalHistory.tab.entries.length)}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
-                onEdit={(reference) => void catalogEditing.edit(reference)}
-                editBusy={catalogEditing.opening === canonicalDocument}
+                onEdit={(reference) => { if (reference.sourceId.startsWith('provider:')) void providerEditing.edit(reference); else void catalogEditing.edit(reference); }}
+                editBusy={canonicalDocument.sourceId.startsWith('provider:') ? providerEditing.opening : catalogEditing.opening === canonicalDocument}
                 onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
-                onClose={closeReaderTab}
+                onClose={() => { if (canonicalHistory.tab) requestCloseTab(`reader:${canonicalHistory.tab.id}`); }}
               />
             ) : activeTab?.docRef.kind === 'cloud' ? (
               <LegacyRecordNotice reference={activeTab.docRef} tabId={activeTab.id} onMigration={openMigration} />
