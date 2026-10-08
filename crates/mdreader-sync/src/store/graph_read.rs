@@ -96,3 +96,47 @@ pub(super) fn dependencies_on(
     }
     Ok(result)
 }
+
+/// Receipt admission reads only this immutable row, not all sibling bodies. Full
+/// graph integrity remains mandatory at root publication and commit. This avoids
+/// quadratic body hashing/allocation while uploading a bounded multi-chunk graph.
+pub(super) fn dependency_on(
+    db: &Connection,
+    scope: &SyncScope,
+    operation: &str,
+    blob: &str,
+) -> Result<StoredDependency> {
+    if !has_root(db, scope, operation)? {
+        return Err(SyncError::NotReady);
+    }
+    let count:usize=db.query_row("SELECT dependency_count FROM mdreader_sync_graph_roots WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND length(CAST(root_blob AS BLOB))=64",params![scope.account_digest,scope.library_id,scope.device_id,operation],|r|r.get(0)).map_err(|_|SyncError::Schema)?;
+    if count == 0 || count > crate::codec::MAX_RESOURCES {
+        return Err(SyncError::Schema);
+    }
+    let valid:Option<bool>=db.query_row("SELECT typeof(ordinal)='integer' AND ordinal BETWEEN 0 AND ?6-1 AND typeof(blob)='text' AND length(CAST(blob AS BLOB))=64 AND typeof(context)='text' AND length(CAST(context AS BLOB))<=1024 AND typeof(envelope)='blob' AND length(envelope)=bytes AND bytes BETWEEN 1 AND 524288 AND (receipt IS NULL OR (typeof(receipt)='text' AND length(CAST(receipt AS BLOB))<=4096)) FROM mdreader_sync_graph_dependencies WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND blob=?5",params![scope.account_digest,scope.library_id,scope.device_id,operation,blob,count],|r|r.get(0)).optional()?;
+    match valid {
+        Some(true) => {}
+        Some(false) => return Err(SyncError::Schema),
+        None => return Err(SyncError::NotReady),
+    }
+    let (context,envelope,bytes,receipt):(String,Vec<u8>,usize,Option<String>)=db.query_row("SELECT context,envelope,bytes,receipt FROM mdreader_sync_graph_dependencies WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND blob=?5 AND length(CAST(context AS BLOB))<=1024 AND length(CAST(envelope AS BLOB))<=524288 AND (receipt IS NULL OR length(CAST(receipt AS BLOB))<=4096)",params![scope.account_digest,scope.library_id,scope.device_id,operation,blob],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    if envelope.len() != bytes || crate::blob_digest(&envelope) != blob {
+        return Err(SyncError::Schema);
+    }
+    let context: EncryptionContext = parse(context.as_bytes(), 1024)?;
+    context.validate()?;
+    if context.library_id != scope.library_id
+        || crate::crypto::envelope_key_id(&envelope)? != context.key_id
+    {
+        return Err(SyncError::Scope);
+    }
+    if let Some(receipt) = &receipt {
+        validate_receipt(scope, operation, blob, bytes, receipt.as_bytes())?;
+    }
+    Ok(StoredDependency {
+        context,
+        blob: blob.into(),
+        envelope_utf8: envelope,
+        uploaded: receipt.is_some(),
+    })
+}

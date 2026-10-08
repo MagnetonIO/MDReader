@@ -224,6 +224,21 @@ fn only_exact_scoped_dependency_and_root_receipts_allow_publication_and_survive_
         ));
         assert!(matches!(s.mark_uploaded(&f.scope,&op,201,&serde_json::to_vec(&json!({"blob":graph.root().blob_id(),"bytes":graph.root().envelope_utf8().len()})).unwrap()),Err(SyncError::Scope)));
     }
+    // A receipt for one exact dependency does not read/hash sibling bodies.
+    // A malformed sibling still prevents the full root publication proof.
+    f.db.execute("UPDATE mdreader_sync_graph_dependencies SET context=?1 WHERE operation_id=?2 AND ordinal=1",params!["é".repeat(700),op]).unwrap();
+    {
+        let resource = &graph.resources()[0];
+        let receipt = f.receipt(&op, resource);
+        let mut s = SyncStore::attach(&mut f.db, f.scope.clone()).unwrap();
+        s.mark_dependency_uploaded(&f.scope, &op, resource.blob_id(), 201, &receipt)
+            .unwrap();
+        assert!(matches!(
+            s.mark_uploaded_scoped(&f.scope, &op, 201, &root_receipt),
+            Err(SyncError::Schema)
+        ));
+    }
+    f.db.execute("UPDATE mdreader_sync_graph_dependencies SET context=?1 WHERE operation_id=?2 AND ordinal=1",params![serde_json::to_string(&graph.resources()[1].context).unwrap(),op]).unwrap();
     for resource in graph.resources() {
         let receipt = f.receipt(&op, resource);
         let mut wrong: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
