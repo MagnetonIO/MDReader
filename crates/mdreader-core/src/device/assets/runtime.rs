@@ -58,6 +58,14 @@ impl Drop for ValidationPermit {
     }
 }
 impl AssetRuntime {
+    pub(in crate::device) fn archive_permit(
+        &self,
+        store: &mut ReaderStore,
+        assets: &AssetStore,
+    ) -> Result<ReadPermit> {
+        self.bind_assets(store, assets)?;
+        self.read_permit(Instant::now())
+    }
     fn bind_assets(&self, store: &mut ReaderStore, assets: &AssetStore) -> Result<()> {
         assets.verify_owner(store)?;
         let mut binding = self.roots.lock().map_err(|_| unavailable())?;

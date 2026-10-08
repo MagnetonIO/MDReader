@@ -15,7 +15,7 @@ pub(super) fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceDocument> {
 pub fn list(store: &mut ReaderStore) -> Result<Vec<DeviceDocument>> {
     schema(store)?;
     let mut documents = store.with_library_connection(|db| {
-        db.prepare("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 ORDER BY d.pinned DESC,d.rowid DESC LIMIT 1000")?
+        db.prepare("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 AND d.retired=0 ORDER BY d.pinned DESC,d.rowid DESC LIMIT 1000")?
             .query_map([],row)?.collect::<rusqlite::Result<Vec<_>>>()
     }).map_err(Error::from)?;
     for document in &mut documents {
@@ -30,7 +30,7 @@ pub fn document(store: &mut ReaderStore, id: &str) -> Result<DeviceDocument> {
         return Err(Error::InvalidSelection);
     }
     schema(store)?;
-    store.with_library_connection(|db| db.query_row("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE d.id=?1 AND s.enabled=1",[id],row).optional())
+    store.with_library_connection(|db| db.query_row("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE d.id=?1 AND s.enabled=1 AND d.retired=0",[id],row).optional())
         .map_err(Error::from)?.ok_or(Error::Unavailable)
 }
 pub fn read(store: &mut ReaderStore, id: &str, expected: Option<&str>) -> Result<DeviceRead> {
@@ -89,26 +89,11 @@ pub fn position(store: &mut ReaderStore, id: &str, revision: &str, line: u32) ->
     if line == 0 || line > max_line {
         return Err(Error::InvalidPosition);
     }
-    store
-        .with_library_connection(|db| {
-            db.execute(
-                "UPDATE device_documents_v1 SET line=?2 WHERE id=?1",
-                params![id, line],
-            )
-        })
-        .map_err(Error::from)?;
-    Ok(())
+    super::state::local_update(store, id, Some(revision), None, Some(line))
 }
 
 pub fn pin(store: &mut ReaderStore, id: &str, pinned: bool) -> Result<()> {
-    document(store, id)?;
-    store.with_library_connection(|db| {
-        db.execute(
-            "UPDATE device_documents_v1 SET pinned=?2 WHERE id=?1",
-            params![id, pinned],
-        )
-    })?;
-    Ok(())
+    super::state::local_update(store, id, None, Some(pinned), None)
 }
 pub fn rebuild(store: &mut ReaderStore) -> Result<()> {
     for document in list(store)? {

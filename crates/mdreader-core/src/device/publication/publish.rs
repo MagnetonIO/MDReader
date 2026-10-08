@@ -146,6 +146,16 @@ pub fn revalidate_publication(
     guard: &PublicationGuard<'_>,
     ready: &ReadyIncoming,
 ) -> PublicationResult<()> {
+    revalidate_with_state(tx, guard, ready, false, 1, 0)
+}
+pub(super) fn revalidate_with_state(
+    tx: &Transaction<'_>,
+    guard: &PublicationGuard<'_>,
+    ready: &ReadyIncoming,
+    pinned: bool,
+    line: u32,
+    generation: u64,
+) -> PublicationResult<()> {
     if &**tx as *const Connection as usize != guard.connection
         || !std::sync::Arc::ptr_eq(&guard.owner, &ready.plan.owner)
     {
@@ -191,7 +201,7 @@ pub fn revalidate_publication(
     {
         return Err(PublicationError::Conflict);
     }
-    let exact:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_documents_v1 WHERE id=?1 AND source_id=?2 AND name=?3 AND revision=?4 AND bytes=?5 AND pinned=0 AND line=1 AND indexed=0)",params![current.id,source_id,current.name,current.revision,current.bytes],|r|r.get(0))?;
+    let exact:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_documents_v1 WHERE id=?1 AND source_id=?2 AND name=?3 AND revision=?4 AND bytes=?5 AND pinned=?6 AND line=?7 AND indexed=0 AND state_generation=?8 AND retired=0 AND retirement IS NULL)",params![current.id,source_id,current.name,current.revision,current.bytes,pinned,line,generation],|r|r.get(0))?;
     let import:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_import_intents_v1 WHERE id=?1 AND name=?2 AND revision=?3 AND bytes=?4 AND parent_identity=?5 AND root_identity=?6 AND state='published')",params![current.id,current.name,current.revision,current.bytes,current.parent_identity,current.root_identity],|r|r.get(0))?;
     if !exact || !import {
         return Err(PublicationError::Conflict);

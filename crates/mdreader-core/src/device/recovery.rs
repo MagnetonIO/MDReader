@@ -32,7 +32,7 @@ pub fn recover_imports(store: &mut ReaderStore, directory: &Path) -> Result<Devi
 pub(super) fn restore_published_imports(store: &mut ReaderStore, directory: &Path) -> Result<()> {
     schema(store)?;
     let imports = store.with_library_connection(|db| {
-        db.prepare("SELECT i.id,i.name,i.revision,i.bytes,i.parent_identity,i.root_identity,d.source_id FROM device_import_intents_v1 i JOIN device_documents_v1 d ON d.id=i.id JOIN sources s ON s.id=d.source_id WHERE i.state='published' AND s.enabled=1 ORDER BY i.rowid LIMIT 1000")?
+        db.prepare("SELECT i.id,i.name,i.revision,i.bytes,i.parent_identity,i.root_identity,d.source_id FROM device_import_intents_v1 i JOIN device_documents_v1 d ON d.id=i.id JOIN sources s ON s.id=d.source_id WHERE i.state='published' AND s.enabled=1 AND d.retired=0 ORDER BY i.rowid LIMIT 1000")?
             .query_map([], |r| Ok((ImportIntent { id:r.get(0)?, name:r.get(1)?, revision:r.get(2)?, bytes:r.get(3)?, parent_identity:r.get(4)?, root_identity:r.get(5)? },r.get::<_,String>(6)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()
     }).map_err(Error::from)?;

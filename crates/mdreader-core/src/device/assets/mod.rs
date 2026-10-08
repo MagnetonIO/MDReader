@@ -49,6 +49,8 @@ fn digest(bytes: &[u8]) -> String {
 
 mod error;
 mod incoming;
+mod retirement;
+pub(in crate::device) use retirement::{ArchivedAssetPlan, CurrentAssets};
 mod model;
 mod paths;
 mod runtime;
