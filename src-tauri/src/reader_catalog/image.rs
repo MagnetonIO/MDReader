@@ -263,7 +263,7 @@ mod tests {
         let notes = scratch.path().join("notes");
         fs::create_dir(&notes).unwrap();
         fs::write(notes.join("note.md"), "![Old](old.png)\n").unwrap();
-        let root = SourceRoot::capture(&notes.canonicalize().unwrap()).unwrap();
+        let root = SourceRoot::capture(notes.canonicalize().unwrap()).unwrap();
         let backend = ReaderBackend::embedded(&scratch.path().join("profile")).unwrap();
         let source = backend.admit(&root).unwrap();
         let first: Document = backend
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn retained_file_stamps_detect_replacement_and_reject_hardlinks() {
         let scratch = tempfile::tempdir().unwrap();
-        let root = SourceRoot::capture(&scratch.path().canonicalize().unwrap()).unwrap();
+        let root = SourceRoot::capture(scratch.path().canonicalize().unwrap()).unwrap();
         fs::write(root.path.join("image.png"), b"same bytes").unwrap();
         let retained = open(&root, Path::new("image.png")).unwrap();
         let stamp = single_link_stamp(&retained).unwrap();
@@ -306,7 +306,7 @@ mod tests {
         fs::create_dir(&selected).unwrap();
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("image.png"), b"outside bytes").unwrap();
-        let root = SourceRoot::capture(&selected.canonicalize().unwrap()).unwrap();
+        let root = SourceRoot::capture(selected.canonicalize().unwrap()).unwrap();
         symlink(outside.join("image.png"), selected.join("leaf.png")).unwrap();
         symlink(&outside, selected.join("parent")).unwrap();
         assert!(open(&root, Path::new("leaf.png")).is_err());
