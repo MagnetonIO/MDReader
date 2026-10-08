@@ -26,6 +26,7 @@ const errors: Record<string, string> = {
   too_large: 'This library exceeds the supported import limits. Its originals were kept.',
   profile_changed: 'The selected library changed. Choose it again before importing; no newer version was substituted.',
   invalid_profile: 'That folder is not a supported reader library or prepared import. Choose the original library folder.',
+  invalid_destination: 'Choose a different destination folder outside both the original library and the library open in this window. No copy was created.',
   migration_unconfirmed: 'The import could not be confirmed. Keep your originals and any copies you created. Use Continue an import to inspect a prepared copy before retrying.',
 };
 

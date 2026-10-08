@@ -50,7 +50,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents }));
     } catch (cause) {
       if (!mounted.current) return;
-      if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
+      if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
       setFailure(cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
     } finally {
       running.current = false;

@@ -23,6 +23,8 @@ pub enum Error {
     Unsupported,
     #[error("profile transition input or schema is invalid")]
     Invalid,
+    #[error("profile transition destination is invalid or overlaps a protected library")]
+    InvalidDestination,
     #[error("profile transition limit exceeded")]
     Bounds,
     #[error("profile or selection changed")]
