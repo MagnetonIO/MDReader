@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 /// Explicit Settings actions, not a generic renderer `confirmed` boolean.
 /// No credentials, private keys, recovery secrets, paths or callback targets.
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AccountIntent {
     SignIn {},
@@ -115,7 +115,7 @@ impl From<mdreader_sync::transport::TransportError> for AccountError {
 }
 pub type Result<T> = std::result::Result<T, AccountError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Queued,
@@ -126,13 +126,13 @@ pub enum Phase {
     ExportingRecovery,
     Syncing,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublicPacketKind {
     Request,
     Approval,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
     Connected,
@@ -151,9 +151,10 @@ pub enum Outcome {
         acknowledged: u64,
         remote_pending: bool,
         local_pending: bool,
+        pending: Option<SyncPending>,
     },
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
     Running { phase: Phase },
@@ -161,12 +162,12 @@ pub enum JobState {
     Failed { error: AccountError },
     Cancelled,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,
     pub state: JobState,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustodyView {
     pub state: CustodyPhase,
     pub enrollment_uncertain: bool,
@@ -175,7 +176,7 @@ pub struct CustodyView {
     pub material_staged: bool,
     pub device_approval: ApprovalPhase,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CustodyPhase {
     LegacyPending,
@@ -185,7 +186,7 @@ pub enum CustodyPhase {
     RecoveryCandidate,
     Enrolled,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPhase {
     None,
@@ -224,12 +225,20 @@ impl From<CustodySummary> for CustodyView {
         }
     }
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AccountStatus {
     pub configured: bool,
+    /// Native secure recovery file/input adapter exists. Export additionally
+    /// requires the confirmed local anchor indicated by custody summary.
+    pub recovery_available: bool,
     pub retained_library: bool,
     pub connected: bool,
     /// None means not inspected yet, not proof that OS material is absent.
     pub custody: Option<CustodyView>,
     pub latest_job: Option<Job>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncPending {
+    pub sequence: u64,
+    pub reason: crate::sync::incoming::PendingReason,
 }

@@ -4641,6 +4641,7 @@ dependencies = [
  "mdreader-mcp",
  "mdreader-provider",
  "mdreader-service",
+ "mdreader-sync",
  "notify-debouncer-mini",
  "regex",
  "reqwest 0.12.28",

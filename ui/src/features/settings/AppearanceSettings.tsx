@@ -9,7 +9,7 @@ export function AppearanceSettings() {
       <div>
         <h2 id="settings-appearance">Appearance</h2>
       </div>
-      <p>Shape the reading room. These preferences use the same store as the titlebar.</p>
+      <p>Choose how MDReader looks and how documents are displayed.</p>
     </div>
 
     <div className="settings-field">
@@ -30,7 +30,7 @@ export function AppearanceSettings() {
 
     <div className="settings-field">
       <div>
-        <div className="settings-field__label">Reading face</div>
+        <div className="settings-field__label">Reading font</div>
         <div className="settings-field__hint">Only document typography changes.</div>
       </div>
       <div className="settings-segment" aria-label="Reading font">

@@ -80,6 +80,7 @@ impl Actor {
             acknowledged: report.acknowledged,
             remote_pending: report.remote_pending,
             local_pending: report.local_pending,
+            pending: None,
         })
     }
 }

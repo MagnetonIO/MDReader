@@ -1,5 +1,6 @@
 /** Native Settings composition; backend operations retain their existing authority checks. */
 import { useCallback, useRef, useState } from 'react';
+import { AccountSyncPanel } from '../features/account-sync/AccountSyncPanel.js';
 import { AgentCapturePanel } from './AgentCapturePanel.js';
 import { IndexingPanel } from './IndexingPanel.js';
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
@@ -77,7 +78,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
         <div className="settings-layout" inert={confirming}>
           <label className="settings-mobile-navigation">
             Settings section
-            <select value={category} onChange={(event) => selectCategory(event.currentTarget.value as Category)}>
+            <select aria-label="Settings section" value={category} onChange={(event) => selectCategory(event.currentTarget.value as Category)}>
               {categories.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
           </label>
@@ -92,14 +93,10 @@ export function SettingsSheet(props: SettingsSheetProps) {
             <div id="settings-category-library" hidden={category !== 'library'}><LibrarySettings controller={controller} /></div>
             <section id="settings-category-account" hidden={category !== 'account'} aria-labelledby="settings-account-title">
               <h2 id="settings-account-title">Account &amp; sync</h2>
-              <p>Choose explicit cloud sources. Connecting a source does not grant access to other files or enable device sync.</p>
+              <AccountSyncPanel active={category === 'account'} />
               {onOpenProviderDocument ? (
                 <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} />
               ) : <p>Cloud source management is unavailable in this context.</p>}
-              <section className="settings-section" aria-labelledby="settings-device-sync">
-                <h3 id="settings-device-sync">Device sync</h3>
-                <p>Device sync controls are not available in this desktop Settings panel. Cloud source connections and encrypted device sync are separate.</p>
-              </section>
             </section>
             <section id="settings-category-backup" hidden={category !== 'backup'} aria-labelledby="settings-backup-title">
               <h2 id="settings-backup-title">Backup &amp; storage</h2>

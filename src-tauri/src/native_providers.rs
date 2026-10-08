@@ -597,7 +597,13 @@ pub(crate) fn serve(
             Err(_) => Arc::new(UnconfiguredFactory),
         }
     };
-    mdreader_service::serve_with_provider_factory(directory, options, factory)
+    mdreader_service::serve_with_native_accounts(
+        directory,
+        options,
+        Some(factory),
+        crate::native_sync::setup(directory),
+        crate::native_sync::roots(directory),
+    )
 }
 
 #[async_trait::async_trait]
@@ -682,48 +688,17 @@ trait Authorizer: Send + Sync {
     ) -> Result<CompletedAuthorization>;
 }
 struct Browser;
-static BROWSER_DISPATCH: Semaphore = Semaphore::const_new(1);
 #[async_trait::async_trait]
 impl SystemBrowser for Browser {
     async fn open(&self, url: &url::Url) -> ProviderResult<()> {
-        let permit = BROWSER_DISPATCH
-            .try_acquire()
-            .map_err(|_| ProviderError::Unavailable)?;
-        let url = url.as_str().to_owned();
-        // A timed-out OS dispatcher keeps the single permit until it exits;
-        // retries cannot accumulate abandoned worker threads or zombie children.
-        tauri::async_runtime::spawn_blocking(move || {
-            let _permit = permit;
-            #[cfg(target_os = "macos")]
-            let mut command = std::process::Command::new("/usr/bin/open");
-            #[cfg(target_os = "linux")]
-            let mut command = std::process::Command::new("xdg-open");
-            #[cfg(target_os = "windows")]
-            let mut command = {
-                let mut c = std::process::Command::new("rundll32.exe");
-                c.arg("url.dll,FileProtocolHandler");
-                c
-            };
-            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-            return Err(ProviderError::Unsupported);
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-            {
-                let status = command
-                    .arg(url)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map_err(|_| ProviderError::Unavailable)?;
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(ProviderError::Unavailable)
+        crate::native_browser::open(url)
+            .await
+            .map_err(|error| match error {
+                crate::native_browser::Error::Invalid => ProviderError::Invalid,
+                crate::native_browser::Error::Busy | crate::native_browser::Error::Unavailable => {
+                    ProviderError::Unavailable
                 }
-            }
-        })
-        .await
-        .map_err(|_| ProviderError::Unavailable)?
+            })
     }
 }
 
