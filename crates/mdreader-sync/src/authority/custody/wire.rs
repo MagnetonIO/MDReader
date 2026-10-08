@@ -29,11 +29,18 @@ struct Wire {
     recovery_private: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phase: Option<Phase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intent: Option<super::super::enrollment::Intent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_recovery: Option<String>,
 }
 impl Drop for Wire {
     fn drop(&mut self) {
         self.signing_pkcs8.zeroize();
         if let Some(raw) = &mut self.wrapping_private {
+            raw.zeroize();
+        }
+        if let Some(raw) = &mut self.pending_recovery {
             raw.zeroize();
         }
         if let Some(raw) = &mut self.recovery_private {
@@ -82,6 +89,11 @@ pub(in super::super) fn encode(record: &CustodyRecord) -> AuthorityResult<Zeroiz
             .as_ref()
             .map(|raw| URL_SAFE_NO_PAD.encode(raw.as_slice())),
         phase: Some(*phase),
+        intent: record.intent.clone(),
+        pending_recovery: record
+            .pending_recovery
+            .as_ref()
+            .map(|raw| URL_SAFE_NO_PAD.encode(raw.as_slice())),
     };
     let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| AuthorityError::Custody)?);
     if bytes.len() > MAX_RECORD {
@@ -158,6 +170,12 @@ pub(in super::super) fn decode(
         pkcs8: decode_secret(&wire.signing_pkcs8, 1024)?,
         keys,
         lifecycle,
+        intent: wire.intent.clone(),
+        pending_recovery: wire
+            .pending_recovery
+            .as_ref()
+            .map(|raw| decode_secret(raw, 16384))
+            .transpose()?,
     };
     record.validate(reference)?;
     Ok(record)

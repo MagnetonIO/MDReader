@@ -45,7 +45,9 @@ pub struct CustodyRecord {
     pub(super) state: EnrollmentState,
     pub(super) pkcs8: Zeroizing<Vec<u8>>,
     pub(super) keys: BTreeMap<String, Zeroizing<Vec<u8>>>,
-    lifecycle: Lifecycle,
+    pub(super) lifecycle: Lifecycle,
+    pub(super) intent: Option<super::enrollment::Intent>,
+    pub(super) pending_recovery: Option<Zeroizing<Vec<u8>>>,
 }
 impl std::fmt::Debug for CustodyRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,6 +77,14 @@ impl CustodyRecord {
     pub(super) fn confirm_bootstrap(&mut self) -> AuthorityResult<()> {
         self.lifecycle.confirm_bootstrap()?;
         self.state = EnrollmentState::Confirmed;
+        self.confirm_intent()?;
+        Ok(())
+    }
+    pub(super) fn confirm_intent(&mut self) -> AuthorityResult<()> {
+        if let Some(mut intent) = self.intent.clone() {
+            intent.confirm(self)?;
+            self.intent = Some(intent);
+        }
         Ok(())
     }
     pub(super) fn can_resume(&self) -> AuthorityResult<()> {
@@ -115,6 +125,8 @@ impl CustodyRecord {
             pkcs8: self.pkcs8.clone(),
             keys: self.keys.clone(),
             lifecycle: self.lifecycle.clone(),
+            intent: self.intent.clone(),
+            pending_recovery: self.pending_recovery.clone(),
         }
     }
     pub(super) fn validate(&self, reference: &SyncCredentialReference) -> AuthorityResult<()> {
@@ -143,6 +155,10 @@ impl CustodyRecord {
         }
         self.lifecycle
             .validate(self.state, self.keys.len(), &signer.device)?;
+        super::recovery::validate_pending(self)?;
+        if let Some(intent) = &self.intent {
+            intent.validate(self)?;
+        }
         for (id, raw) in &self.keys {
             validate_uuid(id).map_err(|_| AuthorityError::Custody)?;
             if raw.len() != 32 {
@@ -152,7 +168,10 @@ impl CustodyRecord {
         Ok(())
     }
     pub(super) fn same_material(&self, other: &Self) -> bool {
-        self.same_keys(other) && self.lifecycle.same_phase(&other.lifecycle)
+        self.same_keys(other)
+            && self.lifecycle.same_phase(&other.lifecycle)
+            && self.intent == other.intent
+            && self.pending_recovery == other.pending_recovery
     }
     fn same_keys(&self, other: &Self) -> bool {
         self.reference == other.reference
@@ -215,6 +234,8 @@ impl PendingCustody {
             pkcs8: Zeroizing::new(pkcs8.as_ref().to_vec()),
             keys: BTreeMap::new(),
             lifecycle: Lifecycle::candidate(kind)?,
+            intent: None,
+            pending_recovery: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
@@ -243,6 +264,8 @@ impl PendingCustody {
             pkcs8,
             keys: BTreeMap::from([(library_key.id.clone(), library_key.bytes.clone())]),
             lifecycle: Lifecycle::bootstrap()?,
+            intent: None,
+            pending_recovery: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
@@ -252,34 +275,9 @@ pub(super) use wire::{decode, encode};
 mod material;
 mod wire;
 pub use material::CandidateKind;
-use material::{Lifecycle, Phase};
-pub(super) fn admission(
-    old: &CustodyRecord,
-    new: &CustodyRecord,
-    expected: Option<u64>,
-) -> AuthorityResult<()> {
-    if !old.same_keys(new) {
-        return Err(AuthorityError::Generation);
-    }
-    match expected {
-        None if old.generation == new.generation
-            && old.state == new.state
-            && old.lifecycle.same_phase(&new.lifecycle) =>
-        {
-            Ok(())
-        }
-        Some(g)
-            if old.generation == g
-                && new.generation == g.checked_add(1).ok_or(AuthorityError::Generation)?
-                && old.state == EnrollmentState::Pending
-                && new.state == EnrollmentState::Confirmed
-                && old.lifecycle.can_confirm_to(&new.lifecycle) =>
-        {
-            Ok(())
-        }
-        _ => Err(AuthorityError::Generation),
-    }
-}
+pub(super) use material::{Lifecycle, Phase};
+mod admission;
+pub(super) use admission::admission;
 #[cfg(test)]
 pub(super) mod test_support {
     use super::*;

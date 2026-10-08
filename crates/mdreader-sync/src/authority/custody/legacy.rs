@@ -44,6 +44,8 @@ pub(super) fn decode(
         pkcs8: decode_secret(&wire.signing_pkcs8, 1024)?,
         keys,
         lifecycle: Lifecycle::Legacy(bytes),
+        intent: None,
+        pending_recovery: None,
     };
     record.validate(reference)?;
     Ok(record)

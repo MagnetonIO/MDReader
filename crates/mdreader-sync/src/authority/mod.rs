@@ -1,8 +1,9 @@
-//! Native-only, default-off OIDC and signing custody. No renderer DTO, provider grant,
-//! production bootstrap, pairing, recovery or mobile custody is supplied here.
+//! Native-only, default-off OIDC, custody and verified bootstrap/recovery contracts.
+//! No renderer credential DTO, provider grant, product RPC, pairing or mobile vault.
 mod access;
 mod capability;
 mod custody;
+mod enrollment;
 mod factory;
 mod http;
 mod identity;
@@ -11,6 +12,7 @@ mod keyring;
 mod loopback;
 mod oidc;
 mod projection;
+mod recovery;
 mod request;
 mod session;
 mod signing;
@@ -18,11 +20,13 @@ mod vault;
 pub mod wrapping;
 pub use capability::NativeAuthority;
 pub use custody::{CandidateKind, CustodyRecord, PendingCustody, SyncCredentialReference};
+pub use enrollment::{EnrollmentLogin, EnrollmentProgress};
 pub use factory::{NativeAuthorityFactory, NativeLogin, VerifiedLogin};
 pub use identity::VerifiedIdentity;
 pub use keyring::SyncKeyringVault;
 pub use oidc::{NativeBrowser, OidcClient, OidcEndpoints, PendingLogin, ReviewedOidcRegistration};
 pub use projection::{ProjectionGuard, ProjectionPermit};
+pub use recovery::{PendingRecovery, RecoveryExport};
 pub use session::SessionController;
 use std::{
     fmt,

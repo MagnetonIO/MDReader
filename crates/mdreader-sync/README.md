@@ -79,3 +79,5 @@ foundation is separately described in [TRANSPORT.md](TRANSPORT.md). Current focu
 ## Native custody and standard wrapping checkpoint
 
 Optional `native-authority` now includes persistent custody v2 and strict browser-compatible pair/recovery JWE primitives. [KEY-LIFECYCLE.md](KEY-LIFECYCLE.md) records the wire profiles, v1 preservation, executed synthetic conformance checks and remaining enrollment/pairing/recovery gates. This does not enable a native product key lifecycle or reuse the raw-key legacy recovery artifact.
+
+Checkpoint (b) adds nonce-bound native enrollment, durable exact request/uncertainty state, explicit encrypted recovery export/import and anchor-verified activation. [NATIVE-ENROLLMENT.md](NATIVE-ENROLLMENT.md) records the public native interfaces, actual local HTTPS/browser conformance evidence and product/mobile/pairing gates. No production composition or deployment is enabled.

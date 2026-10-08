@@ -7,9 +7,10 @@ use std::{
 };
 use zeroize::Zeroizing;
 pub struct NativeLogin {
-    pending: PendingLogin,
+    pub(super) pending: PendingLogin,
+    pub(super) enrollment: Option<EnrollmentLogin>,
     pub(super) epoch: u64,
-    controller: Weak<SessionController>,
+    pub(super) controller: Weak<SessionController>,
 }
 impl std::fmt::Debug for NativeLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,8 +26,9 @@ impl NativeLogin {
 }
 pub struct VerifiedLogin {
     pub(super) identity: VerifiedIdentity,
-    epoch: u64,
-    controller: Weak<SessionController>,
+    pub(super) enrollment: Option<EnrollmentLogin>,
+    pub(super) epoch: u64,
+    pub(super) controller: Weak<SessionController>,
 }
 impl std::fmt::Debug for VerifiedLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -60,6 +62,7 @@ impl NativeAuthorityFactory {
         let epoch = self.controller.epoch()?;
         Ok(NativeLogin {
             pending: self.client.begin(native_loopback_redirect)?,
+            enrollment: None,
             epoch,
             controller: Arc::downgrade(&self.controller),
         })
@@ -75,13 +78,21 @@ impl NativeAuthorityFactory {
             .complete(pending.pending, callback_target)
             .await?;
         self.check_controller(&pending.controller, pending.epoch)?;
+        if pending
+            .enrollment
+            .as_ref()
+            .is_some_and(|binding| !binding.accepts_account(&identity.account))
+        {
+            return Err(AuthorityError::Scope);
+        }
         Ok(VerifiedLogin {
             identity,
+            enrollment: pending.enrollment,
             epoch: pending.epoch,
             controller: pending.controller,
         })
     }
-    fn check_controller(
+    pub(super) fn check_controller(
         &self,
         controller: &Weak<SessionController>,
         epoch: u64,
@@ -212,19 +223,6 @@ impl NativeAuthorityFactory {
             registration: self.client.registration.clone(),
             controller: self.controller.clone(),
             lease,
-        })
-    }
-    #[cfg(test)]
-    pub(super) fn test_begin_nonce(
-        &self,
-        redirect: &str,
-        nonce: &str,
-    ) -> AuthorityResult<NativeLogin> {
-        let epoch = self.controller.epoch()?;
-        Ok(NativeLogin {
-            pending: self.client.test_begin_nonce(redirect, nonce)?,
-            epoch,
-            controller: Arc::downgrade(&self.controller),
         })
     }
 }

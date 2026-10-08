@@ -34,6 +34,11 @@ impl SigningKey {
             device,
         })
     }
+    pub(super) fn recovery_grant(&self, claims: &impl serde::Serialize) -> AuthorityResult<String> {
+        let mut header = Header::new(Algorithm::ES256);
+        header.typ = Some("mdreader-recovery-grant+jwt".into());
+        jsonwebtoken::encode(&header, claims, &self.encoding).map_err(|_| AuthorityError::Custody)
+    }
     pub(super) fn authorize(
         &self,
         identity: &VerifiedIdentity,

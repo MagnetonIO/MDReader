@@ -567,43 +567,29 @@ impl Fixture {
             controller,
         )
     }
-    async fn login(&self, factory: &NativeAuthorityFactory, nonce: Option<&str>) -> VerifiedLogin {
-        if nonce.is_none() {
-            let socket = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-            let redirect = format!(
-                "http://127.0.0.1:{}/mdreader-sync/callback",
-                socket.local_addr().unwrap().port()
-            );
-            drop(socket);
-            return factory
-                .login_desktop(
-                    &redirect,
-                    &LoopbackBrowser(self.http()),
-                    Instant::now() + Duration::from_secs(10),
-                )
+    async fn login(
+        &self,
+        factory: &NativeAuthorityFactory,
+        enrollment: Option<&EnrollmentLogin>,
+    ) -> VerifiedLogin {
+        let socket = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let redirect = format!(
+            "http://127.0.0.1:{}/mdreader-sync/callback",
+            socket.local_addr().unwrap().port()
+        );
+        drop(socket);
+        let browser = LoopbackBrowser(self.http());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        match enrollment {
+            Some(binding) => factory
+                .login_enrollment_desktop(binding, &redirect, &browser, deadline)
                 .await
-                .unwrap();
-        }
-        let attempt = match nonce {
-            Some(nonce) => factory.test_begin_nonce(REDIRECT, nonce).unwrap(),
-            None => factory.begin_login(REDIRECT).unwrap(),
-        };
-        let browser = CaptureBrowser::default();
-        attempt.open(&browser).await.unwrap();
-        let url = browser.url.lock().unwrap().take().unwrap();
-        let response = self.http().get(url.as_str()).send().await.unwrap();
-        assert_eq!(response.status().as_u16(), 302);
-        let redirect = url::Url::parse(
-            response
-                .headers()
-                .get("location")
-                .unwrap()
-                .to_str()
                 .unwrap(),
-        )
-        .unwrap();
-        let callback = Zeroizing::new(format!("{}?{}", redirect.path(), redirect.query().unwrap()));
-        factory.verify_login(attempt, &callback).await.unwrap()
+            None => factory
+                .login_desktop(&redirect, &browser, deadline)
+                .await
+                .unwrap(),
+        }
     }
 }
 impl Drop for Fixture {
@@ -661,44 +647,35 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
     )
     .unwrap();
     factory.persist_pending(&pending).await.unwrap();
-    // No production bootstrap operation exists. The synthetic driver enrolls the
-    // exact persistent native wrapping/recovery keys, never throwaway anchors.
     let signing = SigningKey::load(&pending.record.pkcs8).unwrap();
-    let (wrapping, recovery) = pending.record.test_public_material();
-    let challenge=fixture.json("/v1/enrollment/challenge",json!({"kind":"bootstrap","libraryId":library,"signingJwk":signing.jwk,"wrappingJwk":wrapping,"recoveryJwk":recovery})).await;
+    let binding = factory
+        .prepare_bootstrap(&discovery, &reference, &library)
+        .await
+        .unwrap();
+    let exact_bootstrap = memory
+        .get(&reference)
+        .unwrap()
+        .unwrap()
+        .intent
+        .as_ref()
+        .unwrap()
+        .body
+        .clone();
     drop(discovery);
-    let login = fixture
-        .login(&factory, Some(challenge["nonce"].as_str().unwrap()))
-        .await;
-    let body=Zeroizing::new(serde_json::to_vec(&json!({"challenge":challenge["challenge"],"signingJwk":signing.jwk,"wrappingJwk":wrapping,"recoveryJwk":recovery})).unwrap());
-    let url = factory
-        .client
-        .registration
-        .sync
-        .join("/v1/enrollment/bootstrap")
-        .unwrap();
-    let auth = signing
-        .authorize(&login.identity, "POST", url.as_str(), &body)
-        .unwrap();
+    let login = fixture.login(&factory, Some(&binding)).await;
     fixture
         .json("/__synthetic/control", json!({"dropBootstrap":true}))
         .await;
     assert!(matches!(
-        factory
-            .client
-            .http
-            .send(
-                reqwest::Method::POST,
-                url,
-                body,
-                Some(auth),
-                "application/json",
-                4096
-            )
-            .await,
+        factory.bootstrap(login, &reference, &library).await,
         Err(AuthorityError::Interrupted)
     ));
+    let uncertain = memory.get(&reference).unwrap().unwrap();
+    assert_eq!(uncertain.intent.as_ref().unwrap().body, exact_bootstrap);
+    let wire: Value = serde_json::from_slice(&custody::encode(&uncertain).unwrap()).unwrap();
+    assert_eq!(wire["intent"]["progress"]["state"], json!("uncertain"));
     assert!(controller.active_scope_barrier().read().unwrap().is_none());
+    let login = fixture.login(&factory, None).await;
     let active = factory.resume(login, &reference, &library).await.unwrap();
     let scope = active.scope().unwrap();
     let owner = TestOwner {
@@ -796,6 +773,74 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         ),
         (0, 1, 0, 0)
     );
+    // A second native device imports the exact browser-compatible encrypted file.
+    let export = resumed.export_recovery(true).unwrap();
+    let recovery_controller = SessionController::new();
+    let recovery_factory = fixture.factory(memory.clone(), recovery_controller.clone());
+    let recovery_login = fixture.login(&recovery_factory, None).await;
+    let recovery_candidate = recovery_factory
+        .prepare_candidate(&recovery_login, &library, CandidateKind::Recover)
+        .unwrap();
+    let recovery_reference = recovery_candidate.reference();
+    recovery_factory
+        .persist_pending(&recovery_candidate)
+        .await
+        .unwrap();
+    let imported = recovery_factory
+        .prepare_recovery(
+            &recovery_login,
+            &recovery_reference,
+            &library,
+            export.file_bytes(),
+            export.export_secret(),
+        )
+        .await
+        .unwrap();
+    let binding = recovery_factory
+        .prepare_recovery_enrollment(&recovery_login, &imported, true)
+        .await
+        .unwrap();
+    assert!(memory
+        .get(&recovery_reference)
+        .unwrap()
+        .unwrap()
+        .keys
+        .is_empty());
+    drop(imported);
+    drop(recovery_login);
+    let login = fixture.login(&recovery_factory, Some(&binding)).await;
+    fixture
+        .json("/__synthetic/control", json!({"dropRecover":true}))
+        .await;
+    assert!(matches!(
+        recovery_factory
+            .recover(login, &recovery_reference, &library, true)
+            .await,
+        Err(AuthorityError::Interrupted)
+    ));
+    assert!(memory
+        .get(&recovery_reference)
+        .unwrap()
+        .unwrap()
+        .keys
+        .is_empty());
+    drop(recovery_factory);
+    let recovered_factory = fixture.factory(memory.clone(), SessionController::new());
+    let login = fixture.login(&recovered_factory, None).await;
+    let recovered = recovered_factory
+        .reconcile_recovery(login, &recovery_reference, &library, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        memory.get(&recovery_reference).unwrap().unwrap().keys,
+        persisted.keys
+    );
+    assert_eq!(
+        recovered.scope().unwrap().account_digest(),
+        scope.account_digest()
+    );
+    assert_eq!(recovered.scope().unwrap().library_id(), scope.library_id());
+    drop(recovered);
     let verified = fixture.login(&restarted, None).await;
     let url = factory_url(&fixture.origin, &scope);
     let auth = signing
@@ -829,8 +874,75 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         restarted.resume(login, &stored_reference, &library).await,
         Err(AuthorityError::Enrollment)
     ));
+    // Model a restored uncertain pre-confirmation vault record for the now-revoked
+    // same device. 403 cannot prove never-enrolled; explicit retry must stay pending.
+    let confirmed = memory.get(&stored_reference).unwrap().unwrap();
+    let mut restored: Value =
+        serde_json::from_slice(&custody::encode(&confirmed).unwrap()).unwrap();
+    restored["enrollment"] = json!("pending");
+    restored["phase"] = json!({"state":"bootstrap_pending"});
+    let old_challenge = restored["intent"]["challenge"].as_str().unwrap();
+    let mut claims: Value = serde_json::from_slice(
+        &crate::crypto::decode_canonical(old_challenge.split('.').nth(1).unwrap()).unwrap(),
+    )
+    .unwrap();
+    claims["iat"] = json!(now().unwrap() - 305);
+    claims["exp"] = json!(now().unwrap() - 5);
+    let mut header = Header::new(Algorithm::HS256);
+    header.typ = Some("mdreader-enrollment+jwt".into());
+    let expired = jsonwebtoken::encode(
+        &header,
+        &claims,
+        &EncodingKey::from_secret(b"synthetic-only-server-secret-at-least-32-bytes"),
+    )
+    .unwrap();
+    restored["intent"]["challenge"] = json!(expired);
+    restored["intent"]["expires"] = claims["exp"].clone();
+    let mut body: Value =
+        serde_json::from_str(restored["intent"]["body"].as_str().unwrap()).unwrap();
+    body["challenge"] = json!(expired);
+    let prior_body = serde_json::to_string(&body).unwrap();
+    restored["intent"]["body"] = json!(prior_body);
+    restored["intent"]["progress"]["state"] = json!("uncertain");
+    restored["intent"]["progress"]["receipt"] = Value::Null;
+    memory.records.lock().unwrap().insert(
+        stored_reference.0.clone(),
+        Zeroizing::new(serde_json::to_vec(&restored).unwrap()),
+    );
+    let login = fixture.login(&restarted, None).await;
+    let EnrollmentProgress::Login(binding) = restarted
+        .renew_enrollment(login, &stored_reference, &library, true)
+        .await
+        .unwrap()
+    else {
+        panic!("revoked device must not activate")
+    };
+    let renewed = memory.get(&stored_reference).unwrap().unwrap();
+    assert_eq!(renewed.keys, persisted.keys);
+    let receipt: Value = serde_json::from_slice(&custody::encode(&renewed).unwrap()).unwrap();
+    assert_eq!(
+        receipt["intent"]["progress"]["history"][0]["digest"],
+        json!(blob_digest(prior_body.as_bytes()))
+    );
+    assert_eq!(
+        receipt["intent"]["progress"]["history"][0]["uncertain"],
+        json!(true)
+    );
+    let login = fixture.login(&restarted, Some(&binding)).await;
+    assert!(restarted
+        .bootstrap(login, &stored_reference, &library)
+        .await
+        .is_err());
+    let refused = memory.get(&stored_reference).unwrap().unwrap();
+    assert!(refused.state == custody::EnrollmentState::Pending);
+    assert_eq!(refused.keys, persisted.keys);
+    assert!(restarted_controller
+        .active_scope_barrier()
+        .read()
+        .unwrap()
+        .is_none());
     let stats = fixture.json("/__synthetic/control", json!({})).await;
-    assert_eq!(stats["oauthExchanges"], json!(5));
+    assert_eq!(stats["oauthExchanges"], json!(11));
     assert_eq!(stats["pkceRejected"], json!(0));
 }
 fn factory_url(origin: &str, scope: &SyncScope) -> String {
@@ -1078,3 +1190,6 @@ fn api_access_token_is_bound_to_login_subject_client_resource_and_scopes() {
         URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(id.as_bytes()))
     );
 }
+
+#[path = "lifecycle_tests.rs"]
+mod lifecycle;

@@ -160,7 +160,7 @@ impl OidcClient {
     pub fn begin(&self, native_loopback_redirect: &str) -> AuthorityResult<PendingLogin> {
         self.begin_nonce(native_loopback_redirect, random()?)
     }
-    fn begin_nonce(
+    pub(super) fn begin_nonce(
         &self,
         native_loopback_redirect: &str,
         nonce: Zeroizing<String>,
@@ -210,14 +210,6 @@ impl OidcClient {
             registration: Arc::new(registration),
             http: http::Http::new(Some(root))?,
         })
-    }
-    #[cfg(test)]
-    pub(super) fn test_begin_nonce(
-        &self,
-        redirect: &str,
-        nonce: &str,
-    ) -> AuthorityResult<PendingLogin> {
-        self.begin_nonce(redirect, Zeroizing::new(nonce.into()))
     }
 }
 impl PendingLogin {
