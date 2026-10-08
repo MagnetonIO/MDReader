@@ -65,10 +65,12 @@ versus block/pixel semantics; pins survive document revisions while positions
 remain revision-scoped. No approximate conversion is provided.
 
 The codec validates shape/UUID/path/digest/count/size bounds and canonical chunk
-base64url, not fetched resource graph completeness or raster decoding. Native
-network chunk fetch/reassembly, exact reference/raw-byte hash verification,
-asset MIME/header admission, projection and user-state conflict/tombstone policy
-must be integrated by the owner before native transfer is accepted. Browser
+base64url. Memory-only [incoming preparation](INCOMING.md) now authenticates
+resource graphs, reconstructs exact originals, checks raw-byte hashes and admits
+bounded PNG/JPEG structure. It performs no owner mutation or cursor advancement
+and is not a full image decoder. Native dependency fetching, portable owner
+projection and user-state conflict/tombstone policy must still be integrated
+before native transfer is accepted. Browser
 implementation and exact remaining gates are documented in web
 `lib/sync/PAYLOAD-PROTOCOL.md`. The codec slice adds no auth/provider/keychain behavior; the optional transport
 foundation is separately described in [TRANSPORT.md](TRANSPORT.md). Current focused transport/owner checks and exact remaining gates are recorded in

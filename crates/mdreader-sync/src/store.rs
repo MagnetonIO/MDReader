@@ -856,7 +856,7 @@ fn required_blob<'de, D: serde::Deserializer<'de>>(
     Option::<String>::deserialize(deserializer)
 }
 impl RemoteChange {
-    fn validate(&mut self) -> Result<()> {
+    pub(crate) fn validate(&mut self) -> Result<()> {
         validate_sequence(self.sequence, false)?;
         validate_uuid(&self.revision_id)?;
         validate_uuid(&self.item_id)?;

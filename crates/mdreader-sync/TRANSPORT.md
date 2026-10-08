@@ -126,7 +126,8 @@ ordinary suite until the explicit local fixture command is supplied.
 Production native sync remains unavailable. Missing work includes verified real
 issuer/PKCE sign-in and refresh, secure native signing/wrapping/library-key custody,
 verified pairing/recovery and rotation, library/account selection, typed encrypted
-chunk/asset fetch and reconstruction with MIME/path/hash/revision authority,
+chunk/asset network fetch and owner integration of memory-only
+[incoming preparation](INCOMING.md) with MIME/path/hash/revision authority,
 projection into reader documents/pins/revision-scoped positions with local edit
 barriers and conflict/deletion policy, user-visible pending/conflict/quota controls,
 explicit retention/orphan cleanup/export/account deletion, supported-host native
