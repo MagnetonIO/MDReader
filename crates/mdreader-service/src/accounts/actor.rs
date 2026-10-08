@@ -5,7 +5,12 @@ use storage::Binding;
 pub(super) struct Command {
     pub id: Uuid,
     pub epoch: u64,
-    pub intent: AccountIntent,
+    pub action: Action,
+}
+/// Native-only actions. SelectedSync is never renderer-deserializable.
+pub(super) enum Action {
+    Account(AccountIntent),
+    SelectedSync { document: Uuid, operation: Uuid },
 }
 pub(super) enum Message {
     Run(Command),

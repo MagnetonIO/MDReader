@@ -137,6 +137,8 @@ impl IncomingCoordinator {
             origin,
             head,
         };
+        #[cfg(test)]
+        self.pause_after_materialization()?;
         self.short(selected, |owner, session| {
             admit(
                 owner,

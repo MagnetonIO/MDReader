@@ -1,12 +1,22 @@
 use super::*;
 use actor::{Actor, Command};
+mod outgoing;
 mod pairing;
 mod pump;
 mod recovery;
 
 impl Actor {
     pub async fn execute(&mut self, command: &Command) -> Result<Outcome> {
-        match &command.intent {
+        let intent = match &command.action {
+            actor::Action::Account(intent) => intent,
+            actor::Action::SelectedSync {
+                document,
+                operation,
+            } => {
+                return self.selected_sync(command, *document, *operation).await;
+            }
+        };
+        match intent {
             AccountIntent::SignIn {} => {
                 let binding = self.bound()?;
                 let login = self.login(command).await?;

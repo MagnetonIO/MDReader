@@ -17,6 +17,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 mod fixture;
+mod outgoing;
 mod vault;
 struct Recovery(Vec<u8>);
 impl NativeRecovery for Recovery {
@@ -41,6 +42,7 @@ struct Account {
     owner: Arc<Mutex<ReaderStore>>,
     runtime: AssetRuntime,
     assets: PathBuf,
+    documents: PathBuf,
     _temp: tempfile::TempDir,
 }
 impl Account {
@@ -80,12 +82,13 @@ impl Account {
         };
         let runtime = AssetRuntime::default();
         let assets = temp.path().join("assets");
+        let documents = temp.path().join("documents");
         let coordinator = Arc::new(
             Coordinator::with_asset_runtime(
                 owner.clone(),
                 Some(setup),
                 CacheRoots {
-                    documents: temp.path().join("documents"),
+                    documents: documents.clone(),
                     assets: assets.clone(),
                 },
                 runtime.clone(),
@@ -97,6 +100,7 @@ impl Account {
             owner,
             runtime,
             assets,
+            documents,
             _temp: temp,
         };
         assert!(matches!(
@@ -198,6 +202,7 @@ fn actual_actor_pkce_recovery_pump_and_retained_projection_cancel() {
     let updated = device::document(&mut first.owner.lock().unwrap(), &doc.id).unwrap();
     assert!(updated.pinned);
     assert_eq!(updated.line, 2);
+    outgoing::selected_roundtrip(&first, seed["sourceUtf8"].as_str().unwrap());
 
     // Second real recovery device, same account/library, independent local owner.
     let second = Account::new(&origin, seed["recoveryFile"].as_str().unwrap(), library);
@@ -267,7 +272,7 @@ fn actual_actor_pkce_recovery_pump_and_retained_projection_cancel() {
         .unwrap()
         .is_empty());
     let cursor = second.cursor(&second_scope);
-    assert_eq!(cursor.received, 2);
+    assert_eq!(cursor.received, 3);
     assert_eq!(cursor.applied, 0);
     assert_eq!(cursor.server_acknowledged, 0);
     assert!(matches!(
@@ -286,10 +291,11 @@ fn actual_actor_pkce_recovery_pump_and_retained_projection_cancel() {
             ..
         }
     ));
+    outgoing::cancel_retains_queue(&second, &origin, seed["sourceUtf8"].as_str().unwrap());
     fixture::peer(&origin, "delete");
-    first.sync(3);
+    first.sync(4);
     assert!(device::read(&mut first.owner.lock().unwrap(), &doc.id, None).is_err());
-    assert_eq!(first.cursor(&scope).applied, 3);
+    assert_eq!(first.cursor(&scope).applied, 4);
     drop(first);
     drop(second);
 }
