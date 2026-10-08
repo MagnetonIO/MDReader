@@ -32,8 +32,12 @@ use uuid::Uuid;
 
 const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
+mod configuration;
 mod editing;
 pub(crate) mod preservation;
+#[cfg(test)]
+use configuration::config_from;
+use configuration::{compiled_config, NativeOwnerConfig};
 
 const MAX_MARKDOWN: usize = 2 * 1024 * 1024;
 const RPC_BUDGET: Duration = Duration::from_secs(35);
@@ -446,116 +450,6 @@ pub enum NativeProviderResult {
     },
 }
 
-/// No secret values or registration metadata are runtime renderer configuration.
-pub(crate) struct NativeOwnerConfig {
-    registrations: Vec<Registration>,
-    oauth: OAuthConfig,
-    diagnostics: [Option<String>; 2],
-}
-impl NativeOwnerConfig {
-    fn registration(&self, kind: NativeProviderKind) -> Option<Registration> {
-        self.registrations
-            .iter()
-            .find(|r| NativeProviderKind::from(r.provider()) == kind)
-            .cloned()
-    }
-    fn availability(&self) -> Vec<RegistrationAvailability> {
-        [NativeProviderKind::GoogleDrive, NativeProviderKind::Dropbox]
-            .into_iter()
-            .enumerate()
-            .map(|(index, provider)| RegistrationAvailability {
-                provider,
-                configured: self.registration(provider).is_some(),
-                supported: cfg!(all(unix, not(mobile))),
-                diagnostic: if !cfg!(all(unix, not(mobile))) {
-                    Some("Native provider authorization is unsupported on this host".into())
-                } else {
-                    self.diagnostics[index].clone()
-                },
-            })
-            .collect()
-    }
-}
-fn config_from(
-    drive: Option<&str>,
-    dropbox: Option<&str>,
-    attestation: Option<&str>,
-    redirect: Option<&str>,
-) -> NativeOwnerConfig {
-    let mut registrations = Vec::new();
-    let mut diagnostics = [None, None];
-    match drive {
-        Some(id) => match Registration::google_drive(id.into()) {
-            Ok(r) => registrations.push(r),
-            Err(_) => diagnostics[0] = Some("Native Google registration is invalid".into()),
-        },
-        None => diagnostics[0] = Some("Native Google registration is not configured".into()),
-    }
-    let mut dropbox_redirect = None;
-    match (dropbox, attestation, redirect) {
-        (None, None, None) => {
-            diagnostics[1] = Some("Native Dropbox App Folder registration is not configured".into())
-        }
-        (Some(id), Some(digest), Some(uri)) => {
-            let parsed = (|| {
-                if digest.len() != 64
-                    || !digest
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                {
-                    return Err(ProviderError::Invalid);
-                }
-                let mut bytes = [0; 32];
-                for (i, pair) in digest.as_bytes().chunks_exact(2).enumerate() {
-                    bytes[i] = u8::from_str_radix(
-                        std::str::from_utf8(pair).map_err(|_| ProviderError::Invalid)?,
-                        16,
-                    )
-                    .map_err(|_| ProviderError::Invalid)?;
-                }
-                let url = url::Url::parse(uri).map_err(|_| ProviderError::Invalid)?;
-                if url.scheme() != "http"
-                    || url.host_str() != Some("127.0.0.1")
-                    || url.port().is_none_or(|p| p == 0)
-                    || url.path() != "/oauth/callback"
-                    || url.query().is_some()
-                    || url.fragment().is_some()
-                    || !url.username().is_empty()
-                    || url.password().is_some()
-                {
-                    return Err(ProviderError::Invalid);
-                }
-                Registration::dropbox_app_folder(id.into(), bytes)
-            })();
-            match parsed {
-                Ok(r) => {
-                    registrations.push(r);
-                    dropbox_redirect = Some(uri.into())
-                }
-                Err(_) => {
-                    diagnostics[1] =
-                        Some("Native Dropbox App Folder registration is invalid".into())
-                }
-            }
-        }
-        _ => diagnostics[1] = Some("Native Dropbox App Folder registration is incomplete".into()),
-    }
-    NativeOwnerConfig {
-        registrations,
-        oauth: OAuthConfig {
-            dropbox_registered_redirect: dropbox_redirect,
-        },
-        diagnostics,
-    }
-}
-fn compiled_config() -> NativeOwnerConfig {
-    config_from(
-        option_env!("MDREADER_NATIVE_DRIVE_CLIENT_ID"),
-        option_env!("MDREADER_NATIVE_DROPBOX_CLIENT_ID"),
-        option_env!("MDREADER_NATIVE_DROPBOX_APP_FOLDER_REGISTRATION_SHA256"),
-        option_env!("MDREADER_NATIVE_DROPBOX_REDIRECT_URI"),
-    )
-}
 fn profile_namespace(profile: &Path, identifier: &str) -> Result<String> {
     if identifier.is_empty()
         || identifier.len() > 128
@@ -2019,7 +1913,8 @@ pub async fn native_provider_connect(
         owner
             .connect_with_permissions(provider, selection, None, allow_editing.unwrap_or(false))
             .await
-    }).await
+    })
+    .await
 }
 #[tauri::command]
 #[specta::specta]
@@ -2035,7 +1930,8 @@ pub async fn native_provider_reconnect(
         owner
             .reconnect_with_permissions(&source_id, selection, allow_editing.unwrap_or(false))
             .await
-    }).await
+    })
+    .await
 }
 #[tauri::command]
 #[specta::specta]

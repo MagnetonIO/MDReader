@@ -38,3 +38,6 @@ fixtures/generated/
 .vercel
 
 .env
+
+.env.local
+.env.*.local

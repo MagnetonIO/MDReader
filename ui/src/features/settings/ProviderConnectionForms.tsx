@@ -43,18 +43,18 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
     </section>
     <section className="provider-connection" aria-label="Dropbox connection">
       <header className="provider-connection__heading"><h3>Dropbox</h3><span>{dropboxAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
-      <p>Read Markdown from MDReader’s folder in Dropbox.</p>
+      <p>Choose a Dropbox folder to read Markdown from.</p>
       {dropboxAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
         <legend className="provider-connection__legend">Dropbox folder options</legend>
-        <label className="provider-connection__field" htmlFor={pathId}>Folder within MDReader’s App Folder</label>
-        <input id={pathId} aria-label="Dropbox App Folder path" aria-describedby={pathHintId} aria-invalid={!props.pathValid} value={props.dropboxPath} onChange={(event) => props.onPath(event.target.value)} maxLength={4096} spellCheck={false} />
-        <p id={pathHintId} className="provider-connection__hint">{props.pathValid ? 'Use / for the whole app folder, or a path such as /Notes.' : 'Enter a path starting with /, without . or .. folders.'}</p>
+        <label className="provider-connection__field" htmlFor={pathId}>Dropbox folder</label>
+        <input id={pathId} aria-label="Dropbox folder path" aria-describedby={pathHintId} aria-invalid={!props.pathValid} value={props.dropboxPath} onChange={(event) => props.onPath(event.target.value)} maxLength={4096} spellCheck={false} />
+        <p id={pathHintId} className="provider-connection__hint">{props.pathValid ? 'Use a path such as /Notes. Choosing / includes your accessible Dropbox root.' : 'Enter a path starting with /, without . or .. folders.'}</p>
         <label className="provider-connection__check"><input type="checkbox" checked={props.recursive} onChange={(event) => props.onRecursive(event.target.checked)} /><span>Include subfolders</span></label>
         <label className="provider-connection__check"><input type="checkbox" checked={props.editing} aria-describedby={editingHintId} onChange={(event) => props.onEditing(event.target.checked)} /><span>Allow editing</span></label>
         <p id={editingHintId} className="provider-connection__hint">Read only by default. Editing asks Dropbox for write permission.</p>
         <details className="provider-connection__details"><summary>About reconnecting</summary><p>These folder and editing options also apply when you reconnect a Dropbox source. Reconnecting replaces its previous selection and permission. Unsaved edits stay available to keep or download.</p></details>
       </fieldset> : null}
-      <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>Connect Dropbox App Folder</button>
+      <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>Connect Dropbox folder</button>
       <Availability snapshot={props.snapshot} kind="dropbox" available={dropboxAvailable} />
     </section>
   </div>;

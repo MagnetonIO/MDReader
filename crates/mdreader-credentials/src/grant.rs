@@ -9,83 +9,9 @@ use std::{
 };
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// Configured by the native owner/build, never a renderer attestation.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(try_from = "RegistrationWire")]
-pub struct Registration {
-    provider: ProviderKind,
-    client_id: String,
-    owner_registration_digest: Option<[u8; 32]>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RegistrationWire {
-    provider: ProviderKind,
-    client_id: String,
-    owner_registration_digest: Option<[u8; 32]>,
-}
-impl TryFrom<RegistrationWire> for Registration {
-    type Error = ProviderError;
-    fn try_from(w: RegistrationWire) -> Result<Self> {
-        match (w.provider, w.owner_registration_digest) {
-            (ProviderKind::GoogleDrive, None) => Self::google_drive(w.client_id),
-            (ProviderKind::Dropbox, Some(digest)) => Self::dropbox_app_folder(w.client_id, digest),
-            _ => Err(ProviderError::Invalid),
-        }
-    }
-}
-impl Registration {
-    pub fn google_drive(client_id: String) -> Result<Self> {
-        if client_id.len() > 512
-            || !client_id.ends_with(".apps.googleusercontent.com")
-            || !client_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-        {
-            return Err(ProviderError::Invalid);
-        }
-        Ok(Self {
-            provider: ProviderKind::GoogleDrive,
-            client_id,
-            owner_registration_digest: None,
-        })
-    }
-    /// Digest identifies reviewed native app-registration metadata establishing
-    /// App Folder access. OAuth scopes and a user checkbox are not evidence.
-    pub fn dropbox_app_folder(
-        client_id: String,
-        owner_registration_digest: [u8; 32],
-    ) -> Result<Self> {
-        if client_id.is_empty()
-            || client_id.len() > 128
-            || !client_id.bytes().all(|b| b.is_ascii_alphanumeric())
-            || owner_registration_digest == [0; 32]
-        {
-            return Err(ProviderError::Invalid);
-        }
-        Ok(Self {
-            provider: ProviderKind::Dropbox,
-            client_id,
-            owner_registration_digest: Some(owner_registration_digest),
-        })
-    }
-    pub fn provider(&self) -> ProviderKind {
-        self.provider
-    }
-    pub fn client_id(&self) -> &str {
-        &self.client_id
-    }
-    pub fn digest(&self) -> [u8; 32] {
-        body_hash(&serde_json::to_vec(self).expect("fixed registration"))
-    }
-}
-impl fmt::Debug for Registration {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Registration")
-            .field("provider", &self.provider)
-            .finish_non_exhaustive()
-    }
-}
+mod registration;
+pub use registration::Registration;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DriveFile {

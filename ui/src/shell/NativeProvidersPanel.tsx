@@ -20,7 +20,7 @@ function coverageText(coverage: ProviderCoverage): string {
 function scopeText(source: ProviderSource): string {
   switch (source.selectedScope.kind) {
     case 'exact_documents': return `${source.selectedScope.count} explicitly selected document${source.selectedScope.count === 1 ? '' : 's'}`;
-    case 'scoped_root': return source.selectedScope.recursive ? 'Selected App Folder path and its subfolders' : 'Selected App Folder path';
+    case 'scoped_root': return source.selectedScope.recursive ? 'Selected Dropbox folder and its subfolders' : 'Selected Dropbox folder';
     case 'imported_legacy_broad': return 'Imported broad connection. A new selected-scope connection is required.';
   }
 }

@@ -1,5 +1,5 @@
 //! CatDB-free Dropbox API v2 kernel. Exact files and explicitly selected
-//! app-folder roots are supported. Broad imported authorization stays legacy.
+//! folder roots are supported. Broad imported authorization stays legacy.
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -41,7 +41,7 @@ impl std::fmt::Debug for AccessGrant {
     }
 }
 /// The platform owner exchanges/refreshes credentials in its own custody. These
-/// methods may only return an app-folder grant for the exact admitted account.
+/// methods return a fresh grant for the exact admitted account and selection.
 #[async_trait]
 pub trait CredentialResolver: Send + Sync {
     async fn access(&self, binding: &SourceBinding, context: &IoContext) -> Result<AccessGrant>;
