@@ -1,7 +1,9 @@
 #[cfg(unix)]
 pub(crate) mod backup;
 #[cfg(unix)]
-use crate::database_backup::DatabaseBackupTarget;
+use crate::RelativeLocator;
+#[cfg(unix)]
+use crate::database_backup::{BackupSource, DatabaseBackupTarget};
 use crate::{
     Disposition, Error, Inventory, Limits, Manifest, Result, RootBinding, SnapshotIdentity,
 };
@@ -138,9 +140,11 @@ pub fn stage(
                             &stage,
                             &name,
                             retained,
-                            &inventory.root,
-                            path,
-                            *expected,
+                            BackupSource {
+                                root: inventory.root.binding.clone(),
+                                relative: RelativeLocator::capture(path)?,
+                                stamp: *expected,
+                            },
                             bound,
                             limits,
                         )?;
