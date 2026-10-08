@@ -67,6 +67,7 @@ fn failure(error: Error) -> MigrationError {
             Error::Unclassified | Error::Unsupported => "offline_export_required",
             Error::Bounds => "too_large",
             Error::Conflict => "profile_changed",
+            Error::InvalidDestination => "invalid_destination",
             Error::Invalid | Error::Integrity => "invalid_profile",
             _ => "migration_unconfirmed",
         },
@@ -136,7 +137,11 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
     else {
         return Ok(None);
     };
-    let parent = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
+    let parent = picked_root(folder.into_path().map_err(|_| Error::InvalidDestination)?)
+        .map_err(|error| match error {
+            Error::Invalid => Error::InvalidDestination,
+            other => other,
+        })?;
     let current = crate::reader_profile::directory(app)
         .map_err(|_| Error::Conflict)?
         .canonicalize()
@@ -146,7 +151,7 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
         || parent.path.starts_with(&current)
         || current.starts_with(&parent.path)
     {
-        return Err(Error::Invalid);
+        return Err(Error::InvalidDestination);
     }
     parent.verify().map_err(|_| Error::Conflict)?;
     Ok(Some(parent))

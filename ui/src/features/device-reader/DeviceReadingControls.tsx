@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DeviceReference } from './backend';
 import { deviceReadingStateBackend, type DeviceReadingState, type DeviceReadingStateBackend } from './reading-state-backend';
 import './device-reading.css';
+import { PinIcon } from '../../shell/icons';
 
 /** Pin and source-line state are saved by the same native document owner.
  * Scrolling alone does not issue a write or an upload. */
@@ -54,15 +55,17 @@ export function DeviceReadingControls({ reference, line, onResume, backend = dev
   return <section className="device-reading-controls" aria-label="Pin and reading position" aria-busy={busy}>
     <div className="device-reading-controls__actions">
       <button type="button" disabled={busy || !state} aria-pressed={state?.pinned ?? false}
-        onClick={() => void change({ pinned: !state?.pinned })}>{state?.pinned ? 'Unpin document' : 'Pin document'}</button>
-      <button type="button" disabled={busy || !state || !validLine}
-        onClick={() => void change({ line })}>Save reading position</button>
-      <button type="button" disabled={busy || !state} onClick={() => state && onResume(state.line)}>Resume saved position</button>
-      <button type="button" disabled={busy} onClick={() => void change()}>Refresh reading status</button>
+        aria-label={state?.pinned ? 'Unpin document' : 'Pin document'}
+        onClick={() => void change({ pinned: !state?.pinned })}><PinIcon />{state?.pinned ? 'Pinned' : 'Pin'}</button>
+      <button type="button" disabled={busy || !state || !validLine} aria-label="Save reading position"
+        title={`Save your place at line ${line}`} onClick={() => void change({ line })}>Save place</button>
+      <button type="button" disabled={busy || !state} aria-label="Resume saved position"
+        title={state ? `Return to line ${state.line}` : undefined} onClick={() => state && onResume(state.line)}>Resume</button>
+      <button type="button" disabled={busy} aria-label="Refresh reading status" onClick={() => void change()}>Refresh</button>
     </div>
-    {state ? <p>{state.pinned ? 'Pinned · ' : ''}Saved position: line {state.line}. Current position: line {line}.</p>
-      : !error ? <p role="status">Reading saved document state…</p> : null}
-    {notice ? <p role="status">{notice} Sync it explicitly from Account &amp; sync.</p> : null}
+    {state ? <p className="device-reading-controls__position">Line {line} <span>· Saved at {state.line}</span></p>
+      : !error ? <p role="status">Loading your saved place…</p> : null}
+    {notice ? <p role="status">{notice}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
   </section>;
 }

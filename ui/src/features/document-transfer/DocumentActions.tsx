@@ -91,7 +91,7 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
     catch { if (selected === epoch.current) setError('Clipboard access is unavailable. Select and copy the reading link below.'); }
   }
   return <details className="document-actions" onToggle={(event) => { if (event.currentTarget.open) setLinkLine(getLine?.() ?? line); }}>
-    <summary>Export, share &amp; reading link</summary>
+    <summary>Share &amp; export</summary>
     <p>{includesSelectedImages ? "Original Markdown and selected offline images. Copies with images use a ZIP; incomplete and unselected images are excluded." : "Original Markdown only."} Exporting a copy never changes the source.</p>
     <div className="document-actions__buttons">
       {nativeExport ? <button type="button" disabled={busy} onClick={() => void exportNative()}>{includesSelectedImages ? "Export document copy…" : "Export Markdown…"}</button> : native ? <p>Native file export is unavailable in this build.</p> : null}
@@ -102,7 +102,7 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
       {!nativeShare && typeof navigator.share !== 'function' ? <p>System sharing is unavailable on this host.</p> : null}
       <button type="button" disabled={!link} onClick={() => void copy()}>Copy reading link</button>
     </div>
-    <label>Exact reading link<input readOnly value={link} onFocus={(event) => event.currentTarget.select()} /></label>
+    <label>Reading link<input readOnly value={link} onFocus={(event) => event.currentTarget.select()} /></label>
     <p>This link works only with an existing authorized source and exact revision. {nativeReadingLinks ? "Tap it on this device, or paste it into Open reading link." : "Paste it into Open reading link; opening links from another app is unavailable on this host."}</p>
     {notice ? <p role="status">{notice}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
