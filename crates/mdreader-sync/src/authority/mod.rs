@@ -1,5 +1,5 @@
 //! Native-only, default-off OIDC, custody and verified bootstrap/recovery contracts.
-//! No renderer credential DTO, provider grant, product RPC, pairing or mobile vault.
+//! No renderer credential DTO, provider grant, product RPC or mobile vault.
 mod access;
 mod capability;
 mod custody;
@@ -11,6 +11,7 @@ mod jwt;
 mod keyring;
 mod loopback;
 mod oidc;
+mod pairing;
 mod projection;
 mod recovery;
 mod request;
@@ -25,6 +26,7 @@ pub use factory::{NativeAuthorityFactory, NativeLogin, VerifiedLogin};
 pub use identity::VerifiedIdentity;
 pub use keyring::SyncKeyringVault;
 pub use oidc::{NativeBrowser, OidcClient, OidcEndpoints, PendingLogin, ReviewedOidcRegistration};
+pub use pairing::{PairApprovalPacket, PairRequestPacket};
 pub use projection::{ProjectionGuard, ProjectionPermit};
 pub use recovery::{PendingRecovery, RecoveryExport};
 pub use session::SessionController;

@@ -33,6 +33,8 @@ struct Wire {
     intent: Option<super::super::enrollment::Intent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_recovery: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pairing: Option<super::super::pairing::Slot>,
 }
 impl Drop for Wire {
     fn drop(&mut self) {
@@ -94,6 +96,7 @@ pub(in super::super) fn encode(record: &CustodyRecord) -> AuthorityResult<Zeroiz
             .pending_recovery
             .as_ref()
             .map(|raw| URL_SAFE_NO_PAD.encode(raw.as_slice())),
+        pairing: record.pairing.clone(),
     };
     let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| AuthorityError::Custody)?);
     if bytes.len() > MAX_RECORD {
@@ -176,6 +179,7 @@ pub(in super::super) fn decode(
             .as_ref()
             .map(|raw| decode_secret(raw, 16384))
             .transpose()?,
+        pairing: wire.pairing.clone(),
     };
     record.validate(reference)?;
     Ok(record)

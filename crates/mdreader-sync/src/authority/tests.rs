@@ -24,7 +24,7 @@ const ISSUER: &str = "https://native-synthetic-issuer.example.test";
 const API_AUDIENCE: &str = "https://mdreader.dev/sync";
 const REDIRECT: &str = "http://127.0.0.1:43871/mdreader-sync/callback";
 pub(super) static LOGIN_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-fn registration(origin: &str) -> ReviewedOidcRegistration {
+pub(super) fn registration(origin: &str) -> ReviewedOidcRegistration {
     ReviewedOidcRegistration::new(
         ISSUER,
         "native-synthetic",
@@ -38,12 +38,12 @@ fn registration(origin: &str) -> ReviewedOidcRegistration {
     )
     .unwrap()
 }
-struct Issuer {
+pub(super) struct Issuer {
     key: EncodingKey,
     jwk: Value,
 }
 impl Issuer {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
         let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
@@ -81,7 +81,7 @@ impl Issuer {
             serde_json::from_str(include_str!("../../tests/support/public-test-rsa.json")).unwrap();
         serde_json::to_vec(&json!({"keys":[self.jwk, fixture["jwk"]]})).unwrap()
     }
-    fn identity(&self) -> VerifiedIdentity {
+    pub(super) fn identity(&self) -> VerifiedIdentity {
         access::verify_pair(
             &registration("https://sync.example.test"),
             self.token(&Self::claims()),
@@ -840,6 +840,14 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         scope.account_digest()
     );
     assert_eq!(recovered.scope().unwrap().library_id(), scope.library_id());
+    pairing_http::exercise(
+        &fixture,
+        memory.clone(),
+        &recovered_factory,
+        &recovered,
+        &library,
+    )
+    .await;
     drop(recovered);
     let verified = fixture.login(&restarted, None).await;
     let url = factory_url(&fixture.origin, &scope);
@@ -942,7 +950,7 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         .unwrap()
         .is_none());
     let stats = fixture.json("/__synthetic/control", json!({})).await;
-    assert_eq!(stats["oauthExchanges"], json!(11));
+    assert_eq!(stats["oauthExchanges"], json!(18));
     assert_eq!(stats["pkceRejected"], json!(0));
 }
 fn factory_url(origin: &str, scope: &SyncScope) -> String {
@@ -1193,3 +1201,5 @@ fn api_access_token_is_bound_to_login_subject_client_resource_and_scopes() {
 
 #[path = "lifecycle_tests.rs"]
 mod lifecycle;
+#[path = "pairing_http_tests.rs"]
+mod pairing_http;

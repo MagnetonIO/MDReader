@@ -149,7 +149,8 @@ The bundle is a local checked artifact, not evidence of a new cloud deployment.
 
 ## Remaining release gates
 
-Checkpoint (c) user-verified out-of-band pairing is not implemented. Native
+Checkpoint (c) user-verified out-of-band pairing is described separately in
+[NATIVE-PAIRING.md](NATIVE-PAIRING.md); the evidence above covers (b). Native
 product composition/RPC, selected-library UI/consent, real registered issuer
 login, secure OS-vault acceptance, mobile system-auth callbacks/vault adapters,
 explicit export UI, v1 migration, rotation/deletion and multi-host device testing
