@@ -26,6 +26,12 @@ pub enum CatalogRequest {
     Close {
         cursor: String,
     },
+    Resolve {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+    },
     Read {
         source_id: String,
         path: String,
@@ -75,6 +81,14 @@ pub struct CatalogDocument {
     pub open: CatalogOpen,
 }
 #[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogReference {
+    pub source_id: String,
+    pub path: String,
+    pub revision: String,
+    pub line: u32,
+}
+#[derive(Serialize, Type)]
 #[serde(
     tag = "operation",
     rename_all = "snake_case",
@@ -98,6 +112,9 @@ pub enum CatalogReply {
         markdown: String,
         line_start: u32,
         line_end: u32,
+    },
+    Resolved {
+        references: Vec<CatalogReference>,
     },
     Complete,
 }

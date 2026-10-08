@@ -54,7 +54,6 @@ import {
   recordDiagnosticEventNonBlocking,
   settingsBackend,
   watchLibrarySource,
-  SettingsCommandError,
   type LibrarySourceDto,
 } from '../platform/settings.js';
 import type {
@@ -85,17 +84,8 @@ import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
-import {
-  continueHydratedLibrary,
-  hydrateLibrary,
-  hydrateLibraryDocument,
-  libraryAvailability as availabilityForLibrary,
-  physicalRecordKey,
-  rowsForMember,
-  type LibraryAvailability,
-  type HydratedLibrary,
-  type HydratedLibrarySelection,
-} from './library-documents.js';
+import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
+import { CanonicalReader } from '../features/reader/CanonicalReader';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -169,13 +159,6 @@ export function AppShell() {
   const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
-  const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
-    setProviderReturnToSettings(returnToSettings);
-    setProviderDocument(reference);
-    setSettingsOpen(false);
-    setPaletteOpen(false);
-  }, []);
-
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -195,41 +178,21 @@ export function AppShell() {
       unlisten?.();
     };
   }, []);
-  const [libraryDocument, setLibraryDocument] =
-    useState<HydratedLibrarySelection | null>(null);
-  const [cloudDocuments, setCloudDocuments] = useState<Record<string, HydratedLibrarySelection>>({});
-  const [libraryHydration, setLibraryHydration] = useState<HydratedLibrary>({
-    evidence: [],
-    failures: [],
-  });
-  const libraryEvidence = libraryHydration.evidence;
-  const [librarySearch, setLibrarySearch] = useState('');
-  const [libraryLoading, setLibraryLoading] = useState(false);
-  const [libraryAvailability, setLibraryAvailability] = useState<LibraryAvailability>({
-    kind: 'ready',
-  });
-  const [libraryError, setLibraryError] = useState<string | null>(null);
-  const [libraryDocumentLoading, setLibraryDocumentLoading] = useState(false);
-  const [libraryDocumentError, setLibraryDocumentError] = useState<string | null>(null);
   const [cloudSaving, setCloudSaving] = useState(false);
-  const libraryRefreshGeneration = useRef(0);
-  const libraryRefreshRequest = useRef<string | null>(null);
-  const libraryDocumentGeneration = useRef(0);
-  const libraryDocumentRequest = useRef<string | null>(null);
+  const [canonicalDocument, setCanonicalDocument] = useState<ProviderReaderReference | null>(null);
+  const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
+  const legacy = useLegacyRecords(activeTabId, semanticWorkspaceGeneration);
+  const {
+    libraryDocument, cloudDocuments, setCloudDocuments, libraryHydration,
+    libraryEvidence, librarySearch, setLibrarySearch, libraryLoading,
+    libraryAvailability, libraryError, setLibraryError, libraryDocumentLoading,
+    libraryDocumentError, refreshLibrary, loadMoreLibrary, openLibraryDocument,
+  } = legacy;
   const clearLibraryDocument = useCallback(() => {
-    libraryDocumentGeneration.current += 1;
-    if (settingsBackend.cancelCloudDocumentQuery && libraryDocumentRequest.current) {
-      void settingsBackend.cancelCloudDocumentQuery(libraryDocumentRequest.current);
-    }
-    libraryDocumentRequest.current = null;
-    setLibraryDocument(null);
-    setLibraryDocumentLoading(false);
-    setLibraryDocumentError(null);
-  }, []);
-
-  useEffect(() => {
-    clearLibraryDocument();
-  }, [activeTabId, clearLibraryDocument]);
+    setCanonicalDocument(null);
+    legacy.clearLibraryDocument();
+  }, [legacy.clearLibraryDocument]);
+  useEffect(() => { setCanonicalDocument(null); }, [activeTabId]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -272,189 +235,20 @@ export function AppShell() {
   // selection in the reading column. It STICKS — clicking Approve collapses the
   // selection, and the panel must not empty itself out from under the ruling.
   const [inspected, setInspected] = useState<SpanSelection | null>(null);
-  const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
 
-  const refreshLibrary = useCallback(async () => {
-    const generation = libraryRefreshGeneration.current + 1;
-    libraryRefreshGeneration.current = generation;
-    if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
-      await settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
-    }
-    setLibraryLoading(true);
-    setLibraryError(null);
-    setLibraryAvailability({ kind: 'syncing', sourceNames: [] });
-    try {
-      const requestId = `library:${globalThis.crypto.randomUUID()}`;
-      libraryRefreshRequest.current = requestId;
-      const hydration = await hydrateLibrary(
-        settingsBackend,
-        requestId,
-      );
-      const { evidence: answers } = hydration;
-      if (libraryRefreshGeneration.current !== generation) return;
-      setLibraryHydration(hydration);
-      setLibraryDocument((current) => {
-        if (!current) return null;
-        for (const evidence of answers) {
-          const member = evidence.memberships.find(
-            (candidate) => candidate.membership_id === current.member.membership_id,
-          );
-          const row = evidence.answer.rows.find(
-            (candidate) => candidate.record_key === current.row.record_key,
-          );
-          if (member && row) return { member, row, evidence };
-        }
-        return null;
-      });
-      setLibraryAvailability(availabilityForLibrary(hydration));
-    } catch (error) {
-      if (libraryRefreshGeneration.current === generation) {
-        setLibraryHydration({ evidence: [], failures: [] });
-        setLibraryDocument(null);
-        const detail =
-          error instanceof SettingsCommandError &&
-          typeof error.detail === 'object' &&
-          error.detail !== null &&
-          'kind' in error.detail &&
-          typeof error.detail.kind === 'string'
-            ? ` (${error.detail.kind})`
-            : error instanceof Error
-              ? ` (${error.message})`
-              : '';
-        setLibraryAvailability({
-          kind: 'failed',
-          message: `Library sources could not be read${detail}.`,
-        });
-      }
-    } finally {
-      if (libraryRefreshGeneration.current === generation) {
-        libraryRefreshRequest.current = null;
-        setLibraryLoading(false);
-      }
-    }
-  }, []);
+  const openCatalogDocument = useCallback((reference: ProviderReaderReference) => {
+    legacy.suspend();
+    setCanonicalDocument(reference);
+    setPaletteOpen(false);
+  }, [legacy.suspend]);
 
-  const loadMoreLibrary = useCallback(async (membershipId?: string) => {
-    if (!libraryHydration.continuations?.length) return;
-    const generation = libraryRefreshGeneration.current + 1;
-    libraryRefreshGeneration.current = generation;
-    if (settingsBackend.cancelCloudDocumentQuery && libraryRefreshRequest.current) {
-      await settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
-    }
-    if (libraryRefreshGeneration.current !== generation) return;
-    setLibraryLoading(true);
-    setLibraryError(null);
-    setLibraryAvailability({ kind: 'syncing', sourceNames: [] });
-    try {
-      const requestId = `library:${globalThis.crypto.randomUUID()}`;
-      libraryRefreshRequest.current = requestId;
-      const hydration = await continueHydratedLibrary(
-        settingsBackend,
-        libraryHydration,
-        requestId,
-        membershipId,
-      );
-      if (libraryRefreshGeneration.current !== generation) return;
-      setLibraryHydration(hydration);
-      setLibraryAvailability(availabilityForLibrary(hydration));
-    } catch {
-      if (libraryRefreshGeneration.current === generation) {
-        setLibraryHydration((current) => ({
-          evidence: current.evidence,
-          failures: current.failures,
-        }));
-        setLibraryAvailability({ kind: 'partial', sourceNames: [] });
-        setLibraryError(
-          'More Library documents could not be loaded. Refresh the Library.',
-        );
-      }
-    } finally {
-      if (libraryRefreshGeneration.current === generation) {
-        libraryRefreshRequest.current = null;
-        setLibraryLoading(false);
-      }
-    }
-  }, [libraryHydration]);
-
-  useEffect(() => {
-    if (!hydrated || !isTauri()) return;
-    void refreshLibrary();
-    return () => {
-      libraryRefreshGeneration.current += 1;
-      if (settingsBackend.cancelCloudDocumentQuery) {
-        if (libraryRefreshRequest.current) {
-          void settingsBackend.cancelCloudDocumentQuery(libraryRefreshRequest.current);
-        }
-      }
-      libraryRefreshRequest.current = null;
-    };
-  // Persisted UI state can hydrate before the restored workspace has committed
-  // its backend grant. Refresh again when that grant advances the semantic
-  // generation so a startup read that raced the engine cannot leave the
-  // Library empty until the user changes Settings or presses Refresh.
-  }, [hydrated, refreshLibrary, semanticWorkspaceGeneration]);
-
-  const openLibraryDocument = useCallback(
-    async (member: LibrarySourceExecution, row: EntityRow): Promise<void> => {
-      const evidence = libraryEvidence.find((answer) =>
-        answer.memberships.some(
-          (candidate) => candidate.membership_id === member.membership_id,
-        ),
-      );
-      if (!evidence) return;
-      const generation = libraryDocumentGeneration.current + 1;
-      libraryDocumentGeneration.current = generation;
-      if (settingsBackend.cancelCloudDocumentQuery && libraryDocumentRequest.current) {
-        await settingsBackend.cancelCloudDocumentQuery(libraryDocumentRequest.current);
-      }
-      if (libraryDocumentGeneration.current !== generation) return;
-      const requestId = `library-document:${globalThis.crypto.randomUUID()}`;
-      libraryDocumentRequest.current = requestId;
-      setLibraryDocument({ member, row, evidence });
-      setLibraryDocumentLoading(true);
-      setLibraryDocumentError(null);
-      try {
-        const hydratedDocument = await hydrateLibraryDocument(
-          settingsBackend,
-          { member, row, evidence },
-          requestId,
-        );
-        if (libraryDocumentGeneration.current === generation) {
-          if (
-            (hydratedDocument.member.kind === 'google-drive' ||
-              hydratedDocument.member.kind === 'dropbox') &&
-            hydratedDocument.cloudDocument
-          ) {
-            const recordKey = physicalRecordKey(hydratedDocument.row);
-            if (!recordKey) throw new Error('Cloud document lost its provider identity.');
-            const ref = {
-              kind: 'cloud' as const,
-              sourceId: hydratedDocument.member.registry_id,
-              recordKey,
-              documentKey: hydratedDocument.cloudDocument.document_key,
-              name: hydratedDocument.cloudDocument.title,
-            };
-            setCloudDocuments((current) => ({ ...current, [documentKey(ref)]: hydratedDocument }));
-            useTabsStore.getState().openTab(ref, { originRoot: null });
-            useSourcesStore.getState().addRecent(ref, null);
-            setLibraryDocument(null);
-          } else {
-            setLibraryDocument(hydratedDocument);
-          }
-        }
-      } catch {
-        if (libraryDocumentGeneration.current === generation) {
-          setLibraryDocumentError('This document could not be read from its Library source.');
-        }
-      } finally {
-        if (libraryDocumentGeneration.current === generation) {
-          libraryDocumentRequest.current = null;
-          setLibraryDocumentLoading(false);
-        }
-      }
-    },
-    [libraryEvidence],
-  );
+  const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
+    legacy.suspend();
+    setProviderReturnToSettings(returnToSettings);
+    setProviderDocument(reference);
+    setSettingsOpen(false);
+    setPaletteOpen(false);
+  }, [legacy.suspend]);
 
   const activeCloudDocument =
     activeTab?.docRef.kind === 'cloud' ? cloudDocuments[documentKey(activeTab.docRef)] ?? null : null;
@@ -891,10 +685,8 @@ export function AppShell() {
         watcherGenRef.current = -1;
         activeSourceIdRef.current = null;
         setSemanticWorkspaceGeneration(outcome.workspace_generation);
-        libraryRefreshGeneration.current += 1;
-        setLibraryDocument(null);
-        setLibraryHydration({ evidence: [], failures: [] });
-        setLibrarySearch('');
+        legacy.reset();
+        setCanonicalDocument(null);
         useTabsStore.getState().closeAll();
         useEditorStore.getState().reset();
         useSourcesStore.getState().forgetRoot(closingRoot);
@@ -915,7 +707,7 @@ export function AppShell() {
       );
       return result;
     },
-    [refreshLibrary],
+    [refreshLibrary, legacy.reset],
   );
   commitForgetRef.current = commitForget;
 
@@ -999,31 +791,12 @@ export function AppShell() {
         openRef(ref);
         return;
       }
-      const cached = cloudDocuments[documentKey(ref)];
-      if (
-        cached &&
-        cached.member.registry_id === ref.sourceId &&
-        physicalRecordKey(cached.row) === ref.recordKey
-      ) {
-        void openLibraryDocument(cached.member, cached.row);
-        return;
-      }
-      for (const evidence of libraryEvidence) {
-        const member = evidence.memberships.find(
-          (candidate) => candidate.registry_id === ref.sourceId,
-        );
-        if (!member) continue;
-        const row = rowsForMember(evidence, member).find(
-          (candidate) => physicalRecordKey(candidate) === ref.recordKey,
-        );
-        if (row) {
-          void openLibraryDocument(member, row);
-          return;
-        }
-      }
-      toast('Refresh the Library to reopen this cloud document');
+      setCanonicalDocument(null);
+      void legacy.openRecent(ref).then((opened) => {
+        if (!opened) toast('This historical document is unavailable in Legacy records.');
+      });
     },
-    [cloudDocuments, libraryEvidence, openLibraryDocument, openRef],
+    [legacy.openRecent, openRef],
   );
 
   const openFile = useCallback(
@@ -1154,7 +927,7 @@ export function AppShell() {
       const reference = providerTarget(target);
       if (reference) {
         if (opts.background) { toast('Cloud results currently open in the foreground. Press Enter to read this exact revision.'); return; }
-        openProviderDocument(reference);
+        openCatalogDocument(reference);
         return;
       }
     } catch (cause) { toast(cause instanceof Error ? cause.message : 'The cloud result is unavailable.'); return; }
@@ -1174,7 +947,7 @@ export function AppShell() {
         nonce: (jumpSeq.current += 1),
       });
     }
-  }, [clearLibraryDocument, openProviderDocument]);
+  }, [clearLibraryDocument, openCatalogDocument]);
 
   const onNavigate = useCallback((ref: DocRef) => {
     clearLibraryDocument();
@@ -2323,17 +2096,31 @@ export function AppShell() {
           loading={loading}
           listingError={listingError}
           onPickFolder={onPickFolder}
-          providerSources={isTauri() ? <CatalogSidebar selectedProviderSources={selectedProviderSources} onProviderSelectionChange={setSelectedProviderSources} refreshKey={providerRefreshKey} onOpen={openProviderDocument} onManage={() => setSettingsOpen(true)} /> : undefined}
+          providerSources={isTauri() ? (
+            <CatalogSidebar
+              selectedProviderSources={selectedProviderSources}
+              onProviderSelectionChange={setSelectedProviderSources}
+              refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
+              onOpen={openCatalogDocument}
+              onManage={() => setSettingsOpen(true)}
+            />
+          ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
-          libraryEvidence={libraryEvidence}
+          legacyRecordsOpen={legacy.enabled}
+          onToggleLegacyRecords={() => {
+            setCanonicalDocument(null);
+            if (legacy.enabled) legacy.suspend();
+            else legacy.enable();
+          }}
+          libraryEvidence={legacy.enabled ? libraryEvidence : []}
           librarySearch={librarySearch}
-          libraryLoading={libraryLoading}
-          libraryError={libraryError}
-          libraryAvailability={libraryAvailability}
-          libraryHasMore={Boolean(libraryHydration.continuations?.length)}
-          onLibrarySearch={setLibrarySearch}
+          libraryLoading={legacy.enabled && libraryLoading}
+          libraryError={legacy.enabled ? libraryError : null}
+          libraryAvailability={legacy.enabled ? libraryAvailability : { kind: 'ready' }}
+          libraryHasMore={legacy.enabled && Boolean(libraryHydration.continuations?.length)}
+          onLibrarySearch={legacy.enabled ? setLibrarySearch : undefined}
           onOpenLibrary={(member, row) => {
             setLibraryError(null);
             void openLibraryDocument(member, row);
@@ -2343,17 +2130,24 @@ export function AppShell() {
         />
 
         <main className="shell__main">
-          <TabStrip
+          {!canonicalDocument ? <TabStrip
             onLocalIntent={clearLibraryDocument}
             onRequestClose={requestCloseTab}
-          />
+          /> : null}
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
-            }${libraryDocument || activeCloudDocument ? ' shell__reader-row--library-open' : ''
+            }${canonicalDocument || libraryDocument || activeCloudDocument ? ' shell__reader-row--library-open' : ''
             }`}
           >
-            {libraryDocument ? (
+            {canonicalDocument ? (
+              <CanonicalReader
+                reference={canonicalDocument}
+                sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
+                backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
+                onClose={() => setCanonicalDocument(null)}
+              />
+            ) : libraryDocument ? (
               <LibraryDocumentPane
                 member={libraryDocument.member}
                 row={libraryDocument.row}
@@ -2471,7 +2265,7 @@ export function AppShell() {
       </div>
 
       <StatusBar
-        words={docWords}
+        words={canonicalDocument ? null : docWords}
         watcher={watcher}
         fileCount={files.length}
         listingError={listingError}
@@ -2506,7 +2300,7 @@ export function AppShell() {
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
-          onLibraryChanged={() => { void refreshLibrary(); setProviderRefreshKey((value) => value + 1); }}
+          onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); setProviderRefreshKey((value) => value + 1); }}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference, true)}
           onClose={() => setSettingsOpen(false)}
         />

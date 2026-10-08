@@ -656,9 +656,16 @@ export type CatalogError = {
 
 export type CatalogOpen = { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
-export type CatalogReply = { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "complete" };
+export type CatalogReference = {
+	sourceId: string,
+	path: string,
+	revision: string,
+	line: number,
+};
 
-export type CatalogRequest = { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogReply = { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
+
+export type CatalogRequest = { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,

@@ -4,3 +4,10 @@
 .reader-catalog small { color: var(--color-muted); }
 .reader-catalog p { font-size: 12px; }
 .reader-catalog button { white-space: normal; }
+
+/* The primary reader uses the same exact-body navigation as Settings browsing. */
+.canonical-reader { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.provider-reader-dialog > .canonical-reader { width: 100%; height: 100%; }
+.canonical-reader > .provider-reader-dialog__bar { flex-wrap: wrap; }
+.legacy-records-entry { padding: 8px 12px; flex: none; }
+.legacy-records-entry p { color: var(--color-muted); font-size: 12px; }

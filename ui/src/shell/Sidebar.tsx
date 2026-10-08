@@ -34,6 +34,8 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
+  legacyRecordsOpen?: boolean;
+  onToggleLegacyRecords?: () => void;
   libraryEvidence?: LibraryEntityQueryResponse_Serialize[];
   librarySearch?: string;
   libraryLoading?: boolean;
@@ -117,6 +119,8 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
+  legacyRecordsOpen = true,
+  onToggleLegacyRecords,
   libraryEvidence = [],
   librarySearch = '',
   libraryLoading = false,
@@ -165,13 +169,13 @@ export function Sidebar({
     ),
   );
   const hasFilterableActiveWorkspace = Boolean(root && onLibrarySearch);
-  const showLibraryRail =
+  const showLibraryRail = legacyRecordsOpen && (
     hasFilterableActiveWorkspace ||
     hasSupplementalMemberships ||
     libraryLoading ||
     libraryHasMore ||
     Boolean(libraryError) ||
-    libraryAvailability.kind !== 'ready';
+    libraryAvailability.kind !== 'ready');
   return (
     <aside
       className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}${libraryExpanded ? ' sidebar--library-expanded' : ''}${libraryCollapsed ? ' sidebar--library-collapsed' : ''}`}
@@ -216,6 +220,14 @@ export function Sidebar({
       )}
 
       {providerSources}
+      {onToggleLegacyRecords ? (
+        <div className="legacy-records-entry">
+          <button type="button" aria-expanded={legacyRecordsOpen} onClick={onToggleLegacyRecords}>
+            {legacyRecordsOpen ? 'Close legacy records' : 'Legacy records (migration)'}
+          </button>
+          {legacyRecordsOpen ? <p>Historical sources and edit recovery. This transitional area uses the preserved legacy adapter.</p> : null}
+        </div>
+      ) : null}
       {showLibraryRail ? (
         <>
         {!libraryCollapsed && !libraryExpanded ? (
@@ -229,7 +241,7 @@ export function Sidebar({
         ) : null}
         <nav
           className="library-sources"
-          aria-label="Library sources"
+          aria-label={onToggleLegacyRecords ? 'Legacy records' : 'Library sources'}
           style={
             libraryHeight === null || libraryCollapsed || libraryExpanded
               ? undefined
@@ -237,7 +249,7 @@ export function Sidebar({
           }
         >
           <div className="library-sources__heading">
-            <span>Library</span>
+            <span>{onToggleLegacyRecords ? 'Legacy records' : 'Library'}</span>
             <div className="library-sources__actions">
               <button
                 type="button"
