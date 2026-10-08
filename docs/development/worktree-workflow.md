@@ -16,14 +16,19 @@ feature's review or acceptance receipt.
 | --- | --- | --- | --- | --- | --- |
 | Coordinator | Native | `MDReader-reader-next` | `dev-reader-next` | `21bc807` | Integration only |
 | agent_capture | Native | `MDReader-native-incoming` | `feat/reader-native-incoming` | `c2055ea` | Reviewed core publication and session/cursor fence |
-| reader_mcp | Native | `MDReader-client-acceptance` | `feat/reader-client-acceptance` | `c2055ea` | Actual supported clients and installed extension host |
-| Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea` | Auth0 access-token contract shared with web |
+| reader_mcp | Native | `MDReader-archived-reviews` | `feat/reader-archived-reviews` | `bce887e` | Explicit selected archived reviews and exact reader comparison |
+| Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea`, then `fa3f577` | Auth0 access-token contract and bounded native loopback |
 | Coordinator | Web | `MDReader-Web-reader-next` | `dev-reader-next` | `e2c86d5` | Integration only |
 | cloud_sync | Web | `MDReader-Web-public-oidc` | `feat/reader-public-oidc` | `7f352a8` | One Auth0 issuer, API audience and separate public clients |
 
 Completed and merged into integration: capture/platform extraction (`72ecd9b`),
 core incoming publication (`1ecf76f`), session and atomic cursor fence (`c13a6ad`),
 default-feature lint fix (`0a1787f`) and deployed Preview acceptance (`1501489`).
+Further accepted slices: new-content service incoming (`48c647f`), actual client/
+installed extension acceptance (`554f450`), native auth-v2 (`20fbf70`) and companion
+web auth-v2 (`65bf43f`). The client-acceptance worktree was removed after preserving
+the tested VSIX and receipts; its major branch remains. Incoming work now starts
+from `bce887e` for core state/retirement and service v2 transitions.
 Their clean, inactive worktrees and merged minor branches were removed after
 ancestry checks. Private configuration and receipts were preserved; shared
 caches were retained. The major feature branches in the table remain intentionally

@@ -4,22 +4,24 @@ Integration branches: `dev-reader-next` in MDReader and MDReader-Web. Parallel
 features use separate branches/worktrees; see [ownership and cleanup](worktree-workflow.md). This is an implementation checkpoint, **not release acceptance**.
 The approved scope remains [the development plan](../plans/sqlite-reader-next.md).
 Original `dev` checkouts and the installed baseline are preserved. Migration
-changes have not merged into `dev`. A development sync Worker is deployed but
-remains unconfigured for live identity. The actual Vercel Preview passed offline
+changes have not merged into `dev`. The development sync Worker now uses the verified Auth0 issuer and API access-token
+contract; unauthenticated requests and exact browser-origin boundaries were checked live. The actual Vercel Preview passed offline
 reading, tab contention and hostile-Markdown checks. Auth0 development registrations
 now share one issuer/API audience with separate public browser/native clients;
-access-token integration and live login remain under validation. These do not
+native/browser/Worker access-token integration passed focused checks and two local
+HTTPS native interoperability cases; configured Preview deployment and live login
+remain under validation. These do not
 establish production release acceptance.
 
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. Existing device documents/import recovery/pins/positions and selected PNG/JPEG assets now use portable core owners with schema and live-owner guards. | Whole app still contains legacy CatDB paths; incoming transactional owner transitions, transport cancellation, migration and host acceptance remain. |
-| 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings, review/apply/remove configuration and explicit selected-event backfill UI implemented. | Actual supported-client installation/trust, desktop backfill UX and live cross-agent acceptance; Windows capture implementation and broader echo cases. |
-| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, portable incoming owner projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
+| 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings, review/apply/remove configuration and explicit selected-event backfill UI implemented. | Real isolated Claude approval/connection, Codex tool discovery/read and installed VSIX Extension Host checks now pass (receipt linked below). Packaged desktop entrypoint/hooks, desktop backfill UX/model turn, global client setup and Windows runtime remain open. |
+| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, replacement/state/deletion projection, arbitrary library/account switching, conflict-resolution UI, live issuer login, rotation/export/delete/long-offline acceptance remain. New-content incoming publication now commits original Markdown/assets, exact receipts and applied cursor atomically under session/selection/source fences; focused real SQLite/reopen/rollback tests pass. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks; one synthetic PNG passed actual picker/render/restart/cleanup acceptance. | Final cross-engine matrix for subsequent web features, newer mobile layout/JPEG/owner-migration device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging, bounded CLI reads and portable exact-revision text comparison preserve records and rejection history. | Actual extension-host acceptance; reader presentation and concrete current-source owner adapter/binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging, bounded CLI reads and portable exact-revision text comparison preserve records and rejection history. | Installed isolated VSIX Extension Host acceptance now passes. Archived review presentation/current-source binding, coordinated installed-profile export/rollback, CatDB removal, packaged host/release evidence and final whole-branch review remain. |
 
 ## Measured retrieval
 
@@ -290,3 +292,27 @@ accepted separately before enabling production sync.
   supplied-transaction incoming publication and live sync remain open; the
   [next bounded incoming gates](../../crates/mdreader-sync/INCOMING.md) are design,
   not applied/deployed evidence.
+
+## October 8 isolated integration checkpoint
+
+- [Actual client/extension receipt](../../crates/mdreader-mcp/validation/client-hosts-2026-10-08.md):
+  15 affected extension checks, actual isolated Claude/Codex and installed VSIX host.
+  The host found and verified a custom-URI delimiter fix. Global user configurations
+  were unchanged; this is not packaged desktop entrypoint acceptance.
+- [Incoming owner contract](../../crates/mdreader-service/src/sync/incoming/README.md):
+  five real SQLite/filesystem fixtures, final-revalidation mutation RED then restored
+  GREEN, strict feature Clippy. New content only; no plaintext identity bypass.
+- [Native auth contract](../../crates/mdreader-sync/AUTHORITY.md): 11 ordinary authority
+  cases, strict native/transport feature Clippy, two actual local HTTPS auth-v2
+  Worker cases. Combined incoming/auth service five tests pass after integration.
+  Live Auth0 and OS custody are separate gates.
+- Companion web auth-v2 commit `65bf43f` passes Worker types/dry-runs, 26 actual local
+  Miniflare cases, five Chromium browser scenarios, configuration/types/lint and
+  the focused ID-purpose regression. Development deployment uses the exact existing
+  Worker/SQLite DO/R2 resources and one Auth0 tenant; Production stays unchanged.
+
+The next reader migration slice addresses archived reviews that normal service
+indexing currently leaves unavailable. Removing their legacy dependency before
+explicit preservation/presentation and installed-profile rollback would lose
+useful visible behavior. Physical-device, live-provider, fresh-clone and packaging
+gates have not been discharged by these checkpoints.
