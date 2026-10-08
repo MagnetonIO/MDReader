@@ -1,5 +1,9 @@
 //! Authenticated one-shot local transport; no owner capability leaves the server.
 use super::*;
+mod discovery;
+pub(super) use discovery::{
+    prepare as prepare_directory, publish as publish_endpoint, read as read_endpoint,
+};
 
 pub(super) fn connection(
     mut stream: TcpStream,

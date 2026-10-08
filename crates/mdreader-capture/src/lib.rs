@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod backfill;
 mod platform;
+#[cfg(windows)]
+pub use platform::windows::{same_open_file, PrivateDirectory};
 mod policy;
 pub use policy::ProjectPolicy;
 mod projection;
