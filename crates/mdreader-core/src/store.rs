@@ -17,6 +17,7 @@ mod projection;
 pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 mod local_source;
 pub use local_source::publish_local_source;
+#[cfg(feature = "device-assets")]
 pub(crate) use local_source::validate_root;
 
 pub const MODEL_NAME: &str = "bge-small-en-v1.5";
