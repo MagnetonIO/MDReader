@@ -285,6 +285,19 @@ fn launch_application_with_profile(
         .setup(move |app| {
             reader_profile::configure(app.handle(), profile.as_deref())
                 .map_err(std::io::Error::other)?;
+            let reader_backend = reader::ReaderBackend::open(
+                reader_profile::directory(app.handle())
+                    .map_err(std::io::Error::other)?
+                    .join("reader-v1"),
+            )?;
+            #[cfg(not(mobile))]
+            match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
+                Ok(providers) => {
+                    app.manage(std::sync::Arc::new(providers));
+                }
+                Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
+            }
+            app.manage(reader_backend);
             #[cfg(all(unix, not(mobile)))]
             {
                 let directory =
@@ -295,19 +308,6 @@ fn launch_application_with_profile(
                     std::io::Error::other("Native preferences owner is unavailable")
                 })?;
             }
-            let reader_backend = reader::ReaderBackend::open(
-                reader_profile::directory(app.handle())
-                    .map_err(std::io::Error::other)?
-                    .join("reader-v1"),
-            )?;
-            #[cfg(not(mobile))]
-            match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
-                Ok(providers) => {
-                    app.manage(providers);
-                }
-                Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
-            }
-            app.manage(reader_backend);
             #[cfg(all(feature = "e2e-build", not(mobile)))]
             {
                 library::seed_e2e_local_membership(app.handle())?;

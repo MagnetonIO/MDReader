@@ -15,7 +15,14 @@ use std::{path::Path, sync::Arc};
 use tauri::Manager;
 
 pub(crate) fn configure(app: &tauri::AppHandle, directory: &Path) -> Result<(), PersistenceError> {
-    let state = compose(directory, Arc::new(TauriFlushChannel(app.clone())))?;
+    let providers = app
+        .try_state::<Arc<crate::native_providers::NativeProviders>>()
+        .map(|state| state.inner().clone());
+    let state = compose(
+        directory,
+        Arc::new(TauriFlushChannel(app.clone())),
+        providers,
+    )?;
     if !app.manage(state) {
         return Err(PersistenceError::Conflict);
     }
@@ -25,6 +32,7 @@ pub(crate) fn configure(app: &tauri::AppHandle, directory: &Path) -> Result<(), 
 fn compose(
     directory: &Path,
     channel: Arc<dyn FlushChannel>,
+    providers: Option<Arc<crate::native_providers::NativeProviders>>,
 ) -> Result<PersistenceState, PersistenceError> {
     let root = SourceRoot::capture(directory.to_owned()).map_err(|_| PersistenceError::Conflict)?;
     let SourceRootIdentity::Unix { device, inode } = &root.identity else {
@@ -45,12 +53,11 @@ fn compose(
             .register(participant, Vec::new())
             .map_err(|_| PersistenceError::Conflict)?;
     }
-    transition
-        .register(
-            Arc::new(
-                ServiceParticipant::new(binding, &directory.join("reader-v1"))
-                    .map_err(|_| PersistenceError::Conflict)?,
-            ),
+    let service = ServiceParticipant::new(binding.clone(), &directory.join("reader-v1"))
+        .map_err(|_| PersistenceError::Conflict)?;
+    for participant in service.participants() {
+        let databases = if participant.participant() == mdreader_profile::Participant::ReaderDaemon
+        {
             vec![
                 DatabaseRegistration {
                     relative: "reader-v1/library.sqlite".into(),
@@ -60,9 +67,27 @@ fn compose(
                     relative: "reader-v1/index.sqlite".into(),
                     kind: DatabaseKind::Rebuildable,
                 },
-            ],
-        )
-        .map_err(|_| PersistenceError::Conflict)?;
+            ]
+        } else {
+            Vec::new()
+        };
+        transition
+            .register(participant, databases)
+            .map_err(|_| PersistenceError::Conflict)?;
+    }
+    if let Some(providers) = providers {
+        transition
+            .register(
+                Arc::new(
+                    crate::native_providers::preservation::ParticipantOwner::new(
+                        binding.clone(),
+                        providers,
+                    ),
+                ),
+                Vec::new(),
+            )
+            .map_err(|_| PersistenceError::Conflict)?;
+    }
     Ok(PersistenceState {
         owner,
         transition: Arc::new(transition),
@@ -102,10 +127,10 @@ mod tests {
         std::fs::write(root.join("unclassified.bin"), b"retained original").unwrap();
         let original = br#"{"settings":{"theme":"dark","unknown":1e999999}}"#;
         std::fs::write(root.join("settings.json"), original).unwrap();
-        let state = compose(&root, Arc::new(NoFreeze)).unwrap();
-        assert_eq!(state.transition.missing_participants().len(), 5);
+        let state = compose(&root, Arc::new(NoFreeze), None).unwrap();
+        assert_eq!(state.transition.missing_participants().len(), 3);
         assert!(matches!(
-            compose(&root, Arc::new(NoFreeze)),
+            compose(&root, Arc::new(NoFreeze), None),
             Err(PersistenceError::Unavailable)
         ));
         let loaded = state.owner.load("main").unwrap();

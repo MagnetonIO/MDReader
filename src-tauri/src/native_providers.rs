@@ -33,6 +33,7 @@ use uuid::Uuid;
 const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod editing;
+pub(crate) mod preservation;
 
 const MAX_MARKDOWN: usize = 2 * 1024 * 1024;
 const RPC_BUDGET: Duration = Duration::from_secs(35);
@@ -1998,49 +1999,63 @@ impl NativeProviders {
 #[tauri::command]
 #[specta::specta]
 pub async fn native_provider_status(
-    owner: tauri::State<'_, NativeProviders>,
+    app: tauri::AppHandle,
+    owner: tauri::State<'_, Arc<NativeProviders>>,
 ) -> Result<ProviderSnapshot> {
-    owner.status().await
+    let owner = owner.inner().clone();
+    preservation::run(&app, async move { owner.status().await }).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn native_provider_connect(
-    owner: tauri::State<'_, NativeProviders>,
+    app: tauri::AppHandle,
+    owner: tauri::State<'_, Arc<NativeProviders>>,
     provider: NativeProviderKind,
     selection: Option<DropboxSelection>,
     allow_editing: Option<bool>,
 ) -> Result<AdmissionOutcome> {
-    owner
-        .connect_with_permissions(provider, selection, None, allow_editing.unwrap_or(false))
-        .await
+    let owner = owner.inner().clone();
+    preservation::run(&app, async move {
+        owner
+            .connect_with_permissions(provider, selection, None, allow_editing.unwrap_or(false))
+            .await
+    }).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn native_provider_reconnect(
-    owner: tauri::State<'_, NativeProviders>,
+    app: tauri::AppHandle,
+    owner: tauri::State<'_, Arc<NativeProviders>>,
     source_id: String,
     selection: Option<DropboxSelection>,
     allow_editing: Option<bool>,
 ) -> Result<AdmissionOutcome> {
-    owner
-        .reconnect_with_permissions(&source_id, selection, allow_editing.unwrap_or(false))
-        .await
+    let owner = owner.inner().clone();
+    preservation::run(&app, async move {
+        owner
+            .reconnect_with_permissions(&source_id, selection, allow_editing.unwrap_or(false))
+            .await
+    }).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn native_provider_reconcile(
-    owner: tauri::State<'_, NativeProviders>,
+    app: tauri::AppHandle,
+    owner: tauri::State<'_, Arc<NativeProviders>>,
     attempt_id: String,
 ) -> Result<AdmissionOutcome> {
-    owner.reconcile(&attempt_id).await
+    let owner = owner.inner().clone();
+    preservation::run(&app, async move { owner.reconcile(&attempt_id).await }).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn native_provider_request(
-    owner: tauri::State<'_, NativeProviders>,
+    app: tauri::AppHandle,
+    owner: tauri::State<'_, Arc<NativeProviders>>,
     request: NativeProviderRequest,
 ) -> Result<NativeProviderResult> {
-    owner.request(request).await
+    let owner = owner.inner().clone();
+    preservation::run(&app, async move { owner.request(request).await }).await
 }
 
 #[cfg(test)]

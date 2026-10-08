@@ -8,7 +8,9 @@ use std::{
     time::Instant,
 };
 
+#[derive(Clone)]
 pub(super) struct ServiceParticipant {
+    kind: Participant,
     root: RootBinding,
     directory: PathBuf,
     issued: Arc<Mutex<Option<Issued>>>,
@@ -17,6 +19,7 @@ struct Issued {
     operation: uuid::Uuid,
     epoch: uuid::Uuid,
     attempt: Attempt,
+    released: bool,
 }
 impl ServiceParticipant {
     /// Bind the exact reader-owned child; freeze connects without spawning it.
@@ -27,15 +30,40 @@ impl ServiceParticipant {
             return Err(Error::Invalid);
         }
         Ok(Self {
+            kind: Participant::ReaderDaemon,
             root,
             directory: directory.to_owned(),
             issued: Arc::new(Mutex::new(None)),
         })
     }
 }
+impl ServiceParticipant {
+    pub(super) fn participants(&self) -> [Arc<dyn LiveParticipant>; 3] {
+        [
+            Participant::ReaderDaemon,
+            Participant::CaptureProducers,
+            Participant::IntegrationAndAdmissionCustody,
+        ]
+        .map(|kind| {
+            Arc::new(Self {
+                kind,
+                ..self.clone()
+            }) as Arc<dyn LiveParticipant>
+        })
+    }
+    fn frozen(&self, scope: &FreezeScope<'_>) -> Box<dyn FrozenParticipant> {
+        Box::new(ServiceFrozen {
+            issued: self.issued.clone(),
+            root: self.root.clone(),
+            operation: scope.operation(),
+            epoch: scope.owner_epoch(),
+            released: false,
+        })
+    }
+}
 impl LiveParticipant for ServiceParticipant {
     fn participant(&self) -> Participant {
-        Participant::ReaderDaemon
+        self.kind
     }
     fn root(&self) -> &RootBinding {
         &self.root
@@ -53,8 +81,19 @@ impl LiveParticipant for ServiceParticipant {
             .issued
             .lock()
             .map_err(|_| Error::ReconciliationRequired)?;
-        if custody.is_some() {
-            return Err(Error::ReconciliationRequired);
+        if let Some(issued) = custody.as_mut() {
+            if issued.operation == scope.operation()
+                && issued.epoch == scope.owner_epoch()
+                && !issued.released
+            {
+                if issued.attempt.revalidate().map_err(error)?.phase != Phase::Held {
+                    return Err(Error::ReconciliationRequired);
+                }
+                return Ok(self.frozen(scope));
+            }
+            if !issued.released {
+                return Err(Error::ReconciliationRequired);
+            }
         }
         let client = Client::connect(&self.directory).map_err(error)?;
         let attempt = client
@@ -64,6 +103,7 @@ impl LiveParticipant for ServiceParticipant {
             operation: scope.operation(),
             epoch: scope.owner_epoch(),
             attempt,
+            released: false,
         });
         let held = custody
             .as_mut()
@@ -74,13 +114,7 @@ impl LiveParticipant for ServiceParticipant {
         if held.phase != Phase::Held {
             return Err(Error::ReconciliationRequired);
         }
-        Ok(Box::new(ServiceFrozen {
-            issued: self.issued.clone(),
-            root: self.root.clone(),
-            operation: scope.operation(),
-            epoch: scope.owner_epoch(),
-            released: false,
-        }))
+        Ok(self.frozen(scope))
     }
 }
 struct ServiceFrozen {
@@ -97,7 +131,7 @@ impl ServiceFrozen {
             .lock()
             .map_err(|_| Error::ReconciliationRequired)?;
         let issued = custody.as_mut().ok_or(Error::ReconciliationRequired)?;
-        if issued.operation != self.operation || issued.epoch != self.epoch {
+        if issued.released || issued.operation != self.operation || issued.epoch != self.epoch {
             return Err(Error::Conflict);
         }
         action(&mut issued.attempt)
@@ -128,18 +162,21 @@ impl FrozenParticipant for ServiceFrozen {
     }
     fn release(&mut self, scope: &FreezeScope<'_>) -> Result<()> {
         self.exact(scope)?;
-        if self
-            .with_attempt(|attempt| attempt.release().map_err(error))?
-            .phase
-            != Phase::Released
-        {
-            return Err(Error::ReconciliationRequired);
+        let mut custody = self
+            .issued
+            .lock()
+            .map_err(|_| Error::ReconciliationRequired)?;
+        let issued = custody.as_mut().ok_or(Error::ReconciliationRequired)?;
+        if issued.operation != self.operation || issued.epoch != self.epoch {
+            return Err(Error::Conflict);
+        }
+        if !issued.released {
+            if issued.attempt.release().map_err(error)?.phase != Phase::Released {
+                return Err(Error::ReconciliationRequired);
+            }
+            issued.released = true;
         }
         self.released = true;
-        self.issued
-            .lock()
-            .map_err(|_| Error::ReconciliationRequired)?
-            .take();
         Ok(())
     }
     fn with_database(
