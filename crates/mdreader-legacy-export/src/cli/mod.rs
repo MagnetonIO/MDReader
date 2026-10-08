@@ -1,11 +1,11 @@
 //! Argument/JSON transport only; archival rules and storage stay in the library.
 mod args;
-use args::Command;
-use mdreader_legacy_export::{
+use crate::{
     export, read_spec,
     reviews::{stage_reviews, ReviewArchive},
     verify, Error, Limits, Manifest, Result,
 };
+use args::Command;
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -14,9 +14,10 @@ use std::{
 
 const RECEIPT_BOUND: usize = 4096;
 const READ_BOUND: usize = 4 * 1024 * 1024 + RECEIPT_BOUND;
-pub(super) const USAGE: &str = concat!(
+pub const USAGE: &str = concat!(
     "usage: mdreader-legacy-export\n",
     "  export ABS_SPEC_JSON ABS_DESTINATION\n",
+    "  prepare-profile ABS_SPEC_JSON ABS_NEW_PROFILE\n",
     "  verify ABS_ARCHIVE\n",
     "  stage-reviews ABS_ARCHIVE EXPORT_UUID MANIFEST_SHA256 ABS_NEW_DEST\n",
     "  list-reviews ABS_STAGE EXPORT_UUID MANIFEST_SHA256 OFFSET LIMIT\n",
@@ -63,9 +64,13 @@ fn receipt(manifest: Manifest) -> Result<Vec<u8>> {
         RECEIPT_BOUND,
     )
 }
-pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<Vec<u8>> {
+pub fn run(args: impl Iterator<Item = OsString>) -> Result<Vec<u8>> {
     let limits = Limits::default();
     match args::parse(args)? {
+        Command::PrepareProfile { spec, destination } => encode(
+            &crate::migration::prepare(&spec, &destination, &limits)?,
+            RECEIPT_BOUND,
+        ),
         Command::Export { spec, destination } => {
             receipt(export(&read_spec(&spec, &limits)?, &destination, &limits)?)
         }

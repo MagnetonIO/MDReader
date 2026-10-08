@@ -2774,7 +2774,8 @@ pub(crate) fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
 }
 
 pub(crate) fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
-    let app_data = app.path().app_data_dir().map_err(|_| LibraryError::PersistFailed)?;
+    let app_data =
+        crate::reader_profile::directory(app).map_err(|_| LibraryError::PersistFailed)?;
     Ok((app_data.join("library.json"), app_data))
 }
 

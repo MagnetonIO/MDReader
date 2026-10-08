@@ -64,6 +64,7 @@ mod reader_backfill;
 mod reader_catalog;
 #[cfg(not(mobile))]
 mod reader_device;
+mod reader_profile;
 #[cfg(not(mobile))]
 mod reader_reviews;
 mod reader_workload;
@@ -259,6 +260,12 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
 }
 
 fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) {
+    launch_application_with_profile(None, terminal_runner);
+}
+fn launch_application_with_profile(
+    profile: Option<std::path::PathBuf>,
+    terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>),
+) {
     std::hint::black_box(release_identity());
     let builder = runtime_specta_builder();
 
@@ -272,16 +279,23 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .manage(mobile_assets::AssetRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            reader_profile::configure(app.handle(), profile.as_deref())
+                .map_err(std::io::Error::other)?;
             #[cfg(all(unix, not(mobile)))]
             {
-                let directory = app.path().app_data_dir()?;
+                let directory =
+                    reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
                 std::fs::create_dir_all(&directory)?;
                 let directory = directory.canonicalize()?;
                 profile_transition::startup::configure(app.handle(), &directory).map_err(|_| {
                     std::io::Error::other("Native preferences owner is unavailable")
                 })?;
             }
-            let reader_backend = reader::ReaderBackend::open(app.path().app_data_dir()?.join("reader-v1"))?;
+            let reader_backend = reader::ReaderBackend::open(
+                reader_profile::directory(app.handle())
+                    .map_err(std::io::Error::other)?
+                    .join("reader-v1"),
+            )?;
             #[cfg(not(mobile))]
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {
@@ -588,4 +602,14 @@ mod tests {
             "only {checked} commands were scanned — the attribute marker has drifted"
         );
     }
+}
+
+/// Native CLI entry; never accepts a renderer path or activates an old profile.
+pub fn run_prepared_profile(directory: std::path::PathBuf) -> Result<(), String> {
+    if !directory.is_absolute() {
+        return Err("Prepared profile must be absolute".into());
+    }
+    // Setup validates the immutable archive before constructing any owner.
+    launch_application_with_profile(Some(directory), run_tauri);
+    Ok(())
 }

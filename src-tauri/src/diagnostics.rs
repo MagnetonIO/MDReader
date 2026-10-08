@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::file_lock::AdvisoryFileLock;
@@ -843,7 +843,7 @@ fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, Diagno
 }
 
 pub(crate) fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, DiagnosticError> {
-    app.path().app_data_dir()
+    crate::reader_profile::directory(app)
         .map(|directory| directory.join("diagnostics"))
         .map_err(|_| DiagnosticError::WriteFailed {
             reason: DiagnosticFailureReason::AuthorityUnavailable,

@@ -21,6 +21,37 @@ fn main() {
     let first = args.next();
     if first
         .as_ref()
+        .is_some_and(|arg| arg == "--mdreader-legacy-export")
+    {
+        use std::io::Write;
+        let result = mdreader_legacy_export::cli::run(args).and_then(|bytes| {
+            std::io::stdout()
+                .lock()
+                .write_all(&bytes)
+                .map_err(mdreader_legacy_export::Error::from)
+        });
+        if result.is_err() {
+            eprintln!(
+                "Offline migration failed; originals retained. {}",
+                mdreader_legacy_export::cli::USAGE
+            );
+            std::process::exit(1);
+        }
+        return;
+    }
+    if first.as_ref().is_some_and(|arg| arg == "--reader-profile") {
+        let Some(profile) = args.next().filter(|_| args.next().is_none()) else {
+            eprintln!("usage: MDReader --reader-profile ABS_PREPARED_PROFILE");
+            std::process::exit(2)
+        };
+        if mdreader_app_lib::run_prepared_profile(std::path::PathBuf::from(profile)).is_err() {
+            eprintln!("Prepared reader profile unavailable; originals retained");
+            std::process::exit(1)
+        }
+        return;
+    }
+    if first
+        .as_ref()
         .is_some_and(|arg| arg == "--mdreader-capture")
     {
         let result = mdreader_capture::cli::run(args, std::io::stdin().lock());

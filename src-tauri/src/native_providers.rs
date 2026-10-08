@@ -27,7 +27,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::Manager;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -980,9 +979,7 @@ impl NativeProviders {
         if app.config().identifier != env!("MDREADER_NATIVE_APP_ID") {
             return Err(NativeProviderError::Invalid);
         }
-        let directory = app
-            .path()
-            .app_data_dir()
+        let directory = crate::reader_profile::directory(app)
             .map_err(|_| NativeProviderError::Storage)?
             .join("reader-v1");
         let ledger = CustodyLedger::open(&directory, env!("MDREADER_NATIVE_APP_ID"));
