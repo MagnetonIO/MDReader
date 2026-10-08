@@ -100,12 +100,16 @@ test('native hydration failure keeps default rendering read-only until explicit 
   vi.resetModules();
   (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
   const identity = { ownerEpoch: 'owner', rendererEpoch: 'renderer' };
+  let registrationFailure = true;
   let readFailure = true;
   let mismatchedIdentity = false;
   let writes = 0;
   native.invoke.mockImplementation(async (command: string, args?: { kind: string; generation: number }) => {
     if (command === 'native_profile_persistence_host') return 'native_atomic';
-    if (command === 'native_profile_persistence_load') return { identity, sessionJson: null, settingsJson: null };
+    if (command === 'native_profile_persistence_load') {
+      if (registrationFailure) throw new Error('synthetic interrupted registration reply');
+      return { identity, sessionJson: null, settingsJson: null };
+    }
     if (command === 'native_profile_persistence_read') {
       if (readFailure) throw new Error('private native read diagnostic');
       return { identity: mismatchedIdentity ? { ...identity, rendererEpoch: 'other' } : identity,
@@ -120,13 +124,17 @@ test('native hydration failure keeps default rendering read-only until explicit 
   const persistence = await import('./persistence.js');
   const { DEFAULT_SETTINGS } = await import('../stores/session.js');
   const session = { version: 1, root: null, activeTabId: null, tabs: [], recent: [] };
-  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {} });
+  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {}, restoreFailed: true });
   await expect(persistence.saveSession(session)).rejects.toThrow('not hydrated');
   await expect(persistence.saveSettings(DEFAULT_SETTINGS)).rejects.toThrow('not hydrated');
   expect(writes).toBe(0);
+  registrationFailure = false;
+  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {}, restoreFailed: true });
+  await expect(persistence.saveSession(session)).rejects.toThrow('not hydrated');
+  expect(writes).toBe(0);
   readFailure = false;
   mismatchedIdentity = true;
-  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {} });
+  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {}, restoreFailed: true });
   await expect(persistence.saveSession(session)).rejects.toThrow('not hydrated');
   expect(writes).toBe(0);
   mismatchedIdentity = false;
@@ -144,7 +152,7 @@ test('explicit legacy-host ordinary persistence retains its existing write behav
     throw new Error('native atomic writer must not be used');
   });
   const persistence = await import('./persistence.js');
-  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {} });
+  expect(await persistence.loadPersisted()).toEqual({ session: null, settings: {}, restoreFailed: true });
   await persistence.saveSession({ version: 1, root: null, activeTabId: null, tabs: [], recent: [] });
   expect(native.pluginWrite).toHaveBeenCalledTimes(1);
   expect(native.invoke).toHaveBeenCalledTimes(1);

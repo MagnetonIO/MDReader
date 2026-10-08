@@ -455,3 +455,24 @@ and two jobs. See [the integration receipt](native-sync-pump-integration-2026-10
 Actual account-actor HTTPS flow/cancellation acceptance, outgoing immutable
 graphs, product document/asset discovery, all-writer preservation and release
 packaging remain separate gates. No installed data or deployment changed.
+
+## Strict native preferences startup and actual actor proof, 2026-10-08
+
+Unix desktop now composes the real strict session/settings JSON owner at startup
+and omits the plugin exit-time writer. Failed hydration cannot save defaults;
+failed or timed-out close saves keep the window open with retry. The touched
+persistence responsibility moved from AppShell into a small lifecycle hook.
+The actual Tauri crate passed seven focused native cases and two existing binding/
+command-thread gates; eighteen affected frontend cases, TypeScript and scoped
+lint pass. See [the startup receipt](native-strict-persistence-2026-10-08.md).
+Six other real participants remain missing; installed preservation and durable
+activation/rollback are still unavailable. Native unused-code warnings are
+recorded, not suppressed, and strict full native Clippy remains open.
+
+The actual local HTTPS account-actor fixture now proves recovery/PKCE through
+the real transport/vault codec and encrypted Markdown/PNG publication, pin/line
+state and deletion. A cancellation mutation removing actual blocking-job drain
+failed as expected; restored source passed, together with three account cases
+and strict service feature Clippy. This uses synthetic identity/test-only keyring
+storage, not live Auth0 or OS-vault acceptance. See
+[the actor receipt](../../crates/mdreader-service/src/accounts/acceptance/README.md).

@@ -35,7 +35,7 @@ impl super::bridge::FlushChannel for TauriFlushChannel {
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn native_profile_persistence_host() -> super::types::PersistenceHost {
-    if cfg!(unix) {
+    if cfg!(all(unix, not(mobile))) {
         super::types::PersistenceHost::NativeAtomic
     } else {
         super::types::PersistenceHost::LegacyHost

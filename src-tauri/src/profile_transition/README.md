@@ -1,10 +1,14 @@
-# Native profile writer admission (unregistered)
+# Native profile writer admission and strict JSON ownership
 
-Based on accepted integration `e766942`. The portable foundation and the two
-exact-native-module fixtures pass; strict harness Clippy passes. The module is
-not registered in app startup and no existing command,
-renderer, SDK, daemon or hook is protected by it. No installed profile was read
-or changed. No production activation/rollback acceptance is claimed.
+The original portable foundation was based on integration `e766942`. The latest
+Unix desktop startup composes the real session/settings JSON owner and removes
+the plugin's exit-time writer for those hosts. Six other actual participants
+remain missing; SDK, daemon, editor and hook quiescence are not established.
+Installed preservation and selector activation/rollback remain unavailable.
+Windows/mobile retain ordinary plugin-backed persistence and do not acquire
+installed-preservation authority. See the current
+[native startup receipt](../../../docs/development/native-strict-persistence-2026-10-08.md).
+No installed profile was read or changed during validation.
 
 `NativeProfileTransition::new(&Inventory)` binds one explicitly captured native
 profile root and mints a fresh process owner epoch. Composition registers exactly

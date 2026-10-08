@@ -1,5 +1,5 @@
-//! Sole strict owner for the desktop session/settings JSON wrappers. Startup
-//! must remove plugin writers and register this owner before exposing commands.
+//! Sole strict owner for Unix desktop session/settings JSON wrappers. Startup
+//! omits the plugin writer and registers this owner before exposing commands.
 //! Preservation flush/event wiring is a separate composition responsibility.
 pub(crate) mod bridge;
 #[cfg(all(test, unix))]

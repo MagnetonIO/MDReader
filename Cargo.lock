@@ -4639,6 +4639,7 @@ dependencies = [
  "mdreader-ingest",
  "mdreader-legacy-export",
  "mdreader-mcp",
+ "mdreader-profile",
  "mdreader-provider",
  "mdreader-service",
  "mdreader-sync",

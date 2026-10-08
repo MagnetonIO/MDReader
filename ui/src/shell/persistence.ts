@@ -52,7 +52,11 @@ interface NativeLoaded {
   identity: RendererIdentity; sessionJson: string | null; settingsJson: string | null;
 }
 export interface LatestPersistence { session: SessionData; settings: SettingsSnapshot }
-export interface LoadedState { session: RestoredSession | null; settings: Partial<SettingsSnapshot> }
+export interface LoadedState {
+  session: RestoredSession | null; settings: Partial<SettingsSnapshot>;
+  /** Fixed diagnostic only; defaults after this failure must not be saved. */
+  restoreFailed?: true;
+}
 
 let registration: Promise<NativeLoaded> | undefined;
 let host: Promise<'native_atomic' | 'legacy_host'> | undefined;
@@ -71,13 +75,30 @@ function requireHydration(identity: RendererIdentity, attempt = hydrationAttempt
 }
 
 function registered(): Promise<NativeLoaded> {
-  return (registration ??= invoke<NativeLoaded>('native_profile_persistence_load'));
+  if (!registration) {
+    const pending = invoke<NativeLoaded>('native_profile_persistence_load').catch((error: unknown) => {
+      // A lost first reply must not poison every later explicit reload. The
+      // next registration rotates the native renderer epoch; hydration still
+      // has to read and verify that exact new identity before permitting saves.
+      if (registration === pending) registration = undefined;
+      throw error;
+    });
+    registration = pending;
+  }
+  return registration;
 }
 function persistenceHost(): Promise<'native_atomic' | 'legacy_host'> {
-  return (host ??= invoke<'native_atomic' | 'legacy_host'>('native_profile_persistence_host').then((mode) => {
-    if (mode !== 'native_atomic' && mode !== 'legacy_host') throw new Error('Invalid persistence host');
-    return mode;
-  }));
+  if (!host) {
+    const pending = invoke<'native_atomic' | 'legacy_host'>('native_profile_persistence_host').then((mode) => {
+      if (mode !== 'native_atomic' && mode !== 'legacy_host') throw new Error('Invalid persistence host');
+      return mode;
+    }).catch((error: unknown) => {
+      if (host === pending) host = undefined;
+      throw error;
+    });
+    host = pending;
+  }
+  return host;
 }
 function next(kind: 'session' | 'settings'): number {
   const generation = kind === 'session' ? ++sessionGeneration : ++settingsGeneration;
@@ -114,7 +135,7 @@ export async function loadPersisted(): Promise<LoadedState> {
     };
     if (attempt === hydrationAttempt) hydrated = { attempt, identity: { ...loaded.identity } };
     return state;
-  } catch { return { session: null, settings: {} }; }
+  } catch { return { session: null, settings: {}, restoreFailed: true }; }
 }
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

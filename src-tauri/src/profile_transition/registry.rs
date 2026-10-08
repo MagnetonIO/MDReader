@@ -75,8 +75,11 @@ pub(crate) struct Registry {
 }
 impl Registry {
     pub(crate) fn new(inventory: &Inventory) -> Self {
+        Self::for_root(inventory.binding().clone())
+    }
+    pub(crate) fn for_root(root: RootBinding) -> Self {
         Self {
-            root: inventory.binding().clone(),
+            root,
             admission: Admission::new(),
             participants: (0..REQUIRED_PARTICIPANTS.len()).map(|_| None).collect(),
         }
