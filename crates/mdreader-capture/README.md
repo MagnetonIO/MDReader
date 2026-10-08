@@ -103,15 +103,24 @@ On Unix, files are created with mode 0600 in mode 0700 directories. Temporary wr
 
 Defaults: 256 KiB input/event, 128 pending events, 8 MiB pending bytes, 2 MiB Markdown projection (including frontmatter, matching reader document admission), 1024 provenance occurrences per body. Exceeding a bound rejects the complete operation and retains prior durable state. Owner-selected limits are themselves bounded; the projection cap cannot exceed the reader's 2 MiB document limit. Immutable Markdown and receipts are retained after draining; storage-retention/export policy belongs to the library, not automatic index cleanup. A full provenance body remains readable while the next occurrence stays queued with an explicit capacity error.
 
-**Windows durable publication is not implemented in this slice.** `Spool::open` fails with `Unsupported` before any filesystem mutation rather than treating directory syncing as a successful no-op. A correct private-ACL/reparse-safe, handle-pinned implementation with `FlushFileBuffers` and write-through publication, followed by real Windows crash/restart tests, is required for v1. Unix compilation or Windows cross-compilation is not Windows runtime acceptance.
+**Windows durable publication remains disabled.** `Spool::open` returns the typed `UnsupportedPlatform` error before filesystem mutation. The isolated Windows primitives create and verify a protected current-user/SYSTEM DACL on opened handles, reject remote/non-NTFS volumes and reparse ancestors, retain full volume/file identities, reject hardlinked files, classify nonblocking lock contention, and implement write-through file flushing with handle-relative replacement. These primitives are not an enabled capture spool or Windows runtime acceptance.
+
+The remaining blocker is a defensible namespace durability barrier for publication, receipts and pending-event deletion. [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) documents file/volume flushing, without establishing directory namespace fsync equivalence. [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) describes its explicit write-through flush guarantee for copy/delete moves. [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) documents write-through caching behavior, and [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info) supports the pinned destination directory used here; neither is treated as proof of the complete durable queue protocol. The implementation does not substitute a successful no-op. Windows process-crash, power-loss, ACL/reparse/concurrent replacement and hook-budget acceptance remain open; cross-compilation alone completes none of them.
+
+The filesystem boundary is under `src/platform/`; policy validation, projection encoding, queue state and publication have separate cohesive modules. Unix filesystem operations, durable record JSON and public capture calls are preserved.
 
 Live hook trust/install/uninstall preservation, agent-version compatibility, real Claude→Codex/reader/MCP retrieval, host latency budgets, Linux/mobile runtime behavior, markerless paraphrase suppression and Windows durability remain separate acceptance gates. This crate's tests do not complete Task 3 or authorize publishing/merging/installing anything.
 
 ## Validation
 
 ```sh
-CARGO_TARGET_DIR=/Users/mlong/Library/Caches/MDReader/capture-target cargo test -p mdreader-capture
+CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-capture
+CARGO_BUILD_JOBS=2 cargo clippy --locked -p mdreader-capture --all-targets -- -D warnings
+# With the Windows GNU Rust target already installed, no linker/runtime implied:
+CARGO_BUILD_JOBS=2 cargo check --locked -p mdreader-capture --all-targets --target x86_64-pc-windows-gnu --features blake3/pure
 ```
+
+The platform extraction was checked with the pinned Rust 1.94.0 toolchain: all 25 existing macOS capture tests passed, and strict all-target Clippy passed for both macOS and `x86_64-pc-windows-gnu`. Windows all-target checking also passed with the check-only `blake3/pure` feature because this host has no MinGW C compiler/linker. No dependency versions changed. The three Windows-only tests compile and cover fail-before-mutation, strict inherited-DACL/hardlink rejection and bounded locking, and retained-directory/handle-relative replacement with exact bounded bytes; they have not run on a Windows host. Reparse/junction mutation, concurrent namespace attacks, crash/power-loss durability and hook timing still need real Windows evidence.
 
 The synthetic temporary-filesystem suite covers enqueue/reopen/ack, corrupt events and receipts, body revisions, replay/fork/subagent authorship, hook/notify deduplication, policy revocation, source/exclusion boundaries, queue/provenance bounds, nonblocking lock failure, orphan recovery and symlink escapes. Real hook subprocesses prove both agents enqueue with the reader/model absent, JSON output does not request continuation, selected synthetic backfill is explicit, and a process killed after projection replays without losing the Markdown body or duplicating provenance.
 
