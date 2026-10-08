@@ -6,11 +6,13 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[path = "reader/admission.rs"]
+mod admission;
 #[cfg(any(mobile, test))]
 use std::sync::Mutex;
 
 #[derive(Clone)]
-pub(crate) struct ReaderBackend(Arc<Transport>);
+pub(crate) struct ReaderBackend(Arc<Transport>, Arc<admission::Gate>);
 enum Transport {
     #[cfg(not(mobile))]
     Desktop {
@@ -21,10 +23,20 @@ enum Transport {
     Embedded(Box<Mutex<mdreader_core::ReaderStore>>),
 }
 impl ReaderBackend {
+    pub(crate) fn bind_profile_admission(
+        &self,
+        profile: &Arc<crate::profile_transition::NativeProfileTransition>,
+    ) -> Result<(), String> {
+        self.1.bind(profile)
+    }
     /// Preserve typed service failures at native owner boundaries. Renderer
     /// adapters may format these later; provider revisions must remain conflicts.
     #[cfg(not(mobile))]
     pub(crate) fn call_native(&self, request: Request) -> mdreader_core::Result<Value> {
+        let _lease = self
+            .1
+            .enter()
+            .map_err(|_| mdreader_core::ReaderError::Unavailable)?;
         match self.0.as_ref() {
             Transport::Desktop {
                 directory,
@@ -68,10 +80,13 @@ impl ReaderBackend {
     pub(crate) fn open(directory: PathBuf) -> Result<Self, String> {
         #[cfg(not(mobile))]
         {
-            Ok(Self(Arc::new(Transport::Desktop {
-                directory,
-                executable: std::env::current_exe().map_err(|e| e.to_string())?,
-            })))
+            Ok(Self(
+                Arc::new(Transport::Desktop {
+                    directory,
+                    executable: std::env::current_exe().map_err(|e| e.to_string())?,
+                }),
+                Arc::default(),
+            ))
         }
         #[cfg(mobile)]
         {
@@ -80,11 +95,15 @@ impl ReaderBackend {
     }
     #[cfg(any(mobile, test))]
     pub(crate) fn embedded(directory: &Path) -> Result<Self, String> {
-        Ok(Self(Arc::new(Transport::Embedded(Box::new(Mutex::new(
-            mdreader_core::ReaderStore::open(directory).map_err(|e| e.to_string())?,
-        ))))))
+        Ok(Self(
+            Arc::new(Transport::Embedded(Box::new(Mutex::new(
+                mdreader_core::ReaderStore::open(directory).map_err(|e| e.to_string())?,
+            )))),
+            Arc::default(),
+        ))
     }
     pub(crate) fn call(&self, request: Request) -> Result<Value, String> {
+        let _lease = self.1.enter()?;
         match self.0.as_ref() {
             #[cfg(not(mobile))]
             Transport::Desktop {

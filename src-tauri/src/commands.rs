@@ -566,6 +566,7 @@ impl Drop for SaveLock {
 #[tauri::command(async)]
 #[specta::specta]
 pub fn save_doc(
+    app: AppHandle,
     path: String,
     content: String,
     expected_hash: String,
@@ -573,7 +574,7 @@ pub fn save_doc(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<SaveOutcome, String> {
     save_doc_guarded(
-        &state,
+        &*crate::profile_transition::workspace::admit(&app, &state)?,
         &path,
         &content,
         &expected_hash,

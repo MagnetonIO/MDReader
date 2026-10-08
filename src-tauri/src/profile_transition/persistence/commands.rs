@@ -46,6 +46,7 @@ pub(crate) struct PersistenceState {
     pub owner: Arc<JsonOwner>,
     pub transition: Arc<NativeProfileTransition>,
     pub flush: Arc<super::bridge::FlushBridge>,
+    pub editor: Option<Arc<super::editor::EditorOwner>>,
 }
 
 #[tauri::command]
