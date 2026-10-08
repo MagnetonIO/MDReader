@@ -8,6 +8,7 @@ import { CloseIcon } from './icons.js';
 import { AppearanceSettings } from '../features/settings/AppearanceSettings.js';
 import { LibrarySettings } from '../features/settings/LibrarySettings.js';
 import { DiagnosticSettings } from '../features/settings/DiagnosticSettings.js';
+import { ReadingLinkOpen } from '../features/document-transfer/ReadingLinkOpen.js';
 import { MigrationSettings } from '../features/settings/MigrationSettings.js';
 import { SettingsConfirmations } from '../features/settings/SettingsConfirmations.js';
 import { useSettingsController } from '../features/settings/useSettingsController.js';
@@ -96,6 +97,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               {onOpenProviderDocument ? (
                 <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} />
               ) : <p>Cloud sources are unavailable in this context.</p>}
+              {props.onOpenReadingLink ? <ReadingLinkOpen onOpen={props.onOpenReadingLink} /> : null}
             </div>
             <section id="settings-category-account" hidden={category !== 'account'} aria-labelledby="settings-account-title">
               <h2 id="settings-account-title">Account &amp; sync</h2>

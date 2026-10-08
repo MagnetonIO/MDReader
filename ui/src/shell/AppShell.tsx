@@ -92,7 +92,6 @@ import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/u
 import { useProviderEditing } from '../features/provider-editing/useProviderEditing';
 import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
 import { DEVICE_READ_CHANGED } from '../features/device-reader/changed';
-import { ReadingLinkOpen } from '../features/document-transfer/ReadingLinkOpen';
 import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
 import './shell.css';
@@ -151,7 +150,7 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'appearance' | 'advanced'>('appearance');
+  const [settingsSection, setSettingsSection] = useState<'appearance' | 'library' | 'advanced'>('appearance');
   const openMigration = useCallback(() => {
     setSettingsSection('advanced');
     setSettingsOpen(true);
@@ -1677,13 +1676,12 @@ export function AppShell() {
               onProviderSelectionChange={setSelectedProviderSources}
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
-              onManage={() => setSettingsOpen(true)}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /><ReadingLinkOpen onOpen={openCatalogDocument} /></>
+              onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
+            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
-          onMigration={openMigration}
         />
 
         <main className="shell__main">
@@ -1814,6 +1812,7 @@ export function AppShell() {
           onSourceIntent={beginSourceIntent}
           onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); }}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
+          onOpenReadingLink={openProviderDocument}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}

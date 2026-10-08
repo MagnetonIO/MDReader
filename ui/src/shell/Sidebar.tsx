@@ -23,7 +23,6 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
-  onMigration?: () => void;
 }
 
 function basename(path: string): string {
@@ -70,7 +69,6 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
-  onMigration,
 }: SidebarProps) {
   return (
     <aside
@@ -115,9 +113,6 @@ export function Sidebar({
       )}
 
       {providerSources}
-      {onMigration ? <div className="legacy-records-entry">
-        <button type="button" onClick={onMigration}>Migration &amp; archived records</button>
-      </div> : null}
 
       {recent.length > 0 ? (
         <nav className="recent" aria-label="Recent documents">

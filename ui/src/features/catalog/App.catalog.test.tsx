@@ -57,14 +57,14 @@ afterEach(() => {
   useEditorStore.getState().reset();
 });
 async function openCurrent() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Browse catalog Retained notes' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Read exact Current note' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Retained notes' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Current note' }));
   return screen.findByRole('heading', { name: /Canonical content/ });
 }
 
 test('primary startup lists canonical sources only and reads the exact selection in the normal main reader', async () => {
   render(<App />);
-  await screen.findByRole('button', { name: 'Browse catalog Retained notes' });
+  await screen.findByRole('button', { name: 'Browse Retained notes' });
   await openCurrent();
   expect(within(screen.getByRole('main')).getByRole('heading', { name: /Canonical content/ })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Catalog document' })).toBeNull();
@@ -81,8 +81,8 @@ test('published device receipts open inline through the service device reader wi
   const read = vi.spyOn(deviceReaderBackend, 'read').mockResolvedValue({ operation: 'read_document', documentId: deviceId, sourceId, path: 'document.md', revision, markdown: '# Received device copy', lineStart: 1, lineEnd: 1 });
   vi.spyOn(deviceReaderBackend, 'manifest').mockResolvedValue(null);
   render(<App />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Browse catalog On this device' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Read exact Received copy' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse On this device' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Received copy' }));
   expect(await within(screen.getByRole('main')).findByRole('heading', { name: /Received device copy/ })).toBeTruthy();
   expect(read).toHaveBeenCalledWith({ documentId: deviceId, sourceId, path: 'document.md', revision, title: 'Received copy', line: 1 });
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
@@ -101,7 +101,7 @@ test('migration opens explicitly while historical Recent keeps its identity with
   const reference = { kind: 'cloud' as const, sourceId: 'historical-source', recordKey: 'historical-key',
     documentKey: 'historical-document-key', name: 'Historical recent' };
   render(<App />);
-  await screen.findByRole('button', { name: 'Browse catalog Retained notes' });
+  await screen.findByRole('button', { name: 'Browse Retained notes' });
   act(() => useSourcesStore.getState().addRecent(reference, null));
   fireEvent.click(screen.getByRole('button', { name: 'Historical recent' }));
   expect(await screen.findByRole('heading', { name: 'Historical recent' })).toBeTruthy();
@@ -188,7 +188,7 @@ test('a new canonical selection closes its archive and a late comparison cannot 
     markdown: reference.path === 'new.md' ? '# New exact selection' : '# Canonical content', lineStart: 1, lineEnd: 1 }));
   render(<App />);
   await openCurrent();
-  const replacement = screen.getByRole('button', { name: 'Read exact New selection' });
+  const replacement = screen.getByRole('button', { name: 'Open New selection' });
   await openArchive();
   fireEvent.click(screen.getByRole('button', { name: 'Compare with open document' }));
   await waitFor(() => expect(archivedReviewsBackend.compare).toHaveBeenCalledOnce());

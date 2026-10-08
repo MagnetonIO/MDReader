@@ -16,10 +16,10 @@ export function ReadingLinkOpen({ onOpen }: { onOpen(reference: CanonicalReaderR
   }
   return <details className="reading-link-open">
     <summary>Open reading link</summary>
-    <p>Paste an exact receipt from this library. Missing or revoked sources stay unavailable; this does not connect a source or fetch a newer revision.</p>
+    <p>Paste a link copied from MDReader to return to that document and revision. Its source must still be available in this library.</p>
     <label htmlFor={id}>MDReader reading link</label>
     <input id={id} value={value} maxLength={16384} onChange={(event) => setValue(event.target.value)} />
-    <button type="button" disabled={!value.trim() || busy} onClick={() => void open()}>Open exact revision</button>
+    <button type="button" disabled={!value.trim() || busy} onClick={() => void open()}>Open document</button>
     {error ? <p role="alert">{error}</p> : null}
   </details>;
 }

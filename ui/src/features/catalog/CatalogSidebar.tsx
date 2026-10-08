@@ -15,6 +15,7 @@ import {
 } from '../../platform/providers';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
+import { ChevronRight, DocIcon, FolderIcon } from '../../shell/icons';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -215,60 +216,76 @@ export function CatalogSidebar({
 
   return (
     <section className="reader-catalog" aria-label="Reader catalog">
-      <header>
-        <strong>Library catalog</strong>
-        <button type="button" disabled={busy} onClick={() => setReload((n) => n + 1)}>
-          Reload catalog
-        </button>
-        <button type="button" onClick={onManage}>Manage catalog sources</button>
+      <header className="reader-catalog__header">
+        <h2>Library</h2>
+        <div className="reader-catalog__actions">
+          <button className="reader-catalog__refresh" type="button" disabled={busy}
+            aria-label="Refresh library" title="Refresh library" onClick={() => setReload((n) => n + 1)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 7v5h-5M4 17v-5h5" />
+              <path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
+            </svg>
+          </button>
+          <button type="button" onClick={onManage}>Add source</button>
+        </div>
       </header>
-      {onProviderSelectionChange ? (
-        <p role="status">{selectedProviderSources.length
-          ? `${selectedProviderSources.length} cloud sources included in search with the active folder.`
-          : 'Search uses the active folder. Select admitted cloud sources below to include their cached documents.'}
-        </p>
-      ) : null}
       {searchError ? <p role="alert">{searchError}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
-      {!busy && !sources.length ? <p>No catalog sources. Add or activate a source in Settings.</p> : null}
+      {busy && !sources.length ? <p role="status">Loading your library…</p> : null}
+      {!busy && !sources.length ? <p className="reader-catalog__empty">Add a folder or connect a cloud source to start reading.</p> : null}
       {sources.map((source) => {
         const readerSourceId = searchSources[source.catalogId.slice(7)];
+        const needsActivation = source.coverage === 'needs_activation';
+        const expanded = page?.source.catalogId === source.catalogId;
         return (
           <div className="reader-catalog__source" key={source.catalogId}>
-            <strong>{source.name}</strong>
-            <small>
-              {source.kind === 'capture' ? 'Agent captures' : source.kind === 'device' ? 'Device library' : source.kind === 'local' ? 'Folder'
-                : source.kind === 'google_drive' ? 'Google Drive'
-                  : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
-              {' · '}{coverageLabel(source.coverage)}
-            </small>
+            <button type="button" className="reader-catalog__source-open"
+              aria-label={`${needsActivation ? 'Activate' : 'Browse'} ${source.name}`}
+              aria-expanded={needsActivation ? undefined : expanded}
+              disabled={!needsActivation && (busy || !source.enabled || Boolean(source.failure))}
+              onClick={() => {
+                if (needsActivation) onManage();
+                else if (expanded) {
+                  ++turn.current;
+                  active.current = null;
+                  closeCursor();
+                  setPage(null);
+                } else void browse(source);
+              }}>
+              {source.kind === 'local' ? <FolderIcon /> : <DocIcon />}
+              <span className="reader-catalog__source-label">
+                <strong>{source.name}</strong>
+                <small>
+                  {source.kind === 'capture' ? 'Captured notes' : source.kind === 'device' ? 'On this device' : source.kind === 'local' ? 'Folder'
+                    : source.kind === 'google_drive' ? 'Google Drive'
+                      : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
+                  {' · '}{coverageLabel(source.coverage)}
+                </small>
+              </span>
+              <ChevronRight className="reader-catalog__chevron" />
+            </button>
             {onProviderSelectionChange && source.catalogId.startsWith('remote:') ? (
-              <label>
-                <input
-                  type="checkbox"
+              <label className="reader-catalog__search-selection">
+                <input type="checkbox"
                   checked={Boolean(readerSourceId && selectedProviderSources.includes(readerSourceId))}
                   disabled={!source.enabled || !readerSourceId}
                   onChange={(event) => {
                     if (readerSourceId) selectProvider(readerSourceId, event.currentTarget.checked);
-                  }}
-                />
+                  }} />
                 Include {source.name} in search
               </label>
             ) : null}
-            {source.failure ? <p>{catalogErrorMessage(source.failure)}</p> : null}
-            {source.coverage === 'needs_activation' ? (
-              <button type="button" onClick={onManage}>Activate {source.name} in Settings</button>
-            ) : (
-              <button
-                type="button"
-                aria-pressed={page?.source.catalogId === source.catalogId}
-                disabled={busy || !source.enabled || Boolean(source.failure)}
-                onClick={() => void browse(source)}
-              >Browse catalog {source.name}</button>
-            )}
+            {source.failure ? <p role="status">{catalogErrorMessage(source.failure)}</p> : null}
           </div>
         );
       })}
+      {onProviderSelectionChange && sources.some((source) => source.catalogId.startsWith('remote:')) ? (
+        <p className="reader-catalog__search-help" role="status">
+          {selectedProviderSources.length ? `${selectedProviderSources.length} cloud ${selectedProviderSources.length === 1 ? 'source' : 'sources'} included in search. ` : 'Choose cloud sources to search their saved copies. '}
+          Your open folder, captured notes and device documents are searched when available.
+        </p>
+      ) : null}
       {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy}
         onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} /> : null}
     </section>
@@ -277,7 +294,7 @@ export function CatalogSidebar({
 
 function coverageLabel(coverage: string) {
   const labels: Record<string, string> = {
-    needs_activation: 'Activate to browse', not_indexed: 'Index needed', indexed_observation: 'Indexed',
+    needs_activation: 'Activate to browse', not_indexed: 'Not indexed yet', indexed_observation: 'Indexed',
     historical_index_coverage_unknown: 'Refresh index needed', metadata_complete_selected: 'Selected documents',
     metadata_partial_selected: 'More metadata available', published_device_documents: 'Local copies',
   };

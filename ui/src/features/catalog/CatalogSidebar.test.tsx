@@ -9,11 +9,11 @@ function backend(){return {list:vi.fn(async()=>({operation:'list' as const,sourc
 afterEach(cleanup);
 test('catalog lists without fetch/admission and opens exact local evidence without filesystem path construction',async()=>{
     const api=backend();const fetchCurrent=vi.fn();const open=vi.fn();render(<CatalogSidebar backend={api} providers={{fetchCurrent}} onOpen={open} onManage={vi.fn()}/>);
-    fireEvent.click(await screen.findByRole('button',{name:'Browse catalog Selected folder'}));
-    fireEvent.click(await screen.findByRole('button',{name:'Read exact Plan'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Browse Selected folder'}));
+    fireEvent.click(await screen.findByRole('button',{name:'Open Plan'}));
     expect(open).toHaveBeenCalledWith({sourceId:localId,path:'plan.md',revision:'b'.repeat(64),title:'Plan',line:1});expect(fetchCurrent).not.toHaveBeenCalled();expect(api.readDocument).not.toHaveBeenCalled();
-    api.page.mockRejectedValueOnce(new CatalogError('stale'));fireEvent.click(screen.getByRole('button',{name:'More catalog documents'}));
-    expect((await screen.findByRole('alert')).textContent).toContain('catalog changed');expect(screen.queryByRole('button',{name:'Read exact Plan'})).toBeNull();expect(api.close).toHaveBeenCalledWith('cursor-a');
+    api.page.mockRejectedValueOnce(new CatalogError('stale'));fireEvent.click(screen.getByRole('button',{name:'Load more documents'}));
+    expect((await screen.findByRole('alert')).textContent).toContain('catalog changed');expect(screen.queryByRole('button',{name:'Open Plan'})).toBeNull();expect(api.close).toHaveBeenCalledWith('cursor-a');
 });
 test('uncached provider fetch is explicit, wrong binding rejected and a late reply cannot open after refresh',async()=>{
     const api=backend();const cloud={...source,catalogId:'remote:selected',kind:'google_drive'};api.list.mockResolvedValue({operation:'list',sources:[cloud],providerFailure:null,localFailure:null});
@@ -22,7 +22,7 @@ test('uncached provider fetch is explicit, wrong binding rejected and a late rep
     let finish!:(value:{jobId:string;readerSourceId:string;path:string;revision:string})=>void;
     const fetchCurrent=vi.fn(()=>new Promise<{jobId:string;readerSourceId:string;path:string;revision:string}>((resolve)=>{finish=resolve;}));const open=vi.fn();
     const props={backend:api,providers:{fetchCurrent},onOpen:open,onManage:vi.fn()};const view=render(<CatalogSidebar {...props}/>);
-    fireEvent.click(await screen.findByRole('button',{name:'Browse catalog Selected folder'}));expect(fetchCurrent).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button',{name:'Browse Selected folder'}));expect(fetchCurrent).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button',{name:'Fetch current Plan'}));
     await act(async()=>finish({jobId:'job',readerSourceId:`provider:${'c'.repeat(64)}`,path:`records/${'d'.repeat(64)}.md`,revision:'b'.repeat(64)}));
     expect((await screen.findByRole('alert')).textContent).toContain('binding could not be verified');expect(open).not.toHaveBeenCalled();

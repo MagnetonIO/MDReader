@@ -19,5 +19,6 @@ export interface SettingsSheetProps {
   onSourceIntent?: () => void;
   onLibraryChanged?: () => void;
   onOpenProviderDocument?: (reference: ProviderReaderReference) => Promise<void>;
+  onOpenReadingLink?: (reference: ProviderReaderReference) => void | Promise<void>;
   onClose: () => void;
 }

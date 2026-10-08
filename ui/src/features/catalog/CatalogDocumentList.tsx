@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { CatalogDocument, CatalogPage } from './backend';
+import { DocIcon } from '../../shell/icons';
 
 export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
   page: CatalogPage;
@@ -14,9 +15,8 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
       .toLocaleLowerCase().includes(query)) : page.documents;
   }, [filter, page.documents]);
   return <section className="reader-catalog__documents" aria-label={`Catalog documents ${page.source.name}`}>
-    <h3>{page.source.name}</h3>
-    {page.documents.length ? <label className="reader-catalog__filter">
-      Filter loaded documents
+    {page.documents.length > 8 ? <label className="reader-catalog__filter">
+      Find in these documents
       <input type="search" value={filter} maxLength={256} onChange={(event) => setFilter(event.target.value)} />
     </label> : null}
     <p role="status">{filter.trim() ? `${shown.length} matching documents · ` : ''}{page.documents.length} documents loaded.</p>
@@ -33,8 +33,11 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
     </details>
     {shown.map((document) => <div className="reader-catalog__document" key={document.open.kind === 'exact'
       ? `${document.open.sourceId}:${document.open.path}` : document.open.documentId}>
-      <button type="button" disabled={busy} onClick={() => onOpen(document)}>
-        {document.open.kind === 'selected_uncached' ? 'Fetch current' : 'Read exact'} {document.name}
+      <button type="button" disabled={busy}
+        aria-label={`${document.open.kind === 'selected_uncached' ? 'Fetch current' : 'Open'} ${document.name}`}
+        onClick={() => onOpen(document)}>
+        <DocIcon />
+        <span>{document.open.kind === 'selected_uncached' ? 'Fetch current: ' : ''}{document.name}</span>
       </button>
       <small>{document.displayPath}</small>
       {document.modifiedAtMs !== null || document.sizeBytes !== null ? <small>
@@ -49,7 +52,7 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
       : page.source.coverage === 'historical_index_coverage_unknown'
         ? 'No documents observed. Refresh this source’s index in Settings.'
         : 'No documents in this source observation.'}</p> : null}
-    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={busy} onClick={onMore}>More catalog documents</button> : null}
+    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={busy} onClick={onMore}>Load more documents</button> : null}
     {page.nextCursor && page.documents.length >= 1000 ? <p>Showing the first 1,000 documents. Use global search for other documents.</p> : null}
   </section>;
 }
