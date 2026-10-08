@@ -289,7 +289,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(hits[0].path, "plan.md");
-        assert!(epoch.db().is_none());
         assert!(data.path().join("library.sqlite").exists());
         assert!(data.path().join("index.sqlite").exists());
         assert!(!data.path().join("catdb.db").exists());
@@ -321,7 +320,6 @@ mod tests {
         assert_eq!(result.hits[0].file_path, "plan.md");
         assert!(result.hits[0].revision.is_some());
         assert!(result.semantic_unavailable.is_some());
-        assert!(epoch.db().is_none());
         let stale =
             crate::search::search_reader(&backend, &workspace, "offline", &options, |batch| {
                 if batch.phase == "lexical" {
@@ -400,7 +398,6 @@ mod tests {
             missing.availability.vector,
             crate::search::RelatedVectorStateDto::AnchorMissing
         ));
-        assert!(epoch.db().is_none());
     }
     #[tokio::test]
     async fn source_changes_requeue_even_when_an_import_progress_listener_is_active() {

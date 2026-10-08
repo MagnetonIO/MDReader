@@ -21,7 +21,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceError, CloudSourceRecord};
 use crate::file_lock::AdvisoryFileLock;
-use mdreader_ingest::{SourceRoot, SourceRootIdentity};
+use mdreader_core::{SourceRoot, SourceRootIdentity};
 
 pub(crate) const LIBRARY_VERSION: u32 = 9;
 const MAX_LIBRARY_SOURCES: usize = 128;
@@ -43,6 +43,7 @@ pub(crate) enum LibraryError {
     PersistFailed,
     CleanupFailed { reason: LibraryCleanupReason },
     NeedsNativeRepick,
+    OfflineMigrationRequired,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
@@ -86,6 +87,9 @@ impl std::fmt::Display for LibraryError {
                     LibraryCleanupReason::RollbackFailed => "rollback-failed",
                 }
             ),
+            Self::OfflineMigrationRequired => {
+                formatter.write_str("offline-legacy-migration-required")
+            }
             Self::NeedsNativeRepick => formatter.write_str("needs-native-repick"),
         }
     }
@@ -1101,9 +1105,10 @@ impl LibraryRegistry {
                 index_state: source.identity.as_ref().map_or(
                     LibraryIndexState::Unknown,
                     |identity| {
-                        let db = mdreader_ingest::workspace_index_path_for_stable_identity(
-                            app_data, identity,
-                        );
+                        let db =
+                            mdreader_core::source_root::workspace_index_path_for_stable_identity(
+                                app_data, identity,
+                            );
                         if db.is_file() {
                             LibraryIndexState::Present
                         } else {
@@ -1881,167 +1886,24 @@ fn recover_v2_engine_source_id(
     app_data: &Path,
     source: &LibrarySourceV2,
 ) -> Result<Option<uuid::Uuid>, LibraryError> {
-    recover_v2_engine_source_id_with_hooks(app_data, source, |_| {}, |_| {})
-}
-
-fn recover_v2_engine_source_id_with_hooks(
-    app_data: &Path,
-    source: &LibrarySourceV2,
-    before_open: impl FnOnce(&Path),
-    after_open: impl FnOnce(&Path),
-) -> Result<Option<uuid::Uuid>, LibraryError> {
     let identity = source
         .identity
         .as_ref()
         .ok_or(LibraryError::CorruptRegistry)?;
     let source_path = source.path.restore()?;
-    let old_workspace = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+    let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
         app_data,
         &source_path,
         identity,
-    )
-    .parent()
-    .ok_or(LibraryError::PersistFailed)?
-    .to_path_buf();
-    let new_workspace =
-        mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
-            .parent()
-            .ok_or(LibraryError::PersistFailed)?
-            .to_path_buf();
-
-    let old_present = managed_directory_present(&old_workspace)?;
-    let new_present = managed_directory_present(&new_workspace)?;
-    let workspace = match (old_present, new_present) {
-        (true, false) => old_workspace,
-        (false, true) => new_workspace,
-        (false, false) => return Ok(None),
-        (true, true) => {
-            return Err(LibraryError::CleanupFailed {
-                reason: LibraryCleanupReason::ManagedStateUnavailable,
-            })
-        }
-    };
-    let db_path = workspace.join("catdb.db");
-    let db_metadata = match fs::symlink_metadata(&db_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(LibraryError::CorruptRegistry)
-        }
-        Err(_) => return Err(LibraryError::CorruptRegistry),
-    };
-    if db_metadata.file_type().is_symlink() || !db_metadata.is_file() {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    ensure_no_sqlite_recovery_sidecars(&db_path)?;
-
-    // Hold the exact checked file open while SQLite opens a platform-specific
-    // binding to it. A final name-to-handle comparison also rejects a
-    // one-directional replacement, while the bound connection prevents an ABA
-    // replacement from changing which database is read.
-    let open_path = fs::canonicalize(&db_path).map_err(|_| LibraryError::CorruptRegistry)?;
-    let checked_file =
-        same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
-    before_open(&db_path);
-    let (connection, _connection_guard) = open_checked_v2_connection(&open_path, &checked_file)?;
-    after_open(&db_path);
-    let opened_file =
-        same_file::Handle::from_path(&open_path).map_err(|_| LibraryError::CorruptRegistry)?;
-    if checked_file != opened_file {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    ensure_no_sqlite_recovery_sidecars(&db_path)?;
-    let inspected = catdb_sdk::storage_sqlite::inspect_single_source_catalog_for_adoption(&connection)
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    // Registry V2 was introduced against CatDB v7. Earlier schemas were never
-    // V2 producers; later supported schemas remain migration-owned and are
-    // accepted only after storage validates their exact contract.
-    const EARLIEST_V2_CATDB_SCHEMA_VERSION: i64 = 7;
-    if inspected.schema_version() < EARLIEST_V2_CATDB_SCHEMA_VERSION {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    let expected_root = source_path.display().to_string();
-    if inspected.root_path() != expected_root {
-        return Err(LibraryError::CorruptRegistry);
-    }
-    Ok(Some(inspected.source_id()))
-}
-
-fn ensure_no_sqlite_recovery_sidecars(db_path: &Path) -> Result<(), LibraryError> {
-    for suffix in ["-wal", "-shm", "-journal"] {
-        let mut sidecar = db_path.as_os_str().to_os_string();
-        sidecar.push(suffix);
-        match fs::symlink_metadata(PathBuf::from(sidecar)) {
-            Ok(_) => return Err(LibraryError::CorruptRegistry),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => return Err(LibraryError::CorruptRegistry),
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_checked_v2_connection(
-    _open_path: &Path,
-    checked_file: &same_file::Handle,
-) -> Result<(rusqlite::Connection, ()), LibraryError> {
-    use std::os::fd::AsRawFd;
-
-    // SQLite opens the descriptor link, so the connection is bound to the
-    // already-checked inode even if the original filename is replaced.
-    let descriptor_path = format!(
-        "file:/dev/fd/{}?mode=ro&immutable=1",
-        checked_file.as_raw_fd()
     );
-    let connection = rusqlite::Connection::open_with_flags(
-        descriptor_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    )
-    .map_err(|_| LibraryError::CorruptRegistry)?;
-    Ok((connection, ()))
-}
-
-#[cfg(windows)]
-fn open_checked_v2_connection(
-    open_path: &Path,
-    checked_file: &same_file::Handle,
-) -> Result<(rusqlite::Connection, fs::File), LibraryError> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    // Excluding FILE_SHARE_DELETE keeps the name attached to this file from
-    // the identity comparison through SQLite's open. SQLite remains free to
-    // acquire its ordinary read/write sharing and locking handles.
-    const FILE_SHARE_READ: u32 = 0x0000_0001;
-    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-    let path_lock = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(open_path)
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    let locked_file = path_lock
-        .try_clone()
-        .and_then(same_file::Handle::from_file)
-        .map_err(|_| LibraryError::CorruptRegistry)?;
-    if *checked_file != locked_file {
-        return Err(LibraryError::CorruptRegistry);
+    let current =
+        mdreader_core::source_root::workspace_index_path_for_stable_identity(app_data, identity);
+    for path in [old, current] {
+        if managed_directory_present(path.parent().ok_or(LibraryError::PersistFailed)?)? {
+            return Err(LibraryError::OfflineMigrationRequired);
+        }
     }
-    let connection = rusqlite::Connection::open_with_flags(
-        open_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|_| LibraryError::CorruptRegistry)?;
-    Ok((connection, path_lock))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn open_checked_v2_connection(
-    _open_path: &Path,
-    _checked_file: &same_file::Handle,
-) -> Result<(rusqlite::Connection, ()), LibraryError> {
-    Err(LibraryError::CorruptRegistry)
+    Ok(None)
 }
 
 fn managed_directory_present(path: &Path) -> Result<bool, LibraryError> {
@@ -2147,16 +2009,18 @@ fn migrate_v2_managed_workspaces(
             .as_ref()
             .ok_or(LibraryError::CorruptRegistry)?;
         let path = source.path.restore()?;
-        let old = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
             app_data, &path, identity,
         )
         .parent()
         .ok_or(LibraryError::PersistFailed)?
         .to_path_buf();
-        let new = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
-            .parent()
-            .ok_or(LibraryError::PersistFailed)?
-            .to_path_buf();
+        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
+            app_data, identity,
+        )
+        .parent()
+        .ok_or(LibraryError::PersistFailed)?
+        .to_path_buf();
         if old == new {
             continue;
         }
@@ -2451,12 +2315,14 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
-            .parent()
-            .ok_or(LibraryError::CleanupFailed {
-                reason: LibraryCleanupReason::ManagedStateUnavailable,
-            })?
-            .to_path_buf();
+        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
+            app_data, identity,
+        )
+        .parent()
+        .ok_or(LibraryError::CleanupFailed {
+            reason: LibraryCleanupReason::ManagedStateUnavailable,
+        })?
+        .to_path_buf();
         let mut updated = registry.clone();
         updated.forget(source_id, active_root)?;
 
@@ -2609,12 +2475,14 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity)
-            .parent()
-            .ok_or(LibraryError::CleanupFailed {
-                reason: LibraryCleanupReason::ManagedStateUnavailable,
-            })?
-            .to_path_buf();
+        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
+            app_data, identity,
+        )
+        .parent()
+        .ok_or(LibraryError::CleanupFailed {
+            reason: LibraryCleanupReason::ManagedStateUnavailable,
+        })?
+        .to_path_buf();
         let mut inactive_registry = registry.clone();
         inactive_registry.active_source_id = None;
         if !inactive_registry
@@ -2822,7 +2690,9 @@ impl LibraryStore {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
                 })?;
             let managed_database =
-                mdreader_ingest::workspace_index_path_for_stable_identity(app_data, identity);
+                mdreader_core::source_root::workspace_index_path_for_stable_identity(
+                    app_data, identity,
+                );
             let managed = managed_database
                 .parent()
                 .ok_or(LibraryError::CleanupFailed {
@@ -2904,10 +2774,7 @@ pub(crate) fn map_library_cloud_error(error: LibraryError) -> CloudSourceError {
 }
 
 pub(crate) fn registry_path(app: &AppHandle) -> Result<(PathBuf, PathBuf), LibraryError> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| LibraryError::PersistFailed)?;
+    let app_data = app.path().app_data_dir().map_err(|_| LibraryError::PersistFailed)?;
     Ok((app_data.join("library.json"), app_data))
 }
 
@@ -2957,26 +2824,62 @@ pub(crate) fn list_library_sources(
     let active = active_root(&workspace);
     LibraryStore::new(path).read(|registry| {
         let mut snapshot = registry.snapshot(&app_data, active.as_ref())?;
-        refresh_reader_index_metadata(registry, &mut snapshot, app.state::<crate::reader::ReaderBackend>().inner());
+        refresh_reader_index_metadata(
+            registry,
+            &mut snapshot,
+            app.state::<crate::reader::ReaderBackend>().inner(),
+        );
         Ok(snapshot)
     })
 }
 
-fn refresh_reader_index_metadata(registry: &LibraryRegistry, snapshot: &mut LibrarySnapshot, reader: &crate::reader::ReaderBackend) {
+fn refresh_reader_index_metadata(
+    registry: &LibraryRegistry,
+    snapshot: &mut LibrarySnapshot,
+    reader: &crate::reader::ReaderBackend,
+) {
     for row in &mut snapshot.sources {
         let status = (|| -> Result<LibraryIndexState, String> {
-            let binding = registry.source_for(&row.id).ok_or("Source binding missing")?;
-            let identity = binding.identity.clone().ok_or("Source identity unavailable")?;
-            let source: Option<mdreader_core::Source> = reader.typed(mdreader_service::Request::FindSource {
-                path: binding.path().map_err(|e| e.to_string())?, identity,
-            })?;
-            let Some(source) = source else { return Ok(LibraryIndexState::NotCreated); };
-            if !source.enabled { return Ok(LibraryIndexState::Unknown); }
-            let indexed: mdreader_core::IndexStatus = reader.typed(mdreader_service::Request::Status { sources: vec![source.id.clone()] })?;
-            let job: Option<mdreader_core::IndexJob> = reader.typed(mdreader_service::Request::JobStatus { source_id: source.id })?;
-            Ok(if indexed.documents > 0 || job.is_some_and(|job| matches!(job.phase.as_str(), "loading"|"embedding"|"done"|"model-unavailable")) {
-                LibraryIndexState::Present
-            } else { LibraryIndexState::NotCreated })
+            let binding = registry
+                .source_for(&row.id)
+                .ok_or("Source binding missing")?;
+            let identity = binding
+                .identity
+                .clone()
+                .ok_or("Source identity unavailable")?;
+            let source: Option<mdreader_core::Source> =
+                reader.typed(mdreader_service::Request::FindSource {
+                    path: binding.path().map_err(|e| e.to_string())?,
+                    identity,
+                })?;
+            let Some(source) = source else {
+                return Ok(LibraryIndexState::NotCreated);
+            };
+            if !source.enabled {
+                return Ok(LibraryIndexState::Unknown);
+            }
+            let indexed: mdreader_core::IndexStatus =
+                reader.typed(mdreader_service::Request::Status {
+                    sources: vec![source.id.clone()],
+                })?;
+            let job: Option<mdreader_core::IndexJob> =
+                reader.typed(mdreader_service::Request::JobStatus {
+                    source_id: source.id,
+                })?;
+            Ok(
+                if indexed.documents > 0
+                    || job.is_some_and(|job| {
+                        matches!(
+                            job.phase.as_str(),
+                            "loading" | "embedding" | "done" | "model-unavailable"
+                        )
+                    })
+                {
+                    LibraryIndexState::Present
+                } else {
+                    LibraryIndexState::NotCreated
+                },
+            )
         })();
         row.index_state = status.unwrap_or(LibraryIndexState::Unknown);
     }
@@ -3089,7 +2992,9 @@ pub(crate) fn watch_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
-        app.state::<crate::reader::ReaderBackend>().grant(&native_root).map_err(|_| LibraryError::OpenFailed)?;
+        app.state::<crate::reader::ReaderBackend>()
+            .grant(&native_root)
+            .map_err(|_| LibraryError::OpenFailed)?;
         let engine_source_id = registry
             .source_for(&source_id)
             .ok_or(LibraryError::SourceNotFound)?
@@ -3120,7 +3025,9 @@ pub(crate) fn grant_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
-        app.state::<crate::reader::ReaderBackend>().grant(&native_root).map_err(|_| LibraryError::OpenFailed)?;
+        app.state::<crate::reader::ReaderBackend>()
+            .grant(&native_root)
+            .map_err(|_| LibraryError::OpenFailed)?;
         let engine_source_id = registry
             .source_for(&source_id)
             .ok_or(LibraryError::SourceNotFound)?
@@ -3195,7 +3102,10 @@ pub(crate) fn forget_library_source(
     let source = store.read(|registry| {
         let mut preflight = registry.clone();
         preflight.forget(&source_id, active.as_ref())?;
-        registry.source_for(&source_id).cloned().ok_or(LibraryError::SourceNotFound)
+        registry
+            .source_for(&source_id)
+            .cloned()
+            .ok_or(LibraryError::SourceNotFound)
     })?;
     revoke_reader_membership(app.state::<crate::reader::ReaderBackend>().inner(), &source)?;
     store.forget_source(&source_id, active.as_ref(), &app_data)?;
@@ -3218,8 +3128,12 @@ pub(crate) fn close_and_forget_library_source(
     let (path, app_data) = registry_path(&app)?;
     let epoch = workspace.current().ok_or(LibraryError::GrantMismatch)?;
     let source = LibraryStore::new(path.clone()).read(|registry| {
-        let source = registry.source_for(&source_id).ok_or(LibraryError::SourceNotFound)?;
-        if source.root()? != epoch.source_root() || Some(source.engine_source_id()) != epoch.source_id() {
+        let source = registry
+            .source_for(&source_id)
+            .ok_or(LibraryError::SourceNotFound)?;
+        if source.root()? != epoch.source_root()
+            || Some(source.engine_source_id()) != epoch.source_id()
+        {
             return Err(LibraryError::GrantMismatch);
         }
         Ok(source.clone())
@@ -3228,12 +3142,22 @@ pub(crate) fn close_and_forget_library_source(
     close_and_forget_library_source_at(path, app_data, &source_id, &workspace, &watcher)
 }
 
-fn revoke_reader_membership(reader: &crate::reader::ReaderBackend, source: &LocalFolderSource) -> Result<(), LibraryError> {
+fn revoke_reader_membership(
+    reader: &crate::reader::ReaderBackend,
+    source: &LocalFolderSource,
+) -> Result<(), LibraryError> {
     let path = source.path()?;
-    let identity = source.identity.clone().ok_or(LibraryError::SourceUnavailable)?;
-    reader.revoke_binding(path.clone(), identity).map_err(|_| LibraryError::PersistFailed)?;
+    let identity = source
+        .identity
+        .clone()
+        .ok_or(LibraryError::SourceUnavailable)?;
+    reader
+        .revoke_binding(path.clone(), identity)
+        .map_err(|_| LibraryError::PersistFailed)?;
     #[cfg(not(mobile))]
-    reader.pause_capture(&path).map_err(|_| LibraryError::PersistFailed)?;
+    reader
+        .pause_capture(&path)
+        .map_err(|_| LibraryError::PersistFailed)?;
     Ok(())
 }
 
@@ -3307,7 +3231,6 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use catdb_sdk::storage::CatalogStorage;
     use tempfile::tempdir;
 
     use super::{
@@ -3316,7 +3239,7 @@ mod tests {
         LibraryIndexState, LibraryRegistry, LibrarySourceState, LibraryStore, NativePath,
         LIBRARY_VERSION,
     };
-    use mdreader_ingest::SourceRoot;
+    use mdreader_core::SourceRoot;
 
     fn mkdir(parent: &Path, name: &str) -> PathBuf {
         let path = parent.join(name);
@@ -3374,70 +3297,16 @@ mod tests {
     }
 
     fn v2_managed_paths(app_data: &Path, root: &SourceRoot) -> (PathBuf, PathBuf) {
-        let old = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
+        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
             app_data,
             &root.path,
             &root.identity,
         );
-        let new =
-            mdreader_ingest::workspace_index_path_for_stable_identity(app_data, &root.identity);
+        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
+            app_data,
+            &root.identity,
+        );
         (old, new)
-    }
-
-    fn create_authentic_v2_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
-        create_authentic_v2_index_with_schema(path, root).0
-    }
-
-    fn create_authentic_v2_index_with_schema(path: &Path, root: &SourceRoot) -> (uuid::Uuid, i64) {
-        let engine = catdb_sdk::engine::EmbeddedCatDb::open(
-            catdb_sdk::engine::EngineConfig::new(
-                path,
-                std::sync::Arc::new(catdb_sdk::embed::HashEmbedder::new()),
-            )
-            .with_domain(mdreader_ingest::registration()),
-        )
-        .expect("open authentic V2 managed index");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime
-            .block_on(engine.import(&root.path, catdb_sdk::engine::ImportOptions::default()))
-            .expect("import authentic V2 managed index");
-        let sources = runtime
-            .block_on(engine.store().list_sources())
-            .expect("list authentic V2 source");
-        assert_eq!(sources.len(), 1);
-        let schema_version = engine
-            .store()
-            .schema_version()
-            .expect("read authentic schema version");
-        (sources[0].source_id, schema_version)
-    }
-
-    fn create_genuine_v7_index(path: &Path, root: &SourceRoot) -> uuid::Uuid {
-        fs::create_dir_all(path.parent().expect("legacy index parent"))
-            .expect("create legacy workspace");
-        catdb_sdk::storage_sqlite::migrate_database_to_version_for_tests(path, 7)
-            .expect("migrate through genuine v7 DDL");
-        let source_id = uuid::Uuid::new_v4();
-        let connection = rusqlite::Connection::open(path).expect("open genuine v7 catalog");
-        let schema_version = connection
-            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .expect("read genuine v7 schema version");
-        assert_eq!(schema_version, 7);
-        connection
-            .execute(
-                "INSERT INTO sources(
-                   source_id, root_path, enabled, watch, include_globs,
-                   exclude_globs, max_file_size, respect_gitignore, embed_policy
-                 ) VALUES (?1, ?2, 1, 0, '[]', '[]', 1, 1, 'auto')",
-                (source_id.to_string(), root.path.display().to_string()),
-            )
-            .expect("insert genuine v7 source");
-        drop(connection);
-        assert_no_sqlite_sidecars(path);
-        source_id
     }
 
     fn mutate_catalog_without_leaving_sidecars(path: &Path, sql: &str) {
@@ -3469,51 +3338,6 @@ mod tests {
                 "fixture must not leave a {suffix} sidecar"
             );
         }
-    }
-
-    #[test]
-    fn version_two_recovers_an_authentic_v10_catalog_without_mutating_it() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-        let (source_id, schema_version) = create_authentic_v2_index_with_schema(&old_db, &root);
-        assert_eq!(schema_version, 10, "fixture must traverse the real v10 DDL");
-        let before = fs::read(&old_db).expect("read index before legacy inspection");
-        assert_no_sqlite_sidecars(&old_db);
-
-        let recovered = super::recover_v2_engine_source_id(&app_data, &v2_source(&root));
-        let after = fs::read(&old_db).expect("read index after legacy inspection");
-
-        assert_eq!(
-            after, before,
-            "legacy inspection must never migrate or otherwise write the catalog"
-        );
-        assert_eq!(
-            recovered,
-            Ok(Some(source_id)),
-            "a complete current CatDB catalog remains a valid V2 recovery authority"
-        );
-    }
-
-    #[test]
-    fn version_two_preserves_genuine_v7_catalog_compatibility_without_mutation() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-        let source_id = create_genuine_v7_index(&old_db, &root);
-        let before = fs::read(&old_db).expect("read v7 index before legacy inspection");
-
-        let recovered = super::recover_v2_engine_source_id(&app_data, &v2_source(&root));
-        let after = fs::read(&old_db).expect("read v7 index after legacy inspection");
-
-        assert_eq!(
-            after, before,
-            "v7 compatibility inspection must never migrate or write the catalog"
-        );
-        assert_eq!(recovered, Ok(Some(source_id)));
     }
 
     fn v2_source(root: &SourceRoot) -> super::LibrarySourceV2 {
@@ -4176,81 +4000,6 @@ mod tests {
     }
 
     #[test]
-    fn version_two_path_ids_and_managed_state_migrate_once_to_stable_identity_keys() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        fs::create_dir(&app_data).expect("create app data");
-        let registry_path = app_data.join("library.json");
-        let root = mkdir(temp.path(), "notes");
-        let admitted = bound_root(&root);
-        let native = NativePath::capture(&admitted.path);
-        let path_id = native.source_id();
-        let v2 = serde_json::json!({
-            "version": 2,
-            "active_source_id": path_id.clone(),
-            "sources": [{
-                "id": path_id.clone(),
-                "path": native,
-                "identity": admitted.identity.clone(),
-            }],
-        });
-        fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&v2).expect("encode V2 registry"),
-        )
-        .expect("write V2 registry");
-        let old_db = mdreader_ingest::legacy_workspace_index_path_for_path_identity(
-            &app_data,
-            &admitted.path,
-            &admitted.identity,
-        );
-        let legacy_engine = catdb_sdk::engine::EmbeddedCatDb::open(
-            catdb_sdk::engine::EngineConfig::new(
-                &old_db,
-                std::sync::Arc::new(catdb_sdk::embed::HashEmbedder::new()),
-            )
-            .with_domain(mdreader_ingest::registration()),
-        )
-        .expect("open authentic old managed index");
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(legacy_engine.import(&admitted.path, catdb_sdk::engine::ImportOptions::default()))
-            .expect("import authentic old managed index");
-        let legacy_sources = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("source runtime")
-            .block_on(legacy_engine.store().list_sources())
-            .expect("list authentic old sources");
-        assert_eq!(legacy_sources.len(), 1);
-        let legacy_source_id = legacy_sources[0].source_id;
-        drop(legacy_engine);
-        fs::write(old_db.with_file_name("proposals.db"), b"proposals")
-            .expect("write old proposals");
-
-        let migrated = LibraryRegistry::load_from(&registry_path).expect("migrate V2");
-        let opaque_id = migrated.sources()[0].id.clone();
-        assert_ne!(opaque_id, path_id);
-        assert_eq!(migrated.restore_source_id(), Some(opaque_id.as_str()));
-        assert_eq!(migrated.sources()[0].engine_source_id(), legacy_source_id);
-        let new_db = mdreader_ingest::workspace_index_path_for_stable_identity(
-            &app_data,
-            &admitted.identity,
-        );
-        assert!(!old_db.exists());
-        assert!(new_db.is_file());
-        assert_eq!(
-            fs::read(new_db.with_file_name("proposals.db")).expect("migrated proposals"),
-            b"proposals"
-        );
-
-        let second = LibraryRegistry::load_from(&registry_path).expect("idempotent reload");
-        assert_eq!(second.sources()[0].id, opaque_id);
-    }
-
-    #[test]
     fn version_two_present_workspace_without_catdb_db_refuses_fresh_identity() {
         let temp = tempdir().expect("tempdir");
         let app_data = temp.path().join("app-data");
@@ -4316,121 +4065,9 @@ mod tests {
         assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
     }
 
-    #[test]
-    fn version_two_refuses_newer_and_partial_catalog_mutations_without_writing_them() {
-        for (label, mutation) in [
-            ("newer", "PRAGMA user_version = 11;"),
-            (
-                "partial",
-                "PRAGMA foreign_keys = OFF;
-                 DROP TABLE links;",
-            ),
-        ] {
-            let temp = tempdir().expect("tempdir");
-            let app_data = temp.path().join("app-data");
-            let registry_path = app_data.join("library.json");
-            let root = bound_root(&mkdir(temp.path(), "notes"));
-            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-            super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-            let registry_before = fs::read(&registry_path).expect("read V2 registry");
-            let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-            create_authentic_v2_index(&old_db, &root);
-            mutate_catalog_without_leaving_sidecars(&old_db, mutation);
-            let catalog_before = fs::read(&old_db).expect("read mutated catalog");
-
-            assert_v2_refusal_preserves_managed_state(
-                &registry_path,
-                &registry_before,
-                &old_db,
-                &new_db,
-            );
-            assert_eq!(
-                fs::read(&old_db).expect("read refused catalog"),
-                catalog_before,
-                "refusing the {label} catalog must not mutate it"
-            );
-        }
-    }
-
     // APFS rejects arbitrary non-UTF-8 directory names at creation time, so
     // this authentic filesystem/engine migration runs on Unix platforms that
     // can actually manufacture the historical path.
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn version_two_non_utf8_root_recovers_the_engine_persisted_path_representation() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let registry_path = app_data.join("library.json");
-        let root_path = temp.path().join(OsString::from_vec(b"notes-\xff".to_vec()));
-        fs::create_dir(&root_path).expect("create non-UTF-8 root");
-        fs::write(root_path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        let root = bound_root(&root_path);
-        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-        let source_id = create_authentic_v2_index(&old_db, &root);
-
-        let migrated = LibraryRegistry::load_from(&registry_path)
-            .expect("the exact engine-persisted display representation is comparable");
-
-        assert_eq!(migrated.sources().len(), 1);
-        assert_eq!(migrated.sources()[0].engine_source_id(), source_id);
-        assert!(!old_db.exists());
-        assert!(new_db.is_file());
-    }
-
-    #[test]
-    fn version_two_recovers_after_crash_moved_workspace_before_registry_publish() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let registry_path = app_data.join("library.json");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-        let source_id = create_authentic_v2_index(&old_db, &root);
-        fs::rename(
-            old_db.parent().expect("old workspace"),
-            new_db.parent().expect("new workspace"),
-        )
-        .expect("simulate crash after managed move and before registry publish");
-
-        let migrated =
-            LibraryRegistry::load_from(&registry_path).expect("restart completes migration");
-
-        assert_eq!(migrated.sources().len(), 1);
-        assert_eq!(migrated.sources()[0].engine_source_id(), source_id);
-        assert!(!old_db.exists());
-        assert!(new_db.is_file());
-    }
-
-    #[test]
-    fn version_two_refuses_ambiguous_old_and_new_managed_locations() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let registry_path = app_data.join("library.json");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-        let before = fs::read(&registry_path).expect("read V2 registry");
-        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-        create_authentic_v2_index(&old_db, &root);
-        fs::create_dir_all(new_db.parent().expect("new workspace"))
-            .expect("create ambiguous new workspace");
-        fs::write(&new_db, b"second managed candidate").expect("write ambiguous candidate");
-
-        assert!(matches!(
-            LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CleanupFailed { .. })
-        ));
-        assert_eq!(
-            fs::read(&registry_path).expect("unchanged registry"),
-            before
-        );
-        assert!(old_db.is_file());
-        assert!(new_db.is_file());
-    }
 
     #[cfg(unix)]
     #[test]
@@ -4453,68 +4090,6 @@ mod tests {
                 symlink(&outside, &old_db).expect("substitute symlinked DB");
             } else {
                 fs::create_dir(&old_db).expect("substitute directory DB");
-            }
-
-            assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
-        }
-    }
-
-    #[test]
-    fn version_two_refuses_malformed_or_ambiguous_source_rows_and_path_mismatch() {
-        for kind in [
-            "malformed-db",
-            "zero",
-            "multiple",
-            "non-uuid",
-            "path-mismatch",
-        ] {
-            let temp = tempdir().expect("tempdir");
-            let app_data = temp.path().join("app-data");
-            let registry_path = app_data.join("library.json");
-            let root = bound_root(&mkdir(temp.path(), "notes"));
-            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-            super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-            let before = fs::read(&registry_path).expect("read V2 registry");
-            let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-
-            if kind == "malformed-db" {
-                fs::create_dir_all(old_db.parent().expect("old workspace"))
-                    .expect("create old workspace");
-                fs::write(&old_db, b"not sqlite").expect("write malformed DB");
-            } else {
-                create_authentic_v2_index(&old_db, &root);
-                let connection =
-                    rusqlite::Connection::open(&old_db).expect("open authentic index for mutation");
-                match kind {
-                    "zero" => {
-                        connection
-                            .execute("DELETE FROM sources", [])
-                            .expect("remove source");
-                    }
-                    "multiple" => {
-                        connection
-                            .execute(
-                                "INSERT INTO sources
-                                 SELECT ?1, root_path, enabled, watch, include_globs,
-                                        exclude_globs, max_file_size, respect_gitignore,
-                                        embed_policy
-                                   FROM sources LIMIT 1",
-                                [uuid::Uuid::new_v4().to_string()],
-                            )
-                            .expect("insert second source");
-                    }
-                    "non-uuid" => {
-                        connection
-                            .execute("UPDATE sources SET source_id = 'not-a-uuid'", [])
-                            .expect("malform source UUID");
-                    }
-                    "path-mismatch" => {
-                        connection
-                            .execute("UPDATE sources SET root_path = '/renderer/claim'", [])
-                            .expect("mismatch source root");
-                    }
-                    _ => unreachable!("covered cases"),
-                }
             }
 
             assert_v2_refusal_preserves_managed_state(&registry_path, &before, &old_db, &new_db);
@@ -4618,124 +4193,6 @@ mod tests {
     }
 
     #[test]
-    fn version_two_save_failure_rolls_managed_move_back_before_returning() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let registry_path = app_data.join("library.json");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        super::write_v2_registry_for_test(&registry_path, &root).expect("write V2 registry");
-        let before = fs::read(&registry_path).expect("read V2 registry");
-        let (old_db, new_db) = v2_managed_paths(&app_data, &root);
-        create_authentic_v2_index(&old_db, &root);
-
-        let result = LibraryRegistry::migrate_v2_with_persist(&registry_path, &before, |_, _| {
-            Err(LibraryError::PersistFailed)
-        });
-
-        assert!(matches!(result, Err(LibraryError::PersistFailed)));
-        assert_eq!(
-            fs::read(&registry_path).expect("unchanged registry"),
-            before
-        );
-        assert!(old_db.is_file(), "managed move was rolled back");
-        assert!(!new_db.exists(), "failed publish leaves no V4 managed path");
-    }
-
-    #[test]
-    fn version_two_recovery_refuses_regular_file_swap_between_check_and_open() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-        create_authentic_v2_index(&old_db, &root);
-
-        let replacement_dir = temp.path().join("replacement");
-        let replacement_db = replacement_dir.join("catdb.db");
-        let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
-        let original_parked = old_db.with_file_name("checked-original.db");
-        let source = v2_source(&root);
-        let recovered = super::recover_v2_engine_source_id_with_hooks(
-            &app_data,
-            &source,
-            |_| {
-                fs::rename(&old_db, &original_parked).expect("park checked file");
-                fs::rename(&replacement_db, &old_db).expect("swap regular replacement");
-            },
-            |_| {},
-        );
-
-        assert_eq!(
-            recovered,
-            Err(LibraryError::CorruptRegistry),
-            "the UUID from the path-substituted DB ({replacement_source_id}) must never be adopted"
-        );
-        assert!(original_parked.is_file());
-        assert!(old_db.is_file());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn version_two_recovery_reads_checked_file_across_regular_file_aba_swap() {
-        let temp = tempdir().expect("tempdir");
-        let app_data = temp.path().join("app-data");
-        let root = bound_root(&mkdir(temp.path(), "notes"));
-        fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-        let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-        let original_source_id = create_authentic_v2_index(&old_db, &root);
-
-        let replacement_db = temp.path().join("replacement/catdb.db");
-        let replacement_source_id = create_authentic_v2_index(&replacement_db, &root);
-        let original_parked = old_db.with_file_name("checked-original.db");
-        let replacement_parked = replacement_db.with_file_name("opened-replacement.db");
-        let source = v2_source(&root);
-
-        let recovered = super::recover_v2_engine_source_id_with_hooks(
-            &app_data,
-            &source,
-            |_| {
-                fs::rename(&old_db, &original_parked).expect("park checked original");
-                fs::rename(&replacement_db, &old_db).expect("install replacement before open");
-            },
-            |_| {
-                fs::rename(&old_db, &replacement_parked).expect("park opened replacement");
-                fs::rename(&original_parked, &old_db).expect("restore checked original");
-            },
-        );
-
-        assert_eq!(
-            recovered,
-            Ok(Some(original_source_id)),
-            "the UUID from the transient replacement DB ({replacement_source_id}) must never be adopted"
-        );
-        assert!(old_db.is_file());
-        assert!(replacement_parked.is_file());
-    }
-
-    #[test]
-    fn version_two_recovery_refuses_sqlite_recovery_sidecars() {
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let temp = tempdir().expect("tempdir");
-            let app_data = temp.path().join("app-data");
-            let root = bound_root(&mkdir(temp.path(), "notes"));
-            fs::write(root.path.join("note.md"), b"# alpha\n").expect("write Markdown");
-            let (old_db, _new_db) = v2_managed_paths(&app_data, &root);
-            let source_id = create_authentic_v2_index(&old_db, &root);
-            let mut sidecar = old_db.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            fs::write(PathBuf::from(sidecar), b"unresolved SQLite state")
-                .expect("write recovery sidecar");
-
-            assert_eq!(
-                super::recover_v2_engine_source_id(&app_data, &v2_source(&root)),
-                Err(LibraryError::CorruptRegistry),
-                "recovery must not adopt {source_id} while {suffix} state is unresolved"
-            );
-        }
-    }
-
-    #[test]
     fn version_two_migration_without_identity_fails_closed_and_preserves_bytes() {
         let temp = tempdir().expect("tempdir");
         let registry_path = temp.path().join("app-data/library.json");
@@ -4815,16 +4272,52 @@ mod tests {
         registry.add_root(&unindexed).unwrap();
         let root = bound_root(&path);
         let source = backend.admit(&root).unwrap();
-        backend.call(mdreader_service::Request::Index { source_id: source.clone() }).unwrap();
+        backend
+            .call(mdreader_service::Request::Index {
+                source_id: source.clone(),
+            })
+            .unwrap();
         let mut snapshot = registry.snapshot(&app_data, Some(&root)).unwrap();
         super::refresh_reader_index_metadata(&registry, &mut snapshot, &backend);
-        assert_eq!(snapshot.sources.iter().find(|s| s.name == "notes").unwrap().index_state, LibraryIndexState::Present);
-        assert_eq!(snapshot.sources.iter().find(|s| s.name == "unindexed").unwrap().index_state, LibraryIndexState::NotCreated);
-        let sources: Vec<mdreader_core::Source> = backend.typed(mdreader_service::Request::ListSources).unwrap();
-        assert_eq!(sources.len(), 1, "reading metadata must not grant additional folders");
-        backend.revoke_binding(root.path.clone(), root.identity.clone()).unwrap();
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|s| s.name == "notes")
+                .unwrap()
+                .index_state,
+            LibraryIndexState::Present
+        );
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|s| s.name == "unindexed")
+                .unwrap()
+                .index_state,
+            LibraryIndexState::NotCreated
+        );
+        let sources: Vec<mdreader_core::Source> = backend
+            .typed(mdreader_service::Request::ListSources)
+            .unwrap();
+        assert_eq!(
+            sources.len(),
+            1,
+            "reading metadata must not grant additional folders"
+        );
+        backend
+            .revoke_binding(root.path.clone(), root.identity.clone())
+            .unwrap();
         super::refresh_reader_index_metadata(&registry, &mut snapshot, &backend);
-        assert_eq!(snapshot.sources.iter().find(|s| s.name == "notes").unwrap().index_state, LibraryIndexState::Unknown);
+        assert_eq!(
+            snapshot
+                .sources
+                .iter()
+                .find(|s| s.name == "notes")
+                .unwrap()
+                .index_state,
+            LibraryIndexState::Unknown
+        );
     }
 
     #[test]

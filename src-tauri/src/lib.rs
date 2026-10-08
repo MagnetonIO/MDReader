@@ -38,17 +38,13 @@ static E2E_BUILD_MANIFEST: &str = concat!(
 );
 
 mod cloud_accounts;
-mod cloud_documents;
 mod commands;
 mod diagnostics;
 mod engine;
-mod federation;
 mod file_lock;
 mod library;
-mod library_query;
 mod mobile_assets;
 mod mobile_assets_commands;
-mod mobile_enterprise;
 mod mobile_reader;
 #[cfg(not(mobile))]
 mod native_browser;
@@ -56,7 +52,6 @@ mod native_browser;
 mod native_providers;
 #[cfg(not(mobile))]
 mod native_sync;
-mod overlay;
 mod profile_transition;
 #[cfg(not(mobile))]
 mod provider_oauth;
@@ -141,28 +136,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
-            cloud_accounts::list_cloud_sources,
-            cloud_accounts::connect_cloud_source,
-            cloud_accounts::set_cloud_source_enabled,
-            cloud_accounts::disconnect_cloud_source,
-            cloud_accounts::prepare_cloud_catalog,
-            cloud_accounts::entity_query,
-            cloud_accounts::query_library_documents,
-            cloud_accounts::query_cloud_documents,
-            cloud_accounts::cancel_cloud_document_query,
-            cloud_documents::read_cloud_markdown,
-            cloud_documents::save_cloud_markdown,
-            cloud_documents::open_cloud_original,
-            cloud_documents::export_markdown_copy,
-            mobile_enterprise::connected_catdb_state,
-            mobile_enterprise::enroll_connected_catdb,
-            mobile_enterprise::set_connected_catdb_source_enabled,
-            mobile_enterprise::disconnect_connected_catdb,
-            mobile_enterprise::connected_catdb_entity_query,
-            mobile_enterprise::query_connected_library_documents,
-            mobile_enterprise::cancel_connected_catdb_query,
-            mobile_enterprise::mobile_enterprise_connection,
-            mobile_enterprise::mobile_enterprise_request,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -191,16 +164,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_agents::prepare_agent_integration,
             reader_agents::apply_agent_integration,
             reader_agents::uninstall_agent_integration,
-            search::explain_query,
-            federation::query_federated_document,
-            federation::cancel_federated_document,
-            overlay::list_schemas,
-            overlay::project_corpus,
-            overlay::describe_schema,
-            overlay::inspect_span,
-            overlay::approve_fact,
-            overlay::reject_fact,
-            overlay::check_constraints,
             updater::updater_available,
             updater::check_for_update,
             updater::install_update,
@@ -228,22 +191,6 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_pin,
         mobile_reader::mobile_reader_position,
         mobile_assets_commands::mobile_reader_assets,
-        cloud_accounts::list_cloud_sources,
-        cloud_accounts::query_cloud_documents,
-        mobile_enterprise::connected_catdb_state,
-        mobile_enterprise::enroll_connected_catdb,
-        mobile_enterprise::set_connected_catdb_source_enabled,
-        mobile_enterprise::disconnect_connected_catdb,
-        mobile_enterprise::connected_catdb_entity_query,
-        mobile_enterprise::mobile_enterprise_connection,
-        mobile_enterprise::mobile_enterprise_request,
-        federation::query_federated_document,
-        federation::cancel_federated_document,
-        overlay::list_schemas,
-        overlay::project_corpus,
-        overlay::describe_schema,
-        overlay::inspect_span,
-        overlay::check_constraints,
     ])
 }
 
@@ -320,11 +267,8 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .manage(WorkspaceState::default())
-        .manage(federation::FederationRuntime::default())
         .manage(WatcherState::default())
         .manage(LibraryState::default())
-        .manage(cloud_accounts::CloudAccountsState::default())
-        .manage(mobile_enterprise::MobileEnterpriseState::default())
         .manage(mobile_assets::AssetRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
@@ -333,11 +277,11 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
                 let directory = app.path().app_data_dir()?;
                 std::fs::create_dir_all(&directory)?;
                 let directory = directory.canonicalize()?;
-                profile_transition::startup::configure(app.handle(), &directory)
-                    .map_err(|_| std::io::Error::other("Native preferences owner is unavailable"))?;
+                profile_transition::startup::configure(app.handle(), &directory).map_err(|_| {
+                    std::io::Error::other("Native preferences owner is unavailable")
+                })?;
             }
-            let reader_backend =
-                reader::ReaderBackend::open(app.path().app_data_dir()?.join("reader-v1"))?;
+            let reader_backend = reader::ReaderBackend::open(app.path().app_data_dir()?.join("reader-v1"))?;
             #[cfg(not(mobile))]
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {
@@ -346,15 +290,10 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
                 Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
             }
             app.manage(reader_backend);
-            app.state::<cloud_accounts::CloudAccountsState>()
-                .configure_catalog(app.handle())?;
             #[cfg(all(feature = "e2e-build", not(mobile)))]
             {
                 library::seed_e2e_local_membership(app.handle())?;
-                cloud_accounts::seed_e2e_cloud_membership(app.handle())?;
-                mobile_enterprise::seed_e2e_connected_membership(app.handle())?;
             }
-            cloud_accounts::schedule_cloud_sync_startup(app.handle().clone());
             let diagnostics =
                 DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
             app.manage(diagnostics);
@@ -499,8 +438,6 @@ mod tests {
             "#[cfg(all(feature = \"e2e-build\", not(mobile)))]\n",
             "            {\n",
             "                library::seed_e2e_local_membership(app.handle())?;\n",
-            "                cloud_accounts::seed_e2e_cloud_membership(app.handle())?;\n",
-            "                mobile_enterprise::seed_e2e_connected_membership(app.handle())?;\n",
         );
 
         assert!(
@@ -583,123 +520,6 @@ mod tests {
         assert!(!bindings.contains("__TAURI_INVOKE(\"watch_workspace\""));
     }
 
-    #[test]
-    fn federated_document_query_is_a_registered_specta_command() {
-        let registry = include_str!("lib.rs");
-        assert!(
-            registry.contains("federation::query_federated_document,"),
-            "the P8 federation must cross the real Tauri/Specta command boundary"
-        );
-    }
-
-    #[test]
-    fn cloud_account_commands_are_registered_and_generated_for_the_renderer() {
-        let registry = include_str!("lib.rs");
-        let bindings = include_str!("../../ui/src/bindings.ts");
-        for (rust_command, invoke_name) in [
-            (
-                "cloud_accounts::list_cloud_sources,",
-                "\"list_cloud_sources\"",
-            ),
-            (
-                "cloud_accounts::connect_cloud_source,",
-                "\"connect_cloud_source\"",
-            ),
-            (
-                "cloud_accounts::set_cloud_source_enabled,",
-                "\"set_cloud_source_enabled\"",
-            ),
-            (
-                "cloud_accounts::disconnect_cloud_source,",
-                "\"disconnect_cloud_source\"",
-            ),
-            (
-                "cloud_accounts::prepare_cloud_catalog,",
-                "\"prepare_cloud_catalog\"",
-            ),
-            (
-                "cloud_accounts::query_cloud_documents,",
-                "\"query_cloud_documents\"",
-            ),
-            (
-                "cloud_accounts::cancel_cloud_document_query,",
-                "\"cancel_cloud_document_query\"",
-            ),
-        ] {
-            assert!(registry.contains(rust_command), "missing {rust_command}");
-            assert!(bindings.contains(invoke_name), "missing {invoke_name}");
-        }
-    }
-
-    #[test]
-    fn mobile_enterprise_transport_is_registered_without_a_browser_credential_header() {
-        let registry = include_str!("lib.rs");
-        let bindings = include_str!("../../ui/src/bindings.ts");
-        let adapter = include_str!("../../ui/src/mobile/mobile-source-adapter.ts");
-        for (rust_command, invoke_name) in [
-            (
-                "mobile_enterprise::connected_catdb_state,",
-                "\"connected_catdb_state\"",
-            ),
-            (
-                "mobile_enterprise::enroll_connected_catdb,",
-                "\"enroll_connected_catdb\"",
-            ),
-            (
-                "mobile_enterprise::set_connected_catdb_source_enabled,",
-                "\"set_connected_catdb_source_enabled\"",
-            ),
-            (
-                "mobile_enterprise::disconnect_connected_catdb,",
-                "\"disconnect_connected_catdb\"",
-            ),
-            (
-                "mobile_enterprise::connected_catdb_entity_query,",
-                "\"connected_catdb_entity_query\"",
-            ),
-            (
-                "mobile_enterprise::mobile_enterprise_connection,",
-                "\"mobile_enterprise_connection\"",
-            ),
-            (
-                "mobile_enterprise::mobile_enterprise_request,",
-                "\"mobile_enterprise_request\"",
-            ),
-        ] {
-            assert!(registry.contains(rust_command), "missing {rust_command}");
-            assert!(bindings.contains(invoke_name), "missing {invoke_name}");
-        }
-        assert!(!adapter.contains("X-MDReader-Session-Reference"));
-        assert!(!adapter.contains("Authorization"));
-        assert!(!adapter.contains("fetch.bind(globalThis)"));
-    }
-
-    #[test]
-    fn shared_entity_query_is_registered_and_generated_for_the_renderer() {
-        let registry = include_str!("lib.rs");
-        let bindings = include_str!("../../ui/src/bindings.ts");
-        assert!(
-            registry.contains("cloud_accounts::entity_query,"),
-            "cloud P8 must cross the shared entity-query command boundary"
-        );
-        assert!(
-            bindings.contains("\"entity_query\""),
-            "the shared entity-query command must be generated for the renderer"
-        );
-        assert!(
-            registry.contains("mobile_enterprise::query_connected_library_documents,")
-                && registry.contains("mobile_enterprise::cancel_connected_catdb_query,"),
-            "Connected CatDB Library query and cancellation must share the native boundary"
-        );
-        assert!(
-            bindings.contains("\"query_connected_library_documents\"")
-                && bindings.contains("\"cancel_connected_catdb_query\""),
-            "Connected CatDB Library commands must be generated for the renderer"
-        );
-        assert!(bindings.contains("EntityQueryRequest"));
-        assert!(bindings.contains("EntityQueryResponse"));
-    }
-
     /// THE first-paint guarantee, enforced by construction.
     ///
     /// Tauri dispatches a command that is neither `async fn` nor marked
@@ -728,9 +548,6 @@ mod tests {
             ("engine.rs", include_str!("engine.rs")),
             ("library.rs", include_str!("library.rs")),
             ("search.rs", include_str!("search.rs")),
-            ("federation.rs", include_str!("federation.rs")),
-            ("overlay.rs", include_str!("overlay.rs")),
-            ("mobile_enterprise.rs", include_str!("mobile_enterprise.rs")),
             ("mobile_reader.rs", include_str!("mobile_reader.rs")),
             ("reader_workload.rs", include_str!("reader_workload.rs")),
             ("updater.rs", include_str!("updater.rs")),

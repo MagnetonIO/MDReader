@@ -35,7 +35,7 @@ use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
-use mdreader_ingest::{SourceRoot, SourceRootIdentity};
+use mdreader_core::{SourceRoot, SourceRootIdentity};
 
 /// Debounce window for the workspace watcher. Collapses editor save-storms (a
 /// single logical edit often lands as several `write` syscalls) into one event.
@@ -1181,7 +1181,7 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
-    use mdreader_ingest::SourceRoot;
+    use mdreader_core::SourceRoot;
 
     /// blake3 hex of `bytes` — the same digest `read_doc`/`save_doc` compute, so a
     /// test can anchor an `expected_hash` to a file's real contents.
