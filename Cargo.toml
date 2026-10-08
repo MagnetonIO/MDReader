@@ -10,6 +10,7 @@ members = [
     "crates/mdreader-provider",
     "crates/mdreader-credentials",
     "crates/mdreader-legacy-export",
+    "crates/mdreader-profile",
     "crates/mdreader-connector-dropbox",
     "crates/mdreader-connector-google-drive",
     "crates/mdreader-connector-local",

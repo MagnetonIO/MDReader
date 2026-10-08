@@ -4885,6 +4885,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdreader-profile"
+version = "1.0.0"
+dependencies = [
+ "mdreader-legacy-export",
+ "rusqlite",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
 name = "mdreader-provider"
 version = "1.0.0"
 dependencies = [
