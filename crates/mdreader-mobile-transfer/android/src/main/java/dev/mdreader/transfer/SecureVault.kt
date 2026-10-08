@@ -104,7 +104,20 @@ class SecureVault(private val activity: Activity) {
             try {
                 val opened = Os.fstat(output.fd)
                 require(OsConstants.S_ISREG(opened.st_mode) && opened.st_nlink == 1L && opened.st_uid == android.os.Process.myUid())
-                Os.fchmod(output.fd, 384); output.write(encrypted); file.finishWrite(output)
+                Os.fchmod(output.fd, 384); output.write(encrypted)
+                output.fd.sync() // propagate errors; AtomicFile's own sync only logs failures
+                file.finishWrite(output)
+                // Confirm the published name is still the exact just-written
+                // file, then flush the private directory's rename metadata.
+                val published = Os.lstat(file.baseFile.path)
+                require(published.st_dev == opened.st_dev && published.st_ino == opened.st_ino && published.st_nlink == 1L)
+                val directory = file.baseFile.parentFile!!
+                val dir = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
+                try {
+                    val retained = Os.fstat(dir); val current = Os.lstat(directory.path)
+                    require(retained.st_dev == current.st_dev && retained.st_ino == current.st_ino && OsConstants.S_ISDIR(retained.st_mode))
+                    Os.fsync(dir)
+                } finally { Os.close(dir) }
             }
             catch (error: Exception) { file.failWrite(output); throw error }
             finally { encrypted.fill(0) }

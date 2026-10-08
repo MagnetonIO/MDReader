@@ -66,7 +66,7 @@ fn receive<R: Runtime>(app: &AppHandle<R>, url: &str) {
         }
         queue.0.push_back(url.into());
         let _ = app.emit("mdreader://reading-link-open", url);
-    }
+    };
 }
 pub fn take_links<R: Runtime>(app: &AppHandle<R>) -> Result<PendingLinks, &'static str> {
     let links = app.try_state::<Links>().ok_or("unsupported")?;
