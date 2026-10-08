@@ -6,20 +6,31 @@ import type { AccountBackend, AccountReply, AccountStatus } from './backend.js';
 afterEach(cleanup);
 const JOB = '00000000-0000-4000-8000-000000000001';
 const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
-  configured: true, connected: false, retainedLibrary: true, custody: null, latestJob: null, ...patch,
+  configured: true, connected: false, retainedLibrary: true, recoveryAvailable: false, custody: null, latestJob: null, ...patch,
 });
-function open() { fireEvent.click(screen.getByRole('button', { name: 'Manage encrypted sync' })); }
 
 describe('native Account & sync controls', () => {
-  it('inspects state only on explicit open and disables unavailable account actions', async () => {
-    const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ configured: false }) }));
-    render(<AccountSyncPanel backend={{ request }} />);
+  it('inspects metadata on category activation and disables unavailable account actions', async () => {
+    let configured = false;
+    const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ configured }) }));
+    const backend = { request };
+    const { rerender } = render(<AccountSyncPanel backend={backend} active={false} />);
     expect(request).not.toHaveBeenCalled();
-    open();
+    rerender(<AccountSyncPanel backend={backend} active />);
     await screen.findByText('Encrypted sync is not configured in this build.');
     expect((screen.getByRole('button', { name: 'Sign in / reconnect' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Sync queued work' }) as HTMLButtonElement).disabled).toBe(true);
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
+    configured = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh account state' }));
+    await screen.findByText('Library retained; sign in to resume.');
+    fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('Recovery', { selector: 'summary' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Library ID' }), { target: { value: JOB } });
+    expect(screen.getByText(/Recovery dialogs are unavailable/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Recover this device' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Save recovery file' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(request.mock.calls.every(([operation]) => operation.operation === 'status')).toBe(true);
   });
 
   it('keeps a lost begin reply uncertain and refreshes the same owner without automatic reauthorization', async () => {
@@ -28,7 +39,6 @@ describe('native Account & sync controls', () => {
       return { operation: 'status', status: status() };
     });
     render(<AccountSyncPanel backend={{ request }} />);
-    open();
     await screen.findByText('Library retained; sign in to resume.');
     fireEvent.click(screen.getByRole('button', { name: 'Sign in / reconnect' }));
     await screen.findByRole('alert');
@@ -41,7 +51,7 @@ describe('native Account & sync controls', () => {
   it('reports actual pending sync counters without turning durable application into reader acceptance', async () => {
     let begun = false;
     const completed: NonNullable<AccountStatus['latestJob']> = { id: JOB, state: { state: 'completed', outcome: {
-      kind: 'sync', committed: '2', conflicts: '1', received: '9007199254740993', applied: '0', acknowledged: '0', remotePending: true, localPending: false,
+      kind: 'sync', committed: '2', conflicts: '1', received: '9007199254740993', applied: '0', acknowledged: '0', remotePending: true, localPending: false, pending: { sequence: '9007199254740993', reason: 'head_conflict' },
     } } };
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'begin') { begun = true; return { operation: 'begun', jobId: JOB }; }
@@ -49,11 +59,11 @@ describe('native Account & sync controls', () => {
       return { operation: 'status', status: status({ connected: true, latestJob: begun ? completed : null }) };
     });
     render(<AccountSyncPanel backend={{ request }} />);
-    open();
     await screen.findByText('Connected to the retained library.');
     fireEvent.click(screen.getByRole('button', { name: 'Sync queued work' }));
     await screen.findByText(/Received: 9007199254740993/);
     expect(screen.getByText(/These counts do not prove/).textContent).toContain('Remote work remains pending');
+    expect(screen.getByText(/These counts do not prove/).textContent).toContain('Incoming item 9007199254740993: head conflict');
     expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'sync_now' } });
   });
 
@@ -66,7 +76,6 @@ describe('native Account & sync controls', () => {
       return { operation: 'status', status: status() };
     });
     const { unmount } = render(<AccountSyncPanel backend={{ request }} />);
-    open();
     await screen.findByText('Library retained; sign in to resume.');
     fireEvent.click(screen.getByRole('button', { name: 'Sign in / reconnect' }));
     await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'poll', jobId: JOB }));

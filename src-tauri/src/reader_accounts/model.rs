@@ -11,20 +11,20 @@ use specta::Type;
     deny_unknown_fields
 )]
 pub enum AccountAction {
-    SignIn,
+    SignIn {},
     Bootstrap { remote_library: String },
     JoinDevice { remote_library: String },
     Recover { remote_library: String },
-    ReconcileEnrollment,
-    RenewEnrollment,
-    ShowPairRequest,
+    ReconcileEnrollment {},
+    RenewEnrollment {},
+    ShowPairRequest {},
     AcceptDeviceApproval { packet: String },
     ApproveDevice { packet: String },
-    RetryDeviceApproval,
-    DeviceApprovalHandedOff,
-    ExportRecovery,
-    RetryCustodyWrite,
-    SyncNow,
+    RetryDeviceApproval {},
+    DeviceApprovalHandedOff {},
+    ExportRecovery {},
+    RetryCustodyWrite {},
+    SyncNow {},
 }
 #[derive(Deserialize, Type)]
 #[serde(
@@ -34,11 +34,11 @@ pub enum AccountAction {
     deny_unknown_fields
 )]
 pub enum AccountRequest {
-    Status,
+    Status {},
     Begin { intent: AccountAction },
     Poll { job_id: String },
     Cancel { job_id: String },
-    Disconnect,
+    Disconnect {},
 }
 #[derive(Serialize, Type)]
 pub struct AccountError {
@@ -49,6 +49,7 @@ pub struct AccountError {
 pub struct AccountStatus {
     pub configured: bool,
     pub retained_library: bool,
+    pub recovery_available: bool,
     pub connected: bool,
     pub custody: Option<CustodyStatus>,
     pub latest_job: Option<AccountJob>,
@@ -99,7 +100,13 @@ pub enum Outcome {
         acknowledged: String,
         remote_pending: bool,
         local_pending: bool,
+        pending: Option<AccountPending>,
     },
+}
+#[derive(Serialize, Type)]
+pub struct AccountPending {
+    pub sequence: String,
+    pub reason: String,
 }
 #[derive(Serialize, Type)]
 #[serde(

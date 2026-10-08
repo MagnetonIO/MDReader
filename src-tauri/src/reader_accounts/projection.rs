@@ -11,7 +11,7 @@ fn id(value: String) -> Result<uuid::Uuid, AccountError> {
 impl AccountRequest {
     pub(super) fn service(self) -> Result<service::rpc::AccountRequest, AccountError> {
         Ok(match self {
-            Self::Status => service::rpc::AccountRequest::Status,
+            Self::Status {} => service::rpc::AccountRequest::Status {},
             Self::Begin { intent } => service::rpc::AccountRequest::Begin {
                 intent: intent.service()?,
             },
@@ -21,7 +21,7 @@ impl AccountRequest {
             Self::Cancel { job_id } => service::rpc::AccountRequest::Cancel {
                 job_id: id(job_id)?,
             },
-            Self::Disconnect => service::rpc::AccountRequest::Disconnect,
+            Self::Disconnect {} => service::rpc::AccountRequest::Disconnect {},
         })
     }
 }
@@ -36,7 +36,7 @@ impl AccountAction {
             }
         };
         Ok(match self {
-            Self::SignIn => I::SignIn {},
+            Self::SignIn {} => I::SignIn {},
             Self::Bootstrap { remote_library } => I::Bootstrap {
                 remote_library: id(remote_library)?,
             },
@@ -46,20 +46,20 @@ impl AccountAction {
             Self::Recover { remote_library } => I::Recover {
                 remote_library: id(remote_library)?,
             },
-            Self::ReconcileEnrollment => I::ReconcileEnrollment {},
-            Self::RenewEnrollment => I::RenewEnrollment {},
-            Self::ShowPairRequest => I::ShowPairRequest {},
+            Self::ReconcileEnrollment {} => I::ReconcileEnrollment {},
+            Self::RenewEnrollment {} => I::RenewEnrollment {},
+            Self::ShowPairRequest {} => I::ShowPairRequest {},
             Self::AcceptDeviceApproval { packet: value } => I::AcceptDeviceApproval {
                 packet: packet(value)?,
             },
             Self::ApproveDevice { packet: value } => I::ApproveDevice {
                 packet: packet(value)?,
             },
-            Self::RetryDeviceApproval => I::RetryDeviceApproval {},
-            Self::DeviceApprovalHandedOff => I::DeviceApprovalHandedOff {},
-            Self::ExportRecovery => I::ExportRecovery {},
-            Self::RetryCustodyWrite => I::RetryCustodyWrite {},
-            Self::SyncNow => I::SyncNow {},
+            Self::RetryDeviceApproval {} => I::RetryDeviceApproval {},
+            Self::DeviceApprovalHandedOff {} => I::DeviceApprovalHandedOff {},
+            Self::ExportRecovery {} => I::ExportRecovery {},
+            Self::RetryCustodyWrite {} => I::RetryCustodyWrite {},
+            Self::SyncNow {} => I::SyncNow {},
         })
     }
 }
@@ -75,6 +75,7 @@ impl From<service::AccountStatus> for AccountStatus {
         Self {
             configured: value.configured,
             retained_library: value.retained_library,
+            recovery_available: value.recovery_available,
             connected: value.connected,
             custody: value.custody.map(|c| CustodyStatus {
                 state: label(c.state),
@@ -129,6 +130,7 @@ impl From<service::Outcome> for Outcome {
                 acknowledged,
                 remote_pending,
                 local_pending,
+                pending,
                 ..
             } => Self::Sync {
                 committed: committed.to_string(),
@@ -138,6 +140,10 @@ impl From<service::Outcome> for Outcome {
                 acknowledged: acknowledged.to_string(),
                 remote_pending,
                 local_pending,
+                pending: pending.map(|value| AccountPending {
+                    sequence: value.sequence.to_string(),
+                    reason: label(value.reason),
+                }),
             },
         }
     }

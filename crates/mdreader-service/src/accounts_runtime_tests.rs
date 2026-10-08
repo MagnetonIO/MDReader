@@ -27,7 +27,7 @@ fn account_setup_failure_is_typed_and_does_not_disable_local_reader() {
     let _held = store.lock().unwrap();
     let value = runtime
         .execute(Request::Account {
-            request: AccountRequest::Status,
+            request: AccountRequest::Status {},
         })
         .unwrap();
     assert_eq!(value["error"], "identity_or_scope");

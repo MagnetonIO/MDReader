@@ -7,21 +7,21 @@ use uuid::Uuid;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AccountRequest {
-    Status,
+    Status {},
     Begin { intent: AccountIntent },
     Poll { job_id: Uuid },
     Cancel { job_id: Uuid },
-    Disconnect,
+    Disconnect {},
 }
 // Request's diagnostic formatter must never print public packet contents either.
 impl std::fmt::Debug for AccountRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Status => "AccountStatus",
+            Self::Status {} => "AccountStatus",
             Self::Begin { .. } => "AccountBegin",
             Self::Poll { .. } => "AccountPoll",
             Self::Cancel { .. } => "AccountCancel",
-            Self::Disconnect => "AccountDisconnect",
+            Self::Disconnect {} => "AccountDisconnect",
         })
     }
 }
@@ -36,7 +36,9 @@ pub enum AccountReply {
 impl Coordinator {
     pub fn execute(&self, request: AccountRequest) -> Result<AccountReply> {
         match request {
-            AccountRequest::Status => self.status().map(|status| AccountReply::Status { status }),
+            AccountRequest::Status {} => {
+                self.status().map(|status| AccountReply::Status { status })
+            }
             AccountRequest::Begin { intent } => self
                 .begin(intent)
                 .map(|job_id| AccountReply::Begun { job_id }),
@@ -49,7 +51,7 @@ impl Coordinator {
                 self.cancel(job_id)?;
                 Ok(AccountReply::Complete)
             }
-            AccountRequest::Disconnect => {
+            AccountRequest::Disconnect {} => {
                 self.disconnect()?;
                 Ok(AccountReply::Complete)
             }
@@ -84,7 +86,8 @@ mod tests {
             },
         )
         .unwrap();
-        let AccountReply::Status { status } = coordinator.execute(AccountRequest::Status).unwrap()
+        let AccountReply::Status { status } =
+            coordinator.execute(AccountRequest::Status {}).unwrap()
         else {
             panic!("status")
         };
