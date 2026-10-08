@@ -15,6 +15,8 @@ pub use related::*;
 #[path = "provider_projection.rs"]
 mod projection;
 pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
+mod local_source;
+pub use local_source::publish_local_source;
 
 pub const MODEL_NAME: &str = "bge-small-en-v1.5";
 pub const EMBEDDING_DIM: usize = 384;
@@ -457,44 +459,6 @@ impl ReaderStore {
     /// Borrow the owner's durable connection, including for sync transactions.
     pub fn with_library_connection<T>(&mut self, operation: impl FnOnce(&mut Connection) -> T) -> T {
         operation(&mut self.library)
-    }
-    pub fn add_local_source(&mut self, name: &str, root: SourceRoot) -> Result<Source> {
-        self.add_local_source_with(name,root,|_,_| Ok(())).map(|(source,())|source)
-    }
-    /// Publish trusted owner metadata in the exact same durable transaction as
-    /// the source grant. Files must already be durable. Callback or final root
-    /// validation failures roll back both; this never implicitly re-grants a
-    /// revoked identity. The callback receives no second database writer.
-    pub fn add_local_source_with<T>(
-        &mut self,
-        name: &str,
-        root: SourceRoot,
-        publish: impl FnOnce(&rusqlite::Transaction<'_>, &Source) -> Result<T>,
-    ) -> Result<(Source, T)> {
-        if name.trim().is_empty() || name.len() > 256 {
-            return Err(invalid("invalid source name"));
-        }
-        root.verify()?;
-        let tx=self.library.transaction()?;
-        let private:Option<Vec<u8>>=tx.query_row("SELECT cache_path FROM core_provider_profile WHERE singleton=1",[],|r|r.get(0)).optional()?;
-        if let Some(private)=private {
-            let private=decode_path(private)?;
-            let local=std::fs::canonicalize(&root.path)?;
-            if private.starts_with(&local)||local.starts_with(&private) {
-                return Err(invalid("local source overlaps private provider cache"));
-            }
-        }
-        let identity = serde_json::to_string(&root.identity)
-            .map_err(|_| invalid("invalid source identity"))?;
-        let id = revision(identity.as_bytes());
-        // Admission is idempotent, never an implicit re-grant. A stale window
-        // or queued import must not revive a source that the user revoked.
-        tx.execute("INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path",params![id,name,encode_path(&root.path),identity])?;
-        let source=tx.query_row("SELECT id,name,enabled FROM sources WHERE id=?1",[&id],|r|Ok(Source {id:r.get(0)?,name:r.get(1)?,enabled:r.get(2)?}))?;
-        let value=publish(&tx,&source)?;
-        root.verify()?;
-        tx.commit()?;
-        Ok((source,value))
     }
     /// Look up an exact persisted binding without admitting or reopening it.
     /// This also permits revocation after a directory disappears or is replaced.
