@@ -1,6 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { commands } from "../bindings";
+import "../features/settings/indexing.css";
 type Policy = "balanced" | "paused" | "full_speed";
+const descriptions: Record<Policy, string> = {
+  balanced: "Balances indexing speed with a responsive reader.",
+  paused: "Pauses background indexing after the current batch finishes.",
+  full_speed: "Finishes indexing faster with higher CPU use.",
+};
 interface Backend {
   get(): Promise<string>;
   set(policy: Policy): Promise<string>;
@@ -23,6 +29,7 @@ function policy(value: string): Policy {
   throw new Error("Unknown indexing policy; restart the reader service.");
 }
 export function IndexingPanel({ service = backend }: { service?: Backend }) {
+  const descriptionId = useId();
   const [selected, setSelected] = useState<Policy>("balanced");
   const [applied, setApplied] = useState<Policy | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,36 +74,42 @@ export function IndexingPanel({ service = backend }: { service?: Backend }) {
   };
   return (
     <section
-      className="agent-capture-panel"
+      className="settings-section indexing-settings"
       aria-label="Background semantic indexing"
     >
       <h3>Background semantic indexing</h3>
       <p>
-        Balanced limits inference to one CPU thread and adds time between
-        batches. Reading and text search remain available. A running batch
-        finishes before a pause takes effect.
+        Choose how MDReader builds its search index in the background.
+        Reading and text search stay available in every mode.
       </p>
-      <label>
-        Indexing mode
-        <select
-          aria-label="Indexing mode"
-          value={selected}
-          disabled={busy || applied === null}
-          onChange={(event) => setSelected(event.currentTarget.value as Policy)}
+      <div className="indexing-settings__controls">
+        <label className="indexing-settings__field">
+          <span>Indexing mode</span>
+          <span className="indexing-settings__select">
+            <select
+              aria-label="Indexing mode"
+              aria-describedby={descriptionId}
+              value={selected}
+              disabled={busy || applied === null}
+              onChange={(event) => setSelected(event.currentTarget.value as Policy)}
+            >
+              <option value="balanced">Balanced</option>
+              <option value="paused">Paused</option>
+              <option value="full_speed">Full speed</option>
+            </select>
+          </span>
+        </label>
+        <button
+          className="indexing-settings__apply"
+          type="button"
+          disabled={busy || applied === null || selected === applied}
+          onClick={() => void apply()}
         >
-          <option value="balanced">Balanced</option>
-          <option value="paused">Paused</option>
-          <option value="full_speed">Full speed</option>
-        </select>
-      </label>
-      <button
-        type="button"
-        disabled={busy || applied === null || selected === applied}
-        onClick={() => void apply()}
-      >
-        {busy ? "Saving…" : "Apply indexing mode"}
-      </button>
-      <p role="status">
+          {busy ? "Saving…" : "Apply indexing mode"}
+        </button>
+      </div>
+      <p id={descriptionId} className="indexing-settings__hint">{descriptions[selected]}</p>
+      <p className="indexing-settings__status" role="status">
         {applied === null
           ? "Reading indexing policy…"
           : `Current mode: ${applied === "full_speed" ? "Full speed" : applied === "paused" ? "Paused" : "Balanced"}`}

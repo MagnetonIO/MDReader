@@ -7,7 +7,7 @@ It never imports or enumerates legacy broad grants. Tests use an injected memory
 vault, never a live keychain.
 
 `ProviderGrant` combines a validated native registration, verified stable
-provider account, explicit exact-file or AppFolder selection, and zeroized secret
+provider account, explicit exact-file or folder selection, and zeroized secret
 bundle. It has no public serialization. Private keychain encoding is bounded,
 versioned, rejects unknown schemas and validates construction again on load.
 Debug output redacts grants, references, selected IDs and tokens. Request body
@@ -38,3 +38,8 @@ supported hosts.
 metadata's digest. OAuth scopes or a renderer checkbox cannot establish Dropbox
 App Folder access. Google registrations support the exact `drive.file` Picker
 flow only. No registration migration expands old permissions.
+
+`Registration::dropbox_selected_folder` supports an existing scoped Dropbox app
+without claiming provider-enforced App Folder isolation. Fresh PKCE consent,
+verified scopes/account, and the native exact-path membership fence are required.
+Its distinct encoding/digest cannot silently upgrade an old App Folder grant.

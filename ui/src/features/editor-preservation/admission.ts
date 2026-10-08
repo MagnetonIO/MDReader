@@ -14,6 +14,8 @@ export interface EditorHold {
   /** Join issued work; releasing this hold never cancels an underlying save. */
   drain: () => Promise<void>;
   generation: () => number | null;
+  /** Entire registered set, only after issued saves have settled. */
+  snapshot: (entries: Entries) => { generation: string; entries: Array<EditorEntry & { entryId: string }> };
   release: () => boolean;
 }
 
@@ -58,6 +60,15 @@ export function createEditorAdmission() {
           if (held !== identity || exhausted) throw new Error('Editor admission is no longer held');
         },
         generation: () => held === identity && !exhausted ? generation : null,
+        snapshot(entries) {
+          if (held !== identity || exhausted || saves.size) throw new Error('Editor work is not drained');
+          const values = Object.entries(entries);
+          if (values.length > 64) throw new Error('Too many editor buffers to prepare');
+          return { generation: String(generation), entries: values.map(([entryId, entry]) => {
+            if (entryId !== `${entry.tabId} ${entry.path}`) throw new Error('Editor registration changed');
+            return { ...entry, entryId, conflict: entry.conflict ? { ...entry.conflict } : null };
+          }) };
+        },
         release() {
           if (held !== identity) return false;
           held = null; notify(); return true;

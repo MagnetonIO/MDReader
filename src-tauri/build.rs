@@ -6,6 +6,10 @@ fn main() {
     // Fresh narrow native provider registrations are independent of legacy
     // broad cloud-account configuration. GUI and headless service share identity.
     for field in [
+        "MDREADER_GOOGLE_DRIVE_CLIENT_ID",
+        "MDREADER_DROPBOX_CLIENT_ID",
+        "MDREADER_DROPBOX_REDIRECT_URI",
+        "MDREADER_NATIVE_DROPBOX_ACCESS_TYPE",
         "MDREADER_NATIVE_DRIVE_CLIENT_ID",
         "MDREADER_NATIVE_DROPBOX_CLIENT_ID",
         "MDREADER_NATIVE_DROPBOX_APP_FOLDER_REGISTRATION_SHA256",

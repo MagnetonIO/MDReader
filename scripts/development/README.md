@@ -1,3 +1,25 @@
+# Desktop configuration
+
+Run `pnpm tauri dev` from your selected worktree. The launcher reads only public
+native registration/sync settings from the main checkout's ignored `.env` and
+`.env.local`, then the worktree's files in that order. Shell/CI variables take
+precedence. `.env.example` lists the supported existing connector names.
+
+Existing Google Desktop client IDs and Dropbox app keys/registered redirects
+are reused. The Google client secret and old tokens are not loaded. Provider
+connections still require fresh system-browser consent; old keychain grants
+are not imported. Dropbox defaults to read-only for the explicitly selected
+folder, with editing requiring new consent. `selected_folder` registration does
+not claim Dropbox's provider-enforced App Folder restriction. For an App Folder
+app, paths are relative to its dedicated namespace.
+
+Native overrides are optional and authoritative, including invalid values; a
+bad override does not silently fall back to an old registration. Direct Cargo
+builds require the public configuration in the environment. CI keeps these
+public IDs/redirects in repository variables; it never reads a developer `.env`.
+Restart/rebuild the native app after changing registration values because they
+are compiled into the native owner. Starting Vite alone does not update them.
+
 # Source-bound mobile builds
 
 From a **clean committed checkout**, use Node/pnpm versions declared in the root
