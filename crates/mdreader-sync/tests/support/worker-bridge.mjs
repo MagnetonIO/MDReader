@@ -26,7 +26,7 @@ const jwk={...await exportJWK(issuer.publicKey),alg:'RS256',kid:'synthetic'};
 const runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script:readFileSync(path.join(web,'.worker-build/sync/index.js'),'utf8'),compatibilityDate:'2026-10-01',durableObjects:{READER_ACCOUNTS:{className:'ReaderAccount',useSQLite:true}},r2Buckets:['ENCRYPTED_BLOBS'],bindings:{SYNC_ENABLED:'development',BROWSER_ORIGIN:'https://reader.example.test',OIDC_ISSUER:issuerURL,OIDC_AUDIENCE:apiAudience,OIDC_CLIENT_IDS:JSON.stringify(['native-synthetic']),OIDC_JWKS_URL:issuerURL+'/keys',ENROLLMENT_SECRET:'synthetic-only-server-secret-at-least-32-bytes'},outboundService:async request=>{if(request.url!==issuerURL+'/keys')return new Response(null,{status:404});return Response.json({keys:[jwk]});}}));
 await runtime.ready;
 const codes=new Map();
-let origin, dropBootstrap=false, dropRecover=false, dropPairApproval=false, dropPairEnrollment=false, dropCommit=false, dropAck=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
+let origin, dropBootstrap=false, dropRecover=false, dropPairApproval=false, dropPairEnrollment=false, dropCommit=false, dropAck=false, dropUpload=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
 const stats={oauthExchanges:0,pkceRejected:0,uploadHashes:[],commitHashes:[],pairApprovalHashes:[],acks:[],waiting:false};
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const tokens=async nonce=>({
@@ -68,7 +68,7 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     if(url.pathname==='/__synthetic/control'){
       const input=JSON.parse(body.toString());
       if(input.release){stall=false;release?.();release=undefined;stats.waiting=false;}
-      if(input.dropPairApproval)dropPairApproval=true;if(input.dropPairEnrollment)dropPairEnrollment=true;if(input.dropBootstrap)dropBootstrap=true;if(input.dropRecover)dropRecover=true;if(input.dropCommit)dropCommit=true;if(input.dropAck)dropAck=true;if(input.weakUpload)weakUpload=true;if(input.stall)stall=true;
+      if(input.dropPairApproval)dropPairApproval=true;if(input.dropPairEnrollment)dropPairEnrollment=true;if(input.dropBootstrap)dropBootstrap=true;if(input.dropRecover)dropRecover=true;if(input.dropCommit)dropCommit=true;if(input.dropAck)dropAck=true;if(input.dropUpload)dropUpload=true;if(input.weakUpload)weakUpload=true;if(input.stall)stall=true;
       if(typeof input.forbidden==='boolean')forbidden=input.forbidden;if(input.redirect)redirect=true;if(input.oversized)oversized=true;
       res.end(JSON.stringify(stats));return;
     }
@@ -91,6 +91,7 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     if(url.pathname==='/v1/enrollment/bootstrap'&&dropBootstrap){dropBootstrap=false;res.destroy();return;}
     if(url.pathname==='/v1/ack'&&dropAck){dropAck=false;res.destroy();return;}
     if(url.pathname==='/v1/commit'&&dropCommit){dropCommit=false;res.destroy();return;}
+    if(req.method==='PUT'&&dropUpload&&result.ok){dropUpload=false;res.destroy();return;}
     if(req.method==='PUT'&&weakUpload&&result.ok){weakUpload=false;const value=JSON.parse(bytes);bytes=Buffer.from(JSON.stringify({blob:value.blob,bytes:value.bytes}));}
     res.writeHead(result.status,{'content-type':result.headers.get('content-type')||'application/octet-stream'});res.end(bytes);
   } catch {if(!res.destroyed)res.writeHead(500).end();}

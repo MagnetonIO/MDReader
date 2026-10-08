@@ -45,28 +45,12 @@ impl Transport {
             remote_pending: budget.pages == 0,
             ..RunReport::default()
         };
+        let mut paused = false;
         for entry in entries.into_iter().take(budget.outgoing) {
-            // Reupload immutable persisted bytes even after a legacy weak upload. This new
-            // channel always obtains an exact v2 scoped receipt before publishing the root.
-            if let Some(body) = entry.envelope_utf8 {
-                let blob = entry
-                    .operation
-                    .blob
-                    .as_deref()
-                    .ok_or(TransportError::Protocol)?;
-                let url = self.url(
-                    &format!("/v1/blobs/{blob}"),
-                    &[
-                        ("operationId", entry.operation.operation_id.clone()),
-                        ("libraryId", scope.library_id().into()),
-                    ],
-                )?;
-                let (status, receipt) = self
-                    .request(owner, &mut session, Method::PUT, url, body, 4096)
-                    .await?;
-                owner.with_store(&scope, |s| {
-                    s.mark_uploaded_scoped(&scope, &entry.operation.operation_id, status, &receipt)
-                })?;
+            if !self.upload_outbox(owner, &mut session, &entry).await? {
+                paused = true;
+                report.remote_pending = true;
+                break;
             }
             self.check(authority, &scope, generation)?;
             // Recheck the exact immutable snapshot after network, including owner binding.
@@ -77,7 +61,7 @@ impl Transport {
                 if current.operation != entry.operation {
                     return Err(SyncError::Reused);
                 }
-                Ok(())
+                s.require_dependencies_uploaded(&entry.operation.operation_id)
             })?;
             let (status, bytes) = self
                 .request(
@@ -93,7 +77,7 @@ impl Transport {
             report.committed += 1;
             report.conflicts += usize::from(receipt.conflict);
         }
-        for _ in 0..budget.pages {
+        for _ in 0..if paused { 0 } else { budget.pages } {
             self.check(authority, &scope, generation)?;
             let after = owner.with_store(&scope, |s| s.cursors())?.received;
             let (status, bytes) = self
@@ -142,7 +126,7 @@ impl Transport {
             }
         }
         let cursors = owner.with_store(&scope, |s| s.cursors())?;
-        if cursors.applied > cursors.server_acknowledged {
+        if !paused && cursors.applied > cursors.server_acknowledged {
             let body = serde_json::to_vec(&serde_json::json!({"cursor":cursors.applied}))
                 .map_err(|_| TransportError::Protocol)?;
             let (status, bytes) = self

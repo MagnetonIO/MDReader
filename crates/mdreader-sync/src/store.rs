@@ -4,7 +4,15 @@ use crate::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+mod admission;
 mod application;
+mod graph;
+mod graph_read;
+mod graph_schema;
+#[cfg(test)]
+mod graph_tests;
+mod upload;
+pub use graph::{enqueue_graph_in, StoredDependency};
 
 const VERSION: i64 = 1;
 const MAX_RECEIPT_BYTES: usize = 4096;
@@ -267,6 +275,9 @@ impl<'a> SyncStore<'a> {
         if version != VERSION {
             return Err(SyncError::Schema);
         }
+        if graph_schema::present(connection)? {
+            graph_schema::require(connection)?;
+        }
         let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
         let journal: String = connection.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
         if synchronous < 2 || !matches!(journal.as_str(), "wal" | "delete" | "truncate" | "persist")
@@ -425,117 +436,16 @@ impl<'a> SyncStore<'a> {
     }
     fn enqueue(
         &mut self,
-        mut operation: CommitOperation,
+        operation: CommitOperation,
         envelope: Option<&[u8]>,
     ) -> Result<OutboxEntry> {
-        operation.validate()?;
-        operation.parents.sort();
-        validate_encrypted_body(&operation, envelope)?;
-        let canonical =
-            String::from_utf8(operation.wire_bytes()?).map_err(|_| SyncError::Invalid)?;
-        let bytes = (canonical.len() + envelope.map_or(0, <[u8]>::len) + MAX_RECEIPT_BYTES) as u64;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(old) = entry_on(&transaction, &self.scope, &operation.operation_id)? {
-            if old.operation != operation || old.envelope_utf8.as_deref() != envelope {
-                return Err(SyncError::Reused);
-            }
-            transaction.commit()?;
-            return Ok(old);
-        }
-        let reused:u64=transaction.query_row("SELECT count(*) FROM mdreader_sync_outbox WHERE account=?1 AND (operation_id=?2 OR revision_id=?3)",params![self.scope.account_digest,operation.operation_id,operation.revision_id],|r|r.get(0))?;
-        if reused > 0 {
-            return Err(SyncError::Reused);
-        }
-        let (count, total): (u64, u64) = transaction.query_row(
-            "SELECT count(*),coalesce(sum(bytes),0) FROM mdreader_sync_outbox",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        if count >= self.limits.max_outbox_entries
-            || total.saturating_add(bytes) > self.limits.max_outbox_bytes
-        {
-            return Err(SyncError::Bounds);
-        }
-        let state = if operation.deleted {
-            OutboxState::Uploaded
-        } else {
-            OutboxState::Pending
-        };
-        transaction.execute("INSERT INTO mdreader_sync_outbox(account,library,device,operation_id,revision_id,operation,envelope,state,receipt,bytes) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9)",params![self.scope.account_digest,self.scope.library_id,self.scope.device_id,operation.operation_id,operation.revision_id,canonical,envelope,state.sql(),bytes])?;
-        transaction.commit()?;
-        Ok(OutboxEntry {
-            operation,
-            envelope_utf8: envelope.map(<[u8]>::to_vec),
-            state,
-            receipt: None,
-        })
-    }
-    /// Caller must bind response_scope to its authenticated account/device HTTP channel.
-    /// This validates the protocol receipt; it does not authenticate a network connection.
-    /// New transport channel: strict v2 receipt binds account/library/device/operation.
-    /// It must not admit a legacy unscoped receipt as publication authority.
-    pub fn mark_uploaded_scoped(
-        &mut self,
-        scope: &SyncScope,
-        operation: &str,
-        status: u16,
-        bytes: &[u8],
-    ) -> Result<()> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        struct ScopedReceipt {
-            v: u8,
-            account: String,
-            library_id: String,
-            device: String,
-            operation_id: String,
-            blob: String,
-            bytes: u64,
-        }
-        self.response_scope(scope, status, &[200, 201])?;
-        let receipt: ScopedReceipt = parse(bytes, MAX_RECEIPT_BYTES)?;
-        if receipt.v != 2
-            || receipt.account != scope.account_digest
-            || receipt.library_id != scope.library_id
-            || receipt.device != scope.device_id
-            || receipt.operation_id != operation
-        {
-            return Err(SyncError::Authentication);
-        }
-        let legacy =
-            serde_json::to_vec(&serde_json::json!({"blob":receipt.blob,"bytes":receipt.bytes}))
-                .map_err(|_| SyncError::Invalid)?;
-        self.mark_uploaded(scope, operation, status, &legacy)
-    }
-    /// Legacy receipt compatibility only. New transports must use mark_uploaded_scoped.
-    /// Caller binds response_scope to its authenticated HTTP channel.
-    pub fn mark_uploaded(
-        &mut self,
-        response_scope: &SyncScope,
-        operation_id: &str,
-        status: u16,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.response_scope(response_scope, status, &[200, 201])?;
-        validate_uuid(operation_id)?;
-        let receipt: UploadReceipt = parse(bytes, MAX_RECEIPT_BYTES)?;
-        validate_digest(&receipt.blob)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let entry =
-            entry_on(&transaction, &self.scope, operation_id)?.ok_or(SyncError::NotReady)?;
-        if entry.operation.deleted
-            || entry.operation.blob.as_deref() != Some(receipt.blob.as_str())
-            || entry.envelope_utf8.as_ref().map(|b| b.len() as u64) != Some(receipt.bytes)
-        {
-            return Err(SyncError::Authentication);
-        }
-        transaction.execute("UPDATE mdreader_sync_outbox SET state='uploaded' WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND state='pending'",params![self.scope.account_digest,self.scope.library_id,self.scope.device_id,operation_id])?;
+            admission::enqueue_on(&transaction, &self.scope, &self.limits, operation, envelope)?;
         transaction.commit()?;
-        Ok(())
+        Ok(entry)
     }
     pub fn commit_receipt(
         &mut self,
@@ -552,6 +462,7 @@ impl<'a> SyncStore<'a> {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let entry = entry_on(&transaction, &self.scope, &receipt.operation_id)?
             .ok_or(SyncError::NotReady)?;
+        graph::require_published_on(&transaction, &self.scope, &receipt.operation_id)?;
         if entry.state == OutboxState::Pending {
             return Err(SyncError::NotReady);
         }
@@ -747,7 +658,20 @@ fn entry_on(
     scope: &SyncScope,
     operation_id: &str,
 ) -> Result<Option<OutboxEntry>> {
-    let row:Option<RawOutbox>=connection.query_row("SELECT operation,envelope,state,receipt FROM mdreader_sync_outbox WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4",params![scope.account_digest,scope.library_id,scope.device_id,operation_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+    // Read SQLite-owned byte lengths before allocating any durable text/body.
+    // A corrupt oversized row is distinct from a missing operation.
+    let row: Option<Result<RawOutbox>> = connection.query_row(
+        "SELECT operation,envelope,state,receipt,length(CAST(operation AS BLOB)),length(CAST(envelope AS BLOB)),length(CAST(state AS BLOB)),length(CAST(receipt AS BLOB)) FROM mdreader_sync_outbox WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4",
+        params![scope.account_digest,scope.library_id,scope.device_id,operation_id], |r| {
+            if r.get::<_,usize>(4)? > 4096
+                || r.get::<_,Option<usize>>(5)?.is_some_and(|n| n > crate::crypto::MAX_ENVELOPE_BYTES)
+                || r.get::<_,usize>(6)? > 32
+                || r.get::<_,Option<usize>>(7)?.is_some_and(|n| n > MAX_RECEIPT_BYTES) {
+                return Ok(Err(SyncError::Bounds));
+            }
+            Ok(Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
+        }).optional()?;
+    let row = row.transpose()?;
     row.map(|(op, envelope, state, receipt)| {
         let operation: CommitOperation = parse(op.as_bytes(), 4096)?;
         operation.validate()?;

@@ -25,6 +25,7 @@ pub type Result<T> = std::result::Result<T, SyncError>;
 pub mod codec;
 pub mod crypto;
 pub mod incoming;
+pub mod outgoing;
 pub mod store;
 pub use crypto::*;
 pub use store::*;
