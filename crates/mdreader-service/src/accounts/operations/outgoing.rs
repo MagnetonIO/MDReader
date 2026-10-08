@@ -5,21 +5,21 @@ impl Actor {
     pub async fn selected_sync(
         &mut self,
         command: &Command,
-        document: Uuid,
-        operation: Uuid,
+        selection: SelectedOperation,
     ) -> Result<Outcome> {
         self.shared.check(command)?;
         self.shared.phase(command, Phase::Syncing)?;
         // This real lease is held by the issued blocking task, never an await.
         // Freeze denies admission and cannot claim completion until it drops.
         let (active, lease) = self.shared.projection_lease()?;
+        selection.require_scope(&active.authority.scope()?)?;
         self.blocking(move || {
             let _lease = lease;
             active.incoming.queue_selected_document(
                 &active.selected,
                 &active.authority,
-                document,
-                operation,
+                &selection.receipt,
+                selection.operation_id,
             )?;
             Ok(())
         })
@@ -29,5 +29,31 @@ impl Actor {
         // bytes/intents. It never discards or silently reauthorizes them.
         self.shared.check(command)?;
         self.sync(command).await
+    }
+    pub async fn inspect_selected(
+        &mut self,
+        command: &Command,
+        selection: SelectedOperation,
+    ) -> Result<Outcome> {
+        self.shared.check(command)?;
+        let (active, lease) = self.shared.projection_lease()?;
+        selection.require_scope(&active.authority.scope()?)?;
+        let inspect = selection.clone();
+        let disposition = self
+            .blocking(move || {
+                let _lease = lease;
+                Ok(active.incoming.inspect_selected_document(
+                    &active.selected,
+                    &inspect.receipt,
+                    inspect.operation_id,
+                )?)
+            })
+            .await
+            .map_err(|_| AccountError::Interrupted)??;
+        self.shared.check(command)?;
+        Ok(Outcome::SelectedStatus {
+            selection,
+            disposition,
+        })
     }
 }

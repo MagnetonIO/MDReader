@@ -99,7 +99,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
             </div>
             <section id="settings-category-account" hidden={category !== 'account'} aria-labelledby="settings-account-title">
               <h2 id="settings-account-title">Account &amp; sync</h2>
-              <AccountSyncPanel active={category === 'account'} />
+              <AccountSyncPanel active={category === 'account'} selectedDocument={props.selectedDevice} />
             </section>
             <section id="settings-category-backup" hidden={category !== 'backup'} aria-labelledby="settings-backup-title">
               <h2 id="settings-backup-title">Backup &amp; storage</h2>

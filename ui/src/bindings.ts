@@ -391,6 +391,7 @@ export type AccountError = {
 
 export type AccountJob = {
 	id: string,
+	selectedSync: SelectedOperation | null,
 	state: JobState,
 };
 
@@ -401,7 +402,7 @@ export type AccountPending = {
 
 export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
 
-export type AccountRequest = { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+export type AccountRequest = { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
 
 export type AccountStatus = {
 	configured: boolean,
@@ -410,6 +411,7 @@ export type AccountStatus = {
 	connected: boolean,
 	custody: CustodyStatus | null,
 	latestJob: AccountJob | null,
+	selectedScope: SelectedScope | null,
 };
 
 export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
@@ -1635,7 +1637,7 @@ export type OrderDirection =
 /**  Highest value first. */
 "descending";
 
-export type Outcome = { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+export type Outcome = { kind: "selected_status"; selection: SelectedOperation; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,
@@ -2127,6 +2129,27 @@ export type SearchResults = {
 	 *  lexical-only list and must be presented as one.
 	 */
 	semantic_unavailable: string | null,
+};
+
+export type SelectedDisposition = { state: "absent" } | { state: "queued" } | { state: "applied"; sequence: string } | { state: "reauthorization_required" };
+
+export type SelectedOperation = {
+	scope: SelectedScope,
+	receipt: SelectedReceipt,
+	operationId: string,
+};
+
+export type SelectedReceipt = {
+	documentId: string,
+	sourceId: string,
+	revision: string,
+};
+
+/**  Exact opaque public identity only. No body, native path or credential reference. */
+export type SelectedScope = {
+	accountDigest: string,
+	libraryId: string,
+	deviceId: string,
 };
 
 /**

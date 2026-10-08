@@ -7,7 +7,8 @@ There are no new dependencies, wire formats, background owners or deployments.
 ## Admission
 
 `IncomingCoordinator::queue_selected_document` accepts one explicitly selected
-native device-document UUID and one stable operation UUID. It reuses the actual
+native device-document reading receipt (UUID, source identity, exact raw-byte revision)
+and one stable operation UUID. It reuses the actual
 coordinator's ReaderStore, selected ProjectionPermit, AssetRuntime and operation
 lease. An actual NativeAuthority must match the selected account/library/device
 and current activation. There is no renderer token/key input or authority bypass.
@@ -153,3 +154,10 @@ and the production vault codec. It does not expose QueueDocument RPC/UI or prove
 live issuer/OS-keychain acceptance. Restart/login reauthorization of a queued old intent, outgoing user-state
 and deletion operations, graph cleanup and history maintenance remain explicit
 later work; this checkpoint never guesses those policies.
+
+## Explicit product selection follow-up
+
+The later [selected Settings/RPC slice](../../accounts/SELECTED-SYNC.md) exposes
+only an exact current device-document receipt through the existing account actor.
+The earlier native-only product gate above is historical; outgoing user-state,
+old-intent reauthorization and installed/live acceptance remain gates.

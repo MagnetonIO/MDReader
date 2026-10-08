@@ -158,3 +158,14 @@ fn validate_layout(tx: &Transaction<'_>, name: &str, migration: &str) -> Result<
     }
     Ok(())
 }
+
+/// Readonly observers must not trigger the supported v1-to-v2 upgrade.
+pub(super) fn require_current_library(tx: &Transaction<'_>, library: &str) -> Result<()> {
+    let (count, version): (u64, Option<i64>) = tx.query_row(
+        "SELECT count(*),max(CASE WHEN singleton=1 THEN version END) FROM native_incoming_schema_v1", [], |r| Ok((r.get(0)?,r.get(1)?)),
+    ).map_err(|_| Error::Schema)?;
+    if count != 1 || version != Some(2) {
+        return Err(Error::Schema);
+    }
+    require_library(tx, library)
+}

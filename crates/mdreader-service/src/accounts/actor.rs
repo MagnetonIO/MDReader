@@ -7,10 +7,11 @@ pub(super) struct Command {
     pub epoch: u64,
     pub action: Action,
 }
-/// Native-only actions. SelectedSync is never renderer-deserializable.
+/// Private actor actions. Only closed, validated public selection DTOs enter.
 pub(super) enum Action {
     Account(AccountIntent),
-    SelectedSync { document: Uuid, operation: Uuid },
+    SelectedSync(SelectedOperation),
+    InspectSelected(SelectedOperation),
 }
 pub(super) enum Message {
     Run(Command),
@@ -94,7 +95,9 @@ impl Actor {
             self.settle_blocking().await;
             // Cancelled operations cannot publish status or establish a replacement.
             // Any persisted uncertain enrollment/approval remains intact in the vault.
-            if shared.check(&command).is_ok() {
+            if shared.check(&command).is_ok()
+                && !matches!(&command.action, Action::InspectSelected(_))
+            {
                 let _ = self.refresh_custody(&command).await;
             }
             shared.finish(&command, result);

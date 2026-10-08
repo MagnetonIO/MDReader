@@ -2,9 +2,9 @@
 use super::*;
 use crate::sync::{
     incoming::outgoing_selection::{self, Admission},
-    outgoing::{Intent, association, scope_digest, snapshot::Snapshot},
+    outgoing::{association, scope_digest, snapshot::Snapshot, Intent},
 };
-use mdreader_sync::outgoing::{OutgoingContent, SealedGraph, seal_content};
+use mdreader_sync::outgoing::{seal_content, OutgoingContent, SealedGraph};
 
 struct Local {
     f: Fixture,
@@ -117,6 +117,7 @@ impl Local {
                 graph: &self.graph,
                 current: &self.current,
                 archive: &self.snapshot.archive,
+                expected: &mdreader_core::device::catalog::receipt(&self.current.state().document),
             },
             |_| Ok(()),
         )
@@ -251,6 +252,7 @@ fn selected_association_and_ciphertext_graph_rollback_and_reopen_as_one_unit() {
             graph: &local.graph,
             current: &local.current,
             archive: &local.snapshot.archive,
+            expected: &mdreader_core::device::catalog::receipt(&local.current.state().document),
         },
         |_| Err(Error::Inactive),
     );
@@ -319,23 +321,21 @@ fn selected_association_and_ciphertext_graph_rollback_and_reopen_as_one_unit() {
             entry.envelope_utf8.as_deref(),
             Some(graph.root().envelope_utf8())
         );
-        assert!(
-            mdreader_sync::published_graph_in(
-                &tx,
-                &f.scope,
-                &intent.operation.operation_id,
-                &RemoteChange {
-                    sequence: 1,
-                    revision_id: intent.operation.revision_id.clone(),
-                    item_id: intent.operation.item_id.clone(),
-                    blob: intent.operation.blob.clone(),
-                    deleted: false,
-                    parents: vec![],
-                    device: f.scope.device_id().into()
-                }
-            )
-            .is_err()
-        );
+        assert!(mdreader_sync::published_graph_in(
+            &tx,
+            &f.scope,
+            &intent.operation.operation_id,
+            &RemoteChange {
+                sequence: 1,
+                revision_id: intent.operation.revision_id.clone(),
+                item_id: intent.operation.item_id.clone(),
+                blob: intent.operation.blob.clone(),
+                deleted: false,
+                parents: vec![],
+                device: f.scope.device_id().into()
+            }
+        )
+        .is_err());
     });
     assert_eq!(f.cursor(), CursorState::default());
     let current = device::state::current(&mut f.owner, &intent.native_document).unwrap();
@@ -365,11 +365,9 @@ fn exact_self_echo_receipts_apply_to_same_document_and_late_fence_rolls_back() {
         },
     )
     .unwrap();
-    assert!(
-        !local
-            .snapshot
-            .matches_prepared(&local.prepared_graph(&changed))
-    );
+    assert!(!local
+        .snapshot
+        .matches_prepared(&local.prepared_graph(&changed)));
     local.admit().unwrap();
     local.stage();
     // Uploaded/ack status alone or an absent receipt can never authorize apply.
@@ -428,22 +426,18 @@ fn exact_self_echo_receipts_apply_to_same_document_and_late_fence_rolls_back() {
             [&local.intent.operation.operation_id],
         )
         .unwrap();
-        assert!(
-            mdreader_sync::graph_entry_in(
-                &tx,
-                &local.f.scope,
-                &local.intent.operation.operation_id
-            )
-            .is_err()
-        );
-        assert!(
-            mdreader_sync::outbox_revision_in(
-                &tx,
-                &local.f.scope,
-                &local.intent.operation.revision_id
-            )
-            .is_err()
-        );
+        assert!(mdreader_sync::graph_entry_in(
+            &tx,
+            &local.f.scope,
+            &local.intent.operation.operation_id
+        )
+        .is_err());
+        assert!(mdreader_sync::outbox_revision_in(
+            &tx,
+            &local.f.scope,
+            &local.intent.operation.revision_id
+        )
+        .is_err());
     });
     local.f.owner.with_library_connection(|db| {
         let mut sync = SyncStore::attach(db, local.f.scope.clone()).unwrap();

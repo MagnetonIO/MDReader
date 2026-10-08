@@ -34,11 +34,43 @@ pub enum AccountAction {
     deny_unknown_fields
 )]
 pub enum AccountRequest {
+    SyncSelected { selection: SelectedOperation },
+    InspectSelected { selection: SelectedOperation },
     Status {},
     Begin { intent: AccountAction },
     Poll { job_id: String },
     Cancel { job_id: String },
     Disconnect {},
+}
+/// Exact opaque public identity only. No body, native path or credential reference.
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedScope {
+    pub account_digest: String,
+    pub library_id: String,
+    pub device_id: String,
+}
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedReceipt {
+    pub document_id: String,
+    pub source_id: String,
+    pub revision: String,
+}
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedOperation {
+    pub scope: SelectedScope,
+    pub receipt: SelectedReceipt,
+    pub operation_id: String,
+}
+#[derive(Serialize, Type)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SelectedDisposition {
+    Absent,
+    Queued,
+    Applied { sequence: String },
+    ReauthorizationRequired,
 }
 #[derive(Serialize, Type)]
 pub struct AccountError {
@@ -53,6 +85,7 @@ pub struct AccountStatus {
     pub connected: bool,
     pub custody: Option<CustodyStatus>,
     pub latest_job: Option<AccountJob>,
+    pub selected_scope: Option<SelectedScope>,
 }
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +100,8 @@ pub struct CustodyStatus {
 #[derive(Serialize, Type)]
 pub struct AccountJob {
     pub id: String,
+    #[serde(rename = "selectedSync")]
+    pub selected_sync: Option<SelectedOperation>,
     pub state: JobState,
 }
 #[derive(Serialize, Type)]
@@ -84,6 +119,10 @@ pub enum JobState {
     rename_all_fields = "camelCase"
 )]
 pub enum Outcome {
+    SelectedStatus {
+        selection: SelectedOperation,
+        disposition: SelectedDisposition,
+    },
     Connected,
     PublicPacket {
         packet_kind: String,

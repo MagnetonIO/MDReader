@@ -3,7 +3,10 @@ import type { ImportState } from '../../platform/fs.js';
 import type { LibrarySourceDto, SettingsBackend } from '../../platform/settings.js';
 import type { WatcherStatus } from '../../stores/sources.js';
 
+import type { DeviceReference } from '../device-reader/backend';
+
 export interface SettingsSheetProps {
+  selectedDevice?: DeviceReference;
   localRoot?: string | null;
   backend?: SettingsBackend;
   watcher: WatcherStatus;

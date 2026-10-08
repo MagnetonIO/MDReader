@@ -2200,6 +2200,7 @@ export function AppShell() {
       ) : null}
       {settingsOpen ? (
         <SettingsSheet
+          selectedDevice={canonicalDocument && isDeviceReference(canonicalDocument) ? canonicalDocument : undefined}
           localRoot={root}
           watcher={watcher}
           importState={importState}

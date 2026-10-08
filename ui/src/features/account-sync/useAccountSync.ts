@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { accountBackend, accountError, type AccountAction, type AccountBackend, type AccountStatus } from './backend.js';
+import { accountBackend, accountError, type AccountAction, type AccountBackend, type AccountStatus, type AccountRequest } from './backend.js';
 
 /** Polling observes the same service actor. Closing Settings never cancels its job. */
 export function useAccountSync(backend: AccountBackend = accountBackend, observing = true) {
@@ -33,12 +33,12 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
     } finally { if (current(version)) setBusy(false); }
   }, [backend]);
 
-  const act = useCallback(async (action: AccountAction) => {
+  const begin = useCallback(async (request: Extract<AccountRequest, { operation: 'begin' | 'sync_selected' | 'inspect_selected' }>) => {
     const version = ++epoch.current;
     setBusy(true);
     setError(null);
     try {
-      const reply = await backend.request({ operation: 'begin', intent: action });
+      const reply = await backend.request(request);
       if (!current(version)) return;
       if (reply.operation !== 'begun') throw new Error('invalid reply');
       setJobId(reply.jobId);
@@ -46,6 +46,8 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
       if (current(version)) setError(accountError(cause));
     } finally { if (current(version)) setBusy(false); }
   }, [backend]);
+
+  const act = useCallback((action: AccountAction) => begin({ operation: 'begin', intent: action }), [begin]);
 
   const stop = useCallback(async (disconnect: boolean) => {
     const exact = jobId ?? (status?.latestJob?.state.state === 'running' ? status.latestJob.id : null);
@@ -99,5 +101,5 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
     return () => { cancelled = true; clearTimeout(timer); };
   }, [backend, jobId, busy, observing, refresh]);
 
-  return { status, error, busy, running: jobId !== null, refresh, act, cancel: () => stop(false), disconnect: () => stop(true) };
+  return { status, error, busy, running: jobId !== null, refresh, act, begin, cancel: () => stop(false), disconnect: () => stop(true) };
 }

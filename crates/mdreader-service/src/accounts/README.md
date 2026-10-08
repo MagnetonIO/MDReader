@@ -211,3 +211,9 @@ cancellation/freeze gate is now exercised together. See the scoped
 [fixture and exact evidence](acceptance/README.md); the earlier checkpoint's
 separate-component limitation above is historical. Outgoing selection, product
 recovery adapters, cross-process backup and live/mobile acceptance remain gates.
+
+## Explicit selected-document product follow-up
+
+See [the exact selection/reconciliation contract](SELECTED-SYNC.md). The closed
+selected RPC uses the same actor and native authority; no token, raw key, body,
+private path or generic native operation is accepted from the renderer.
