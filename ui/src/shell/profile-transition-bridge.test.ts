@@ -82,6 +82,9 @@ test('released or disposed preflight cannot later flush or affect a replacement 
   expect(boundary.flush).not.toHaveBeenCalled();
   expect(owner.failed).not.toHaveBeenCalled();
   expect(owner.resumed).toHaveBeenCalledTimes(1);
+  // A preflight now owns a real editor hold even before JSON flush starts.
+  expect(boundary.listeners.size).toBe(1);
+  emit('released', request('current'));
   expect(boundary.listeners.size).toBe(0);
   expect(boundary.off).toHaveBeenCalledTimes(2);
 });

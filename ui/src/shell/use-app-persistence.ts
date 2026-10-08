@@ -1,5 +1,5 @@
 /** Ordinary renderer persistence and native close lifecycle. Profile-wide
- * preservation has a separate editor/freeze handshake; this hook grants none. */
+ * preservation joins the actual editor owner with the same accumulated writer. */
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useShallow } from 'zustand/react/shallow';
@@ -13,6 +13,8 @@ import { useSettingsStore, type SettingsSnapshot } from '../stores/settings.js';
 import { isTauri, saveSettings, sessionWriter } from './persistence.js';
 import { drainBeforeClose } from './persistence-lifecycle.js';
 import { toast } from './toasts.js';
+import { installRendererPreservation } from '../features/editor-preservation/bridge';
+import { editorAdmission } from '../features/editor-preservation/admission';
 
 function currentSettings(): SettingsSnapshot {
   const s = useSettingsStore.getState();
@@ -47,6 +49,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
     toast('Your preferences or session could not be saved. Keep MDReader open and try again.', 8000);
   }, []);
   const flushSession = useCallback(() => {
+    if (editorAdmission.denied()) return;
     const t = useTabsStore.getState();
     const s = useSourcesStore.getState();
     const legacy = serializeSession({ root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent });
@@ -62,6 +65,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
   }, []);
   flushSessionRef.current = flushSession;
   const flushAll = useCallback(async () => {
+    if (editorAdmission.denied()) throw new Error('Editor preparation is held');
     flushSession();
     await Promise.all([sessionWriter.drain(), saveSettings(currentSettings())]);
     failureShown.current = false;
@@ -74,6 +78,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
       tracker.current = createSessionTracker(serializeSession({ root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent }), useReaderHistoryStore.getState().persisted);
     }
     const timer = window.setTimeout(() => {
+      if (editorAdmission.denied()) return;
       flushSession();
       void sessionWriter.drain().then(() => { failureShown.current = false; }, failed);
     }, 1000);
@@ -83,6 +88,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
   useEffect(() => {
     if (!persistenceReady) return;
     const timer = window.setTimeout(() => {
+      if (editorAdmission.denied()) return;
       void saveSettings(currentSettings()).then(() => { failureShown.current = false; }, failed);
     }, 1000);
     return () => window.clearTimeout(timer);
@@ -90,7 +96,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
 
   useEffect(() => {
     if (!persistenceReady) return;
-    const flush = () => { void flushAll().catch(failed); };
+    const flush = () => { if (!editorAdmission.denied()) void flushAll().catch(failed); };
     const visibility = () => { if (document.visibilityState === 'hidden') flush(); };
     window.addEventListener('beforeunload', flush);
     document.addEventListener('visibilitychange', visibility);
@@ -98,6 +104,32 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
       window.removeEventListener('beforeunload', flush);
       document.removeEventListener('visibilitychange', visibility);
     };
+  }, [persistenceReady, flushAll, failed]);
+
+  useEffect(() => {
+    if (!persistenceReady || !isTauri()) return;
+    let disposed = false;
+    let off: (() => void) | undefined;
+    void installRendererPreservation({
+      latest: () => {
+        if (!tracker.current) throw new Error('Session snapshot is not initialized');
+        const t = useTabsStore.getState(), s = useSourcesStore.getState();
+        const legacy = serializeSession({ root: s.root, activeTabId: t.activeTabId, tabs: t.tabs, recent: s.recent });
+        const reader = useReaderHistoryStore.getState();
+        const writable = reader.mode === 'native_atomic';
+        const patch = tracker.current.peek(legacy, writable ? reader.data : null);
+        return { session: sessionWriter.snapshot(patch, writable), settings: currentSettings() };
+      },
+      paused: () => toast('Preparing reader data. Editing is paused while your drafts and session are captured.', 8000),
+      failed: () => toast('Preparation could not be confirmed. Your editor buffers were kept. Editing stays paused until native release.', 10000),
+      resumed: () => { void flushAll().catch(failed); },
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else off = dispose;
+    }, () => {
+      if (!disposed) toast('Profile preservation is unavailable in this window. Your editor buffers were kept.', 8000);
+    });
+    return () => { disposed = true; off?.(); };
   }, [persistenceReady, flushAll, failed]);
 
   useEffect(() => {
@@ -113,8 +145,12 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
           if (closing.current) return;
           closing.current = true;
           try {
+            if (editorAdmission.denied()) {
+              toast('Preparation is still in progress. Keep this window open; your buffers are retained.', 8000);
+              return;
+            }
             if (persistenceReady) await drainBeforeClose(flushAll());
-            if (disposed) return;
+            if (disposed || editorAdmission.denied()) return;
             if (useEditorStore.getState().dirtyTabIds().length > 0) {
               requestQuit();
               return;

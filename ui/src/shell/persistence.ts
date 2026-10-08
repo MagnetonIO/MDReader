@@ -175,8 +175,14 @@ export async function saveSettings(snapshot: SettingsSnapshot): Promise<void> {
   await settingsWriter.drain();
 }
 
-/** The separate bridge calls this after the real unsaved-editor guard. Only a
- * fresh native request token can route the latest snapshot through freeze. */
+/** Event adapters must bind the loaded native renderer, never a caller's epoch. */
+export function verifyPreservationIdentity(request: FlushRequest): void {
+  if (!hydrated || hydrated.attempt !== hydrationAttempt || !sameIdentity(hydrated.identity, request.identity)) {
+    throw new Error('Stale preservation request');
+  }
+}
+
+/** Only a fresh native request can route the latest snapshot through freeze. */
 export async function flushForPreservation(
   request: FlushRequest, latest: () => LatestPersistence, signal?: AbortSignal,
 ): Promise<void> {
