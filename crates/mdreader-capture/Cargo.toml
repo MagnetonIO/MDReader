@@ -13,6 +13,7 @@ blake3 = "1"
 fs2 = "0.4"
 
 [target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",

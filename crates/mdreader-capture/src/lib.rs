@@ -1,4 +1,4 @@
-//! Durable visible-output capture, independent of SQLite, models, transcripts and agent control.
+//! Durable visible-output capture, independent of models, transcripts and agent control.
 //!
 //! Hooks enqueue only. The one reader service projects Markdown, commits its durable
 //! capture/job state, then acknowledges. A projected body remains authoritative after ack.
@@ -16,10 +16,12 @@ mod policy;
 pub use policy::ProjectPolicy;
 mod projection;
 mod spool;
+#[cfg(not(windows))]
+use platform::sync_directory;
 use platform::{
     ensure_regular_or_missing, private_directory, private_open, read_bounded, regular_exists,
-    sync_directory,
 };
+#[cfg(not(windows))]
 use projection::parse_projection;
 pub use projection::read_projection;
 pub use spool::{FrozenSpool, Spool};
@@ -35,6 +37,9 @@ pub const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
 pub enum CaptureError {
     #[error("capture persistence failed")]
     Io(#[from] std::io::Error),
+    #[cfg(windows)]
+    #[error("capture database persistence failed")]
+    Database(#[from] rusqlite::Error),
     #[error("invalid capture data or policy")]
     Invalid,
     #[error("capture input exceeds configured bound")]

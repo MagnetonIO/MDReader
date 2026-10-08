@@ -30,7 +30,7 @@ fn open_file(path: &Path, creation: u32, writable: bool) -> Result<File> {
     )
 }
 #[allow(unsafe_code)]
-fn open_file_with_lock(
+pub(super) fn open_file_with_lock(
     path: &Path,
     creation: u32,
     writable: bool,
@@ -110,10 +110,7 @@ pub(crate) fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-pub(crate) fn confirm_file(path: &Path) -> Result<()> {
-    open_file(path, OPEN_EXISTING, true)?.sync_all()?;
-    Ok(())
-}
+#[cfg(test)]
 pub(crate) fn sync_directory(_: &Path) -> Result<()> {
     Err(CaptureError::UnsupportedPlatform)
 }
@@ -195,4 +192,17 @@ fn validate_leaf(path: &Path) -> Result<()> {
         return Err(CaptureError::UnsafePath);
     }
     Ok(())
+}
+
+/// Pin against replacement while SQLite opens its own read/write descriptor.
+pub(crate) fn pin_database(path: &Path) -> Result<File> {
+    open_file_with_lock(path, OPEN_ALWAYS, true, true)
+}
+
+pub(crate) fn pin_existing_database(path: &Path) -> Result<Option<File>> {
+    match open_file_with_lock(path, OPEN_EXISTING, true, true) {
+        Ok(file) => Ok(Some(file)),
+        Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }

@@ -55,7 +55,7 @@ impl PrivateDirectory {
     /// Atomic publication of ephemeral discovery metadata, with exact readback.
     /// File flushing is real; callers must not use this as a durable queue receipt.
     pub fn publish(&self, name: &Path, bytes: &[u8]) -> Result<()> {
-        if bytes.len() > 4096 {
+        if bytes.len() > 1024 * 1024 {
             return Err(CaptureError::TooLarge);
         }
         let destination = self.child(name)?;
@@ -69,7 +69,7 @@ impl PrivateDirectory {
         file.sync_all()?;
         replace(&file, &temporary, &destination)?;
         drop(file);
-        if self.read(name, 4096)? != bytes {
+        if self.read(name, 1024 * 1024)? != bytes {
             return Err(CaptureError::UnsafePath);
         }
         self.verify()

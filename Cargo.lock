@@ -3363,6 +3363,7 @@ version = "1.0.0"
 dependencies = [
  "blake3",
  "fs2",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
