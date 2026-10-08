@@ -9,6 +9,7 @@ export const commands = {
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
+	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -424,6 +425,35 @@ export const events = {
 };
 
 /* Types */
+export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
+
+export type AccountError = {
+	kind: string,
+};
+
+export type AccountJob = {
+	id: string,
+	state: JobState,
+};
+
+export type AccountPending = {
+	sequence: string,
+	reason: string,
+};
+
+export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
+
+export type AccountRequest = { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+
+export type AccountStatus = {
+	configured: boolean,
+	retainedLibrary: boolean,
+	recoveryAvailable: boolean,
+	connected: boolean,
+	custody: CustodyStatus | null,
+	latestJob: AccountJob | null,
+};
+
 export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
 
 export type AdmissionPhase = "vault_pending" | "admission_pending";
@@ -915,6 +945,15 @@ export type ConstraintReport = {
 };
 
 export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
+
+export type CustodyStatus = {
+	state: string,
+	enrollmentUncertain: boolean,
+	enrollmentExpired: boolean,
+	recoveryExportAvailable: boolean,
+	materialStaged: boolean,
+	deviceApproval: string,
+};
 
 export type DeviceDocument = {
 	id: string,
@@ -1524,6 +1563,8 @@ export type InspectedFact = {
 	source_changed_since_review: boolean,
 };
 
+export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
+
 export type LibraryAvailability = { kind: "available" } | { kind: "missing" } | { kind: "unreadable" } | { kind: "not-directory" };
 
 export type LibraryCleanupReason = "managed-state-unavailable" | "rollback-failed";
@@ -1872,6 +1913,8 @@ export type OrderDirection =
 "ascending" |
 /**  Highest value first. */
 "descending";
+
+export type Outcome = { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,

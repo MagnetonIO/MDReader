@@ -9,5 +9,5 @@
   // `e2e` is in scope too: the Playwright specs are the only automated proof of
   // several surfaces, and a spec that does not typecheck is a spec that can rot
   // silently (the runner transpiles without checking).
-  "include": ["src", "e2e", "playwright.config.ts"]
+  "include": ["src", "e2e", "playwright.config.ts", "playwright.settings.config.ts"]
 }

@@ -290,7 +290,7 @@ describe('Settings sheet', () => {
     selectSettingsSection('Advanced');
     expect(screen.getByRole('heading', { name: 'Diagnostics' })).toBeTruthy();
     expect(screen.getByText('Local Markdown folders', { selector: 'strong' })).toBeTruthy();
-    expect(screen.getByText(/stay on this device/i)).toBeTruthy();
+    expect(screen.getByText(/Coarse lifecycle logs stay on this device/i)).toBeTruthy();
     expect(screen.queryByText(/Google Drive|Dropbox|Notion|connector/i)).toBeNull();
 
     selectSettingsSection('Appearance');
