@@ -14,6 +14,7 @@ export {
 } from './thresholds.js';
 export { isFrontmatterError } from './types.js';
 export { readerSanitizeSchema, USER_CONTENT_PREFIX } from './sanitize-schema.js';
+export { resolveHeading } from './resolve-heading.js';
 
 export type {
   ParsedDoc,

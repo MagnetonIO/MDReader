@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle, NavigateEvent } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
-import { USER_CONTENT_PREFIX } from '@mdreader/markdown';
+import { resolveHeading } from '@mdreader/markdown';
 import type { ParsedDoc } from '@mdreader/markdown';
 import {
   nativeProvidersBackend, type NativeProvidersBackend, type ProviderReaderReference,
@@ -23,8 +23,9 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
   // A new parent selection takes effect immediately, including before effects.
   const currentReference = navigation.origin === reference ? navigation.current : reference;
   const history = navigation.origin === reference ? navigation.history : [];
-  const [doc, setDoc] = useState<ParsedDoc | null>(null);
-  const [line, setLine] = useState(1);
+  const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; line: number } | null>(null);
+  const doc = loaded?.reference === currentReference ? loaded.doc : null;
+  const line = loaded?.reference === currentReference ? loaded.line : 1;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [links, setLinks] = useState<ProviderLinkResolution | null>(null);
@@ -37,7 +38,7 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
   useEffect(() => {
     let current = true;
     action.current++;
-    setDoc(null);
+    setLoaded(null);
     restored.current = false;
     setError(null); setNotice(null); setLinks(null); setBusy(false);
     void backend.readDocument(currentReference).then(async (value) => {
@@ -47,14 +48,11 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
       if (!current) return;
       let targetLine = currentReference.line ?? 1;
       if (currentReference.heading) {
-        const target = currentReference.heading;
-        const textMatches = parsed.outline.filter((item) => item.text.toLowerCase() === target.toLowerCase());
-        const heading = parsed.outline.find((item) => item.slug === target || item.slug === `${USER_CONTENT_PREFIX}${target}`)
-          ?? (textMatches.length === 1 ? textMatches[0] : undefined);
+        const heading = resolveHeading(parsed.outline, currentReference.heading);
         if (heading) targetLine = heading.lineStart;
         else setNotice('The requested heading is unavailable in this revision. Showing the beginning of the document.');
       }
-      setLine(targetLine); setDoc(parsed);
+      setLoaded({ reference: currentReference, doc: parsed, line: targetLine });
     }).catch((cause: unknown) => {
       if (current) setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
     });

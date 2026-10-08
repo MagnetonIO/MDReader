@@ -20,6 +20,8 @@ let pendingImports: { id: string; name: string; bytes: number }[] = [];
 let rejectDiscard = false;
 let pinAcknowledgement:Promise<void>|null=null;
 let readFailure: string | null = null;
+let positionAcknowledgement: Promise<void> | null = null;
+let extraDocument = false;
 let deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
 const deviceDocument = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -31,6 +33,7 @@ const deviceDocument = {
   line: 1,
   indexed: true,
 };
+const secondDocument = { ...deviceDocument, id: "33333333-3333-4333-8333-333333333333", name: "second.md", source_id: "device-source-2" };
 const nativeCalls = vi.fn();
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -55,7 +58,7 @@ function installTauriRuntime(): void {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
         if (command === "mobile_reader_list")
-          return {documents: nativeDeviceConfigured ? [{ ...deviceDocument }] : [], pending: [...pendingImports]};
+          return {documents: nativeDeviceConfigured ? [{ ...deviceDocument }, ...(extraDocument ? [{ ...secondDocument }] : [])] : [], pending: [...pendingImports]};
         if (command === "mobile_reader_discard_import") {
           if (rejectDiscard) throw new Error("Incomplete copy could not be removed");
           pendingImports = [];
@@ -64,8 +67,8 @@ function installTauriRuntime(): void {
         if (command === "mobile_reader_read") {
           if (readFailure) throw new Error(readFailure);
           return {
-            document: { ...deviceDocument },
-            markdown: deviceMarkdown,
+            document: { ...(args?.id === secondDocument.id ? secondDocument : deviceDocument) },
+            markdown: args?.id === secondDocument.id ? "# Second selection\n\n## Section two" : deviceMarkdown,
           };
         }
         if (command === "mobile_reader_search")
@@ -81,7 +84,7 @@ function installTauriRuntime(): void {
           deviceDocument.pinned = Boolean(args?.pinned);
           return null;
         }
-        if (command === "mobile_reader_position") return null;
+        if (command === "mobile_reader_position") { await positionAcknowledgement; return null; }
         if (command === "mobile_reader_import") {
           deviceMarkdown = String(args?.content);
           deviceDocument.name = String(args?.name);
@@ -192,6 +195,8 @@ beforeEach(() => {
   rejectDiscard = false;
   pinAcknowledgement=null;
   readFailure = null;
+  positionAcknowledgement = null;
+  extraDocument = false;
   deviceDocument.pinned = false;
   deviceDocument.name = "architecture.md";
   deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
@@ -213,6 +218,38 @@ afterEach(() => {
 });
 
 describe("compile-time mobile composition", () => {
+  test("opens a selected wiki filename and its heading without inferring folders", async () => {
+    installDeviceLibrary(); extraDocument = true;
+    deviceMarkdown = "# Original\n\n[[second#Section two|Next section]]";
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Next section" }));
+    await screen.findByRole("heading", { name: /Second selection/ });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(nativeCalls).toHaveBeenCalledWith("mobile_reader_read", { id: secondDocument.id, revision: secondDocument.revision });
+  });
+  test("a late position acknowledgment cannot close a newer tablet selection", async () => {
+    installDeviceLibrary(); extraDocument = true; setViewport(900);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const view = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    act(() => {
+      fireEvent.scroll(view.container.querySelector(".mdreader")!);
+      frames.splice(0).forEach((callback) => callback(0));
+    });
+    let finish!: () => void;
+    positionAcknowledgement = new Promise<void>((resolve) => { finish = resolve; });
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(nativeCalls.mock.calls.some(([command]) => command === "mobile_reader_position")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "second.md" }));
+    await screen.findByRole("heading", { name: /Second selection/ });
+    await act(async () => finish());
+    expect(screen.getByRole("heading", { name: /Second selection/ })).toBeTruthy();
+    expect(screen.getByRole("main", { name: "Reader" })).toBeTruthy();
+  });
   test("ends a failed read and retries the same revision only on request", async () => {
     installDeviceLibrary();
     readFailure = "Source authority could not be verified";

@@ -1,12 +1,17 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ProviderReaderDialog } from './ProviderReaderDialog';
-import type { ProviderDocumentBody, ProviderReaderReference, ProviderLinkResolution } from '../platform/providers';
+import type { ProviderDocumentBody, ProviderReaderReference, ProviderLinkResolution, NativeProvidersBackend } from '../platform/providers';
 
 afterEach(cleanup);
 const reference: ProviderReaderReference = { sourceId: `provider:${'a'.repeat(64)}`, path: `records/${'b'.repeat(64)}.md`, revision: 'c'.repeat(64), title: 'Selected note' };
 function body(ref = reference, markdown = '# Selected content\n\n![Private image](https://example.invalid/private.png)'): ProviderDocumentBody {
   return { ...ref, operation: 'read_document', markdown, lineStart: 1, lineEnd: 3 };
+}
+function ObservedDialog({ reference, backend, snapshot }: { reference: ProviderReaderReference; backend: Pick<NativeProvidersBackend, 'readDocument'>; snapshot: (value: string) => void }) {
+  useLayoutEffect(() => { snapshot(document.querySelector('.provider-reader-dialog .mdreader')?.textContent ?? ''); }, [reference, snapshot]);
+  return <ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />;
 }
 test('reads the exact selected revision without fetching images and returns to sources', async () => {
   const close = vi.fn();
@@ -23,12 +28,15 @@ test('rejects a mismatched revision and ignores a late previous selection', asyn
   let finish!: (value: ProviderDocumentBody) => void;
   const next = { ...reference, revision: 'd'.repeat(64) };
   const backend = { readDocument: vi.fn((ref: ProviderReaderReference) => ref === reference ? new Promise<ProviderDocumentBody>((resolve) => { finish = resolve; }) : Promise.resolve(body(next, '# Current selection'))) };
-  const view = render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} />);
-  view.rerender(<ProviderReaderDialog reference={next} backend={backend} onClose={() => {}} />);
+  const snapshots: string[] = [];
+  const snapshot = (value: string) => { snapshots.push(value); };
+  const view = render(<ObservedDialog reference={reference} backend={backend} snapshot={snapshot} />);
+  view.rerender(<ObservedDialog reference={next} backend={backend} snapshot={snapshot} />);
   await screen.findByRole('heading', { name: /Current selection/ });
   await act(async () => finish(body(reference, '# Stale selection')));
   expect(screen.queryByRole('heading', { name: /Stale selection/ })).toBeNull();
-  view.rerender(<ProviderReaderDialog reference={reference} backend={{ readDocument: async () => body(next, '# Wrong revision') }} onClose={() => {}} />);
+  view.rerender(<ObservedDialog reference={reference} backend={{ readDocument: async () => body(next, '# Wrong revision') }} snapshot={snapshot} />);
+  expect(snapshots.at(-1)).not.toContain('Current selection');
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'The selected document revision is no longer available.');
   expect(screen.queryByRole('heading', { name: /Wrong revision/ })).toBeNull();
   expect(screen.queryByText('Reading Markdown…')).toBeNull();

@@ -70,6 +70,18 @@ scalability claim. Drive links support flat selected filenames, not inferred
 folder hierarchy. Shared renderer anchor handling passes 12 focused tests and
 prevents handled links from additionally invoking browser fragment navigation.
 
+The mobile follow-up passes 13 composition tests plus three selected-link tests
+and two shared heading-resolution tests. A delayed reading-position acknowledgment
+can no longer close a newer tablet selection. Flat imported filenames support
+wiki `.md` aliases, `./` relative links and decoded heading fragments; duplicate
+names remain ambiguous, and qualified folder paths never fall back to a basename.
+The shared heading resolver uses actual sanitized outline IDs/source lines.
+An extended existing provider test reproduced previous content appearing beneath
+a new selection before passive effects; rendered bodies are now bound to their
+exact selection immediately. The mobile reader uses the same identity guard.
+These follow-ups pass app typecheck and scoped lint; actual rebuilt device/GUI
+acceptance remains open.
+
 The [legacy migration inventory](legacy-migration-inventory.md) identifies
 durable reviews, graph/operation history and accepted-write repair records.
 CatDB removal requires lossless raw snapshots plus typed exports, validation and

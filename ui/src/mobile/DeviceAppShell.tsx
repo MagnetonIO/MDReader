@@ -6,12 +6,14 @@ import type {
   ScrollAnchor,
 } from "@mdreader/ui";
 import { parseMarkdownAuto } from "@mdreader/markdown/worker";
+import { resolveHeading } from "@mdreader/markdown";
 import type { ParsedDoc } from "@mdreader/markdown";
 import { commands } from "../bindings";
 import type { DeviceDocument, DeviceHit, PendingDeviceImport } from "../bindings";
 import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
+import { resolveImportedLink } from "./imported-links";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -77,8 +79,11 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [active, setActive] = useState<{
     document: DeviceDocument;
     line: number;
+    heading?: string | null;
   } | null>(null);
-  const [parsed, setParsed] = useState<ParsedDoc | null>(null);
+  const [parsedResult, setParsedResult] = useState<{ id: string; revision: string; doc: ParsedDoc } | null>(null);
+  const parsed = parsedResult?.id === active?.document.id && parsedResult?.revision === active?.document.revision ? parsedResult?.doc ?? null : null;
+  const [readLine, setReadLine] = useState(1);
   const [readError, setReadError] = useState<string | null>(null);
   const [readAttempt, setReadAttempt] = useState(0);
   const [evidence, setEvidence] = useState(false);
@@ -93,6 +98,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
   );
   const readEpoch = useRef(0);
+  const navigationEpoch = useRef(0);
   const searchEpoch = useRef(0);
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const readerHost = useRef<HTMLDivElement | null>(null);
@@ -111,6 +117,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   }, []);
   const activeId = active?.document.id;
   const activeRevision = active?.document.revision;
+  const activeHeading = active?.heading ?? null;
   useEffect(() => {
     let current = true;
     void result(commands.mobileReaderList())
@@ -139,6 +146,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     return () => {
       current = false;
       readEpoch.current++;
+      navigationEpoch.current++;
       searchEpoch.current++;
     };
   }, []);
@@ -182,7 +190,8 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       );
       setDocuments((value) =>
         value.map((doc) =>
-          doc.id === pending.id ? { ...doc, line: pending.line } : doc,
+          doc.id === pending.id && doc.revision === pending.revision
+            ? { ...doc, line: pending.line } : doc,
         ),
       );
     } catch (cause) {
@@ -201,7 +210,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   }, [flushPosition]);
   useEffect(() => {
     const epoch = ++readEpoch.current;
-    setParsed(null);
+    setParsedResult(null);
     setReadError(null);
     restored.current = false;
     setEvidence(false);
@@ -210,7 +219,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     void result(commands.mobileReaderRead(activeId, activeRevision))
       .then(async (value) => {
         const doc = await parseMarkdownAuto(value.markdown);
-        if (epoch === readEpoch.current) setParsed(doc);
+        if (epoch !== readEpoch.current) return;
+        const heading = activeHeading ? resolveHeading(doc.outline, activeHeading) : null;
+        if (activeHeading && !heading)
+          setError("The requested heading is unavailable in this revision. Showing the beginning of the document.");
+        setReadLine(activeHeading ? heading?.lineStart ?? 1 : active?.line ?? 1);
+        setParsedResult({ id: activeId, revision: activeRevision, doc });
       })
       .catch((cause) => {
         if (epoch === readEpoch.current) setReadError(message(cause));
@@ -218,7 +232,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     return () => {
       readEpoch.current++;
     };
-  }, [activeId, activeRevision, readAttempt]);
+  }, [activeId, activeRevision, activeHeading, readAttempt]);
   useEffect(() => {
     const epoch = ++searchEpoch.current;
     setHits([]);
@@ -244,20 +258,24 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       searchEpoch.current++;
     };
   }, [query]);
-  const open = async (doc: DeviceDocument, line = doc.line) => {
+  const open = async (doc: DeviceDocument, line = doc.line, heading: string | null = null) => {
+    const epoch = ++navigationEpoch.current;
     await flushPosition();
+    if (navigationEpoch.current !== epoch) return;
     setError(null);
     if (
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
     ) {
-      reader.current?.scrollToLine(line);
+      const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
+      reader.current?.scrollToLine(target?.lineStart ?? line);
     }
-    setActive({ document: doc, line });
+    setActive({ document: doc, line, heading });
   };
   const close = async () => {
+    const epoch = ++navigationEpoch.current;
     await flushPosition();
-    setActive(null);
+    if (navigationEpoch.current === epoch) setActive(null);
   };
   const saveAnchor = (anchor: ScrollAnchor) => {
     if (!active || !restored.current) return;
@@ -530,7 +548,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       ref={(handle) => {
                         reader.current = handle;
                         if (handle && !restored.current) {
-                          handle.scrollToLine(active.line);
+                          handle.scrollToLine(readLine);
                           restored.current = true;
                         }
                       }}
@@ -539,26 +557,22 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
                         if (event.kind === "anchor") {
-                          const target = parsed.outline.find(
-                            (item) => item.slug === event.slug,
-                          );
+                          const target = resolveHeading(parsed.outline, event.slug);
                           if (target)
                             reader.current?.scrollToLine(target.lineStart);
                         } else {
-                          const target =
-                            event.kind === "relative"
-                              ? event.href
-                              : event.target;
-                          const matches = documents.filter(
-                            (doc) => doc.name === target.split("#")[0],
-                          );
-                          if (matches.length === 1) void open(matches[0]!);
-                          else
-                            setError(
-                              matches.length
-                                ? "This link is ambiguous. Open the intended file from Library."
-                                : "Import the linked Markdown file before opening this link.",
-                            );
+                          const target = event.kind === "relative" ? event.href
+                            : `${event.target}${event.heading ? `#${event.heading}` : ""}`;
+                          const resolution = resolveImportedLink(documents, event.kind, target);
+                          if (resolution.state === "resolved")
+                            void open(resolution.document, 1, resolution.heading);
+                          else setError(resolution.state === "ambiguous"
+                            ? "This link is ambiguous. Open the intended file from Library."
+                            : resolution.state === "unsupported"
+                              ? "Imported files have no folder hierarchy. Open the selected file from Library."
+                              : resolution.state === "invalid"
+                                ? "This Markdown link is invalid."
+                                : "Import the linked Markdown file before opening this link.");
                         }
                       }}
                     />
