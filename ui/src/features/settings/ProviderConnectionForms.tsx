@@ -36,7 +36,7 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   return <div className="provider-connections" aria-label="New connections">
     <section className="provider-connection" aria-label="Google Drive connection">
       <header className="provider-connection__heading"><h3>Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
-      <p>Choose the files you want to read from your Drive.</p>
+      <p>Select one or more Markdown files from your Drive. Whole-folder selection is not available yet.</p>
       <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Choose Google Drive files</button>
       <Availability snapshot={props.snapshot} kind="google_drive" available={googleAvailable} />
       {googleAvailable ? <details className="provider-connection__details"><summary>How file access works</summary><p>MDReader can access only the files you select. Reconnecting asks you to select files again.</p></details> : null}
