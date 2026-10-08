@@ -15,11 +15,19 @@ feature's review or acceptance receipt.
 | Owner | Repository | Worktree | Branch | Initial base | Dependency |
 | --- | --- | --- | --- | --- | --- |
 | Coordinator | Native | `MDReader-reader-next` | `dev-reader-next` | `21bc807` | Integration only |
-| agent_capture | Native | `MDReader-incoming-publication` | `feat/reader-incoming-publication` | `21bc807` | Existing portable device and asset owner |
-| reader_mcp | Native | `MDReader-capture-platform` | `feat/reader-capture-platform` | `21bc807` | Independent capture extraction/platform work |
-| Coordinator | Native | `MDReader-sync-application` | `feat/reader-sync-application` | `21bc807` | Incoming owner commit required before service composition |
+| agent_capture | Native | `MDReader-native-incoming` | `feat/reader-native-incoming` | `c2055ea` | Reviewed core publication and session/cursor fence |
+| reader_mcp | Native | `MDReader-client-acceptance` | `feat/reader-client-acceptance` | `c2055ea` | Actual supported clients and installed extension host |
+| Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea` | Auth0 access-token contract shared with web |
 | Coordinator | Web | `MDReader-Web-reader-next` | `dev-reader-next` | `e2c86d5` | Integration only |
-| cloud_sync | Web | `MDReader-Web-preview-acceptance` | `fix/reader-preview-acceptance` | `e2c86d5` | Committed Preview manifest parser fix `0b28dab` |
+| cloud_sync | Web | `MDReader-Web-public-oidc` | `feat/reader-public-oidc` | `7f352a8` | One Auth0 issuer, API audience and separate public clients |
+
+Completed and merged into integration: capture/platform extraction (`72ecd9b`),
+core incoming publication (`1ecf76f`), session and atomic cursor fence (`c13a6ad`),
+default-feature lint fix (`0a1787f`) and deployed Preview acceptance (`1501489`).
+Their clean, inactive worktrees and merged minor branches were removed after
+ancestry checks. Private configuration and receipts were preserved; shared
+caches were retained. The major feature branches in the table remain intentionally
+while implementation and review continue. Neither integration has reached `dev`.
 
 Existing unfinished edits were backed up, copied to their owned worktree and
 verified file by file with SHA-256 before removing/restoring the original copies.

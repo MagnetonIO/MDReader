@@ -5,8 +5,11 @@ features use separate branches/worktrees; see [ownership and cleanup](worktree-w
 The approved scope remains [the development plan](../plans/sqlite-reader-next.md).
 Original `dev` checkouts and the installed baseline are preserved. Migration
 changes have not merged into `dev`. A development sync Worker is deployed but
-remains unconfigured for live identity. A Vercel Preview is Ready; its browser
-acceptance is in progress. These do not establish production release acceptance.
+remains unconfigured for live identity. The actual Vercel Preview passed offline
+reading, tab contention and hostile-Markdown checks. Auth0 development registrations
+now share one issuer/API audience with separate public browser/native clients;
+access-token integration and live login remain under validation. These do not
+establish production release acceptance.
 
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |
