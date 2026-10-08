@@ -1,0 +1,27 @@
+{
+  "observedFrozenSourceCommit": "e31e2a47ef1312c5c5e85084280a1dd242ae2a06",
+  "binarySha256": "a8e2df4f394a63d37964392ac1d049c49d4df8b212b77c3fa52429406418fa7c",
+  "binaryBytes": 251542136,
+  "embeddedSourceCommit": "0000000000000000000000000000000000000000",
+  "releaseIdentityVerified": false,
+  "platforms": [
+    "iPhoneSimulator"
+  ],
+  "minimumOS": "15.0",
+  "syntheticFixtureSha256": "db35e2c0939b6220e8b52e272bb26f979cbfda698ff8cab238cda4032fc6c345",
+  "guiAcceptance": {
+    "markdownSystemPicker": true,
+    "separatePngSystemPicker": true,
+    "renderedBlueRectangle": true,
+    "terminateLaunchPersistence": true,
+    "homeForegroundRendered": true,
+    "sourcesInventoryReady135Bytes": true,
+    "forgetRecovered135BytesZeroCopies": true,
+    "originalPngHashPreserved": true,
+    "physicalDevice": false,
+    "jpegPicker": false,
+    "relocatedRootAfterReplacement": false,
+    "uiFinding": "Long introduction hides file control inside 25 percent scroll region",
+    "afterForgetPlaceholderNoImage": true
+  }
+}

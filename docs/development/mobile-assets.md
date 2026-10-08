@@ -80,7 +80,30 @@ iteration, use the existing cache and the team's exclusive build slot:
 CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-app --lib mobile_assets::tests -- --test-threads=1
 ```
 
-Newest iOS/Android packaging and real file-picker/image/read/restart/visibility
-acceptance remain open, including asset-root relocation after app replacement.
-No latest device/GUI acceptance, sync projection, original-image export/share,
-or production cloud deployment follows from these focused checks.
+An unsigned debug iOS simulator bundle built from the frozen `e31e2a4` tree and
+passed an actual Device Hub GUI probe on the owned iPhone 17/iOS 26.5 simulator:
+Markdown system-picker import; separate PNG system-picker selection; rendered
+64×32 blue rectangle; terminate/relaunch and Home/foreground rendering; Sources
+inventory; and Forget recovering the complete 135-byte quota. The original
+synthetic PNG retained SHA256
+`db35e2c0939b6220e8b52e272bb26f979cbfda698ff8cab238cda4032fc6c345`.
+No library rows or selection receipts were injected by the probe.
+
+The immutable debug executable is 251,542,136 bytes with SHA256
+`a8e2df4f394a63d37964392ac1d049c49d4df8b212b77c3fa52429406418fa7c`.
+Its embedded release source identity is **zero**, despite supplying the outer
+build environment: nested Xcode did not preserve that environment handoff.
+This is an observed-source debug probe, not verified release provenance.
+Build log, copied app and full receipt remain outside Git at
+`/tmp/mdreader-reader-next-gui/ios-assets/`.
+
+The probe exposed an overlong introduction hiding the file control in a nested
+25-percent scroll region. Follow-up UI puts selection controls before expandable
+limits, gives fields touch-sized rows, keeps the panel summary visible and allows
+an open image panel 45 percent of the reader. New layout device acceptance is
+separate from the immutable bundle above.
+
+Android packaging of this feature, JPEG picker, physical devices, app-replacement
+asset-root relocation, exhaustive visibility/memory acceptance, sync projection,
+original-image export/share and release source identity remain open. No production
+cloud deployment follows from this probe.

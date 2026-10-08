@@ -11,10 +11,10 @@ or published; the new sync protocol has not deployed.
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. | Whole app still contains legacy CatDB paths; transport cancellation, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
-| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, typed incoming projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
+| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, portable incoming owner projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks. | Final cross-engine matrix for subsequent web features, native/mobile image device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging and explicit bounded CLI reads preserve exact records and rejection history. | Actual extension-host acceptance; reader presentation and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging, bounded CLI reads and portable exact-revision text comparison preserve records and rejection history. | Actual extension-host acceptance; reader presentation and concrete current-source owner adapter/binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
 
 ## Measured retrieval
 
@@ -149,8 +149,11 @@ inventory/forget with revoked or changed originals, retained quota after failed
 private deletion, target truncation and additive/future-schema handling. The
 backend is split into focused modules with transactional versioned SQL. Actual
 bindings and app command composition compile; isolated feature strict Clippy
-passes. Original Markdown remains unchanged. Newest iOS/Android image packaging,
-file-picker/read/restart and asset-root relocation acceptance remain open.
+passes. Original Markdown remains unchanged. A new iOS simulator debug bundle passed
+actual separate Markdown/PNG system-picker import, rendering, restart/foreground
+and Sources inventory/forget, preserving the original PNG hash. Its embedded
+release source identity is zero, so release provenance remains open. Android,
+JPEG/physical-device and asset-root relocation acceptance remain open.
 See [mobile image contract](mobile-assets.md).
 
 The bindings drift guard `e3ece21` runs only its two artifact-generating tests and
@@ -192,3 +195,24 @@ fail-closed. Keys, provider credentials and agent histories are not uploaded.
 Browser nonextractable CryptoKeys do not protect against same-origin script/XSS
 or a compromised browser profile. Live authentication and recovery must be
 accepted separately before enabling production sync.
+
+## Latest continuation checkpoint
+
+- `4a5e317` adds bounded native incoming preparation: exact encrypted root/chunk
+  authentication and reconstruction, strict UTF-8, selected asset structure,
+  typed positions and opaque tombstones. Seven focused tests and the affected
+  crate (39 passed, five explicit integration cases ignored) plus strict Clippy
+  pass. It cannot mutate originals or advance applied/acknowledged cursors.
+  [Owner/projection gates](../../crates/mdreader-sync/INCOMING.md) remain open.
+- `082f81a` compares an archived review's actual normalized cited text with an
+  explicitly selected owner/source/path/revision, separating recorded/current
+  and reviewed/current equality. Three meaningful regressions observed RED then
+  GREEN; 14 affected unit and two CLI process tests plus strict Clippy pass.
+  Native owner integration is absent; archival review, unavailable graph state
+  and source-binding-required labels remain unchanged.
+- [iOS image receipt](../benchmarks/2026-10-07-ios-assets-smoke.json) records the
+  exact debug executable hash and observed frozen source. GUI acceptance covers
+  one synthetic PNG, original preservation, persistence and quota cleanup.
+  This does not prove release source identity, physical devices or whole-plan
+  mobile acceptance. The system picker/control layout exposed a usability issue;
+  follow-up selection-first layout has separate verification and packaging gates.

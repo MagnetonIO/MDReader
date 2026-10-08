@@ -139,6 +139,47 @@
   margin: 0;
 }
 
+.mobile-assets > summary {
+  position: sticky;
+  top: 0;
+  min-height: 44px;
+  padding-block: 0.5rem;
+  background: var(--mobile-surface);
+}
+
+.mobile-assets label {
+  display: grid;
+  gap: 0.35rem;
+  margin-block: 0.65rem;
+}
+
+.mobile-assets select,
+.mobile-assets input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.mobile-assets button,
+.mobile-offline-image button {
+  min-height: 44px;
+}
+
+.mobile-offline-image > .mobile-state {
+  display: block;
+  margin-block: 0.5rem;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.mobile-assets__limits {
+  margin-top: 0.75rem;
+}
+
+.mobile-shell--device .mobile-reader > .mobile-assets[open] {
+  max-height: 45%;
+}
+
 .mobile-document-list {
   display: grid;
   gap: 0.55rem;

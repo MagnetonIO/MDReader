@@ -36,12 +36,9 @@ export function DeviceAssetsSection({ documentId, revision, manifest, onRefresh,
       if (started === current.current) { setBusy(false); onRefresh(); }
     }
   }
-  return <details className="mobile-state">
+  return <details className="mobile-state mobile-assets">
     <summary>Offline images</summary>
-    <p>Select each PNG or JPEG for this exact Markdown revision. No folder access is inferred.
-      Up to 4 MiB and 4 million pixels per image; 8 assets and 16 MiB per document,
-      32 MiB for the device library including incomplete copies.
-      SVG, animated PNG and raw HTML image grants are unsupported.</p>
+    <p>Choose an image target, then select its PNG or JPEG. Each copy belongs to this Markdown revision.</p>
     {!selected ? <p>Reading selected asset metadata…</p> : <>
       {selected.targets_truncated ? <p>Only the first 64 native Markdown image targets are offered for selection.</p> : null}
       <label>Image target in this Markdown
@@ -85,5 +82,12 @@ export function DeviceAssetsSection({ documentId, revision, manifest, onRefresh,
     </>}
     {busy ? <p role="status">Copying selected image…</p> : null}
     {error ? <p role="alert">{error}</p> : null}
+    <details className="mobile-assets__limits">
+      <summary>Supported images and storage limits</summary>
+      <p>Select individual files; no folder access is granted.
+        Up to 4 MiB and 4 million pixels per image; 8 assets and 16 MiB per document,
+        32 MiB for the device library including incomplete copies.
+        SVG, animated PNG and raw HTML image grants are unsupported.</p>
+    </details>
   </details>;
 }
