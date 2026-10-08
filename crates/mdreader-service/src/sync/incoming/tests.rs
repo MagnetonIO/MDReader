@@ -79,6 +79,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        let mut f = Self::unstaged();
+        f.stage(2, 1);
+        f
+    }
+    fn unstaged() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut owner = ReaderStore::open(&temp.path().join("data")).unwrap();
         crate::sync::initialize(&mut owner).unwrap();
@@ -120,7 +125,6 @@ impl Fixture {
             f.origin.selection_epoch,
         )
         .unwrap();
-        f.stage(2, 1);
         f
     }
     fn key(&self) -> LibraryKey {
@@ -583,3 +587,6 @@ fn future_or_malformed_service_namespace_fails_without_resetting_rows() {
 
 #[path = "transition_tests.rs"]
 mod transitions;
+
+#[path = "../outgoing/tests.rs"]
+mod outgoing;

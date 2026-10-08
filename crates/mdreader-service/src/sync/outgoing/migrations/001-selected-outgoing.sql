@@ -1,0 +1,3 @@
+CREATE TABLE native_outgoing_schema_v1(singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL);
+CREATE TABLE native_outgoing_intents_v1(scope TEXT NOT NULL,operation_id TEXT NOT NULL,wire_item TEXT NOT NULL,wire_revision TEXT NOT NULL,native_document TEXT NOT NULL,intent TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN('queued','applied')),sequence INTEGER,PRIMARY KEY(scope,operation_id),UNIQUE(scope,wire_revision),CHECK((state='queued' AND sequence IS NULL) OR (state='applied' AND sequence BETWEEN 1 AND 9007199254740991)));
+INSERT INTO native_outgoing_schema_v1 VALUES(1,1);

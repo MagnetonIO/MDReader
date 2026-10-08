@@ -80,7 +80,7 @@ pub(super) fn document(input: &PreparedIncoming) -> Result<IncomingDocument> {
         assets,
     )?)
 }
-pub(super) fn scope_key(scope: &SyncScope) -> Result<String> {
+pub(in crate::sync) fn scope_key(scope: &SyncScope) -> Result<String> {
     Ok(mdreader_sync::blob_digest(&serde_json::to_vec(&(
         "mdreader-native-incoming",
         1,

@@ -1,8 +1,9 @@
 //! Scoped wire associations only; core remains the sole native document authority.
 use super::{identity::Identity, types::*};
 use rusqlite::{params, OptionalExtension, Transaction};
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct Head {
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::sync) struct Head {
     pub item: String,
     pub kind: String,
     pub revision: String,
@@ -106,5 +107,19 @@ pub(super) fn content_admission(identity: &Identity, head: Option<&Head>) -> Opt
         Some(PendingReason::BaselineUnknown)
     } else {
         None
+    }
+}
+
+/// Native identity lookup, never raw-hash or title/path matching.
+pub(super) fn for_document(
+    tx: &Transaction<'_>,
+    scope: &str,
+    document: &str,
+) -> Result<Option<Head>> {
+    let items=tx.prepare("SELECT wire_item FROM native_incoming_heads_v2 WHERE scope=?1 AND document_id=?2 AND kind='content' LIMIT 2")?.query_map(params![scope,document],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    match items.as_slice() {
+        [] => Ok(None),
+        [item] => get(tx, scope, item),
+        _ => Err(Error::Conflict),
     }
 }
