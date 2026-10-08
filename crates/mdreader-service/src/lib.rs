@@ -12,6 +12,7 @@ use std::time::Duration;
 pub mod accounts;
 pub mod capture;
 pub mod catalog;
+pub mod daemon;
 #[cfg(feature = "sync-native")]
 pub mod device;
 pub mod integrations;
@@ -445,19 +446,19 @@ fn serve_configured(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
     }
-    let lock = private_file(&directory.join("reader.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| protocol_error("reader service is already running"))?;
+    let startup = daemon::StartupOwner::acquire(directory)
+        .map_err(|_| protocol_error("reader service owner is unavailable"))?;
     let mut owner = ReaderStore::open(directory)?;
     workload::initialize(&mut owner)?;
     sync::initialize(&mut owner)
         .map_err(|_| protocol_error("Encrypted sync storage is unavailable"))?;
     let store = Arc::new(Mutex::new(owner));
-    let runtime = Arc::new(runtime::Runtime::new_with_adapters(
+    let runtime = Arc::new(runtime::Runtime::new_with_startup(
         store,
         directory.join("models"),
         options,
         adapters,
+        Some(startup),
     )?);
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     let token = format!(
@@ -499,7 +500,6 @@ fn serve_configured(
             let _ = connection(stream, &token, &runtime);
         });
     }
-    drop(lock);
     Ok(())
 }
 pub fn call(directory: &Path, request: &Request) -> Result<Value> {

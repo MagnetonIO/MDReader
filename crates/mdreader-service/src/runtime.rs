@@ -17,6 +17,8 @@ use std::time::Duration;
 
 pub(super) struct Runtime {
     store: Arc<Mutex<ReaderStore>>,
+    daemon_admission: Arc<super::daemon::Admission>,
+    daemon: super::daemon::Result<Arc<super::daemon::Coordinator>>,
     queries: Arc<Mutex<ReaderStore>>,
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
@@ -58,6 +60,15 @@ impl Runtime {
         options: super::ServiceOptions,
         adapters: super::NativeAdapters,
     ) -> Result<Self> {
+        Self::new_with_startup(store, cache, options, adapters, None)
+    }
+    pub(super) fn new_with_startup(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
+        options: super::ServiceOptions,
+        adapters: super::NativeAdapters,
+        startup: Option<Arc<super::daemon::StartupOwner>>,
+    ) -> Result<Self> {
         // Offline mode creates neither an actor thread nor a model/download.
         #[cfg(feature = "local-embed")]
         let model = (!options.disable_model).then(|| ModelActor::new(cache.clone(), false));
@@ -84,7 +95,7 @@ impl Runtime {
             }),
             None => Err(super::accounts::AccountError::Unconfigured),
         };
-        let mut runtime = Self::with_model(store, cache, model)?;
+        let mut runtime = Self::with_owned_model(store, cache, model, startup)?;
         #[cfg(feature = "sync-native")]
         {
             runtime.accounts = accounts;
@@ -111,11 +122,26 @@ impl Runtime {
         }
         Ok(runtime)
     }
+    #[cfg(test)]
     fn with_model(
         store: Arc<Mutex<ReaderStore>>,
         cache: PathBuf,
         model: Option<ModelActor>,
     ) -> Result<Self> {
+        Self::with_owned_model(store, cache, model, None)
+    }
+    fn with_owned_model(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
+        mut model: Option<ModelActor>,
+        startup: Option<Arc<super::daemon::StartupOwner>>,
+    ) -> Result<Self> {
+        let daemon_admission = super::daemon::Admission::new(startup.clone());
+        if let Some(model) = &mut model {
+            model
+                .bind_admission(daemon_admission.clone())
+                .map_err(|_| protocol_error("model already issued work before owner binding"))?;
+        }
         {
             let mut owner = store
                 .lock()
@@ -137,8 +163,22 @@ impl Runtime {
         let capture_admission = super::capture::admission::Coordinator::new(store.clone(), &directory)
             .map(Arc::new);
         let worker_capture = capture_admission.clone();
+        let daemon = match startup {
+            Some(startup) => super::daemon::Coordinator::new(
+                daemon_admission.clone(),
+                startup,
+                store.clone(),
+                queries.clone(),
+            ),
+            None => Err(super::daemon::Error::Unsupported),
+        };
+        let worker_daemon = daemon.clone();
+        let worker_admission = daemon_admission.clone();
         std::thread::spawn(move || {
-            if let Some(model) = &worker_model {
+            if let (Some(model), Ok(effect)) = (
+                &worker_model,
+                daemon_effect(&worker_daemon, &worker_admission),
+            ) {
                 // Persisted vectors need query inference after a service restart.
                 let needs_model = worker_store.lock().ok().is_some_and(|store| {
                     store
@@ -153,12 +193,20 @@ impl Runtime {
                         })
                 });
                 if needs_model {
-                    model.ensure_loaded();
+                    model.ensure_loaded_owned(Some(&effect));
                 }
             }
             let mut scheduler = Scheduler::default();
             loop {
-                // Admission does not wait for initialization or inference.
+                // No owner lock is retained while admission is denied. The
+                // same real lease spans this whole bounded scheduler turn.
+                let Ok(effect) = daemon_effect(&worker_daemon, &worker_admission) else {
+                    if !worker_admission.wait_for_admission() {
+                        break;
+                    }
+                    continue;
+                };
+                scheduler.observe_epoch(effect.epoch());
                 if let Ok(lease) = worker_capture
                     .as_ref()
                     .map_err(|error| *error)
@@ -169,7 +217,9 @@ impl Runtime {
                         let _ = super::capture::drain(&mut store, &worker_directory);
                     }
                 }
-                let activity = scheduler.tick(&worker_store, worker_model.as_ref());
+                let activity =
+                    scheduler.tick_owned(&worker_store, worker_model.as_ref(), Some(&effect));
+                drop(effect);
                 // Continue fair progress immediately. A zero timeout still
                 // consumes wakes and detects shutdown; capture admission runs
                 // again before the next bounded turn. Sleep only with no
@@ -194,6 +244,8 @@ impl Runtime {
         Ok(Self {
             catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()),
             reviews,
+            daemon_admission,
+            daemon,
             store,
             queries,
             model,
@@ -230,6 +282,13 @@ impl Runtime {
             .map_err(|_| protocol_error("Capture producers are paused or unavailable"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if matches!(request, Request::Ping) {
+            return Ok(
+                serde_json::json!({"protocol":super::PROTOCOL,"pid":std::process::id(),"headless":true}),
+            );
+        }
+        let effect = daemon_effect(&self.daemon, &self.daemon_admission)
+            .map_err(|_| protocol_error("Reader operations are paused or unavailable"))?;
         #[cfg(feature = "sync-native")]
         if let Request::Device { request } = request {
             let result = self.device.as_ref()
@@ -276,7 +335,14 @@ impl Runtime {
                         .as_ref()
                         .ok_or(mdreader_provider::ProviderError::Unsupported)
                 })
-                .and_then(|coordinator| coordinator.execute(request));
+                .and_then(|coordinator| {
+                    coordinator.execute_owned(
+                        request,
+                        effect
+                            .fork()
+                            .map_err(|_| mdreader_provider::ProviderError::Unavailable)?,
+                    )
+                });
             let value = match result {
                 Ok(value) => serde_json::json!({"result":value,"error":null}),
                 Err(error) => serde_json::json!({"result":null,"error":error}),
@@ -366,7 +432,7 @@ impl Runtime {
                 return Ok(fallback);
             }
             if let Some(model) = &self.model {
-                if let Ok(vector) = model.query(text, model::QUERY_DEADLINE) {
+                if let Ok(vector) = model.query_owned(text, model::QUERY_DEADLINE, Some(&effect)) {
                     let store = self.queries()?;
                     let hits = if matches!(mode, SearchMode::Semantic) {
                         store.semantic_search_query(&query, &vector, &sources, limit)?
@@ -379,8 +445,9 @@ impl Runtime {
                     })
                     .map_err(|_| protocol_error("invalid search result"));
                 }
-                fallback["semantic_unavailable"] =
-                    Value::String(model_diagnostic(model.ensure_loaded()).into());
+                fallback["semantic_unavailable"] = Value::String(
+                    model_diagnostic(model.ensure_loaded_owned(Some(&effect))).into(),
+                );
             } else {
                 fallback["semantic_unavailable"] = Value::String("Local embedding model is disabled or unavailable; lexical search remains available".into());
             }
@@ -412,6 +479,28 @@ impl Runtime {
                 let _ = self.wake.try_send(());
             }
             Ok(result)
+        }
+    }
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Wake a condition-blocked scheduler. Issued command leases retain the
+        // actual startup lock until native/provider completion, independently.
+        self.daemon_admission.stop_worker();
+    }
+}
+fn daemon_effect(
+    coordinator: &super::daemon::Result<Arc<super::daemon::Coordinator>>,
+    admission: &Arc<super::daemon::Admission>,
+) -> super::daemon::Result<super::daemon::EffectLease> {
+    match coordinator {
+        Ok(coordinator) => coordinator.enter(),
+        // Standalone/mobile and unsupported hosts retain ordinary operation,
+        // but cannot produce a service-preservation capability.
+        Err(super::daemon::Error::Unsupported) => admission.enter(),
+        Err(error) => {
+            admission.quarantine();
+            Err(*error)
         }
     }
 }
@@ -458,6 +547,7 @@ enum Step {
 struct Scheduler {
     jobs: HashMap<String, Work>,
     last_admitted: Option<String>,
+    epoch: Option<uuid::Uuid>,
 }
 struct Work {
     generation: u64,
@@ -474,7 +564,23 @@ struct EmbeddingDocument {
     batch_size: usize,
 }
 impl Scheduler {
+    #[cfg(test)]
     fn tick(&mut self, store: &Mutex<ReaderStore>, model: Option<&ModelActor>) -> Activity {
+        self.tick_owned(store, model, None)
+    }
+    fn observe_epoch(&mut self, epoch: uuid::Uuid) {
+        if self.epoch != Some(epoch) {
+            self.jobs.clear();
+            self.last_admitted = None;
+            self.epoch = Some(epoch);
+        }
+    }
+    fn tick_owned(
+        &mut self,
+        store: &Mutex<ReaderStore>,
+        model: Option<&ModelActor>,
+        effect: Option<&super::daemon::EffectLease>,
+    ) -> Activity {
         let pending = store
             .lock()
             .ok()
@@ -511,7 +617,7 @@ impl Scheduler {
                     recovered: false,
                 };
             }
-            match step(store, model, source, work) {
+            match step_owned(store, model, source, work, effect) {
                 Ok(Step::Admitted) => {
                     self.last_admitted = Some(source.clone());
                     progressed = true;
@@ -522,7 +628,7 @@ impl Scheduler {
                     if !matches!(error, ReaderError::Cancelled) {
                         let (phase, diagnostic) = if matches!(error, ReaderError::ModelUnavailable)
                         {
-                            ("model-unavailable", model.map_or("Local embedding model is disabled or unavailable; lexical search remains available", |model| model_diagnostic(model.ensure_loaded())))
+                            ("model-unavailable", model.map_or("Local embedding model is disabled or unavailable; lexical search remains available", |model| model_diagnostic(model.ensure_loaded_owned(effect))))
                         } else {
                             ("error", "Indexing failed; check source access and retry")
                         };
@@ -561,11 +667,21 @@ fn current(store: &ReaderStore, source: &str, generation: u64) -> Result<()> {
 }
 /// A scheduler turn performs at most one lexical pass, inference admission,
 /// completion, or document install. Inference itself runs only on the actor.
+#[cfg(test)]
 fn step(
     store: &Mutex<ReaderStore>,
     model: Option<&ModelActor>,
     source: &str,
     work: &mut Work,
+) -> Result<Step> {
+    step_owned(store, model, source, work, None)
+}
+fn step_owned(
+    store: &Mutex<ReaderStore>,
+    model: Option<&ModelActor>,
+    source: &str,
+    work: &mut Work,
+    effect: Option<&super::daemon::EffectLease>,
 ) -> Result<Step> {
     {
         let store = store.lock().map_err(|_| ReaderError::Unavailable)?;
@@ -632,7 +748,7 @@ fn step(
     if !model.background_ready() {
         return Ok(Step::Waiting);
     }
-    match model.ensure_loaded() {
+    match model.ensure_loaded_owned(effect) {
         ModelState::Ready => {}
         ModelState::Loading | ModelState::Busy => return Ok(Step::Waiting),
         _ => return Err(ReaderError::ModelUnavailable),
@@ -653,7 +769,7 @@ fn step(
     }
     document.batch_size = texts.len();
     phase(store, source, work.generation, "embedding")?;
-    match model.start_background(texts, model::BATCH_DEADLINE) {
+    match model.start_background_owned(texts, model::BATCH_DEADLINE, effect) {
         Ok(ticket) => {
             document.texts.drain(..document.batch_size);
             document.ticket = Some(ticket);
@@ -1047,3 +1163,7 @@ mod tests {
 #[cfg(all(test, feature = "sync-native"))]
 #[path = "accounts_runtime_tests.rs"]
 mod accounts_tests;
+
+#[cfg(all(test, unix))]
+#[path = "daemon/runtime_tests.rs"]
+mod daemon_tests;

@@ -101,6 +101,7 @@ struct Command {
     reply: mpsc::SyncSender<Result<Value>>,
     deadline: Instant,
     cancellation: Cancellation,
+    effect: Option<crate::daemon::EffectLease>,
 }
 #[derive(Clone)]
 pub struct Coordinator {
@@ -183,6 +184,20 @@ impl Coordinator {
         Ok(Self { sender, local })
     }
     pub fn execute(&self, request: ProviderRequest) -> Result<Value> {
+        self.execute_with_effect(request, None)
+    }
+    pub(crate) fn execute_owned(
+        &self,
+        request: ProviderRequest,
+        effect: crate::daemon::EffectLease,
+    ) -> Result<Value> {
+        self.execute_with_effect(request, Some(effect))
+    }
+    fn execute_with_effect(
+        &self,
+        request: ProviderRequest,
+        effect: Option<crate::daemon::EffectLease>,
+    ) -> Result<Value> {
         // Revocation never waits for a network slot or a credential worker.
         if matches!(
             request,
@@ -203,6 +218,7 @@ impl Coordinator {
                 reply,
                 deadline: Instant::now() + DEADLINE,
                 cancellation: cancellation.clone(),
+                effect,
             })
             .map_err(|_| ProviderError::Unavailable)?;
         let result = receiver
@@ -251,6 +267,9 @@ async fn run<O: Owner + 'static>(
         let factory = factory.clone();
         let active = active.clone();
         tokio::spawn(async move {
+            // Keep the actual issued effect through timeout/cancel Unknown
+            // journal cleanup even when execute's caller has abandoned reply.
+            let _effect = command.effect;
             let _guard = OperationGuard { active, scope };
             let interrupted = match &command.request {
                 ProviderRequest::DispatchSave {
@@ -675,3 +694,7 @@ fn admission_replay(
         json!({"source_id":receipt.source_id,"enabled":enabled,"replayed":true}),
     ))
 }
+
+#[cfg(all(test, unix))]
+#[path = "../daemon/provider_tests.rs"]
+mod daemon_tests;

@@ -8,8 +8,37 @@ fn writer_readonly_and_reopen_keep_original_object_and_reject_replacement() {
     let owner = ReaderStore::open(directory.path()).unwrap();
     let identity = owner.library_identity().unwrap();
     identity.verify_at(directory.path()).unwrap();
+    owner
+        .store_identity()
+        .unwrap()
+        .verify_at(directory.path())
+        .unwrap();
+    // The actual index connection must retain the original authority handle,
+    // not merely a valid main index filename/library certificate.
+    owner
+        .index
+        .execute_batch(
+            "DETACH DATABASE reader_authority; ATTACH DATABASE ':memory:' AS reader_authority",
+        )
+        .unwrap();
+    assert!(matches!(owner.store_identity(), Err(ReaderError::Conflict)));
+    owner
+        .index
+        .execute_batch("DETACH DATABASE reader_authority")
+        .unwrap();
+    super::super::projection::attach_authority(
+        &owner.index,
+        &directory.path().join("library.sqlite"),
+    )
+    .unwrap();
+    owner.store_identity().unwrap();
     let readonly = ReaderStore::open_readonly(directory.path()).unwrap();
     readonly.library_identity().unwrap().verify().unwrap();
+    readonly
+        .store_identity()
+        .unwrap()
+        .verify_at(directory.path())
+        .unwrap();
     let closed = readonly.library_identity().unwrap();
     drop(readonly);
     assert!(matches!(closed.verify(), Err(ReaderError::Unavailable)));
