@@ -594,3 +594,22 @@ profile Clippy passes. See [the exact receipt](profile-sqlite-lock-verification-
 This does not activate migration. Exact native SQLite/recovery classification,
 all-owner freeze composition, installed preservation/conversion/rollback and
 cross-host release acceptance remain open.
+
+## Held service preservation control, 2026-10-08
+
+The actual configured desktop Runtime retains its real daemon/account/device/
+capture freeze guards behind an operation/owner-epoch/root/boot-bound control
+session. A trusted typed client pins the existing endpoint and reconciles lost
+Begin/Release replies without restarting or rebinding the service. Deadline
+expiry and partial/uncertain acquisition retain guards; explicit release checks
+actual producer admission and releases the daemon barrier last. Independent
+provider/vault custody is not inferred from daemon drain.
+
+Three actual TCP/SQLite fixtures pass for lost replies/ordinary-request denial,
+stale identities and expiry retaining guards. A real ordinary-admission bypass
+produced behavioral RED; exact restoration returned all three to GREEN. Strict
+all-target service Clippy passes for default and sync-native. See
+[the scoped receipt](../../crates/mdreader-service/src/preservation/README.md).
+No remote database borrow, backup operation, native all-eight registration,
+selector activation, installed-profile migration or release acceptance is claimed.
+The actual server-owned staged backup and native owner composition are next.
