@@ -10,6 +10,9 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[path = "editing.rs"]
+mod editing;
+
 const DEADLINE: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -54,6 +57,15 @@ pub enum ProviderRequest {
     Forget {
         source_id: SourceId,
     },
+    BeginEditExact {
+        reader_source_id: SourceId,
+        path: RecordKey,
+        revision: OpaqueValue,
+    },
+    InspectSave {
+        source_id: SourceId,
+        operation_id: Uuid,
+    },
     BeginEdit {
         source_id: SourceId,
         document_id: Uuid,
@@ -78,7 +90,10 @@ impl ProviderRequest {
     fn scope(&self) -> String {
         match self {
             Self::List | Self::Admit { .. } => "registry".into(),
-            Self::ResolveLink {
+            Self::BeginEditExact {
+                reader_source_id, ..
+            }
+            | Self::ResolveLink {
                 reader_source_id, ..
             } => reader_source_id.as_str().into(),
             Self::Reconnect { source_id, .. }
@@ -92,6 +107,7 @@ impl ProviderRequest {
             | Self::PrepareSave { source_id, .. }
             | Self::DispatchSave { source_id, .. }
             | Self::Repair { source_id }
+            | Self::InspectSave { source_id, .. }
             | Self::Mutations { source_id } => source_id.as_str().into(),
         }
     }
@@ -150,10 +166,21 @@ impl Coordinator {
                     )?)
                     .map_err(|_| ProviderError::Protocol);
                 }
+                if let ProviderRequest::BeginEditExact {
+                    reader_source_id,
+                    path,
+                    revision,
+                } = request
+                {
+                    return editing::begin_edit_exact(c, &reader_source_id, &path, &revision);
+                }
                 let source = SourceId::new(request.scope())?;
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
                 match request {
+                    ProviderRequest::InspectSave { operation_id, .. } => {
+                        editing::inspect_save(c, binding, operation_id)
+                    }
                     ProviderRequest::CachedOpen { document_id, .. } => {
                         cached_open(c, binding, document_id)
                     }
@@ -202,6 +229,8 @@ impl Coordinator {
         if matches!(
             request,
             ProviderRequest::List
+                | ProviderRequest::BeginEditExact { .. }
+                | ProviderRequest::InspectSave { .. }
                 | ProviderRequest::ResolveLink { .. }
                 | ProviderRequest::CachedOpen { .. }
                 | ProviderRequest::Documents { .. }
@@ -532,13 +561,16 @@ async fn perform<O: Owner + 'static>(
             })
         }
         ProviderRequest::BeginEdit { document_id, .. } => {
-            return owner.with_connection(|c| begin_edit(c, &configuration.descriptor, document_id))
+            return owner.with_connection(|c| {
+                editing::begin_edit(c, &configuration.descriptor, document_id)
+            })
         }
         ProviderRequest::PrepareSave {
             edit_id, markdown, ..
         } => {
-            return owner
-                .with_connection(|c| prepare_save(c, &configuration.descriptor, edit_id, markdown))
+            return owner.with_connection(|c| {
+                editing::prepare_save(c, &configuration.descriptor, edit_id, markdown)
+            })
         }
         _ => {}
     }
@@ -575,92 +607,6 @@ async fn perform<O: Owner + 'static>(
         }
         _ => Err(ProviderError::Invalid),
     }
-}
-fn begin_edit(c: &mut Connection, d: &SourceDescriptor, id: Uuid) -> Result<Value> {
-    let b = d.binding();
-    let key = key_for(c, b, id)?;
-    if !d.capabilities().guarded_write {
-        return Err(ProviderError::Unsupported);
-    }
-    let metadata = metadata(c, b, &key)?;
-    if metadata.version.conditional_write_token.is_none() {
-        return Err(ProviderError::Unsupported);
-    }
-    let cache = cached(c, b, &key)?.ok_or(ProviderError::Unavailable)?;
-    if cache.projection.is_none() {
-        return Err(ProviderError::Unavailable);
-    }
-    let time = now()?;
-    registry::db(c.execute(
-        "DELETE FROM mdreader_provider_client_edits WHERE expires<?1",
-        [time],
-    ))?;
-    let count: u64 = registry::db(c.query_row(
-        "SELECT count(*) FROM mdreader_provider_client_edits",
-        [],
-        |r| r.get(0),
-    ))?;
-    if count >= 256 {
-        return Err(ProviderError::TooLarge);
-    }
-    let edit = Uuid::new_v4();
-    registry::db(c.execute(
-        "INSERT INTO mdreader_provider_client_edits VALUES(?1,?2,?3,?4,?5,0)",
-        params![
-            edit.to_string(),
-            b.digest().as_slice(),
-            key.as_str(),
-            registry::encode(&metadata.version, 32768)?,
-            time + 10 * 60 * 1000
-        ],
-    ))?;
-    Ok(
-        json!({"edit_id":edit,"markdown":std::str::from_utf8(cache.document.body.as_bytes()).map_err(|_|ProviderError::InvalidUtf8)?,"expires_at_ms":time+10*60*1000}),
-    )
-}
-fn prepare_save(
-    c: &mut Connection,
-    d: &SourceDescriptor,
-    id: Uuid,
-    markdown: String,
-) -> Result<Value> {
-    let b = d.binding();
-    revalidate(c, b)?;
-    let row:Option<(String,String,i64,bool)>=registry::db(c.query_row("SELECT key,expected,expires,consumed FROM mdreader_provider_client_edits WHERE id=?1 AND binding=?2",params![id.to_string(),b.digest().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
-    let (key, expected, expires, consumed) = row.ok_or(ProviderError::Unauthorized)?;
-    if expires < now()? {
-        return Err(ProviderError::Unauthorized);
-    }
-    let key = RecordKey::new(key)?;
-    let expected = registry::decode(&expected, 32768)?;
-    let body = MarkdownBytes::new(markdown.into_bytes())?;
-    // The edit UUID is also the durable operation UUID: a crash between journal
-    // commit and ticket consumption cannot manufacture a second write intent.
-    match journal::load(c, b, id) {
-        Ok(pending) => {
-            if pending.key != key || pending.expected != expected || pending.body != body {
-                return Err(ProviderError::Conflict);
-            }
-        }
-        Err(ProviderError::Unauthorized) => {
-            if consumed {
-                return Err(ProviderError::Unauthorized);
-            }
-            if !d.capabilities().guarded_write {
-                return Err(ProviderError::Unsupported);
-            }
-            if metadata(c, b, &key)?.version != expected {
-                return Err(ProviderError::Conflict);
-            }
-            journal::prepare_with_id(c, b, &key, &expected, &body, id)?;
-        }
-        Err(error) => return Err(error),
-    }
-    registry::db(c.execute(
-        "UPDATE mdreader_provider_client_edits SET consumed=1 WHERE id=?1",
-        [id.to_string()],
-    ))?;
-    Ok(json!({"operation_id":id,"state":"prepared"}))
 }
 
 fn admission_replay(

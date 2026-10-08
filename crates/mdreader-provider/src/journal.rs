@@ -3,6 +3,10 @@
 use crate::*;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+#[path = "journal/inspection.rs"]
+mod inspection;
+pub use inspection::inspect;
+
 const MAX_RECORD: usize = 32 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
