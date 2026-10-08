@@ -532,3 +532,28 @@ cases, a meaningful omitted-fence RED, restored thirteen-case publication GREEN
 and strict core/device-assets all-target Clippy pass. See [the core receipt](../../crates/mdreader-core/src/device/publication/README.md).
 Service association/self-echo adoption and acceptance remain in progress; this
 does not enable native QueueDocument RPC/UI or claim cross-device acceptance.
+
+## Selected native association and self-echo storage, 2026-10-08
+
+`7989ace` adopts the selected archive fence and binds an explicit native document
+UUID/raw BLAKE3 revision to its immutable encrypted wire graph in one borrowed
+SQLite transaction. Receipt-proven own-device content echo advances the existing
+head/association/applied cursor atomically while preserving native document,
+source and asset UUIDs, pins and exact line. It performs no duplicate import,
+implicit selection or source regrant. Full decrypted content is compared with the
+selected native snapshot outside owner locks.
+
+Two private-seam real SQLite/filesystem lifecycle cases pass, including rollback,
+reopen, future namespace refusal, exact receipt/operation authority, same-document
+application and dirty-generation refusal. Omitting only the final caller fence
+produced the expected RED; restored code passed all twelve affected incoming
+cases and three graph cases. Strict sync/native-authority and service/sync-native
+all-target Clippy pass. See [the scoped receipt](../../crates/mdreader-service/src/sync/outgoing/README.md).
+
+Actual public IncomingCoordinator queue admission through an account actor,
+authenticated outgoing network/self-echo, retained queue cancellation/freeze and
+live OS-vault acceptance remain unverified. QueueDocument product RPC/UI is still
+disabled. Repeated full graph proof hashing/allocation under owner access remains
+an explicit responsiveness cost; transaction-bound proof reuse is follow-up work,
+not a reason to weaken final archive/session fences. Restart reauthorization,
+outgoing user-state/deletions, history/graph cleanup and live release remain open.
