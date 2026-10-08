@@ -1175,6 +1175,7 @@ export function AppShell() {
         keys: 'Mod+P',
         description: 'Jump to file',
         group: 'Files',
+        allowInSourceEditor: true,
         run: () => {
           setPaletteMode('file');
           setPaletteOpen(true);
@@ -1185,6 +1186,7 @@ export function AppShell() {
         keys: 'Mod+K',
         description: 'Search',
         group: 'Search',
+        allowInSourceEditor: true,
         run: () => {
           setPaletteMode('search');
           setPaletteOpen(true);
@@ -1365,7 +1367,9 @@ export function AppShell() {
         paletteOpen ||
         sheetOpen ||
         settingsOpen;
-      if (registry.dispatch(event, { inEditable })) event.preventDefault();
+      const inSourceEditor = !paletteOpen && !sheetOpen && !settingsOpen
+        && Boolean(document.activeElement?.closest('.cm-editor'));
+      if (registry.dispatch(event, { inEditable, inSourceEditor })) event.preventDefault();
     }
     function onKeyUp(event: KeyboardEvent) {
       if (event.key === 'Control') tabCycle.finish();
