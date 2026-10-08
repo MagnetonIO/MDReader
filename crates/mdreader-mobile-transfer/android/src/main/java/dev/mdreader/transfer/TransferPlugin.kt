@@ -39,6 +39,12 @@ class WatchLinks { lateinit var handler: Channel }
 @TauriPlugin
 class TransferPlugin(private val activity: Activity): Plugin(activity) {
     private val worker = Executors.newSingleThreadExecutor()
+    private val accounts = AccountSession(activity)
+    private val vault = SecureVault(activity)
+    @Command fun authenticate(invoke: Invoke) { accounts.authenticate(invoke) }
+    @Command fun cancelAuthentication(invoke: Invoke) { accounts.cancel(invoke) }
+    @Command fun vaultRead(invoke: Invoke) { worker.execute { vault.read(invoke) } }
+    @Command fun vaultWrite(invoke: Invoke) { worker.execute { vault.write(invoke) } }
     private val busy = AtomicBoolean(false)
     private var pendingCopy: CopyRequest? = null
     private var listener: Channel? = null
@@ -47,6 +53,7 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
     override fun load(webView: WebView) { receive(activity.intent) }
     override fun onNewIntent(intent: Intent) { receive(intent) }
     private fun receive(intent: Intent?) {
+        if (accounts.receive(intent)) return
         if (intent?.action != Intent.ACTION_VIEW) return
         val url = intent.dataString ?: return
         if (url.length > 16384 || !url.startsWith("mdreader://read?") || url.any { it.code < 32 }) return
@@ -155,6 +162,6 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
         }
     }
     override fun onDestroy(activity: AppCompatActivity) {
-        listener = null; worker.shutdown()
+        accounts.close(); listener = null; worker.shutdown()
     }
 }

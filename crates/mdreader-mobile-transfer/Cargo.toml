@@ -12,6 +12,7 @@ workspace = true
 tauri = "2"
 serde.workspace = true
 serde_json.workspace = true
+zeroize = "1.9"
 
 [build-dependencies]
 tauri-plugin = { version = "=2.6.3", features = ["build"] }

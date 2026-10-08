@@ -13,6 +13,9 @@ import type { AssetManifest, DeviceDocument, DeviceHit, PendingDeviceImport } fr
 import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
+import { AccountSyncPanel } from "../features/account-sync/AccountSyncPanel";
+import type { DeviceReference } from "../features/device-reader/backend";
+import "../features/settings/settings.css";
 import { resolveImportedLink } from "./imported-links";
 import { nativeAssetBackend } from "./device-assets";
 import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from "./DeviceAssetImage";
@@ -40,9 +43,10 @@ function message(cause: unknown): string {
     : "Device library operation failed";
 }
 
-/** Account-free mobile reading over the embedded SQLite owner. */
+/** Local reading remains account-free; optional sync shares the embedded owner. */
 export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
+  const [syncSelection, setSyncSelection] = useState<DeviceReference>();
   const [documents, setDocuments] = useState<DeviceDocument[]>([]);
   const [pending, setPending] = useState<PendingDeviceImport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -276,6 +280,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
       reader.current?.scrollToLine(target?.lineStart ?? line);
     }
+    setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
   };
   const openReadingLink = async (reference: CanonicalReaderReference) => {
@@ -703,7 +708,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               </p>
             </article>
             <DeviceAssetStorage onChanged={refreshAssets} />
-            {["Google Drive", "Dropbox", "Encrypted cloud sync"].map((name) => (
+            {["Google Drive", "Dropbox"].map((name) => (
               <article key={name} className="mobile-source">
                 <h2>{name}</h2>
                 <p>
@@ -730,6 +735,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 </label>
               ))}
             </fieldset>
+            <div className="mobile-account-settings">
+              <h2>Account &amp; sync</h2>
+              <AccountSyncPanel active={tab === "Settings"} selectedDocument={syncSelection} />
+            </div>
             <h2>Offline copies</h2>
             <p>
               Imports and pins are never automatically evicted. This device
@@ -747,7 +756,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 type="button"
                 className="mobile-nav__item"
                 aria-current={name === tab ? "page" : undefined}
-                onClick={() => setTab(name)}
+                onClick={() => {
+                  setTab(name);
+                  if (name === "Library") void refresh().catch((cause) => setError(message(cause)));
+                }}
               >
                 {name}
               </button>

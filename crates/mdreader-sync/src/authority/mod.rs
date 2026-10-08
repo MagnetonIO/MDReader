@@ -1,5 +1,5 @@
 //! Native-only, default-off OIDC, custody and verified bootstrap/recovery contracts.
-//! No renderer credential DTO, provider grant, product RPC or mobile vault.
+//! Native custody and callbacks stay outside renderer credential DTOs.
 mod access;
 mod capability;
 mod custody;
@@ -11,9 +11,11 @@ mod incoming;
 mod jwt;
 mod keyring;
 mod loopback;
+mod mobile;
 mod oidc;
 mod outgoing;
 mod pairing;
+mod platform_vault;
 mod projection;
 mod recovery;
 mod request;
@@ -30,6 +32,7 @@ pub use identity::VerifiedIdentity;
 pub use keyring::SyncKeyringVault;
 pub use oidc::{NativeBrowser, OidcClient, OidcEndpoints, PendingLogin, ReviewedOidcRegistration};
 pub use pairing::{PairApprovalPacket, PairRequestPacket};
+pub use platform_vault::{SecureByteStore, SyncPlatformVault};
 pub use projection::{ProjectionGuard, ProjectionPermit};
 pub use recovery::{PendingRecovery, RecoveryExport};
 pub use session::SessionController;
@@ -52,6 +55,8 @@ pub enum AuthorityError {
     Inactive,
     #[error("native sync authorization or custody is busy")]
     Busy,
+    #[error("native sync authorization was cancelled")]
+    Cancelled,
     #[error("native sync operation timed out or was interrupted")]
     Interrupted,
     #[error("native sync response or custody bound exceeded")]

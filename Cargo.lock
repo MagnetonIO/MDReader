@@ -6352,6 +6352,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-plugin",
+ "zeroize",
 ]
 
 [[package]]

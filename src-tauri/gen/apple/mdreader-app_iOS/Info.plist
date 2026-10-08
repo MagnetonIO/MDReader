@@ -22,6 +22,9 @@
 	<array><dict>
 		<key>CFBundleURLName</key><string>Reader document links</string>
 		<key>CFBundleURLSchemes</key><array><string>mdreader</string></array>
+	</dict><dict>
+		<key>CFBundleURLName</key><string>Reader account sign-in</string>
+		<key>CFBundleURLSchemes</key><array><string>$(PRODUCT_BUNDLE_IDENTIFIER).auth</string></array>
 	</dict></array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

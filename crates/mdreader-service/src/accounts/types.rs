@@ -69,6 +69,7 @@ impl From<AuthorityError> for AccountError {
             AuthorityError::Inactive => Self::ReconnectRequired,
             AuthorityError::Busy => Self::Busy,
             AuthorityError::Interrupted => Self::Interrupted,
+            AuthorityError::Cancelled => Self::Cancelled,
             AuthorityError::Bounds => Self::Limit,
             AuthorityError::Custody => Self::CustodyUnavailable,
             AuthorityError::Generation => Self::Conflict,

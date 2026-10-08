@@ -103,3 +103,7 @@ tauri = { version = "2", features = ["test"] }
 syn = { version = "2", features = ["full"] }
 # Native async command tests use the existing service owner.
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
+mdreader-service = { path = "../crates/mdreader-service", features = ["sync-native"] }
+mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }

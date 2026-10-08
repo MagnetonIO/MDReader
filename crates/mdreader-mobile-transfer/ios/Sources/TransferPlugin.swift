@@ -12,6 +12,9 @@ private struct CopyRequest: Decodable {
 /// Receives only the app's native-authorized private staged copy. Hashing runs
 /// off the UI thread. OS presentation never becomes an input filesystem grant.
 class TransferPlugin: Plugin, UIDocumentPickerDelegate {
+  private let account = AccountSession()
+  @objc public func authenticate(_ invoke: Invoke) throws { try account.authenticate(invoke, window: manager.viewController?.view.window) }
+  @objc public func cancelAuthentication(_ invoke: Invoke) throws { try account.cancel(invoke) }
   private var pending: Invoke?
   private var presenting = false
 
