@@ -184,7 +184,9 @@ pub(super) fn profile_error(error: mdreader_profile::Error) -> Error {
         mdreader_profile::Error::Bounds => Error::Bounds,
         mdreader_profile::Error::Conflict | mdreader_profile::Error::Integrity => Error::StaleOwner,
         mdreader_profile::Error::NotQuiescent => Error::Deadline,
-        mdreader_profile::Error::Invalid | mdreader_profile::Error::Unclassified => Error::Invalid,
+        mdreader_profile::Error::Invalid
+        | mdreader_profile::Error::InvalidDestination
+        | mdreader_profile::Error::Unclassified => Error::Invalid,
         mdreader_profile::Error::Storage => Error::Unavailable,
         mdreader_profile::Error::ReconciliationRequired => Error::Uncertain,
     }
