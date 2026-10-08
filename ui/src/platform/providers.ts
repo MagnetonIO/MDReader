@@ -24,6 +24,18 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
     default: return 'The provider operation is unavailable. Try a read of cached content or review the source connection.';
   }
 }
+/** A failed fresh sign-in does not mean an existing source was paused. */
+export function providerConnectionErrorMessage(cause: unknown, provider: NativeProviderKind): string {
+  const name = provider === 'google_drive' ? 'Google Drive' : 'Dropbox';
+  if (!(cause instanceof NativeProviderError)) return `${name} could not connect. Try again.`;
+  switch (cause.detail.kind) {
+    case 'unauthorized': return `${name} sign-in or file selection was not accepted. Start the connection again to retry.`;
+    case 'timeout': return `${name} sign-in took too long. Return to MDReader and start the connection again.`;
+    case 'cancelled': return `${name} connection was cancelled. You can try again when you are ready.`;
+    case 'invalid_response': return `${name} returned a response MDReader could not use. Start the connection again to retry.`;
+    default: return cause.message;
+  }
+}
 export interface ProviderAvailability { provider: NativeProviderKind; configured: boolean; supported: boolean; diagnostic: string | null }
 export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'imported_legacy_broad' };
 export type ProviderCoverage = { kind: 'never_indexed' } | { kind: 'partial'; reason: string } | { kind: 'metadata_complete_selected' | 'complete_selected'; observedAtMs: number };

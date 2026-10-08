@@ -85,6 +85,17 @@ describe('dispatch', () => {
     expect(registry.dispatch(key('j', { metaKey: true }))).toBe(false);
   });
 
+  test.each([true, false])('editor search uses the platform modifier without enabling form shortcuts (mac=%s)', (mac) => {
+    const run = vi.fn();
+    const registry = new KeymapRegistry(mac);
+    registry.register(binding({ run, allowInSourceEditor: true }));
+    const chord = key('k', mac ? { metaKey: true } : { ctrlKey: true });
+    expect(registry.dispatch(chord, { inEditable: true })).toBe(false);
+    expect(registry.dispatch(chord, { inEditable: true, inSourceEditor: true })).toBe(true);
+    expect(registry.dispatch(key('k', mac ? { ctrlKey: true } : { metaKey: true }), { inEditable: true, inSourceEditor: true })).toBe(false);
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   test('Ctrl+Tab fires on macOS via ctrlKey, not metaKey', () => {
     const run = vi.fn();
     const registry = new KeymapRegistry(true);

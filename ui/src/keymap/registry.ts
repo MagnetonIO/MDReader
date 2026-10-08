@@ -31,6 +31,8 @@ export interface Binding {
   run: () => void;
   /** When true, the binding still fires while a text input is focused. */
   allowInInput?: boolean;
+  /** Still fires in the document editor, while other form fields stay guarded. */
+  allowInSourceEditor?: boolean;
 }
 
 interface Chord {
@@ -151,11 +153,11 @@ export class KeymapRegistry {
    * ran (the caller should then `preventDefault`). Bindings are skipped while a
    * text field is focused unless they opt in with `allowInInput`.
    */
-  dispatch(event: KeyLike, opts: { inEditable?: boolean } = {}): boolean {
+  dispatch(event: KeyLike, opts: { inEditable?: boolean; inSourceEditor?: boolean } = {}): boolean {
     for (const binding of this.bindings) {
       const chord = this.chords.get(binding.id)!;
       if (!eventMatches(chord, event)) continue;
-      if (opts.inEditable && !binding.allowInInput) return false;
+      if (opts.inEditable && !binding.allowInInput && !(opts.inSourceEditor && binding.allowInSourceEditor)) return false;
       binding.run();
       return true;
     }
