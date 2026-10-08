@@ -3,7 +3,7 @@ use p256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 
 /// Public-only P-256 JWK, exact fields; serde rejects duplicate members.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicJwk {
     kty: String,

@@ -39,6 +39,13 @@ impl SigningKey {
         header.typ = Some("mdreader-recovery-grant+jwt".into());
         jsonwebtoken::encode(&header, claims, &self.encoding).map_err(|_| AuthorityError::Custody)
     }
+    pub(super) fn pair_grant(&self, claims: &impl serde::Serialize) -> AuthorityResult<String> {
+        let mut header = Header::new(Algorithm::ES256);
+        header.typ = Some("mdreader-pair-grant+jwt".into());
+        header.jwk =
+            Some(serde_json::from_value(self.jwk.clone()).map_err(|_| AuthorityError::Custody)?);
+        jsonwebtoken::encode(&header, claims, &self.encoding).map_err(|_| AuthorityError::Custody)
+    }
     pub(super) fn authorize(
         &self,
         identity: &VerifiedIdentity,
