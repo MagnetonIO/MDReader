@@ -59,10 +59,11 @@ arguments, no legacy/current-path lookup, inline/history return without reread,
 selected-handle release and late-comparison rejection. The existing device case
 also asserts absence of the archive action.
 
-## Native acceptance still queued
+## Native acceptance — combined checkpoint
 
-The root will run these in its single combined actual app test artifact, together
-with its actual binding generator and existing no-command-UI-thread gate:
+The root ran both cases successfully in its single combined actual app artifact,
+together with the actual binding generator and existing no-command-UI-thread gate.
+See [the combined receipt](native-retirement-composition-2026-10-08.md):
 
 ```text
 reader_catalog::tests::canonical_review_membership_checks_exact_read_and_final_retained_grant_without_workspace
@@ -71,7 +72,8 @@ reader_reviews::tests::exact_local_selection_never_regrants_and_old_same_root_co
 
 The new native fixture uses real embedded ReaderBackend grants and exact reads,
 then verifies missing membership, revocation and root replacement refusal without
-an active workspace. It was authored and statically reviewed here, not executed in
-this feature worktree. Native runtime/package acceptance is not claimed by the
-frontend checks. Installed-library export, candidate conversion/activation and
-rollback remain separate release gates.
+an active workspace. It was authored and statically reviewed in the feature
+worktree, then executed successfully in the combined native checkpoint. Native
+runtime/package acceptance is not claimed by these headless checks. Installed-
+library export, candidate conversion/activation and rollback remain separate
+release gates.

@@ -366,54 +366,6 @@ export const commands = {
 	 *  file caused it is the entire value of the surface.
 	 */
 	checkConstraints: () => typedError<ConstraintReport, string>(__TAURI_INVOKE("check_constraints")),
-	/**
-	 *  Every registered mapping, with its persisted version identity and a one-
-	 *  glance verdict on whether it is total and lossless.
-	 */
-	listMappings: () => typedError<MappingSummaryDto[], string>(__TAURI_INVOKE("list_mappings")),
-	/**
-	 *  One mapping's full coverage: every source concept, where it lands, what it
-	 *  shares that landing with, and what the destination is left holding.
-	 */
-	inspectMapping: (mapping: string) => typedError<MappingCoverageDto, string>(__TAURI_INVOKE("inspect_mapping", { mapping })),
-	/**
-	 *  Compose a chain of registered mappings into a single validated mapping, and
-	 *  report the composite's coverage.
-	 *
-	 *  This is the claim that N×M pipelines collapse toward N+M, made concrete: the
-	 *  result is a real [`catdb_sdk::core::ComposedMapping`], validated end to end with
-	 *  the same equality-saturation prover that gates every registered mapping at
-	 *  startup — not a rendering of two mappings side by side.
-	 *
-	 *  A chain that does not compose returns a plan-shaped answer with
-	 *  [`MappingCompositionDto::failure`] set, so the Explorer can draw the break
-	 *  on the leg that caused it.
-	 */
-	composeMappings: (mappings: string[]) => typedError<MappingCompositionDto, string>(__TAURI_INVOKE("compose_mappings", { mappings })),
-	/**
-	 *  Diff two persisted versions of one schema, by ordinal.
-	 *
-	 *  Each version's stored body is verified against its recorded checksum first,
-	 *  so a corrupt row is refused rather than certified "unchanged"; only then does
-	 *  an equal-checksum pair skip the structural comparison. The short answer can
-	 *  never disagree with the long one (see [`catdb_sdk::engine::semantic_diff`]).
-	 */
-	diffSchemaVersions: (schema: string, from: number, to: number) => typedError<SchemaDiffDto, string>(__TAURI_INVOKE("diff_schema_versions", { schema, from, to })),
-	/**
-	 *  Report what migrating this corpus along a registered mapping *would* do —
-	 *  without doing any of it.
-	 *
-	 *  Read-only: it reads objects, morphisms, and the schema catalog, derives an
-	 *  in-memory instance, and runs Σ over that copy. The corpus and the operation
-	 *  log are never touched (`catdb-engine`'s `tests/migration.rs` asserts the
-	 *  bytes are unchanged).
-	 *
-	 *  Where the plan depends on Σ, its limits travel with it:
-	 *  [`SigmaOutcomeDto::state`] says whether the chase ran, was declined, or
-	 *  refused, and [`MigrationPlanDto::notes`] carries the claims the plan is
-	 *  explicitly NOT making. Render the notes.
-	 */
-	inspectMigration: (mapping: string) => typedError<MigrationPlanDto, string>(__TAURI_INVOKE("inspect_migration", { mapping })),
 	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
 	checkForUpdate: () => typedError<{
 	version: string,
@@ -591,18 +543,6 @@ export type ArchivedReviewsError = {
 export type ArchivedReviewsReply = { operation: "selected"; handle: string; exportId: string; manifestSha256: string; ownerScope: string } | { operation: "listed"; records: ArchivedReviewRecord[]; nextOffset: number | null } | { operation: "record"; record: ArchivedReviewRecord } | { operation: "compared"; comparison: ArchivedReviewComparison } | { operation: "current"; reference: ReviewCurrent } | { operation: "closed" } | { operation: "cancelled" };
 
 export type ArchivedReviewsRequest = { operation: "select"; exportId: string; manifestSha256: string } | { operation: "list"; handle: string; offset: number; limit: number } | { operation: "get"; handle: string; recordId: string } | { operation: "current"; path: string; generation: number } | { operation: "compare"; handle: string; recordId: string; current: ReviewCurrent; generation: number | null } | { operation: "close"; handle: string };
-
-/**  Where one source arrow goes. */
-export type ArrowMoveDto = {
-	/**  The source arrow. */
-	from: string,
-	/**  The destination path, rendered (`Item.label`). */
-	to_path: string,
-	/**  The destination path's arrows, in application order. */
-	to_arrows: string[],
-	/**  Other source arrows landing on the same path. */
-	shared_with: string[],
-};
 
 export type AssetInventory = {
 	items: AssetInventoryItem[],
@@ -886,50 +826,6 @@ export type Completeness =
 /**  Authorized sources that refused. */
 excluded_source_ids: string[] };
 
-/**  Why a chain did not produce a validated composite. */
-export type CompositionFailureDto = {
-	/**  `"structure"`, `"leg"`, or `"composite"`. */
-	kind: string,
-	/**  Which leg, for a `"leg"` failure. */
-	leg: number | null,
-	/**  The kernel's own message. */
-	message: string,
-	/**  The individual validation errors, for a `"leg"` or `"composite"` failure. */
-	errors: string[],
-};
-
-/**  One leg of a composed chain. */
-export type CompositionLegDto = {
-	/**  The leg's registered mapping name. */
-	name: string,
-	/**  Source schema name. */
-	src: string,
-	/**  Destination schema name. */
-	dst: string,
-	/**  The persisted version ordinal of the mapping, when it has one. */
-	version: number | null,
-	/**  `blake3:` checksum of the persisted mapping, when it has one. */
-	checksum: string | null,
-};
-
-/**  What becomes of one concept of the old version. */
-export type ConceptClassificationDto = {
-	/**  The old version's concept. */
-	concept: ConceptDto,
-	/**  `"mapped_exactly"`, `"needs_classification"`, or `"unmappable"`. */
-	verdict: string,
-	/**  The change that makes it ambiguous, for `"needs_classification"`. */
-	reason: string | null,
-};
-
-/**  One named piece of a schema. */
-export type ConceptDto = {
-	/**  `"entity"`, `"arrow"`, or `"attribute"`. */
-	kind: string,
-	/**  The concept's name, as the schema declares it. */
-	name: string,
-};
-
 export type ConnectedCatdbKind = "connected-catdb";
 
 export type ConnectedCatdbSourceView = {
@@ -1059,32 +955,6 @@ export type EntityFilter = {
 	operator: FilterOperator,
 	/**  Lexical value parsed against the pinned semantic schema. */
 	value: string,
-};
-
-/**  Where one source entity's rows go. */
-export type EntityMoveDto = {
-	/**  The source entity. */
-	from: string,
-	/**  The destination entity. */
-	to: string,
-	/**  Other source entities landing there. */
-	shared_with: string[],
-};
-
-/**  How many stored objects of one source entity move without a decision. */
-export type EntityObjectCountDto = {
-	/**  The source entity. */
-	entity: string,
-	/**  The qualified name the corpus stores its objects under. */
-	qualified: string,
-	/**  How many are stored. */
-	objects: number,
-	/**  How many move mechanically. */
-	auto_mapped: number,
-	/**  How many need a human decision. */
-	needs_decision: number,
-	/**  Why, when they do. */
-	reason: string | null,
 };
 
 /**  Transport-neutral entity query. */
@@ -1358,24 +1228,6 @@ export type FederatedSourceDto = {
 	refusal: string | null,
 };
 
-/**  Where one old field goes. */
-export type FieldMoveDto = {
-	/**  The source attribute. */
-	from: string,
-	/**  The source entity it is observed on. */
-	from_entity: string,
-	/**  The destination path, rendered. */
-	to_path: string,
-	/**  The destination path's arrows, in application order. */
-	to_arrows: string[],
-	/**  The destination attribute observed at the end of the path. */
-	to_attr: string,
-	/**  Other source attributes landing on the same slot — their values compete. */
-	shared_with: string[],
-	/**  The whole move on one line. */
-	rendered: string,
-};
-
 /**  One source's evidence for one field on one source record. */
 export type FieldObservation = FieldObservation_Serialize | FieldObservation_Deserialize;
 
@@ -1520,27 +1372,6 @@ export type ImportProgress = {
 	chunks_embedded: number,
 	/**  The failure message when `phase == "error"`. */
 	error: string | null,
-};
-
-/**
- *  One way the mapping fails to determine a source concept from its image.
- *
- *  See [`catdb_sdk::core::coverage`] for what "loss" does and does not claim: it is
- *  a statement about the mapping, never a claim that a lossless mapping is
- *  invertible.
- */
-export type InformationLossDto = {
-	/**
-	 *  `"dropped"`, `"entities_merged"`, `"arrows_merged"`, or
-	 *  `"attributes_overwritten"`.
-	 */
-	kind: string,
-	/**  The shared destination image, rendered; empty for `"dropped"`. */
-	image: string,
-	/**  The source concepts involved. */
-	sources: string[],
-	/**  The kernel's own sentence about it — not re-worded here. */
-	detail: string,
 };
 
 /**
@@ -1749,151 +1580,6 @@ remedy: string } |
 { kind: "failed";
 /**  The failure, as text. */
 message: string };
-
-/**  A source concept and where it lands. */
-export type MappedConceptDto = {
-	/**  The source concept. */
-	concept: ConceptDto,
-	/**  Its image, rendered (`Item`, `Item.label`, `Item::item_title`). */
-	image: string,
-	/**
-	 *  Other source concepts landing on the same image. Empty means the image
-	 *  determines this one.
-	 */
-	shared_with: ConceptDto[],
-};
-
-/**
- *  A composed chain: either a validated composite, or exactly why not.
- *
- *  Failure is part of the value rather than an error string, because "leg 1
- *  does not validate" is something the Explorer must *draw* — on the leg — not
- *  flash as a toast.
- */
-export type MappingCompositionDto = {
-	/**  The legs, in order. */
-	legs: CompositionLegDto[],
-	/**
-	 *  The schemas the chain passes through, source first. Present even when
-	 *  composition failed, so the Explorer can draw the intended chain.
-	 */
-	chain: string[],
-	/**  True when the composite is a validated first-class mapping. */
-	validated: boolean,
-	/**  The composite's coverage, when there is a composite. */
-	coverage: MappingCoverageDto | null,
-	/**  Why not, when there is not. */
-	failure: CompositionFailureDto | null,
-	/**
-	 *  Everything true about the composite that must not be ignored: inherited
-	 *  waivers, a degraded write capability.
-	 */
-	warnings: string[],
-};
-
-/**  What a mapping carries, what it drops, and what that costs. */
-export type MappingCoverageDto = {
-	/**  Source schema name. */
-	src: string,
-	/**  Destination schema name. */
-	dst: string,
-	/**  Source concepts with an image. */
-	mapped: MappedConceptDto[],
-	/**  Source concepts with none (a validated mapping has none). */
-	unmapped: ConceptDto[],
-	/**  Concepts the mapping maps that the source schema does not declare. */
-	foreign: ConceptDto[],
-	/**  Every determination the mapping loses. */
-	loss: InformationLossDto[],
-	/**  Destination concepts nothing in the source reaches. **Not loss.** */
-	unreached_destination: ConceptDto[],
-	/**  True when the mapping maps exactly the source's concepts. */
-	total: boolean,
-	/**  True when every source concept is determined by its image. */
-	lossless: boolean,
-};
-
-/**  One registered mapping, as the Explorer lists it. */
-export type MappingSummaryDto = {
-	/**  The registered name (e.g. `F_parse`). */
-	name: string,
-	/**  The schema it maps from. */
-	src: string,
-	/**  The schema it maps to. */
-	dst: string,
-	/**  The persisted version ordinal; `None` before the index has been opened. */
-	version: number | null,
-	/**
-	 *  `blake3:` checksum of the persisted mapping; `None` under the same
-	 *  condition.
-	 */
-	checksum: string | null,
-	/**  How many source entities it maps. */
-	entity_count: number,
-	/**  How many source arrows it maps. */
-	arrow_count: number,
-	/**  How many source attributes it maps. */
-	attribute_count: number,
-	/**  The declared write capability, as the kernel spells it. */
-	write_capability: string,
-	/**  Whether it maps exactly the source schema's concepts. */
-	total: boolean,
-	/**  Whether every source concept is determined by its image. */
-	lossless: boolean,
-};
-
-/**  A place the plan cannot be applied mechanically. */
-export type MigrationAmbiguityDto = {
-	/**
-	 *  `"entity_collision"`, `"arrow_collision"`, `"attribute_collision"`,
-	 *  `"unmapped"`, or `"destination_unreached"`.
-	 */
-	kind: string,
-	/**  The shared destination image, rendered; empty where there is none. */
-	image: string,
-	/**  The source concepts involved. */
-	sources: string[],
-	/**  Stored objects affected, for an entity collision. */
-	objects: number,
-	/**  A one-line rendering. */
-	detail: string,
-};
-
-/**  Everything applying a mapping to this corpus would do — none of it done. */
-export type MigrationPlanDto = {
-	/**  The mapping's registered name. */
-	mapping_name: string | null,
-	/**  The source schema version. */
-	src: SchemaVersionRefDto,
-	/**  The destination schema version. */
-	dst: SchemaVersionRefDto,
-	/**  Whether the mapping validates on its own. */
-	valid: boolean,
-	/**  Its validation errors, when it does not. */
-	validation_errors: string[],
-	/**  Waivers its validation leaned on. */
-	waivers: string[],
-	/**  Where each source entity's rows go. */
-	entity_moves: EntityMoveDto[],
-	/**  Where each source arrow goes. */
-	arrow_moves: ArrowMoveDto[],
-	/**  Where each old field goes. */
-	field_moves: FieldMoveDto[],
-	/**  The mapping's coverage and loss analysis. */
-	coverage: MappingCoverageDto,
-	/**  Per-entity object counts over the live corpus. */
-	objects: EntityObjectCountDto[],
-	/**  Total objects that move without a decision. */
-	auto_mapped_objects: number,
-	/**  Total objects that need one. */
-	objects_needing_decision: number,
-	/**  Every place the plan cannot be applied mechanically. */
-	ambiguities: MigrationAmbiguityDto[],
-	/**  What Σ did, or why it did not run. */
-	sigma: SigmaOutcomeDto,
-	/**  Everything the plan is NOT claiming. Render these verbatim. */
-	notes: string[],
-};
 
 export type MobileEnterpriseConnection = {
 	connection_id: string,
@@ -2250,24 +1936,6 @@ export type SchemaAttributeDto = {
 	nullable: boolean,
 };
 
-/**  One difference between two schema versions. */
-export type SchemaChangeDto = {
-	/**
-	 *  The change class, e.g. `"entity_added"`, `"attribute_altered"`,
-	 *  `"equation_removed"`.
-	 */
-	class: string,
-	/**
-	 *  `"schema"`, `"type"`, `"entity"`, `"arrow"`, `"attribute"`, or
-	 *  `"equation"`.
-	 */
-	kind: string,
-	/**  What changed, by name (or the law's rendering, for an equation). */
-	subject: string,
-	/**  The before/after detail, rendered. */
-	detail: string,
-};
-
 /**  A registered schema, fully introspected. */
 export type SchemaDetail = {
 	/**  Schema name. */
@@ -2292,25 +1960,6 @@ export type SchemaDetail = {
 	equations: SchemaEquationDto[],
 	/**  Whether the engine requires approval for facts in this schema. */
 	approval_required: boolean,
-};
-
-/**  What changed between two versions of a schema. */
-export type SchemaDiffDto = {
-	/**  The older side. */
-	from: SchemaVersionRefDto,
-	/**  The newer side. */
-	to: SchemaVersionRefDto,
-	/**
-	 *  True exactly when nothing changed — the same answer the content
-	 *  checksums give, by construction.
-	 */
-	identical: boolean,
-	/**  Every difference. */
-	changes: SchemaChangeDto[],
-	/**  One entry per concept of the OLD version. Empty when `identical`. */
-	classification: ConceptClassificationDto[],
-	/**  Concepts only the new version declares. */
-	introduced: ConceptDto[],
 };
 
 /**  One entity, with the attributes observed on it. */
@@ -2374,18 +2023,6 @@ export type SchemaSummary = {
 	 *  state. Always `0` for a schema that carries no reviewable assertions.
 	 */
 	proposal_count: number,
-};
-
-/**  Which version a diff side refers to. */
-export type SchemaVersionRefDto = {
-	/**  The catalog's content-derived id (uuid string), when persisted. */
-	schema_id: string | null,
-	/**  The schema's name. */
-	name: string,
-	/**  The version ordinal, when persisted. */
-	version: number | null,
-	/**  `blake3:` content checksum. */
-	checksum: string,
 };
 
 export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "imported_legacy_broad" };
@@ -2497,35 +2134,6 @@ export type SearchResults = {
  *  Settings. The renderer owns the sheet; the native menu only requests it.
  */
 export type ShowSettings = Record<string, never>;
-
-/**  What Σ did, or why it did not run. */
-export type SigmaOutcomeDto = {
-	/**  `"not_needed"`, `"not_attempted"`, `"ran"`, or `"refused"`. */
-	state: string,
-	/**  Why it was not attempted. */
-	reason: string | null,
-	/**  Σ's own refusal message. */
-	error: string | null,
-	/**
-	 *  Which chase bound was hit (`"depth"`, `"element"`, `"round"`), when the
-	 *  refusal was a bound rather than a defect in the input.
-	 */
-	limit: string | null,
-	/**  Rows in the source instance the inspection derived. */
-	rows_in: number | null,
-	/**  Rows in Σ's output. */
-	rows_out: number | null,
-	/**  Output rows Σ invented (labelled nulls). */
-	labelled_nulls: number | null,
-	/**  Elements the chase created. */
-	elements: number | null,
-	/**  How deeply the labelled nulls nested. */
-	depth: number | null,
-	/**  Merges the chase performed — irreversible identifications. */
-	merges: number | null,
-	/**  Fixpoint rounds the chase ran. */
-	rounds: number | null,
-};
 
 /**  One visible source execution and freshness report. */
 export type SourceExecution = {

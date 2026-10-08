@@ -493,3 +493,18 @@ durable native association and receipt-proven same-document echo are complete.
 SQLite-open identity and read-only final publication fencing are separate
 checkpoints in progress. Installed migration/rollback, all-writer preservation,
 CatDB removal, live provider/device acceptance and packaging remain open.
+
+## Native authority, archive access and unused mapping retirement, 2026-10-08
+
+Read-only final publication fencing `64c5a10`, actual SQLite-open identity
+`6d7e586` and canonical local/provider archived-review access `6c207271` compose
+with the primary native reader. The unused 1,249-line mapping administration
+module and five commands are retired; actual generated bindings shrink by 392
+lines. Eleven distinct actual-app cases, two core publication cases, TypeScript
+and scoped lint pass. See [the combined receipt](native-retirement-composition-2026-10-08.md).
+
+This supersedes the prior queued archive-native check and in-progress identity/
+final-fence status. It does not establish CatDB removal or release readiness.
+Durable canonical history, selected native upload association/self-echo, remaining
+writer preservation, installed activation/rollback, live connectors and packaging
+remain open. Seven inherited Tauri warnings and strict full-native Clippy remain.
