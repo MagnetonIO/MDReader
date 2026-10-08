@@ -17,16 +17,20 @@ export function SelectedDocumentSync({ account, selected }: {
       ? 'An upload identity for another account or library is retained. It will not be sent to this account.'
       : 'A retained upload is waiting for its original account and library. Sign in before checking it.'}</p> : null}
     {upload.pending ? <>
-      <p>A dispatched upload is retained. Changing the selected document does not replace it.</p>
+      <p>A dispatched {upload.pending.purpose === 'user_state' ? 'pin and position update' : 'document upload'} is retained. Changing the selected document does not replace it.</p>
       <details><summary>Retained upload identity</summary><p>
-        Document: {upload.pending.receipt.documentId}. Revision: {upload.pending.receipt.revision}.
+        Document: {upload.pending.selection.receipt.documentId}. Revision: {upload.pending.selection.receipt.revision}.
       </p></details>
       <div className="settings-account-actions">
-        <button type="button" disabled={disabled} onClick={() => void upload.inspect()}>Check retained upload</button>
-        <button type="button" disabled={disabled || !!upload.error} onClick={() => void upload.upload()}>Retry retained upload</button>
+        <button type="button" disabled={disabled} onClick={() => void upload.inspect()}>Check retained sync</button>
+        <button type="button" disabled={disabled || !!upload.error} onClick={() => void upload.upload()}>Retry retained sync</button>
       </div>
-    </> : <button type="button" className="settings-account-primary" disabled={disabled || !selected || !!upload.error}
-      onClick={() => void upload.upload()}>Sync this document</button>}
-    <p>Uploads include this document and its tracked images. Pin and reading-position changes are not uploaded yet.</p>
+    </> : <div className="settings-account-actions">
+      <button type="button" className="settings-account-primary" disabled={disabled || !selected || !!upload.error}
+        onClick={() => void upload.upload('content')}>Sync this document</button>
+      <button type="button" disabled={disabled || !selected || !!upload.error}
+        onClick={() => void upload.upload('user_state')}>Sync pin &amp; reading position</button>
+    </div>}
+    <p>Document sync includes its tracked images. Pin and position sync sends the state saved on this device; save your reading position in the reader first.</p>
   </div>;
 }

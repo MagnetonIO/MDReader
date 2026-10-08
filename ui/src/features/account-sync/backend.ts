@@ -1,8 +1,14 @@
-import { commands, type AccountRequest, type AccountReply, type AccountError } from '../../bindings.js';
-export type { AccountRequest, AccountReply, AccountAction, AccountStatus, AccountJob, SelectedOperation, SelectedScope } from '../../bindings.js';
+import { invoke } from '@tauri-apps/api/core';
+import { commands, type AccountRequest as GeneratedAccountRequest, type AccountReply, type AccountError, type SelectedOperation } from '../../bindings.js';
+export type { AccountReply, AccountAction, AccountStatus, AccountJob, SelectedOperation, SelectedScope } from '../../bindings.js';
+export type AccountRequest = GeneratedAccountRequest
+  | { operation: 'sync_selected_state' | 'inspect_selected_state'; selection: SelectedOperation };
 export interface AccountBackend { request(operation: AccountRequest): Promise<AccountReply> }
 export const accountBackend: AccountBackend = {
   async request(operation) {
+    if (operation.operation === 'sync_selected_state' || operation.operation === 'inspect_selected_state') {
+      return invoke<AccountReply>('reader_account', { operation });
+    }
     const result = await commands.readerAccount(operation);
     if (result.status === 'error') throw result.error;
     return result.data;
