@@ -6,6 +6,8 @@ use rusqlite::{Connection, OpenFlags};
 use std::io::Write;
 use uuid::Uuid;
 
+#[path = "original_fence.rs"]
+mod original_fence;
 #[path = "recovery.rs"]
 mod recovery;
 #[path = "rollback.rs"]
@@ -98,7 +100,7 @@ impl Workspace {
             Path::new(DATABASE),
             &limits,
         )?;
-        let mut source = ReaderStore::open_readonly(&original.path().join("reader-v1"))
+        let mut source = ReaderStore::open_durable_readonly(&original.path().join("reader-v1"))
             .map_err(|_| Error::Unsupported)?;
         let mut destination =
             ReaderStore::open(&candidate_path.join("reader-v1")).map_err(|_| Error::Storage)?;
@@ -174,6 +176,7 @@ impl Workspace {
     }
     pub(super) fn activate(&mut self) -> Result<PathBuf> {
         let operation = self.operation;
+        let self_root = self.root.path.clone();
         let receipt = self.with_journal(|journal, owners| {
             let transition = journal.get(operation)?;
             let candidate = transition.candidate.as_ref().ok_or(Error::Conflict)?;
@@ -188,9 +191,12 @@ impl Workspace {
                         &limits,
                     )?;
                     let current = Inventory::capture(owners.original.path(), &choices, &limits)?;
-                    if current.identity() != transition.inventory_hash {
-                        return Err(Error::Conflict);
-                    }
+                    let snapshot = mdreader_profile::verify(
+                        &self_root.join("original"),
+                        &candidate.snapshot,
+                        &limits,
+                    )?;
+                    original_fence::verify(&current, snapshot.manifest())?;
                 }
                 State::Active
                     if selection.root == candidate.candidate
@@ -369,3 +375,7 @@ pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
     selected.verify().map_err(|_| Error::Conflict)?;
     Ok(selected)
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

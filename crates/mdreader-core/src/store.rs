@@ -17,6 +17,7 @@ mod projection;
 pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 #[path = "catalog/mod.rs"]
 pub mod catalog;
+mod durable_readonly;
 mod local_source;
 mod profile;
 mod identity;

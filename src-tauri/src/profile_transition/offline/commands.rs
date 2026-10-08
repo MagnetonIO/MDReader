@@ -116,6 +116,17 @@ impl MigrationState {
     }
 }
 #[cfg(unix)]
+pub(super) fn picked_root(path: PathBuf) -> Result<SourceRoot> {
+    // Reject a leaf symlink first, then normalize OS aliases such as /var on
+    // macOS without changing the admitted object or relaxing no-follow checks.
+    let original = SourceRoot::capture(path).map_err(|_| Error::Invalid)?;
+    let canonical = original.path.canonicalize().map_err(|_| Error::Invalid)?;
+    let root =
+        SourceRoot::restore(canonical, original.identity.clone()).map_err(|_| Error::Conflict)?;
+    original.verify().map_err(|_| Error::Conflict)?;
+    Ok(root)
+}
+#[cfg(unix)]
 fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>> {
     let Some(folder) = app
         .dialog()
@@ -125,9 +136,11 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
     else {
         return Ok(None);
     };
-    let folder = folder.into_path().map_err(|_| Error::Invalid)?;
-    let parent = SourceRoot::capture(folder).map_err(|_| Error::Invalid)?;
-    let current = crate::reader_profile::directory(app).map_err(|_| Error::Conflict)?;
+    let parent = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
+    let current = crate::reader_profile::directory(app)
+        .map_err(|_| Error::Conflict)?
+        .canonicalize()
+        .map_err(|_| Error::Conflict)?;
     if parent.path.starts_with(source)
         || source.starts_with(&parent.path)
         || parent.path.starts_with(&current)
@@ -156,8 +169,9 @@ fn execute(
         else {
             return Ok(reply("cancelled", None));
         };
-        let path = folder.into_path().map_err(|_| Error::Invalid)?;
-        let mut workspace = Workspace::resume(&path)?;
+        let root = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
+        let mut workspace = Workspace::resume(&root.path)?;
+        root.verify().map_err(|_| Error::Conflict)?;
         let state = workspace.status()?;
         let imported = workspace.imported()?;
         let id = Uuid::new_v4();
@@ -182,9 +196,11 @@ fn execute(
         else {
             return Ok(reply("cancelled", None));
         };
-        let path = folder.into_path().map_err(|_| Error::Invalid)?;
-        let selected = SourceRoot::capture(path).map_err(|_| Error::Invalid)?;
-        let current = crate::reader_profile::directory(app).map_err(|_| Error::Conflict)?;
+        let selected = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
+        let current = crate::reader_profile::directory(app)
+            .map_err(|_| Error::Conflict)?
+            .canonicalize()
+            .map_err(|_| Error::Conflict)?;
         if selected.path.starts_with(&current) || current.starts_with(&selected.path) {
             return Err(Error::NotQuiescent);
         }
@@ -192,7 +208,7 @@ fn execute(
         // Reject unknown stores BEFORE promising a usable conversion. Known
         // library SQLite is archived in full, including unconverted records.
         super::super::backup_inventory::selections(original.path(), &Default::default())?;
-        let store = ReaderStore::open_readonly(&original.path().join("reader-v1"))
+        let store = ReaderStore::open_durable_readonly(&original.path().join("reader-v1"))
             .map_err(|_| Error::Unsupported)?;
         let documents = conversion::documents(&store)?
             .into_iter()
