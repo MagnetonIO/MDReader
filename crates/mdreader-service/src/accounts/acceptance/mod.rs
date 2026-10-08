@@ -296,6 +296,7 @@ fn actual_actor_pkce_recovery_pump_and_retained_projection_cancel() {
     first.sync(4);
     assert!(device::read(&mut first.owner.lock().unwrap(), &doc.id, None).is_err());
     assert_eq!(first.cursor(&scope).applied, 4);
+    outgoing::state_and_deletion(&first);
     drop(first);
     drop(second);
 }
