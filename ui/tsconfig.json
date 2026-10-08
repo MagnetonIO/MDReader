@@ -1,10 +1,7 @@
 {
   "extends": "@mdreader/config/tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "paths": {
-      "@catdb/client": ["../catdb/sdk/typescript/src/index.ts"]
-    }
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
   // `e2e` is in scope too: the Playwright specs are the only automated proof of
   // several surfaces, and a spec that does not typecheck is a spec that can rot
