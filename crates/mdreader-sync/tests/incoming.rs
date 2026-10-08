@@ -106,6 +106,13 @@ fn missing_extra_tampered_wrong_key_and_cross_context_resources_fail_closed() {
     let f = fixture();
     let key = key();
     let revision = root(&f.vectors[2]);
+    assert_eq!(
+        dependencies(&scope(), &revision, &[&key]).unwrap(),
+        f.vectors[..2]
+            .iter()
+            .map(|v| v.blob_sha256.clone())
+            .collect::<Vec<_>>()
+    );
     assert!(matches!(
         prepare(&scope(), &revision, &[&key], &resources(&f)[..1]),
         Err(SyncError::NotReady)
@@ -125,6 +132,10 @@ fn missing_extra_tampered_wrong_key_and_cross_context_resources_fail_closed() {
         Err(SyncError::Authentication)
     ));
     let wrong = LibraryKey::from_bytes(key.key_id().into(), Zeroizing::new(vec![1; 32])).unwrap();
+    assert!(matches!(
+        dependencies(&scope(), &revision, &[&wrong]),
+        Err(SyncError::Authentication)
+    ));
     assert!(matches!(
         prepare(&scope(), &revision, &[&wrong], &resources(&f)),
         Err(SyncError::Authentication)
@@ -229,6 +240,7 @@ fn tombstone_stays_untyped_and_preparation_never_advances_a_cursor() {
     revision.change.blob = None;
     revision.envelope_utf8 = None;
     let prepared = prepare(&scope(), &revision, &[], &[]).unwrap();
+    assert!(dependencies(&scope(), &revision, &[]).unwrap().is_empty());
     assert!(matches!(
         prepared.payload(),
         IncomingPayload::OpaqueTombstone

@@ -8,8 +8,10 @@ use crate::{
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
+mod graph;
 mod raster;
 mod resources;
+pub use graph::dependencies;
 use resources::{decrypt_blob, Resources};
 
 /// Already downloaded untrusted ciphertext. No path or arbitrary file access is accepted.
@@ -99,34 +101,8 @@ pub fn prepare(
     keys: &[&crate::LibraryKey],
     resources: &[EncryptedResource<'_>],
 ) -> Result<PreparedIncoming> {
-    let mut change = revision.change.clone();
-    change.validate()?;
-    if keys.len() > 16 {
-        return Err(SyncError::Bounds);
-    }
-    let mut ids = std::collections::HashSet::new();
-    if keys.iter().any(|key| !ids.insert(key.key_id())) {
-        return Err(SyncError::Invalid);
-    }
-    let payload = if change.deleted {
-        if revision.envelope_utf8.is_some() || !resources.is_empty() {
-            return Err(SyncError::Invalid);
-        }
-        IncomingPayload::OpaqueTombstone
-    } else {
-        let blob = change.blob.as_deref().ok_or(SyncError::Invalid)?;
-        let envelope = revision
-            .envelope_utf8
-            .as_deref()
-            .ok_or(SyncError::NotReady)?;
-        let plaintext = decrypt_blob(
-            scope.library_id(),
-            &change.item_id,
-            &change.revision_id,
-            blob,
-            envelope,
-            keys,
-        )?;
+    let (change, plaintext) = authenticated_root(scope, revision, keys)?;
+    let payload = if let Some(plaintext) = plaintext {
         let kind: PayloadKind<'_> =
             serde_json::from_slice(&plaintext).map_err(|_| SyncError::Invalid)?;
         match kind.kind {
@@ -168,16 +144,57 @@ pub fn prepare(
                 if state.document_id == change.item_id {
                     return Err(SyncError::Scope);
                 }
-                // Target existence, tombstones, dirty local state, remote parents and
-                // stale position clearing belong to the atomic owner projection.
                 IncomingPayload::UserState(state)
             }
             _ => return Err(SyncError::Invalid),
         }
+    } else {
+        if !resources.is_empty() {
+            return Err(SyncError::Invalid);
+        }
+        IncomingPayload::OpaqueTombstone
     };
     Ok(PreparedIncoming {
         scope: scope.clone(),
         change,
         payload,
     })
+}
+
+/// Shared authentication admission for graph discovery and full preparation.
+fn authenticated_root(
+    scope: &SyncScope,
+    revision: &RemoteRevision,
+    keys: &[&crate::LibraryKey],
+) -> Result<(RemoteChange, Option<Zeroizing<Vec<u8>>>)> {
+    let mut change = revision.change.clone();
+    change.validate()?;
+    if keys.len() > 16 {
+        return Err(SyncError::Bounds);
+    }
+    let mut ids = std::collections::HashSet::new();
+    if keys.iter().any(|key| !ids.insert(key.key_id())) {
+        return Err(SyncError::Invalid);
+    }
+    let plaintext = if change.deleted {
+        if revision.envelope_utf8.is_some() {
+            return Err(SyncError::Invalid);
+        }
+        None
+    } else {
+        let blob = change.blob.as_deref().ok_or(SyncError::Invalid)?;
+        let envelope = revision
+            .envelope_utf8
+            .as_deref()
+            .ok_or(SyncError::NotReady)?;
+        Some(decrypt_blob(
+            scope.library_id(),
+            &change.item_id,
+            &change.revision_id,
+            blob,
+            envelope,
+            keys,
+        )?)
+    };
+    Ok((change, plaintext))
 }

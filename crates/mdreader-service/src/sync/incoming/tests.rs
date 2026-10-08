@@ -240,6 +240,102 @@ impl Fixture {
 }
 
 #[test]
+fn staged_graph_requires_verified_bodies_before_atomic_owner_projection() {
+    let mut f = Fixture::new();
+    f.reopen();
+    let staged = f.owner.with_library_connection(|db| {
+        SyncStore::attach(db, f.scope.clone())
+            .unwrap()
+            .staged(0, 1)
+            .unwrap()
+            .remove(0)
+    });
+    let key = f.key();
+    let blobs = incoming::dependencies(&f.scope, &staged, &[&key]).unwrap();
+    assert_eq!(blobs.len(), 2);
+    // Simulate arbitrary download order, resolving only authenticated hashes.
+    let bodies = blobs
+        .iter()
+        .rev()
+        .map(|blob| {
+            let vector = f
+                .vectors
+                .vectors
+                .iter()
+                .find(|v| &v.blob_sha256 == blob)
+                .unwrap();
+            EncryptedResource {
+                blob_id: blob,
+                envelope_utf8: vector.envelope_utf8.as_bytes(),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        incoming::prepare(&f.scope, &staged, &[&key], &bodies[..1]),
+        Err(mdreader_sync::SyncError::NotReady)
+    ));
+    let mut corrupt = bodies[0].envelope_utf8.to_vec();
+    corrupt[0] ^= 1;
+    let tampered = [
+        EncryptedResource {
+            blob_id: bodies[0].blob_id,
+            envelope_utf8: &corrupt,
+        },
+        EncryptedResource {
+            blob_id: bodies[1].blob_id,
+            envelope_utf8: bodies[1].envelope_utf8,
+        },
+    ];
+    assert!(matches!(
+        incoming::prepare(&f.scope, &staged, &[&key], &tampered),
+        Err(mdreader_sync::SyncError::Authentication)
+    ));
+    let prepared = incoming::prepare(&f.scope, &staged, &[&key], &bodies).unwrap();
+    assert_eq!(
+        f.cursor(),
+        CursorState {
+            received: 1,
+            applied: 0,
+            server_acknowledged: 0
+        }
+    );
+    let storage::Start::Plan(plan) = f.start(&prepared) else {
+        panic!("expected selected publication plan")
+    };
+    let ready = plan
+        .write(identity::document(&prepared).unwrap())
+        .unwrap()
+        .validate(f.runtime.validation_permit().unwrap())
+        .unwrap();
+    let receipt = f.commit(&ready).unwrap();
+    assert_eq!(
+        f.cursor(),
+        CursorState {
+            received: 1,
+            applied: 1,
+            server_acknowledged: 0
+        }
+    );
+    f.reopen();
+    assert_eq!(
+        device::read(
+            &mut f.owner,
+            &receipt.document.id,
+            Some(&receipt.document.revision)
+        )
+        .unwrap()
+        .markdown,
+        f.vectors.source_utf8
+    );
+    assert_eq!(f.cursor().applied, 1);
+    assert_eq!(
+        f.cursor().server_acknowledged,
+        0,
+        "local projection is not remote acknowledgment"
+    );
+}
+
+#[test]
 fn exact_content_assets_receipt_cursor_and_replay_survive_reopen() {
     let mut f = Fixture::new();
     let ready = f.ready();

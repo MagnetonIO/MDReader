@@ -7,6 +7,14 @@ pub(super) struct Command {
     pub epoch: u64,
     pub intent: AccountIntent,
 }
+pub(super) enum Message {
+    Run(Command),
+    Settle {
+        token: Uuid,
+        deadline: std::time::Instant,
+        reply: tokio::sync::oneshot::Sender<Result<()>>,
+    },
+}
 pub(super) struct Actor {
     pub owner: Arc<Mutex<ReaderStore>>,
     pub setup: NativeSetup,
@@ -16,6 +24,9 @@ pub(super) struct Actor {
     pub pending: Option<PendingCustody>,
     pub incoming: Option<Arc<IncomingCoordinator>>,
     pub shared: Arc<state::Shared>,
+    // Retain join handles independently of the cancellable job future. A profile
+    // freeze/cancel may not mistake a dropped await for completed owner work.
+    blocking: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Actor {
     pub fn new(
@@ -33,10 +44,34 @@ impl Actor {
             pending: None,
             incoming: None,
             shared,
+            blocking: Vec::new(),
         }
     }
-    pub async fn run(mut self, mut receiver: tokio::sync::mpsc::Receiver<Command>) {
-        while let Some(command) = receiver.recv().await {
+    pub async fn run(mut self, mut receiver: tokio::sync::mpsc::Receiver<Message>) {
+        while let Some(message) = receiver.recv().await {
+            let command = match message {
+                Message::Run(command) => command,
+                Message::Settle {
+                    token,
+                    deadline,
+                    reply,
+                } => {
+                    let result =
+                        async {
+                            self.shared.require_frozen(token)?;
+                            self.setup
+                                .factory
+                                .settle_custody(deadline.min(
+                                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                                ))
+                                .await?;
+                            self.shared.require_frozen(token)
+                        }
+                        .await;
+                    let _ = reply.send(result);
+                    continue;
+                }
+            };
             let mut changes = self.shared.changes.subscribe();
             let shared = self.shared.clone();
             let result = if shared.check(&command).is_err() {
@@ -48,6 +83,7 @@ impl Actor {
                     result = tokio::time::timeout(std::time::Duration::from_secs(660),self.execute(&command)) => result.unwrap_or(Err(AccountError::Interrupted)),
                 }
             };
+            self.settle_blocking().await;
             // Cancelled operations cannot publish status or establish a replacement.
             // Any persisted uncertain enrollment/approval remains intact in the vault.
             if shared.check(&command).is_ok() {
@@ -56,6 +92,21 @@ impl Actor {
             shared.finish(&command, result);
         }
         let _ = self.shared.invalidate(None);
+    }
+    pub fn blocking<T: Send + 'static>(
+        &mut self,
+        action: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> tokio::sync::oneshot::Receiver<Result<T>> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.blocking.push(tokio::task::spawn_blocking(move || {
+            let _ = send.send(action());
+        }));
+        receive
+    }
+    async fn settle_blocking(&mut self) {
+        for job in self.blocking.drain(..) {
+            let _ = job.await;
+        }
     }
     pub fn bound(&self) -> Result<Binding> {
         self.binding
