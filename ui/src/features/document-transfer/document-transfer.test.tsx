@@ -33,5 +33,5 @@ test('late copy preparation cannot publish a body for a newly selected revision'
   await act(async () => { resolve({ operation: 'read_document', ...reference, markdown: '# Old body', lineStart: 1, lineEnd: 1 }); });
   expect(screen.queryByRole('button', { name: 'Download Markdown' })).toBeNull();
   expect(screen.queryByText('Exact Markdown prepared.', { exact: false })).toBeNull();
-  expect(parseReadingLink(screen.getByRole('textbox', { name: 'Exact reading link' }).getAttribute('value')!).revision).toBe(next.revision);
+  expect(parseReadingLink(screen.getByRole('textbox', { name: 'Reading link' }).getAttribute('value')!).revision).toBe(next.revision);
 });

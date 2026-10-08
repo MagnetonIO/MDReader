@@ -15,6 +15,7 @@ import { savedAnchor, restoreAnchor } from '../reader-history/positions';
 import { exportNativeMarkdown } from '../document-transfer/native-export';
 import { DocumentActions } from '../document-transfer/DocumentActions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
+import './canonical-reader.css';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
   reference: ProviderReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
@@ -149,10 +150,11 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
       {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
-    {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
+    <div className="canonical-reader__tools" role="group" aria-label="Document actions">
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
+    {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     <details className="provider-reader-dialog__evidence">
-      <summary>Source evidence</summary>
+      <summary>Document details</summary>
       <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
       <p>{verifiedKind === 'capture'
         ? 'This is an exact captured visible-output revision. Capture opt-in controls its availability; this reader cannot edit the captured original.'
@@ -162,6 +164,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}
       </p>
     </details>
+    </div>
     {error ? <p role="alert">{error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
     {busy ? <p role="status">Opening linked document…</p> : null}
