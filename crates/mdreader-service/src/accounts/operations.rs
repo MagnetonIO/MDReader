@@ -1,6 +1,7 @@
 use super::*;
 use actor::{Actor, Command};
 mod pairing;
+mod pump;
 mod recovery;
 
 impl Actor {
@@ -45,42 +46,5 @@ impl Actor {
             AccountIntent::RetryCustodyWrite {} => self.persist_exact(command).await,
             AccountIntent::SyncNow {} => self.sync(command).await,
         }
-    }
-    async fn sync(&self, command: &Command) -> Result<Outcome> {
-        self.shared.phase(command, Phase::Syncing)?;
-        let active = self.active()?;
-        let barrier = self
-            .setup
-            .factory
-            .session_controller()
-            .active_scope_barrier();
-        let owner = crate::sync::TransportOwner {
-            owner: &self.owner,
-            active_scope: &barrier,
-        };
-        let report = active
-            .authority
-            .run(
-                &self.setup.transport,
-                &owner,
-                Budget {
-                    outgoing: 5,
-                    pages: 2,
-                    page_size: 5,
-                    transfer_bytes: 8 * 1024 * 1024,
-                },
-            )
-            .await?;
-        self.shared.check(command)?;
-        Ok(Outcome::Sync {
-            committed: report.committed,
-            conflicts: report.conflicts,
-            received: report.received,
-            applied: report.applied,
-            acknowledged: report.acknowledged,
-            remote_pending: report.remote_pending,
-            local_pending: report.local_pending,
-            pending: None,
-        })
     }
 }

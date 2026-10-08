@@ -7,6 +7,7 @@ mod enrollment;
 mod factory;
 mod http;
 mod identity;
+mod incoming;
 mod jwt;
 mod keyring;
 mod loopback;
