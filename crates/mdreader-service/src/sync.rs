@@ -3,6 +3,9 @@
 use mdreader_core::ReaderStore;
 use mdreader_sync::{Result, SyncScope, SyncStore};
 
+#[cfg(feature = "sync-native")]
+pub mod incoming;
+
 pub fn initialize(owner: &mut ReaderStore) -> Result<()> {
     owner.with_library_connection(mdreader_sync::migrate)
 }
