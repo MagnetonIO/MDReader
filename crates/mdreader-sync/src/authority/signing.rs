@@ -1,0 +1,59 @@
+use super::*;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use ring::{
+    rand::SystemRandom,
+    signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
+};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+pub(super) struct SigningKey {
+    encoding: EncodingKey,
+    pub(super) jwk: serde_json::Value,
+    pub(super) device: String,
+}
+impl SigningKey {
+    pub(super) fn load(pkcs8: &[u8]) -> AuthorityResult<Self> {
+        let key = EcdsaKeyPair::from_pkcs8(
+            &ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8,
+            &SystemRandom::new(),
+        )
+        .map_err(|_| AuthorityError::Custody)?;
+        let point = key.public_key().as_ref();
+        if point.len() != 65 || point[0] != 4 {
+            return Err(AuthorityError::Custody);
+        }
+        let jwk = serde_json::json!({"crv":"P-256","kty":"EC","x":URL_SAFE_NO_PAD.encode(&point[1..33]),"y":URL_SAFE_NO_PAD.encode(&point[33..65])});
+        let device = URL_SAFE_NO_PAD.encode(Sha256::digest(
+            serde_json::to_vec(&jwk).map_err(|_| AuthorityError::Custody)?,
+        ));
+        Ok(Self {
+            encoding: EncodingKey::from_ec_der(pkcs8),
+            jwk,
+            device,
+        })
+    }
+    pub(super) fn authorize(
+        &self,
+        identity: &VerifiedIdentity,
+        method: &str,
+        url: &str,
+        body: &[u8],
+    ) -> AuthorityResult<crate::transport::Authorization> {
+        if now()? >= identity.expires || body.len() > crate::MAX_ENVELOPE_BYTES {
+            return Err(AuthorityError::Identity);
+        }
+        let mut header = Header::new(Algorithm::ES256);
+        header.typ = Some("mdreader-proof+jwt".into());
+        header.jwk =
+            Some(serde_json::from_value(self.jwk.clone()).map_err(|_| AuthorityError::Custody)?);
+        let claims = serde_json::json!({"htm":method,"htu":url,"ath":URL_SAFE_NO_PAD.encode(Sha256::digest(identity.token.as_bytes())),"bht":URL_SAFE_NO_PAD.encode(Sha256::digest(body)),"iat":now()?,"jti":uuid::Uuid::new_v4().to_string()});
+        let jwt = Zeroizing::new(
+            jsonwebtoken::encode(&header, &claims, &self.encoding)
+                .map_err(|_| AuthorityError::Custody)?,
+        );
+        crate::transport::Authorization::new(&identity.token, &jwt)
+            .map_err(|_| AuthorityError::Identity)
+    }
+}

@@ -63,10 +63,19 @@ impl From<SyncError> for TransportError {
 }
 pub type TransportResult<T> = std::result::Result<T, TransportError>;
 
-/// Native implementation must bind verified issuer/subject, enrolled device and current
-/// custody generation. Generation changes must invalidate the owner binding under its
-/// binding barrier as well. Never implement this using unverified token decoding. No RPC accepts it.
+/// Remote authentication failures contain no response body or credential material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityRejection {
+    Authentication,
+    Forbidden,
+}
+/// Native implementation binds verified issuer/subject, enrolled device and current
+/// custody generation. Generation changes invalidate the owner binding under its
+/// barrier as well. Never use unverified token decoding. No RPC accepts this capability.
 pub trait Authority: Send + Sync {
+    /// Called by transport on every remote 401/403, including late stale responses.
+    /// Implementations must invalidate only this capability, never a replacement session.
+    fn rejected(&self, _reason: AuthorityRejection) {}
     fn scope(&self) -> TransportResult<SyncScope>;
     /// Changes on sign-out, key/session replacement or revocation even if scope is equal.
     fn generation(&self) -> TransportResult<u64>;
@@ -92,6 +101,10 @@ pub struct Authorization {
     proof: HeaderValue,
 }
 impl Authorization {
+    #[cfg(feature = "native-authority")]
+    pub(crate) fn into_headers(self) -> (HeaderValue, HeaderValue) {
+        (self.bearer, self.proof)
+    }
     pub fn new(bearer_token: &str, proof_jwt: &str) -> TransportResult<Self> {
         if bearer_token.len() > 16 * 1024
             || bearer_token.is_empty()
@@ -191,6 +204,13 @@ impl Transport {
     pub fn new(origin: &str) -> TransportResult<Self> {
         Self::build(origin, None)
     }
+    #[cfg(test)]
+    pub(crate) fn test_with_root(
+        origin: &str,
+        root: reqwest::Certificate,
+    ) -> TransportResult<Self> {
+        Self::build(origin, Some(root))
+    }
     fn build(origin: &str, extra_root: Option<reqwest::Certificate>) -> TransportResult<Self> {
         let endpoint = Url::parse(origin).map_err(|_| TransportError::Protocol)?;
         if endpoint.scheme() != "https"
@@ -288,8 +308,16 @@ impl Transport {
         // Never retain or diagnose remote error bodies, URLs, tokens or raw reqwest errors.
         match status {
             200 | 201 => {}
-            401 => return Err(TransportError::Authentication),
-            403 => return Err(TransportError::Forbidden),
+            401 => {
+                session
+                    .authority
+                    .rejected(AuthorityRejection::Authentication);
+                return Err(TransportError::Authentication);
+            }
+            403 => {
+                session.authority.rejected(AuthorityRejection::Forbidden);
+                return Err(TransportError::Forbidden);
+            }
             409 => return Err(TransportError::Conflict),
             413 | 507 => return Err(TransportError::Quota),
             408 | 429 | 500..=599 => return Err(TransportError::Retryable),

@@ -208,6 +208,10 @@ pub fn decrypt(
         .map_err(|_| SyncError::Authentication)?;
     Ok(Zeroizing::new(bytes))
 }
+#[cfg(feature = "native-authority")]
+pub(crate) fn envelope_key_id(bytes: &[u8]) -> Result<String> {
+    parse_envelope(bytes).map(|(envelope, _, _)| envelope.key_id)
+}
 pub(crate) fn validate_envelope(bytes: &[u8]) -> Result<()> {
     parse_envelope(bytes).map(|_| ())
 }

@@ -2,7 +2,7 @@
 import { createRequire } from 'node:module';
 import { createServer } from 'node:https';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -22,13 +22,29 @@ const issuer=await generateKeyPair('RS256',{extractable:true});
 const jwk={...await exportJWK(issuer.publicKey),alg:'RS256',kid:'synthetic'};
 const runtime=new Miniflare(convertV4MiniflareOptions({modules:true,scriptPath:path.join(web,'.worker-build/sync/index.js'),compatibilityDate:'2026-10-01',durableObjects:{READER_ACCOUNTS:{className:'ReaderAccount',useSQLite:true}},r2Buckets:['ENCRYPTED_BLOBS'],bindings:{SYNC_ENABLED:'development',BROWSER_ORIGIN:'https://reader.example.test',OIDC_ISSUER:issuerURL,OIDC_CLIENT_ID:'native-synthetic',OIDC_JWKS_URL:issuerURL+'/keys',ENROLLMENT_SECRET:'synthetic-only-server-secret-at-least-32-bytes'},outboundService:async request=>{if(request.url!==issuerURL+'/keys')return new Response(null,{status:404});return Response.json({keys:[jwk]});}}));
 await runtime.ready;
-let origin, dropCommit=false, dropAck=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
-const stats={uploadHashes:[],commitHashes:[],acks:[],waiting:false};
+const codes=new Map();
+let origin, dropBootstrap=false, dropCommit=false, dropAck=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
+const stats={oauthExchanges:0,pkceRejected:0,uploadHashes:[],commitHashes:[],acks:[],waiting:false};
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(req,res)=>{
   try {
     const chunks=[];let n=0;for await(const c of req){n+=c.length;if(n>2*1024*1024+8192){res.writeHead(413).end();return;}chunks.push(c);}
     const body=Buffer.concat(chunks),url=new URL(req.url,origin);
+    if(url.pathname==='/__synthetic/keys'){res.setHeader('content-type','application/json');res.end(JSON.stringify({keys:[jwk]}));return;}
+    if(url.pathname==='/__synthetic/oauth/authorize'){
+      const q=url.searchParams,redirect=new URL(q.get('redirect_uri'));
+      if(req.method!=='GET'||q.get('client_id')!=='native-synthetic'||q.get('response_type')!=='code'||q.get('scope')!=='openid'||q.get('code_challenge_method')!=='S256'||!['state','nonce','code_challenge'].every(k=>/^[A-Za-z0-9_-]{43}$/.test(q.get(k)||''))||redirect.protocol!=='http:'||redirect.hostname!=='127.0.0.1'||!redirect.port||redirect.pathname!=='/mdreader-sync/callback'||redirect.search||redirect.hash||codes.size>=16){res.writeHead(400).end();return;}
+      const code=randomUUID();codes.set(code,{nonce:q.get('nonce'),challenge:q.get('code_challenge'),redirect:redirect.toString(),expires:Date.now()+300000});
+      redirect.searchParams.set('state',q.get('state'));redirect.searchParams.set('code',code);redirect.searchParams.set('iss',issuerURL);
+      res.writeHead(302,{location:redirect.toString()}).end();return;
+    }
+    if(url.pathname==='/__synthetic/oauth/token'){
+      const q=new URLSearchParams(body.toString()),code=q.get('code'),record=codes.get(code);codes.delete(code);
+      if(req.method!=='POST'||!record||record.expires<Date.now()||q.get('grant_type')!=='authorization_code'||q.get('client_id')!=='native-synthetic'||q.get('redirect_uri')!==record.redirect||createHash('sha256').update(q.get('code_verifier')||'').digest('base64url')!==record.challenge){stats.pkceRejected++;res.writeHead(400).end();return;}
+      stats.oauthExchanges++;
+      const token=await new SignJWT({nonce:record.nonce}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
+      res.setHeader('content-type','application/json');res.end(JSON.stringify({id_token:token,access_token:'synthetic-access-not-used-for-sync',token_type:'Bearer',expires_in:300}));return;
+    }
     if(url.pathname==='/__synthetic/token'){
       const input=JSON.parse(body.toString());
       const token=await new SignJWT(input.nonce?{nonce:input.nonce}:{}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
@@ -37,7 +53,7 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     if(url.pathname==='/__synthetic/control'){
       const input=JSON.parse(body.toString());
       if(input.release){stall=false;release?.();release=undefined;stats.waiting=false;}
-      if(input.dropCommit)dropCommit=true;if(input.dropAck)dropAck=true;if(input.weakUpload)weakUpload=true;if(input.stall)stall=true;
+      if(input.dropBootstrap)dropBootstrap=true;if(input.dropCommit)dropCommit=true;if(input.dropAck)dropAck=true;if(input.weakUpload)weakUpload=true;if(input.stall)stall=true;
       if(typeof input.forbidden==='boolean')forbidden=input.forbidden;if(input.redirect)redirect=true;if(input.oversized)oversized=true;
       res.end(JSON.stringify(stats));return;
     }
@@ -53,6 +69,7 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     const headers={...req.headers};delete headers.host;delete headers.connection;delete headers['content-length'];
     const result=await runtime.dispatchFetch(origin+req.url,{method:req.method,headers,body:['GET','HEAD'].includes(req.method)?undefined:body});
     let bytes=Buffer.from(await result.arrayBuffer());
+    if(url.pathname==='/v1/enrollment/bootstrap'&&dropBootstrap){dropBootstrap=false;res.destroy();return;}
     if(url.pathname==='/v1/ack'&&dropAck){dropAck=false;res.destroy();return;}
     if(url.pathname==='/v1/commit'&&dropCommit){dropCommit=false;res.destroy();return;}
     if(req.method==='PUT'&&weakUpload&&result.ok){weakUpload=false;const value=JSON.parse(bytes);bytes=Buffer.from(JSON.stringify({blob:value.blob,bytes:value.bytes}));}

@@ -4,8 +4,9 @@ The optional `mdreader-sync/transport` feature implements bounded HTTPS Worker
 upload/commit/change/root-download/ack orchestration. The optional service
 `sync-transport` feature supplies `TransportOwner` over the existing
 `Mutex<ReaderStore>` and an explicit native active-scope binding barrier. Neither
-feature is enabled by default. There is no product RPC, scheduler, native sign-in
-implementation, keychain factory or usable production `Authority` constructor.
+feature is enabled by default. There is no product RPC, scheduler, sign-in UI or enabled production authority. The separate
+[default-off native authority foundation](AUTHORITY.md) adds reviewed-configuration
+OIDC/signing/custody code; activation and real-host acceptance remain gated.
 
 `Authority` is a trusted native capability, not a JSON DTO. Its factory must
 verify standard OIDC issuer/audience/nonce/PKCE/state, derive account scope from
@@ -17,7 +18,11 @@ invalidate the owner scope while holding its binding write barrier. The injected
 capability signs the exact method/HTTPS URL including query, bearer SHA256 and
 exact body SHA256 with fresh proof time/jti. Headers have sensitive formatting,
 no getters, no Debug and no serialization; HTTP errors never retain raw URLs,
-response error bodies, reqwest errors, custom SQLite/owner error text or tokens in diagnostics. HTTP/header
+response error bodies, reqwest errors, custom SQLite/owner error text or tokens in diagnostics.
+Transport itself delivers every remote 401/403 through `Authority::rejected`; a
+native authority invalidates its own lease and owner binding, including when the
+caller directly uses `Transport::run`. A stale response cannot invalidate a newer
+session with the same account/library/device scope. HTTP/header
 buffers necessarily hold transient copies; zeroization is best effort, not a
 claim that transport allocations are comprehensively wiped.
 

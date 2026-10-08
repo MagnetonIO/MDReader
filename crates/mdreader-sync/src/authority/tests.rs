@@ -1,0 +1,798 @@
+use super::*;
+use super::{custody::test_support::MemoryVault, signing::SigningKey};
+use crate::{
+    transport::{Authority, Owner, TransportError, TransportResult},
+    *,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use ring::{
+    rand::SystemRandom,
+    signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
+};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader, Write},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant},
+};
+use zeroize::Zeroizing;
+const ISSUER: &str = "https://native-synthetic-issuer.example.test";
+const REDIRECT: &str = "http://127.0.0.1:43871/mdreader-sync/callback";
+static LOGIN_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+fn registration(origin: &str) -> ReviewedOidcRegistration {
+    ReviewedOidcRegistration::new(
+        ISSUER,
+        "native-synthetic",
+        OidcEndpoints {
+            authorization: format!("{origin}/__synthetic/oauth/authorize"),
+            token: format!("{origin}/__synthetic/oauth/token"),
+            jwks: format!("{origin}/__synthetic/keys"),
+        },
+        origin,
+    )
+    .unwrap()
+}
+struct Issuer {
+    key: EncodingKey,
+    jwk: Value,
+}
+impl Issuer {
+    fn new() -> Self {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let point = key.public_key().as_ref();
+        Self {
+            key: EncodingKey::from_ec_der(pkcs8.as_ref()),
+            jwk: json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(&point[1..33]),"y":URL_SAFE_NO_PAD.encode(&point[33..]),"kid":"synthetic","alg":"ES256","use":"sig"}),
+        }
+    }
+    fn claims() -> Value {
+        let now = super::now().unwrap();
+        json!({"iss":ISSUER,"sub":"synthetic-alice","aud":"native-synthetic","iat":now,"exp":now+300,"nonce":"synthetic-nonce"})
+    }
+    fn token(&self, claims: &Value) -> Zeroizing<String> {
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("synthetic".into());
+        Zeroizing::new(jsonwebtoken::encode(&header, claims, &self.key).unwrap())
+    }
+    fn jwks(&self) -> Vec<u8> {
+        serde_json::to_vec(&json!({"keys":[self.jwk]})).unwrap()
+    }
+    fn identity(&self) -> VerifiedIdentity {
+        identity::verify(
+            &registration("https://sync.example.test"),
+            self.token(&Self::claims()),
+            &self.jwks(),
+            "synthetic-nonce",
+            super::now().unwrap(),
+        )
+        .unwrap()
+    }
+}
+#[test]
+fn verified_identity_requires_signature_issuer_audience_nonce_and_fresh_time() {
+    let issuer = Issuer::new();
+    let reg = registration("https://sync.example.test");
+    let claims = Issuer::claims();
+    let now = super::now().unwrap();
+    let verified = identity::verify(
+        &reg,
+        issuer.token(&claims),
+        &issuer.jwks(),
+        "synthetic-nonce",
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        verified.account,
+        blob_digest(br#"["https://native-synthetic-issuer.example.test","synthetic-alice"]"#)
+    );
+    for (field, value) in [
+        ("iss", json!("https://evil.example.test")),
+        ("aud", json!("other-client")),
+        ("nonce", json!("wrong")),
+        ("exp", json!(now - 1)),
+        ("iat", json!(now + 60)),
+        ("iat", json!(now - 600)),
+        ("azp", json!("other-client")),
+        ("aud", json!(["native-synthetic", "other-client"])),
+    ] {
+        let mut bad = claims.clone();
+        bad[field] = value;
+        assert!(
+            identity::verify(
+                &reg,
+                issuer.token(&bad),
+                &issuer.jwks(),
+                "synthetic-nonce",
+                now
+            )
+            .is_err(),
+            "{field}"
+        );
+    }
+    let other = Issuer::new();
+    assert!(identity::verify(
+        &reg,
+        other.token(&claims),
+        &issuer.jwks(),
+        "synthetic-nonce",
+        now
+    )
+    .is_err());
+    let mut duplicate: Value = serde_json::from_slice(&issuer.jwks()).unwrap();
+    duplicate["keys"]
+        .as_array_mut()
+        .unwrap()
+        .push(issuer.jwk.clone());
+    assert!(identity::verify(
+        &reg,
+        issuer.token(&claims),
+        &serde_json::to_vec(&duplicate).unwrap(),
+        "synthetic-nonce",
+        now
+    )
+    .is_err());
+    let mut multi = claims;
+    multi["aud"] = json!(["native-synthetic", "other-client"]);
+    multi["azp"] = json!("native-synthetic");
+    identity::verify(
+        &reg,
+        issuer.token(&multi),
+        &issuer.jwks(),
+        "synthetic-nonce",
+        now,
+    )
+    .unwrap();
+}
+#[derive(Default)]
+struct CaptureBrowser {
+    url: Mutex<Option<Zeroizing<String>>>,
+}
+impl NativeBrowser for CaptureBrowser {
+    fn open<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AuthorityResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            *self.url.lock().unwrap() = Some(Zeroizing::new(url.into()));
+            Ok(())
+        })
+    }
+}
+#[tokio::test]
+async fn native_login_uses_fresh_pkce_and_consumes_invalid_callback_without_network() {
+    let _serial = LOGIN_TEST.lock().await;
+    let client = OidcClient::new(registration("https://sync.example.test")).unwrap();
+    let browser = CaptureBrowser::default();
+    let pending = client.begin(REDIRECT).unwrap();
+    assert!(matches!(client.begin(REDIRECT), Err(AuthorityError::Busy)));
+    pending.open(&browser).await.unwrap();
+    assert!(pending.open(&browser).await.is_err());
+    let url = url::Url::parse(browser.url.lock().unwrap().as_ref().unwrap()).unwrap();
+    let query: BTreeMap<_, _> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    assert_eq!(query["scope"], "openid");
+    assert_eq!(query["response_type"], "code");
+    assert_eq!(query["code_challenge_method"], "S256");
+    assert_eq!(query["nonce"].len(), 43);
+    assert_eq!(query["state"].len(), 43);
+    assert_eq!(query["code_challenge"].len(), 43);
+    assert!(!query.contains_key("client_secret"));
+    assert!(matches!(
+        client
+            .complete(
+                pending,
+                "/mdreader-sync/callback?state=wrong&code=synthetic-code"
+            )
+            .await,
+        Err(AuthorityError::Identity)
+    ));
+    let second = client.begin(REDIRECT).unwrap();
+    let second_browser = CaptureBrowser::default();
+    second.open(&second_browser).await.unwrap();
+    let second_url = url::Url::parse(second_browser.url.lock().unwrap().as_ref().unwrap()).unwrap();
+    let second_state = second_url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    assert_ne!(query["state"], second_state);
+    let callback =
+        format!("/mdreader-sync/callback?state={second_state}&state={second_state}&code=x");
+    assert!(matches!(
+        client.complete(second, &callback).await,
+        Err(AuthorityError::Identity)
+    ));
+    assert!(client
+        .begin("http://localhost:43871/mdreader-sync/callback")
+        .is_err());
+}
+#[tokio::test]
+async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
+    let issuer = Issuer::new();
+    let identity = issuer.identity();
+    let reg = registration("https://sync.example.test");
+    let library = uuid::Uuid::new_v4().to_string();
+    let pending = PendingCustody::prepare(&identity, &reg, &library).unwrap();
+    let reference = pending.reference();
+    let memory = Arc::new(MemoryVault::new());
+    let vault = SyncVaultClient::new(memory.clone()).unwrap();
+    memory
+        .delay
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        vault
+            .create(&pending, Instant::now() + Duration::from_millis(10))
+            .await
+            .unwrap_err(),
+        AuthorityError::Interrupted
+    );
+    memory
+        .delay
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    // This get waits behind the ONE still-running OS mutation; no replacement worker.
+    let restored = vault
+        .get(&reference, Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(restored.same_material(&pending.record));
+    assert_eq!(restored.generation, 1);
+    vault
+        .create(&pending, Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    let reopened = memory.get(&reference).unwrap().unwrap();
+    assert!(reopened.same_material(&restored));
+    assert!(reopened.keys == restored.keys);
+    let before = memory.records.lock().unwrap()[reference.opaque_reference()].clone();
+    let mut bytes: Value = serde_json::from_slice(&before).unwrap();
+    bytes["scope"]["device_id"] = json!(URL_SAFE_NO_PAD.encode([8; 32]));
+    memory.records.lock().unwrap().insert(
+        reference.opaque_reference().into(),
+        Zeroizing::new(serde_json::to_vec(&bytes).unwrap()),
+    );
+    assert!(vault
+        .get(&reference, Instant::now() + Duration::from_secs(1))
+        .await
+        .is_err());
+    memory
+        .records
+        .lock()
+        .unwrap()
+        .insert(reference.opaque_reference().into(), before);
+    let restored = memory.get(&reference).unwrap().unwrap();
+    assert_eq!(
+        restored
+            .check_identity(&identity, &reg, &uuid::Uuid::new_v4().to_string())
+            .unwrap_err(),
+        AuthorityError::Scope
+    );
+    let other_registration = ReviewedOidcRegistration::new(
+        ISSUER,
+        "different-native-client",
+        OidcEndpoints {
+            authorization: "https://sync.example.test/auth".into(),
+            token: "https://sync.example.test/token".into(),
+            jwks: "https://sync.example.test/keys".into(),
+        },
+        "https://sync.example.test",
+    )
+    .unwrap();
+    assert!(restored
+        .check_identity(&identity, &other_registration, &library)
+        .is_err());
+}
+#[test]
+fn private_records_and_identities_never_diagnose_key_or_token_content() {
+    let issuer = Issuer::new();
+    let identity = issuer.identity();
+    let pending = PendingCustody::prepare(
+        &identity,
+        &registration("https://sync.example.test"),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap();
+    let formatted = format!(
+        "{identity:?} {pending:?} {:?} {:?}",
+        pending.reference(),
+        pending.record
+    );
+    assert!(!formatted.contains(identity.token.as_str()));
+    assert!(!formatted.contains(&URL_SAFE_NO_PAD.encode(pending.record.pkcs8.as_slice())));
+    assert!(!formatted.contains(pending.reference().opaque_reference()));
+    assert!(formatted.contains("redacted"));
+    SyncKeyringVault::new("com.mdreader.synthetic-test").unwrap(); // Construction has no OS I/O.
+}
+#[tokio::test]
+async fn logout_during_login_rejects_late_completion_before_any_network() {
+    let _serial = LOGIN_TEST.lock().await;
+    let controller = SessionController::new();
+    let factory = NativeAuthorityFactory::new(
+        OidcClient::new(registration("https://sync.example.test")).unwrap(),
+        SyncVaultClient::new(Arc::new(MemoryVault::new())).unwrap(),
+        controller.clone(),
+    );
+    let login = factory.begin_login(REDIRECT).unwrap();
+    controller.logout().unwrap();
+    assert!(matches!(
+        factory
+            .verify_login(login, "/mdreader-sync/callback?state=wrong&code=x")
+            .await,
+        Err(AuthorityError::Inactive)
+    ));
+    assert!(controller.active_scope_barrier().read().unwrap().is_none());
+}
+struct Fixture {
+    child: Child,
+    _temp: tempfile::TempDir,
+    origin: String,
+    cert: reqwest::Certificate,
+}
+impl Fixture {
+    fn start() -> Self {
+        let web = std::env::var("MDREADER_SYNC_WEB_WORKTREE")
+            .expect("explicit synthetic Worker worktree required");
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut child = Command::new("node")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/worker-bridge.mjs"
+            ))
+            .current_dir(&web)
+            .arg(web)
+            .arg(temp.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let value: Value = serde_json::from_str(&line).expect("synthetic bridge must start");
+        let cert = reqwest::Certificate::from_pem(
+            &std::fs::read(value["cert"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        Self {
+            child,
+            _temp: temp,
+            origin: value["origin"].as_str().unwrap().into(),
+            cert,
+        }
+    }
+    fn http(&self) -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .add_root_certificate(self.cert.clone())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap()
+    }
+    async fn json(&self, path: &str, body: Value) -> Value {
+        let response = self
+            .http()
+            .post(format!("{}{path}", self.origin))
+            .body(serde_json::to_vec(&body).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap()
+    }
+    fn factory(
+        &self,
+        memory: Arc<MemoryVault>,
+        controller: Arc<SessionController>,
+    ) -> NativeAuthorityFactory {
+        NativeAuthorityFactory::new(
+            OidcClient::test_with_root(registration(&self.origin), self.cert.clone()).unwrap(),
+            SyncVaultClient::new(memory).unwrap(),
+            controller,
+        )
+    }
+    async fn login(&self, factory: &NativeAuthorityFactory, nonce: Option<&str>) -> VerifiedLogin {
+        let attempt = match nonce {
+            Some(nonce) => factory.test_begin_nonce(REDIRECT, nonce).unwrap(),
+            None => factory.begin_login(REDIRECT).unwrap(),
+        };
+        let browser = CaptureBrowser::default();
+        attempt.open(&browser).await.unwrap();
+        let url = browser.url.lock().unwrap().take().unwrap();
+        let response = self.http().get(url.as_str()).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 302);
+        let redirect = url::Url::parse(
+            response
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let callback = Zeroizing::new(format!("{}?{}", redirect.path(), redirect.query().unwrap()));
+        factory.verify_login(attempt, &callback).await.unwrap()
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(mut stdin) = self.child.stdin.take() {
+            let _ = stdin.write_all(b"stop\n");
+        }
+        for _ in 0..100 {
+            if self.child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+struct TestOwner {
+    db: Mutex<rusqlite::Connection>,
+    binding: Arc<RwLock<Option<SyncScope>>>,
+}
+impl Owner for TestOwner {
+    fn with_store<T>(
+        &self,
+        expected: &SyncScope,
+        action: impl FnOnce(&mut SyncStore<'_>) -> Result<T>,
+    ) -> TransportResult<T> {
+        let binding = self.binding.read().unwrap();
+        if binding.as_ref() != Some(expected) {
+            return Err(TransportError::Authority);
+        }
+        let mut db = self.db.lock().unwrap();
+        Ok(action(&mut SyncStore::attach(&mut db, expected.clone())?)?)
+    }
+}
+#[tokio::test]
+#[ignore = "explicit local HTTPS synthetic OIDC code+PKCE and production Worker fixture only"]
+async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revocation() {
+    let fixture = Fixture::start();
+    let memory = Arc::new(MemoryVault::new());
+    let controller = SessionController::new();
+    let factory = fixture.factory(memory.clone(), controller.clone());
+    let library = uuid::Uuid::new_v4().to_string();
+    let discovery = fixture.login(&factory, None).await;
+    let pending = factory.prepare_pending(&discovery, &library).unwrap();
+    let reference = pending.reference();
+    let local = tempfile::TempDir::new().unwrap();
+    let path = local.path().join("synthetic-owner.sqlite");
+    let mut db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;CREATE TABLE native_sync_reference(value TEXT);").unwrap();
+    migrate(&mut db).unwrap();
+    db.execute(
+        "INSERT INTO native_sync_reference VALUES(?)",
+        [reference.opaque_reference()],
+    )
+    .unwrap();
+    factory.persist_pending(&pending).await.unwrap();
+    // No production bootstrap constructor exists. Only this test owns separate valid
+    // P-256 candidate wrapping/recovery keys and drives actual server enrollment.
+    let signing = SigningKey::load(&pending.record.pkcs8).unwrap();
+    let wrapping = Issuer::new();
+    let recovery = Issuer::new();
+    let public = |key: &Value| json!({"kty":key["kty"],"crv":key["crv"],"x":key["x"],"y":key["y"]});
+    let wrapping = public(&wrapping.jwk);
+    let recovery = public(&recovery.jwk);
+    let challenge=fixture.json("/v1/enrollment/challenge",json!({"kind":"bootstrap","libraryId":library,"signingJwk":signing.jwk,"wrappingJwk":wrapping,"recoveryJwk":recovery})).await;
+    drop(discovery);
+    let login = fixture
+        .login(&factory, Some(challenge["nonce"].as_str().unwrap()))
+        .await;
+    let body=Zeroizing::new(serde_json::to_vec(&json!({"challenge":challenge["challenge"],"signingJwk":signing.jwk,"wrappingJwk":wrapping,"recoveryJwk":recovery})).unwrap());
+    let url = factory
+        .client
+        .registration
+        .sync
+        .join("/v1/enrollment/bootstrap")
+        .unwrap();
+    let auth = signing
+        .authorize(&login.identity, "POST", url.as_str(), &body)
+        .unwrap();
+    fixture
+        .json("/__synthetic/control", json!({"dropBootstrap":true}))
+        .await;
+    assert!(matches!(
+        factory
+            .client
+            .http
+            .send(
+                reqwest::Method::POST,
+                url,
+                body,
+                Some(auth),
+                "application/json",
+                4096
+            )
+            .await,
+        Err(AuthorityError::Interrupted)
+    ));
+    assert!(controller.active_scope_barrier().read().unwrap().is_none());
+    let active = factory.resume(login, &reference, &library).await.unwrap();
+    let scope = active.scope().unwrap();
+    let owner = TestOwner {
+        db: Mutex::new(db),
+        binding: controller.active_scope_barrier(),
+    };
+    let persisted = memory.get(&reference).unwrap().unwrap();
+    let (key_id, raw) = persisted.keys.iter().next().unwrap();
+    let key = LibraryKey::from_bytes(key_id.clone(), raw.clone()).unwrap();
+    let context = EncryptionContext {
+        library_id: library.clone(),
+        item_id: uuid::Uuid::new_v4().to_string(),
+        revision_id: uuid::Uuid::new_v4().to_string(),
+        key_id: key_id.clone(),
+    };
+    owner
+        .with_store(&scope, |s| {
+            s.seal_enqueue(
+                &uuid::Uuid::new_v4().to_string(),
+                &[],
+                &key,
+                &context,
+                b"synthetic authority root",
+            )
+        })
+        .unwrap();
+    let transport =
+        crate::transport::Transport::test_with_root(&fixture.origin, fixture.cert.clone()).unwrap();
+    let report = active
+        .run(&transport, &owner, crate::transport::Budget::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            report.committed,
+            report.received,
+            report.applied,
+            report.acknowledged
+        ),
+        (1, 1, 0, 0)
+    );
+    assert!(active
+        .authorize(
+            "GET",
+            "https://evil.example.test/v1/changes?after=0&limit=1",
+            &[]
+        )
+        .is_err());
+    assert!(active
+        .authorize(
+            "POST",
+            &format!("{}/v1/enrollment/bootstrap", fixture.origin),
+            b"{}"
+        )
+        .is_err());
+    controller.logout().unwrap();
+    assert!(active.scope().is_err());
+    drop(owner);
+    drop(factory);
+    let restarted_controller = SessionController::new();
+    let restarted = fixture.factory(memory.clone(), restarted_controller.clone());
+    assert!(restarted_controller
+        .active_scope_barrier()
+        .read()
+        .unwrap()
+        .is_none());
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let opaque: String = db
+        .query_row("SELECT value FROM native_sync_reference", [], |r| r.get(0))
+        .unwrap();
+    let stored_reference = SyncCredentialReference::parse(&opaque).unwrap();
+    let before = memory.get(&stored_reference).unwrap().unwrap();
+    assert!(before.same_material(&persisted));
+    let login = fixture.login(&restarted, None).await;
+    let resumed = restarted
+        .resume(login, &stored_reference, &library)
+        .await
+        .unwrap();
+    assert_eq!(resumed.scope().unwrap(), scope);
+    assert!(active.scope().is_err());
+    let owner = TestOwner {
+        db: Mutex::new(db),
+        binding: restarted_controller.active_scope_barrier(),
+    };
+    let report = transport
+        .run(&owner, &resumed, crate::transport::Budget::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            report.committed,
+            report.received,
+            report.applied,
+            report.acknowledged
+        ),
+        (0, 1, 0, 0)
+    );
+    let verified = fixture.login(&restarted, None).await;
+    let url = factory_url(&fixture.origin, &scope);
+    let auth = signing
+        .authorize(&verified.identity, "DELETE", &url, &[])
+        .unwrap();
+    let headers = auth.into_headers();
+    let revoked = fixture
+        .http()
+        .delete(url)
+        .header("authorization", headers.0)
+        .header("mdreader-proof", headers.1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status().as_u16(), 200);
+    assert!(matches!(
+        transport
+            .run(&owner, &resumed, crate::transport::Budget::default())
+            .await,
+        Err(TransportError::Forbidden)
+    ));
+    assert!(restarted_controller
+        .active_scope_barrier()
+        .read()
+        .unwrap()
+        .is_none());
+    assert!(resumed.scope().is_err());
+    assert!(memory.get(&stored_reference).unwrap().is_some());
+    let login = fixture.login(&restarted, None).await;
+    assert!(matches!(
+        restarted.resume(login, &stored_reference, &library).await,
+        Err(AuthorityError::Enrollment)
+    ));
+    let stats = fixture.json("/__synthetic/control", json!({})).await;
+    assert_eq!(stats["oauthExchanges"], json!(5));
+    assert_eq!(stats["pkceRejected"], json!(0));
+}
+fn factory_url(origin: &str, scope: &SyncScope) -> String {
+    format!("{origin}/v1/devices/{}", scope.device_id())
+}
+
+// Test-only construction deliberately cannot be reached through production activation.
+fn synthetic_capability(
+    issuer: &Issuer,
+    controller: Arc<SessionController>,
+    record: CustodyRecord,
+) -> NativeAuthority {
+    let identity = issuer.identity();
+    let registration = Arc::new(registration("https://sync.example.test"));
+    let signer = SigningKey::load(&record.pkcs8).unwrap();
+    let lease = controller
+        .activate(controller.epoch().unwrap(), record.scope.clone())
+        .unwrap();
+    NativeAuthority {
+        record,
+        signer,
+        identity,
+        registration,
+        controller,
+        lease,
+    }
+}
+#[test]
+fn late_401_and_drop_of_old_capability_preserve_same_scope_replacement() {
+    let issuer = Issuer::new();
+    let controller = SessionController::new();
+    let mut record = PendingCustody::prepare(
+        &issuer.identity(),
+        &registration("https://sync.example.test"),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap()
+    .record;
+    record.state = custody::EnrollmentState::Confirmed;
+    let old = synthetic_capability(&issuer, controller.clone(), record.copy());
+    let old_generation = old.generation().unwrap();
+    let replacement = synthetic_capability(&issuer, controller.clone(), record);
+    let replacement_generation = replacement.generation().unwrap();
+    assert!(replacement_generation > old_generation);
+    old.rejected(crate::transport::AuthorityRejection::Authentication);
+    assert!(old.scope().is_err());
+    assert!(replacement.scope().is_ok());
+    drop(old);
+    assert_eq!(replacement.generation().unwrap(), replacement_generation);
+    assert!(controller.active_scope_barrier().read().unwrap().is_some());
+    replacement.rejected(crate::transport::AuthorityRejection::Forbidden);
+    assert!(replacement.scope().is_err());
+    assert!(controller.active_scope_barrier().read().unwrap().is_none());
+}
+#[test]
+fn expiry_and_capability_drop_clear_owner_binding_without_erasing_keys() {
+    let issuer = Issuer::new();
+    let controller = SessionController::new();
+    let mut record = PendingCustody::prepare(
+        &issuer.identity(),
+        &registration("https://sync.example.test"),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap()
+    .record;
+    record.state = custody::EnrollmentState::Confirmed;
+    let mut active = synthetic_capability(&issuer, controller.clone(), record.copy());
+    active.identity.expires = super::now().unwrap();
+    assert!(active.scope().is_err());
+    assert!(controller.active_scope_barrier().read().unwrap().is_none());
+    assert!(!active.record.keys.is_empty());
+    let fresh = synthetic_capability(&issuer, controller.clone(), record);
+    assert!(fresh.scope().is_ok());
+    drop(fresh);
+    assert!(controller.active_scope_barrier().read().unwrap().is_none());
+}
+#[test]
+fn signing_policy_requires_exact_origin_query_envelope_hash_and_scope() {
+    let issuer = Issuer::new();
+    let controller = SessionController::new();
+    let mut record = PendingCustody::prepare(
+        &issuer.identity(),
+        &registration("https://sync.example.test"),
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .unwrap()
+    .record;
+    record.state = custody::EnrollmentState::Confirmed;
+    let active = synthetic_capability(&issuer, controller, record);
+    let key_id = active.record.keys.keys().next().unwrap();
+    let key = LibraryKey::from_bytes(key_id.clone(), active.record.keys[key_id].clone()).unwrap();
+    let context = EncryptionContext {
+        library_id: active.record.scope.library_id().into(),
+        item_id: uuid::Uuid::new_v4().to_string(),
+        revision_id: uuid::Uuid::new_v4().to_string(),
+        key_id: key_id.clone(),
+    };
+    let prepared = encrypt(&key, &context, b"synthetic content").unwrap();
+    let operation = uuid::Uuid::new_v4();
+    let url = format!(
+        "https://sync.example.test/v1/blobs/{}?operationId={operation}&libraryId={}",
+        prepared.blob_id(),
+        context.library_id
+    );
+    assert!(active
+        .authorize("PUT", &url, prepared.envelope_utf8())
+        .is_ok());
+    assert!(active.authorize("PUT", &url, b"{} ").is_err());
+    assert!(active
+        .authorize(
+            "PUT",
+            &url.replace(prepared.blob_id(), &"0".repeat(64)),
+            prepared.envelope_utf8()
+        )
+        .is_err());
+    for path in [
+        "/v1/changes?after=%30&limit=1",
+        "/v1/changes?limit=1&after=0",
+        "/v1/changes?after=0&limit=101",
+        "/v1/changes?after=0&limit=1#fragment",
+        "/v1/enrollment/bootstrap",
+    ] {
+        assert!(active
+            .authorize("GET", &format!("https://sync.example.test{path}"), &[])
+            .is_err());
+    }
+    assert!(active
+        .authorize(
+            "GET",
+            "https://sync.example.test/v1/changes?after=0&limit=1",
+            &[]
+        )
+        .is_ok());
+    assert!(active
+        .authorize(
+            "GET",
+            "https://other.example.test/v1/changes?after=0&limit=1",
+            &[]
+        )
+        .is_err());
+}

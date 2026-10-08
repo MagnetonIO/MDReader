@@ -30,3 +30,6 @@ pub use store::*;
 
 #[cfg(feature = "transport")]
 pub mod transport;
+
+#[cfg(feature = "native-authority")]
+pub mod authority;

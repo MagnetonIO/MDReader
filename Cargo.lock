@@ -4844,6 +4844,7 @@ dependencies = [
  "base64 0.23.0",
  "getrandom 0.4.3",
  "jsonwebtoken",
+ "keyring",
  "reqwest 0.12.28",
  "ring",
  "rusqlite",
