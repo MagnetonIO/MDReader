@@ -767,6 +767,16 @@ export function installTauriMocks(): void {
   mockIPC((cmd, args) => {
     SENT.push({ cmd, args });
     switch (cmd) {
+      case 'reader_embedding_policy':
+        return 'balanced';
+      case 'native_provider_status':
+        return {
+          availability: ['google_drive', 'dropbox'].map((provider) => ({
+            provider, configured: false, supported: true,
+            diagnostic: 'This provider is not configured in this build.',
+          })),
+          sources: [], pendingAdmissions: [], error: null,
+        };
       case 'reader_account': {
         const operation = (args as { operation: { operation: string } }).operation;
         if (operation.operation !== 'status') throw { kind: 'unconfigured' };

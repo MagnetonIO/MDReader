@@ -71,6 +71,8 @@ registry versions/checksums, audited against `Cargo.lock`; no source copies or
 new registry versions. The absent-registration assertion was added to the
 existing registration test afterward and its focused rerun passed (0.25s).
 Strict all-target Clippy for the exact-module harness passed (8.28s).
-Service/RPC integration, generated bindings, packaged desktop
-startup and live Auth0 acceptance are pending. This is a source checkpoint,
+The combined native app generator, four exact native cases, five focused service
+account cases and strict service Clippy subsequently passed; see the
+[native Settings checkpoint](native-account-settings-checkpoint-2026-10-08.md).
+Packaged desktop startup and live Auth0 acceptance are pending. This is a source checkpoint,
 not a release or installed-app claim.

@@ -22,13 +22,18 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await sheet.getByRole('button', { name: 'Account & sync', exact: true }).click();
   await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
   await expect(sheet.getByRole('button', { name: 'Sign in / reconnect' })).toBeDisabled();
+  await sheet.getByRole('button', { name: 'Manage cloud sources' }).click();
+  await expect(sheet.getByRole('button', { name: 'Choose Google Drive files' })).toBeDisabled();
+  await expect(sheet.getByRole('button', { name: 'Connect Dropbox App Folder' })).toBeDisabled();
+  await expect(sheet.getByText('No selected cloud sources are connected.')).toBeVisible();
+  await sheet.getByRole('button', { name: 'Hide cloud sources' }).click();
   // The fixture cannot authenticate or enable recovery. Only status was inspected.
   await sheet.getByRole('button', { name: 'Appearance', exact: true }).click();
   await sheet.getByRole('button', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 
   await testInfo.attach('settings-desktop', {
-    body: await page.screenshot({ animations: 'disabled' }),
+    body: await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('settings-desktop.png') }),
     contentType: 'image/png',
   });
 
@@ -38,7 +43,7 @@ test('Settings categories keep local controls usable across desktop and narrow l
   const confirm = page.getByRole('alertdialog', { name: 'Clear diagnostic logs' });
   await expect(confirm).toContainText(/cannot be undone/i);
   await confirm.getByRole('button', { name: 'Clear diagnostic logs now' }).click();
-  await expect(sheet.getByText('Diagnostic logs cleared', { exact: true })).toBeVisible();
+  await expect(sheet.getByText(/^Diagnostic logs cleared\./)).toBeVisible();
 
   await page.setViewportSize({ width: 320, height: 640 });
   const narrowBox = await sheet.boundingBox();
@@ -48,13 +53,13 @@ test('Settings categories keep local controls usable across desktop and narrow l
   expect(narrowBox!.width).toBe(320);
   expect(narrowBox!.height).toBe(640);
   await expect(sheet.getByRole('button', { name: 'Close Settings' })).toBeVisible();
-  await sheet.getByLabel('Settings section').selectOption('account');
+  await sheet.getByRole('combobox', { name: 'Settings section', exact: true }).selectOption('account');
   await expect(sheet.getByRole('heading', { name: 'Account & sync' })).toBeVisible();
   await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
   expect(await sheet.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   await testInfo.attach('settings-narrow-320x640', {
-    body: await page.screenshot({ animations: 'disabled' }),
+    body: await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('settings-mobile.png') }),
     contentType: 'image/png',
   });
 });

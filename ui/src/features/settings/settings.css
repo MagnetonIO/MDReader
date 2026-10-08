@@ -38,3 +38,26 @@
 .settings-account-advanced label { display: grid; gap: 6px; margin: 12px 0; }
 .settings-account-advanced input, .settings-account-advanced textarea { max-width: 100%; box-sizing: border-box; }
 .settings-account-advanced textarea { width: 100%; min-height: 100px; }
+
+#settings-category-account button {
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+#settings-category-account button:disabled { opacity: .5; cursor: default; }
+#settings-category-account button:not(:disabled):hover { border-color: var(--color-accent); }
+#settings-category-account :is(button, input, textarea, summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+#settings-category-account :is(input, textarea) {
+  padding: 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font: inherit;
+}

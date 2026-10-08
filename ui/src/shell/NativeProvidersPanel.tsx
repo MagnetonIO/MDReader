@@ -165,7 +165,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       .finally(() => { if (lifecycle.current === epoch && documentRequest.current === request) setDocumentsLoading(false); });
   }
   return <section className="settings-section" aria-labelledby={titleId}>
-    <div className="settings-section__intro"><h2 id={titleId}>Selected cloud sources</h2><p>Connect explicit provider selections and read their exact admitted Markdown revisions.</p></div>
+    <div className="settings-section__intro"><h2 id={titleId}>Selected cloud sources</h2><p>Read the files you choose from Google Drive or Dropbox. Connecting a source does not turn on device sync.</p></div>
     <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Hide cloud sources' : 'Manage cloud sources'}</button>
     {expanded ? <>
       <button type="button" disabled={busy || loading} onClick={() => void run(updateSnapshot)}>Reload provider status</button>

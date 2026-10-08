@@ -1,9 +1,28 @@
 # Native Account & sync source checkpoint
 
-This is an **unvalidated source checkpoint**, based on native major `2be0006`.
-It is intended for composition in the native startup feature branch, not release
-or accepted integration. No Cargo, frontend check, model, live authentication,
-installed-profile access or provider request was run for this checkpoint.
+The native startup feature branch composes the account coordinator, wire bridge
+`3ab167b`, RPC/UI corrections `dcb7836`, reviewed registration and desktop command
+collector. The combined artifact has generated actual Rust-to-TypeScript bindings
+and passed the focused checks below. This is source and browser-layout acceptance,
+not an installed desktop, live authentication or release claim.
+
+## UI review outcomes
+
+The original long sidebar mixed normal reading preferences, account state and
+raw security operations. The categorized modal now gives Appearance, Library &
+sources, Account & sync, Backup & storage and Advanced their own view. Mobile
+uses a labeled section selector and a fullscreen sheet.
+
+Device sync comes first in Account & sync so its status is not pushed below
+provider setup. Technical custody evidence is behind Security details; device
+pairing, recovery and troubleshooting have separate disclosures. Unsupported
+actions remain disabled with a reason. Account controls use theme-aware borders,
+text, visible keyboard focus and 44-pixel targets instead of browser-default
+buttons. Cloud-source selection explains that it does not enable device sync.
+
+The design-critique skill supplied the hierarchy, consistency and accessibility
+review framework. Browser geometry checks isolate presentation; they do not
+establish native authentication or real provider acceptance.
 
 ## Boundaries
 
@@ -26,20 +45,38 @@ installed-profile access or provider request was run for this checkpoint.
   implicitly cancels the service-owned operation. User cancellation/disconnect
   are explicit operations.
 
-## Required composition before checks
+## Combined validation
 
-1. Merge the account coordinator's public wire derives from the pump owner:
-   AccountIntent Clone/Serialize; Deserialize on status/job/outcome public DTOs.
-2. Add/project the pump's typed SyncPending evidence and recovery capability.
-   The current UI must disable unavailable recovery, not infer it from enrollment.
-3. Root wires desktop feature/dependencies, native setup/cache roots, command
-   collector and module registration. Generate actual Specta bindings from that
-   coherent native artifact; **do not hand-edit generated bindings**. The adapter
-   currently references those future generated Account DTOs/readerAccount method.
-4. Run the focused new service RPC/runtime cases, native input/counter projection
-   case, four UI lifecycle/evidence cases, affected Settings behavior, scoped
-   type/lint and affected strict Rust checks under the coordinated slot. These
-   authored cases are not yet executed and no RED/GREEN evidence is claimed.
+- One warm native app library-test build, locked/offline, jobs=2, completed in
+  1m33s. Only the exact binding generator ran (0.04s); bindings were not edited
+  manually. The build reports seven existing legacy dead-code warnings; whole-app
+  strict Clippy is not claimed.
+- The same native executable ran four exact tests without recompilation: closed
+  native input and precise pending counters; absent/invalid public registration;
+  exact profile-bound vault namespace; actual browser-launcher kill/reap.
+- Service `--features sync-native --lib accounts`: five tests passed, including
+  closed RPC, typed configuration-failure isolation, retained custody/schema and
+  cancellation fences (0.30s; 12.26s warm compilation).
+- Service all-target strict Clippy passed (6.67s).
+- Account panel plus affected Settings suite: 28 tests passed (1.81s). A broad
+  diagnostic-copy query initially matched hidden account copy; its diagnostic
+  assertion is now scoped to the actual diagnostic message.
+- UI TypeScript and scoped ESLint passed. The new Settings browser config is
+  included in TypeScript checking.
+- Chromium and WebKit checked category navigation, 320x640 fullscreen layout,
+  unavailable action state, theme, log confirmation, shortcut, Escape and focus
+  restoration. The layout cases passed after fixing stale flat-layout assertions,
+  an exact-text punctuation mismatch and an ambiguous mobile selector. Current
+  screenshot-driven button styling and account-first layout passed their
+  affected rerun in both engines (3.7s), including expanded unconfigured provider
+  controls and no horizontal overflow. Three affected Settings tests then passed
+  (0.18s); UI typecheck and scoped lint passed again.
+
+Run `pnpm --filter @mdreader/app test:settings-browser` for these two UI scenarios
+in both engines, with one worker. This config overrides the broad harness setup,
+so it starts only Vite and uses explicit IPC fixtures; it does not start a CatDB
+server or compile Rust. Fixture status is unconfigured with recovery unavailable;
+no mocked authentication or sync result is presented as native acceptance.
 
 ## Product gates
 
@@ -65,10 +102,10 @@ controls are disabled with an explanation when the native adapter is absent.
 Background observation retires when the category becomes inactive; it never
 cancels the service actor implicitly.
 
-Authored focused cases remain four UI lifecycle/evidence tests, one native closed
+The focused cases cover four UI lifecycle/evidence tests, one native closed
 input/precision projection test, one RPC bounds/closed-input/unconfigured test
 and one runtime failure-isolation test. The first UI case also proves an actually
 configured account cannot offer recovery without its native capability. The
 native precision fixture uses actual HeadConflict pending evidence. These source
-corrections have not been executed here; root owns the next coherent validation
-and actual binding generation slot.
+corrections passed the combined checks recorded above; packaged native lifecycle
+and actual remote authentication remain separate gates.
