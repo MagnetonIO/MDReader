@@ -358,3 +358,37 @@ source/index authority. A separate native custody slice adds persistent wrapping
 and recovery material with standard JWE conformance. Both start from `e3608e9` in
 owned worktrees; neither is accepted yet. Physical-device, live-provider,
 fresh-clone, offline app-version upgrade and packaging gates remain open.
+
+## Subsequent native lifecycle checkpoints
+
+Incoming service v2 is merged as `bc6ca6e`: lossless ordered ledger migration,
+immutable history and whole-head CAS, replacements, exact line/pin state and
+content/state tombstones. Nine focused real SQLite/filesystem lifecycle cases
+passed. Review caught adoption of a later reread head; the implementation now
+retains the first checked snapshot and checks it at commit. The extended exact
+replacement lifecycle passed after that correction (0.10 seconds), and strict
+service feature Clippy passed (2.56 seconds). Tombstone/dirty/unknown-baseline
+conflicts hold the cursor; state-item deletion preserves local pin/line. Native
+product UI and live transport acceptance remain open.
+
+Custody checkpoint (a), `ce9ace2`, persists independent wrapping/recovery material,
+strictly preserves original v1 records and keeps empty-key pairing/recovery
+candidates inactive. Two wrapping checks, eleven authority checks, explicitly run
+native/browser JOSE interoperability and strict affected Clippy passed. Existing
+locked package versions/checksums remain unchanged; sixteen crypto graph packages
+were added. See [the custody receipt](../../crates/mdreader-sync/KEY-LIFECYCLE.md).
+Bootstrap/network recovery/pairing, OS-vault host acceptance and mobile remain open.
+
+Integration `165e180` contains both slices. The earlier combined-tree checkpoint
+predates these two commits; their final combined checks remain pending the next
+coherent integration gate. No installed-profile migration or live sync acceptance
+is implied. The new profile-transition audit found no existing profile-wide writer
+quiescence owner: swallowed save failures, bounded close draining and a surviving
+reader daemon must be resolved before claiming a consistent installed backup or
+activation. Originals remain preserved.
+
+The actual deployed offline app upgrade failed safely, retaining the prior app
+and synthetic library. Old open-page CSS paths returned404 on the new deployment.
+A focused manifest-owned-generation fix passed its meaningful RED/GREEN checks
+and independent review; its new Preview exists but old-to-new runtime acceptance
+is still failing and being diagnosed. Do not count that release gate as passed.
