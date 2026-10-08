@@ -2,6 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { ReaderClient } = require("../../src/reader-client");
 const { cleanEnvironment } = require("./stdio");
@@ -34,6 +35,41 @@ function submit(fixture, policy, event) {
   });
 }
 
+// Observe the settled, synthetic Unix spool directly: an erroneously admitted
+// event remains visible either as pending work or as its immutable receipt,
+// even when projection runs before the following search RPC.
+async function spoolSnapshot(fixture) {
+  const snapshot = {};
+  for (const directory of ["pending", "receipts", "markdown"]) {
+    const root = path.join(fixture.data, "captures", directory);
+    const names = (await fs.readdir(root)).sort();
+    assert.ok(names.length <= 16, "synthetic spool file bound");
+    snapshot[directory] = {};
+    for (const name of names) {
+      const pattern = directory === "pending" ? /^[a-f0-9]{64}\.json$/u
+        : directory === "markdown" ? /^[a-f0-9]{64}\.md$/u : /^[a-f0-9]{64}$/u;
+      assert.match(name, pattern);
+      const file = path.join(root, name);
+      const stat = await fs.lstat(file);
+      assert.ok(stat.isFile() && stat.size <= 1048576, "synthetic spool content bound");
+      const bytes = await fs.readFile(file);
+      assert.equal(bytes.length, stat.size);
+      snapshot[directory][name] = createHash("sha256").update(bytes).digest("hex");
+    }
+  }
+  return snapshot;
+}
+async function settledSpool(fixture) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const snapshot = await spoolSnapshot(fixture);
+    if (Object.keys(snapshot.pending).length === 0
+      && Object.keys(snapshot.receipts).length === 1
+      && Object.keys(snapshot.markdown).length === 1) return snapshot;
+    await delay(50);
+  }
+  throw new Error("legitimate synthetic capture did not settle durably");
+}
+
 async function captureProbe(fixture) {
   const policy = { ...fixture.policy, enabled: true };
   await fixture.request({ method: "configure_capture", params: { policy } });
@@ -63,11 +99,13 @@ async function captureProbe(fixture) {
     assert.ok(document.markdown.includes(event.last_assistant_message));
     assert.doesNotMatch(document.markdown, /Excluded(?:Prompt|Reasoning|Tool)Sentinel/u);
     assert.equal(document.revision, hit.revision);
+    const beforeExcluded = await settledSpool(fixture);
     await submit(fixture, policyPath, { ...event, session_id: "outside-selected-project", cwd: path.join(fixture.root, "denied"), last_assistant_message: "OutsideCaptureSentinel" });
+    assert.deepEqual(await spoolSnapshot(fixture), beforeExcluded, "excluded event must not enter durable spool or projection");
     assert.deepEqual(await client.search("OutsideCaptureSentinel"), []);
     return { executableMode: fixture.executableMode, syntheticHookEntrypoint: true, explicitProjectOptIn: true,
       realOwnerProjectionAndIndex: true, exactRevisionRead: true, excludedFieldsAbsent: true,
-      outsideSelectedProjectSkipped: true, modelDrivenAgentHook: "not_exercised" };
+      outsideSelectedProjectSkipped: true, outsideSelectedProjectDurableSpoolUnchanged: true, modelDrivenAgentHook: "not_exercised" };
   } finally {
     await fixture.request({ method: "configure_capture", params: { policy: fixture.policy } });
   }
