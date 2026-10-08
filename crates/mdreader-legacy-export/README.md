@@ -149,3 +149,22 @@ for the envelope and terminator. Serialization is bounded and completes before
 stdout begins. Validation failures exit nonzero with empty stdout and sanitized
 errors that do not echo arguments, paths, reviewer identities or row contents.
 Review commands perform no activation, source binding, grant or graph action.
+
+## Portable current-revision comparison boundary
+
+The `binding` library module accepts one explicit `SelectedBinding` (archive
+identity, record ID and current owner/source/path/exact revision) and a trusted
+`CurrentDocumentReader`. It reinterprets the raw archived row and compares its
+inclusive normalized line span with a bounded current body, then requires final
+owner and archive revalidation. Recorded/current and reviewed/current hashes
+remain separate; absent reviewed hashes stay unknown. Unsupported schemas,
+rules or hashes cannot become matches. Archives and owner state are unchanged.
+
+This is an injectable portable boundary, **not native reader integration**.
+The trait defaults to unsupported. A later adapter must borrow the selected
+concrete ReaderStore, preserve enabled/current-generation/exact-revision gates
+and use a stable authoritative profile UUID. Local raw revisions are checked;
+provider revisions are opaque and labeled as cached observations, not remote
+head freshness. No profile discovery, inferred grant, fuzzy relocation,
+approval migration, graph membership or CLI binding command is supplied.
+See the [producer semantics and adapter requirements](../../docs/development/legacy-document-reviews.md#explicit-current-revision-text-comparison).

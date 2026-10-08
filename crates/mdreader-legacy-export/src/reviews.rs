@@ -141,7 +141,7 @@ impl ReviewArchive {
 }
 
 #[cfg(unix)]
-fn text(
+pub(crate) fn text(
     fields: &std::collections::BTreeMap<String, crate::SqlValue>,
     name: &str,
 ) -> Option<String> {
@@ -168,7 +168,7 @@ fn valid_hash(value: &str) -> bool {
         .is_some_and(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 #[cfg(unix)]
-fn interpret(
+pub(crate) fn interpret(
     fields: &std::collections::BTreeMap<String, crate::SqlValue>,
     raw: RawReference,
     record_id: String,

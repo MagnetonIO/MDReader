@@ -1,5 +1,6 @@
 //! Bounded, private archives of explicitly selected standalone offline snapshots.
 //! Never discovers a profile, opens an SDK, imports data, or accesses a vault.
+pub mod binding;
 mod model;
 mod records;
 pub mod reviews;

@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 sha2 = "0.11"
+blake3 = "1"
 rusqlite = { version = "0.37", features = ["bundled", "limits"] }
 
 [target.'cfg(unix)'.dependencies]

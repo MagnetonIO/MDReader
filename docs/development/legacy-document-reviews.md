@@ -114,3 +114,93 @@ Read output explicitly labels current-document evidence unavailable and binding
 not performed; record discriminants preserve the candidate/unavailable distinction.
 Raw tagged rows remain separate from interpreted JSON responses. The CLI does
 not change the authority or retention requirements above.
+
+## Explicit current-revision text comparison
+
+The portable `binding` module compares one selected staged record with one
+explicit current owner/source/path/revision. It does **not** implement a native
+ReaderStore adapter, CLI binding command, durable binding, source grant, review
+transition or application integration. An injected test reader is only the
+isolated authority boundary, not evidence that the native path is integrated.
+
+The producer contract is specific:
+
+- [`source_document`](../../crates/mdreader-ingest/src/source_view.rs#L57)
+  hashes `str::lines()` joined with LF. CRLF becomes LF and a terminal newline
+  is omitted. Section citations hash their own inclusive span, not a nested
+  subtree or the parser's structural section hash. Link assertions cite a
+  single line. The recorded range determines exactly which lines are compared.
+- [`persist_review`](../../crates/mdreader-ingest/src/proposals.rs#L539) stamps
+  `reviewed_hash = content_hash`. Later extraction can change the recorded hash
+  while retaining a rejection and its earlier reviewed hash. Missing v1 review
+  hashes remain unknown; the comparison never substitutes the recorded hash.
+- [Ingest decoding](../../crates/mdreader-ingest/src/ingestor.rs#L385) used
+  `String::from_utf8_lossy` after a separate raw-byte change-detection hash.
+  Normalized citation equality cannot establish equality of legacy raw bytes.
+- Native [`read_document`](../../crates/mdreader-core/src/store.rs#L755)
+  reads strict UTF-8 at an enabled admitted source and checks the selected exact
+  revision. Local revisions hash raw bytes; provider revisions incorporate the
+  remote version and body hash. A provider revision is opaque, not a raw-body
+  hash. [Provider reads](../../crates/mdreader-core/src/provider_projection.rs#L375)
+  revalidate current generation, cached body hash and revision. They do not
+  establish freshness against the remote provider head.
+
+`SelectedBinding::new` requires the selected archive identity and record ID plus
+`CurrentDocumentReference::new(ownerScope, sourceId, relativePath, revision)`.
+UUIDv4 owner identity, bounded source/path, normal relative path components and
+64-hex exact revision are validated without resolving a filesystem path. The
+legacy locator is never opened or matched to discover a document. Selecting a
+renamed document is an explicit caller choice, not an inferred relocation.
+
+`verify_binding` reads the exact raw staged proposal, checks its row hash and
+archive/record identity, and reinterprets the known schema/rule/version from
+that raw record. Unsupported assertions or hash encodings fail before a current
+read. Only `blake3:<64 hex>` is supported; a missing/null reviewed hash produces
+`unknown`, while an unrecognized non-null hash cannot produce `matches`.
+
+The trusted reader must belong to the selected owner and return the exact
+selected reference. Current UTF-8 bodies are bounded to 2 MiB. Local raw-byte
+revisions are also checked against the returned body; provider revisions remain
+opaque and require the owner's exact-revision cache read. The cited lines are
+hashed incrementally with the producer's normalization. Missing current lines,
+including an empty document with legacy degenerate range `[1,1]`, are rejected
+rather than reproducing historical clamping. No fuzzy search, extractor rerun,
+endpoint resolution or relationship validation occurs.
+
+The result separates `recordedCurrent` and `reviewedCurrent` comparisons and
+labels its scope `selected_owner_revision`. The original archival state,
+reviewer, raw reference, unavailable chronology/graph membership and
+`source_binding_required` label remain unchanged. A `matches` value establishes
+only normalized cited-text equality at that explicitly selected revision. It
+does not approve an assertion, establish current semantic truth or upgrade an
+archival review into a citation. `provider_cached_revision` explicitly identifies
+a cached observation; it is not a remote-head freshness assertion.
+
+Before returning, the reader must revalidate the selected revision and enabled
+authority and the archive read guard must still pass. Failures return sanitized
+typed errors, never a partial comparison. This is a transient observation;
+later evidence use must revalidate the exact reference again. Nothing is saved
+to either archive or owner.
+
+### Native adapter requirements still open
+
+A later owner adapter must borrow the **already selected concrete ReaderStore**
+and its stable authoritative library/profile UUID. It must not discover/open a
+profile. Both read and final revalidation must call the owner exact-revision
+read (`read_document(source, path, Some(revision))`) with enabled source/current
+generation, retained-root and provider-cache gates intact. Revalidation must
+reject revocation/rebind or a changed revision/body; owner scope must remain the
+same. The owner must serialize/cohere grant changes with these checks. Provider
+cache observations must remain visibly distinct from remote-current fetches.
+The portable trait defaults both operations to unsupported and supplies no
+native implementation. No app/core/service contract changes, durable source
+binding, activation, graph replay or approval migration are accepted by this
+slice.
+
+Portable comparison checkpoint: the three real-archive/injected-owner behavior
+tests failed against the unsupported stub, then passed after implementation.
+The affected crate passed 14 unit tests and two CLI subprocess tests; its ignored
+child helper is exercised by the actual exporter spawn/kill test. Crate-only
+all-target strict Clippy passed. These checks used locked dependencies and two
+build jobs on macOS. They establish the portable/archive boundary, not native
+adapter integration, remote freshness or release migration acceptance.
