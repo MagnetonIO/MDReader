@@ -57,3 +57,22 @@ pub fn page_in(
     }
     Ok(page)
 }
+
+/// Readonly current pin/line CAS identity within the explicitly configured owner.
+pub fn state_in(
+    store: &ReaderStore,
+    directory: &Path,
+    expected: &Receipt,
+) -> Result<super::super::state::DocumentState> {
+    let document = document_in(store, directory, expected)?;
+    let db = store.device_connection();
+    if readonly::namespace(db)? != Some(readonly::Namespace::Current) {
+        return Err(Error::UnsupportedSchema);
+    }
+    readonly::validate_rows(db, readonly::Namespace::Current)?;
+    let state = super::super::state::load(db, &expected.document_id, true)?;
+    if state.document != document {
+        return Err(Error::Conflict);
+    }
+    Ok(state)
+}

@@ -1,7 +1,7 @@
 //! Thin read-only service adapter. No second device owner or GUI asset runtime.
 mod model;
 use crate::reader::ReaderBackend;
-use mdreader_service::{Request, device as service};
+use mdreader_service::{device as service, Request};
 pub use model::*;
 use serde::Deserialize;
 use tauri::State;
@@ -14,7 +14,7 @@ struct Envelope {
 fn request(reader: &ReaderBackend, operation: DeviceRequest) -> Result<DeviceReply, DeviceError> {
     let response: Envelope = reader
         .typed(Request::Device {
-            request: operation.into(),
+            request: operation.service()?,
         })
         .map_err(|_| model::unavailable())?;
     match (response.result, response.error) {
