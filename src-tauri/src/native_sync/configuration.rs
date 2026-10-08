@@ -87,9 +87,12 @@ impl Configuration<'_> {
             transport,
             browser: Arc::new(browser),
             registered_redirect: redirect.into(),
-            #[cfg(target_os = "macos")]
-            recovery: Some(Arc::new(super::recovery::Recovery::default())),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            recovery: super::recovery::Recovery::available().then(|| {
+                Arc::new(super::recovery::Recovery::default())
+                    as Arc<dyn mdreader_service::accounts::NativeRecovery>
+            }),
+            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
             recovery: None,
         }))
     }

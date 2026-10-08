@@ -1,4 +1,4 @@
-//! Production macOS recovery adapter. Ciphertext uses selected native files;
+//! Production desktop recovery adapter. Ciphertext uses selected native files;
 //! independent secrets use only owned OS dialogs and zeroizing native buffers.
 mod dialog;
 mod files;
@@ -11,18 +11,24 @@ use zeroize::Zeroizing;
 pub(super) struct Recovery {
     owner: owner::Owner,
 }
+impl Recovery {
+    pub(super) fn available() -> bool {
+        dialog::available()
+    }
+}
 impl NativeRecovery for Recovery {
     fn import<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<RecoveryInput, AccountError>> + Send + 'a>> {
         Box::pin(self.owner.run(|cancel| async move {
-            let path = files::path(dialog::run(dialog::PICK_IMPORT, None, &cancel, 8193).await?)?;
+            let path =
+                files::path(dialog::run(dialog::Kind::PickImport, None, &cancel, 8193).await?)?;
             let read_cancel = cancel.clone();
             let file = tokio::task::spawn_blocking(move || files::read(&path, &read_cancel))
                 .await
                 .map_err(|_| AccountError::Interrupted)??;
             cancel.check()?;
-            let bytes = dialog::run(dialog::ENTER_SECRET, None, &cancel, 64).await?;
+            let bytes = dialog::run(dialog::Kind::EnterSecret, None, &cancel, 64).await?;
             let secret = Zeroizing::new(
                 std::str::from_utf8(bytes.as_slice())
                     .map_err(|_| AccountError::Invalid)?
@@ -44,9 +50,10 @@ impl NativeRecovery for Recovery {
         value: RecoveryExport,
     ) -> Pin<Box<dyn Future<Output = Result<(), AccountError>> + Send + 'a>> {
         Box::pin(self.owner.run(|cancel| async move {
-            let path = files::path(dialog::run(dialog::PICK_EXPORT, None, &cancel, 8193).await?)?;
+            let path =
+                files::path(dialog::run(dialog::Kind::PickExport, None, &cancel, 8193).await?)?;
             let confirmation = dialog::run(
-                dialog::SHOW_SECRET,
+                dialog::Kind::ShowSecret,
                 Some(value.export_secret()),
                 &cancel,
                 64,

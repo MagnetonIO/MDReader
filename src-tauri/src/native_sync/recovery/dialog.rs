@@ -1,4 +1,4 @@
-//! OS Standard Additions UI. Scripts contain only public copy; secrets cross
+//! Owned desktop system-dialog processes. Scripts contain only public copy; secrets cross
 //! private stdin/stdout pipes, never argv, environment, shell or WebView IPC.
 //! Rust buffers are zeroized; transient OS dialog/process copies cannot be
 //! erased by Rust and exist only for the owned process lifetime.
@@ -9,39 +9,47 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zeroize::Zeroizing;
 type Result<T> = std::result::Result<T, AccountError>;
 const CANCELLED: &[u8] = b"MDREADER_CANCELLED";
-pub(super) const PICK_IMPORT: &str = r#"try
-return POSIX path of (choose file with prompt "Choose your encrypted MDReader recovery file" of type {"json"})
-on error number -128
-return "MDREADER_CANCELLED"
-end try"#;
-pub(super) const ENTER_SECRET: &str = r#"try
-return text returned of (display dialog "Enter the separate 43-character MDReader recovery key. It stays in native memory." with title "Recover MDReader library" default answer "" with hidden answer buttons {"Cancel", "Recover"} default button "Recover" cancel button "Cancel")
-on error number -128
-return "MDREADER_CANCELLED"
-end try"#;
-pub(super) const PICK_EXPORT: &str = r#"try
-return POSIX path of (choose file name with prompt "Save encrypted MDReader recovery file — choose a new file" default name "mdreader-recovery.json")
-on error number -128
-return "MDREADER_CANCELLED"
-end try"#;
-pub(super) const SHOW_SECRET: &str = r#"try
-set recoveryKey to read POSIX file "/dev/stdin"
-display dialog "Store this recovery key separately from the encrypted file. Anyone with BOTH can recover this library. Copy the key to your secure password manager before continuing." with title "MDReader recovery key" default answer recoveryKey buttons {"Cancel", "I stored the key separately"} default button "I stored the key separately" cancel button "Cancel"
-set recoveryKey to ""
-return "confirmed"
-on error number -128
-return "MDREADER_CANCELLED"
-end try"#;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(target_os = "macos")]
+use macos as platform;
+#[cfg(target_os = "windows")]
+use windows as platform;
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    PickImport,
+    EnterSecret,
+    PickExport,
+    ShowSecret,
+}
+pub(super) struct Platform {
+    command: tokio::process::Command,
+    cancelled_exit: Option<i32>,
+    empty_confirmation: bool,
+}
+pub(super) fn available() -> bool {
+    platform::available()
+}
 
 pub(super) async fn run(
-    script: &'static str,
+    kind: Kind,
     input: Option<Zeroizing<String>>,
     cancel: &Arc<Cancel>,
     bound: usize,
 ) -> Result<Zeroizing<Vec<u8>>> {
     cancel.check()?;
-    let mut child = tokio::process::Command::new("/usr/bin/osascript")
-        .args(["-e", script])
+    let Platform {
+        mut command,
+        cancelled_exit,
+        empty_confirmation,
+    } = platform::command(kind)?;
+    let mut child = command
         .kill_on_drop(true)
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -77,16 +85,21 @@ pub(super) async fn run(
             if bytes.len() > bound {
                 return Err(AccountError::Limit);
             }
-            if !child
-                .wait()
-                .await
-                .map_err(|_| AccountError::Interrupted)?
-                .success()
-            {
-                return Err(AccountError::Interrupted);
+            let status = child.wait().await.map_err(|_| AccountError::Interrupted)?;
+            if !status.success() {
+                return Err(
+                    if status.code().is_some() && status.code() == cancelled_exit {
+                        AccountError::Cancelled
+                    } else {
+                        AccountError::Interrupted
+                    },
+                );
             }
             if bytes.last() == Some(&b'\n') {
                 bytes.pop();
+            }
+            if bytes.is_empty() && empty_confirmation && matches!(kind, Kind::ShowSecret) {
+                bytes.extend_from_slice(b"confirmed");
             }
             if bytes.as_slice() == CANCELLED {
                 return Err(AccountError::Cancelled);

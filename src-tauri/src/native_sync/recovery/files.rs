@@ -2,6 +2,7 @@
 use super::owner::Cancel;
 use mdreader_core::SourceRoot;
 use mdreader_service::accounts::AccountError;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
     io::{Read, Write},
@@ -56,9 +57,7 @@ pub(super) fn read(path: &Path, cancel: &Arc<Cancel>) -> Result<Vec<u8>> {
         .ok_or(AccountError::Conflict)?;
     if bytes.len() > MAX_FILE
         || before.len() != after.len()
-        || before.nlink() != 1
-        || after.nlink() != 1
-        || (before.ctime(), before.ctime_nsec()) != (after.ctime(), after.ctime_nsec())
+        || unix_changed(&before, &after)
         || before.modified().ok() != after.modified().ok()
         || same_file::Handle::from_file(file).map_err(|_| AccountError::Storage)?
             != same_file::Handle::from_file(observed).map_err(|_| AccountError::Storage)?
@@ -83,6 +82,7 @@ pub(super) fn write(path: &Path, bytes: &[u8], cancel: &Arc<Cancel>) -> Result<(
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| AccountError::Storage)?;
+    #[cfg(unix)]
     root.try_clone_directory_handle()
         .map_err(|_| AccountError::Storage)?
         .sync_all()
@@ -100,4 +100,18 @@ pub(super) fn write(path: &Path, bytes: &[u8], cancel: &Arc<Cancel>) -> Result<(
     }
     root.verify().map_err(|_| AccountError::Conflict)?;
     cancel.check()
+}
+
+fn unix_changed(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        before.nlink() != 1
+            || after.nlink() != 1
+            || (before.ctime(), before.ctime_nsec()) != (after.ctime(), after.ctime_nsec())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (before, after);
+        false
+    }
 }
