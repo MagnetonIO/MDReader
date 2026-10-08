@@ -106,6 +106,7 @@ pub struct AccountJob {
     pub id: String,
     #[serde(rename = "selectedSync")]
     pub selected_sync: Option<SelectedOperation>,
+    #[serde(rename = "selectedPurpose")]
     pub selected_purpose: Option<SelectedPurpose>,
     pub state: JobState,
 }
