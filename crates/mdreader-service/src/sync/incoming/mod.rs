@@ -52,6 +52,23 @@ impl IncomingCoordinator {
         documents: PathBuf,
         assets: PathBuf,
     ) -> Result<Self> {
+        Self::with_runtime(
+            owner,
+            remote_library,
+            documents,
+            assets,
+            AssetRuntime::default(),
+        )
+    }
+    /// Product composition shares this exact runtime with its same-owner asset
+    /// reader. Legacy standalone construction retains a private default runtime.
+    pub fn with_runtime(
+        owner: Arc<Mutex<ReaderStore>>,
+        remote_library: Uuid,
+        documents: PathBuf,
+        assets: PathBuf,
+        runtime: AssetRuntime,
+    ) -> Result<Self> {
         {
             let mut owner = owner.try_lock().map_err(|_| Error::Busy)?;
             crate::sync::initialize(&mut owner)?;
@@ -66,7 +83,7 @@ impl IncomingCoordinator {
             owner,
             documents,
             assets,
-            runtime: AssetRuntime::default(),
+            runtime,
             operation: Mutex::new(()),
             selection: RwLock::new(None),
             identity: Arc::new(()),

@@ -19,6 +19,7 @@ pub(super) struct Actor {
     pub owner: Arc<Mutex<ReaderStore>>,
     pub setup: NativeSetup,
     pub roots: CacheRoots,
+    runtime: AssetRuntime,
     pub binding: Option<Binding>,
     /// Exact same private record is retained after a failed/uncertain OS write.
     pub pending: Option<PendingCustody>,
@@ -33,6 +34,7 @@ impl Actor {
         owner: Arc<Mutex<ReaderStore>>,
         setup: NativeSetup,
         roots: CacheRoots,
+        runtime: AssetRuntime,
         binding: Option<Binding>,
         shared: Arc<state::Shared>,
     ) -> Self {
@@ -40,6 +42,7 @@ impl Actor {
             owner,
             setup,
             roots,
+            runtime,
             binding,
             pending: None,
             incoming: None,
@@ -158,11 +161,12 @@ impl Actor {
             Some(incoming) => incoming.clone(),
             None => {
                 let incoming = Arc::new(
-                    IncomingCoordinator::new(
+                    IncomingCoordinator::with_runtime(
                         self.owner.clone(),
                         binding.library,
                         self.roots.documents.clone(),
                         self.roots.assets.clone(),
+                        self.runtime.clone(),
                     )
                     .map_err(AccountError::from)?,
                 );
