@@ -57,11 +57,18 @@ impl Runtime {
             None
         };
         let owner = store.clone();
+        // Initialize the borrowed account namespace before the background writer
+        // starts; a legitimate indexing turn must not become a permanent Busy.
+        #[cfg(feature = "sync-native")]
+        let accounts = match adapters.accounts {
+            Some((setup, roots)) => setup.and_then(|setup| {
+                super::accounts::Coordinator::new(owner.clone(), setup, roots)
+            }),
+            None => Err(super::accounts::AccountError::Unconfigured),
+        };
         let mut runtime = Self::with_model(store, cache, model)?;
         #[cfg(feature = "sync-native")]
-        if let Some((setup, roots)) = adapters.accounts {
-            runtime.accounts = setup.and_then(|setup| super::accounts::Coordinator::new(owner.clone(), setup, roots));
-        }
+        { runtime.accounts = accounts; }
         if let Some(factory) = adapters.factory {
             // Provider cache/host failure must not take local reading, capture,
             // or indexing offline. Retain the typed error for provider clients.
