@@ -118,6 +118,8 @@ pub enum CatalogReply {
         revision: String,
         target: String,
         mime: String,
+        width: u32,
+        height: u32,
         base64: String,
     },
     EditLocal {

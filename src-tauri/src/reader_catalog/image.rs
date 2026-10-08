@@ -188,6 +188,8 @@ pub(super) fn local(
         revision: revision.into(),
         target: target.into(),
         mime: raster.mime,
+        width: raster.width,
+        height: raster.height,
         base64: STANDARD.encode(bytes),
     })
 }
