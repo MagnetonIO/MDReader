@@ -81,3 +81,18 @@ freeze/flush/release lifecycle. Merely registering native owners does not prove
 preservation readiness. Existing-library export, useful-record mapping, rollback
 and final CatDB SDK removal remain separate gates. Real packaged reader history
 and position/focus/scroll acceptance also remain open.
+
+## Combined integration gate, 2026-10-08
+
+The coordinator subsequently checked the final actor/history integration tree
+`4aa9037ad9309b4c1600f96f76ae9dda1a081278` with the actual default-feature native
+artifact in the existing warm cache. The bindings generator passed **1 case in
+0.04 s** and the native persistence owner passed **5 cases in 0.08 s** on that
+final artifact. An initial attempt reused a stale artifact predating the source
+identity/core archive exports and failed on missing exports. The coordinator
+verified those exports, refreshed only the core `lib.rs` modification time, and
+successfully recompiled local crates (31.53 s, followed by 20.51 s for the final
+actor/bindings composition). No source or cache deletion was used. Two inherited
+test warnings remained; full strict native Clippy remains open. This combined
+gate does not mount the renderer preservation bridge or establish all-writer
+preservation readiness.

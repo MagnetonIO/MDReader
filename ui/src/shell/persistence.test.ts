@@ -161,3 +161,96 @@ test('explicit legacy-host ordinary persistence retains its existing write behav
   expect(native.pluginWrite).toHaveBeenCalledTimes(1);
   expect(native.invoke).toHaveBeenCalledTimes(1);
 });
+
+test('cancelled preservation never admits after its first await', async () => {
+  vi.resetModules();
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
+  const identity = { ownerEpoch: 'owner', rendererEpoch: 'renderer' };
+  native.invoke.mockImplementation(async (command: string, args?: { kind: string; generation: number }) => {
+    if (command === 'native_profile_persistence_host') return 'native_atomic';
+    if (command === 'native_profile_persistence_load' || command === 'native_profile_persistence_read') {
+      return { identity, sessionJson: null, settingsJson: null };
+    }
+    if (command === 'native_profile_persistence_write' && args) {
+      return { ...identity, kind: args.kind, generation: args.generation, sha256: 'a'.repeat(64) };
+    }
+    throw new Error('unexpected synthetic command');
+  });
+  const persistence = await import('./persistence.js');
+  await persistence.loadPersisted();
+  const signal = new AbortController();
+  const latest = vi.fn();
+  const pending = persistence.flushForPreservation({ requestId: 'cancelled', identity }, latest, signal.signal);
+  signal.abort();
+  await expect(pending).rejects.toThrow('retired');
+  expect(latest).not.toHaveBeenCalled();
+  await persistence.saveSession({ version: 1, root: '/retained' });
+  expect(native.invoke.mock.calls.some(([command]) => command === 'native_profile_persistence_flush')).toBe(false);
+});
+
+test('release or cancellation while draining cannot submit a retired flush or reopen held admission', async () => {
+  vi.resetModules();
+  (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {};
+  const identity = { ownerEpoch: 'owner', rendererEpoch: 'renderer' };
+  let gate = deferred();
+  native.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'native_profile_persistence_host') return 'native_atomic';
+    if (command === 'native_profile_persistence_load' || command === 'native_profile_persistence_read') {
+      return { identity, sessionJson: null, settingsJson: null };
+    }
+    if (command === 'native_profile_persistence_write' && args) {
+      await gate.promise;
+      return { ...identity, kind: args.kind, generation: args.generation, sha256: 'a'.repeat(64) };
+    }
+    if (command === 'native_profile_persistence_flush' && args) {
+      const submission = args.submission as { sessionGeneration: number; settingsGeneration: number };
+      return [
+        { ...identity, kind: 'session', generation: submission.sessionGeneration, sha256: 'b'.repeat(64) },
+        { ...identity, kind: 'settings', generation: submission.settingsGeneration, sha256: 'c'.repeat(64) },
+      ];
+    }
+    throw new Error('unexpected synthetic command');
+  });
+  const persistence = await import('./persistence.js');
+  const { DEFAULT_SETTINGS } = await import('../stores/session.js');
+  await persistence.loadPersisted();
+  persistence.sessionWriter.write({ version: 1, root: '/pending' });
+  await flush();
+  const first = { requestId: 'first', identity };
+  const current = { requestId: 'current', identity };
+  const oldLatest = vi.fn();
+  const old = persistence.flushForPreservation(first, oldLatest);
+  const retired = expect(old).rejects.toThrow('retired');
+  await flush();
+  expect(persistence.releasePreservation({ ...first, identity: { ...identity, rendererEpoch: 'wrong' } })).toBe(false);
+  expect(persistence.releasePreservation(first)).toBe(true);
+  const currentLatest = vi.fn(() => ({ session: persistence.sessionWriter.snapshot(null, false), settings: DEFAULT_SETTINGS }));
+  const next = persistence.flushForPreservation(current, currentLatest);
+  await flush();
+  gate.resolve();
+  await retired; await next;
+  expect(oldLatest).not.toHaveBeenCalled();
+  expect(currentLatest).toHaveBeenCalledTimes(1);
+  const submissions = native.invoke.mock.calls.filter(([command]) => command === 'native_profile_persistence_flush');
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0]![1]).toMatchObject({ submission: { request: current } });
+  await expect(persistence.saveSession({ version: 1 })).rejects.toThrow('frozen');
+  expect(persistence.releasePreservation(first)).toBe(false);
+  expect(persistence.releasePreservation(current)).toBe(true);
+  await persistence.saveSession({ version: 1 });
+
+  gate = deferred();
+  persistence.sessionWriter.write({ version: 1, root: '/still-pending' });
+  await flush();
+  const disposed = { requestId: 'disposed', identity };
+  const controller = new AbortController();
+  const disposedLatest = vi.fn();
+  const pending = persistence.flushForPreservation(disposed, disposedLatest, controller.signal);
+  const cancelled = expect(pending).rejects.toThrow('retired');
+  await flush();
+  controller.abort(); gate.resolve(); await cancelled;
+  expect(disposedLatest).not.toHaveBeenCalled();
+  await expect(persistence.saveSession({ version: 1 })).rejects.toThrow('frozen');
+  expect(persistence.releasePreservation(disposed)).toBe(true);
+  await persistence.saveSession({ version: 1 });
+});

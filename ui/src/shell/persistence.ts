@@ -177,27 +177,43 @@ export async function saveSettings(snapshot: SettingsSnapshot): Promise<void> {
 
 /** The separate bridge calls this after the real unsaved-editor guard. Only a
  * fresh native request token can route the latest snapshot through freeze. */
-export async function flushForPreservation(request: FlushRequest, latest: () => LatestPersistence): Promise<void> {
+export async function flushForPreservation(
+  request: FlushRequest, latest: () => LatestPersistence, signal?: AbortSignal,
+): Promise<void> {
+  // Retain our identity before yielding, not a caller-owned mutable payload.
+  const held = { requestId: request.requestId, identity: { ...request.identity } };
+  const requireActive = () => {
+    if (signal?.aborted) throw new Error('Preservation request retired');
+  };
+  requireActive();
   const admission = hydrated;
   if (await persistenceHost() !== 'native_atomic') throw new Error('Profile preservation is unavailable on this host');
+  requireActive();
   if (!admission) throw new Error('Native persistence is not hydrated');
   const loaded = await registered();
+  requireActive();
   const attempt = admission.attempt;
   requireHydration(loaded.identity, attempt);
-  if (request.identity.ownerEpoch !== loaded.identity.ownerEpoch || request.identity.rendererEpoch !== loaded.identity.rendererEpoch
+  if (held.identity.ownerEpoch !== loaded.identity.ownerEpoch || held.identity.rendererEpoch !== loaded.identity.rendererEpoch
     || preservation) throw new Error('Stale preservation request');
-  preservation = request;
+  preservation = held;
   // Ordinary queued writes may be refused by native freeze. Await settlement;
   // the scoped latest write then supersedes those earlier generations.
   await Promise.allSettled([sessionWriter.drain(), settingsWriter.drain()]);
+  requireActive();
+  if (preservation !== held) throw new Error('Preservation request retired');
   requireHydration(loaded.identity, attempt);
   const snapshot = latest();
+  requireActive();
+  if (preservation !== held) throw new Error('Preservation request retired');
   const sessionGeneration = next('session');
   const settingsGeneration = next('settings');
   const receipts = await invoke<[WriteReceipt, WriteReceipt]>('native_profile_persistence_flush', {
-    submission: { request, sessionGeneration, settingsGeneration,
+    submission: { request: held, sessionGeneration, settingsGeneration,
       sessionJson: JSON.stringify(snapshot.session), settingsJson: JSON.stringify(snapshot.settings) },
   });
+  requireActive();
+  if (preservation !== held) throw new Error('Preservation request retired');
   verifyReceipt(receipts[0], loaded.identity, 'session', sessionGeneration);
   verifyReceipt(receipts[1], loaded.identity, 'settings', settingsGeneration);
 }
