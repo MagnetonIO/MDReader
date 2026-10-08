@@ -68,6 +68,8 @@ mod reader_backfill;
 #[cfg(not(mobile))]
 mod reader_catalog;
 #[cfg(not(mobile))]
+mod reader_device;
+#[cfg(not(mobile))]
 mod reader_reviews;
 mod reader_workload;
 mod search;
@@ -114,6 +116,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
             reader_accounts::reader_account,
+            reader_device::reader_device,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,

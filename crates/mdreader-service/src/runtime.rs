@@ -21,6 +21,8 @@ pub(super) struct Runtime {
     catalog: super::catalog::Coordinator,
     #[cfg(feature = "sync-native")]
     accounts: super::accounts::Result<super::accounts::Coordinator>,
+    #[cfg(feature = "sync-native")]
+    device: Option<Arc<super::device::Coordinator>>,
     reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
@@ -57,18 +59,35 @@ impl Runtime {
             None
         };
         let owner = store.clone();
+        #[cfg(feature = "sync-native")]
+        let asset_runtime = mdreader_core::device::assets::AssetRuntime::default();
+        #[cfg(feature = "sync-native")]
+        let device_roots = adapters.accounts.as_ref().map(|(_, roots)| {
+            (roots.documents.clone(), roots.assets.clone())
+        });
         // Initialize the borrowed account namespace before the background writer
         // starts; a legitimate indexing turn must not become a permanent Busy.
         #[cfg(feature = "sync-native")]
         let accounts = match adapters.accounts {
             Some((setup, roots)) => setup.and_then(|setup| {
-                super::accounts::Coordinator::new(owner.clone(), setup, roots)
+                super::accounts::Coordinator::with_asset_runtime(
+                    owner.clone(), setup, roots, asset_runtime.clone(),
+                )
             }),
             None => Err(super::accounts::AccountError::Unconfigured),
         };
         let mut runtime = Self::with_model(store, cache, model)?;
         #[cfg(feature = "sync-native")]
-        { runtime.accounts = accounts; }
+        {
+            runtime.accounts = accounts;
+            if let Some((documents, assets)) = device_roots {
+                let device = Arc::new(super::device::Coordinator::new(
+                    owner.clone(), runtime.queries.clone(), documents, assets, asset_runtime,
+                ));
+                runtime.catalog.enable_device_catalog(device.clone());
+                runtime.device = Some(device);
+            }
+        }
         if let Some(factory) = adapters.factory {
             // Provider cache/host failure must not take local reading, capture,
             // or indexing offline. Retain the typed error for provider clients.
@@ -165,6 +184,8 @@ impl Runtime {
             providers: Ok(None),
             #[cfg(feature = "sync-native")]
             accounts: Err(super::accounts::AccountError::Unconfigured),
+            #[cfg(feature = "sync-native")]
+            device: None,
         })
     }
     fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -178,6 +199,16 @@ impl Runtime {
             .map_err(|_| protocol_error("reader query worker failed"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        #[cfg(feature = "sync-native")]
+        if let Request::Device { request } = request {
+            let result = self.device.as_ref()
+                .ok_or(super::device::DeviceError::Unconfigured)
+                .and_then(|device| device.execute(request));
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
         #[cfg(feature = "sync-native")]
         if let Request::Account { request } = request {
             let result = self.accounts.as_ref().map_err(|error| *error).and_then(|owner| owner.execute(request));

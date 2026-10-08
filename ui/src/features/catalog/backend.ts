@@ -1,4 +1,5 @@
 import type { LocalLinkResolution } from '../reader/contracts';
+import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderReaderReference, ProviderDocumentBody } from '../../platform/providers';
 import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen } from '../../bindings';
 export type { CatalogSource, CatalogDocument, CatalogOpen } from '../../bindings';
@@ -69,7 +70,14 @@ export const catalogBackend: CatalogBackend = {
 };
 
 /** Never reinterpret a canonical receipt as an absolute local filesystem path. */
-export function catalogReference(open: CatalogOpen, title: string): ProviderReaderReference {
+export function catalogReference(open: CatalogOpen, title: string): CanonicalReaderReference {
+  if (open.kind === 'device') {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(open.documentId)
+      || !/^[a-f0-9]{64}$/.test(open.sourceId) || !/^[a-f0-9]{64}$/.test(open.revision)
+      || !Number.isSafeInteger(open.line) || open.line < 1) throw new CatalogError('invalid');
+    return { documentId: open.documentId, sourceId: open.sourceId, revision: open.revision,
+      path: 'document.md', title, line: open.line };
+  }
   if (open.kind !== 'exact' || !/^[a-f0-9]{64}$/.test(open.revision)
     || !/^(?:[a-f0-9]{64}|provider:[a-f0-9]{64})$/.test(open.sourceId)
     || !open.path || open.path.length > 4096

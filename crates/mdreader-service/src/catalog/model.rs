@@ -51,6 +51,12 @@ pub struct CatalogSource {
     deny_unknown_fields
 )]
 pub enum CatalogOpen {
+    Device {
+        document_id: String,
+        source_id: String,
+        revision: String,
+        line: u32,
+    },
     Exact {
         source_id: String,
         path: String,

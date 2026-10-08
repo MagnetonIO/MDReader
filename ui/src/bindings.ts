@@ -10,6 +10,7 @@ export const commands = {
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
+	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -684,7 +685,7 @@ export type CatalogError = {
 	kind: string,
 };
 
-export type CatalogOpen = { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
+export type CatalogOpen = { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
 export type CatalogReference = {
 	sourceId: string,
@@ -966,6 +967,10 @@ export type DeviceDocument = {
 	indexed: boolean,
 };
 
+export type DeviceError = {
+	kind: string,
+};
+
 export type DeviceHit = {
 	document: DeviceDocument,
 	line: number,
@@ -981,6 +986,16 @@ export type DeviceRead = {
 	document: DeviceDocument,
 	markdown: string,
 };
+
+export type DeviceReceipt = {
+	documentId: string,
+	sourceId: string,
+	revision: string,
+};
+
+export type DeviceReply = { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+
+export type DeviceRequest = { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 

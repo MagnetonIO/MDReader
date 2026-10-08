@@ -13,6 +13,8 @@ pub mod assets;
 
 pub mod publication;
 pub mod state;
+#[cfg(feature = "device-assets")]
+pub mod catalog;
 
 mod documents;
 mod error;

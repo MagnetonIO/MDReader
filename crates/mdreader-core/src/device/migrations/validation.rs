@@ -1,7 +1,7 @@
 use super::*;
 
 /// Validate bounded durable metadata only. Never open paths or infer consent.
-pub(super) fn rows(tx: &rusqlite::Transaction<'_>, intents_present: bool) -> Result<()> {
+pub(super) fn rows(tx: &rusqlite::Connection, intents_present: bool) -> Result<()> {
     let count: u64 = tx
         .query_row("SELECT count(*) FROM device_documents_v1", [], |r| r.get(0))
         .map_err(|_| Error::InvalidSchema)?;
@@ -39,7 +39,7 @@ pub(super) fn rows(tx: &rusqlite::Transaction<'_>, intents_present: bool) -> Res
     }
     Ok(())
 }
-fn intents(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+fn intents(tx: &rusqlite::Connection) -> Result<()> {
     let count: u64 = tx
         .query_row("SELECT count(*) FROM device_import_intents_v1", [], |r| {
             r.get(0)

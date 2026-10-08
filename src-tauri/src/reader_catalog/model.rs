@@ -57,6 +57,12 @@ pub struct CatalogSource {
     rename_all_fields = "camelCase"
 )]
 pub enum CatalogOpen {
+    Device {
+        document_id: String,
+        source_id: String,
+        revision: String,
+        line: u32,
+    },
     Exact {
         source_id: String,
         path: String,
@@ -159,6 +165,17 @@ impl From<service::CatalogDocument> for CatalogDocument {
             observed_at_ms: time(d.observed_at_ms),
             observation: d.observation,
             open: match d.open {
+                service::CatalogOpen::Device {
+                    document_id,
+                    source_id,
+                    revision,
+                    line,
+                } => CatalogOpen::Device {
+                    document_id,
+                    source_id,
+                    revision,
+                    line,
+                },
                 service::CatalogOpen::Exact {
                     source_id,
                     path,

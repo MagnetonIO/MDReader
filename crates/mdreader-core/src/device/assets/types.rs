@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetReceipt {
     pub asset_id: String,
     pub document_id: String,
@@ -12,7 +12,7 @@ pub struct AssetReceipt {
     pub width: u32,
     pub height: u32,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetPending {
     pub intent_id: String,
     pub target: String,
@@ -20,7 +20,7 @@ pub struct AssetPending {
     pub received: u32,
     pub state: String,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetManifest {
     pub document_id: String,
     pub document_revision: String,
@@ -30,7 +30,7 @@ pub struct AssetManifest {
     pub targets: Vec<String>,
     pub targets_truncated: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetInventoryItem {
     pub asset_id: String,
     pub document_id: String,
@@ -40,7 +40,7 @@ pub struct AssetInventoryItem {
     pub received: u32,
     pub state: String,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetInventory {
     pub items: Vec<AssetInventoryItem>,
     pub reserved_bytes: u32,
@@ -49,7 +49,7 @@ pub struct AssetInventory {
 }
 
 /// One bounded chunk from a verified, revision-gated image session.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AssetChunk {
     pub offset: u32,
     pub base64: String,
