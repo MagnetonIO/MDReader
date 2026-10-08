@@ -456,7 +456,7 @@ fn exact_self_echo_receipts_apply_to_same_document_and_late_fence_rolls_back() {
             "UPDATE mdreader_sync_graph_dependencies SET rowid=rowid+100000 WHERE operation_id=?1 AND ordinal=0",
             "INSERT INTO mdreader_sync_graph_dependencies SELECT account,library,device,operation_id,ordinal+2,'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',context,envelope,bytes,receipt FROM mdreader_sync_graph_dependencies WHERE operation_id=?1 AND ordinal=0",
             "UPDATE mdreader_sync_graph_roots SET root_receipt=root_receipt||' ' WHERE operation_id=?1",
-            "UPDATE mdreader_sync_graph_schema SET version=2 WHERE EXISTS(SELECT 1 FROM mdreader_sync_graph_roots WHERE operation_id=?1)",
+            "UPDATE mdreader_sync_graph_schema SET version=99 WHERE EXISTS(SELECT 1 FROM mdreader_sync_graph_roots WHERE operation_id=?1)",
         ] {
             let tx = db.transaction().unwrap();
             let proof = mdreader_sync::published_graph_proof_in(
