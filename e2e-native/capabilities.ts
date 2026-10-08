@@ -27,14 +27,12 @@ import {
   readFileSync,
   readSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import { scanAndroidArchive } from './apk-manifest-scanner.mjs';
 import { E2E_BUNDLE_IDENTIFIER, E2E_PROCESS_NAME, FLOW_CONFIG } from './flows.ts';
+import { REPO_ROOT } from './repository.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, '..', '..', '..');
 const BUILD_MANIFEST_PREFIX = Buffer.from('MDREADER_E2E_BUILD_MANIFEST:');
 const BUILD_MANIFEST_SUFFIX = Buffer.from(':MDREADER_E2E_BUILD_MANIFEST_END');
 const MAX_ANDROID_NATIVE_LIBRARY_BYTES = 512 * 1024 * 1024;
