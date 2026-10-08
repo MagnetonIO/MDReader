@@ -14,7 +14,7 @@ or published; the new sync protocol has not deployed.
 | 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, typed incoming projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks. | Final cross-engine matrix for subsequent web features, native/mobile image device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging preserves exact records and rejection history. | Actual extension-host acceptance; archival CLI/presentation and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging and explicit bounded CLI reads preserve exact records and rejection history. | Actual extension-host acceptance; reader presentation and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
 
 ## Measured retrieval
 
@@ -128,8 +128,16 @@ rejection tombstones, and publishes a new read-only staging database. Four
 review behaviors join the affected crate's 11 passing unit tests and one CLI
 process check; crate-only strict Clippy passes. Archived approval never implies
 current graph membership, source authority or a verified present-day citation.
-Useful reviews still need explicit current-source binding, reader presentation,
-coordinated installed-profile migration and rollback before CatDB removal.
+CLI checkpoint `d28e594` exposes `stage-reviews`, `list-reviews` and `get-review`
+with mandatory selected export UUID/manifest hash, bounded all-or-nothing JSON
+serialization and sanitized errors. One actual subprocess fixture covers stage,
+replay, list/get, missing records, wrong identity, limits and unchanged staging
+bytes; it passes in 0.08 seconds. The existing export/verify process check passes
+in 0.04 seconds and crate-only strict Clippy passes. Output explicitly labels
+archival scope, unavailable current-document evidence and unperformed binding;
+raw rows remain separate. Useful reviews still need explicit current-source
+binding, reader presentation, coordinated installed-profile migration and
+rollback before CatDB removal.
 
 Mobile attachment checkpoints `423c5af` (native) and `a32fada` (UI) are committed.
 Ten actual app-native behaviors pass in 0.25 seconds; 13 mobile composition and
