@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 mod admission;
 mod application;
 mod graph;
+mod graph_proof;
 mod graph_read;
+pub use graph_proof::{graph_entry_in, outbox_revision_in, published_graph_in};
 mod graph_schema;
 #[cfg(test)]
 mod graph_tests;

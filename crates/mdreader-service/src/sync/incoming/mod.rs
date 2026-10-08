@@ -18,11 +18,16 @@ use uuid::Uuid;
 mod commit;
 mod content_commit;
 mod heads;
+pub(in crate::sync) use heads::Head;
+pub(in crate::sync) use identity::scope_key;
 mod identity;
 mod ledger;
 #[cfg(test)]
 mod materialization_gate;
+#[path = "../outgoing/selection.rs"]
+mod outgoing_selection;
 mod schema;
+mod self_echo;
 mod storage;
 mod transition_commit;
 mod transition_start;
@@ -174,6 +179,9 @@ impl IncomingCoordinator {
             mdreader_sync::incoming::IncomingPayload::Content(_)
         ) {
             return self.apply_transition(selected, input, &identity, &origin);
+        }
+        if let Some(outcome) = self.apply_self_echo(selected, input, &identity, &origin)? {
+            return Ok(outcome);
         }
         let document = identity::document(input)?;
         let start = self.short(selected, |owner, _| {
