@@ -254,8 +254,8 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         Request::Device { .. } => return Err(protocol_error("Device reading requires the desktop service")),
         Request::Catalog { .. } => return Err(protocol_error("Catalog requires the desktop service")),
         // Embedded dispatch has no composed private cache directories.
-        Request::ReaderOwnedSources => serde_json::to_value(catalog::ReaderOwnedSources::default()).map_err(|_|protocol_error("invalid reader scope"))?,
-        Request::CaptureReaderSources => serde_json::json!([]),
+        Request::ReaderOwnedSources => serde_json::to_value(catalog::ReaderOwnedSources::default()),
+        Request::CaptureReaderSources => Ok(serde_json::json!([])),
         Request::Reviews { .. }
         | Request::Provider { .. }
         | Request::ConfigureCapture { .. }
