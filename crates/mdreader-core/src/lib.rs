@@ -1,10 +1,11 @@
 //! MDReader-owned parsing, filesystem authority and SQLite reader service.
 //! No platform, provider credential, or CatDB type crosses this boundary.
+pub mod device;
 pub mod parse;
+mod query;
 pub mod scan;
 pub mod source_root;
 mod store;
-mod query;
 pub use parse::{
     parse_markdown, parse_markdown_with_limit, ParsedDocument, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };
