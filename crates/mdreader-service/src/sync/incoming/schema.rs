@@ -50,7 +50,7 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
         )
         .optional()
         .map_err(|_| Error::Schema)?;
-    if version != Some(1) {
+    if !matches!(version, Some(1 | 2)) {
         return Err(Error::Schema);
     }
     let columns = |name: &str| -> Result<Vec<String>> {
@@ -86,11 +86,74 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     {
         return Err(Error::Schema);
     }
-    let invalid: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_incoming_items_v1 WHERE length(identity)>16384 OR length(origin)>1024 OR length(receipt)>32768 OR length(scope)!=64 OR length(wire_item)!=36 OR length(wire_revision)!=36 OR sequence<=0 OR state NOT IN('reserved','applied') OR (state='reserved' AND receipt IS NOT NULL) OR (state='applied' AND (receipt IS NULL OR document_id IS NULL)))",[],|r|r.get(0))?;
+    let invalid: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_incoming_items_v1 WHERE length(CAST(identity AS BLOB))>16384 OR length(CAST(origin AS BLOB))>1024 OR length(CAST(receipt AS BLOB))>32768 OR length(scope)!=64 OR length(wire_item)!=36 OR length(wire_revision)!=36 OR sequence<=0 OR state NOT IN('reserved','applied') OR (state='reserved' AND receipt IS NOT NULL) OR (state='applied' AND (receipt IS NULL OR document_id IS NULL)))",[],|r|r.get(0))?;
     let count: u64 = tx.query_row("SELECT count(*) FROM native_incoming_items_v1", [], |r| {
         r.get(0)
     })?;
     if invalid || count > 4096 {
+        return Err(Error::Schema);
+    }
+    let migration = if version == Some(1) {
+        include_str!("migrations/001-incoming.sql")
+    } else {
+        include_str!("migrations/002-head-history.sql")
+    };
+    for name in ["native_incoming_schema_v1", "native_incoming_items_v1"] {
+        validate_layout(tx, name, migration)?;
+    }
+    if version == Some(1) {
+        tx.execute_batch(include_str!("migrations/002-head-history.sql"))?;
+        super::heads::backfill(tx)?;
+    }
+    validate_layout(
+        tx,
+        "native_incoming_heads_v2",
+        include_str!("migrations/002-head-history.sql"),
+    )?;
+    let invalid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_incoming_heads_v2 WHERE length(scope)!=64 OR length(wire_item)!=36 OR length(head_revision)!=36 OR length(document_id)!=36 OR (target_item IS NOT NULL AND length(target_item)!=36) OR kind NOT IN('content','user_state') OR (kind='content' AND target_item IS NOT NULL) OR (kind='user_state' AND target_item IS NULL) OR (baseline_generation IS NOT NULL AND (typeof(baseline_generation)!='integer' OR baseline_generation NOT BETWEEN 0 AND 9007199254740991)) OR (tombstone_revision IS NOT NULL AND length(tombstone_revision)!=36))",[],|r|r.get(0))?;
+    let count: u64 = tx.query_row("SELECT count(*) FROM native_incoming_heads_v2", [], |r| {
+        r.get(0)
+    })?;
+    if invalid || count > 4096 {
+        return Err(Error::Schema);
+    }
+    Ok(())
+}
+fn normalized(sql: &str) -> String {
+    let mut result = String::new();
+    let mut quoted = false;
+    let mut chars = sql.trim().trim_end_matches(';').chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' {
+            result.push(c);
+            if quoted && chars.peek() == Some(&'\'') {
+                result.push(chars.next().unwrap_or('\''));
+            } else {
+                quoted = !quoted;
+            }
+        } else if quoted || !c.is_ascii_whitespace() {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn validate_layout(tx: &Transaction<'_>, name: &str, migration: &str) -> Result<()> {
+    let expected = migration
+        .split(';')
+        .find(|sql| {
+            sql.trim_start()
+                .starts_with(&format!("CREATE TABLE {name}("))
+        })
+        .ok_or(Error::Schema)?;
+    let actual: String = tx
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name=?1 AND type='table'",
+            [name],
+            |r| r.get(0),
+        )
+        .map_err(|_| Error::Schema)?;
+    if normalized(&actual) != normalized(expected) {
         return Err(Error::Schema);
     }
     Ok(())

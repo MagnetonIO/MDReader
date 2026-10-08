@@ -67,11 +67,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum PendingReason {
     NotContiguous,
     Unstaged,
-    ParentsUnsupported,
-    ExistingAssociation,
-    UserStateUnsupported,
     TombstoneUnresolved,
     ReauthorizationRequired,
+    HeadConflict,
+    BaselineUnknown,
+    LocalStateChanged,
+    TargetUnavailable,
+    PositionUnsupported,
+    PositionStale,
+    Tombstoned,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +85,20 @@ pub struct AssetIdentity {
     pub mime: String,
     pub sha256: String,
     pub bytes: u32,
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    #[default]
+    Content,
+    UserState,
+    DocumentDeleted,
+    UserStateDeleted,
+}
+impl Operation {
+    pub(super) fn is_content(&self) -> bool {
+        *self == Self::Content
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,6 +111,12 @@ pub struct Receipt {
     pub markdown_sha256: String,
     pub assets: Vec<AssetIdentity>,
     pub materialized_assets: Vec<MaterializedAsset>,
+    #[serde(default, skip_serializing_if = "Operation::is_content")]
+    pub operation: Operation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<mdreader_core::device::state::RetirementRecord>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

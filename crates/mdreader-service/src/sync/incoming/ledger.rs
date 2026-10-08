@@ -29,12 +29,7 @@ pub(super) fn inspect(
         }
         return Ok(Some(Entry::Reserved));
     }
-    let occupied: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_incoming_items_v1 WHERE scope=?1 AND wire_item=?2)",
-        params![scope, identity.change.item_id],
-        |r| r.get(0),
-    )?;
-    Ok(occupied.then_some(Entry::Pending(PendingReason::ExistingAssociation)))
+    Ok(None)
 }
 pub(super) fn reserve(
     tx: &Transaction<'_>,
@@ -97,25 +92,46 @@ pub(super) fn verify(
     }
     Ok(())
 }
-fn validate_receipt(identity: &Identity, receipt: &Receipt) -> Result<()> {
+pub(super) fn validate_receipt(identity: &Identity, receipt: &Receipt) -> Result<()> {
     if receipt.sequence != identity.change.sequence
         || receipt.wire_item_id != identity.change.item_id
         || receipt.wire_revision != identity.change.revision_id
-        || receipt.document.name != identity.title
-        || receipt.markdown_sha256 != identity.markdown_sha256
-        || receipt.assets != identity.assets
+        || (receipt.operation == Operation::Content
+            && (receipt.document.name != identity.title
+                || receipt.markdown_sha256 != identity.markdown_sha256
+                || receipt.assets != identity.assets))
+        || (!identity.deleted
+            && receipt.operation == Operation::UserState
+            && identity.user_state.is_none())
+        || (identity.deleted
+            != matches!(
+                receipt.operation,
+                Operation::DocumentDeleted | Operation::UserStateDeleted
+            ))
         || uuid::Uuid::parse_str(&receipt.document.id).is_err()
+        || (!identity.deleted
+            && ((identity.user_state.is_some() && receipt.operation != Operation::UserState)
+                || (identity.user_state.is_none() && receipt.operation != Operation::Content)))
+        || (receipt.operation == Operation::DocumentDeleted) != receipt.retirement.is_some()
+        || receipt
+            .generation
+            .is_some_and(|value| value > 9_007_199_254_740_991)
         || receipt.document.revision.len() != 64
         || receipt.document.source_id.is_empty()
         || receipt.document.source_id.len() > 256
     {
         return Err(Error::Conflict);
     }
-    if receipt.materialized_assets.len() != identity.assets.len()
+    let assets = if receipt.operation == Operation::Content {
+        &identity.assets
+    } else {
+        &receipt.assets
+    };
+    if receipt.materialized_assets.len() != assets.len()
         || receipt
             .materialized_assets
             .iter()
-            .zip(&identity.assets)
+            .zip(assets)
             .any(|(a, expected)| {
                 &a.identity != expected
                     || uuid::Uuid::parse_str(&a.asset_id).is_err()

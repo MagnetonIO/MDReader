@@ -1,4 +1,4 @@
-//! Native owner composition for authenticated, contiguous NEW incoming content.
+//! Native owner composition for authenticated, contiguous immutable transitions.
 //! No RPC/plaintext/authentication bypass, profile discovery, network or renderer DTO.
 //! Construct one coordinator per live owner; reopening requires a fresh coordinator.
 use mdreader_core::{
@@ -15,10 +15,15 @@ use std::{
 };
 use uuid::Uuid;
 
+mod commit;
+mod content_commit;
+mod heads;
 mod identity;
 mod ledger;
 mod schema;
 mod storage;
+mod transition_commit;
+mod transition_start;
 mod types;
 pub use types::*;
 
@@ -135,13 +140,19 @@ impl IncomingCoordinator {
         }
         // Hashing/copy allocation is outside owner and authority/selection barriers.
         let identity = identity::Identity::from_prepared(input)?;
-        let document = identity::document(input)?;
         let origin = identity::origin(
             input.scope(),
             input,
             selected.permit.session_token(),
             selected.token,
         )?;
+        if !matches!(
+            input.payload(),
+            mdreader_sync::incoming::IncomingPayload::Content(_)
+        ) {
+            return self.apply_transition(selected, input, &identity, &origin);
+        }
+        let document = identity::document(input)?;
         let start = self.short(selected, |owner, _| {
             storage::start(
                 owner,
@@ -166,6 +177,41 @@ impl IncomingCoordinator {
                     index_queued,
                 })
             }),
+            storage::Start::Replacement {
+                plan,
+                current,
+                head,
+            } => {
+                let ready = plan.write(document)?.validate(
+                    self.runtime
+                        .validation_permit()
+                        .map_err(publication::PublicationError::from)?,
+                )?;
+                let current = current.verify()?;
+                self.short(selected, |owner, session| {
+                    let receipt = storage::commit_replacement(
+                        owner,
+                        input.scope(),
+                        &identity,
+                        &origin,
+                        storage::Replacement {
+                            ready: &ready,
+                            current: &current,
+                            head: &head,
+                        },
+                        |_| {
+                            session.check()?;
+                            Ok(())
+                        },
+                    )?;
+                    let index_queued = storage::queue_index(owner, &receipt);
+                    Ok(Outcome::Applied {
+                        receipt: Box::new(receipt),
+                        replayed: false,
+                        index_queued,
+                    })
+                })
+            }
             storage::Start::Plan(plan) => {
                 let ready = plan.write(document)?.validate(
                     self.runtime
@@ -183,6 +229,59 @@ impl IncomingCoordinator {
                         receipt: Box::new(receipt),
                         replayed: false,
                         index_queued,
+                    })
+                })
+            }
+        }
+    }
+    fn apply_transition(
+        &self,
+        selected: &SelectedIncoming,
+        input: &PreparedIncoming,
+        identity: &identity::Identity,
+        origin: &publication::IncomingOrigin,
+    ) -> Result<Outcome> {
+        let start = self.short(selected, |owner, _| {
+            transition_start::start(
+                owner,
+                input.scope(),
+                identity,
+                origin,
+                storage::Materialization {
+                    documents: &self.documents,
+                    assets: &self.assets,
+                    runtime: &self.runtime,
+                },
+            )
+        })?;
+        match start {
+            transition_start::Start::Pending(reason) => Ok(Outcome::Pending(reason)),
+            transition_start::Start::Applied(receipt) => Ok(Outcome::Applied {
+                receipt,
+                replayed: true,
+                index_queued: false,
+            }),
+            transition_start::Start::Plan(plan) => {
+                let verified = plan.verify()?;
+                if let Some(reason) = transition_commit::pending(&verified) {
+                    return Ok(Outcome::Pending(reason));
+                }
+                self.short(selected, |owner, session| {
+                    let receipt = transition_commit::commit(
+                        owner,
+                        input.scope(),
+                        identity,
+                        origin,
+                        &verified,
+                        |_| {
+                            session.check()?;
+                            Ok(())
+                        },
+                    )?;
+                    Ok(Outcome::Applied {
+                        receipt: Box::new(receipt),
+                        replayed: false,
+                        index_queued: false,
                     })
                 })
             }
