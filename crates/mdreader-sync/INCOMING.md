@@ -48,10 +48,12 @@ URLs or transport logs.
 ## Coordinated owner gate
 
 This slice contains no mutation callback or `mark_applied` call. Selected imports
-and assets currently use app-owned durable files/metadata. Extract that ownership
-into core with versioned migrations preserving grants/revocation, pending intents,
-pins and positions; do not add parallel permanent sync documents or dual writes.
-Remote UUID revisions and native content-hash revisions need explicit mapping.
+and assets now have portable core owners, preserving existing durable files,
+metadata, grants/revocation, pending intents, pins and positions. Asset publication
+still commits its own transaction. Incoming apply needs a caller-owned transaction
+seam and durable intent origin before using these owners; do not add parallel
+permanent sync documents or dual writes. Remote UUID revisions and native
+content-hash revisions need explicit mapping.
 
 Owner-reserved, fsynced exact files precede atomic publication. One owner SQLite
 transaction must commit originals/assets metadata, local edit/state CAS, verified
@@ -61,6 +63,28 @@ Rebuildable indexing follows commit. Conflicts preserve local originals/pins and
 hold applied; document tombstone authority must survive conflicting deletion to
 block old user-state resurrection. Revocation/scope changes invalidate publication.
 Only actual durable applied receipts permit acknowledgment.
+
+The next bounded apply slice should accept one contiguous new content revision
+with verified selected assets. Replacements, user state and opaque tombstones
+must hold the cursor until their owner/conflict transitions exist. Before files
+are written, persist a bounded incoming intent distinct from local selection:
+ordinary import recovery must never automatically activate interrupted incoming
+bytes. Preserve BOM/CRLF and native raw-BLAKE3 identity; record the scoped wire
+association, title and asset-manifest identity separately.
+
+Capture the verified scope, session epoch, selected-profile generation and
+document-absence CAS. Revalidate all four after filesystem/network/custody waits;
+same-account logout/login and same-value selection changes cannot regain an old
+operation's authority. Fsync exact files and perform bounded pixel decoding outside
+the owner lock. One `mark_applied` transaction then publishes source/document/asset
+authority, association, completed intent, receipt and applied cursor. Index after
+commit and acknowledge only that durable receipt. Scope identity alone is not an
+epoch or selection-change fence.
+
+Focused acceptance needs exact fixture/reopen preservation, interrupted incoming
+that local recovery cannot publish, rollback of metadata/receipt/cursor, session
+epoch changes and local-ID collisions, and unsupported state/deletion retaining
+the contiguous cursor. These are planned gates, not implemented apply evidence.
 
 Dependency network fetching, portable owner projection, conflict UI, complete
 native custody/pairing/recovery, real issuer and mobile acceptance remain gates.

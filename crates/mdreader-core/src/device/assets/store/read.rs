@@ -2,6 +2,9 @@ use super::*;
 
 impl AssetStore {
     pub(super) fn read_file(&self, item: &Item) -> Result<Vec<u8>> {
+        if item.bytes == 0 || item.bytes > MAX_FILE || item.received > item.bytes {
+            return Err(unavailable());
+        }
         let file = self
             .root
             .open_optional_file_relative(&item.filename())
@@ -44,6 +47,7 @@ impl AssetStore {
             receipt: item.receipt()?,
             manifest: manifest.into(),
             root: self.root.clone(),
+            owner: self.owner.clone(),
         })
     }
 }

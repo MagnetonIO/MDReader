@@ -6,6 +6,7 @@ pub struct PreparedSnapshot {
     pub(super) receipt: AssetReceipt,
     pub(super) manifest: String,
     pub(super) root: SourceRoot,
+    pub(super) owner: Arc<()>,
 }
 pub struct VerifiedSnapshot {
     pub(super) _permit: ReadPermit,
@@ -13,6 +14,7 @@ pub struct VerifiedSnapshot {
     pub(super) receipt: AssetReceipt,
     pub(super) manifest: String,
     pub(super) root: SourceRoot,
+    pub(super) owner: Arc<()>,
 }
 impl PreparedSnapshot {
     pub fn verify(self) -> Result<VerifiedSnapshot> {
@@ -26,6 +28,7 @@ impl PreparedSnapshot {
             receipt: self.receipt,
             manifest: self.manifest,
             root: self.root,
+            owner: self.owner,
         })
     }
 }
@@ -33,6 +36,8 @@ struct Session {
     snapshot: VerifiedSnapshot,
     expires: Instant,
 }
+/// One owner profile: at most two read permits and one image validation at a time.
+/// Clones share limits and sessions; use fresh instances after owner reopen.
 #[derive(Default, Clone)]
 pub struct AssetRuntime {
     roots: Arc<Mutex<Option<AssetStore>>>,
@@ -53,6 +58,16 @@ impl Drop for ValidationPermit {
     }
 }
 impl AssetRuntime {
+    fn bind_assets(&self, store: &mut ReaderStore, assets: &AssetStore) -> Result<()> {
+        assets.verify_owner(store)?;
+        let mut binding = self.roots.lock().map_err(|_| unavailable())?;
+        if let Some(current) = binding.as_ref() {
+            current.same_owner_root(&assets.owner, &assets.root)?;
+        } else {
+            *binding = Some(assets.clone());
+        }
+        Ok(())
+    }
     pub fn assets(&self, store: &mut ReaderStore, directory: &Path) -> Result<AssetStore> {
         let mut root = self.roots.lock().map_err(|_| unavailable())?;
         if root.is_none() {
@@ -62,7 +77,7 @@ impl AssetRuntime {
         if assets.root.path != directory.canonicalize().map_err(|_| unavailable())? {
             return Err(unavailable());
         }
-        assets.verify()?;
+        assets.verify_owner(store)?;
         Ok(assets.clone())
     }
     pub fn read_permit(&self, now: Instant) -> Result<ReadPermit> {
@@ -74,13 +89,13 @@ impl AssetRuntime {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 2).then_some(count + 1)
             })
-            .map_err(|_| "Two image reads are already active.".to_string())?;
+            .map_err(|_| Error::ReadsBusy)?;
         Ok(ReadPermit(self.reading.clone()))
     }
     pub fn validation_permit(&self) -> Result<ValidationPermit> {
         self.validating
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "An image is being validated. Try again when it completes.".to_string())?;
+            .map_err(|_| Error::ValidationBusy)?;
         Ok(ValidationPermit(self.validating.clone()))
     }
     pub fn install(
@@ -90,12 +105,17 @@ impl AssetRuntime {
         snapshot: VerifiedSnapshot,
         now: Instant,
     ) -> Result<(String, AssetReceipt)> {
+        self.bind_assets(store, assets)?;
         let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
         sessions.retain(|_, session| session.expires > now);
         if sessions.len() >= 2 {
-            return Err("Two image reads are already active.".into());
+            return Err(Error::ReadsBusy);
         }
-        snapshot.root.verify().map_err(|_| unavailable())?;
+        assets.verify_owner(store)?;
+        assets.same_owner_root(&snapshot.owner, &snapshot.root)?;
+        if !Arc::ptr_eq(&snapshot._permit.0, &self.reading) {
+            return Err(unavailable());
+        }
         assets.check_selection(store, &snapshot.receipt, &snapshot.manifest)?;
         let id = uuid::Uuid::new_v4().to_string();
         let receipt = snapshot.receipt.clone();
@@ -115,22 +135,24 @@ impl AssetRuntime {
         id: &str,
         offset: u32,
         now: Instant,
-    ) -> Result<AssetReply> {
+    ) -> Result<AssetChunk> {
         valid_id(id)?;
+        if let Err(error) = self.bind_assets(store, assets) {
+            self.sessions.lock().map_err(|_| unavailable())?.remove(id);
+            return Err(error);
+        }
         let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
         sessions.retain(|_, session| session.expires > now);
         let session = sessions.get(id).ok_or_else(unavailable)?;
         let snapshot = &session.snapshot;
-        let current = snapshot
-            .root
-            .verify()
-            .map_err(|_| unavailable())
+        let current = assets
+            .same_owner_root(&snapshot.owner, &snapshot.root)
             .and_then(|()| assets.check_selection(store, &snapshot.receipt, &snapshot.manifest));
-        let valid = current.is_ok();
-        if !valid
-            || offset as usize >= snapshot.bytes.len()
-            || !(offset as usize).is_multiple_of(MAX_CHUNK)
-        {
+        if let Err(error) = current {
+            sessions.remove(id);
+            return Err(error);
+        }
+        if offset as usize >= snapshot.bytes.len() || !(offset as usize).is_multiple_of(MAX_CHUNK) {
             sessions.remove(id);
             return Err(unavailable());
         }
@@ -140,7 +162,7 @@ impl AssetRuntime {
         if complete {
             sessions.remove(id);
         }
-        Ok(AssetReply::Chunk {
+        Ok(AssetChunk {
             offset,
             base64,
             complete,

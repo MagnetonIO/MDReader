@@ -5,11 +5,13 @@ pub struct PreparedAsset {
     pub(super) bytes: Vec<u8>,
     pub(super) item: Item,
     pub(super) root: SourceRoot,
+    pub(super) owner: Arc<()>,
 }
 pub struct ValidatedAsset {
     pub(super) _permit: ValidationPermit,
     pub(super) item: Item,
     pub(super) root: SourceRoot,
+    pub(super) owner: Arc<()>,
     pub(super) hash: String,
     pub(super) mime: String,
     pub(super) width: u32,
@@ -19,12 +21,11 @@ impl PreparedAsset {
     /// Full PNG/JPEG decode is mandatory. Dimensions/output bytes are strict;
     /// the image crate's decoder allocation budget excludes allocator overhead.
     pub fn validate(self) -> Result<ValidatedAsset> {
-        let format = image::guess_format(&self.bytes)
-            .map_err(|_| "Select a valid PNG or JPEG image.".to_string())?;
+        let format = image::guess_format(&self.bytes).map_err(|_| Error::InvalidImage)?;
         let mime = match format {
             image::ImageFormat::Png => "image/png",
             image::ImageFormat::Jpeg => "image/jpeg",
-            _ => return Err("Only PNG and JPEG images are supported.".into()),
+            _ => return Err(Error::UnsupportedImage),
         };
         // Reject APNG before a browser can interpret multiple unvalidated frames.
         if format == image::ImageFormat::Png {
@@ -41,7 +42,7 @@ impl PreparedAsset {
                     .filter(|end| *end <= self.bytes.len())
                     .ok_or_else(unavailable)?;
                 if &self.bytes[offset + 4..offset + 8] == b"acTL" {
-                    return Err("Animated PNG assets are unsupported.".into());
+                    return Err(Error::AnimatedPng);
                 }
                 offset = end;
             }
@@ -59,13 +60,11 @@ impl PreparedAsset {
             || height > 4096
             || u64::from(width) * u64::from(height) > 4_000_000
         {
-            return Err("Image exceeds 4096 pixels per side or 4 million pixels.".into());
+            return Err(Error::ImageBounds);
         }
         let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&self.bytes), format);
         reader.limits(limits);
-        let decoded = reader
-            .decode()
-            .map_err(|_| "Image could not be fully decoded within the asset limits.".to_string())?;
+        let decoded = reader.decode().map_err(|_| Error::DecodeFailed)?;
         if decoded.width() != width
             || decoded.height() != height
             || decoded.as_bytes().len() > 16_000_000
@@ -77,6 +76,7 @@ impl PreparedAsset {
             _permit: self._permit,
             item: self.item,
             root: self.root,
+            owner: self.owner,
             hash: digest(&self.bytes),
             mime: mime.into(),
             width,

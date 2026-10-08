@@ -17,7 +17,7 @@ impl AssetStore {
             || current.manifest != expected
             || !current.targets.contains(&target)
         {
-            return Err("Asset selection or manifest changed.".into());
+            return Err(Error::SelectionChanged);
         }
         let item = Item {
             id: uuid::Uuid::new_v4().to_string(),
@@ -33,7 +33,7 @@ impl AssetStore {
             width: None,
             height: None,
         };
-        store.with_library_connection(|db| {
+        store.with_library_connection(|db| -> Result<()> {
             let tx = db.transaction()?;
             let (count, total): (u64, u64) = tx.query_row(
                 "SELECT count(*), coalesce(sum(bytes),0) FROM device_asset_items_v1",
@@ -45,14 +45,18 @@ impl AssetStore {
             )?;
             if count >= 512 || total + u64::from(bytes) > MAX_LIBRARY_BYTES
                 || doc_count >= 8 || doc_bytes + u64::from(bytes) > MAX_DOC_BYTES {
-                return Err(rusqlite::Error::InvalidParameterName("quota".into()));
+                return Err(Error::Quota);
             }
             tx.execute(
                 "INSERT INTO device_asset_items_v1(id,document_id,revision,target,bytes,state,expected_manifest) VALUES(?1,?2,?3,?4,?5,'reserved',?6)",
                 params![item.id,item.doc,item.revision,item.target,item.bytes,item.expected],
-            )?;
-            tx.commit()
-        }).map_err(|_| "Asset quota reached or a selection for this target is already pending. Remove or discard unused assets first.".to_string())?;
+            ).map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(code, _) if matches!(code.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) => Error::Quota,
+                _ => Error::Metadata,
+            })?;
+            tx.commit()?;
+            Ok(())
+        })?;
         self.root
             .create_new_relative(&item.filename())
             .map_err(|_| unavailable())?
@@ -69,11 +73,9 @@ impl AssetStore {
         encoded: &str,
     ) -> Result<u32> {
         if encoded.len() > MAX_BASE64 {
-            return Err("Asset chunk exceeds 64 KiB.".into());
+            return Err(Error::ChunkBounds);
         }
-        let chunk = STANDARD
-            .decode(encoded)
-            .map_err(|_| "Invalid asset chunk.".to_string())?;
+        let chunk = STANDARD.decode(encoded).map_err(|_| Error::InvalidChunk)?;
         let item = self.item(store, id)?;
         document(store, &item.doc, &item.revision)?;
         if item.state != "reserved"
@@ -82,7 +84,7 @@ impl AssetStore {
             || u64::from(offset) + chunk.len() as u64 > u64::from(item.bytes)
             || offset > item.received
         {
-            return Err("Invalid asset chunk offset.".into());
+            return Err(Error::InvalidOffset);
         }
         let mut file = self
             .root
@@ -102,13 +104,13 @@ impl AssetStore {
             || (offset < item.received
                 && u64::from(offset) + chunk.len() as u64 > u64::from(item.received))
         {
-            return Err("Asset chunk replay conflicts.".into());
+            return Err(Error::ReplayConflict);
         }
         if offset < item.received {
             return Ok(item.received);
         }
         if size > u64::from(offset) + chunk.len() as u64 {
-            return Err("Asset chunk recovery requires the original offset.".into());
+            return Err(Error::RecoveryOffset);
         }
         let mut append = self
             .root
@@ -133,13 +135,14 @@ impl AssetStore {
         let item = self.item(store, id)?;
         document(store, &item.doc, &item.revision)?;
         if item.state != "reserved" || item.received != item.bytes {
-            return Err("Asset upload is incomplete.".into());
+            return Err(Error::IncompleteUpload);
         }
         Ok(PreparedAsset {
             _permit: permit,
             bytes: self.read_file(&item)?,
             item,
             root: self.root.clone(),
+            owner: self.owner.clone(),
         })
     }
     pub fn publish(
@@ -147,17 +150,15 @@ impl AssetStore {
         store: &mut ReaderStore,
         validated: ValidatedAsset,
     ) -> Result<(AssetReceipt, String)> {
-        self.verify()?;
-        validated.root.verify().map_err(|_| unavailable())?;
+        self.verify_owner(store)?;
+        self.same_owner_root(&validated.owner, &validated.root)?;
         let item = self.item(store, &validated.item.id)?;
         document(store, &item.doc, &item.revision)?;
         let items = self.items(store, &item.doc, &item.revision)?;
         if item.state != "reserved"
             || Self::stamp(store, &item.doc, &item.revision, &items)? != item.expected
         {
-            return Err(
-                "Asset manifest changed. Discard this pending selection and try again.".into(),
-            );
+            return Err(Error::ManifestChanged);
         }
         store.with_library_connection(|db| {
             let tx = db.transaction()?;

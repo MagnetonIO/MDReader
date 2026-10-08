@@ -8,6 +8,9 @@ use std::{
     path::Path,
 };
 
+#[cfg(feature = "device-assets")]
+pub mod assets;
+
 mod documents;
 mod error;
 mod imports;

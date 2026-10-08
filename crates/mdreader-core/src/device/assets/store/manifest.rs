@@ -7,7 +7,7 @@ impl AssetStore {
         id: &str,
         revision: &str,
     ) -> Result<AssetManifest> {
-        self.verify()?;
+        self.verify_owner(store)?;
         let markdown = document(store, id, revision)?;
         let items = self.items(store, id, revision)?;
         let manifest = Self::stamp(store, id, revision, &items)?;
@@ -42,17 +42,17 @@ impl AssetStore {
     }
     /// Metadata only: no original document reads, inferred source grants or image decode.
     pub fn inventory(&self, store: &mut ReaderStore) -> Result<AssetInventory> {
-        self.verify()?;
+        self.verify_owner(store)?;
         let items = store.with_library_connection(|db| {
             db.prepare(&format!("SELECT {ITEM_COLUMNS} FROM device_asset_items_v1 ORDER BY document_id,revision,target,id LIMIT 513"))?
                 .query_map([], item_row)?.collect::<rusqlite::Result<Vec<_>>>()
         }).map_err(sql)?;
         if items.len() > 512 {
-            return Err("Device asset inventory exceeds its supported bound.".into());
+            return Err(Error::InventoryBounds);
         }
         let reserved_bytes: u64 = items.iter().map(|i| u64::from(i.bytes)).sum();
         if reserved_bytes > MAX_LIBRARY_BYTES {
-            return Err("Device asset inventory exceeds its supported quota.".into());
+            return Err(Error::InventoryQuota);
         }
         let reserved_bytes = u32::try_from(reserved_bytes).map_err(|_| unavailable())?;
         let items = items

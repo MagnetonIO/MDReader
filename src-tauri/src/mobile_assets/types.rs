@@ -1,4 +1,5 @@
-use super::*;
+use mdreader_core::device::assets as core;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -123,4 +124,81 @@ pub enum AssetReply {
         complete: bool,
     },
     Complete,
+}
+
+impl From<core::AssetReceipt> for AssetReceipt {
+    fn from(value: core::AssetReceipt) -> Self {
+        Self {
+            asset_id: value.asset_id,
+            document_id: value.document_id,
+            document_revision: value.document_revision,
+            target: value.target,
+            content_hash: value.content_hash,
+            mime: value.mime,
+            bytes: value.bytes,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+impl From<core::AssetPending> for AssetPending {
+    fn from(value: core::AssetPending) -> Self {
+        Self {
+            intent_id: value.intent_id,
+            target: value.target,
+            bytes: value.bytes,
+            received: value.received,
+            state: value.state,
+        }
+    }
+}
+
+impl From<core::AssetManifest> for AssetManifest {
+    fn from(value: core::AssetManifest) -> Self {
+        Self {
+            document_id: value.document_id,
+            document_revision: value.document_revision,
+            manifest: value.manifest,
+            assets: value.assets.into_iter().map(Into::into).collect(),
+            pending: value.pending.into_iter().map(Into::into).collect(),
+            targets: value.targets,
+            targets_truncated: value.targets_truncated,
+        }
+    }
+}
+
+impl From<core::AssetInventoryItem> for AssetInventoryItem {
+    fn from(value: core::AssetInventoryItem) -> Self {
+        Self {
+            asset_id: value.asset_id,
+            document_id: value.document_id,
+            document_revision: value.document_revision,
+            target: value.target,
+            bytes: value.bytes,
+            received: value.received,
+            state: value.state,
+        }
+    }
+}
+
+impl From<core::AssetInventory> for AssetInventory {
+    fn from(value: core::AssetInventory) -> Self {
+        Self {
+            items: value.items.into_iter().map(Into::into).collect(),
+            reserved_bytes: value.reserved_bytes,
+            max_bytes: value.max_bytes,
+            max_items: value.max_items,
+        }
+    }
+}
+
+impl From<core::AssetChunk> for AssetReply {
+    fn from(value: core::AssetChunk) -> Self {
+        Self::Chunk {
+            offset: value.offset,
+            base64: value.base64,
+            complete: value.complete,
+        }
+    }
 }

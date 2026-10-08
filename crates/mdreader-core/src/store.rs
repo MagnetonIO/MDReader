@@ -119,6 +119,8 @@ pub struct Reference {
 pub struct ReaderStore {
     library: Connection,
     index: Connection,
+    #[cfg(feature = "device-assets")]
+    owner_session: std::sync::Arc<()>,
 }
 const LIBRARY_SCHEMA: &str = "
 CREATE TABLE sources(id TEXT PRIMARY KEY, name TEXT NOT NULL, path BLOB NOT NULL,
@@ -445,7 +447,12 @@ impl ReaderStore {
         projection::initialize(&library)?;
         let index=open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
-        Ok(Self {library,index})
+        Ok(Self {
+            library,
+            index,
+            #[cfg(feature = "device-assets")]
+            owner_session: std::sync::Arc::new(()),
+        })
     }
     /// Read existing owner-managed databases without creating or migrating them.
     pub fn open_readonly(directory: &Path) -> Result<Self> {
@@ -454,7 +461,17 @@ impl ReaderStore {
         projection::check_schema(&library)?;
         let index=open_readonly_database(&directory.join("index.sqlite"), INDEX_VERSION)?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
-        Ok(Self {library,index})
+        Ok(Self {
+            library,
+            index,
+            #[cfg(feature = "device-assets")]
+            owner_session: std::sync::Arc::new(()),
+        })
+    }
+    /// Ephemeral capability for this live owner; reopening needs fresh sessions.
+    #[cfg(feature = "device-assets")]
+    pub(crate) fn device_owner_session(&self) -> std::sync::Arc<()> {
+        self.owner_session.clone()
     }
     /// Borrow the owner's durable connection, including for sync transactions.
     pub fn with_library_connection<T>(&mut self, operation: impl FnOnce(&mut Connection) -> T) -> T {

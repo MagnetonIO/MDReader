@@ -9,7 +9,7 @@ or published; the new sync protocol has not deployed.
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
-| 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. Existing device documents/import recovery/pins/positions now use a portable core owner and namespaced migration guard. | Whole app still contains legacy CatDB paths; portable asset owner, incoming owner transitions, transport cancellation, migration and host acceptance remain. |
+| 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. Existing device documents/import recovery/pins/positions and selected PNG/JPEG assets now use portable core owners with schema and live-owner guards. | Whole app still contains legacy CatDB paths; incoming transactional owner transitions, transport cancellation, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings, review/apply/remove configuration and explicit selected-event backfill UI implemented. | Actual supported-client installation/trust, desktop backfill UX and live cross-agent acceptance; Windows capture implementation and broader echo cases. |
 | 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, portable incoming owner projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks; one synthetic PNG passed actual picker/render/restart/cleanup acceptance. | Final cross-engine matrix for subsequent web features, newer mobile layout/JPEG/owner-migration device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
@@ -260,3 +260,28 @@ accepted separately before enabling production sync.
   Clippy also passed. No broad app suite, model benchmark or second packaging
   run was used to verify this extraction; packaged owner-upgrade acceptance
   remains open.
+
+- Portable selected assets now live in `mdreader-core::device::assets` behind
+  optional `device-assets`; native code retains wire DTOs and worker scheduling.
+  The old native implementation/tests are moved, with identical SQL/files/quotas,
+  rather than duplicated. Errors are typed and fixed. Cached stores, prepared
+  publications, snapshots and read permits are fenced to their live owner/root
+  and runtime; current asset schema/root authority is revalidated. Independent
+  4 MiB bounds precede allocation. Two focused ownership regressions observed
+  RED then GREEN; all 13 asset tests, 62 default-core tests (manual performance
+  case ignored), and strict all-target core Clippy with/without the feature pass.
+  Default core and service dependency trees exclude the decoder. Lockfile changes
+  only existing dependency edges, with no package/version/checksum drift.
+  An actual embedded-owner/native-dispatch regression reproduced Close failure
+  after asset-directory replacement, then passed after Close stopped reacquiring
+  storage; both snapshot permits are released and exact copied PNG bytes remain.
+  The RED app compile took 31.55 seconds and the warm fix compile 9.86 seconds;
+  only that regression ran. The exact binding generator passed from the same
+  final artifact; generated wire contracts are unchanged. Builds were serialized
+  with two jobs; no full app suite, model benchmark or packaging run was used.
+  Static independent review and scoped formatting/diff checks pass. Existing
+  malformed prototype schema-adoption and pre-acquisition native Chunk retention
+  limits are recorded in [the owner contract](device-library.md). Packaged upgrade,
+  supplied-transaction incoming publication and live sync remain open; the
+  [next bounded incoming gates](../../crates/mdreader-sync/INCOMING.md) are design,
+  not applied/deployed evidence.

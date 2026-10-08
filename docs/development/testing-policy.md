@@ -46,6 +46,8 @@ cargo test -p mdreader-core --test sqlite_library repeated_admission
 cargo test -p mdreader-service --lib
 # Portable device owner; no desktop/provider/release suite or model
 CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-core --lib device:: -- --test-threads=1
+# Optional selected-image owner; synthetic images and real SQLite only
+CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-core --features device-assets --lib device::assets:: -- --test-threads=1
 pnpm --filter @mdreader/app test src/App.mobile.test.tsx
 # Indexing controls presentation/acknowledgment
 pnpm --filter @mdreader/app test src/shell/IndexingPanel.test.tsx

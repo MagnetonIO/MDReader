@@ -26,25 +26,26 @@ impl AssetStore {
                 & 0o077
                 != 0
             {
-                return Err("Asset directory privacy could not be verified.".into());
+                return Err(Error::Privacy);
             }
         }
         let directory = directory.canonicalize().map_err(|_| unavailable())?;
-        store.with_library_connection(|db| {
+        store.with_library_connection(|db| -> Result<()> {
             let tx = db.transaction()?;
             tx.execute_batch("CREATE TABLE IF NOT EXISTS device_asset_meta_v1(key TEXT PRIMARY KEY,value TEXT NOT NULL);")?;
             let version: Option<String> = tx.query_row(
                 "SELECT value FROM device_asset_meta_v1 WHERE key='schema_version'", [], |r| r.get(0),
             ).optional()?;
             if version.as_deref().is_some_and(|version| version != "1") {
-                return Err(rusqlite::Error::InvalidParameterName("unsupported asset schema".into()));
+                return Err(Error::UnsupportedSchema);
             }
             // Initial version and unpublished prototype layout: preserve rows,
             // create missing additive tables/indexes and publish the marker atomically.
             tx.execute_batch(include_str!("schema-v1.sql"))?;
             tx.execute("INSERT OR IGNORE INTO device_asset_meta_v1(key,value) VALUES('schema_version','1')", [])?;
-            tx.commit()
-        }).map_err(sql)?;
+            tx.commit()?;
+            Ok(())
+        })?;
         let stored: Option<String> = store
             .with_library_connection(|db| {
                 db.query_row(
@@ -72,6 +73,9 @@ impl AssetStore {
                 .map_err(sql)?;
             root
         };
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            owner: store.device_owner_session(),
+        })
     }
 }

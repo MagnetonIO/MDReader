@@ -30,7 +30,7 @@ tauri-build = { version = "2", features = [] }
 serde_json = { workspace = true }
 
 [dependencies]
-mdreader-core = { path = "../crates/mdreader-core" }
+mdreader-core = { path = "../crates/mdreader-core", features = ["device-assets"] }
 mdreader-provider = { path = "../crates/mdreader-provider" }
 mdreader-credentials = { path = "../crates/mdreader-credentials" }
 mdreader-service = { path = "../crates/mdreader-service" }
@@ -53,7 +53,6 @@ zeroize = { version = "1", features = ["derive"] }
 notify-debouncer-mini = "0.7.0"
 blake3 = "1.8.5"
 base64 = "0.22"
-image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 hmac = "0.12"
 sha2 = "0.10"
 subtle = "2"

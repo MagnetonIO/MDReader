@@ -4,7 +4,7 @@ use super::*;
 /// consumer cannot reinterpret a target. Qualified relative paths remain exact.
 pub(super) fn canonical_target(raw: &str) -> Result<String> {
     if raw.is_empty() || raw.len() > 1536 {
-        return Err("Invalid relative asset target.".into());
+        return Err(Error::InvalidTarget);
     }
     let input = raw.as_bytes();
     let mut bytes = Vec::with_capacity(input.len());
@@ -29,14 +29,14 @@ pub(super) fn canonical_target(raw: &str) -> Result<String> {
             .any(|c| c.is_control() || matches!(c, ':' | '\\' | '?' | '#' | '%'))
         || value.starts_with('/')
     {
-        return Err("Invalid relative asset target.".into());
+        return Err(Error::InvalidTarget);
     }
     let parts: Vec<_> = value.split('/').filter(|part| *part != ".").collect();
     if parts.is_empty()
         || parts.len() > 8
         || parts.iter().any(|part| part.is_empty() || *part == "..")
     {
-        return Err("Invalid relative asset target.".into());
+        return Err(Error::InvalidTarget);
     }
     Ok(parts.join("/"))
 }
@@ -49,12 +49,15 @@ pub(super) fn document(store: &mut ReaderStore, id: &str, revision: &str) -> Res
     {
         return Err(unavailable());
     }
-    mdreader_core::device::read(store, id, Some(revision))
+    crate::device::read(store, id, Some(revision))
         .map(|body| body.markdown)
-        .map_err(|_| unavailable())
+        .map_err(|error| match error {
+            crate::device::Error::UnsupportedSchema => Error::UnsupportedDocumentSchema,
+            _ => unavailable(),
+        })
 }
 pub(super) fn image_targets(markdown: &str) -> Vec<String> {
-    let parsed = mdreader_core::parse_markdown(markdown, "document.md");
+    let parsed = crate::parse_markdown(markdown, "document.md");
     let mut targets: Vec<_> = parsed
         .sections
         .iter()

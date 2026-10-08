@@ -4,21 +4,24 @@ use crate::{
     mobile_assets::{AssetReply, AssetRequest, AssetRuntime},
     reader::ReaderBackend,
 };
+use mdreader_core::device::assets;
 use std::{path::PathBuf, time::Instant};
 use tauri::Manager;
 
 async fn owner<T: Send + 'static>(
     backend: ReaderBackend,
-    operation: impl FnOnce(&mut mdreader_core::ReaderStore) -> Result<T, String> + Send + 'static,
+    operation: impl FnOnce(&mut mdreader_core::ReaderStore) -> assets::Result<T> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(move || backend.with_mobile_store(operation))
-        .await
-        .map_err(|_| "Device asset worker failed.".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        backend.with_mobile_store(|store| operation(store).map_err(|error| error.to_string()))
+    })
+    .await
+    .map_err(|_| "Device asset worker failed.".to_string())?
 }
 async fn work<T: Send + 'static>(
-    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+    operation: impl FnOnce() -> assets::Result<T> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(operation)
+    tauri::async_runtime::spawn_blocking(move || operation().map_err(|error| error.to_string()))
         .await
         .map_err(|_| "Device asset worker failed.".to_string())?
 }
@@ -31,8 +34,14 @@ async fn dispatch(
     request: AssetRequest,
 ) -> Result<AssetReply, String> {
     match request {
+        AssetRequest::Close { session_id } => runtime
+            .close(&session_id)
+            .map(|()| AssetReply::Complete)
+            .map_err(|error| error.to_string()),
         AssetRequest::Commit { intent_id } => {
-            let permit = runtime.validation_permit()?;
+            let permit = runtime
+                .validation_permit()
+                .map_err(|error| error.to_string())?;
             let prepare_runtime = runtime.clone();
             let prepare_directory = directory.clone();
             let prepared = owner(backend.clone(), move |store| {
@@ -45,7 +54,10 @@ async fn dispatch(
             owner(backend, move |store| {
                 let assets = runtime.assets(store, &directory)?;
                 let (receipt, manifest) = assets.publish(store, validated)?;
-                Ok(AssetReply::Published { receipt, manifest })
+                Ok(AssetReply::Published {
+                    receipt: receipt.into(),
+                    manifest,
+                })
             })
             .await
         }
@@ -55,7 +67,9 @@ async fn dispatch(
             asset_id,
             manifest,
         } => {
-            let permit = runtime.read_permit(Instant::now())?;
+            let permit = runtime
+                .read_permit(Instant::now())
+                .map_err(|error| error.to_string())?;
             let prepare_runtime = runtime.clone();
             let prepare_directory = directory.clone();
             let prepared = owner(backend.clone(), move |store| {
@@ -71,7 +85,7 @@ async fn dispatch(
                     runtime.install(&assets, store, snapshot, Instant::now())?;
                 Ok(AssetReply::Opened {
                     session_id,
-                    receipt,
+                    receipt: receipt.into(),
                 })
             })
             .await
@@ -81,7 +95,7 @@ async fn dispatch(
                 let assets = runtime.assets(store, &directory)?;
                 match other {
                     AssetRequest::Inventory => Ok(AssetReply::Inventory {
-                        value: assets.inventory(store)?,
+                        value: assets.inventory(store)?.into(),
                     }),
                     AssetRequest::Forget { asset_id } => {
                         assets.forget(store, &asset_id)?;
@@ -91,7 +105,7 @@ async fn dispatch(
                         document_id,
                         revision,
                     } => Ok(AssetReply::Manifest {
-                        value: assets.manifest(store, &document_id, &revision)?,
+                        value: assets.manifest(store, &document_id, &revision)?.into(),
                     }),
                     AssetRequest::Begin {
                         document_id,
@@ -137,16 +151,12 @@ async fn dispatch(
                         )?;
                         Ok(AssetReply::Complete)
                     }
-                    AssetRequest::Chunk { session_id, offset } => {
-                        runtime.chunk(&assets, store, &session_id, offset, Instant::now())
-                    }
-                    AssetRequest::Close { session_id } => {
-                        runtime.close(&session_id)?;
-                        Ok(AssetReply::Complete)
-                    }
-                    AssetRequest::Commit { .. } | AssetRequest::Open { .. } => {
-                        Err("Invalid device asset operation.".into())
-                    }
+                    AssetRequest::Chunk { session_id, offset } => runtime
+                        .chunk(&assets, store, &session_id, offset, Instant::now())
+                        .map(Into::into),
+                    AssetRequest::Commit { .. }
+                    | AssetRequest::Open { .. }
+                    | AssetRequest::Close { .. } => Err(assets::Error::Unavailable),
                 }
             })
             .await
@@ -177,3 +187,6 @@ pub async fn mobile_reader_assets(
     )
     .await
 }
+
+#[cfg(test)]
+mod tests;

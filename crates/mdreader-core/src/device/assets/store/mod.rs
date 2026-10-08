@@ -6,11 +6,57 @@ mod read;
 mod schema;
 mod upload;
 
+/// Private asset authority bound to one live reader owner and retained directory.
 #[derive(Clone)]
 pub struct AssetStore {
     pub(super) root: SourceRoot,
+    pub(super) owner: Arc<()>,
 }
 impl AssetStore {
+    /// Bound to one live reader owner. Reopen with a fresh store/runtime.
+    pub(super) fn verify_owner(&self, store: &mut ReaderStore) -> Result<()> {
+        if !Arc::ptr_eq(&self.owner, &store.device_owner_session()) {
+            return Err(unavailable());
+        }
+        self.verify()?;
+        let (version, root): (Option<String>, Option<String>) = store
+            .with_library_connection(|db| {
+                Ok::<_, rusqlite::Error>((
+                    db.query_row(
+                        "SELECT value FROM device_asset_meta_v1 WHERE key='schema_version'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+                    db.query_row(
+                        "SELECT value FROM device_asset_meta_v1 WHERE key='root_identity'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .optional()?,
+                ))
+            })
+            .map_err(sql)?;
+        if version.as_deref() != Some("1") {
+            return Err(Error::UnsupportedSchema);
+        }
+        let identity: SourceRootIdentity =
+            serde_json::from_str(root.as_deref().ok_or_else(unavailable)?)
+                .map_err(|_| unavailable())?;
+        if identity != self.root.identity {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+    pub(super) fn same_owner_root(&self, owner: &Arc<()>, root: &SourceRoot) -> Result<()> {
+        if !Arc::ptr_eq(&self.owner, owner)
+            || self.root.path != root.path
+            || self.root.identity != root.identity
+        {
+            return Err(unavailable());
+        }
+        root.verify().map_err(|_| unavailable())
+    }
     /// Revalidate authority during a read without reparsing Markdown's image AST
     /// for every 64 KiB chunk. The original revision is still checked exactly.
     pub(super) fn check_selection(
@@ -19,7 +65,7 @@ impl AssetStore {
         receipt: &AssetReceipt,
         expected: &str,
     ) -> Result<()> {
-        self.verify()?;
+        self.verify_owner(store)?;
         document(store, &receipt.document_id, &receipt.document_revision)?;
         let items = self.items(store, &receipt.document_id, &receipt.document_revision)?;
         if Self::stamp(
@@ -41,7 +87,7 @@ impl AssetStore {
     }
     pub(super) fn item(&self, store: &mut ReaderStore, id: &str) -> Result<Item> {
         valid_id(id)?;
-        self.verify()?;
+        self.verify_owner(store)?;
         store
             .with_library_connection(|db| {
                 db.query_row(
@@ -60,6 +106,7 @@ impl AssetStore {
         id: &str,
         revision: &str,
     ) -> Result<Vec<Item>> {
+        self.verify_owner(store)?;
         store.with_library_connection(|db|db.prepare(&format!("SELECT {ITEM_COLUMNS} FROM device_asset_items_v1 WHERE document_id=?1 AND revision=?2 ORDER BY target,id LIMIT 513"))?.query_map(params![id,revision],item_row)?.collect::<rusqlite::Result<Vec<_>>>()).map_err(sql)
     }
     pub(super) fn stamp(

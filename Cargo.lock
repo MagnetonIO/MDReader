@@ -4533,7 +4533,6 @@ dependencies = [
  "catdb-sdk",
  "fs2",
  "hmac 0.12.1",
- "image",
  "keyring",
  "mdreader-capture",
  "mdreader-connector-dropbox",
@@ -4660,16 +4659,19 @@ dependencies = [
 name = "mdreader-core"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "comrak",
  "fastembed",
  "ignore",
+ "image",
  "mdreader-provider",
  "percent-encoding",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlite-vec",
  "tempfile",
  "thiserror 2.0.19",

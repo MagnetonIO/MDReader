@@ -52,7 +52,7 @@ impl AssetStore {
     pub fn discard(&self, store: &mut ReaderStore, id: &str) -> Result<()> {
         let item = self.item(store, id)?;
         if item.state == "ready" {
-            return Err("Remove the published asset before discarding its bytes.".into());
+            return Err(Error::PublishedAsset);
         }
         if self
             .root

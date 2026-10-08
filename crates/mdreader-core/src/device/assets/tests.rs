@@ -34,13 +34,9 @@ impl Fixture {
         let directory = temp.path().join("documents");
         let markdown = "# Assets\n\n![First](figures/a.png) ![Second](b.jpg) ![Third](c.png) ![Fourth](d.png) ![Fifth](e.png)\n";
         let mut store = ReaderStore::open(&temp.path().join("data")).unwrap();
-        let document = mdreader_core::device::import(
-            &mut store,
-            &directory,
-            "assets.md".into(),
-            markdown.into(),
-        )
-        .unwrap();
+        let document =
+            crate::device::import(&mut store, &directory, "assets.md".into(), markdown.into())
+                .unwrap();
         let root = directory.join(&document.id);
         let id = document.id;
         let source = document.source_id;
@@ -277,10 +273,11 @@ fn reservations_consume_quota_until_explicit_discard_and_invalid_images_never_pu
                 .unwrap(),
         );
     }
-    assert!(f
-        .assets
-        .begin(&mut f.store, &f.id, &f.revision, "e.png", 1, &stamp)
-        .is_err());
+    assert!(matches!(
+        f.assets
+            .begin(&mut f.store, &f.id, &f.revision, "e.png", 1, &stamp),
+        Err(Error::Quota)
+    ));
     assert_eq!(f.manifest().pending.len(), 4);
     assert!(f
         .assets
@@ -535,7 +532,10 @@ fn future_document_schema_blocks_asset_authority_but_keeps_cleanup_metadata_avai
             )
         })
         .unwrap();
-    assert!(f.assets.manifest(&mut f.store, &f.id, &f.revision).is_err());
+    assert!(matches!(
+        f.assets.manifest(&mut f.store, &f.id, &f.revision),
+        Err(Error::UnsupportedDocumentSchema)
+    ));
     let runtime = AssetRuntime::default();
     assert!(f
         .assets
@@ -583,7 +583,10 @@ fn additive_schema_upgrade_preserves_copies_and_future_versions_fail_closed() {
             )
         })
         .unwrap();
-    assert!(AssetStore::open(&mut f.store, &f.temp.path().join("assets")).is_err());
+    assert!(matches!(
+        AssetStore::open(&mut f.store, &f.temp.path().join("assets")),
+        Err(Error::UnsupportedSchema)
+    ));
     let version: String = f
         .store
         .with_library_connection(|db| {
@@ -597,3 +600,6 @@ fn additive_schema_upgrade_preserves_copies_and_future_versions_fail_closed() {
     assert_eq!(version, "99");
     assert_eq!(fs::read(&copy).unwrap(), before);
 }
+
+#[path = "binding_tests.rs"]
+mod binding_tests;
