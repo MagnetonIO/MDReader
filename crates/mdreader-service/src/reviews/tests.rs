@@ -213,6 +213,67 @@ fn restart_reselection_and_future_schema_fail_closed_without_opening_legacy_loca
         Coordinator::new(f.owner.clone(), &f.profile),
         Err(ReviewError::Unsupported)
     ));
+    let scope = Uuid::new_v4().to_string();
+    f.owner.lock().unwrap().with_library_connection(|connection| {
+        connection.execute_batch("DROP TABLE mdreader_review_owner; CREATE TABLE mdreader_review_owner(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,owner_uuid TEXT NOT NULL);").unwrap();
+        connection.execute("INSERT INTO mdreader_review_owner VALUES(1,1,?1)", [&scope]).unwrap();
+    });
+    assert!(matches!(
+        Coordinator::new(f.owner.clone(), &f.profile),
+        Err(ReviewError::Unsupported)
+    ));
+    // Even exact DDL is insufficient when a damaged file violates the singleton.
+    f.owner
+        .lock()
+        .unwrap()
+        .with_library_connection(|connection| {
+            connection
+                .execute_batch("DROP TABLE mdreader_review_owner;")
+                .unwrap();
+            connection
+                .execute_batch(include_str!("migrations/001-owner.sql"))
+                .unwrap();
+            connection
+                .execute_batch("PRAGMA ignore_check_constraints=ON;")
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO mdreader_review_owner VALUES(1,1,?1),(2,1,?1)",
+                    [&scope],
+                )
+                .unwrap();
+            connection
+                .execute_batch("PRAGMA ignore_check_constraints=OFF;")
+                .unwrap();
+        });
+    assert!(matches!(
+        Coordinator::new(f.owner.clone(), &f.profile),
+        Err(ReviewError::Unsupported)
+    ));
+    // A view with a convincing singleton row is never accepted as the owner table.
+    f.owner.lock().unwrap().with_library_connection(|connection| {
+        assert_eq!(connection.query_row("SELECT count(*) FROM mdreader_review_owner", [], |r| r.get::<_,u64>(0)).unwrap(), 2);
+        connection.execute_batch("DROP TABLE mdreader_review_owner;").unwrap();
+        connection.execute_batch(&format!("CREATE VIEW mdreader_review_owner AS SELECT 1 AS id,1 AS version,'{scope}' AS owner_uuid;")).unwrap();
+    });
+    assert!(matches!(
+        Coordinator::new(f.owner.clone(), &f.profile),
+        Err(ReviewError::Unsupported)
+    ));
+    let kind = f
+        .owner
+        .lock()
+        .unwrap()
+        .with_library_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT type FROM sqlite_schema WHERE name='mdreader_review_owner'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+        });
+    assert_eq!(kind, "view");
 }
 
 #[test]

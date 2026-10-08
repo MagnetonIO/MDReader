@@ -72,3 +72,13 @@ Clippy passed. This is not a native lint-pass claim. Packaged native picker and
 actual desktop modal acceptance remain unrun. Windows archival support,
 installed-profile export/activation/rollback and complete CatDB removal remain
 open. A cached provider observation says nothing about remote-head freshness.
+
+## Final schema hardening
+
+The existing restart/future-schema regression also rejects a weakened owner
+table, an extra singleton row admitted through disabled SQLite CHECK enforcement,
+and a convincing replacement view, without resetting the malformed namespace.
+The actual table must match normalized fixed migration DDL and contain exactly
+one row before its version/UUID can be read. The exact extended test passed
+(0.09 s; cached build 2.52 s), followed by affected service all-target strict
+Clippy (2.05 s). No native/UI/protocol change or wider test rerun was needed.
