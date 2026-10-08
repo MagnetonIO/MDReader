@@ -11,10 +11,10 @@ or published; the new sync protocol has not deployed.
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. | Whole app still contains legacy CatDB paths; transport cancellation, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
-| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. | Native transport/custody, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
+| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and injected authority, with actual synthetic Worker checks. | Native verified identity/custody and typed incoming projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. | Final cross-engine matrix for subsequent web features, native/mobile assets/export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
-| 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. | Sidebar/global-search integration and guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. | Actual extension-host acceptance; useful insights/reviews migration, lossless export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
+| 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. | Actual extension-host acceptance; useful insights/reviews staging and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
 
 ## Measured retrieval
 
@@ -42,6 +42,13 @@ the reader reports these and missing/partial vector coverage even on empty lists
 - The resource probe found unfinished paused jobs still polling at about 1.4% CPU. Commit `2568abc` changes that wait from 20 ms to up to one second, interrupted by policy/job wakes. Two focused policy regressions pass. A separate 20-document packaged probe observed 0.199% CPU with unfinished work paused, durable pause after restart and loaded idle below the 0.13% measurement-resolution bound. Fixtures differ, so this is directional evidence rather than a controlled speedup ratio. [Follow-up receipt](../benchmarks/2026-10-07-packaged-bge-paused-idle.md).
 
 ## Evidence boundaries
+
+Development resource policy is enforced by Cargo's two-job default and Android
+Gradle's two-worker, nonparallel project configuration (`83f16f4`). The team runs
+one heavyweight verification at a time and reuses compatible caches. This limits
+concurrency, not CPU percentage; compilers can use internal threads. Filtered
+tests can still compile many dependencies on a cold target. The ordinary
+[testing policy](testing-policy.md) keeps broad checks at integration checkpoints.
 
 Native core affected suite: 55 tests and all-target strict Clippy pass. Four focused mobile storage behaviors pass in 0.11 s, including interrupted imports and app-container relocation with the same source identity and revoked-source protection. Provider admission replay checks pass 9 provider and 5 runtime tests; native custody wrappers pass 5 focused tests. The desktop provider composition passes 7 App and 2 cached-reader dialog tests; app typecheck and scoped lint pass. These focused checks follow [the testing policy](testing-policy.md); broad native/renderer and final cross-host matrices remain integration/release gates rather than per-fix commands.
 
@@ -81,6 +88,26 @@ a new selection before passive effects; rendered bodies are now bound to their
 exact selection immediately. The mobile reader uses the same identity guard.
 These follow-ups pass app typecheck and scoped lint; actual rebuilt device/GUI
 acceptance remains open.
+
+Provider sidebar/search checkpoint `35cccd1` passes 44 affected UI checks plus
+native provider-only, mixed-ranking and stale-epoch regressions. Exact provider
+source/revision evidence survives palette and Related navigation; provider hits
+never become inferred local filesystem grants. Default source selection is empty.
+
+Native transport checkpoint `7f958e9` remains disabled by default and has no
+production authority constructor or renderer RPC. Focused tests include actual
+local HTTPS requests to the synthetic Worker/SQLite/R2 fixture. Received payloads
+are not marked applied without a typed projection transaction; native custody,
+production enrollment/recovery and live issuer acceptance remain open.
+
+The rebuilt iOS simulator bundle has SHA256
+`137e028186aabb54a366252084757d059cfb0b16675d395b0ffed5b655d3d7d2`.
+The completed Android arm64 debug APK has SHA256
+`1fc505c9fd8c1ea11d5f814cc12fec16b9d60b20dffbd32a0ad080a4ab6703f1`
+and is 517,414,088 bytes. These are build-only artifacts, not new GUI/device
+acceptance. Android debug size is a release-footprint investigation gate; no
+release-size claim follows from it. Release source-stamp provenance has not been
+verified for these artifacts. The installed baseline remains unchanged.
 
 The [legacy migration inventory](legacy-migration-inventory.md) identifies
 durable reviews, graph/operation history and accepted-write repair records.
