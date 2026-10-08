@@ -15,6 +15,7 @@ pub(super) struct View {
     pub retained: bool,
     pub custody: Option<CustodyView>,
     pub frozen: Option<freeze::Tag>,
+    pub resumed: Option<freeze::Tag>,
     pub projections: usize,
 }
 impl View {
@@ -60,6 +61,7 @@ impl Shared {
                 retained,
                 custody: None,
                 frozen: None,
+                resumed: None,
                 projections: 0,
             }),
             controller,

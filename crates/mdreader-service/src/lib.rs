@@ -16,6 +16,8 @@ pub mod daemon;
 #[cfg(feature = "sync-native")]
 pub mod device;
 pub mod integrations;
+mod ipc;
+pub mod preservation;
 pub mod provider;
 pub mod reviews;
 mod runtime;
@@ -48,6 +50,7 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    Preservation { request: preservation::ControlRequest },
     #[cfg(feature = "sync-native")]
     Account { request: accounts::rpc::AccountRequest },
     #[cfg(feature = "sync-native")]
@@ -238,6 +241,11 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
+        Request::Preservation { .. } => {
+            return serde_json::to_value(preservation::ControlReply::Failure {
+                error: preservation::Error::Unsupported,
+            }).map_err(|_| protocol_error("response serialization failed"));
+        }
         #[cfg(feature = "sync-native")]
         Request::Account { .. } => return Err(protocol_error("Accounts require the desktop service")),
         #[cfg(feature = "sync-native")]
@@ -363,35 +371,6 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         Err(_) => Err(protocol_error("response serialization failed")),
     }
 }
-fn connection(mut stream: TcpStream, token: &str, runtime: &runtime::Runtime) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let input = read_frame(&mut BufReader::new(stream.try_clone()?), MAX_REQUEST)?;
-    let envelope: Envelope =
-        serde_json::from_slice(&input).map_err(|_| protocol_error("invalid request envelope"))?;
-    let result = if envelope.protocol != PROTOCOL || !token_matches(&envelope.token, token) {
-        Err(ReaderError::Unavailable)
-    } else {
-        runtime.execute(envelope.request)
-    };
-    let reply = match result {
-        Ok(result) => Reply {
-            result,
-            error: None,
-        },
-        Err(error) => Reply {
-            result: Value::Null,
-            error: Some(wire_error(error)),
-        },
-    };
-    let mut output = encode(&reply)?;
-    if output.len() as u64 > MAX_RESPONSE {
-        return Err(protocol_error("response exceeds budget"));
-    }
-    output.push(b'\n');
-    stream.write_all(&output)?;
-    Ok(())
-}
 /// Blocking service entry point. The OS file lock is the single-writer barrier,
 /// released automatically after a crash. The UI is never its lifetime owner.
 #[derive(Debug, Clone, Copy, Default)]
@@ -497,7 +476,7 @@ fn serve_configured(
                 }
             }
             let _guard = ActiveGuard;
-            let _ = connection(stream, &token, &runtime);
+            let _ = ipc::connection(stream, &token, &runtime);
         });
     }
     Ok(())

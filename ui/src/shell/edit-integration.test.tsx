@@ -85,6 +85,7 @@ const h = vi.hoisted(() => ({
   libraryCancelCalls: [] as string[],
   cloudReadQueue: [] as Promise<Record<string, unknown>>[],
   cloudReadCalls: [] as Array<{ sourceId: string; recordKey: string }>,
+  cloudSaveCalls: [] as Array<{ token: string; content: string }>,
   markGate: null as null | { promise: Promise<void>; resolve: () => void },
   markStarted: false,
   markSucceeded: false,
@@ -329,6 +330,11 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
         modified_at_ms: 1,
       };
     }),
+    saveCloudMarkdown: vi.fn(async (token: string, content: string) => {
+      h.cloudSaveCalls.push({ token, content });
+      if (h.gate) await h.gate.promise;
+      return { kind: 'saved' as const, edit_token: 'saved-cloud-token', modified_at_ms: 2 };
+    }),
     resolveLibraryDocumentEdit: vi.fn(async (sourceId: string, relativePath: string) => {
       h.editResolutions.push({ sourceId, relativePath });
       const root = sourceId === 'b'.repeat(64) ? '/ws-b' : '/ws';
@@ -400,6 +406,7 @@ import { useTabsStore } from '../stores/tabs';
 import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
 import { useEditorStore } from '../stores/editor';
+import { editorAdmission } from '../features/editor-preservation/admission';
 import { saveSettings, sessionWriter } from './persistence.js';
 
 const NOTE = '/ws/note.md';
@@ -678,6 +685,7 @@ beforeEach(() => {
   h.libraryCancelGate = null;
   h.libraryCancelCalls.length = 0;
   h.cloudReadCalls.length = 0;
+  h.cloudSaveCalls.length = 0;
   h.cloudReadQueue.length = 0;
   h.markGate = null;
   h.markStarted = false;
@@ -700,6 +708,54 @@ afterEach(() => {
   useSourcesStore.getState().reset();
   useSettingsStore.getState().reset();
   useEditorStore.getState().reset();
+});
+
+describe('actual save ownership during renderer editor admission', () => {
+  it('joins the pending local save and settles only its exact captured buffer while edits are denied', async () => {
+    const tab = await openDirtyDoc();
+    h.gate = deferred();
+    await act(async () => { modKeyDown('s'); });
+    await waitFor(() => expect(h.saveCalls).toHaveLength(1));
+    const held = editorAdmission.hold()!;
+    try {
+      let drained = false;
+      const drain = held.drain().then(() => { drained = true; });
+      act(() => useEditorStore.getState().edit(tab, NOTE, 'blocked during hold'));
+      await Promise.resolve(); expect(drained).toBe(false);
+      await act(async () => { h.gate!.resolve(); await drain; });
+      expect(useEditorStore.getState().entry(tab, NOTE)).toMatchObject({
+        buffer: 'hello + my local edit', savedContent: 'hello + my local edit', dirty: false,
+      });
+      expect(h.disk.get(NOTE)!.content).toBe('hello + my local edit');
+      expect(drained).toBe(true);
+    } finally { held.release(); }
+  });
+
+  it('joins the actual cloud save without deleting or replacing the held cloud buffer', async () => {
+    installRapidCloudLibraryDocuments();
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open First note from Google Drive' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Source view' }));
+    const entry = Object.values(useEditorStore.getState().entries).find((entry) => entry.path.startsWith('cloud:'))!;
+    act(() => useEditorStore.getState().edit(entry.tabId, entry.path, 'selected cloud edit'));
+    h.gate = deferred();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(h.cloudSaveCalls).toHaveLength(1));
+    const held = editorAdmission.hold()!;
+    try {
+      let drained = false;
+      const drain = held.drain().then(() => { drained = true; });
+      act(() => useEditorStore.getState().reset());
+      await Promise.resolve(); expect(drained).toBe(false);
+      await act(async () => { h.gate!.resolve(); await drain; });
+      expect(h.cloudSaveCalls[0]).toEqual({ token: entry.baseHash, content: 'selected cloud edit' });
+      expect(useEditorStore.getState().entry(entry.tabId, entry.path)).toMatchObject({
+        buffer: 'selected cloud edit', savedContent: 'selected cloud edit', baseHash: 'saved-cloud-token', dirty: false,
+      });
+      expect(drained).toBe(true);
+    } finally { held.release(); }
+  });
 });
 
 describe('conflict wiring (fs-changed → ConflictBanner) and self-write suppression', () => {

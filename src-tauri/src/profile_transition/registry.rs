@@ -1,12 +1,13 @@
 //! Actual native participant registration and preservation-only freeze. Startup
 //! must supply every real owner; this cannot infer a writer from a pathname.
 use super::admission::{Admission, DeniedLease, EffectLease, MAX_FREEZE_WAIT};
+use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
 use mdreader_profile::{
     Error, FrozenProfile, Inventory, Participant, Result, RootBinding, REQUIRED_PARTICIPANTS,
 };
 use rusqlite::Connection;
 use std::{
-    path::{Component, Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -66,7 +67,7 @@ pub(crate) trait FrozenParticipant {
 }
 struct Registered {
     owner: Arc<dyn LiveParticipant>,
-    databases: Vec<PathBuf>,
+    databases: Vec<DatabaseRegistration>,
 }
 pub(crate) struct Registry {
     root: RootBinding,
@@ -89,7 +90,7 @@ impl Registry {
     pub(crate) fn register(
         &mut self,
         owner: Arc<dyn LiveParticipant>,
-        databases: Vec<PathBuf>,
+        databases: Vec<DatabaseRegistration>,
     ) -> Result<()> {
         self.admission.registration_open()?;
         if owner.root() != &self.root || databases.len() > 64 {
@@ -99,26 +100,30 @@ impl Registry {
         if self.participants[index].is_some() {
             return Err(Error::Conflict);
         }
-        let mut unique = std::collections::BTreeSet::new();
-        for path in &databases {
-            if path.as_os_str().is_empty()
-                || path.as_os_str().len() > 16384
-                || path.components().count() > 64
-                || path
-                    .components()
-                    .any(|part| !matches!(part, Component::Normal(_)))
-                || !unique.insert(path)
-                || self
-                    .participants
-                    .iter()
-                    .flatten()
-                    .any(|registered| registered.databases.contains(path))
-            {
-                return Err(Error::Invalid);
-            }
-        }
+        storage_layout::validate_registrations(
+            self.participants
+                .iter()
+                .flatten()
+                .flat_map(|registered| &registered.databases)
+                .chain(&databases),
+        )?;
         self.participants[index] = Some(Registered { owner, databases });
         Ok(())
+    }
+    pub(crate) fn validate_choices(
+        &self,
+        choices: &[mdreader_profile::InventorySelection],
+    ) -> Result<()> {
+        if !self.missing().is_empty() {
+            return Err(Error::NotQuiescent);
+        }
+        storage_layout::validate_choices(
+            self.participants
+                .iter()
+                .flatten()
+                .flat_map(|registered| &registered.databases),
+            choices,
+        )
     }
     pub(crate) fn missing(&self) -> Vec<Participant> {
         REQUIRED_PARTICIPANTS
@@ -259,7 +264,11 @@ impl FrozenProfile for Frozen<'_, '_> {
         let (_, handle) = self
             .handles
             .iter_mut()
-            .find(|(registered, _)| registered.databases.iter().any(|path| path == relative))
+            .find(|(registered, _)| {
+                registered.databases.iter().any(|database| {
+                    database.relative == relative && matches!(database.kind, DatabaseKind::Durable)
+                })
+            })
             .ok_or(Error::Invalid)?;
         let mut calls = 0;
         handle.with_database(relative, &mut |connection| {

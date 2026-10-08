@@ -1140,28 +1140,29 @@ export function AppShell() {
       const entry = useEditorStore.getState().entry(tabId, path);
       if (!entry) return 'noop';
       if (!force && !entry.dirty) return 'noop'; // a clean guarded save is a no-op
-      // Snapshot exactly what we send, so completion can mark THIS content saved
-      // (not a newer buffer produced by typing during the in-flight save).
-      const snapshot = entry.buffer;
-      const result = await runSave({
-        path: entry.path,
-        buffer: snapshot,
-        baseHash: entry.baseHash,
-        force,
-        save: saveDoc,
-      });
-      const editor = useEditorStore.getState();
-      if (result.kind === 'saved') {
-        editor.markSaved(tabId, path, snapshot, result.newHash);
-        void triggerReindex();
-        return 'saved';
-      }
-      if (result.kind === 'conflict') {
-        editor.raiseConflict(tabId, path, result.currentHash, 'save');
-        return 'conflict';
-      }
-      toast(`Could not save — ${result.message}`);
-      return 'error';
+      const save = useEditorStore.getState().beginSave(tabId, path);
+      if (!save) { toast('Editing is paused or this document is already saving.'); return 'error'; }
+      try {
+        const captured = save.entry;
+        const result = await runSave({
+          path: captured.path, buffer: captured.buffer, baseHash: captured.baseHash,
+          force, save: saveDoc,
+        });
+        if (result.kind === 'saved') {
+          void triggerReindex();
+          if (!save.saved(result.newHash)) {
+            toast('Save completed for an earlier editor state. Your current buffer was kept.');
+            return 'error';
+          }
+          return 'saved';
+        }
+        if (result.kind === 'conflict') {
+          save.conflicted(result.currentHash);
+          return 'conflict';
+        }
+        toast(`Could not save — ${result.message}`);
+        return 'error';
+      } finally { save.finish(); }
     },
     [triggerReindex],
   );
@@ -1200,16 +1201,21 @@ export function AppShell() {
   ): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
     const entry = useEditorStore.getState().entry(tabId, key);
     if (!entry || !entry.dirty) return 'noop';
-    const snapshot = entry.buffer;
+    const save = useEditorStore.getState().beginSave(tabId, key);
+    if (!save) { toast('Editing is paused or this document is already saving.'); return 'error'; }
+    const snapshot = save.entry.buffer;
     setCloudSaving(true);
     try {
-      const outcome = await settingsBackend.saveCloudMarkdown?.(entry.baseHash, snapshot);
+      const outcome = await settingsBackend.saveCloudMarkdown?.(save.entry.baseHash, snapshot);
       if (!outcome) throw new Error('Cloud editing is unavailable.');
       if (outcome.kind === 'conflict') {
-        useEditorStore.getState().raiseConflict(tabId, key, entry.baseHash, 'save');
+        save.conflicted(save.entry.baseHash);
         return 'conflict';
       }
-      useEditorStore.getState().markSaved(tabId, key, snapshot, outcome.edit_token);
+      if (!save.saved(outcome.edit_token)) {
+        toast('Save completed for an earlier editor state. Your current buffer was kept.');
+        return 'error';
+      }
       setCloudDocuments((current) => {
         const selection = current[key];
         if (!selection?.cloudDocument) return current;
@@ -1231,6 +1237,7 @@ export function AppShell() {
       toast('Could not save this cloud document.');
       return 'error';
     } finally {
+      save.finish();
       setCloudSaving(false);
     }
   }, []);

@@ -595,6 +595,38 @@ This does not activate migration. Exact native SQLite/recovery classification,
 all-owner freeze composition, installed preservation/conversion/rollback and
 cross-host release acceptance remain open.
 
+## Native profile storage classification, 2026-10-08
+
+Native owner registration now distinguishes durable SQLite from rebuildable
+indexes and reserves their recovery sidecars. Both preservation entry points
+reject raw-copy misclassification, missing durable main files and unknown
+SQLite/index/recovery claims before any participant flush. Two new actual native
+regressions and the affected eleven-case profile-transition suite pass. See
+[the scoped receipt](profile-storage-layout-verification-2026-10-08.md).
+
+All actual owners must still declare their databases. Complete writer/custody
+composition, cross-process backup and installed migration/activation/rollback
+remain open; this change does not enable migration.
+
+## Held service preservation control, 2026-10-08
+
+The actual configured desktop Runtime retains its real daemon/account/device/
+capture freeze guards behind an operation/owner-epoch/root/boot-bound control
+session. A trusted typed client pins the existing endpoint and reconciles lost
+Begin/Release replies without restarting or rebinding the service. Deadline
+expiry and partial/uncertain acquisition retain guards; explicit release checks
+actual producer admission and releases the daemon barrier last. Independent
+provider/vault custody is not inferred from daemon drain.
+
+Three actual TCP/SQLite fixtures pass for lost replies/ordinary-request denial,
+stale identities and expiry retaining guards. A real ordinary-admission bypass
+produced behavioral RED; exact restoration returned all three to GREEN. Strict
+all-target service Clippy passes for default and sync-native. See
+[the scoped receipt](../../crates/mdreader-service/src/preservation/README.md).
+No remote database borrow, backup operation, native all-eight registration,
+selector activation, installed-profile migration or release acceptance is claimed.
+The actual server-owned staged backup and native owner composition are next.
+
 ## Exact selected native document product action, 2026-10-08
 
 Native Settings now offers explicit sync for the currently opened On this device

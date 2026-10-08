@@ -39,12 +39,29 @@ impl Drop for FrozenAccounts {
     fn drop(&mut self) {
         if let Ok(mut state) = self.coordinator.shared.view.lock() {
             if state.frozen == Some(self.tag) {
+                state.resumed = Some(self.tag);
                 state.frozen = None;
             }
         }
     }
 }
 impl Coordinator {
+    pub(crate) fn resumed(&self, operation: Uuid, owner_epoch: Uuid) -> Result<()> {
+        let state = self
+            .shared
+            .view
+            .lock()
+            .map_err(|_| AccountError::Interrupted)?;
+        if state.frozen.is_some()
+            || state
+                .resumed
+                .is_none_or(|tag| tag.operation != operation || tag.owner_epoch != owner_epoch)
+        {
+            return Err(AccountError::Conflict);
+        }
+        Ok(())
+    }
+
     /// Preservation-only: deny new admission and drain already-issued work, with
     /// no inferred logout/cancellation or profile mutation. Caller owns this future
     /// in the actual service process; timeout returns no quiescence proof. A remote
@@ -77,6 +94,7 @@ impl Coordinator {
             if state.frozen.is_some() {
                 return Err(AccountError::Busy);
             }
+            state.resumed = None;
             state.frozen = Some(tag);
         }
         let guard = FrozenAccounts {
