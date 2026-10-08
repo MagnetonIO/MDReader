@@ -241,7 +241,7 @@ fn unconfigured_local_owner_rejects_secret_inputs_and_bounds_jobs() {
         .validate(),
         Err(AccountError::Limit)
     ));
-    let shared = state::Shared::new(None, false);
+    let shared = state::Shared::new(None, false, false);
     for _ in 0..10 {
         let command = actor::Command {
             id: Uuid::new_v4(),
