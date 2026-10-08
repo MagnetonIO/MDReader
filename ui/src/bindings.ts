@@ -12,6 +12,9 @@ export const commands = {
 	nativeProfilePersistenceRead: (identity: RendererIdentity) => typedError<PersistedJson, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_read", { identity })),
 	nativeProfilePersistenceWrite: (identity: RendererIdentity, kind: JsonKind, generation: number, json: string) => typedError<WriteReceipt, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_write", { identity, kind, generation, json })),
 	nativeProfilePersistenceFlush: (submission: FlushSubmission) => typedError<[WriteReceipt, WriteReceipt], PersistenceError>(__TAURI_INVOKE("native_profile_persistence_flush", { submission })),
+	nativeProfileEditorSubmit: (submission: EditorSubmission) => typedError<EditorReceipt, PersistenceError>(__TAURI_INVOKE("native_profile_editor_submit", { submission })),
+	nativeProfileBackup: () => typedError<BackupReply, BackupError>(__TAURI_INVOKE("native_profile_backup")),
+	nativeProfileMigration: (request: MigrationRequest) => typedError<MigrationReply, MigrationError>(__TAURI_INVOKE("native_profile_migration", { request })),
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
@@ -39,6 +42,9 @@ export const commands = {
 	mobileReaderPin: (id: string, pinned: boolean) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_pin", { id, pinned })),
 	mobileReaderPosition: (id: string, revision: string, line: number) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_position", { id, revision, line })),
 	mobileReaderAssets: (request: AssetRequest) => typedError<AssetReply, string>(__TAURI_INVOKE("mobile_reader_assets", { request })),
+	mobileReaderTransfer: (reference: Reference, action: Action) => typedError<Reply, string>(__TAURI_INVOKE("mobile_reader_transfer", { reference, action })),
+	mobileReaderTransferCapabilities: () => __TAURI_INVOKE<Capabilities>("mobile_reader_transfer_capabilities"),
+	mobileReaderTakeReadingLinks: () => typedError<PendingLinks, string>(__TAURI_INVOKE("mobile_reader_take_reading_links")),
 	/**
 	 *  Read a single markdown document from within the granted workspace. Thin:
 	 *  resolves + validates the path, reads the bytes, hashes them, decodes to text.
@@ -214,6 +220,8 @@ export type AccountStatus = {
 	selectedScope: SelectedScope | null,
 };
 
+export type Action = "export" | "share";
+
 export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
 
 export type AdmissionPhase = "vault_pending" | "admission_pending";
@@ -384,6 +392,16 @@ export type AssetReply = { operation: "inventory"; value: AssetInventory } | { o
 
 export type AssetRequest = { operation: "inventory" } | { operation: "forget"; asset_id: string } | { operation: "manifest"; document_id: string; revision: string } | { operation: "begin"; document_id: string; revision: string; target: string; bytes: number; expected_manifest: string } | { operation: "write"; intent_id: string; offset: number; base64: string } | { operation: "commit"; intent_id: string } | { operation: "discard"; intent_id: string } | { operation: "remove"; document_id: string; revision: string; asset_id: string; expected_manifest: string } | { operation: "open"; document_id: string; revision: string; asset_id: string; manifest: string } | { operation: "chunk"; session_id: string; offset: number } | { operation: "close"; session_id: string };
 
+export type BackupError = {
+	kind: string,
+};
+
+export type BackupReply = {
+	state: BackupState,
+};
+
+export type BackupState = "exported" | "cancelled";
+
 /**  The recorded contribution of each ranking boost to a hit's score. */
 export type BoostsDto = {
 	/**  Title match (query terms in the heading breadcrumb's head). */
@@ -394,6 +412,12 @@ export type BoostsDto = {
 	recency: number | null,
 	/**  Graph proximity to a `linked-to:` document. */
 	graph: number | null,
+};
+
+export type Capabilities = {
+	export: boolean,
+	share: boolean,
+	readingLinks: boolean,
 };
 
 export type CapabilitiesDto = {
@@ -462,6 +486,10 @@ export type CloseAndForgetStatus =
 { kind: "inactive"; error: LibraryError };
 
 export type CloudProvider = "google-drive" | "dropbox";
+
+export type ConflictPhase = "choose" | "confirm";
+
+export type ConflictSource = "external" | "save";
 
 export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
 
@@ -556,9 +584,53 @@ export type DocPayload = {
 	hash: string,
 };
 
+export type Document = {
+	documentId: string,
+	name: string,
+	revision: string,
+	bytes: number,
+	pinned: boolean,
+	line: number,
+};
+
 export type DropboxSelection = {
 	path: string,
 	recursive: boolean,
+};
+
+export type EditorConflict = {
+	currentHash: string,
+	source: ConflictSource,
+	phase: ConflictPhase,
+};
+
+export type EditorEntry = {
+	entryId: string,
+	tabId: string,
+	path: string,
+	mode: EditorMode,
+	buffer: string,
+	savedContent: string,
+	baseHash: string,
+	dirty: boolean,
+	conflict: EditorConflict | null,
+};
+
+export type EditorMode = "read" | "source" | "split";
+
+export type EditorReceipt = {
+	requestId: string,
+	identity: RendererIdentity,
+	generation: string,
+	sha256: string,
+	entryCount: number,
+};
+
+export type EditorSubmission = {
+	request: FlushRequest,
+	generation: string,
+	entries: EditorEntry[],
+	providerEditsJson: string,
 };
 
 /**  The full per-hit score breakdown (see [`SearchQuery::explain`]). */
@@ -788,6 +860,19 @@ remedy: string } |
 /**  The failure, as text. */
 message: string };
 
+export type MigrationError = {
+	kind: string,
+};
+
+export type MigrationReply = {
+	state: string,
+	operationId: string | null,
+	documents: Document[],
+	imported: number,
+};
+
+export type MigrationRequest = { operation: "preview" } | { operation: "resume" } | { operation: "export"; operationId: string } | { operation: "prepare"; operationId: string; documents: Selection[] } | { operation: "activate"; operationId: string } | { operation: "rollback"; operationId: string } | { operation: "close"; operationId: string };
+
 export type MutationDto = {
 	operationId: string,
 	state: MutationStateDto,
@@ -827,6 +912,11 @@ export type PendingDeviceImport = {
 	id: string,
 	name: string,
 	bytes: number,
+};
+
+export type PendingLinks = {
+	links: string[],
+	truncated: boolean,
 };
 
 export type PersistedJson = {
@@ -914,6 +1004,13 @@ export type ProviderSourceDto = {
 	coverage: CoverageDto,
 };
 
+export type Reference = {
+	documentId: string,
+	sourceId: string,
+	path: string,
+	revision: string,
+};
+
 export type RegistrationAvailability = {
 	provider: NativeProviderKind,
 	configured: boolean,
@@ -976,6 +1073,10 @@ export type RelatedVectorStateDto = "available" | "anchor_missing" | "no_anchor_
 export type RendererIdentity = {
 	ownerEpoch: string,
 	rendererEpoch: string,
+};
+
+export type Reply = {
+	state: TransferState,
 };
 
 export type ReviewCurrent = {
@@ -1149,11 +1250,18 @@ export type SelectedScope = {
 	deviceId: string,
 };
 
+export type Selection = {
+	documentId: string,
+	revision: string,
+};
+
 /**
  *  Request emitted by the native application menu when the user chooses
  *  Settings. The renderer owns the sheet; the native menu only requests it.
  */
 export type ShowSettings = Record<string, never>;
+
+export type TransferState = "exported" | "presented" | "cancelled";
 
 export type UpdateInfo = {
 	version: string,
