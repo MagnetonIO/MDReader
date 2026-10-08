@@ -1,8 +1,10 @@
 use crate::*;
 use fs2::FileExt;
 
+mod freeze;
 mod projection;
 mod queue;
+pub use freeze::FrozenSpool;
 
 // flock belongs to the open file description. Explicit unlock on owner drop
 // prevents an unrelated fork's briefly inherited descriptor from extending the

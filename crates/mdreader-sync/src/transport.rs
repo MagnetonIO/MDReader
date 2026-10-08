@@ -99,6 +99,9 @@ mod authorization;
 pub use authorization::Authorization;
 mod foreground;
 mod graph;
+#[cfg(test)]
+mod graph_upload_tests;
+mod upload;
 pub use graph::DownloadedResource;
 
 /// Only short synchronous closures borrow the ONE reader-owner connection. Implementations
