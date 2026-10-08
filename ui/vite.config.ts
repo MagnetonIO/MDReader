@@ -35,12 +35,6 @@ export default defineConfig({
   // subpaths (unused by the client) where `worker` maps to the same file as
   // `browser`.
   resolve: {
-    alias: {
-      '@catdb/client': new URL(
-        '../catdb/sdk/typescript/src/index.ts',
-        import.meta.url,
-      ).pathname,
-    },
     conditions: workerBundleResolveConditions(defaultClientConditions),
   },
   server: {

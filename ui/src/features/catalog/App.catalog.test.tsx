@@ -14,15 +14,7 @@ import { useTabsStore } from '../../stores/tabs';
 import { useSourcesStore } from '../../stores/sources';
 import { useSettingsStore } from '../../stores/settings';
 import { useEditorStore } from '../../stores/editor';
-import type { HydratedLibrarySelection } from '../../shell/library-documents';
-import { legacyEvidence, legacySelection } from '../legacy-records/test-fixture';
-
-const legacy = vi.hoisted(() => ({ hydrate: vi.fn(), read: vi.fn(), load: vi.fn() }));
-vi.mock('../../shell/library-documents', async (original) => ({
-  ...await original<typeof import('../../shell/library-documents')>(),
-  hydrateLibrary: legacy.hydrate,
-  hydrateLibraryDocument: legacy.read,
-}));
+const legacy = vi.hoisted(() => ({ load: vi.fn() }));
 vi.mock('../../shell/persistence', async (original) => ({
   ...await original<typeof import('../../shell/persistence')>(),
   isTauri: () => true,
@@ -46,8 +38,6 @@ const document: CatalogDocument = {
 
 beforeEach(() => {
   legacy.load.mockResolvedValue({ session: null, settings: {}, readerHistory: restoreReaderHistory(undefined, true) });
-  legacy.hydrate.mockResolvedValue({ evidence: [legacyEvidence], failures: [] });
-  legacy.read.mockResolvedValue(legacySelection);
   vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ availability: [], sources: [], pendingAdmissions: [], error: null });
   vi.spyOn(catalogBackend, 'list').mockResolvedValue({ operation: 'list', sources: [source], providerFailure: null, localFailure: null });
   vi.spyOn(catalogBackend, 'page').mockResolvedValue({ operation: 'page', source, documents: [document], nextCursor: null });
@@ -60,8 +50,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  legacy.hydrate.mockReset();
-  legacy.read.mockReset();
   useReaderHistoryStore.getState().reset();
   useTabsStore.getState().reset();
   useSourcesStore.getState().reset();
@@ -77,14 +65,11 @@ async function openCurrent() {
 test('primary startup lists canonical sources only and reads the exact selection in the normal main reader', async () => {
   render(<App />);
   await screen.findByRole('button', { name: 'Browse catalog Retained notes' });
-  expect(legacy.hydrate).not.toHaveBeenCalled();
-  expect(legacy.read).not.toHaveBeenCalled();
   await openCurrent();
   expect(within(screen.getByRole('main')).getByRole('heading', { name: /Canonical content/ })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Catalog document' })).toBeNull();
   expect(documentElement('.shell__reader-content').hasAttribute('inert')).toBe(false);
   expect(catalogBackend.readDocument).toHaveBeenCalledWith({ sourceId, path: 'current.md', revision, title: 'Current note', line: 1 });
-  expect(legacy.read).not.toHaveBeenCalled();
 });
 
 test('published device receipts open inline through the service device reader without local folder or legacy reads', async () => {
@@ -101,7 +86,6 @@ test('published device receipts open inline through the service device reader wi
   expect(await within(screen.getByRole('main')).findByRole('heading', { name: /Received device copy/ })).toBeTruthy();
   expect(read).toHaveBeenCalledWith({ documentId: deviceId, sourceId, path: 'document.md', revision, title: 'Received copy', line: 1 });
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
-  expect(legacy.read).not.toHaveBeenCalled();
   expect(screen.queryByRole('dialog', { name: 'Device document' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
 });
@@ -111,39 +95,26 @@ function documentElement(selector: string): Element {
   return element;
 }
 
-test('explicit legacy read remains available but its late body cannot replace a newer canonical selection', async () => {
-  let finish!: (value: HydratedLibrarySelection) => void;
-  legacy.read.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-  render(<App />);
-  fireEvent.click(screen.getByRole('button', { name: 'Legacy records (migration)' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Open Historical note from Historical account' }));
-  await waitFor(() => expect(legacy.read).toHaveBeenCalledOnce());
-  await openCurrent();
-  await act(async () => finish(legacySelection));
-  expect(screen.getByRole('heading', { name: /Canonical content/ })).toBeTruthy();
-  expect(screen.queryByRole('heading', { name: /Historical body/ })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Close legacy records' })).toBeNull();
-});
-
-test('a preserved historical Recent explicitly invokes the legacy adapter with its existing identity and edit receipt', async () => {
+test('migration opens explicitly while historical Recent keeps its identity without fetching or regranting', async () => {
+  const providerRead = vi.spyOn(nativeProvidersBackend, 'readDocument');
+  const fileRead = vi.spyOn(filesystem, 'readDoc');
+  const reference = { kind: 'cloud' as const, sourceId: 'historical-source', recordKey: 'historical-key',
+    documentKey: 'historical-document-key', name: 'Historical recent' };
   render(<App />);
   await screen.findByRole('button', { name: 'Browse catalog Retained notes' });
-  act(() => useSourcesStore.getState().addRecent({
-    kind: 'cloud', sourceId: legacySelection.member.registry_id, recordKey: 'historical-key',
-    documentKey: 'historical-document-key', name: 'Historical recent',
-  }, null));
+  act(() => useSourcesStore.getState().addRecent(reference, null));
   fireEvent.click(screen.getByRole('button', { name: 'Historical recent' }));
-  expect(await screen.findByRole('heading', { name: /Historical body/ })).toBeTruthy();
-  expect(legacy.hydrate).toHaveBeenCalledOnce();
-  expect(legacy.read).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-    member: legacySelection.member, row: legacySelection.row,
-  }), expect.stringContaining('library-document:'));
-  expect(useTabsStore.getState().tabs[0]?.docRef).toEqual({
-    kind: 'cloud', sourceId: legacySelection.member.registry_id, recordKey: 'historical-key',
-    documentKey: 'historical-document-key', name: 'Historical note',
-  });
-  expect(screen.getByRole('button', { name: 'Source view' })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: 'Historical recent' })).toBeTruthy();
+  expect(useTabsStore.getState().tabs[0]?.docRef).toEqual(reference);
+  expect(providerRead).not.toHaveBeenCalled();
+  expect(fileRead).not.toHaveBeenCalled();
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
+  fireEvent.click(within(screen.getByRole('region', { name: 'Retained historical document' }))
+    .getByRole('button', { name: 'Migration & archived records' }));
+  const settings = await screen.findByRole('dialog', { name: 'Settings' });
+  expect(within(settings).getByRole('button', { name: 'Advanced' }).getAttribute('aria-current')).toBe('page');
+  expect(within(settings).getByText('Preserve an offline snapshot')).toBeTruthy();
+  expect(useTabsStore.getState().tabs[0]?.docRef).toEqual(reference);
 });
 
 const archivalRow: ArchivedReviewRecord = {
@@ -206,7 +177,6 @@ test.each(['local', 'provider'] as const)('canonical %s archive comparison uses 
   expect(archivedReviewsBackend.close).toHaveBeenCalledWith('selected-archive');
   fireEvent.click(screen.getByRole('button', { name: 'Previous document' }));
   await screen.findByRole('heading', { name: /Canonical content/ });
-  expect(legacy.read).not.toHaveBeenCalled();
 });
 test('a new canonical selection closes its archive and a late comparison cannot restore the old reader', async () => {
   archiveBoundary();
