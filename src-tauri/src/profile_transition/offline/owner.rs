@@ -100,7 +100,7 @@ impl ClosedOwner {
         let capture = if root.path.join("reader-v1/captures").exists() {
             Some(
                 mdreader_capture::Spool::open(
-                    &root.path.join("reader-v1/captures"),
+                    root.path.join("reader-v1/captures"),
                     Default::default(),
                 )
                 .and_then(mdreader_capture::Spool::freeze)

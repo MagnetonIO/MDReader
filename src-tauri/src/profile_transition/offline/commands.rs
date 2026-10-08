@@ -91,7 +91,7 @@ struct Pending {
 enum Phase {
     Empty,
     Busy,
-    Ready(Pending),
+    Ready(Box<Pending>),
 }
 pub(crate) struct MigrationState(Mutex<Phase>);
 impl Default for MigrationState {
@@ -106,13 +106,13 @@ impl MigrationState {
             return Err(Error::NotQuiescent);
         }
         Ok(match std::mem::replace(&mut *state, Phase::Busy) {
-            Phase::Ready(pending) => Some(pending),
+            Phase::Ready(pending) => Some(*pending),
             _ => None,
         })
     }
     fn put(&self, pending: Option<Pending>) {
         if let Ok(mut state) = self.0.lock() {
-            *state = pending.map_or(Phase::Empty, Phase::Ready);
+            *state = pending.map_or(Phase::Empty, |pending| Phase::Ready(Box::new(pending)));
         }
     }
 }
@@ -137,11 +137,12 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
     else {
         return Ok(None);
     };
-    let parent = picked_root(folder.into_path().map_err(|_| Error::InvalidDestination)?)
-        .map_err(|error| match error {
+    let parent = picked_root(folder.into_path().map_err(|_| Error::InvalidDestination)?).map_err(
+        |error| match error {
             Error::Invalid => Error::InvalidDestination,
             other => other,
-        })?;
+        },
+    )?;
     let current = crate::reader_profile::directory(app)
         .map_err(|_| Error::Conflict)?
         .canonicalize()
