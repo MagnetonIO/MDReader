@@ -8,6 +8,26 @@ use std::{path::Path, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+fn private_destination(parent: &Path) -> Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // TempDir otherwise inherits the process umask (commonly creating 0755).
+        // Set permissions on creation, before any private snapshot is written.
+        tempfile::Builder::new()
+            .prefix("MDReader-backup-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+            .map(tempfile::TempDir::keep)
+            .map_err(|_| Error::Storage)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Err(Error::Unsupported)
+    }
+}
+
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BackupState {
@@ -101,13 +121,9 @@ pub(crate) async fn native_profile_backup(
             return Err(failure(Error::NotQuiescent));
         }
         parent.verify().map_err(|_| failure(Error::Conflict))?;
-        // tempfile creates an exclusive private directory. Keep it on failure:
+        // Create an exclusive private directory. Keep it on failure:
         // uncertain staged output must not be deleted through a raced pathname.
-        let directory = tempfile::Builder::new()
-            .prefix("MDReader-backup-")
-            .tempdir_in(&parent.path)
-            .map_err(|_| failure(Error::Storage))?
-            .keep();
+        let directory = private_destination(&parent.path).map_err(failure)?;
         parent.verify().map_err(|_| failure(Error::Conflict))?;
         let limits = Limits::default();
         let bundle = transition
@@ -125,4 +141,26 @@ pub(crate) async fn native_profile_backup(
     })
     .await
     .map_err(|_| failure(Error::ReconciliationRequired))?
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn backup_destination_is_private_before_snapshot_publication() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = private_destination(parent.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert!(destination.starts_with(parent.path()));
+    }
 }
