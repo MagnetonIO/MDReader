@@ -260,7 +260,17 @@ async fn pending_key_custody_reconciles_timeout_and_reopens_same_material() {
     memory
         .delay
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    // This get waits behind the ONE still-running OS mutation; no replacement worker.
+    // A preservation FIFO barrier must wait for the actual OS mutation even
+    // after its original receiver timed out. It never infers mutation success.
+    vault
+        .settle(Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(memory
+        .records
+        .lock()
+        .unwrap()
+        .contains_key(reference.opaque_reference()));
     let restored = vault
         .get(&reference, Instant::now() + Duration::from_secs(2))
         .await

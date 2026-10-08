@@ -439,3 +439,19 @@ remain unavailable until their actual owners are connected. Pairing passes its
 focused authority/actual local HTTPS Worker/JOSE cases but has no shipping native
 account coordinator/UI yet. CatDB removal, live provider/device acceptance and
 release packaging remain open.
+
+## Native typed sync pump integration, 2026-10-08
+
+The typed foreground pump (`a2d17f8`) and shared owner asset-runtime constructor
+(`0c4e19f`) are composed with the current Settings integration. An explicit sync
+action hydrates authenticated dependencies and delegates contiguous revisions to
+the existing atomic SQLite publisher; it acknowledges durable applied state only.
+Cancellation drains retained blocking jobs. The native account freeze supplies
+an exact-scoped participant guard, not a profile-wide preservation proof.
+
+The combined tree passed three account cases, ten incoming SQLite/filesystem
+cases and strict service `sync-native --all-targets` Clippy, using the warm cache
+and two jobs. See [the integration receipt](native-sync-pump-integration-2026-10-08.md).
+Actual account-actor HTTPS flow/cancellation acceptance, outgoing immutable
+graphs, product document/asset discovery, all-writer preservation and release
+packaging remain separate gates. No installed data or deployment changed.

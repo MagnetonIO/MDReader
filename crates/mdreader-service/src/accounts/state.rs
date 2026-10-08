@@ -14,6 +14,8 @@ pub(super) struct View {
     pub active: Option<Arc<Active>>,
     pub retained: bool,
     pub custody: Option<CustodyView>,
+    pub frozen: Option<freeze::Tag>,
+    pub projections: usize,
 }
 impl View {
     pub fn start(&mut self, id: Uuid) {
@@ -39,6 +41,7 @@ pub(super) struct Shared {
     pub view: Mutex<View>,
     pub controller: Option<Arc<SessionController>>,
     pub changes: tokio::sync::watch::Sender<u64>,
+    pub settled: tokio::sync::Notify,
     recovery_available: bool,
 }
 impl Shared {
@@ -55,9 +58,12 @@ impl Shared {
                 active: None,
                 retained,
                 custody: None,
+                frozen: None,
+                projections: 0,
             }),
             controller,
             changes: tokio::sync::watch::channel(0).0,
+            settled: tokio::sync::Notify::new(),
             recovery_available,
         }
     }
@@ -77,6 +83,9 @@ impl Shared {
     }
     pub fn invalidate(&self, requested: Option<Uuid>) -> Result<()> {
         let mut state = self.view.lock().map_err(|_| AccountError::Interrupted)?;
+        if state.frozen.is_some() {
+            return Err(AccountError::Busy);
+        }
         if requested.is_some() && state.running != requested {
             return Err(AccountError::Conflict);
         }
@@ -128,6 +137,7 @@ impl Shared {
                 }
             }
             state.running = None;
+            self.settled.notify_one();
         }
     }
 }

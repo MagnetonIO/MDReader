@@ -3,6 +3,7 @@
 mod actor;
 mod binding;
 mod enrollment;
+mod freeze;
 mod interaction;
 mod operations;
 pub mod rpc;
@@ -12,6 +13,7 @@ mod storage;
 mod tests;
 mod types;
 
+pub use freeze::FrozenAccounts;
 pub use interaction::{NativeRecovery, RecoveryInput};
 use mdreader_core::{device::assets::AssetRuntime, ReaderStore};
 use mdreader_sync::authority::{
@@ -45,7 +47,7 @@ pub struct CacheRoots {
 /// separate coordinators over the same owner. No SQLite guard spans an await.
 pub struct Coordinator {
     shared: Arc<state::Shared>,
-    sender: Option<tokio::sync::mpsc::Sender<actor::Command>>,
+    sender: Option<tokio::sync::mpsc::Sender<actor::Message>>,
 }
 impl Coordinator {
     pub fn new(
@@ -101,7 +103,7 @@ impl Coordinator {
             .view
             .lock()
             .map_err(|_| AccountError::Interrupted)?;
-        if state.running.is_some() {
+        if state.running.is_some() || state.frozen.is_some() {
             return Err(AccountError::Busy);
         }
         let id = Uuid::new_v4();
@@ -110,10 +112,12 @@ impl Coordinator {
             epoch: state.epoch,
             intent,
         };
-        sender.try_send(command).map_err(|error| match error {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => AccountError::Busy,
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => AccountError::Interrupted,
-        })?;
+        sender
+            .try_send(actor::Message::Run(command))
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => AccountError::Busy,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => AccountError::Interrupted,
+            })?;
         state.start(id);
         Ok(id)
     }
@@ -147,14 +151,7 @@ impl Coordinator {
         &self,
         input: &mdreader_sync::incoming::PreparedIncoming,
     ) -> crate::sync::incoming::Result<crate::sync::incoming::Outcome> {
-        let active = self
-            .shared
-            .view
-            .lock()
-            .map_err(|_| crate::sync::incoming::Error::Inactive)?
-            .active
-            .clone()
-            .ok_or(crate::sync::incoming::Error::Inactive)?;
+        let (active, _lease) = self.shared.projection_lease()?;
         active.incoming.apply(&active.selected, input)
     }
 }
