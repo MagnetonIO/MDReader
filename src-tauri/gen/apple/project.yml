@@ -39,6 +39,9 @@ targets:
     info:
       path: mdreader-app_iOS/Info.plist
       properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: Reader document links
+            CFBundleURLSchemes: [mdreader]
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
