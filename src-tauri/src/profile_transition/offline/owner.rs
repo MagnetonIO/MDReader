@@ -17,6 +17,7 @@ pub(super) struct ClosedOwner {
     binding: RootBinding,
     locks: Vec<Lock>,
     capture: Option<mdreader_capture::FrozenSpool>,
+    database: Option<Connection>,
 }
 impl ClosedOwner {
     pub(super) fn acquire(path: &Path) -> Result<Self> {
@@ -108,11 +109,31 @@ impl ClosedOwner {
         } else {
             None
         };
+        // Open once after actual writer closure, before inventory capture. A
+        // readonly WAL connection can create recovery sidecars; retaining this
+        // exact handle keeps that membership stable through archive/activation.
+        let database = Connection::open_with_flags(
+            root.path.join("reader-v1/library.sqlite"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| Error::Storage)?;
+        database
+            .busy_timeout(std::time::Duration::ZERO)
+            .map_err(|_| Error::Storage)?;
+        database
+            .pragma_update(None, "query_only", true)
+            .map_err(|_| Error::Storage)?;
+        database
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .map_err(|_| Error::Storage)?;
         let mut closed = Self {
             root,
             binding,
             locks,
             capture,
+            database: Some(database),
         };
         closed.revalidate()?;
         Ok(closed)
@@ -156,19 +177,8 @@ impl FrozenProfile for ClosedOwner {
         if relative != Path::new("reader-v1/library.sqlite") {
             return Err(Error::Unsupported);
         }
-        let connection = Connection::open_with_flags(
-            self.root.path.join(relative),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|_| Error::Storage)?;
-        connection
-            .busy_timeout(std::time::Duration::ZERO)
-            .map_err(|_| Error::Storage)?;
-        connection
-            .pragma_update(None, "query_only", true)
-            .map_err(|_| Error::Storage)?;
-        self.revalidate()?;
-        action(&connection)?;
+        let connection = self.database.as_ref().ok_or(Error::NotQuiescent)?;
+        action(connection)?;
         self.revalidate()
     }
 }
@@ -176,6 +186,8 @@ impl Drop for ClosedOwner {
     fn drop(&mut self) {
         // Explicitly release actual flock descriptors. No exported bytes are
         // proof that another process still holds these capabilities.
+        // Drop SQLite before allowing any new original writer.
+        drop(self.database.take());
         for lock in &self.locks {
             let _ = fs2::FileExt::unlock(&lock.file);
         }
