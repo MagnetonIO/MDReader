@@ -8,6 +8,8 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(feature = "sync-native")]
+pub mod accounts;
 pub mod capture;
 pub mod catalog;
 pub mod integrations;

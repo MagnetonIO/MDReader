@@ -10,6 +10,23 @@ mod state;
 use super::*;
 pub use packets::{PairApprovalPacket, PairRequestPacket};
 pub(super) use state::{activation_transition, slot_transition, validate_slot, Slot};
+pub(super) fn owner_summary(record: &CustodyRecord) -> PairApprovalSummary {
+    match &record.pairing {
+        Some(Slot::Sending {
+            state: state::ApprovalState::Prepared,
+            ..
+        }) => PairApprovalSummary::Prepared,
+        Some(Slot::Sending {
+            state: state::ApprovalState::Uncertain,
+            ..
+        }) => PairApprovalSummary::Uncertain,
+        Some(Slot::Sending {
+            state: state::ApprovalState::Confirmed,
+            ..
+        }) => PairApprovalSummary::Confirmed,
+        _ => PairApprovalSummary::None,
+    }
+}
 use std::time::{Duration, Instant};
 use wrapping::{PairContext, PublicJwk};
 use zeroize::Zeroizing;
