@@ -8,6 +8,7 @@ repository.workspace = true
 [features]
 default = []
 sync-transport = ["mdreader-sync/transport"]
+sync-native = ["sync-transport", "mdreader-sync/native-authority", "mdreader-core/device-assets"]
 local-embed = ["mdreader-core/local-embed"]
 
 [dependencies]
