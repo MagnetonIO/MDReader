@@ -26,9 +26,11 @@ pub(super) struct Runtime {
     capture_admission: super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
     #[cfg(feature = "sync-native")]
-    accounts: super::accounts::Result<super::accounts::Coordinator>,
+    accounts: super::accounts::Result<Arc<super::accounts::Coordinator>>,
     #[cfg(feature = "sync-native")]
     device: Option<Arc<super::device::Coordinator>>,
+    #[cfg(feature = "sync-native")]
+    preservation: super::preservation::Result<Arc<super::preservation::Session>>,
     reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
@@ -98,7 +100,7 @@ impl Runtime {
         let mut runtime = Self::with_owned_model(store, cache, model, startup)?;
         #[cfg(feature = "sync-native")]
         {
-            runtime.accounts = accounts;
+            runtime.accounts = accounts.map(Arc::new);
             if let Some((documents, assets)) = device_roots {
                 let device = Arc::new(super::device::Coordinator::new(
                     owner.clone(), runtime.queries.clone(), documents, assets, asset_runtime,
@@ -106,6 +108,35 @@ impl Runtime {
                 runtime.catalog.enable_device_catalog(device.clone());
                 runtime.device = Some(device);
             }
+            runtime.preservation = (|| {
+                let daemon = runtime
+                    .daemon
+                    .as_ref()
+                    .map_err(|_| super::preservation::Error::Unavailable)?
+                    .clone();
+                let accounts = runtime
+                    .accounts
+                    .as_ref()
+                    .map_err(|_| super::preservation::Error::Unavailable)?
+                    .clone();
+                let devices = runtime
+                    .device
+                    .clone()
+                    .ok_or(super::preservation::Error::Unavailable)?;
+                let capture = runtime
+                    .capture_admission
+                    .as_ref()
+                    .map_err(|_| super::preservation::Error::Unavailable)?
+                    .clone();
+                super::preservation::Session::new(
+                    &runtime.directory,
+                    owner.clone(),
+                    daemon,
+                    accounts,
+                    devices,
+                    capture,
+                )
+            })();
         }
         if let Some(factory) = adapters.factory {
             // Provider cache/host failure must not take local reading, capture,
@@ -257,6 +288,8 @@ impl Runtime {
             accounts: Err(super::accounts::AccountError::Unconfigured),
             #[cfg(feature = "sync-native")]
             device: None,
+            #[cfg(feature = "sync-native")]
+            preservation: Err(super::preservation::Error::Unsupported),
         })
     }
     fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -281,7 +314,17 @@ impl Runtime {
             .and_then(|admission| admission.enter())
             .map_err(|_| protocol_error("Capture producers are paused or unavailable"))
     }
+    #[cfg(feature = "sync-native")]
+    pub(super) fn preservation_session(
+        &self,
+    ) -> super::preservation::Result<&Arc<super::preservation::Session>> {
+        self.preservation.as_ref().map_err(|error| *error)
+    }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::Preservation { request } = request {
+            return serde_json::to_value(super::preservation::dispatch(self, request))
+                .map_err(|_| protocol_error("response serialization failed"));
+        }
         if matches!(request, Request::Ping) {
             return Ok(
                 serde_json::json!({"protocol":super::PROTOCOL,"pid":std::process::id(),"headless":true}),

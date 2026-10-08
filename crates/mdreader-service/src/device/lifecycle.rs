@@ -7,6 +7,7 @@ use uuid::Uuid;
 #[derive(Default)]
 struct State {
     frozen: Option<Uuid>,
+    resumed: Option<(Uuid, Uuid)>,
     active: u32,
 }
 #[derive(Default)]
@@ -136,12 +137,25 @@ impl Drop for FrozenDevices {
     fn drop(&mut self) {
         if let Ok(mut state) = self.coordinator.admission.state.lock() {
             if state.frozen == Some(self.token) {
+                state.resumed = Some((self.operation, self.epoch));
                 state.frozen = None;
             }
         }
     }
 }
 impl Coordinator {
+    pub(crate) fn resumed(&self, operation: Uuid, epoch: Uuid) -> Result<()> {
+        let state = self
+            .admission
+            .state
+            .lock()
+            .map_err(|_| DeviceError::Persistence)?;
+        if state.frozen.is_some() || state.resumed != Some((operation, epoch)) {
+            return Err(DeviceError::Stale);
+        }
+        Ok(())
+    }
+
     /// Call on a native blocking worker, never the UI/async executor. Bounded
     /// drain includes verification outside SQLite locks; timeout yields no guard.
     pub fn freeze(
@@ -167,6 +181,7 @@ impl Coordinator {
         if state.frozen.is_some() {
             return Err(DeviceError::Busy);
         }
+        state.resumed = None;
         state.frozen = Some(token);
         let mut guard = FrozenDevices {
             coordinator: self.clone(),
