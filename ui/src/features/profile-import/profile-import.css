@@ -9,3 +9,5 @@
 .profile-import__documents > p { padding: 0 12px; }
 .profile-import__confirmation { margin: 16px 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
 .profile-import__confirmation legend { padding: 0 6px; font-size: 14px; font-weight: 600; }
+.profile-import .settings-link-button { max-width: 100%; white-space: normal; text-align: left; }
+.profile-import__confirmation { min-width: 0; }

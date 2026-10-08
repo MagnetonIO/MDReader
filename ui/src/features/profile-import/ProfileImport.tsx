@@ -13,12 +13,16 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const running = useRef(false);
   const mounted = useRef(true);
   const latestOperation = useRef(reply.operationId);
+  const title = useRef<HTMLHeadingElement>(null);
+  const keepSeparate = useRef<HTMLButtonElement>(null);
   latestOperation.current = reply.operationId;
   const operationId = reply.operationId;
   const prepared = reply.state === 'prepared';
   const opening = reply.state === 'activated' || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
   const preview = reply.state === 'preview' || reply.state === 'exported';
+  useEffect(() => { title.current?.focus(); }, [reply.state]);
+  useEffect(() => { if (confirmRollback) keepSeparate.current?.focus(); }, [confirmRollback]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -45,6 +49,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       // Export/preparation replies need not repeat the verified metadata list.
       setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents }));
     } catch (cause) {
+      if (!mounted.current) return;
       if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
       setFailure(cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
     } finally {
@@ -59,7 +64,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   }
 
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
-    <h3 id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
+    <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
     {preview ? <>
       <p>Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves the selected library’s supported records, including records that are not shown as documents here.</p>
@@ -90,7 +95,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       <div className="settings-account-actions">
         <button type="button" className="settings-link-button" disabled={busy !== null || uncertain || !operationId}
           onClick={() => { if (operationId) void perform({ operation: 'rollback', operationId }, 'Backing up changes and requesting the original library…'); }}>Back up changes and open original library</button>
-        <button type="button" className="settings-link-button" disabled={busy !== null} onClick={() => setConfirmRollback(false)}>Keep separate library</button>
+        <button ref={keepSeparate} type="button" className="settings-link-button" disabled={busy !== null} onClick={() => { setConfirmRollback(false); title.current?.focus(); }}>Keep separate library</button>
       </div>
     </fieldset> : null}
     <div className="settings-account-actions">

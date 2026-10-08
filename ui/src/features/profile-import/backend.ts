@@ -53,7 +53,9 @@ function checked(value: ImportReply): ImportReply {
 
 export async function importRequest(request: ImportRequest): Promise<ImportReply> {
   try {
-    return checked(await invoke<ImportReply>('native_profile_migration', { request }));
+    const value = checked(await invoke<ImportReply>('native_profile_migration', { request }));
+    if ('operationId' in request && value.operationId !== request.operationId) throw new ImportFailure('migration_unconfirmed');
+    return value;
   } catch (cause) {
     if (cause instanceof ImportFailure) throw cause;
     const kind = cause && typeof cause === 'object' && 'kind' in cause ? String(cause.kind) : '';
