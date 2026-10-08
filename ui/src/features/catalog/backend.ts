@@ -1,4 +1,5 @@
-import type { LocalLinkResolution } from '../reader/contracts';
+import type { LocalLinkResolution, LocalImageBytes } from '../reader/contracts';
+import { readCatalogImage } from './local-image-backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderReaderReference, ProviderDocumentBody } from '../../platform/providers';
 import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen } from '../../bindings';
@@ -14,6 +15,7 @@ export interface CatalogBackend {
     reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
   ): Promise<LocalLinkResolution>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
+  readImage?(reference: ProviderReaderReference, target: string): Promise<LocalImageBytes>;
 }
 
 export function catalogErrorMessage(kind: string): string {
@@ -46,6 +48,7 @@ async function request<O extends CatalogReply['operation']>(
 }
 
 export const catalogBackend: CatalogBackend = {
+  readImage: readCatalogImage,
   list: () => request({ operation: 'list' }, 'list'),
   page: (catalogId, cursor, limit) =>
     request({ operation: 'page', catalogId, cursor, limit }, 'page'),

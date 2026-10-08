@@ -16,6 +16,7 @@ import { exportNativeMarkdown } from '../document-transfer/native-export';
 import { DocumentActions } from '../document-transfer/DocumentActions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
 import './canonical-reader.css';
+import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
   reference: ProviderReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
@@ -42,6 +43,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
   const verifiedKind = loaded?.reference === currentReference ? loaded.sourceKind ?? sourceKind : sourceKind;
+  const localImages = useLocalImages(currentReference, backend.readImage, Boolean(doc) && verifiedKind === 'local');
   const line = loaded?.reference === currentReference ? loaded.line : 1;
   const positionRef = useRef(position);
   positionRef.current = position;
@@ -198,7 +200,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
     <div className="provider-reader-dialog__document">
-      {doc ? <PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) { if (/^https:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer'); } }}>
+      {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) { if (/^https:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer'); } }}>
         <MarkdownReader
           ref={(handle) => {
             reader.current = handle;
@@ -214,9 +216,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
             const position = savedAnchor(doc, currentReference.revision, anchor);
             if (position) onPosition(position);
           } : undefined}
-          components={{ img: Image ?? (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>) }}
+          components={{ img: Image ?? (verifiedKind === 'local' && backend.readImage ? LocalSourceImage : (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>)) }}
           onNavigate={(event) => void navigate(event)} />
-      </PlatformProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
+      </PlatformProvider></LocalImageProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
     </div>
   </section>;
 }
