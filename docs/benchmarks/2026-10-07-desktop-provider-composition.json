@@ -1,0 +1,17 @@
+{
+  "binarySHA256": "09fcac6a0e09233773d36c0d7af56bbb64bef9fbd34f3f0ada862ec6f1dc2ec7",
+  "headless": true,
+  "providerRegistryAvailableWithoutOAuth": true,
+  "localDocuments": 1,
+  "searchHits": 1,
+  "originalBytesPreserved": true,
+  "contentSHA256": "ba4c1fda74f5221fd4d0138e01a4f60453b693b8e2eea49b9e0707cc220aee98",
+  "revision": "5b33504bc2856461ec97c3ec3e6746920d6e15e4f84c6975bad764a54326b4af",
+  "savedLine": 3,
+  "guiAcceptance": false,
+  "guiBlocker": "Sky Computer Use native pipe startup failed",
+  "restartPreservesSourceSearchReadAndBookmark": true,
+  "observedSourceSnapshot": "feb7a2d",
+  "embeddedReleaseSourceCommit": "0000000000000000000000000000000000000000",
+  "buildIdentityNote": "Debug probe uses an unset release provenance stamp. Source snapshot and binary SHA256 are recorded separately; this is not release provenance acceptance."
+}

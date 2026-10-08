@@ -11,7 +11,7 @@ or published; the new sync protocol has not deployed.
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. | Whole app still contains legacy CatDB paths; transport cancellation, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
-| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Worker/SQLite/R2 and synthetic OIDC enrollment/pairing/recovery checks pass. | Foreground browser synchronization and account UI are being integrated. Native transport/custody, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
+| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. | Native transport/custody, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. | Final cross-engine matrix for subsequent web features, native/mobile assets/export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. | Logical provider links, sidebar/global-search integration and guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
 | 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. | Actual extension-host acceptance; useful insights/reviews migration, lossless export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
@@ -44,6 +44,22 @@ the reader reports these and missing/partial vector coverage even on empty lists
 ## Evidence boundaries
 
 Native core affected suite: 55 tests and all-target strict Clippy pass. Four focused mobile storage behaviors pass in 0.11 s, including interrupted imports and app-container relocation with the same source identity and revoked-source protection. Provider admission replay checks pass 9 provider and 5 runtime tests; native custody wrappers pass 5 focused tests. The desktop provider composition passes 7 App and 2 cached-reader dialog tests; app typecheck and scoped lint pass. These focused checks follow [the testing policy](testing-policy.md); broad native/renderer and final cross-host matrices remain integration/release gates rather than per-fix commands.
+
+The fresh [desktop packaged composition checkpoint](../benchmarks/2026-10-07-desktop-provider-composition.md)
+passes headless provider-registry access without OAuth, local admission/index/read,
+original-byte preservation and saved reading line through restart. Its GUI
+attachment failed before interaction, so native provider GUI acceptance remains
+open. Eleven focused mobile composition tests now include a reproduced failed
+read that previously displayed an indefinite loading message; an explicit error
+and user-requested retry replace that state. This UI fix has not yet been rebuilt
+and exercised on the simulator.
+
+Web foreground sync checkpoint `a25a2bf` passes Chromium sync 10/10, OPFS 11/11,
+configured production `/app` 1/1, default offline/tab contention 2/2 and 48 unit
+tests (two existing skips), plus targeted authority/progress regressions. The
+default build stays unconfigured; live issuer and deployment acceptance remain
+open. Details and limitations are recorded in the web repository's
+`lib/sync/FOREGROUND-SYNC.md`.
 
 The [actual iOS smoke receipt](../benchmarks/2026-10-07-ios-reader-smoke.md)
 records standard file-picker import, exact original bytes, reading, pinning,

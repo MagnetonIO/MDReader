@@ -79,6 +79,8 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     line: number;
   } | null>(null);
   const [parsed, setParsed] = useState<ParsedDoc | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [readAttempt, setReadAttempt] = useState(0);
   const [evidence, setEvidence] = useState(false);
   const [outline, setOutline] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -200,6 +202,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   useEffect(() => {
     const epoch = ++readEpoch.current;
     setParsed(null);
+    setReadError(null);
     restored.current = false;
     setEvidence(false);
     setOutline(false);
@@ -210,12 +213,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         if (epoch === readEpoch.current) setParsed(doc);
       })
       .catch((cause) => {
-        if (epoch === readEpoch.current) setError(message(cause));
+        if (epoch === readEpoch.current) setReadError(message(cause));
       });
     return () => {
       readEpoch.current++;
     };
-  }, [activeId, activeRevision]);
+  }, [activeId, activeRevision, readAttempt]);
   useEffect(() => {
     const epoch = ++searchEpoch.current;
     setHits([]);
@@ -560,6 +563,13 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       }}
                     />
                   </PlatformProvider>
+                ) : readError ? (
+                  <div className="mobile-state">
+                    <p role="alert">{readError}</p>
+                    <button type="button" className="mobile-touch" onClick={() => setReadAttempt((value) => value + 1)}>
+                      Retry reading
+                    </button>
+                  </div>
                 ) : (
                   <p role="status">Reading Markdown…</p>
                 )}

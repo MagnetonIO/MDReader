@@ -19,6 +19,7 @@ let nativeDeviceConfigured = false;
 let pendingImports: { id: string; name: string; bytes: number }[] = [];
 let rejectDiscard = false;
 let pinAcknowledgement:Promise<void>|null=null;
+let readFailure: string | null = null;
 let deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
 const deviceDocument = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -60,11 +61,13 @@ function installTauriRuntime(): void {
           pendingImports = [];
           return null;
         }
-        if (command === "mobile_reader_read")
+        if (command === "mobile_reader_read") {
+          if (readFailure) throw new Error(readFailure);
           return {
             document: { ...deviceDocument },
             markdown: deviceMarkdown,
           };
+        }
         if (command === "mobile_reader_search")
           return [
             {
@@ -188,6 +191,7 @@ beforeEach(() => {
   pendingImports = [];
   rejectDiscard = false;
   pinAcknowledgement=null;
+  readFailure = null;
   deviceDocument.pinned = false;
   deviceDocument.name = "architecture.md";
   deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
@@ -209,6 +213,24 @@ afterEach(() => {
 });
 
 describe("compile-time mobile composition", () => {
+  test("ends a failed read and retries the same revision only on request", async () => {
+    installDeviceLibrary();
+    readFailure = "Source authority could not be verified";
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(readFailure);
+    expect(screen.queryByText("Reading Markdown…")).toBeNull();
+    const retry = screen.getByRole("button", { name: "Retry reading" });
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_read")).toHaveLength(1);
+    readFailure = null;
+    fireEvent.click(retry);
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_read")).toHaveLength(2);
+    expect(nativeCalls).toHaveBeenLastCalledWith("mobile_reader_read", {
+      id: deviceDocument.id, revision: deviceDocument.revision,
+    });
+  });
   test("keeps interrupted imports visible until native removal succeeds", async () => {
     pendingImports = [{ id: deviceDocument.id, name: "partial.md", bytes: 128 }];
     rejectDiscard = true;
