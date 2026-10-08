@@ -9,7 +9,7 @@ import {
   parseReleaseManifest,
   type ReleaseManifest,
   type ReleaseManifestArtifact,
-} from '../../apps/web/lib/release-manifest';
+} from './release-manifest';
 import { assertCompleteArtifactSbom } from './stage-release';
 import { updaterPublicKeyFingerprint } from './release-config';
 

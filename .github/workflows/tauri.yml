@@ -5,7 +5,16 @@ on:
     branches: [main]
   pull_request:
     paths:
-      - 'apps/mdreader/**'
+      - 'src-tauri/**'
+      - 'crates/**'
+      - 'ui/**'
+      - 'packages/**'
+      - 'e2e-native/**'
+      - '.cargo/**'
+      - 'rust-toolchain.toml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/tauri.yml'
       - 'scripts/check-bindings.sh'
       - 'scripts/macos-smoke.sh'
@@ -66,10 +75,10 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
-      # Check-only for P0 — no `tauri build`. This compiles the Tauri app shell
+      # Compile the Tauri app shell
       # for each target OS to catch platform-specific breakage early.
       - name: Cargo check (mdreader-app)
-        run: cargo check -p mdreader-app
+        run: cargo check --locked -p mdreader-app
 
       # The generated tauri-specta bindings are committed; verify they haven't
       # drifted from the Rust command surface. Ubuntu only — one OS is enough.
@@ -85,7 +94,7 @@ jobs:
   # mac2 leg runs. macOS is deliberately absent here: WKWebView exposes no
   # WebDriver, so the Mac path is the appium-mac2-driver leg (see `macos-smoke`).
   #
-  # The harness (apps/mdreader/e2e-native) lives OUTSIDE the pnpm workspace, so it
+  # The harness (e2e-native) lives OUTSIDE the pnpm workspace, so it
   # installs its Appium/WebdriverIO toolchain on demand with `npm install` (NOT
   # `pnpm install`, which walks up to the root pnpm-workspace.yaml and installs the
   # workspace instead of these deps, leaving webdriverio absent). This matches
@@ -160,25 +169,25 @@ jobs:
         uses: browser-actions/setup-edge@v1
 
       - name: Install e2e-native toolchain
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: npm install
 
       - name: Typecheck the GUI suite
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: pnpm run typecheck
 
       - name: Verify native E2E seed isolation
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: pnpm run test:seed
 
       - name: Run desktop e2e (Linux, headed under xvfb)
         if: runner.os == 'Linux'
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: xvfb-run -a pnpm run test:desktop
 
       - name: Run desktop e2e (Windows)
         if: runner.os == 'Windows'
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: pnpm run test:desktop
 
   # --------------------------------------------------------------------------
@@ -274,7 +283,7 @@ jobs:
         shell: bash
         run: |
           fingerprint=$(
-            git ls-files -z apps/mdreader/src-tauri/gen/apple \
+            git ls-files -z src-tauri/gen/apple \
               | xargs -0 shasum -a 256 \
               | shasum -a 256 \
               | cut -d ' ' -f 1
@@ -295,18 +304,18 @@ jobs:
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE"
           pnpm --filter @mdreader/app tauri ios init --ci
-          node apps/mdreader/e2e-native/build-mobile-e2e.mjs ios
+          node e2e-native/build-mobile-e2e.mjs ios
 
       - name: Validate and export iOS app
         shell: bash
         run: |
-          app="$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/src-tauri/gen/apple/build/mdreader-app_iOS.xcarchive/Products/Applications/MDReader E2E.app"
+          app="$MDREADER_IOS_E2E_WORKTREE/src-tauri/gen/apple/build/mdreader-app_iOS.xcarchive/Products/Applications/MDReader E2E.app"
           if [[ ! -d "$app" ]]; then
             echo "expected archived iOS app is missing: $app" >&2
             exit 1
           fi
           node --experimental-strip-types --no-warnings \
-            "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native/validate-artifact.ts" \
+            "$MDREADER_IOS_E2E_WORKTREE/e2e-native/validate-artifact.ts" \
             ios \
             "$app" \
             "$GITHUB_SHA"
@@ -338,25 +347,25 @@ jobs:
       - name: Install e2e-native toolchain
         shell: bash
         run: |
-          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
           npm install
 
       - name: Typecheck the GUI harness
         shell: bash
         run: |
-          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
           pnpm run typecheck
 
       - name: Verify artifact and seed guards
         shell: bash
         run: |
-          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
           pnpm run test:seed
 
       - name: Run iOS e2e (Simulator)
         shell: bash
         run: |
-          cd "$MDREADER_IOS_E2E_WORKTREE/apps/mdreader/e2e-native"
+          cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
           pnpm run test:ios
 
       - name: Verify production Apple tree and remove disposable worktree
@@ -365,7 +374,7 @@ jobs:
         run: |
           status=0
           fingerprint=$(
-            git ls-files -z apps/mdreader/src-tauri/gen/apple \
+            git ls-files -z src-tauri/gen/apple \
               | xargs -0 shasum -a 256 \
               | shasum -a 256 \
               | cut -d ' ' -f 1
@@ -374,11 +383,11 @@ jobs:
             echo "production Apple target changed during the E2E build" >&2
             status=1
           }
-          git diff --exit-code -- apps/mdreader/src-tauri/gen/apple || status=1
-          test -z "$(git status --porcelain --untracked-files=all -- apps/mdreader/src-tauri/gen/apple)" \
+          git diff --exit-code -- src-tauri/gen/apple || status=1
+          test -z "$(git status --porcelain --untracked-files=all -- src-tauri/gen/apple)" \
             || status=1
           grep -F 'PRODUCT_BUNDLE_IDENTIFIER: dev.mdreader.app' \
-            apps/mdreader/src-tauri/gen/apple/project.yml \
+            src-tauri/gen/apple/project.yml \
             || status=1
           if [[ -n "${MDREADER_IOS_E2E_WORKTREE:-}" && -d "$MDREADER_IOS_E2E_WORKTREE" ]]; then
             git worktree remove --force "$MDREADER_IOS_E2E_WORKTREE" || status=1
@@ -420,23 +429,23 @@ jobs:
       - name: Prepare isolated Android E2E project
         shell: bash
         run: |
-          test -f apps/mdreader/src-tauri/gen/android/gradlew || {
+          test -f src-tauri/gen/android/gradlew || {
             echo "the committed production Tauri Android project is missing" >&2
             exit 1
           }
           production_project="$RUNNER_TEMP/mdreader-android-production-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mv apps/mdreader/src-tauri/gen/android "$production_project"
+          mv src-tauri/gen/android "$production_project"
           pnpm --filter @mdreader/app tauri android init \
             --config src-tauri/tauri.e2e.conf.json \
             --ci
 
       - name: Build MDReader Android debug APK
-        run: node apps/mdreader/e2e-native/build-mobile-e2e.mjs android
+        run: node e2e-native/build-mobile-e2e.mjs android
 
       - name: Validate and export Android APK
         shell: bash
         run: |
-          apks=$(find apps/mdreader/src-tauri/gen/android -type f -name '*.apk' -print)
+          apks=$(find src-tauri/gen/android -type f -name '*.apk' -print)
           count=$(printf '%s\n' "$apks" | sed '/^$/d' | wc -l | tr -d ' ')
           if [[ "$count" -ne 1 ]]; then
             echo "expected exactly one Android APK; found $count" >&2
@@ -444,22 +453,22 @@ jobs:
           fi
           apk=$(realpath "$apks")
           node --experimental-strip-types --no-warnings \
-            apps/mdreader/e2e-native/validate-artifact.ts \
+            e2e-native/validate-artifact.ts \
             android \
             "$apk" \
             "$GITHUB_SHA"
           printf 'MDREADER_ANDROID_APP=%s\n' "$apk" >> "$GITHUB_ENV"
 
       - name: Install e2e-native toolchain
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: npm install
 
       - name: Typecheck the GUI harness
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: pnpm run typecheck
 
       - name: Verify artifact and seed guards
-        working-directory: apps/mdreader/e2e-native
+        working-directory: e2e-native
         run: pnpm run test:seed
 
       - name: Run Android e2e (emulator)
@@ -467,5 +476,5 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
-          working-directory: apps/mdreader/e2e-native
+          working-directory: e2e-native
           script: pnpm run test:android

@@ -562,7 +562,7 @@ jobs:
               'icon.icns',
               'icon.ico',
             ].map((icon) => [
-              join('apps', 'mdreader', 'src-tauri', 'icons', icon),
+              join('src-tauri', 'icons', icon),
               join('icons', icon),
             ]),
           ];
@@ -1602,8 +1602,8 @@ jobs:
 
           const workspace = required('BUNDLE_WORKSPACE_ROOT');
           rmSync(workspace, { recursive: true, force: true });
-          const tauriRoot = join(workspace, 'apps', 'mdreader', 'src-tauri');
-          const uiDist = join(workspace, 'apps', 'mdreader', 'ui', 'dist');
+          const tauriRoot = join(workspace, 'src-tauri');
+          const uiDist = join(workspace, 'ui', 'dist');
           mkdirSync(join(tauriRoot, 'src'), { recursive: true, mode: 0o700 });
           mkdirSync(join(tauriRoot, 'icons'), { recursive: true, mode: 0o700 });
           mkdirSync(uiDist, { recursive: true, mode: 0o700 });
@@ -2091,7 +2091,7 @@ jobs:
           TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
           BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
         run: |
-          cd "$BUNDLE_WORKSPACE/apps/mdreader/src-tauri"
+          cd "$BUNDLE_WORKSPACE/src-tauri"
           export CARGO_TARGET_DIR="$BUNDLE_WORKSPACE/target"
           exec "$NODE_EXECUTABLE" "$TAURI_ENTRYPOINT" bundle \
             --target "${{ matrix.target }}" \
@@ -2112,7 +2112,7 @@ jobs:
           TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
           BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
         run: |
-          Set-Location -LiteralPath (Join-Path $env:BUNDLE_WORKSPACE 'apps\mdreader\src-tauri')
+          Set-Location -LiteralPath (Join-Path $env:BUNDLE_WORKSPACE 'src-tauri')
           $env:CARGO_TARGET_DIR = Join-Path $env:BUNDLE_WORKSPACE 'target'
           & $env:NODE_EXECUTABLE $env:TAURI_ENTRYPOINT bundle `
             --target '${{ matrix.target }}' `
@@ -2132,7 +2132,7 @@ jobs:
           TAURI_ENTRYPOINT: ${{ steps.verify-credential-boundaries.outputs.tauri_entrypoint }}
           BUNDLE_WORKSPACE: ${{ steps.verify-credential-boundaries.outputs.bundle_workspace }}
         run: |
-          cd "$BUNDLE_WORKSPACE/apps/mdreader/src-tauri"
+          cd "$BUNDLE_WORKSPACE/src-tauri"
           export CARGO_TARGET_DIR="$BUNDLE_WORKSPACE/target"
           exec "$NODE_EXECUTABLE" "$TAURI_ENTRYPOINT" bundle \
             --target "${{ matrix.target }}" \

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseReleaseManifest } from '../../apps/web/lib/release-manifest';
+import { parseReleaseManifest } from './release-manifest';
 import {
   createReleaseConfig,
   readTauriIdentifier,
@@ -56,7 +56,7 @@ async function writeConfig(args: string[]): Promise<void> {
     version,
     workspaceVersion: readWorkspaceVersion(join(ROOT, 'Cargo.toml')),
     bundleIdentifier: readTauriIdentifier(
-      join(ROOT, 'apps', 'mdreader', 'src-tauri', 'tauri.conf.json'),
+      join(ROOT, 'src-tauri', 'tauri.conf.json'),
     ),
     updaterPublicKey: requireEnvironment('MDREADER_UPDATER_PUBLIC_KEY'),
     updaterEndpoint:

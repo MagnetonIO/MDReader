@@ -15,7 +15,7 @@ import type {
   ReleaseArtifactKind,
   ReleaseManifestArtifact,
   ReleasePlatform,
-} from '../../apps/web/lib/release-manifest';
+} from './release-manifest';
 import {
   verifyCredentialedOutput,
   verifyReleaseBuildAttestation,

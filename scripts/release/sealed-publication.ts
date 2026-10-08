@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   parseReleaseManifest,
   type ReleaseManifestArtifact,
-} from '../../apps/web/lib/release-manifest';
+} from './release-manifest';
 import type {
   PublicationEntry,
   PublicationKind,

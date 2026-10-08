@@ -18,7 +18,7 @@ import {
   verifyPackageBinarySet,
   type PackageBinary,
 } from './binary-identity';
-import type { ReleasePlatform } from '../../apps/web/lib/release-manifest';
+import type { ReleasePlatform } from './release-manifest';
 
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
 const APPIMAGE_LAUNCHER =
