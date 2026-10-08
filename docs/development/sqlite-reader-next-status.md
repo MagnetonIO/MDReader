@@ -557,3 +557,24 @@ disabled. Repeated full graph proof hashing/allocation under owner access remain
 an explicit responsiveness cost; transaction-bound proof reuse is follow-up work,
 not a reason to weaken final archive/session fences. Restart reauthorization,
 outgoing user-state/deletions, history/graph cleanup and live release remain open.
+
+## Actual native selected-sync actor checkpoint, 2026-10-08
+
+The public native-only coordinator now serializes explicit document/operation
+UUIDs through its actual account actor, retained blocking projection lease and
+existing authenticated foreground pump. The existing synthetic local HTTPS
+OIDC/PKCE/Worker/SQLite/R2 fixture imports a document plus PNG through real core
+APIs, uploads its immutable graph with strict scoped receipts and applies its
+own echo without replacing native document/source/asset UUIDs, pins or exact line.
+A pre-admission cancellation retains the actual blocking job and refuses freeze
+proof; a cancellation during HTTPS upload preserves the already-admitted graph
+byte-for-byte. Surrounding incoming/reauthorization/tombstone checks remain.
+
+One scheduled TLS-child case passed; bypassing only the late authority/selection
+fence caused the expected canceled-admission RED, exact source was restored, and
+the same case passed. Three affected account unit cases and strict all-target
+service/sync-native Clippy pass. See [the exact receipt](../../crates/mdreader-service/src/accounts/acceptance/README.md).
+AccountIntent/RPC/renderer DTO/UI are unchanged; QueueDocument remains a product
+integration gate. Actual OS-keychain/live issuer/mobile/installed acceptance,
+old-intent reauthorization, outgoing user-state/deletions and cleanup remain open.
+Repeated full graph proof owner cost is documented and not optimized in this slice.

@@ -1,5 +1,7 @@
 //! Native-only account owner. No startup, RPC dispatch or renderer credential path.
 //! Callers supply reviewed registration, one reader owner and native adapters.
+#[cfg(test)]
+mod acceptance;
 mod actor;
 mod binding;
 mod enrollment;
@@ -11,8 +13,6 @@ mod state;
 mod storage;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod acceptance;
 mod types;
 
 pub use freeze::FrozenAccounts;
@@ -99,6 +99,20 @@ impl Coordinator {
     /// Returns immediately. Only the actor owns browser/network/private custody work.
     pub fn begin(&self, intent: AccountIntent) -> Result<Uuid> {
         intent.validate()?;
+        self.begin_action(actor::Action::Account(intent))
+    }
+    /// Trusted native selection only; no AccountIntent/RPC/renderer dispatch.
+    /// The serial actor retains queue materialization before foreground sync.
+    pub fn begin_selected_sync(&self, document: Uuid, operation: Uuid) -> Result<Uuid> {
+        if document.get_version_num() != 4 || operation.get_version_num() != 4 {
+            return Err(AccountError::Invalid);
+        }
+        self.begin_action(actor::Action::SelectedSync {
+            document,
+            operation,
+        })
+    }
+    fn begin_action(&self, action: actor::Action) -> Result<Uuid> {
         let sender = self.sender.as_ref().ok_or(AccountError::Unconfigured)?;
         let mut state = self
             .shared
@@ -112,7 +126,7 @@ impl Coordinator {
         let command = actor::Command {
             id,
             epoch: state.epoch,
-            intent,
+            action,
         };
         sender
             .try_send(actor::Message::Run(command))

@@ -104,8 +104,10 @@ new dependencies, lock drift, model runs, packaging or live accounts were involv
 The compatible cross-worktree cache's sync input timestamp was refreshed before
 Clippy to avoid relative dep-info alias reuse; no source bytes or cache were removed.
 
-Do not enable QueueDocument RPC/UI until actual native account actor selection,
-authenticated transport, self-echo and retained cancellation/freeze acceptance
-pass. Restart/login reauthorization of a queued old intent, outgoing user-state
+The subsequent [actual actor checkpoint](../../accounts/acceptance/README.md)
+proves native-only public coordinator selection, authenticated local HTTPS
+transport/self-echo and retained queue cancellation/freeze using synthetic OIDC
+and the production vault codec. It does not expose QueueDocument RPC/UI or prove
+live issuer/OS-keychain acceptance. Restart/login reauthorization of a queued old intent, outgoing user-state
 and deletion operations, graph cleanup and history maintenance remain explicit
 later work; this checkpoint never guesses those policies.

@@ -83,3 +83,53 @@ These results do not claim product recovery dialogs, selected outgoing uploads,
 live issuer login, mobile custody, cross-process preservation backup or installed
 application acceptance. The separate outgoing/core-fence drafts are not part of
 this checkpoint. There was no deployment, account mutation or private-data access.
+
+## Selected native actor checkpoint (2026-10-08)
+
+The same scheduled case now exercises the public native-only
+`Coordinator::begin_selected_sync(document, operation)`. A private actor action
+retains the actual projection lease and blocking JoinHandle while calling the
+production IncomingCoordinator queue seam, then uses the existing authenticated
+foreground pump. AccountIntent, renderer RPC, DTOs and UI are unchanged.
+
+The fixture imports a second account-free native Markdown document and PNG through
+core's real APIs under the actual configured owner roots. Its raw bytes equal the
+peer document deliberately, proving that equal native hashes do not alias UUID
+ownership. The real selected NativeAuthority encrypts and uploads both dependencies
+and the root; strict scoped receipts and a commit receipt permit same-document
+echo. Native document/source/asset UUIDs, BOM/CRLF, pin and exact line survive;
+applied and acknowledged reach 3 without a duplicate import.
+
+The second real recovered account pauses actual selected queue work after sealing
+and before admission. Cancellation retains the real blocking task; new admission
+stays Busy, freeze times out without proof, and SQLite remains available. Releasing
+the task leaves no graph/nonce/association admission. A subsequent native login
+and queue pauses its actual HTTPS upload after durable admission; cancelling that
+job preserves exact encrypted root bytes, nonce reservations and the queued
+association. No implicit reauthorization or deletion is performed. The preceding
+incoming cancellation/reauthorization and later peer tombstone assertions remain.
+
+Using jobs=2, `--locked --offline`, feature `sync-native` and the existing warm
+benchmark target, the exact scheduled case passed first in 2.27s (child1.75s,
+compile5.34s). This is **one** test case executed by a TLS-scoped child, not two
+independent tests. Temporarily bypassing only post-materialization authority/
+selection validation produced the expected RED in 1.98s (child1.55s, compile2.38s):
+the cancelled queue incorrectly admitted one root, three nonce reservations and
+one association instead of zero. Exact source was restored byte-for-byte. The
+restored case passed in 2.15s (child1.73s, compile1.93s); the affected three account
+unit cases passed in 0.31s; strict all-target service/sync-native Clippy passed in
+3.08s. No compile/test failure occurred outside that intentional mutation.
+
+Explicit companion web source was `8be2b785c1494703505cd6cab2c9541cb7ed5f06`;
+the unchanged production Worker dry-run bundle SHA256 was
+`fb22baded8f9b9db8aaa44962bb021962c4f2dd9333780250825ce7950c98a22`.
+There was no web rebuild/deployment, bridge/protocol/dependency/lock change,
+model run, private-profile or live-account access.
+
+This establishes synthetic authenticated native actor queue/transport/self-echo
+and retained cancellation boundaries. It does not establish actual OS-keychain
+custody (the fixture retains its test-only keyring backend), live Auth0, mobile,
+product QueueDocument RPC/UI or packaging. Old queued intent reauthorization,
+outgoing user-state/deletions and cleanup remain gated. Repeated full graph proofs
+under owner access are still a responsiveness follow-up; this checkpoint does
+not intermingle the proposed transaction-bound proof reuse refactor.

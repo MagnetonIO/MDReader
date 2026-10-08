@@ -233,7 +233,7 @@ fn cancellation_releases_callback_owner_and_fences_late_or_stale_jobs() {
         &actor::Command {
             id: first,
             epoch: 0,
-            intent: AccountIntent::SignIn {},
+            action: actor::Action::Account(AccountIntent::SignIn {}),
         },
         Ok(Outcome::Connected),
     );
@@ -282,7 +282,7 @@ fn unconfigured_local_owner_rejects_secret_inputs_and_bounds_jobs() {
         let command = actor::Command {
             id: Uuid::new_v4(),
             epoch: 0,
-            intent: AccountIntent::SignIn {},
+            action: actor::Action::Account(AccountIntent::SignIn {}),
         };
         shared.view.lock().unwrap().start(command.id);
         shared.finish(&command, Err(AccountError::Unconfigured));
