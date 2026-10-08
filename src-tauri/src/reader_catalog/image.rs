@@ -81,12 +81,15 @@ fn relative(origin: &str, raw: &str) -> Result<PathBuf, CatalogError> {
     Ok(parts.into_iter().collect())
 }
 
-fn referenced(markdown: &str, path: &str, target: &str) -> bool {
+fn referenced(markdown: &str, path: &str, target: &Path) -> bool {
     mdreader_core::parse_markdown(markdown, path)
         .sections
         .iter()
         .flat_map(|section| &section.links)
-        .any(|link| link.kind == "image" && link.raw_target == target)
+        .any(|link| {
+            link.kind == "image"
+                && relative(path, &link.raw_target).is_ok_and(|resolved| resolved == target)
+        })
 }
 
 fn exact(
@@ -150,7 +153,7 @@ pub(super) fn local(
         .root()
         .map_err(|_| failure("unauthorized"))?;
     let document = exact(backend, source, path, revision)?;
-    if !referenced(&document.markdown, path, target) {
+    if !referenced(&document.markdown, path, &relative) {
         return Err(failure("unauthorized"));
     }
     let mut file = open(&root, &relative)?;
@@ -230,20 +233,27 @@ mod tests {
     #[test]
     fn only_actual_ast_images_authorize_exact_targets() {
         let markdown = "# Images\n\n![Selected](images/selected.png)\n\n[Reference image][photo]\n\n![Named][photo]\n\n[photo]: images/named.jpg\n\n[ordinary](images/link.png)\n\n`![code](images/inline.png)`\n\n```md\n![fenced](images/fenced.png)\n```\n\n<img src=\"images/raw.png\">\n";
-        assert!(referenced(markdown, "note.md", "images/selected.png"));
-        assert!(referenced(markdown, "note.md", "images/named.jpg"));
+        let authorizes =
+            |target: &str| referenced(markdown, "note.md", &relative("note.md", target).unwrap());
+        assert!(authorizes("images/selected.png"));
+        assert!(authorizes("./images/selected.png"));
+        assert!(authorizes("images/named.jpg"));
+        let encoded = "![Unicode](café.png)\n\n![Spaces](<my diagram.png>)\n";
+        for target in ["caf%C3%A9.png", "my%20diagram.png"] {
+            assert!(referenced(
+                encoded,
+                "note.md",
+                &relative("note.md", target).unwrap()
+            ));
+        }
         for target in [
             "images/link.png",
             "images/inline.png",
             "images/fenced.png",
             "images/raw.png",
             "images/unselected.png",
-            "./images/selected.png",
         ] {
-            assert!(
-                !referenced(markdown, "note.md", target),
-                "no authority for {target}"
-            );
+            assert!(!authorizes(target), "no authority for {target}");
         }
     }
 
