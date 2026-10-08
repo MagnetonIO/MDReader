@@ -2,6 +2,8 @@
 //! copies only; selector activation is a separate offline profile lifecycle.
 mod admission;
 #[cfg(not(mobile))]
+pub(crate) mod offline;
+#[cfg(not(mobile))]
 pub(crate) mod backup;
 mod backup_inventory;
 pub(crate) mod persistence;

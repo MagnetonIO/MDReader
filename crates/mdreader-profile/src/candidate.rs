@@ -1,17 +1,19 @@
 //! Import receipt publication on the destination's EXISTING owner transaction.
 //! Domain converters own imported rows/grants; this module invents neither.
 use crate::{
+    Error, Limits, Result, RootBinding, VerifiedSnapshot,
     lifecycle::CandidateReceipt,
     model::{digest, valid_hash},
-    Error, Limits, Result, RootBinding, VerifiedSnapshot,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 use uuid::Uuid;
 const SQL: &str = include_str!("candidate/migrations/001-import-receipt.sql");
 #[path = "candidate/connection.rs"]
 mod connection;
+#[cfg(all(test, unix))]
 use connection::check as check_connection;
+use connection::check_at as check_connection_at;
 #[cfg(all(test, unix))]
 #[path = "candidate/connection_tests.rs"]
 mod connection_tests;
@@ -21,6 +23,7 @@ pub struct CandidatePlan {
     receipt: CandidateReceipt,
     #[cfg(unix)]
     root: crate::platform::Root,
+    database: std::path::PathBuf,
 }
 pub fn prepare(
     operation: Uuid,
@@ -28,10 +31,29 @@ pub fn prepare(
     candidate: &Path,
     limits: &Limits,
 ) -> Result<CandidatePlan> {
+    prepare_at_database(
+        operation,
+        snapshot,
+        candidate,
+        Path::new("library.sqlite"),
+        limits,
+    )
+}
+/// Native composition supplies its actual fixed owner-relative database location;
+/// no renderer path or a SQLite filename string can stand in for opened identity.
+/// The receipt wire format is unchanged, and activation uses the same location.
+pub fn prepare_at_database(
+    operation: Uuid,
+    snapshot: &VerifiedSnapshot,
+    candidate: &Path,
+    database: &Path,
+    limits: &Limits,
+) -> Result<CandidatePlan> {
+    crate::model::relative(database)?;
     snapshot.revalidate(limits)?;
     #[cfg(not(unix))]
     {
-        let _ = (operation, candidate);
+        let _ = (operation, candidate, database);
         Err(Error::Unsupported)
     }
     #[cfg(unix)]
@@ -51,7 +73,11 @@ pub fn prepare(
             imported_records: 0,
             import_digest: crate::model::hash(&[]),
         };
-        Ok(CandidatePlan { receipt, root })
+        Ok(CandidatePlan {
+            receipt,
+            root,
+            database: database.to_owned(),
+        })
     }
 }
 /// Call after all domain import rows in the SAME supplied destination TX. The
@@ -64,7 +90,7 @@ pub fn record(
     import_digest: &str,
 ) -> Result<CandidateReceipt> {
     plan.verify_root()?;
-    check_connection(tx, &plan.receipt.candidate)?;
+    check_connection_at(tx, &plan.receipt.candidate, &plan.database)?;
     if imported_records > 1_000_000 || !valid_hash(import_digest) {
         return Err(Error::Bounds);
     }
@@ -92,7 +118,7 @@ pub fn record(
         return Err(Error::Conflict);
     }
     plan.verify_root()?;
-    check_connection(tx, &plan.receipt.candidate)?;
+    check_connection_at(tx, &plan.receipt.candidate, &plan.database)?;
     Ok(receipt)
 }
 impl CandidatePlan {
@@ -110,13 +136,23 @@ impl CandidatePlan {
 /// Native FrozenActivation implementations use this on the actual candidate
 /// ReaderStore connection. It never opens a database or accepts uncommitted SQL.
 pub fn verify_committed(connection: &Connection, expected: &CandidateReceipt) -> Result<()> {
+    verify_committed_at_database(connection, expected, Path::new("library.sqlite"))
+}
+/// Verify only the already-committed receipt on the actual selected native owner
+/// connection at the same trusted relative location used during preparation.
+pub fn verify_committed_at_database(
+    connection: &Connection,
+    expected: &CandidateReceipt,
+    database: &Path,
+) -> Result<()> {
+    crate::model::relative(database)?;
     expected.validate()?;
     if !connection.is_autocommit() {
         return Err(Error::Conflict);
     }
     schema(connection, false)?;
     check_root(&expected.candidate)?;
-    check_connection(connection, &expected.candidate)?;
+    check_connection_at(connection, &expected.candidate, database)?;
     if read(connection, expected.operation)?
         .as_ref()
         .map(digest)
@@ -126,7 +162,7 @@ pub fn verify_committed(connection: &Connection, expected: &CandidateReceipt) ->
         return Err(Error::Conflict);
     }
     check_root(&expected.candidate)?;
-    check_connection(connection, &expected.candidate)
+    check_connection_at(connection, &expected.candidate, database)
 }
 fn check_root(binding: &RootBinding) -> Result<()> {
     #[cfg(unix)]

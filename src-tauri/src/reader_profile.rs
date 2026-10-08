@@ -8,8 +8,21 @@ struct ProfileRoot(SourceRoot);
 pub(crate) fn configure(app: &tauri::AppHandle, selected: Option<&Path>) -> Result<(), String> {
     let path = match selected {
         Some(path) => {
-            mdreader_legacy_export::migration::verify(path, &Default::default())
+            #[cfg(all(unix, not(mobile)))]
+            let native = path
+                .join("native-reader-profile.json")
+                .try_exists()
                 .map_err(|_| "Prepared profile integrity failed")?;
+            #[cfg(not(all(unix, not(mobile))))]
+            let native = false;
+            if native {
+                #[cfg(all(unix, not(mobile)))]
+                crate::profile_transition::offline::workspace::verify_prepared(path)
+                    .map_err(|_| "Prepared profile integrity failed")?;
+            } else {
+                mdreader_legacy_export::migration::verify(path, &Default::default())
+                    .map_err(|_| "Prepared profile integrity failed")?;
+            }
             path.to_owned()
         }
         None => app

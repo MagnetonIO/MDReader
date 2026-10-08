@@ -121,6 +121,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             profile_transition::persistence::commands::native_profile_persistence_flush,
             profile_transition::persistence::editor::native_profile_editor_submit,
             profile_transition::backup::native_profile_backup,
+            profile_transition::offline::commands::native_profile_migration,
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
             reader_accounts::reader_account,
@@ -296,6 +297,8 @@ fn launch_application_with_profile(
         .manage(mobile_transfer::TransferRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            #[cfg(not(mobile))]
+            app.manage(profile_transition::offline::commands::MigrationState::default());
             reader_profile::configure(app.handle(), profile.as_deref())
                 .map_err(std::io::Error::other)?;
             let reader_backend = reader::ReaderBackend::open(

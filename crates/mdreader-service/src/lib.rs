@@ -429,6 +429,7 @@ fn serve_configured(
         Some(startup),
     )?);
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    runtime.install_shutdown_wake(listener.local_addr()?)?;
     let token = format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -443,6 +444,10 @@ fn serve_configured(
     ipc::publish_endpoint(directory, &encode(&endpoint)?)?;
     for stream in listener.incoming() {
         let stream = stream?;
+        if runtime.shutdown_requested() {
+            runtime.stop_for_shutdown();
+            break;
+        }
         let token = token.clone();
         let runtime = Arc::clone(&runtime);
         // Bound the accepted handler count; stalled unauthenticated clients

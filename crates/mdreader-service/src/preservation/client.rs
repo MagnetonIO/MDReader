@@ -214,6 +214,18 @@ impl Attempt {
             lease: self.lease.ok_or(Error::NotHeld)?,
         })
     }
+    /// Requests real service teardown while retaining its already-drained
+    /// guards. The offline caller must still acquire the exact writer lock;
+    /// this acknowledgement (or a lost reply) is not closed-owner proof.
+    pub fn shutdown(&mut self) -> Result<()> {
+        match self.endpoint.call(ControlRequest::Shutdown {
+            scope: self.scope.clone(),
+            lease: self.lease.ok_or(Error::NotHeld)?,
+        })? {
+            ControlReply::ShutdownRequested { boot } if boot == self.scope.boot => Ok(()),
+            _ => Err(Error::Uncertain),
+        }
+    }
     pub fn release(&mut self) -> Result<Status> {
         self.receive(ControlRequest::Release {
             scope: self.scope.clone(),

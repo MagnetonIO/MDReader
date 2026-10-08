@@ -1,0 +1,183 @@
+//! Closed-owner capability. Exact cooperating writer locks, retained capture
+//! producer barrier and root identity are held through import and selector CAS.
+//! No PID absence, caller boolean or successful shutdown reply is proof.
+use mdreader_core::{SourceRoot, SourceRootIdentity};
+use mdreader_profile::{Error, FrozenProfile, Result, RootBinding, RootLocator};
+use rusqlite::{Connection, OpenFlags};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
+struct Lock {
+    relative: PathBuf,
+    file: File,
+}
+pub(super) struct ClosedOwner {
+    root: SourceRoot,
+    binding: RootBinding,
+    locks: Vec<Lock>,
+    capture: Option<mdreader_capture::FrozenSpool>,
+}
+impl ClosedOwner {
+    pub(super) fn acquire(path: &Path) -> Result<Self> {
+        let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
+        let SourceRootIdentity::Unix { device, inode } = &root.identity else {
+            return Err(Error::Unsupported);
+        };
+        // Old clients lacking this lifetime lock cannot establish closure here.
+        // Their inputs require the standalone offline exporter instead.
+        if root
+            .open_optional_file_relative(Path::new(".mdreader-json-owner.lock"))
+            .map_err(|_| Error::Conflict)?
+            .is_none()
+            || root
+                .open_optional_file_relative(Path::new("reader-v1/library.sqlite"))
+                .map_err(|_| Error::Conflict)?
+                .is_none()
+        {
+            return Err(Error::Unsupported);
+        }
+        let binding = RootBinding {
+            locator: RootLocator::capture(path)?,
+            device: *device,
+            inode: *inode,
+        };
+        let mut locks = Vec::new();
+        for relative in [
+            ".mdreader-json-owner.lock",
+            "library.lock",
+            "diagnostics/diagnostics.lock",
+            "reader-v1/reader.lock",
+            "reader-v1/native-provider-admissions-v1.lock",
+            "reader-v1/integrations/settings/installer.lock",
+        ] {
+            let relative = Path::new(relative);
+            // Missing optional subsystems have no writer to close. Capture the
+            // actual existing parent before creating its cooperating lock.
+            if !root
+                .path
+                .join(relative.parent().ok_or(Error::Invalid)?)
+                .exists()
+            {
+                continue;
+            }
+            let file = root
+                .open_lock_relative(relative)
+                .map_err(|_| Error::Conflict)?;
+            if fs2::FileExt::try_lock_exclusive(&file).is_err() {
+                if relative != Path::new("reader-v1/reader.lock") {
+                    return Err(Error::NotQuiescent);
+                }
+                // A closed GUI may leave its daemon running. Stop only the exact
+                // authenticated owner selected here, with all its jobs held.
+                let client =
+                    mdreader_service::preservation::Client::connect(&root.path.join("reader-v1"))
+                        .map_err(|_| Error::NotQuiescent)?;
+                let mut attempt = client
+                    .attempt(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 30000)
+                    .map_err(|_| Error::NotQuiescent)?;
+                attempt.begin().map_err(|_| Error::NotQuiescent)?;
+                // Lost acknowledgement is uncertain, not permission to restart
+                // or retry. Only acquiring the actual writer lock below proves closure.
+                let _ = attempt.shutdown();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(Error::NotQuiescent);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+            locks.push(Lock {
+                relative: relative.to_owned(),
+                file,
+            });
+        }
+        let capture = if root.path.join("reader-v1/captures").exists() {
+            Some(
+                mdreader_capture::Spool::open(
+                    &root.path.join("reader-v1/captures"),
+                    Default::default(),
+                )
+                .and_then(mdreader_capture::Spool::freeze)
+                .map_err(|_| Error::NotQuiescent)?,
+            )
+        } else {
+            None
+        };
+        let mut closed = Self {
+            root,
+            binding,
+            locks,
+            capture,
+        };
+        closed.revalidate()?;
+        Ok(closed)
+    }
+    pub(super) fn path(&self) -> &Path {
+        &self.root.path
+    }
+}
+impl FrozenProfile for ClosedOwner {
+    fn binding(&self) -> &RootBinding {
+        &self.binding
+    }
+    fn revalidate(&mut self) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        self.root.verify().map_err(|_| Error::Conflict)?;
+        for lock in &self.locks {
+            let named = self
+                .root
+                .open_optional_file_relative(&lock.relative)
+                .map_err(|_| Error::Conflict)?
+                .ok_or(Error::Conflict)?;
+            let old = lock.file.metadata().map_err(|_| Error::Storage)?;
+            let new = named.metadata().map_err(|_| Error::Storage)?;
+            if new.nlink() != 1 || (old.dev(), old.ino()) != (new.dev(), new.ino()) {
+                return Err(Error::Conflict);
+            }
+        }
+        if let Some(capture) = &self.capture {
+            capture.revalidate().map_err(|_| Error::Conflict)?;
+        }
+        Ok(())
+    }
+    fn with_database(
+        &mut self,
+        relative: &Path,
+        action: &mut dyn FnMut(&Connection) -> Result<()>,
+    ) -> Result<()> {
+        self.revalidate()?;
+        // Only the actual known reader DB is supported. Unknown legacy stores
+        // remain blocked by inventory classification/standalone offline export.
+        if relative != Path::new("reader-v1/library.sqlite") {
+            return Err(Error::Unsupported);
+        }
+        let connection = Connection::open_with_flags(
+            self.root.path.join(relative),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| Error::Storage)?;
+        connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .map_err(|_| Error::Storage)?;
+        connection
+            .pragma_update(None, "query_only", true)
+            .map_err(|_| Error::Storage)?;
+        self.revalidate()?;
+        action(&connection)?;
+        self.revalidate()
+    }
+}
+impl Drop for ClosedOwner {
+    fn drop(&mut self) {
+        // Explicitly release actual flock descriptors. No exported bytes are
+        // proof that another process still holds these capabilities.
+        for lock in &self.locks {
+            let _ = fs2::FileExt::unlock(&lock.file);
+        }
+    }
+}

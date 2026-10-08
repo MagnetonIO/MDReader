@@ -72,6 +72,7 @@ fn classify(path: &Path) -> Result<Disposition> {
         "settings.json",
         "library.json",
         "reader-profile.json",
+        "native-reader-profile.json",
     ]
     .iter()
     .any(|name| path == Path::new(name))
@@ -85,6 +86,7 @@ fn classify(path: &Path) -> Result<Disposition> {
         "reader-v1/reader-endpoint.json",
         "reader-v1/native-provider-admissions-v1.lock",
         "reader-v1/captures/queue.lock",
+        "reader-v1/integrations/settings/installer.lock",
     ]
     .iter()
     .any(|name| path == Path::new(name))
@@ -115,6 +117,7 @@ fn classify(path: &Path) -> Result<Disposition> {
             "reader-v1/device-assets-v1",
             "reader-v1/provider-cache",
             "reader-v1/captures",
+            "reader-v1/integrations/settings/receipts",
             "legacy-archive",
             "archived-reviews",
         ]
