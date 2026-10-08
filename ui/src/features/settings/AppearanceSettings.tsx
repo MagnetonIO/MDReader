@@ -14,7 +14,7 @@ export function AppearanceSettings() {
 
     <div className="settings-field">
       <div className="settings-field__label">Theme</div>
-      <div className="settings-segment" aria-label="Theme">
+      <div className="settings-segment" role="group" aria-label="Theme">
         {(['system', 'light', 'dark'] as const).map((value) => (
           <button
             key={value}
@@ -33,7 +33,7 @@ export function AppearanceSettings() {
         <div className="settings-field__label">Reading font</div>
         <div className="settings-field__hint">Only document typography changes.</div>
       </div>
-      <div className="settings-segment" aria-label="Reading font">
+      <div className="settings-segment" role="group" aria-label="Reading font">
         {(['serif', 'sans'] as const).map((value) => (
           <button
             key={value}
@@ -49,7 +49,7 @@ export function AppearanceSettings() {
 
     <div className="settings-field">
       <div>
-        <div className="settings-field__label">Text scale</div>
+        <div className="settings-field__label">Text size</div>
         <div className="settings-field__hint">
           {Math.round(textScaleFactor({ textScaleIndex }) * 100)}%
         </div>
@@ -74,6 +74,14 @@ export function AppearanceSettings() {
         </button>
       </div>
     </div>
+    <figure className="settings-reading-preview" aria-label="Reading preview">
+      <figcaption>Reading preview</figcaption>
+      <div style={{ fontFamily: readingFont === 'serif' ? 'var(--font-reading-serif, Georgia, serif)' : 'var(--font-reading-sans, system-ui, sans-serif)', fontSize: `${16 * textScaleFactor({ textScaleIndex })}px` }}>
+        <h3>A quiet place to read</h3>
+        <p>Your Markdown, in a typeface and text size that feel comfortable.</p>
+      </div>
+    </figure>
+    <p className="settings-footnote">Appearance changes apply immediately and are saved on this device.</p>
   </section>
 
   );

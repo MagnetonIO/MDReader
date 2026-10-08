@@ -164,7 +164,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     }).catch((cause: unknown) => { if (lifecycle.current === epoch && documentRequest.current === request) setError(message(cause)); })
       .finally(() => { if (lifecycle.current === epoch && documentRequest.current === request) setDocumentsLoading(false); });
   }
-  return <section className="settings-section" aria-labelledby={titleId}>
+  return <section className="settings-section settings-cloud-sources" aria-labelledby={titleId}>
     <div className="settings-section__intro"><h2 id={titleId}>Selected cloud sources</h2><p>Read the files you choose from Google Drive or Dropbox. Connecting a source does not turn on device sync.</p></div>
     <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Hide cloud sources' : 'Manage cloud sources'}</button>
     {expanded ? <>
