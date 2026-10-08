@@ -312,7 +312,7 @@ fn now() -> Result<i64> {
         .try_into()
         .map_err(|_| ProviderError::Protocol)
 }
-fn initialize_client(c: &mut Connection) -> Result<()> {
+pub(super) fn initialize_client(c: &mut Connection) -> Result<()> {
     initialize(c)?;
     let tx = registry::db(c.transaction())?;
     let count:u64=registry::db(tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('mdreader_provider_client_meta','mdreader_provider_client_handles','mdreader_provider_client_edits')",[],|r|r.get(0)))?;

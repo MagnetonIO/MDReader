@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub mod capture;
+pub mod catalog;
 pub mod integrations;
 pub mod provider;
 pub mod reviews;
@@ -42,6 +43,7 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    Catalog { request: catalog::CatalogRequest },
     Reviews {
         request: reviews::ReviewRequest,
     },
@@ -227,6 +229,7 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
+        Request::Catalog { .. } => return Err(protocol_error("Catalog requires the desktop service")),
         Request::Reviews { .. }
         | Request::Provider { .. }
         | Request::ConfigureCapture { .. }

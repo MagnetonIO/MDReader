@@ -87,7 +87,7 @@ fn canonical_path(path: &str) -> Result<String> {
     }
     Ok(format!("/{}", parts.join("/")))
 }
-fn allowed(d: &SourceDescriptor, row: &Metadata) -> bool {
+pub(super) fn allowed(d: &SourceDescriptor, row: &Metadata) -> bool {
     match d.scope() {
         SelectedScope::ExactDocuments { keys } => keys.contains(&row.key),
         SelectedScope::ScopedRoot { root, recursive } if d.kind() == ProviderKind::Dropbox => {

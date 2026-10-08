@@ -1,0 +1,166 @@
+use mdreader_service::catalog as service;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+#[derive(Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogError {
+    pub kind: String,
+}
+pub(super) fn failure(kind: &str) -> CatalogError {
+    CatalogError { kind: kind.into() }
+}
+#[derive(Deserialize, Type)]
+#[serde(
+    tag = "operation",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CatalogRequest {
+    List,
+    Page {
+        catalog_id: String,
+        cursor: Option<String>,
+        limit: u32,
+    },
+    Close {
+        cursor: String,
+    },
+    Read {
+        source_id: String,
+        path: String,
+        revision: String,
+    },
+}
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSource {
+    pub catalog_id: String,
+    pub name: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub coverage: String,
+    pub observed_at_ms: Option<f64>,
+    pub failure: Option<String>,
+    pub library_source_id: Option<String>,
+}
+#[derive(Serialize, Type)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum CatalogOpen {
+    Exact {
+        source_id: String,
+        path: String,
+        revision: String,
+    },
+    SelectedUncached {
+        source_id: String,
+        reader_source_id: String,
+        document_id: String,
+    },
+}
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogDocument {
+    pub name: String,
+    pub display_path: String,
+    pub modified_at_ms: Option<f64>,
+    /// Decimal string preserves provider metadata without JavaScript precision loss.
+    pub size_bytes: Option<String>,
+    pub observed_at_ms: Option<f64>,
+    pub observation: String,
+    pub open: CatalogOpen,
+}
+#[derive(Serialize, Type)]
+#[serde(
+    tag = "operation",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum CatalogReply {
+    List {
+        sources: Vec<CatalogSource>,
+        provider_failure: Option<String>,
+        local_failure: Option<String>,
+    },
+    Page {
+        source: CatalogSource,
+        documents: Vec<CatalogDocument>,
+        next_cursor: Option<String>,
+    },
+    ReadDocument {
+        source_id: String,
+        path: String,
+        revision: String,
+        markdown: String,
+        line_start: u32,
+        line_end: u32,
+    },
+    Complete,
+}
+pub(super) fn error_kind(e: service::CatalogError) -> String {
+    match e {
+        service::CatalogError::Invalid => "invalid",
+        service::CatalogError::Stale => "stale",
+        service::CatalogError::Unauthorized => "unauthorized",
+        service::CatalogError::Unsupported => "unsupported",
+        service::CatalogError::Unavailable => "unavailable",
+        service::CatalogError::Persistence => "persistence",
+        service::CatalogError::TooLarge => "too_large",
+        service::CatalogError::Busy => "busy",
+    }
+    .into()
+}
+fn time(t: Option<i64>) -> Option<f64> {
+    t.filter(|t| t.unsigned_abs() <= 9_007_199_254_740_991)
+        .map(|t| t as f64)
+}
+impl From<service::CatalogSource> for CatalogSource {
+    fn from(s: service::CatalogSource) -> Self {
+        Self {
+            catalog_id: s.catalog_id,
+            name: s.name,
+            kind: s.kind,
+            enabled: s.enabled,
+            coverage: s.coverage,
+            observed_at_ms: time(s.observed_at_ms),
+            failure: s.failure.map(error_kind),
+            library_source_id: None,
+        }
+    }
+}
+impl From<service::CatalogDocument> for CatalogDocument {
+    fn from(d: service::CatalogDocument) -> Self {
+        Self {
+            name: d.name,
+            display_path: d.display_path,
+            modified_at_ms: time(d.modified_at_ms),
+            size_bytes: d.size_bytes.map(|n| n.to_string()),
+            observed_at_ms: time(d.observed_at_ms),
+            observation: d.observation,
+            open: match d.open {
+                service::CatalogOpen::Exact {
+                    source_id,
+                    path,
+                    revision,
+                } => CatalogOpen::Exact {
+                    source_id,
+                    path,
+                    revision,
+                },
+                service::CatalogOpen::SelectedUncached {
+                    source_id,
+                    reader_source_id,
+                    document_id,
+                } => CatalogOpen::SelectedUncached {
+                    source_id,
+                    reader_source_id,
+                    document_id,
+                },
+            },
+        }
+    }
+}

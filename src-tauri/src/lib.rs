@@ -61,6 +61,8 @@ mod reader_agents;
 mod reader_backfill;
 #[cfg(not(mobile))]
 mod reader_reviews;
+#[cfg(not(mobile))]
+mod reader_catalog;
 mod reader_workload;
 mod search;
 mod updater;
@@ -104,6 +106,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::ping,
             reader_reviews::reader_archived_reviews,
+            reader_catalog::reader_catalog,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,
