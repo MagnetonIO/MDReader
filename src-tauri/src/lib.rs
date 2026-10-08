@@ -52,17 +52,23 @@ mod mobile_assets_commands;
 mod mobile_enterprise;
 mod mobile_reader;
 #[cfg(not(mobile))]
+mod native_browser;
+#[cfg(not(mobile))]
 mod native_providers;
+#[cfg(not(mobile))]
+mod native_sync;
 mod overlay;
 #[cfg(not(mobile))]
 mod provider_oauth;
 mod reader;
+#[cfg(not(mobile))]
+mod reader_accounts;
 mod reader_agents;
 mod reader_backfill;
 #[cfg(not(mobile))]
-mod reader_reviews;
-#[cfg(not(mobile))]
 mod reader_catalog;
+#[cfg(not(mobile))]
+mod reader_reviews;
 mod reader_workload;
 mod search;
 mod updater;
@@ -107,6 +113,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             commands::ping,
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
+            reader_accounts::reader_account,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,
