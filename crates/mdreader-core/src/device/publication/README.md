@@ -255,3 +255,28 @@ publication module then passed all 11 cases in 0.32s (compile 0.97s). Strict
 all-target core/device-assets Clippy passed in 2.57s. No schema migration,
 dependency, lockfile or protocol changed. This seam does not itself implement
 outgoing native-to-wire association, self-echo, QueueDocument RPC or UI.
+
+## Retained archive file evidence checkpoint (2026-10-08)
+
+`ArchivedDocument` now carries its original owner, exact asset metadata and opened
+Markdown/asset file evidence until the selected snapshot is dropped. The new
+`revalidate_current_archive(tx, guard, current, archive)` fence verifies those
+identities on the actual caller-owned transaction, without hash/decode work,
+writes, migration, new admission or commit. Invoke before provisional association
+and immediately before final commit. Ordinary incomplete archival exports remain
+possible; current publication refuses missing, partial or nonready resources.
+
+Two real-SQLite regressions passed (4.67s compile, 0.15s tests), covering in-place
+asset edits, equal-byte file replacement, deletion/root replacement, same rows
+under another actual owner, changed asset generation, incomplete archive export
+and read-only successful final checks. Provisional caller associations roll back
+on failure. Temporarily omitting only the final retained evidence loop produced
+expected RED: the changed asset was accepted (1.84s compile, 0.08s test). Exact
+production bytes were restored; all thirteen affected publication cases passed
+(1.74s compile, 0.49s tests), then strict core `device-assets --all-targets` Clippy
+passed in 3.30s. Two jobs, locked/offline, existing warm benchmark target and one
+heavyweight slot were used; no model/full-workspace suite.
+
+This closes the core evidence-lifetime gap. Native service association/self-echo
+callers must adopt both fences before product upload exposure; that acceptance,
+OS-vault/live sync and release packaging are not established by these tests.

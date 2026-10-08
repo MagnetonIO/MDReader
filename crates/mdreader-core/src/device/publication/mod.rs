@@ -56,6 +56,10 @@ mod archive;
 #[cfg(feature = "device-assets")]
 pub use archive::{prepare_archive, ArchivePlan, ArchivedAsset, ArchivedDocument};
 #[cfg(feature = "device-assets")]
+mod archive_fence;
+#[cfg(feature = "device-assets")]
+pub use archive_fence::revalidate_current_archive;
+#[cfg(feature = "device-assets")]
 mod drop_intent;
 #[cfg(feature = "device-assets")]
 pub use drop_intent::{finish_drop, prepare_drop, DropPlan, RemovedIncoming};

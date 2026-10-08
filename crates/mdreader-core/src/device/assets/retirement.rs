@@ -2,7 +2,7 @@
 use super::*;
 use rusqlite::Transaction;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::device) struct CurrentAssets {
     doc: String,
     revision: String,
