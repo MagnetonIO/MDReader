@@ -19,7 +19,7 @@ pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 pub mod catalog;
 mod local_source;
 mod identity;
-pub use identity::LibraryIdentity;
+pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;
 #[cfg(feature = "device-assets")]
 pub(crate) use local_source::validate_root;
@@ -125,6 +125,7 @@ pub struct Reference {
 pub struct ReaderStore {
     // Owner liveness expires before either SQLite connection begins teardown.
     library_identity: Option<identity::LibraryOwner>,
+    index_identity: Option<identity::LibraryOwner>,
     library: Connection,
     index: Connection,
     #[cfg(feature = "device-assets")]
@@ -455,13 +456,18 @@ impl ReaderStore {
             open_database(path, LIBRARY_SCHEMA, false)
         })?;
         projection::initialize(&library)?;
-        let index=open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?;
+        let (index, index_identity) = identity::open_index(directory, true, |path| {
+            open_database(path, INDEX_SCHEMA, true)
+        })?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
         catalog::schema::initialize(&library,&index)?;
         identity::verify_connection(&library, library_identity.as_ref())?;
+        identity::verify_connection(&index, index_identity.as_ref())?;
+        identity::verify_attached(&index, library_identity.as_ref())?;
         Ok(Self {
             library,
             library_identity,
+            index_identity,
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
@@ -474,12 +480,17 @@ impl ReaderStore {
             open_readonly_database(path, LIBRARY_VERSION)
         })?;
         projection::check_schema(&library)?;
-        let index=open_readonly_database(&directory.join("index.sqlite"), INDEX_VERSION)?;
+        let (index, index_identity) = identity::open_index(directory, false, |path| {
+            open_readonly_database(path, INDEX_VERSION)
+        })?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
         identity::verify_connection(&library, library_identity.as_ref())?;
+        identity::verify_connection(&index, index_identity.as_ref())?;
+        identity::verify_attached(&index, library_identity.as_ref())?;
         Ok(Self {
             library,
             library_identity,
+            index_identity,
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
@@ -492,6 +503,21 @@ impl ReaderStore {
         let identity = self.library_identity.as_ref().ok_or(ReaderError::Unavailable)?;
         identity::verify_connection(&self.library, Some(identity))?;
         Ok(identity::certificate(identity))
+    }
+    /// Verify every actual SQLite handle used by this store, including the
+    /// index's readonly attached library. Names alone never adopt new objects.
+    pub fn store_identity(&self) -> Result<StoreIdentity> {
+        let library = self.library_identity()?;
+        let index = self
+            .index_identity
+            .as_ref()
+            .ok_or(ReaderError::Unavailable)?;
+        identity::verify_connection(&self.index, Some(index))?;
+        identity::verify_attached(&self.index, self.library_identity.as_ref())?;
+        Ok(StoreIdentity {
+            library,
+            index: identity::certificate(index),
+        })
     }
     /// Ephemeral capability for this live owner; reopening needs fresh sessions.
     #[cfg(feature = "device-assets")]

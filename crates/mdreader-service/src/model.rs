@@ -1,5 +1,6 @@
 //! One model-owner thread. ONNX/download calls cannot be cancelled: a deadline
 //! failure permanently closes admission until the service process restarts.
+use crate::daemon::{Admission, EffectLease};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -54,10 +55,12 @@ impl State {
 enum Command {
     Load {
         serial: u64,
+        effect: Option<EffectLease>,
     },
     Embed {
         serial: u64,
         background: bool,
+        effect: Option<EffectLease>,
         texts: Vec<String>,
         reply: mpsc::SyncSender<(Instant, ModelResult)>,
     },
@@ -71,6 +74,7 @@ pub(super) struct ModelActor {
     commands: mpsc::SyncSender<Command>,
     state: Arc<Mutex<State>>,
     load_deadline: Duration,
+    admission: Option<Arc<Admission>>,
 }
 impl ModelActor {
     pub(super) fn new(cache: std::path::PathBuf, disabled: bool) -> Self {
@@ -115,12 +119,19 @@ impl ModelActor {
                     }
                 );
                 let serial = match &command {
-                    Command::Load { serial } | Command::Embed { serial, .. } => *serial,
+                    Command::Load { serial, .. } | Command::Embed { serial, .. } => *serial,
                 };
-                let (texts, reply) = match command {
-                    Command::Load { .. } => (None, None),
-                    Command::Embed { texts, reply, .. } => (Some(texts), Some(reply)),
+                let (texts, reply, _effect) = match command {
+                    Command::Load { effect, .. } => (None, None, effect),
+                    Command::Embed {
+                        texts,
+                        reply,
+                        effect,
+                        ..
+                    } => (Some(texts), Some(reply), effect),
                 };
+                // This lease survives native timeouts, abandoned receivers and
+                // panic recovery until the actual command/completion returns.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if let Some(texts) = texts {
                         engine
@@ -164,14 +175,48 @@ impl ModelActor {
             commands,
             state,
             load_deadline,
+            admission: None,
         }
     }
+    pub(super) fn bind_admission(
+        &mut self,
+        admission: Arc<Admission>,
+    ) -> std::result::Result<(), ModelError> {
+        let state = self.state.lock().map_err(|_| ModelError::Unavailable)?;
+        if state.phase != ModelState::Dormant || self.admission.is_some() {
+            return Err(ModelError::Busy);
+        }
+        self.admission = Some(admission);
+        Ok(())
+    }
+    fn child_effect(
+        &self,
+        parent: Option<&EffectLease>,
+    ) -> std::result::Result<Option<EffectLease>, ModelError> {
+        self.admission
+            .as_ref()
+            .map(|admission| {
+                match parent {
+                    Some(parent) => admission.fork(parent),
+                    None => admission.enter(),
+                }
+                .map_err(|_| ModelError::Busy)
+            })
+            .transpose()
+    }
+    #[cfg(test)]
     pub(super) fn ensure_loaded(&self) -> ModelState {
+        self.ensure_loaded_owned(None)
+    }
+    pub(super) fn ensure_loaded_owned(&self, parent: Option<&EffectLease>) -> ModelState {
         let Ok(mut state) = self.state.lock() else {
             return ModelState::Unavailable;
         };
         state.refresh();
         if state.phase == ModelState::Dormant {
+            let Ok(effect) = self.child_effect(parent) else {
+                return ModelState::Busy;
+            };
             state.serial += 1;
             state.phase = ModelState::Loading;
             state.deadline = Some(Instant::now() + self.load_deadline);
@@ -179,6 +224,7 @@ impl ModelActor {
                 .commands
                 .try_send(Command::Load {
                     serial: state.serial,
+                    effect,
                 })
                 .is_err()
             {
@@ -188,12 +234,13 @@ impl ModelActor {
         }
         state.phase
     }
+    #[cfg(test)]
     pub(super) fn start(
         &self,
         texts: Vec<String>,
         duration: Duration,
     ) -> std::result::Result<Ticket, ModelError> {
-        self.start_classified(texts, duration, false)
+        self.start_classified(texts, duration, false, None)
     }
     pub(super) fn set_background_policy(&self, policy: crate::workload::EmbeddingPolicy) {
         if let Ok(mut state) = self.state.lock() {
@@ -216,18 +263,28 @@ impl ModelActor {
             .lock()
             .map_or(8, |state| state.budget.policy.batch_limit())
     }
+    #[cfg(test)]
     pub(super) fn start_background(
         &self,
         texts: Vec<String>,
         duration: Duration,
     ) -> std::result::Result<Ticket, ModelError> {
-        self.start_classified(texts, duration, true)
+        self.start_classified(texts, duration, true, None)
+    }
+    pub(super) fn start_background_owned(
+        &self,
+        texts: Vec<String>,
+        duration: Duration,
+        parent: Option<&EffectLease>,
+    ) -> std::result::Result<Ticket, ModelError> {
+        self.start_classified(texts, duration, true, parent)
     }
     fn start_classified(
         &self,
         texts: Vec<String>,
         duration: Duration,
         background: bool,
+        parent: Option<&EffectLease>,
     ) -> std::result::Result<Ticket, ModelError> {
         if texts.is_empty()
             || texts.len() > MAX_BATCH_TEXTS
@@ -251,6 +308,7 @@ impl ModelActor {
             ModelState::RestartRequired => return Err(ModelError::TimedOut),
             ModelState::Unavailable => return Err(ModelError::Unavailable),
         }
+        let effect = self.child_effect(parent)?;
         state.serial += 1;
         let deadline = Instant::now() + duration;
         state.phase = ModelState::Busy;
@@ -261,6 +319,7 @@ impl ModelActor {
             .try_send(Command::Embed {
                 serial: state.serial,
                 background,
+                effect,
                 texts,
                 reply,
             })
@@ -300,12 +359,21 @@ impl ModelActor {
             state.deadline = None;
         }
     }
+    #[cfg(test)]
     pub(super) fn query(
         &self,
         text: String,
         duration: Duration,
     ) -> std::result::Result<Vec<f32>, ModelError> {
-        let ticket = self.start(vec![text], duration)?;
+        self.query_owned(text, duration, None)
+    }
+    pub(super) fn query_owned(
+        &self,
+        text: String,
+        duration: Duration,
+        parent: Option<&EffectLease>,
+    ) -> std::result::Result<Vec<f32>, ModelError> {
+        let ticket = self.start_classified(vec![text], duration, false, parent)?;
         match ticket.reply.recv_timeout(duration) {
             Ok((completed, Ok(mut vectors)))
                 if completed <= ticket.deadline && vectors.len() == 1 =>

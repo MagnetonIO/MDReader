@@ -32,6 +32,8 @@ struct Retained {
     root: crate::SourceRoot,
     #[cfg(unix)]
     object: Stat,
+    #[cfg(unix)]
+    name: &'static str,
 }
 
 pub(super) fn certificate(owner: &LibraryOwner) -> LibraryIdentity {
@@ -81,12 +83,12 @@ impl LibraryIdentity {
 }
 
 #[cfg(unix)]
-fn optional_object(root: &crate::SourceRoot) -> Result<Option<Stat>> {
+fn optional_object(root: &crate::SourceRoot, name: &str) -> Result<Option<Stat>> {
     root.verify().map_err(|_| ReaderError::Conflict)?;
     let directory = root
         .try_clone_directory_handle()
         .map_err(|_| ReaderError::Conflict)?;
-    let object = match statat(&directory, "library.sqlite", AtFlags::SYMLINK_NOFOLLOW) {
+    let object = match statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(object) => Some(object),
         Err(rustix::io::Errno::NOENT) => None,
         Err(_) => return Err(ReaderError::Conflict),
@@ -102,14 +104,14 @@ fn optional_object(root: &crate::SourceRoot) -> Result<Option<Stat>> {
 }
 
 #[cfg(unix)]
-fn named_object(root: &crate::SourceRoot) -> Result<Stat> {
-    optional_object(root)?.ok_or(ReaderError::Conflict)
+fn named_object(root: &crate::SourceRoot, name: &str) -> Result<Stat> {
+    optional_object(root, name)?.ok_or(ReaderError::Conflict)
 }
 
 fn verify_live(identity: &Retained) -> Result<()> {
     #[cfg(unix)]
     {
-        let named = named_object(&identity.root)?;
+        let named = named_object(&identity.root, identity.name)?;
         if (named.st_dev, named.st_ino) != (identity.object.st_dev, identity.object.st_ino) {
             return Err(ReaderError::Conflict);
         }
@@ -122,8 +124,39 @@ fn verify_live(identity: &Retained) -> Result<()> {
     }
 }
 
+/// Both main databases and the index's attached authority belong to this
+/// exact live store. Verifying names is not a writer-drain proof.
+#[derive(Clone)]
+pub struct StoreIdentity {
+    pub(super) library: LibraryIdentity,
+    pub(super) index: LibraryIdentity,
+}
+impl StoreIdentity {
+    pub fn verify_at(&self, directory: &Path) -> Result<()> {
+        self.library.verify_at(directory)?;
+        self.index.verify_at(directory)
+    }
+}
+
 pub(super) fn open_library(
     directory: &Path,
+    create: bool,
+    open: impl FnOnce(&Path) -> Result<Connection>,
+) -> Result<(Connection, Option<LibraryOwner>)> {
+    open_named(directory, "library.sqlite", create, open)
+}
+
+pub(super) fn open_index(
+    directory: &Path,
+    create: bool,
+    open: impl FnOnce(&Path) -> Result<Connection>,
+) -> Result<(Connection, Option<LibraryOwner>)> {
+    open_named(directory, "index.sqlite", create, open)
+}
+
+fn open_named(
+    directory: &Path,
+    name: &'static str,
     create: bool,
     open: impl FnOnce(&Path) -> Result<Connection>,
 ) -> Result<(Connection, Option<LibraryOwner>)> {
@@ -133,22 +166,22 @@ pub(super) fn open_library(
             .map_err(|_| ReaderError::Conflict)?;
         // Reject preexisting symlinks/hardlinks before SQLite can follow or
         // initialize them; only a fresh writer may create an absent library.
-        let before = optional_object(&root)?;
+        let before = optional_object(&root, name)?;
         if before.is_none() && !create {
             return Err(ReaderError::Unavailable);
         }
-        let connection = open(&root.path.join("library.sqlite"))?;
-        sqlite_file_has_not_moved(&connection)?;
-        let object = named_object(&root)?;
+        let connection = open(&root.path.join(name))?;
+        sqlite_file_has_not_moved(&connection, c"main")?;
+        let object = named_object(&root, name)?;
         if before
             .is_some_and(|before| (before.st_dev, before.st_ino) != (object.st_dev, object.st_ino))
         {
             return Err(ReaderError::Conflict);
         }
-        sqlite_file_has_not_moved(&connection)?;
+        sqlite_file_has_not_moved(&connection, c"main")?;
         let identity = LibraryOwner {
             lifetime: Arc::new(()),
-            retained: Arc::new(Retained { root, object }),
+            retained: Arc::new(Retained { root, object, name }),
         };
         verify_connection(&connection, Some(&identity))?;
         Ok((connection, Some(identity)))
@@ -156,7 +189,7 @@ pub(super) fn open_library(
     #[cfg(not(unix))]
     {
         let _ = create;
-        Ok((open(&directory.join("library.sqlite"))?, None))
+        Ok((open(&directory.join(name))?, None))
     }
 }
 
@@ -164,24 +197,51 @@ pub(super) fn verify_connection(
     connection: &Connection,
     identity: Option<&LibraryOwner>,
 ) -> Result<()> {
+    verify_database(connection, identity, "main", c"main")
+}
+
+pub(super) fn verify_attached(
+    connection: &Connection,
+    identity: Option<&LibraryOwner>,
+) -> Result<()> {
+    verify_database(
+        connection,
+        identity,
+        "reader_authority",
+        c"reader_authority",
+    )
+}
+
+fn verify_database(
+    connection: &Connection,
+    identity: Option<&LibraryOwner>,
+    sql_name: &'static str,
+    c_name: &'static std::ffi::CStr,
+) -> Result<()> {
     #[cfg(unix)]
     {
         let identity = identity.ok_or(ReaderError::Unavailable)?;
         verify_live(&identity.retained)?;
-        let actual = connection.path().ok_or(ReaderError::Unavailable)?;
-        if Path::new(actual)
+        let actual: String = connection
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name=?1",
+                [sql_name],
+                |row| row.get(0),
+            )
+            .map_err(|_| ReaderError::Unavailable)?;
+        if Path::new(&actual)
             .canonicalize()
             .map_err(|_| ReaderError::Conflict)?
-            != identity.retained.root.path.join("library.sqlite")
+            != identity.retained.root.path.join(identity.retained.name)
         {
             return Err(ReaderError::Conflict);
         }
-        sqlite_file_has_not_moved(connection)?;
+        sqlite_file_has_not_moved(connection, c_name)?;
         verify_live(&identity.retained)
     }
     #[cfg(not(unix))]
     {
-        let _ = (connection, identity);
+        let _ = (connection, identity, sql_name, c_name);
         Ok(())
     }
 }
@@ -190,16 +250,19 @@ pub(super) fn verify_connection(
 /// Unsupported VFS implementations do not issue a certificate.
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn sqlite_file_has_not_moved(connection: &Connection) -> Result<()> {
+fn sqlite_file_has_not_moved(
+    connection: &Connection,
+    database: &'static std::ffi::CStr,
+) -> Result<()> {
     let mut moved: std::ffi::c_int = -1;
     // SAFETY: the shared borrow keeps this live Connection open for the entire
-    // synchronous call. The static NUL-terminated main name and initialized int
+    // synchronous call. The static NUL-terminated database name and initialized int
     // out-pointer satisfy SQLITE_FCNTL_HAS_MOVED's documented ABI. No pointer or
     // SQLite/file ownership escapes, and this opcode performs no SQL mutation.
     let result = unsafe {
         rusqlite::ffi::sqlite3_file_control(
             connection.handle(),
-            c"main".as_ptr(),
+            database.as_ptr(),
             rusqlite::ffi::SQLITE_FCNTL_HAS_MOVED,
             std::ptr::addr_of_mut!(moved).cast(),
         )
