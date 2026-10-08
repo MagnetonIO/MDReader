@@ -53,3 +53,23 @@ pnpm --filter @mdreader/app test src/shell/IndexingPanel.test.tsx
 
 `scripts/check-reader-baseline.sh` remains a checkpoint command. It intentionally
 runs broad legacy and reader suites and is not the per-edit command.
+
+## Generated contracts without unnecessary recompilation
+
+`scripts/check-bindings.sh` runs only the two actual artifact generators and
+compares the committed bindings/provenance with `HEAD`, including staged drift.
+Keep those generators deterministic and write only changed bytes. Rust test
+sources embed the bindings with `include_str!`; rewriting identical output
+invalidates that input and causes an avoidable rebuild on the next Cargo command.
+
+The test-only `generated_artifacts` module exports to a private temporary path,
+normalizes whitespace, compares bytes and propagates filesystem errors. The
+bindings generator test also checks timestamp preservation on unchanged content.
+The provenance generator uses the same write-on-change helper.
+
+Observed checkpoint: the previous real generator produced identical SHA256 bytes
+but changed the bindings timestamp. After this fix the actual two-test drift
+script passes in 1.42 seconds on the warm shared target, preserving both generated
+files' timestamps and the compiled test binary's timestamp. This is local cache
+behavior, not a cold-build or general performance guarantee. No full app suite
+or model benchmark is needed to verify this regression.

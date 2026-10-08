@@ -388,40 +388,33 @@ pub fn run() {
 }
 
 #[cfg(test)]
-const BINDINGS_PATH: &str = "../ui/src/bindings.ts";
-
-/// Writes the TypeScript bindings for the current command surface, then strips
-/// trailing whitespace from every line. specta emits blank doc-comment
-/// continuation lines as `\t * ` (a trailing space), which would trip
-/// `git diff --check`; trimming keeps the committed bindings pristine. The pass
-/// is deterministic, so drift detection is unaffected — a real command change
-/// still surfaces as a diff.
-#[cfg(test)]
-fn export_bindings(builder: &Builder<tauri::Wry>) -> Result<(), specta_typescript::Error> {
-    builder.export(specta_typescript::Typescript::default(), BINDINGS_PATH)?;
-    if let Ok(contents) = std::fs::read_to_string(BINDINGS_PATH) {
-        let body = contents
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let _ = std::fs::write(BINDINGS_PATH, format!("{}\n", body.trim_end()));
-    }
-    Ok(())
-}
+mod generated_artifacts;
 
 #[cfg(test)]
 mod tests {
     use std::process::Command;
 
-    use super::{export_bindings, launch_application, release_identity, specta_builder};
+    use super::{
+        generated_artifacts::export_bindings, launch_application, release_identity, specta_builder,
+    };
 
     /// Regenerates `apps/mdreader/ui/src/bindings.ts` headlessly (no window, no
     /// webview). `scripts/check-bindings.sh` runs this then `git diff
     /// --exit-code` to fail CI on drift.
     #[test]
     fn export_bindings_up_to_date() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/src/bindings.ts");
+        let before = std::fs::read(&path).ok().zip(std::fs::metadata(&path).ok());
         export_bindings(&specta_builder()).expect("failed to export typescript bindings");
+        if let Some((bytes, metadata)) = before {
+            if bytes == std::fs::read(&path).unwrap() {
+                assert_eq!(
+                    metadata.modified().unwrap(),
+                    std::fs::metadata(&path).unwrap().modified().unwrap(),
+                    "identical generated bindings must not invalidate Rust's include_str inputs"
+                );
+            }
+        }
     }
 
     #[test]

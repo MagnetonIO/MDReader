@@ -1172,9 +1172,9 @@ mod tests {
         let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../ui/src/goldens/provenance.json");
         std::fs::create_dir_all(golden_path.parent().unwrap()).unwrap();
-        std::fs::write(
+        crate::generated_artifacts::write_if_changed(
             &golden_path,
-            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()).as_bytes(),
         )
         .unwrap();
     }

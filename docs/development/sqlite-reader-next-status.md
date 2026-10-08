@@ -11,10 +11,10 @@ or published; the new sync protocol has not deployed.
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
 | 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. | Whole app still contains legacy CatDB paths; transport cancellation, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings and review/apply/remove configuration UI implemented. | Actual supported-client installation/trust and live cross-agent acceptance; Windows capture implementation; selected backfill UI and broader echo cases. |
-| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and injected authority, with actual synthetic Worker checks. | Native verified identity/custody and typed incoming projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
-| 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. | Final cross-engine matrix for subsequent web features, native/mobile assets/export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
+| 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, typed incoming projection, arbitrary library/account switching, conflict-resolution UI, real issuer registration, rotation/export/delete/long-offline acceptance remain. |
+| 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks. | Final cross-engine matrix for subsequent web features, native/mobile image device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. | Actual extension-host acceptance; useful insights/reviews staging and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging preserves exact records and rejection history. | Actual extension-host acceptance; archival CLI/presentation and current-source binding, coordinated installed-profile export/rollback, CatDB removal, host/release evidence and final whole-branch review. |
 
 ## Measured retrieval
 
@@ -94,11 +94,17 @@ native provider-only, mixed-ranking and stale-epoch regressions. Exact provider
 source/revision evidence survives palette and Related navigation; provider hits
 never become inferred local filesystem grants. Default source selection is empty.
 
-Native transport checkpoint `7f958e9` remains disabled by default and has no
-production authority constructor or renderer RPC. Focused tests include actual
-local HTTPS requests to the synthetic Worker/SQLite/R2 fixture. Received payloads
-are not marked applied without a typed projection transaction; native custody,
-production enrollment/recovery and live issuer acceptance remain open.
+Native transport checkpoint `7f958e9` remains disabled by default. Authority
+checkpoint `de9adac` adds verified native OIDC/PKCE, ES256 request proofs, scoped
+OS-vault interfaces, uncertain-write/restart reconciliation and transport-owned
+401/403 invalidation. Eight focused authority regressions and one actual local
+HTTPS synthetic issuer → Worker/SQLite/R2 case pass; the affected crate passes
+31 ordinary tests, strict Clippy and its feature-disabled check. Late old-session
+rejections cannot invalidate replacement sessions. This is not live issuer or
+OS-vault runtime acceptance. Production product construction, persistent
+standard wrapping/bootstrap/pair/recovery, mobile custody and typed incoming
+projection remain open. Received payloads are not marked applied without a typed
+projection transaction. See `crates/mdreader-sync/AUTHORITY.md`.
 
 The rebuilt iOS simulator bundle has SHA256
 `137e028186aabb54a366252084757d059cfb0b16675d395b0ffed5b655d3d7d2`.
@@ -125,19 +131,33 @@ current graph membership, source authority or a verified present-day citation.
 Useful reviews still need explicit current-source binding, reader presentation,
 coordinated installed-profile migration and rollback before CatDB removal.
 
-Mobile attachment work is currently uncommitted. Its isolated native harness
-passes seven affected behaviors in 0.17 seconds, including two observed failures
-now fixed: add/remove cycles could revive an older pending manifest, and a
-revoked image read retained its bounded slot until expiry. Persisted manifest
-generations and immediate failed-session cleanup address them. PNG/JPEG copies
-remain private, explicitly selected and revision-bound; no source folder is
-inferred. New inventory/forget cleanup, app command composition, generated
-bindings, renderer integration and actual mobile acceptance are not yet verified.
+Mobile attachment checkpoints `423c5af` (native) and `a32fada` (UI) are committed.
+Ten actual app-native behaviors pass in 0.25 seconds; 13 mobile composition and
+10 asset UI checks, app TypeScript and scoped lint pass. Two observed failures
+were repaired: add/remove cycles could revive an older pending manifest, and a
+revoked image read retained its bounded slot until expiry. Persisted generations
+and immediate failed-session cleanup address them. New checks cover metadata-only
+inventory/forget with revoked or changed originals, retained quota after failed
+private deletion, target truncation and additive/future-schema handling. The
+backend is split into focused modules with transactional versioned SQL. Actual
+bindings and app command composition compile; isolated feature strict Clippy
+passes. Original Markdown remains unchanged. Newest iOS/Android image packaging,
+file-picker/read/restart and asset-root relocation acceptance remain open.
+See [mobile image contract](mobile-assets.md).
 
-The bindings drift guard `e3ece21` now runs only its two artifact-generating
-tests and checks the current `ui/src` paths, including staged drift. Lightweight
-dispatch and real temporary-Git checks pass without launching Cargo. The next
-native integration checkpoint must still exercise both actual generators.
+The bindings drift guard `e3ece21` runs only its two artifact-generating tests and
+checks current `ui/src` paths, including staged drift. Both actual generators now
+pass. The old generator was observed rewriting identical bytes and changing the
+timestamp of an `include_str!` input. A test-only writer now preserves unchanged
+artifacts. The actual warm drift guard passes in 1.42 seconds with generated-file
+and test-binary timestamps unchanged; see [testing policy](testing-policy.md).
+
+Vercel practices are recorded in both worktrees' `AGENTS.md`. Web commit `84e446f`
+replaces stale parent-monorepo/Turborepo commands with frozen root installation
+and `pnpm build`; its README describes the local SQLite reader and separate
+Cloudflare sync boundary. Root commands, generated-asset build path, ignored
+local secrets/config and setup links pass static checks. Remote Vercel project
+settings and actual Preview deployment acceptance have not been verified.
 
 The [actual iOS smoke receipt](../benchmarks/2026-10-07-ios-reader-smoke.md)
 records standard file-picker import, exact original bytes, reading, pinning,
