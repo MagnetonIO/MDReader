@@ -1,0 +1,129 @@
+{
+  "bytes": 517414088,
+  "sha256": "1fc505c9fd8c1ea11d5f814cc12fec16b9d60b20dffbd32a0ad080a4ab6703f1",
+  "build": "Android arm64 debug APK",
+  "acceptance": "build only, not installed or exercised",
+  "sourceProvenance": "development worktree; release source stamp not verified",
+  "manifest": [
+    "package: name='dev.mdreader.app' versionCode='1' versionName='1.0' platformBuildVersionName='16' platformBuildVersionCode='36' compileSdkVersion='36' compileSdkVersionCodename='16'",
+    "targetSdkVersion:'36'",
+    "native-code: 'arm64-v8a'"
+  ],
+  "elf": {
+    "libraryBytes": 509444392,
+    "debugSectionBytes": 426605954,
+    "symbolTableBytes": 31225258,
+    "allocatedFileSectionsBytes": 51608994,
+    "largestSections": [
+      {
+        "name": ".debug_info",
+        "bytes": 186440873,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".debug_str",
+        "bytes": 159908200,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".debug_line",
+        "bytes": 40231130,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".text",
+        "bytes": 30207316,
+        "inFile": true,
+        "allocated": true
+      },
+      {
+        "name": ".debug_ranges",
+        "bytes": 25117616,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".strtab",
+        "bytes": 17709298,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".symtab",
+        "bytes": 13515960,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".rodata",
+        "bytes": 6992344,
+        "inFile": true,
+        "allocated": true
+      },
+      {
+        "name": ".debug_loc",
+        "bytes": 6598031,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".debug_aranges",
+        "bytes": 6087184,
+        "inFile": true,
+        "allocated": false
+      },
+      {
+        "name": ".eh_frame",
+        "bytes": 5687432,
+        "inFile": true,
+        "allocated": true
+      },
+      {
+        "name": ".gcc_except_table",
+        "bytes": 3710004,
+        "inFile": true,
+        "allocated": true
+      }
+    ]
+  },
+  "interpretation": {
+    "debugSymbolsRetainedBy": "src-tauri/gen/android/app/build.gradle.kts debug jniLibs.keepDebugSymbols",
+    "releaseSize": "not measured",
+    "runtimeMemory": "not measured; APK and ELF section sizes are not resident-memory measurements"
+  },
+  "largestZipEntries": [
+    {
+      "name": "lib/arm64-v8a/libmdreader_app_lib.so",
+      "bytes": 509444392,
+      "compressedBytes": 509444392,
+      "compressionMethod": 0
+    },
+    {
+      "name": "classes.dex",
+      "bytes": 10260852,
+      "compressedBytes": 4377142,
+      "compressionMethod": 8
+    },
+    {
+      "name": "classes9.dex",
+      "bytes": 4164264,
+      "compressedBytes": 1493980,
+      "compressionMethod": 8
+    },
+    {
+      "name": "resources.arsc",
+      "bytes": 1164040,
+      "compressedBytes": 1164040,
+      "compressionMethod": 0
+    },
+    {
+      "name": "classes7.dex",
+      "bytes": 507684,
+      "compressedBytes": 130409,
+      "compressionMethod": 8
+    }
+  ]
+}

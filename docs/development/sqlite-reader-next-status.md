@@ -116,6 +116,29 @@ a separate-profile rollback; it cannot discard these databases as search indexes
 The first implementation slice exports only explicitly supplied offline snapshots
 and does not discover, migrate or activate an installed library.
 
+Archival review staging `32e3996` is committed. It re-derives typed proposal rows
+from the verified raw snapshot, preserves exact records/reviewer fields and
+rejection tombstones, and publishes a new read-only staging database. Four
+review behaviors join the affected crate's 11 passing unit tests and one CLI
+process check; crate-only strict Clippy passes. Archived approval never implies
+current graph membership, source authority or a verified present-day citation.
+Useful reviews still need explicit current-source binding, reader presentation,
+coordinated installed-profile migration and rollback before CatDB removal.
+
+Mobile attachment work is currently uncommitted. Its isolated native harness
+passes seven affected behaviors in 0.17 seconds, including two observed failures
+now fixed: add/remove cycles could revive an older pending manifest, and a
+revoked image read retained its bounded slot until expiry. Persisted manifest
+generations and immediate failed-session cleanup address them. PNG/JPEG copies
+remain private, explicitly selected and revision-bound; no source folder is
+inferred. New inventory/forget cleanup, app command composition, generated
+bindings, renderer integration and actual mobile acceptance are not yet verified.
+
+The bindings drift guard `e3ece21` now runs only its two artifact-generating
+tests and checks the current `ui/src` paths, including staged drift. Lightweight
+dispatch and real temporary-Git checks pass without launching Cargo. The next
+native integration checkpoint must still exercise both actual generators.
+
 The [actual iOS smoke receipt](../benchmarks/2026-10-07-ios-reader-smoke.md)
 records standard file-picker import, exact original bytes, reading, pinning,
 search and application replacement. The newest 16 px search-field adjustment
