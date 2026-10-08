@@ -1,5 +1,6 @@
 /** Native Settings composition; backend operations retain their existing authority checks. */
 import { useCallback, useRef, useState } from 'react';
+import { AccountSyncPanel } from '../features/account-sync/AccountSyncPanel.js';
 import { AgentCapturePanel } from './AgentCapturePanel.js';
 import { IndexingPanel } from './IndexingPanel.js';
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
@@ -96,10 +97,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               {onOpenProviderDocument ? (
                 <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} />
               ) : <p>Cloud source management is unavailable in this context.</p>}
-              <section className="settings-section" aria-labelledby="settings-device-sync">
-                <h3 id="settings-device-sync">Device sync</h3>
-                <p>Device sync controls are not available in this desktop Settings panel. Cloud source connections and encrypted device sync are separate.</p>
-              </section>
+              <AccountSyncPanel active={category === 'account'} />
             </section>
             <section id="settings-category-backup" hidden={category !== 'backup'} aria-labelledby="settings-backup-title">
               <h2 id="settings-backup-title">Backup &amp; storage</h2>

@@ -19,6 +19,8 @@ pub(super) struct Runtime {
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
     catalog: super::catalog::Coordinator,
+    #[cfg(feature = "sync-native")]
+    accounts: super::accounts::Result<super::accounts::Coordinator>,
     reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
@@ -38,6 +40,14 @@ impl Runtime {
         options: super::ServiceOptions,
         factory: Option<Arc<dyn super::provider::ProviderFactory>>,
     ) -> Result<Self> {
+        Self::new_with_adapters(store, cache, options, super::NativeAdapters { factory, ..super::NativeAdapters::default() })
+    }
+    pub(super) fn new_with_adapters(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
+        options: super::ServiceOptions,
+        adapters: super::NativeAdapters,
+    ) -> Result<Self> {
         // Offline mode creates neither an actor thread nor a model/download.
         #[cfg(feature = "local-embed")]
         let model = (!options.disable_model).then(|| ModelActor::new(cache.clone(), false));
@@ -48,7 +58,11 @@ impl Runtime {
         };
         let owner = store.clone();
         let mut runtime = Self::with_model(store, cache, model)?;
-        if let Some(factory) = factory {
+        #[cfg(feature = "sync-native")]
+        if let Some((setup, roots)) = adapters.accounts {
+            runtime.accounts = setup.and_then(|setup| super::accounts::Coordinator::new(owner.clone(), setup, roots));
+        }
+        if let Some(factory) = adapters.factory {
             // Provider cache/host failure must not take local reading, capture,
             // or indexing offline. Retain the typed error for provider clients.
             runtime.providers = (|| {
@@ -142,6 +156,8 @@ impl Runtime {
             wake,
             directory,
             providers: Ok(None),
+            #[cfg(feature = "sync-native")]
+            accounts: Err(super::accounts::AccountError::Unconfigured),
         })
     }
     fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -155,6 +171,14 @@ impl Runtime {
             .map_err(|_| protocol_error("reader query worker failed"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        #[cfg(feature = "sync-native")]
+        if let Request::Account { request } = request {
+            let result = self.accounts.as_ref().map_err(|error| *error).and_then(|owner| owner.execute(request));
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
         if let Request::Catalog { request } = request {
             let result = self.catalog.execute(request);
             return Ok(match result {
@@ -946,3 +970,7 @@ mod tests {
         assert_eq!(result.unwrap().unwrap()[0]["path"], "note.md");
     }
 }
+
+#[cfg(all(test, feature = "sync-native"))]
+#[path = "accounts_runtime_tests.rs"]
+mod accounts_tests;

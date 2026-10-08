@@ -5,6 +5,7 @@ mod binding;
 mod enrollment;
 mod interaction;
 mod operations;
+pub mod rpc;
 mod state;
 mod storage;
 #[cfg(test)]
