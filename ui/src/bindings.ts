@@ -260,6 +260,7 @@ export const commands = {
 	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
 	agentCaptureState: (expectedRoot: string) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("agent_capture_state", { expectedRoot })),
 	setAgentCapture: (expectedRoot: string, update: AgentCaptureUpdate) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("set_agent_capture", { expectedRoot, update })),
+	agentCaptureBackfill: (expectedRoot: string, request: AgentBackfillRequest) => typedError<AgentBackfillReply, string>(__TAURI_INVOKE("agent_capture_backfill", { expectedRoot, request })),
 	agentIntegrationsState: (expectedRoot: string) => typedError<AgentIntegrationsState, string>(__TAURI_INVOKE("agent_integrations_state", { expectedRoot })),
 	prepareAgentIntegration: (expectedRoot: string, selection: AgentIntegrationSelection) => typedError<AgentIntegrationReview, string>(__TAURI_INVOKE("prepare_agent_integration", { expectedRoot, selection })),
 	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
@@ -424,6 +425,26 @@ export const events = {
 export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
 
 export type AdmissionPhase = "vault_pending" | "admission_pending";
+
+export type AgentBackfillAdapter = "claude_code" | "codex_hook" | "codex_notify";
+
+export type AgentBackfillOutcome = { status: "queued"; id: string } | { status: "duplicate"; id: string } | { status: "skipped"; reason: string };
+
+export type AgentBackfillReply = { operation: "state"; enabled: boolean; selected_sessions: string[] } | { operation: "reviewed"; value: AgentBackfillReview } | { operation: "enqueued"; outcome: AgentBackfillOutcome } | { operation: "deselected"; session_id: string };
+
+export type AgentBackfillRequest = { operation: "state" } | { operation: "review"; adapter: AgentBackfillAdapter; event: string } | { operation: "enqueue"; adapter: AgentBackfillAdapter; event: string; review_digest: string; session_id: string } | { operation: "deselect"; session_id: string };
+
+export type AgentBackfillReview = {
+	canonical_event: string,
+	review_digest: string,
+	session_id: string,
+	turn_id: string | null,
+	turn_id_kind: string | null,
+	subagent_id: string | null,
+	cwd: string,
+	body: string,
+	selected: boolean,
+};
 
 export type AgentCaptureState = {
 	root: string,

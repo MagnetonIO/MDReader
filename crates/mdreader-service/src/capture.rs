@@ -1,4 +1,5 @@
 //! Service-owned admission bridge. Hooks never open library.sqlite.
+pub mod backfill;
 use mdreader_capture::{Limits, ProjectPolicy, Spool};
 use mdreader_core::{ReaderStore, Result, SourceRoot, SourceRootIdentity};
 use serde::{Deserialize, Serialize};
@@ -113,10 +114,19 @@ fn artifact_matches(directory: &Path, policy: &ProjectPolicy) -> Result<()> {
 /// remain authoritative across service restart and worktree replacement.
 pub fn configure(store: &mut ReaderStore, directory: &Path, policy: ProjectPolicy) -> Result<()> {
     policy.validate().map_err(|_| invalid())?;
+    let previous = policies(store)?
+        .into_iter()
+        .find(|grant| grant.policy.project_id == policy.project_id);
+    // Settings callers carry the list they previously observed. Once a grant
+    // exists, only the explicit backfill operation changes this list: a stale
+    // settings save must not undo a later session deselection (or selection).
+    // Reject before recapturing roots, opening the spool or publishing policy.
+    if previous.as_ref().is_some_and(|grant| {
+        grant.policy.selected_backfill_sessions != policy.selected_backfill_sessions
+    }) {
+        return Err(mdreader_core::ReaderError::Conflict);
+    }
     let grant = if !policy.enabled {
-        let previous = policies(store)?
-            .into_iter()
-            .find(|grant| grant.policy.project_id == policy.project_id);
         if let Some(mut previous) = previous {
             previous.policy = policy;
             previous
@@ -171,7 +181,7 @@ pub fn drain(store: &mut ReaderStore, directory: &Path) -> Result<DrainStatus> {
             return Ok(DrainStatus {
                 diagnostic: Some("Capture spool unavailable on this platform or profile".into()),
                 ..Default::default()
-            })
+            });
         }
     };
     let mut status = DrainStatus::default();

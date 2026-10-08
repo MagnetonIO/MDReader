@@ -125,6 +125,10 @@ pub enum Request {
     ConfigureCapture {
         policy: mdreader_capture::ProjectPolicy,
     },
+    CaptureBackfill {
+        project_id: String,
+        request: capture::backfill::BackfillRequest,
+    },
     CaptureStatus,
     CapturePolicy {
         project_id: String,
@@ -221,6 +225,7 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
         Request::Provider { .. }
         | Request::ConfigureCapture { .. }
+        | Request::CaptureBackfill { .. }
         | Request::CaptureStatus
         | Request::CapturePolicy { .. }
         | Request::PrepareIntegration { .. }

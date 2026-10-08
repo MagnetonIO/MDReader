@@ -54,3 +54,22 @@ test('an unsupported platform stays disabled', async () => {
   expect((button.closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
   expect(backend.update).not.toHaveBeenCalled();
 });
+
+test('a missing-root capture-state failure still permits explicit metadata-only backfill deselection', async () => {
+  const backend: AgentCaptureBackend = { state: vi.fn(async () => { throw new Error('Selected root is unavailable'); }), update: vi.fn() };
+  let selected = true;
+  const request = vi.fn<import('../agents/backfill/backend').BackfillBackend['request']>(async (_root, input) => {
+    if (input.operation === 'state') return { operation: 'state', enabled: false, selected_sessions: selected ? ['retained-session'] : [] };
+    if (input.operation === 'deselect') { selected = false; return { operation: 'deselected', session_id: input.session_id }; }
+    throw new Error('A missing root must never admit or review an output');
+  });
+  render(<AgentCapturePanel root="/missing" backend={backend} integrationBackend={null} backfillBackend={{ request }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Configure agent capture' }));
+  await screen.findByText('Selected root is unavailable');
+  expect(request).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Import selected past output' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop backfill for session retained-session' }));
+  await waitFor(() => expect(screen.getByText(/Pending events remain retained/)).toBeTruthy());
+  expect(request.mock.calls.map(([, input]) => input.operation)).toEqual(['state', 'deselect', 'state']);
+  expect(backend.update).not.toHaveBeenCalled();
+});

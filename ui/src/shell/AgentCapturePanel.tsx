@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { BackfillPanel } from '../agents/backfill/BackfillPanel.js';
+import type { BackfillBackend } from '../agents/backfill/backend.js';
 import { AgentIntegrationPanel } from './AgentIntegrationPanel.js';
 import { agentIntegrationBackend, type AgentIntegrationBackend } from '../platform/agents.js';
 import { agentCaptureBackend, type AgentCaptureBackend, type AgentCaptureState } from '../platform/agents.js';
@@ -6,7 +8,7 @@ import { agentCaptureBackend, type AgentCaptureBackend, type AgentCaptureState }
 const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean);
 
 /** Project opt-in is independent of installing agent hooks. Opening settings is read-only. */
-export function AgentCapturePanel({ root, backend = agentCaptureBackend, integrationBackend = agentIntegrationBackend }: { root: string | null; backend?: AgentCaptureBackend; integrationBackend?: AgentIntegrationBackend | null }) {
+export function AgentCapturePanel({ root, backend = agentCaptureBackend, integrationBackend = agentIntegrationBackend, backfillBackend }: { root: string | null; backend?: AgentCaptureBackend; integrationBackend?: AgentIntegrationBackend | null; backfillBackend?: BackfillBackend }) {
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState<AgentCaptureState | null>(null);
   const [enabled, setEnabled] = useState(false);
@@ -85,6 +87,7 @@ export function AgentCapturePanel({ root, backend = agentCaptureBackend, integra
         {state.diagnostic ? <p role="status">{state.diagnostic}</p> : null}
         {state.supported && integrationBackend ? <AgentIntegrationPanel root={root} captureEnabled={state.enabled} backend={integrationBackend} /> : null}
       </> : null}
+      {state?.supported !== false ? <BackfillPanel root={root} captureEnabled={state?.enabled ?? false} backend={backfillBackend} /> : null}
     </> : null}
   </section>;
 }

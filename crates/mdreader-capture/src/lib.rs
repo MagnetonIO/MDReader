@@ -9,6 +9,8 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod backfill;
+
 pub const RETRIEVAL_MARKER: &str = "<!-- mdreader-retrieval -->";
 pub const CAPTURE_MARKER: &str = "<!-- mdreader-capture:v1 -->";
 const HEADER: &str = "<!-- mdreader-capture:v1 -->\n---\nmdreader_capture: ";

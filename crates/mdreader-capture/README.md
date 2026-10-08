@@ -36,6 +36,14 @@ The owner passes an exact policy path; there is no upward policy discovery, impl
 
 `backfill` accepts an explicitly supplied sanitized final-output event only for a session in `selected_backfill_sessions`. It does not discover or read historical files. Changing that list or project opt-in before projection also prevents projection. Excluded events never enter the queue. Disabling a project retains already queued events for explicit owner recovery; it does not destroy them.
 
+### Desktop selected-output review
+
+Agent capture settings provide a separate **Import selected past output** panel. Enable capture for the current local folder, explicitly choose one UTF-8 final-output JSON event (at most 256 KiB), choose its actual agent format, then review the supplied session/optional turn/subagent, working folder and exact visible text. Confirming selects that supplied session and queues only that reviewed output. Missing IDs, original event time and repository revision remain unavailable; import capture time is the current receipt time. The format choice is user-supplied authorship, not agent verification.
+
+This is not a transcript importer. JSONL histories, directories, plan files and plain Markdown without supplied event provenance are unsupported. Paths mentioned by unknown fields are never opened. Review uses the same visible-output parser as hooks and returns only canonical visible fields; unknown reasoning/tool/prompt fields are not rendered or persisted. Known reasoning/retrieval markers and all existing project/subagent/session/path exclusions still apply. Only current retained root/source grants can accept a review or enqueue: selecting a session never recaptures or regrants a folder.
+
+Queue success means durable enqueue, not completed projection/indexing. If a reply is lost, explicitly retry the same canonical reviewed event; the existing occurrence identity deduplicates it across restart. Session selection may have committed even if enqueue failed or its reply was lost. If policy publication was interrupted before its SQLite save, only the same reviewed enqueue can complete its exact next selection artifact; unrelated mismatches remain closed. **Stop backfill for session** narrows the current policy; it does not delete pending recovery events, original outputs, captured Markdown or live-capture settings. Removing selection before projection prevents that selected-backfill event from being admitted until explicitly reselected.
+
 ## CLI and configuration fragments
 
 Build the crate with `cargo build -p mdreader-capture`. Invocation:

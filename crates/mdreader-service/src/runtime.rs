@@ -183,6 +183,20 @@ impl Runtime {
             let _ = self.wake.try_send(());
             return Ok(serde_json::json!({"configured":true,"policyPath":path}));
         }
+        if let Request::CaptureBackfill { project_id, request } = request {
+            let mutation = request.is_mutation();
+            let reply = super::capture::backfill::execute(
+                &mut *self.store()?,
+                &self.directory,
+                &project_id,
+                request,
+            )?;
+            if mutation {
+                let _ = self.wake.try_send(());
+            }
+            return serde_json::to_value(reply)
+                .map_err(|_| protocol_error("invalid backfill reply"));
+        }
         if matches!(request, Request::CaptureStatus) {
             return serde_json::to_value(super::capture::status(
                 &*self.queries()?,

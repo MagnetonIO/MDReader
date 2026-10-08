@@ -28,7 +28,7 @@ pub struct AgentCaptureUpdate {
     pub excluded_paths: Vec<String>,
     pub excluded_sessions: Vec<String>,
 }
-fn project_id(root: &Path) -> String {
+pub(crate) fn project_id(root: &Path) -> String {
     crate::reader::worktree_project_id(root)
 }
 
@@ -232,7 +232,7 @@ pub async fn uninstall_agent_integration(
         .finish(&workspace, ())
         .map_err(|e| e.to_string())
 }
-fn checked_epoch(
+pub(crate) fn checked_epoch(
     workspace: &WorkspaceState,
     expected_root: &str,
 ) -> Result<std::sync::Arc<crate::engine::Epoch>, String> {

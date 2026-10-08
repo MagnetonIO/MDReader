@@ -58,6 +58,7 @@ mod overlay;
 mod provider_oauth;
 mod reader;
 mod reader_agents;
+mod reader_backfill;
 mod reader_workload;
 mod search;
 mod updater;
@@ -164,6 +165,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             search::related,
             reader_agents::agent_capture_state,
             reader_agents::set_agent_capture,
+            reader_backfill::agent_capture_backfill,
             reader_agents::agent_integrations_state,
             reader_agents::prepare_agent_integration,
             reader_agents::apply_agent_integration,
