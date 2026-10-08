@@ -6,7 +6,7 @@ const MAX_SCOPES = 8;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DEVICE = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const HASH = /^[0-9a-f]{64}$/;
-export type SelectedPurpose = 'content' | 'user_state';
+export type SelectedPurpose = 'content' | 'user_state' | 'delete';
 export interface PendingUpload { purpose: SelectedPurpose; selection: SelectedOperation }
 const fault = () => new Error('The retained upload identity is unavailable or unsupported. It was not replaced. Local reading remains available.');
 function object(value: unknown, keys: string[]): value is Record<string, unknown> {
@@ -39,7 +39,7 @@ function read(storage: Storage): { raw: string | null; operations: PendingUpload
   try { value = JSON.parse(raw); } catch { throw fault(); }
   // Our machine-owned canonical format deliberately admits no duplicate members,
   // alternate encodings or unknown fields. Preserve every rejected original byte.
-  if (!object(value, ['version', 'operations']) || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.operations)
+  if (!object(value, ['version', 'operations']) || (value.version !== 1 && value.version !== 2 && value.version !== 3) || !Array.isArray(value.operations)
     || value.operations.length > MAX_SCOPES
     || JSON.stringify(value) !== raw) throw fault();
   const operations: PendingUpload[] = [];
@@ -48,7 +48,7 @@ function read(storage: Storage): { raw: string | null; operations: PendingUpload
       if (!validSelection(row)) throw fault();
       operations.push({ purpose: 'content', selection: row });
     } else {
-      if (!object(row, ['purpose', 'selection']) || (row.purpose !== 'content' && row.purpose !== 'user_state')
+      if (!object(row, ['purpose', 'selection']) || (row.purpose !== 'content' && row.purpose !== 'user_state' && !(value.version === 3 && row.purpose === 'delete'))
         || !validSelection(row.selection)) throw fault();
       operations.push({ purpose: row.purpose, selection: row.selection });
     }
@@ -73,7 +73,7 @@ function update(storage: Storage, change: (operations: PendingUpload[]) => Pendi
   if (JSON.stringify(operations) === JSON.stringify(before.operations)) return;
   // Explicit actions alone upgrade the machine-owned namespace. Legacy opaque
   // IDs and purposes are retained; unsupported bytes never get normalized.
-  const next = JSON.stringify({ version: 2, operations });
+  const next = JSON.stringify({ version: 3, operations });
   if (next.length > MAX_BYTES || storage.getItem(KEY) !== before.raw) throw fault();
   if (next === before.raw) return; // Polled native metadata is often unchanged.
   storage.setItem(KEY, next);
@@ -94,7 +94,7 @@ export async function retainSelection(selection: SelectedOperation, storage: Sto
   return retainUpload({ purpose: 'content', selection }, storage);
 }
 export async function retainUpload(upload: PendingUpload, storage: Storage = localStorage): Promise<void> {
-  if (!validSelection(upload.selection) || (upload.purpose !== 'content' && upload.purpose !== 'user_state')) throw fault();
+  if (!validSelection(upload.selection) || (upload.purpose !== 'content' && upload.purpose !== 'user_state' && upload.purpose !== 'delete')) throw fault();
   await locked(() => {
     try {
       update(storage, (operations) => {

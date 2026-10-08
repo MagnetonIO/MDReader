@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { DeleteSelectedDocument } from './DeleteSelectedDocument';
+import type { DeletionSelection } from './useSelectedSync';
 import type { DeviceReference } from '../device-reader/backend';
 import type { useAccountSync } from './useAccountSync';
 import { useSelectedSync } from './useSelectedSync';
@@ -5,6 +8,7 @@ import { useSelectedSync } from './useSelectedSync';
 export function SelectedDocumentSync({ account, selected }: {
   account: ReturnType<typeof useAccountSync>; selected?: DeviceReference;
 }) {
+  const [deletion, setDeletion] = useState<DeletionSelection | null>(null);
   const upload = useSelectedSync(account, selected);
   const disabled = account.busy || account.running || account.status?.latestJob?.state.state === 'running'
     || !account.status?.connected || !account.status.selectedScope;
@@ -17,8 +21,8 @@ export function SelectedDocumentSync({ account, selected }: {
       ? 'An upload identity for another account or library is retained. It will not be sent to this account.'
       : 'A retained upload is waiting for its original account and library. Sign in before checking it.'}</p> : null}
     {upload.pending ? <>
-      <p>A dispatched {upload.pending.purpose === 'user_state' ? 'pin and position update' : 'document upload'} is retained. Changing the selected document does not replace it.</p>
-      <details><summary>Retained upload identity</summary><p>
+      <p>A retained {upload.pending.purpose === 'delete' ? 'deletion request' : upload.pending.purpose === 'user_state' ? 'pin and position update' : 'document upload'}. Changing the selected document does not replace it.</p>
+      <details><summary>Retained sync identity</summary><p>
         Document: {upload.pending.selection.receipt.documentId}. Revision: {upload.pending.selection.receipt.revision}.
       </p></details>
       <div className="settings-account-actions">
@@ -31,6 +35,12 @@ export function SelectedDocumentSync({ account, selected }: {
       <button type="button" disabled={disabled || !selected || !!upload.error}
         onClick={() => void upload.upload('user_state')}>Sync pin &amp; reading position</button>
     </div>}
+    {!upload.pending ? <div className="settings-account-actions">
+      <button type="button" className="settings-button--danger" disabled={disabled || !selected || !!upload.error}
+        onClick={() => { if (selected && account.status?.selectedScope) setDeletion({ reference: { ...selected }, scope: { ...account.status.selectedScope } }); }}>Delete this synced document…</button>
+    </div> : null}
+    {deletion ? <DeleteSelectedDocument selection={deletion} disabled={disabled || !!upload.pending}
+      onCancel={() => setDeletion(null)} onConfirm={() => { const exact = deletion; setDeletion(null); void upload.remove(exact); }} /> : null}
     <p>Document sync includes its tracked images. Pin and position sync sends the state saved on this device; save your reading position in the reader first.</p>
   </div>;
 }
