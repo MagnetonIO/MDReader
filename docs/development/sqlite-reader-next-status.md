@@ -11,8 +11,10 @@ now share one issuer/API audience with separate public browser/native clients;
 native/browser/Worker access-token integration passed focused checks and two local
 HTTPS native interoperability cases. Configured Preview deployment now passes
 five deployed browser checks, including navigation to the registered Auth0 login.
-The user reported that explanatory text hid Connect below the visible panel;
-a focused layout fix is being verified in its own web worktree. Live credential
+The reported hidden Connect action is fixed and deployed (`5bb05b2`, receipt
+`c09c0cb` in the web integration). Three focused deployed checks passed, including
+200% text at desktop/mobile widths, real Auth0 navigation and offline reopen.
+A separate empty-reader enlarged-text overflow fix is under Preview validation. Live credential
 login, enrollment and authenticated transfer remain pending. These do not
 establish production release acceptance.
 
@@ -29,12 +31,12 @@ account UI remain separate gates. The web deployment receipt is merged as
 | Plan task | Current evidence | Remaining work |
 | --- | --- | --- |
 | 1. Baseline | Reproduced UI/native/provider failures repaired; deterministic baseline passed. | Live provider acceptance belongs to Task 6. |
-| 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. Existing device documents/import recovery/pins/positions and selected PNG/JPEG assets now use portable core owners with schema and live-owner guards. | Whole app still contains legacy CatDB paths; incoming transactional owner transitions, transport cancellation, migration and host acceptance remain. |
+| 2. SQLite reader | Native durable `library.sqlite`, disposable `index.sqlite`, source authority, FTS5/sqlite-vec, jobs, revision evidence and indexed links implemented. Desktop search/import/resolve delegates to a headless owner. Core schema-5 membership counts and exact provider projections are committed; source grants and trusted metadata can publish atomically. Existing device documents/import recovery/pins/positions and selected PNG/JPEG assets now use portable core owners with schema and live-owner guards. | Whole app still contains legacy CatDB paths; service integration of accepted core owner transitions, migration and host acceptance remain. |
 | 3. Capture/MCP | Both visible-output adapters, private spool, durable Markdown/provenance, automatic admission/indexing, six read-only MCP tools, packaged service bootstrap and echo exclusion pass synthetic process checks. Project settings, review/apply/remove configuration and explicit selected-event backfill UI implemented. | Real isolated Claude approval/connection, Codex tool discovery/read and installed VSIX Extension Host checks now pass (receipt linked below). Packaged desktop entrypoint/hooks, desktop backfill UX/model turn, global client setup and Windows runtime remain open. |
 | 4. Encrypted sync | Cross-language AES-GCM fixtures, native durable outbox/incoming receipts and browser selected Markdown/PNG/JPEG/pin/position transfer are committed. Browser account UI and bounded foreground/reconnect orchestration pass actual Next + synthetic issuer + Worker/SQLite/R2 checks, including interrupted acknowledgment and restart. Default-off native transport has bounded HTTPS, durable receipts and verified OIDC/PKCE authority with scoped custody, including actual synthetic Worker checks. | Native product integration, standard persistent wrapping/bootstrap/pair/recovery, replacement/state/deletion projection, arbitrary library/account switching, conflict-resolution UI, live issuer login, rotation/export/delete/long-offline acceptance remain. New-content incoming publication now commits original Markdown/assets, exact receipts and applied cursor atomically under session/selection/source fences; focused real SQLite/reopen/rollback tests pass. |
 | 5. Clients | Real Next `/app` imports/reads/searches local Markdown with SQLite OPFS and offline shell. Local ZIP v2 backup, selected PNG/JPEG assets, pins/exact reading anchors and bounded Mermaid rendering are committed. Native mobile uses embedded SQLite; actual iOS simulator import/read/search/pin/update evidence found and fixed toolbar scrolling and container-relocation failures. Explicit bounded native PNG/JPEG selection, recovery and cleanup pass focused app/UI checks; one synthetic PNG passed actual picker/render/restart/cleanup acceptance. | Final cross-engine matrix for subsequent web features, newer mobile layout/JPEG/owner-migration device acceptance, export/share/deep links/sync, physical-device and longer lifecycle acceptance. Desktop probe controls passed; new provider composition requires a fresh packaged check. |
 | 6. Providers | CatDB-free Drive/Dropbox protocols, durable registry/cursors and mutation journal; native selected OAuth/Picker, private credential custody, provider factory/coordinator/RPC and cached reader panel are implemented. Durable admission receipts prevent retired credentials from reviving sources. Local logical links preserve exact current binding/revision, distinguish ambiguity/uncached targets and fetch only on explicit request. A separate provider sidebar and explicitly selected provider sources join canonical global search, including provider-only search without a workspace. | Guarded edits; disposable live-provider OAuth/Picker/refresh acceptance. Prototype schema-1 profiles with missing admission history reject unknown credentials rather than inventing replay safety. |
-| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging, bounded CLI reads and portable exact-revision text comparison preserve records and rejection history. | Installed isolated VSIX Extension Host acceptance now passes. Archived review presentation/current-source binding, coordinated installed-profile export/rollback, CatDB removal, packaged host/release evidence and final whole-branch review remain. |
+| 7. Extension/migration/release | Local VS Code service adapter, readonly preview/search/reference/status and scoped process tests; inspected VSIX built. CatDB-free offline exporter preserves explicitly supplied raw snapshots and bounded typed known rows, with verified atomic publication and crash checks. Archival document-review staging, bounded CLI reads and portable exact-revision text comparison preserve records and rejection history. | Installed isolated VSIX Extension Host acceptance now passes. Archived review presentation/current-source binding is now merged; coordinated installed-profile export/rollback, CatDB removal, packaged host/release evidence and final whole-branch review remain. |
 
 ## Measured retrieval
 
@@ -324,8 +326,34 @@ accepted separately before enabling production sync.
   the focused ID-purpose regression. Development deployment uses the exact existing
   Worker/SQLite DO/R2 resources and one Auth0 tenant; Production stays unchanged.
 
-The next reader migration slice addresses archived reviews that normal service
-indexing currently leaves unavailable. Removing their legacy dependency before
-explicit preservation/presentation and installed-profile rollback would lose
-useful visible behavior. Physical-device, live-provider, fresh-clone and packaging
-gates have not been discharged by these checkpoints.
+## October 8 core, archive and combined-tree checkpoint
+
+Native integration `e3608e9` includes core transitions `c54b959`, archived review
+presentation `fb02b38` and schema hardening `db1fc37`. The core document namespace
+advances additively to version 2; this is independent of library/index versions.
+Replacement publishes fresh immutable document identity and retires the old one
+atomically. State changes use monotonic generation fences, including explicit
+source disable/enable cycles. Retirement removes reading/search authority while
+preserving exportable bytes/history. Service replacement/state/deletion wiring
+is still in progress; accepted core code alone does not establish live sync.
+
+Explicit selected archive staging now supports bounded listing, inspection and
+exact-revision reader comparison. Owner identity, stage identity and current
+source authority are revalidated before results publish. Weak metadata tables,
+views and extra identity rows fail closed. Packaged picker/modal acceptance and
+installed-profile coordinated export/activation/rollback remain open. See
+[the archive validation receipt](archived-review-validation-2026-10-08.md).
+
+After integration, the coordinator ran the warm, serialized affected checkpoint:
+33 default core tests passed (0.23 seconds), five `sync-native` incoming service
+cases passed (0.13 seconds), four archived review cases passed (0.22 seconds),
+and strict service `sync-native --all-targets` Clippy passed (6.13 seconds).
+Compilation used two jobs and the existing shared cache. No broad app suite or
+model benchmark ran; final native app Clippy is still pending.
+
+The next primary-screen slice replaces the CatDB-backed library hydration and
+body-read paths with a paged reader-owned catalog, explicit coverage and current
+source/index authority. A separate native custody slice adds persistent wrapping
+and recovery material with standard JWE conformance. Both start from `e3608e9` in
+owned worktrees; neither is accepted yet. Physical-device, live-provider,
+fresh-clone, offline app-version upgrade and packaging gates remain open.

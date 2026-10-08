@@ -16,11 +16,12 @@ feature's review or acceptance receipt.
 | --- | --- | --- | --- | --- | --- |
 | Coordinator | Native | `MDReader-reader-next` | `dev-reader-next` | `21bc807` | Integration only |
 | agent_capture | Native | `MDReader-native-incoming` | `feat/reader-native-incoming` | `c2055ea` | Reviewed core publication and session/cursor fence |
-| reader_mcp | Native | `MDReader-archived-reviews` | `feat/reader-archived-reviews` | `bce887e` | Explicit selected archived reviews and exact reader comparison |
+| reader_mcp | Native | `MDReader-reader-catalog` | `feat/reader-catalog` | `e3608e9` | Reader-owned paged catalog and primary-screen CatDB cutover |
+| cloud_sync | Native | `MDReader-native-key-lifecycle` | `feat/reader-native-key-lifecycle` | `e3608e9` | Persistent custody v2 and standard JWE interoperability |
 | Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea`, then `fa3f577` | Auth0 access-token contract and bounded native loopback |
 | Coordinator | Web | `MDReader-Web-reader-next` | `dev-reader-next` | `e2c86d5` | Integration only |
 | cloud_sync | Web | `MDReader-Web-public-oidc` | `feat/reader-public-oidc` | `7f352a8` | One Auth0 issuer, API audience and separate public clients |
-| cloud_sync | Web | `MDReader-Web-sync-connect-layout` | `fix/reader-sync-connect-layout` | `88abc58` | Visible primary action at enlarged text/short viewports; Preview only |
+| Coordinator | Web | `MDReader-Web-empty-reflow` | `fix/reader-empty-reflow` | `7cee473` | Bound enlarged empty-reader text; Preview validation pending |
 
 Completed and merged into integration: capture/platform extraction (`72ecd9b`),
 core incoming publication (`1ecf76f`), session and atomic cursor fence (`c13a6ad`),
@@ -30,7 +31,11 @@ installed extension acceptance (`554f450`), native auth-v2 (`20fbf70`) and compa
 web auth-v2 (`65bf43f`), native bounded callback ownership (`a4607b4`) and the
 configured development deployment receipt (`88abc58`). The client-acceptance worktree was removed after preserving
 the tested VSIX and receipts; its major branch remains. Incoming work now starts
-from `bce887e` for core state/retirement and service v2 transitions.
+from `e3608e9` for service v2 transitions. Core state/retirement (`c54b959`)
+and archived review presentation/schema hardening (`fb02b38`, `db1fc37`) are merged.
+The archived-review worktree was removed cleanly; its major branch remains.
+The web Connect fix (`5bb05b2`, receipt `c09c0cb`) merged through its owning major
+branch into web integration; its clean minor worktree and branch were removed.
 Their clean, inactive worktrees and merged minor branches were removed after
 ancestry checks. Private configuration and receipts were preserved; shared
 caches were retained. The major feature branches in the table remain intentionally
