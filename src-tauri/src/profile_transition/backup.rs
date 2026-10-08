@@ -60,6 +60,11 @@ pub(crate) async fn native_profile_backup(
     state: State<'_, PersistenceState>,
 ) -> std::result::Result<BackupReply, BackupError> {
     let transition = state.transition.clone();
+    // Do not ask for a destination when an actual owner was not composed.
+    // Registration is only admission: real freeze/drain is still mandatory.
+    if !transition.missing_participants().is_empty() {
+        return Err(failure(Error::NotQuiescent));
+    }
     let json = state.owner.clone();
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
