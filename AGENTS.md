@@ -150,6 +150,33 @@ scripts/configuration change. Verify a fresh-clone startup at release checkpoint
 The current legacy SDK still has a machine-local Git dependency: record this
 portability blocker until migration removes it; do not claim fresh-clone readiness.
 
+## Parallel worktrees, integration and cleanup
+
+- `dev` is the development destination. `dev-reader-next` is the current
+  reader migration integration branch; it is not a shared editing checkout.
+- Give each parallel agent or independent feature/bug one named branch and its
+  own worktree, based on the agreed integration commit. Never have agents edit
+  the same worktree, share a Git index, or copy unfinished source between trees.
+  The coordinator owns the integration worktree; implementation also belongs in
+  a separate feature worktree. Record owner, branch, path, base and dependencies.
+- Commit only scoped, reviewed changes. Merge each completed feature/bug branch
+  into the integration branch after focused checks and review. Resolve dependent
+  changes there in order; do not merge unvalidated work directly into `dev`.
+  Run appropriate integration checks on the combined tree, then merge the
+  accepted integration branch into `dev`. Deployment acceptance remains a
+  separate gate; a merge alone does not establish a successful release.
+- Keep the existing single heavyweight build/check slot across all worktrees.
+  Reuse compatible caches with serialized writers; do not start a cold build or
+  install another dependency tree merely because an agent got a new worktree.
+- After the feature/bug is accepted and its commits are reachable from the
+  integration branch, remove its clean, inactive worktree with `git worktree
+  remove`, then delete its merged local branch with `git branch -d`. After the
+  release reaches `dev`, clean up the integration worktree/branch similarly.
+  Inspect status, untracked files and running processes first. Preserve private
+  configuration and acceptance receipts before cleanup; never use forced removal
+  or discard unmerged work to make cleanup pass. Prune stale Git worktree metadata
+  after removal. Do not delete unrelated historical branches or worktrees.
+
 ## Clean repository and delivery
 
 - Work in isolated development branches/worktrees. Preserve unrelated changes,
