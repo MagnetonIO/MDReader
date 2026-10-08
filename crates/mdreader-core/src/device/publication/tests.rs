@@ -429,3 +429,6 @@ fn incoming_quota_dropping_fence_and_future_schema_are_shared_with_local_imports
     assert_eq!(version, 2);
     assert_eq!(f.count("sources"), 0);
 }
+
+#[path = "transition_tests.rs"]
+mod transitions;

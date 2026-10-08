@@ -57,7 +57,7 @@ fn populated_unmarked_layout_adopts_without_reset_and_future_or_malformed_schema
     let parent = SourceRoot::capture(docs.path().canonicalize().unwrap()).unwrap();
     let pending = reserve_import(&mut store, &parent, "pending.md".into(), "# Pending").unwrap();
     store
-        .with_library_connection(|db| db.execute_batch("DROP TABLE device_document_schema_v1;"))
+        .with_library_connection(|db| db.execute_batch("ALTER TABLE device_documents_v1 DROP COLUMN retirement; ALTER TABLE device_documents_v1 DROP COLUMN retired; ALTER TABLE device_documents_v1 DROP COLUMN state_generation; DROP TABLE device_document_schema_v1;"))
         .unwrap();
     let before = snapshot(&mut store);
     let original = fs::read(docs.path().join(&saved.id).join("document.md")).unwrap();
@@ -67,7 +67,7 @@ fn populated_unmarked_layout_adopts_without_reset_and_future_or_malformed_schema
     assert_eq!(documents.len(), 1);
     assert!(documents[0].pinned);
     assert_eq!(documents[0].line, 3);
-    assert_eq!(marker(&mut store), Some(1));
+    assert_eq!(marker(&mut store), Some(2));
     assert_eq!(snapshot(&mut store), before);
     assert_eq!(pending_imports(&mut store).unwrap()[0].id, pending.id);
     assert!(
@@ -154,7 +154,7 @@ fn populated_unmarked_layout_adopts_without_reset_and_future_or_malformed_schema
     assert_eq!(recovered[0].line, 3);
     assert!(recovered[0].pinned);
     assert!(snapshot(&mut store).1.is_empty());
-    assert_eq!(marker(&mut store), Some(1));
+    assert_eq!(marker(&mut store), Some(2));
     assert_eq!(
         read(&mut store, &id, Some(&revision)).unwrap().markdown,
         body
@@ -174,5 +174,64 @@ fn populated_unmarked_layout_adopts_without_reset_and_future_or_malformed_schema
             ))
             .unwrap(),
         "kept"
+    );
+}
+
+#[test]
+fn marked_v1_state_upgrade_is_transactional_preserves_rows_and_survives_reopen() {
+    let profile = tempfile::tempdir().unwrap();
+    let selected = tempfile::tempdir().unwrap();
+    let mut store = ReaderStore::open(profile.path()).unwrap();
+    let doc = import(
+        &mut store,
+        selected.path(),
+        "retained.md".into(),
+        "# One\n\nThree".into(),
+    )
+    .unwrap();
+    pin(&mut store, &doc.id, true).unwrap();
+    position(&mut store, &doc.id, &doc.revision, 3).unwrap();
+    store.set_source_enabled(&doc.source_id, false).unwrap();
+    store.with_library_connection(|db| db.execute_batch("ALTER TABLE device_documents_v1 DROP COLUMN retirement; ALTER TABLE device_documents_v1 DROP COLUMN retired; ALTER TABLE device_documents_v1 DROP COLUMN state_generation; UPDATE device_document_schema_v1 SET version=1;")).unwrap();
+    let before = snapshot(&mut store);
+    let failed: Result<()> = store.with_library_connection(|db| {
+        let tx = db.transaction()?;
+        schema::initialize_in(&tx)?;
+        Err(Error::Storage)
+    });
+    assert_eq!(failed, Err(Error::Storage));
+    assert_eq!(marker(&mut store), Some(1));
+    assert_eq!(snapshot(&mut store), before);
+    assert_eq!(store.with_library_connection(|db|db.query_row("SELECT count(*) FROM pragma_table_info('device_documents_v1') WHERE name='state_generation'",[],|r|r.get::<_,u64>(0))).unwrap(), 0);
+    list(&mut store).unwrap();
+    assert_eq!(marker(&mut store), Some(2));
+    assert_eq!(snapshot(&mut store), before);
+    let state: (u64, bool, Option<String>) = store
+        .with_library_connection(|db| {
+            db.query_row(
+                "SELECT state_generation,retired,retirement FROM device_documents_v1 WHERE id=?1",
+                [&doc.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+        })
+        .unwrap();
+    assert_eq!(state, (0, false, None));
+    drop(store);
+    let mut reopened = ReaderStore::open(profile.path()).unwrap();
+    assert!(list(&mut reopened).unwrap().is_empty());
+    assert_eq!(snapshot(&mut reopened), before);
+    reopened.set_source_enabled(&doc.source_id, true).unwrap();
+    let restored = super::state::current(&mut reopened, &doc.id).unwrap();
+    assert_eq!(
+        restored.generation, 1,
+        "explicit re-enable advances the migrated zero baseline once"
+    );
+    assert!(restored.document.pinned);
+    assert_eq!(restored.document.line, 3);
+    assert_eq!(
+        read(&mut reopened, &doc.id, Some(&doc.revision))
+            .unwrap()
+            .markdown,
+        "# One\n\nThree"
     );
 }

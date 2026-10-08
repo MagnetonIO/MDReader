@@ -3,7 +3,8 @@
 //! This namespace is available without image decoding so local quotas remain shared.
 //! Older clients unaware of this namespace cannot enforce its reservations: do not
 //! downgrade an active incoming profile without resolving/exporting its intents.
-//! New documents only; replacement, user-state and tombstone application are absent.
+//! Immutable replacements and retirement preserve archived originals; caller owns
+//! remote-head conflicts, authentication and receipt/cursor transactions.
 use super::{Error, Result};
 use rusqlite::{OptionalExtension, Transaction};
 
@@ -26,6 +27,31 @@ mod files;
 mod publish;
 #[cfg(feature = "device-assets")]
 pub use publish::{publish_new, revalidate_publication, with_publication, PublicationGuard};
+#[cfg(feature = "device-assets")]
+mod current;
+#[cfg(feature = "device-assets")]
+pub use current::{prepare_current, with_transition, CurrentGuard, CurrentPlan, VerifiedCurrent};
+#[cfg(feature = "device-assets")]
+mod state_change;
+#[cfg(feature = "device-assets")]
+pub use state_change::{
+    publish_state, revalidate_state, PositionUpdate, StateReceipt, StateUpdate,
+};
+#[cfg(feature = "device-assets")]
+mod retire;
+#[cfg(feature = "device-assets")]
+pub use retire::{retire_current, revalidate_retirement, RetirementReceipt};
+#[cfg(feature = "device-assets")]
+mod replacement;
+#[cfg(feature = "device-assets")]
+pub use replacement::{
+    publish_replacement, revalidate_replacement, with_replacement, ReplacementGuard,
+    ReplacementReceipt,
+};
+#[cfg(feature = "device-assets")]
+mod archive;
+#[cfg(feature = "device-assets")]
+pub use archive::{prepare_archive, ArchivePlan, ArchivedAsset, ArchivedDocument};
 #[cfg(feature = "device-assets")]
 mod drop_intent;
 #[cfg(feature = "device-assets")]

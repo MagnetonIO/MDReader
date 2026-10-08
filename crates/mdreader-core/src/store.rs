@@ -500,6 +500,7 @@ impl ReaderStore {
             .collect::<std::result::Result<_, _>>()?)
     }
     fn stored_root(&self, id: &str, require_enabled: bool) -> Result<SourceRoot> {
+        crate::device::source_authority(&self.library,id)?;
         if id.starts_with("provider:") {self.provider_enabled(id)?;}
         let row: Option<(Vec<u8>, String, bool)> = self
             .library
@@ -545,6 +546,7 @@ impl ReaderStore {
         if enabled {
             self.stored_root(id, false)?.verify()?;
         }
+        if crate::device::set_source_enabled(&mut self.library,id,enabled)? {return Ok(());}
         if self.library.execute(
             "UPDATE sources SET enabled=?2 WHERE id=?1",
             params![id, enabled],

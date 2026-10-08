@@ -12,6 +12,7 @@ use std::{
 pub mod assets;
 
 pub mod publication;
+pub mod state;
 
 mod documents;
 mod error;
@@ -37,8 +38,20 @@ const MAX_BYTES: usize = 1024 * 1024;
 const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DOCUMENTS: u64 = 1000;
 
+pub(crate) fn source_authority(db: &rusqlite::Connection, id: &str) -> crate::Result<()> {
+    schema::source_authority(db, id).map_err(|_| crate::ReaderError::Unavailable)
+}
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod schema_tests;
+
+pub(crate) fn set_source_enabled(
+    db: &mut rusqlite::Connection,
+    id: &str,
+    enabled: bool,
+) -> crate::Result<bool> {
+    state::source_enabled(db, id, enabled).map_err(|_| crate::ReaderError::Unavailable)
+}

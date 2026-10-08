@@ -527,7 +527,7 @@ fn future_document_schema_blocks_asset_authority_but_keeps_cleanup_metadata_avai
     f.store
         .with_library_connection(|db| {
             db.execute(
-                "UPDATE device_document_schema_v1 SET version=2 WHERE singleton=1",
+                "UPDATE device_document_schema_v1 SET version=3 WHERE singleton=1",
                 [],
             )
         })

@@ -1,8 +1,9 @@
-# Incoming new-document publication
+# Incoming document publication and retained revision transitions
 
-This core slice prepares and publishes **new** documents on the existing device
-owner. It does not apply replacements, user state or tombstones, authenticate sync
-accounts, discover profiles, advance cursors, acknowledge receipts or activate sync.
+This core owner prepares new immutable documents, replaces a selected current
+revision, changes exact-revision pin/line state and retires documents while retaining
+originals. It does not authenticate sync accounts, resolve remote head conflicts,
+discover profiles, advance cursors, acknowledge receipts or activate sync.
 Native/service integration and mobile/Windows acceptance remain separate gates.
 
 ## Owner contract
@@ -63,8 +64,14 @@ not rehashed or pixel-decoded while holding the owner transaction.
 
 `migrations/001-incoming-intents.sql` adds only the independently guarded
 `device_incoming_schema_v1` and `device_incoming_intents_v1` staging namespace.
-Existing document/import/asset migration history, library version 4 and index
-version 5 remain unchanged. Future or malformed incoming layouts fail closed.
+Existing applied document/import/asset migrations, library version 4 and index
+version 5 remain unchanged. Document migration `003-device-state.sql` adds
+monotonic state generations and explicit retirement on the same existing document
+table, advancing its independent marker from 1 to 2 transactionally. Known marked
+v1 and exact interrupted unmarked layouts preserve rows, files, pins, lines, intents
+and grants. Existing rows start at generation zero; this records a migration
+baseline, not reconstructed historical edits. Future or malformed layouts fail
+closed without reset. Future document-schema fixtures must now use version 3.
 
 The existing 1 MiB/document, 1,000-document/64 MiB library quota includes local
 and incoming reservations, including dropping intents. Assets retain eight/
@@ -92,7 +99,71 @@ Unix file evidence is implemented. Windows/non-Unix incoming publication refuses
 reservation/resume/cleanup before file mutation with `UnsupportedPlatform` until equivalent retained-file identity/change evidence is implemented;
 existing source-root Windows support alone does not establish this acceptance.
 
-## Focused evidence
+## Immutable transitions and archival access
+
+`prepare_current(owner, documentId, assets, origin)` captures bounded current
+metadata and retained roots under short owner access. `CurrentPlan::verify` reads
+and hashes exact Markdown bytes outside owner access. The resulting opaque
+`VerifiedCurrent` binds the native revision, pin/line generation, asset rows and
+manifest generation to the live owner and exact incoming activation/selection.
+`with_transition` supplies a non-escaping guard for the actual borrowed connection.
+
+Inside one caller transaction:
+
+- `publish_state` applies a `StateUpdate` under generation CAS. Positions are
+  `Preserve`, `Start` or a bounded exact line. Local `device::pin` and `position`
+  use the same monotonic generation rule, so changing a pin and changing it back
+  cannot erase intervening edits. No-op writes also advance generation. Device source disable/re-enable advances
+  the same generation atomically with permission changes. Exhaustion returns
+  typed `StateLimit` for document transitions without wrap/reset; disabling
+  remains durable at the saturated maximum, while re-enable is refused.
+- `retire_current` records an explicit `RetirementRecord`, disables the old source,
+  invalidates its index job and retires assets without deleting their copies. The
+  remote operation UUID must match the selected origin.
+- `with_replacement`/`publish_replacement` publish a prepared fresh local document
+  and source, then retire the selected old document atomically. Pin state copies
+  exactly; the new position starts at line 1, including identical-body revisions.
+  Neither the remote wire UUID nor raw BLAKE3 equality is a native identity alias.
+
+After **all** outer receipt/head/cursor SQL, call the corresponding final function
+`revalidate_state`, `revalidate_retirement` or `revalidate_replacement` immediately
+before commit. Errors require whole-transaction rollback. Final checks cover
+owner/connection/origin, exact generation/state, enabled or retired source status,
+source/root metadata, cache separation, unchanged file evidence and asset state.
+No body hashing, pixel decode, independent commit or indexing occurs there. The
+caller still fences current remote authority through commit and resolves conflicts.
+
+The narrow shared-file integrations are `ReaderStore::stored_root` calling the
+private device authority predicate and `set_source_enabled` delegating only
+device-owned sources to its transactional generation/permission helper. It rejects retired or unsupported device-owned
+sources for generic read/search/reindex/re-enable; unrelated local/provider grants
+retain existing semantics. Device list/recovery also omit retired owners. Old
+exact evidence becomes unavailable without deleting its index or original files.
+
+`prepare_archive(owner, explicitDocumentId, assets, runtime)` selects retained
+metadata without granting a source, changing state, discovering files or activating
+sync. `ArchivePlan::read` reads and hashes known files outside the owner lock. Its
+opaque result contains exact UTF-8 Markdown bytes, document state/retirement and
+tracked asset metadata with available bytes. Missing assets remain `None`; partial
+copies preserve exact available prefixes. Complete known images are SHA256 checked.
+The shared runtime limits concurrent archive/view snapshots to two. This is a
+local export read contract, not an archive file writer or a current citation grant.
+
+Retained document rows and all ready/reserved/retired asset rows continue counting
+existing quotas. There is no automatic pruning or content loss. Explicit later
+asset Forget remains a separate existing action. A downgrade after schema2
+requires export/backup and an explicit migration decision: this slice supplies no
+reverse schema migration, source regrant, filesystem overwrite or graph replay.
+Ordinary container-relocation recovery skips disabled/retired sources. If an iOS
+update moves the container, an archived source's stored old path may no longer
+resolve even though its bytes remain retained. Explicit archive-only relocation
+using the persisted parent/root identities is a separate required lifecycle gate;
+this slice never fixes an archive path by silently regranting or activating it.
+Service replacement/state/deletion orchestration and actual product acceptance
+remain separate gates; injectable/core fixtures cannot establish authenticated
+end-to-end sync.
+
+## Focused evidence from the preceding new-document checkpoint
 
 Five real temporary-SQLite tests passed: exact originals/assets plus outer rollback
 and reopen; interrupted copies/local recovery isolation and explicit resume; epoch,
@@ -115,3 +186,36 @@ integration, existing asset behavior tests after decoder factoring, native
 projection/cursor composition, packaging and live release acceptance are not
 claimed by this focused checkpoint. No dependencies, lock changes, private
 profiles or live sync operations were involved.
+
+
+## Transition checkpoint evidence
+
+Five additional real SQLite/filesystem tests passed: marked-v1 transactional
+upgrade/reopen preserving populated disabled rows; pin ABA plus wrong-owner and
+post-callback fences; exact-line bounds and generation exhaustion; replacement
+rollback/commit/reopen with identical raw bytes, preserved pin/reset position,
+quota accounting and retained export; retirement revocation/asset-session release
+and unrelated local source enable/read preservation.
+
+```sh
+cargo test --locked -p mdreader-core --features device-assets --lib device::publication::tests::transitions
+cargo test --locked -p mdreader-core --features device-assets --lib device::schema_tests::marked_v1_state_upgrade
+```
+
+With the coordinator's sole slot, `CARGO_BUILD_JOBS=2` and the existing warm
+benchmark target, a deliberate omission of the device-only permission dispatch
+failed the grant-ABA case: generation stayed 2 instead of advancing to 4 (0.04 s).
+The dispatch was immediately restored. Four transition tests passed (0.14 s),
+then the marked-v1 migration test passed (0.03 s). The affected device suite passed
+all 28 tests (0.82 s), and feature all-target strict Clippy passed (2.32 s):
+
+```sh
+cargo test --locked -p mdreader-core --features device-assets --lib device::
+cargo clippy --locked -p mdreader-core --all-targets --features device-assets -- -D warnings
+```
+
+No new dependencies, manifests, lock changes or private-profile access accompany
+this transition slice. Default-core combined-tree checks, native schema fixture
+update, service replacement/state/deletion orchestration, archive relocation and
+product/live acceptance remain separate gates. No full-workspace or model tests
+were run for this checkpoint.

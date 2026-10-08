@@ -34,7 +34,11 @@ fn stamp(file: &File) -> PublicationResult<Vec<u64>> {
     }
 }
 impl FileEvidence {
-    fn read(root: &SourceRoot, path: PathBuf, bytes: u32) -> PublicationResult<(Self, Vec<u8>)> {
+    pub(super) fn read(
+        root: &SourceRoot,
+        path: PathBuf,
+        bytes: u32,
+    ) -> PublicationResult<(Self, Vec<u8>)> {
         let mut file = root
             .open_optional_file_relative(&path)?
             .ok_or(PublicationError::Incomplete)?;

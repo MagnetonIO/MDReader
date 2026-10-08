@@ -9,6 +9,8 @@ pub enum Error {
     Conflict,
     #[error("Reading position is outside this revision")]
     InvalidPosition,
+    #[error("Device state generation reached its supported limit")]
+    StateLimit,
     #[error("Device library is full (1,000 documents or 64 MiB), including interrupted imports")]
     Quota,
     #[error("Device directory identity changed or is unavailable")]
