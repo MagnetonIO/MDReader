@@ -36,11 +36,7 @@ impl SyncStore<'_> {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         graph_schema::require(&tx)?;
-        let dependencies = dependencies_on(&tx, scope, operation)?;
-        let expected = dependencies
-            .iter()
-            .find(|d| d.blob == blob)
-            .ok_or(SyncError::NotReady)?;
+        let expected = super::graph_read::dependency_on(&tx, scope, operation, blob)?;
         validate_receipt(scope, operation, blob, expected.envelope_utf8.len(), body)?;
         let receipt = std::str::from_utf8(body).map_err(|_| SyncError::Invalid)?;
         let previous: Option<String> = tx.query_row("SELECT receipt FROM mdreader_sync_graph_dependencies WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4 AND blob=?5 AND (receipt IS NULL OR length(CAST(receipt AS BLOB))<=4096)",params![scope.account_digest,scope.library_id,scope.device_id,operation,blob], |r|r.get(0))?;
@@ -332,5 +328,7 @@ pub(super) fn require_published_on(
     if has_root(db, scope, operation)? && !root_uploaded_on(db, scope, operation)? {
         return Err(SyncError::NotReady);
     }
-    require_uploaded_on(db, scope, operation)
+    // root_uploaded_on already checks every dependency once. An absent graph is
+    // legacy, while has_root rejects orphan dependencies before this fast path.
+    Ok(())
 }

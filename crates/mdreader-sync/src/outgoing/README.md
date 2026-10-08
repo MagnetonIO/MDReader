@@ -79,3 +79,27 @@ receipt-proven self-echo to the same native document (without duplicate import),
 dirty baseline CAS, conflict/tombstone fencing and pin/position preservation.
 Product recovery/mobile/live issuer acceptance and bounded orphan cleanup remain
 separate gates. Do not expose selection until those associations are verified.
+
+## Linear dependency receipt checkpoint (2026-10-08)
+
+Per-chunk receipt admission previously loaded/hashed every sibling body for each
+receipt, multiplying graph work by up to 72 chunks under owner access. Admission
+now validates only the exact addressed row (at most 512KiB), its scoped graph
+membership, ordinal, context, envelope key, ciphertext SHA256/byte count and prior
+immutable receipt. Root publication and commit still verify the whole graph and
+all receipts. The commit gate no longer repeats the same complete graph proof.
+No receipt status string substitutes for those identity/integrity checks.
+
+The existing receipt regression now corrupts a sibling context: admitting the
+valid target receipt succeeds, while full root publication fails until that
+sibling is restored. Restoring only the old full-graph-per-receipt call produced
+expected RED in 0.15s (compile 2.29s). Exact final source restored, the same three
+SQLite cases passed in 0.52s (compile 1.65s); the existing actual HTTPS Worker
+fixture passed in 2.12s; strict sync/native-authority all-target Clippy passed in
+1.92s. Commands, synthetic fixture and artifact are the same as above. No timing
+benchmark or release-performance claim is inferred from these behavioral checks.
+
+Service association and new borrowed graph-proof seams were excluded from this
+compiled checkpoint. They remain separate source work with no QueueDocument RPC
+or UI enabled. Full graph verification still has a bounded aggregate ciphertext
+read/hash cost at publication; it is not file/image/model or network work.

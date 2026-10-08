@@ -8,7 +8,7 @@ use crate::{
     },
     ReaderStore, SourceRoot,
 };
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::{marker::PhantomData, path::Path, sync::Arc};
 
 pub struct CurrentPlan {
@@ -185,4 +185,32 @@ pub(super) fn verify_live(
         .assets
         .verify_current_assets_in(tx, &current.plan.asset_state)?;
     Ok(())
+}
+
+/// Read-only fence for publishing a selected snapshot's external association in
+/// the same borrowed owner transaction. Does not change pin/position/generation,
+/// regrant a source, or commit. The caller rolls back the whole transaction on
+/// error and invokes this again immediately before committing its own records.
+pub fn revalidate_current(
+    tx: &Transaction<'_>,
+    guard: &CurrentGuard<'_>,
+    current: &VerifiedCurrent,
+) -> PublicationResult<()> {
+    // Preparation already adopted the current namespace. Refuse callback changes
+    // to old/missing markers before guard_current's compatibility initializer can
+    // run. With v2 pinned, that validator checks the complete exact table layouts,
+    // singleton, rows and state, and has no schema-write path.
+    let version: Option<i64> = tx
+        .query_row(
+            "SELECT version FROM device_document_schema_v1 WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| device::Error::InvalidSchema)?;
+    match version {
+        Some(2) => verify_live(tx, guard, current),
+        Some(_) => Err(device::Error::UnsupportedSchema.into()),
+        None => Err(device::Error::InvalidSchema.into()),
+    }
 }

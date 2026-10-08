@@ -30,7 +30,10 @@ pub use publish::{publish_new, revalidate_publication, with_publication, Publica
 #[cfg(feature = "device-assets")]
 mod current;
 #[cfg(feature = "device-assets")]
-pub use current::{prepare_current, with_transition, CurrentGuard, CurrentPlan, VerifiedCurrent};
+pub use current::{
+    prepare_current, revalidate_current, with_transition, CurrentGuard, CurrentPlan,
+    VerifiedCurrent,
+};
 #[cfg(feature = "device-assets")]
 mod state_change;
 #[cfg(feature = "device-assets")]

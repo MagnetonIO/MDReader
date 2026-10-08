@@ -78,7 +78,8 @@ import { StatusBar } from './StatusBar.js';
 import { ShortcutSheet } from './ShortcutSheet.js';
 import { SettingsSheet } from './SettingsSheet.js';
 import { ProviderReaderDialog } from './ProviderReaderDialog.js';
-import { ArchivedReviewsPanel, type ReviewTarget } from '../reviews/ArchivedReviewsPanel';
+import { ArchivedReviewsPanel } from '../reviews/ArchivedReviewsPanel';
+import { useArchivedReviewSelection } from '../reviews/useArchivedReviewSelection';
 import type { ProviderReaderReference } from '../platform/providers.js';
 import { LibraryDocumentPane } from './LibraryDocumentPane.js';
 import type { ShortcutGroup } from './ShortcutSheet.js';
@@ -157,8 +158,6 @@ export function AppShell() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
-  const [archivedReviewTarget, setArchivedReviewTarget] = useState<ReviewTarget | null>(null);
-  const [archivedReviewReturn, setArchivedReviewReturn] = useState<ProviderReaderReference | null>(null);
   const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
@@ -183,6 +182,8 @@ export function AppShell() {
   }, []);
   const [cloudSaving, setCloudSaving] = useState(false);
   const [canonicalDocument, setCanonicalDocument] = useState<CanonicalReaderReference | null>(null);
+  const archivedReviews = useArchivedReviewSelection(canonicalDocument);
+  const archivedReviewTarget = archivedReviews.target;
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
   const legacy = useLegacyRecords(activeTabId, semanticWorkspaceGeneration);
   const {
@@ -2020,6 +2021,7 @@ export function AppShell() {
                 reference={canonicalDocument}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
+                onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
                 onClose={() => setCanonicalDocument(null)}
               />
             ) : libraryDocument ? (
@@ -2109,7 +2111,7 @@ export function AppShell() {
             {activeTab ? (
               <InspectorRail
                 adapter={semantics}
-                onArchivedReviews={activeDocPath ? () => { setArchivedReviewReturn(null); setArchivedReviewTarget({ kind: 'local', path: activeDocPath, generation: semanticWorkspaceGeneration }); } : undefined}
+                onArchivedReviews={activeDocPath ? () => archivedReviews.openLocal(activeDocPath, semanticWorkspaceGeneration) : undefined}
                 open={inspectorOpen}
                 onToggle={() => useSettingsStore.getState().toggleInspector()}
                 selection={inspected}
@@ -2180,8 +2182,30 @@ export function AppShell() {
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
-      {providerDocument ? <ProviderReaderDialog reference={providerDocument} sourceKind={providerDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'} backend={providerDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend} onArchivedReviews={providerDocument.sourceId.startsWith('provider:') ? (reference) => { setArchivedReviewReturn(reference); setProviderDocument(null); setArchivedReviewTarget({ kind: 'exact', reference }); } : undefined} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
-      {archivedReviewTarget ? <ArchivedReviewsPanel current={archivedReviewTarget} onClose={() => { setArchivedReviewTarget(null); if (archivedReviewReturn) setProviderDocument(archivedReviewReturn); }} /> : null}
+      {providerDocument ? (
+        <ProviderReaderDialog
+          reference={providerDocument}
+          sourceKind={providerDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
+          backend={providerDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
+          onArchivedReviews={providerDocument.sourceId.startsWith('provider:') ? (reference) => {
+            archivedReviews.openProvider(reference);
+            setProviderDocument(null);
+          } : undefined}
+          onClose={() => {
+            setProviderDocument(null);
+            setSettingsOpen(providerReturnToSettings);
+          }}
+        />
+      ) : null}
+      {archivedReviewTarget ? (
+        <ArchivedReviewsPanel
+          current={archivedReviewTarget}
+          onClose={() => {
+            const reference = archivedReviews.close();
+            if (reference) setProviderDocument(reference);
+          }}
+        />
+      ) : null}
       {lensSheetOpen ? (
         <LensSheet
           adapter={semantics}

@@ -5,10 +5,13 @@ mod state;
 #[cfg(all(test, unix))]
 mod tests;
 use mdreader_capture::{CaptureError, FrozenSpool, Limits, Spool};
+#[cfg(unix)]
+use mdreader_core::{LibraryIdentity, ReaderError};
 use mdreader_core::{ReaderStore, SourceRoot};
 pub use state::EffectLease;
+#[cfg(unix)]
+use std::fs::File;
 use std::{
-    fs::File,
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -31,21 +34,30 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Coordinator {
     owner: Arc<Mutex<ReaderStore>>,
     root: SourceRoot,
-    library: File,
+    #[cfg(unix)]
+    library: LibraryIdentity,
     namespace: namespace::Namespace,
     shared: Arc<state::Shared>,
 }
 impl Coordinator {
     pub fn new(owner: Arc<Mutex<ReaderStore>>, directory: &Path) -> Result<Self> {
         let root = SourceRoot::capture(directory.to_path_buf()).map_err(|_| Error::Conflict)?;
-        let library = root
-            .open_optional_file_relative(Path::new("library.sqlite"))
-            .map_err(|_| Error::Conflict)?
-            .ok_or(Error::Conflict)?;
+        // Ask the actual opened owner for its original handle-bound proof.
+        // Never adopt a replacement merely because its pathname is unchanged.
+        #[cfg(unix)]
+        let library = {
+            let store = owner.try_lock().map_err(|_| Error::Busy)?;
+            store.library_identity().map_err(|error| match error {
+                ReaderError::Conflict => Error::Conflict,
+                _ => Error::Unavailable,
+            })?
+        };
+        #[cfg(unix)]
+        library.verify_at(&root.path).map_err(|_| Error::Conflict)?;
+        // Ordinary non-Unix service startup keeps its prior filename association;
+        // it never issues a preservation certificate (freeze is Unsupported).
+        #[cfg(not(unix))]
         {
-            // Filename association is not a retained SQLite-open identity. If
-            // replacement raced ReaderStore::open before this constructor, the
-            // reader-daemon participant still needs its own verified proof.
             let mut store = owner.try_lock().map_err(|_| Error::Busy)?;
             let actual: String = store
                 .with_library_connection(|connection| {
@@ -72,6 +84,7 @@ impl Coordinator {
         let coordinator = Self {
             owner,
             root,
+            #[cfg(unix)]
             library,
             namespace,
             shared: Arc::new(state::Shared {
@@ -108,24 +121,15 @@ impl Coordinator {
     fn verify_root(&self) -> Result<()> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         self.namespace.verify()?;
-        let named = self
-            .root
+        #[cfg(not(unix))]
+        self.root
             .open_optional_file_relative(Path::new("library.sqlite"))
             .map_err(|_| Error::Conflict)?
             .ok_or(Error::Conflict)?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let expected = self.library.metadata().map_err(|_| Error::Unavailable)?;
-            let actual = named.metadata().map_err(|_| Error::Unavailable)?;
-            if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
-                return Err(Error::Conflict);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (&self.library, named);
-        }
+        self.library
+            .verify_at(&self.root.path)
+            .map_err(|_| Error::Conflict)?;
         Ok(())
     }
     /// Blocking bounded wait; call on a service preservation worker, never an

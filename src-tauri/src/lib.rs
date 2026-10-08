@@ -4,7 +4,7 @@
 //! mobile entry points (P6) can share `run()`. The tauri-specta [`Builder`] is
 //! constructed once in [`specta_builder`] and reused by both the running app
 //! and the headless `export_bindings_up_to_date` test, guaranteeing the committed
-//! `apps/mdreader/ui/src/bindings.ts` always matches the live command surface.
+//! `ui/src/bindings.ts` always matches the live command surface.
 
 #[cfg(all(feature = "direct-updater", feature = "e2e-build"))]
 compile_error!("the direct updater cannot be compiled into the isolated E2E application");
@@ -46,7 +46,6 @@ mod federation;
 mod file_lock;
 mod library;
 mod library_query;
-mod mapping;
 mod mobile_assets;
 mod mobile_assets_commands;
 mod mobile_enterprise;
@@ -202,11 +201,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             overlay::approve_fact,
             overlay::reject_fact,
             overlay::check_constraints,
-            mapping::list_mappings,
-            mapping::inspect_mapping,
-            mapping::compose_mappings,
-            mapping::diff_schema_versions,
-            mapping::inspect_migration,
             updater::updater_available,
             updater::check_for_update,
             updater::install_update,
@@ -250,11 +244,6 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         overlay::describe_schema,
         overlay::inspect_span,
         overlay::check_constraints,
-        mapping::list_mappings,
-        mapping::inspect_mapping,
-        mapping::compose_mappings,
-        mapping::diff_schema_versions,
-        mapping::inspect_migration,
     ])
 }
 
@@ -741,7 +730,6 @@ mod tests {
             ("search.rs", include_str!("search.rs")),
             ("federation.rs", include_str!("federation.rs")),
             ("overlay.rs", include_str!("overlay.rs")),
-            ("mapping.rs", include_str!("mapping.rs")),
             ("mobile_enterprise.rs", include_str!("mobile_enterprise.rs")),
             ("mobile_reader.rs", include_str!("mobile_reader.rs")),
             ("reader_workload.rs", include_str!("reader_workload.rs")),
