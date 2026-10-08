@@ -40,7 +40,7 @@ describe('Settings category lifecycle', () => {
     expect(backend.diagnosticsInfo).toHaveBeenCalledOnce();
   });
 
-  it('excludes hidden sections and closed migration controls from both ends of the focus loop', async () => {
+  it('excludes hidden sections and closed disclosures from both ends of the focus loop', async () => {
     mount();
     await screen.findByText('Stored locally on this device');
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
@@ -53,7 +53,15 @@ describe('Settings category lifecycle', () => {
     hiddenControl.style.display = '';
     hiddenControl.style.visibility = 'hidden';
     expect(visibleSettingsControls(dialog)).not.toContain(hiddenControl);
+    const disclosure = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Closed diagnostic details';
+    const hiddenDetail = document.createElement('button');
+    hiddenDetail.textContent = 'Action inside closed details';
+    disclosure.append(summary, hiddenDetail); dialog.append(disclosure);
     const controls = visibleSettingsControls(dialog);
+    expect(controls).not.toContain(hiddenDetail);
+    expect(controls).toContain(summary);
     const last = controls.at(-1)!;
     expect(last.tagName).toBe('SUMMARY');
     last.focus();

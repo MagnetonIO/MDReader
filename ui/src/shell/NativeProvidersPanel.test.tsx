@@ -26,16 +26,21 @@ test('explicit Picker and App Folder actions pass only the displayed narrow sele
   const api = backend(snapshot); api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-source', enabled: true, replayed: false }));
   render(<NativeProvidersPanel backend={api} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Choose Google Drive files' }));
-  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null));
+  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, false));
   await screen.findByText(/selected source is connected/);
   fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/Notes' } });
   fireEvent.click(screen.getByRole('checkbox', { name: 'Include subfolders' }));
   fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox App Folder' }));
-  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('dropbox', { path: '/Notes', recursive: true }));
+  await waitFor(() => expect(api.connect).toHaveBeenCalledWith('dropbox', { path: '/Notes', recursive: true }, false));
   await screen.findByText(/selected source is connected/);
   fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/../outside' } });
   expect((screen.getByRole('button', { name: 'Connect Dropbox App Folder' }) as HTMLButtonElement).disabled).toBe(true);
   expect(api.connect).toHaveBeenCalledTimes(2);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox App Folder path' }), { target: { value: '/Notes' } });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Allow editing' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox App Folder' }));
+  await waitFor(() => expect(api.connect).toHaveBeenLastCalledWith('dropbox', { path: '/Notes', recursive: true }, true));
+  expect(api.connect).toHaveBeenCalledTimes(3);
 });
 test('metadata enumeration never claims indexed bodies and cached reads use the exact core reference', async () => {
   const selected = source(); selected.coverage = { kind: 'metadata_complete_selected', observedAtMs: 10 };
