@@ -20,11 +20,20 @@ export function BackupSettings() {
   const [selection, setSelection] = useState<ImportReply | null>(null);
   const mounted = useRef(true);
   const running = useRef(false);
+  const importButton = useRef<HTMLButtonElement>(null);
+  const hadSelection = useRef(false);
   const held = useSyncExternalStore(editorAdmission.subscribe, editorAdmission.denied, () => false);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  useEffect(() => {
+    if (selection) hadSelection.current = true;
+    else if (hadSelection.current) {
+      hadSelection.current = false;
+      importButton.current?.focus();
+    }
+  }, [selection]);
   async function backup() {
     if (running.current || held) return;
     running.current = true;
@@ -65,7 +74,7 @@ export function BackupSettings() {
       <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void backup(); }}>
         Back up reader data
       </button>
-      <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('preview'); }}>Import reader data…</button>
+      <button ref={importButton} type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('preview'); }}>Import reader data…</button>
       <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('resume'); }}>Continue an import…</button>
     </div>
     {busy ? <p role="status">Choose a folder in the native dialog, then wait for preparation to finish.</p> : null}
