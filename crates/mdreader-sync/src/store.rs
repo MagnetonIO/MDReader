@@ -4,6 +4,8 @@ use crate::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+mod application;
+
 const VERSION: i64 = 1;
 const MAX_RECEIPT_BYTES: usize = 4096;
 const MAX_PAGE_BYTES: usize = 256 * 1024;
@@ -710,30 +712,6 @@ impl<'a> SyncStore<'a> {
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter().map(parse_remote).collect()
-    }
-    /// The owner applies document/reading state with this same SQLite transaction.
-    /// Callback failure rolls back application writes and the applied cursor together.
-    pub fn mark_applied(
-        &mut self,
-        through: u64,
-        apply: impl FnOnce(&Transaction<'_>) -> Result<()>,
-    ) -> Result<CursorState> {
-        validate_sequence(through, true)?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = cursors_on(&transaction, &self.scope)?;
-        if through > current.received {
-            return Err(SyncError::NotReady);
-        }
-        if through <= current.applied {
-            transaction.commit()?;
-            return Ok(current);
-        }
-        apply(&transaction)?;
-        transaction.execute("UPDATE mdreader_sync_cursors SET applied=?1 WHERE account=?2 AND library=?3 AND device=?4",params![through,self.scope.account_digest,self.scope.library_id,self.scope.device_id])?;
-        transaction.commit()?;
-        self.cursors()
     }
     pub fn confirm_cursor_ack(
         &mut self,

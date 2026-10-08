@@ -7,17 +7,18 @@ use std::sync::{
 
 pub(super) struct Lease {
     pub(super) epoch: u64,
+    pub(super) token: uuid::Uuid,
     pub(super) scope: SyncScope,
-    valid: AtomicBool,
+    pub(super) valid: AtomicBool,
 }
-struct State {
-    epoch: u64,
+pub(super) struct State {
+    pub(super) epoch: u64,
     active: Option<Weak<Lease>>,
 }
 /// Native owner shares this exact binding barrier with TransportOwner. No renderer handles it.
 pub struct SessionController {
-    binding: Arc<RwLock<Option<SyncScope>>>,
-    state: Mutex<State>,
+    pub(super) binding: Arc<RwLock<Option<SyncScope>>>,
+    pub(super) state: Mutex<State>,
 }
 impl std::fmt::Debug for SessionController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,6 +88,7 @@ impl SessionController {
         state.epoch = next;
         let lease = Arc::new(Lease {
             epoch: next,
+            token: uuid::Uuid::new_v4(),
             scope: scope.clone(),
             valid: AtomicBool::new(true),
         });
