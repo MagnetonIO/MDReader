@@ -6,11 +6,18 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 mod admission;
 mod application;
+pub use application::AppliedAdvance;
 mod graph;
 mod graph_proof;
 mod graph_read;
-pub use graph_proof::{graph_entry_in, outbox_revision_in, published_graph_in};
+mod graph_revalidate;
+pub use graph_proof::{
+    graph_entry_in, outbox_revision_in, published_graph_in, published_graph_proof_in,
+    PublishedGraphProof,
+};
 mod graph_schema;
+mod outbox_read;
+use outbox_read::entry_on;
 #[cfg(test)]
 mod graph_tests;
 mod upload;
@@ -654,55 +661,6 @@ impl<'a> SyncStore<'a> {
     }
 }
 
-type RawOutbox = (String, Option<Vec<u8>>, String, Option<String>);
-fn entry_on(
-    connection: &Connection,
-    scope: &SyncScope,
-    operation_id: &str,
-) -> Result<Option<OutboxEntry>> {
-    // Read SQLite-owned byte lengths before allocating any durable text/body.
-    // A corrupt oversized row is distinct from a missing operation.
-    let row: Option<Result<RawOutbox>> = connection.query_row(
-        "SELECT operation,envelope,state,receipt,length(CAST(operation AS BLOB)),length(CAST(envelope AS BLOB)),length(CAST(state AS BLOB)),length(CAST(receipt AS BLOB)) FROM mdreader_sync_outbox WHERE account=?1 AND library=?2 AND device=?3 AND operation_id=?4",
-        params![scope.account_digest,scope.library_id,scope.device_id,operation_id], |r| {
-            if r.get::<_,usize>(4)? > 4096
-                || r.get::<_,Option<usize>>(5)?.is_some_and(|n| n > crate::crypto::MAX_ENVELOPE_BYTES)
-                || r.get::<_,usize>(6)? > 32
-                || r.get::<_,Option<usize>>(7)?.is_some_and(|n| n > MAX_RECEIPT_BYTES) {
-                return Ok(Err(SyncError::Bounds));
-            }
-            Ok(Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
-        }).optional()?;
-    let row = row.transpose()?;
-    row.map(|(op, envelope, state, receipt)| {
-        let operation: CommitOperation = parse(op.as_bytes(), 4096)?;
-        operation.validate()?;
-        validate_encrypted_body(&operation, envelope.as_deref())?;
-        let state = OutboxState::parse(&state)?;
-        let receipt = receipt
-            .map(|r| {
-                let mut receipt: CommitReceipt = parse(r.as_bytes(), MAX_RECEIPT_BYTES)?;
-                receipt.validate()?;
-                if receipt.operation_id != operation.operation_id
-                    || receipt.revision_id != operation.revision_id
-                {
-                    return Err(SyncError::Schema);
-                }
-                Ok(receipt)
-            })
-            .transpose()?;
-        if (state == OutboxState::Acknowledged) != receipt.is_some() {
-            return Err(SyncError::Schema);
-        }
-        Ok(OutboxEntry {
-            operation,
-            envelope_utf8: envelope,
-            state,
-            receipt,
-        })
-    })
-    .transpose()
-}
 fn validate_encrypted_body(operation: &CommitOperation, envelope: Option<&[u8]>) -> Result<()> {
     if operation.deleted {
         if envelope.is_some() {

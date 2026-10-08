@@ -1,5 +1,7 @@
 //! Applied publication and its final authority fence share one transaction.
 use super::*;
+mod transaction;
+pub use transaction::AppliedAdvance;
 
 impl SyncStore<'_> {
     /// Callback failure rolls back owner writes and the applied cursor together.
