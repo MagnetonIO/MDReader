@@ -1,5 +1,5 @@
 /** Native Settings composition; backend operations retain their existing authority checks. */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AccountSyncPanel } from '../features/account-sync/AccountSyncPanel.js';
 import { AgentCapturePanel } from './AgentCapturePanel.js';
 import { IndexingPanel } from './IndexingPanel.js';
@@ -33,6 +33,9 @@ export function SettingsSheet(props: SettingsSheetProps) {
     onOpenProviderDocument, onLibraryChanged, localRoot } = controller;
   const [category, setCategory] = useState<Category>('appearance');
   const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [category]);
   const confirming = confirmClear || confirmForget !== null;
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -61,8 +64,6 @@ export function SettingsSheet(props: SettingsSheetProps) {
 
   function selectCategory(next: Category) {
     setCategory(next);
-    // Start each section at its heading; never scroll the main reader behind Settings.
-    if (contentRef.current) contentRef.current.scrollTop = 0;
   }
 
   return (
