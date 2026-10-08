@@ -116,3 +116,59 @@ network, installed profile or private source was used. No package/lock changes.
 Actual packaged desktop/device and end-to-end sync acceptance remain separate
 gates. Relative device-document links, image import/editing and preservation
 composition with all other producers are not implemented by this slice.
+
+## Combined strict-preferences/device checkpoint
+
+The normal merge of native integration `5429193` produced clean source HEAD
+`6d8aa1d98f56a77f1050ff634715e0837deda0fc`. No merge conflicts occurred.
+AppShell retained both the extracted persistence lifecycle and the exact inline
+device route; native collectors retained preferences and device commands.
+
+One combined native artifact was compiled using the existing CatDB target cache.
+The first invocation failed because the shared cache reused a core artifact from
+another worktree that lacked this branch's device APIs. Cargo's dependency paths
+were relative and its cached input timestamps were newer than the branch's
+unchanged inputs. Refreshing only `crates/mdreader-core/src/lib.rs`'s timestamp
+forced the correct core compilation, without changing bytes, cleaning the cache
+or changing dependencies. The coherent warm build then completed in **34.60 s**,
+with the same seven inherited legacy dead-code warnings. Shared cache consumers
+must not infer source provenance from an artifact filename alone.
+
+Observed on the freshly built combined artifact:
+
+- `profile_transition::`: **7 passed** (0.24 s).
+- Exact device input/projection regression: **1 passed**.
+- Existing UI-thread structural check: **1 passed** (0.28 s). The new device
+  command is independently declared async and delegates blocking IPC off-thread.
+- Actual binding generator: **1 passed** (0.04 s), with **no generated delta**.
+- Combined UI: **57 affected cases passed**: editor integration 42, persistence
+  7, related-rail persistence 2, device reader 2 and composed catalog app 4.
+  The first run passed 48 and failed nine older editor fixtures: the newly
+  mounted catalog/provider boundaries were unmocked, and Settings source actions
+  were queried while their category was hidden. The fixture now supplies empty
+  read-only boundary replies and explicitly navigates Library & sources. All 42
+  editor cases then passed (5.49 s total), including failed hydration, native
+  close, preference failure and unsaved-editor behavior. No product errors or
+  assertions were suppressed; no blanket alert filtering was added.
+- Combined app typecheck and scoped ESLint: **passed**.
+
+Native commands, serialized with two Cargo jobs:
+
+```sh
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/Users/mlong/Library/Caches/CatDB/cargo-target-v1 cargo test --locked --offline -p mdreader-app --lib profile_transition:: -- --nocapture
+/Users/mlong/Library/Caches/CatDB/cargo-target-v1/debug/deps/mdreader_app_lib-a92063a7fbc15c69 reader_device::tests::closed_read_inputs_and_projection_do_not_expose_paths_or_native_handles --exact --nocapture
+/Users/mlong/Library/Caches/CatDB/cargo-target-v1/debug/deps/mdreader_app_lib-a92063a7fbc15c69 tests::no_command_runs_on_the_ui_thread --exact --nocapture
+/Users/mlong/Library/Caches/CatDB/cargo-target-v1/debug/deps/mdreader_app_lib-a92063a7fbc15c69 tests::export_bindings_up_to_date --exact --nocapture
+```
+
+The UI run used existing cached Node entry points from `ui/`:
+
+```sh
+node node_modules/vitest/vitest.mjs run src/shell/persistence.test.ts src/shell/edit-integration.test.tsx src/shell/related-rail-persistence.test.tsx src/features/device-reader/DeviceReader.test.tsx src/features/catalog/App.catalog.test.tsx
+DEBUG_PRINT_LIMIT=500 node node_modules/vitest/vitest.mjs run src/shell/edit-integration.test.tsx
+node node_modules/typescript/bin/tsc --noEmit
+node node_modules/eslint/bin/eslint.js src/shell/AppShell.tsx src/shell/use-app-persistence.ts src/shell/persistence.ts src/shell/persistence-lifecycle.ts src/shell/profile-transition-bridge.ts src/shell/legacy-persistence.ts src/shell/persistence.test.ts src/shell/edit-integration.test.tsx src/shell/related-rail-persistence.test.tsx src/features/device-reader src/features/catalog/App.catalog.test.tsx src/features/catalog/CatalogSidebar.tsx src/features/catalog/backend.ts src/features/reader/CanonicalReader.tsx src/features/reader/contracts.ts
+```
+
+No model, network, packaging, installed profile or full native suite was used.
+The previously listed packaged, sync and preservation composition gates remain.

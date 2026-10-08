@@ -118,6 +118,22 @@ const h = vi.hoisted(() => ({
   }),
 }));
 
+// These editor scenarios do not select canonical/provider documents. Isolate the
+// newly mounted read-only listing boundaries instead of manufacturing unrelated
+// service-unavailable alerts alongside the conflict being asserted below.
+vi.mock('../features/catalog/backend', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../features/catalog/backend')>();
+  return { ...actual, catalogBackend: { ...actual.catalogBackend,
+    list: vi.fn(async () => ({ operation: 'list', sources: [], providerFailure: null, localFailure: null })),
+  } };
+});
+vi.mock('../platform/providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform/providers')>();
+  return { ...actual, nativeProvidersBackend: { ...actual.nativeProvidersBackend,
+    state: vi.fn(async () => ({ availability: [], sources: [], pendingAdmissions: [], error: null })),
+  } };
+});
+
 vi.mock('../platform/fs.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/fs.js')>();
   return {
@@ -424,6 +440,7 @@ async function openDirtyDoc() {
 
 async function confirmActiveSourceForget() {
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
   await screen.findByText('Workspace');
   fireEvent.click(screen.getByRole('button', { name: 'Forget Workspace' }));
   fireEvent.click(screen.getByRole('button', { name: 'Forget source' }));
@@ -1152,6 +1169,7 @@ describe('library source identity follows the committed backend epoch', () => {
     h.pickedPath = '/ws-b';
     h.listGate = deferred();
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
     await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-b'));
@@ -1373,6 +1391,7 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     await confirmActiveSourceForget();
     await waitFor(() => expect(useSourcesStore.getState().root).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
 
@@ -1386,6 +1405,7 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     h.watch.mockClear();
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
 
