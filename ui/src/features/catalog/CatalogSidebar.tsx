@@ -237,7 +237,7 @@ export function CatalogSidebar({
           <div className="reader-catalog__source" key={source.catalogId}>
             <strong>{source.name}</strong>
             <small>
-              {source.kind === 'device' ? 'Device library' : source.kind === 'local' ? 'Folder'
+              {source.kind === 'capture' ? 'Agent captures' : source.kind === 'device' ? 'Device library' : source.kind === 'local' ? 'Folder'
                 : source.kind === 'google_drive' ? 'Google Drive'
                   : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
               {' · '}{coverageLabel(source.coverage)}

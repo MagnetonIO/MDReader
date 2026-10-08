@@ -2,6 +2,9 @@ import { act, cleanup, render, screen, fireEvent, waitFor } from '@testing-libra
 import { afterEach, expect, test, vi } from 'vitest';
 
 import App from './App';
+import * as fs from './platform/fs';
+import { deviceReaderBackend } from './features/device-reader/backend';
+import { deviceReadingStateBackend } from './features/device-reader/reading-state-backend';
 import { detectMac } from './keymap/registry';
 import { useTabsStore } from './stores/tabs';
 import { useSourcesStore } from './stores/sources';
@@ -13,6 +16,7 @@ import { useReaderHistoryStore } from './features/reader-history/store';
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   useReaderHistoryStore.getState().reset();
   useTabsStore.getState().reset();
   useSettingsStore.getState().reset();
@@ -155,4 +159,32 @@ test('flushes the latest session synchronously when the window is going away', a
   expect(data.tabs).toBeDefined();
   if (!data.tabs) throw new Error('The changed legacy tabs must be included in the close patch');
   expect(data.tabs.map((tab) => tab.docRef.path)).toContain('/wsX/note.md');
+});
+
+test('search works with no folder and opens a service-owned device UUID through the exact device reader', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  const documentId = '00000000-0000-4000-8000-000000000001';
+  const sourceId = 'a'.repeat(64); const revision = 'b'.repeat(64);
+  const search = vi.fn(async () => ({ hits: [{ chunkId: 'device-chunk', documentId, deviceDocumentId: documentId,
+    sourceKind: 'device' as const, sourceId, revision, path: 'document.md', filePath: 'document.md', name: 'Synced note',
+    headingPath: [], startLine: 1, endLine: 1, score: 1, rrfScore: 1, boosts: { title: 0, path: 0, recency: 0, graph: 0 },
+    lexRank: 1, semRank: null, snippet: 'Synchronized note', mtime: 1, explain: null }], semanticUnavailable: null }));
+  vi.spyOn(fs, 'makeSearchAdapter').mockReturnValue({ search, related: vi.fn(async () => []) });
+  const localRead = vi.spyOn(fs, 'readDoc');
+  const read = vi.spyOn(deviceReaderBackend, 'read').mockImplementation(async (reference) => ({ operation: 'read_document',
+    ...reference, markdown: '# Exact synced note', lineStart: 1, lineEnd: 1 }));
+  vi.spyOn(deviceReaderBackend, 'manifest').mockResolvedValue(null);
+  vi.spyOn(deviceReadingStateBackend, 'read').mockResolvedValue({ receipt: { documentId, sourceId, revision },
+    pinned: false, line: 1, lineEnd: 1, generation: '0' });
+  render(<App />);
+  await act(async () => {});
+  expect(useSourcesStore.getState().root).toBeNull();
+  act(() => modKeyDown('k'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'synced' } });
+  fireEvent.click(await screen.findByRole('option'));
+  await screen.findByRole('heading', { name: /Exact synced note/ });
+  expect(search).toHaveBeenCalled();
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({ documentId, sourceId, revision, path: 'document.md' }));
+  expect(localRead).not.toHaveBeenCalled();
+  expect(useSourcesStore.getState().root).toBeNull();
 });

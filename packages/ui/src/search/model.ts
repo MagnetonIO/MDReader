@@ -37,10 +37,13 @@ export interface SearchHit {
   chunkId: string;
   /** Source grant that produced the evidence, when supplied by the transport. */
   sourceId?: string;
+  /** Owner-issued device UUID, never derived from a cache pathname. */
+  deviceDocumentId?: string;
+  sourceKind?: 'local' | 'provider' | 'capture' | 'device';
   /** Content revision binding the snippet and line range to the document. */
   revision?: string;
   documentId: string;
-  /** Absolute path the reader opens. */
+  /** Local native path or an exact source-relative canonical locator. */
   path: string;
   /** Source-relative stored path (the breadcrumb's file segment). */
   filePath: string;
@@ -82,10 +85,13 @@ export interface RelatedComponents {
 /** One related document, transport-normalized. */
 export interface RelatedHit {
   sourceId?: string;
+  /** Owner-issued device UUID, never derived from a cache pathname. */
+  deviceDocumentId?: string;
+  sourceKind?: 'local' | 'provider' | 'capture' | 'device';
   revision?: string;
   line?: number;
   documentId: string;
-  /** Absolute path the reader opens. */
+  /** Local native path or an exact source-relative canonical locator. */
   path: string;
   /** Source-relative stored path. */
   filePath: string;

@@ -46,3 +46,16 @@ test('restoring a saved position waits for exact receipt verification and refuse
   expect(screen.queryByRole('heading', { name: /Different revision/ })).toBeNull();
   expect(onPosition).not.toHaveBeenCalled();
 });
+
+test('an exact capture read disables local editing and archive comparison even after history restore', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'outputs/plan.md', revision: 'b'.repeat(64), title: 'Captured plan' };
+  const backend: CanonicalReaderBackend = { readDocument: vi.fn(async () => ({ operation: 'read_document' as const,
+    ...reference, sourceKind: 'capture' as const, markdown: '# Visible plan', lineStart: 1, lineEnd: 1 })) };
+  const edit = vi.fn(); const reviews = vi.fn();
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} onEdit={edit} onArchivedReviews={reviews} />);
+  await screen.findByRole('heading', { name: /Visible plan/ });
+  expect(screen.queryByRole('button', { name: 'Edit local file' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
+  expect(screen.getByText(/exact captured visible-output revision/)).toBeTruthy();
+  expect(edit).not.toHaveBeenCalled(); expect(reviews).not.toHaveBeenCalled();
+});

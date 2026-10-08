@@ -847,7 +847,7 @@ export function AppShell() {
     try {
       const reference = providerTarget(target);
       if (reference) {
-        if (opts.background) { toast('Cloud results currently open in the foreground. Press Enter to read this exact revision.'); return; }
+        if (opts.background) { toast('Service-owned results currently open in the foreground. Press Enter to read this exact revision.'); return; }
         openCatalogDocument(reference);
         return;
       }

@@ -50,6 +50,8 @@ export type PaletteMode = 'search' | 'file';
 export interface HitTarget {
   /** Canonical source and exact revision, when supplied by the transport. */
   sourceId?: string;
+  deviceDocumentId?: string;
+  sourceKind?: 'local' | 'provider' | 'capture' | 'device';
   revision?: string;
   path: string;
   name: string;
@@ -448,7 +450,9 @@ export function SearchPalette({
       for (const { file } of fileMatches) map.set(file.path.toLowerCase(), { file });
     } else if (isRelated) {
       for (const hit of relatedShown) {
-        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) });
+        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
+          ...(hit.deviceDocumentId != null ? { deviceDocumentId: hit.deviceDocumentId } : {}),
+          ...(hit.sourceKind != null ? { sourceKind: hit.sourceKind } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) });
       }
     } else {
       for (const hit of searchHits) {
@@ -456,6 +460,8 @@ export function SearchPalette({
           path: hit.path,
           name: hit.name,
           ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
+          ...(hit.deviceDocumentId != null ? { deviceDocumentId: hit.deviceDocumentId } : {}),
+          ...(hit.sourceKind != null ? { sourceKind: hit.sourceKind } : {}),
           ...(hit.revision != null ? { revision: hit.revision } : {}),
           line: hit.startLine,
           endLine: hit.endLine,
@@ -487,6 +493,8 @@ export function SearchPalette({
           path: hit.path,
           name: hit.name,
           ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
+          ...(hit.deviceDocumentId != null ? { deviceDocumentId: hit.deviceDocumentId } : {}),
+          ...(hit.sourceKind != null ? { sourceKind: hit.sourceKind } : {}),
           ...(hit.revision != null ? { revision: hit.revision } : {}),
           line: chunk ? hit.startLine : undefined,
           endLine: chunk ? hit.endLine : undefined,

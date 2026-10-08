@@ -64,3 +64,18 @@ describe('search intent and revision evidence over IPC', () => {
     expect(outcome.hits[0]).toMatchObject({sourceId,revision:evidence.revision,path:evidence.abs_path});
   });
 });
+
+it('preserves native device identity in streamed and final hits without turning document.md into a filesystem path', async () => {
+  const documentId = '00000000-0000-4000-8000-000000000001';
+  const evidence = { ...hit(), document_id: documentId, device_document_id: documentId,
+    source_kind: 'device', source_id: 'a'.repeat(64), revision: 'b'.repeat(64), abs_path: 'document.md' };
+  transport.search.mockImplementation(async (_query, _opts, channel) => {
+    channel.onmessage({ generation: 0, phase: 'final', hits: [evidence] });
+    return { status: 'ok', data: { hits: [evidence], semantic_unavailable: null } };
+  });
+  const phases = vi.fn();
+  const result = await search('synced', { lexicalOnly: true, explain: false }, phases);
+  const expected = expect.objectContaining({ deviceDocumentId: documentId, sourceKind: 'device', sourceId: evidence.source_id,
+    path: 'document.md', revision: evidence.revision, startLine: 3, endLine: 5 });
+  expect(result.hits).toEqual([expected]); expect(phases).toHaveBeenCalledWith('final', [expected]);
+});
