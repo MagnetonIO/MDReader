@@ -71,9 +71,9 @@ test('three visible local images load without clicks while external images remai
   vi.stubGlobal('IntersectionObserver', class {
     private disconnected = false;
     constructor(private callback: IntersectionObserverCallback) {}
-    observe() {
+    observe(target: Element) {
       queueMicrotask(() => {
-        if (!this.disconnected) this.callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+        if (!this.disconnected) this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
       });
     }
     disconnect() { this.disconnected = true; }
