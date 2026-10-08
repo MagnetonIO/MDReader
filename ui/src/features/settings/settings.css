@@ -31,3 +31,10 @@
   .settings-content { padding: 20px 18px 28px; }
 }
 @media (prefers-reduced-motion: reduce) { .settings-content { scroll-behavior: auto; } }
+
+.settings-account-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.settings-account-actions button, .settings-account-advanced > summary { min-height: 44px; }
+.settings-account-advanced > summary { padding: 10px 0; cursor: pointer; font-weight: 600; }
+.settings-account-advanced label { display: grid; gap: 6px; margin: 12px 0; }
+.settings-account-advanced input, .settings-account-advanced textarea { max-width: 100%; box-sizing: border-box; }
+.settings-account-advanced textarea { width: 100%; min-height: 100px; }
