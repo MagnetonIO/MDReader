@@ -6,6 +6,7 @@ use rusqlite::Connection;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
+    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
@@ -175,7 +176,16 @@ impl Fixture {
                     }))
                 };
                 let databases = if kind == Participant::ReaderDaemon {
-                    vec![PathBuf::from("library.sqlite")]
+                    vec![
+                        DatabaseRegistration {
+                            relative: "library.sqlite".into(),
+                            kind: DatabaseKind::Durable,
+                        },
+                        DatabaseRegistration {
+                            relative: "index.sqlite".into(),
+                            kind: DatabaseKind::Rebuildable,
+                        },
+                    ]
                 } else {
                     vec![]
                 };
@@ -344,4 +354,157 @@ fn all_real_capabilities_span_flush_inventory_and_backup_and_reject_root_replace
         partial.coordinator.effect(Participant::ReaderDaemon),
         Err(Error::NotQuiescent)
     ));
+}
+
+#[test]
+fn registered_sqlite_and_recovery_files_cannot_be_archived_as_raw_or_omitted() {
+    for relative in ["library.sqlite", "library.sqlite-wal", "library.sqlite-shm"] {
+        let mut fixture = Fixture::new(true);
+        let choice = fixture
+            .choices
+            .iter_mut()
+            .find(|choice| choice.relative == Path::new(relative))
+            .unwrap();
+        choice.disposition = Disposition::Raw;
+        assert!(
+            matches!(
+                fixture.coordinator.preserve(
+                    &fixture.choices,
+                    &fixture.temp.path().join("refused"),
+                    &Limits::default(),
+                    Duration::from_secs(1)
+                ),
+                Err(Error::Invalid)
+            ),
+            "registered SQLite and sidecars must not enter the raw descriptor path"
+        );
+        assert_eq!(
+            fixture.releases.load(Ordering::SeqCst),
+            0,
+            "classification is checked before any participant flush"
+        );
+        assert_eq!(
+            fs::read(fixture.temp.path().join("original/settings.json")).unwrap(),
+            b"old state"
+        );
+        assert!(!fixture.temp.path().join("refused").exists());
+    }
+    let mut fixture = Fixture::new(true);
+    fixture
+        .choices
+        .retain(|choice| choice.relative != Path::new("library.sqlite"));
+    assert!(matches!(
+        fixture.coordinator.preserve(
+            &fixture.choices,
+            &fixture.temp.path().join("omitted"),
+            &Limits::default(),
+            Duration::from_secs(1)
+        ),
+        Err(Error::Invalid)
+    ));
+    assert_eq!(fixture.releases.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn registered_rebuildable_database_and_recovery_are_excluded_without_raw_reads() {
+    let mut fixture = Fixture::new(true);
+    let root = fixture.temp.path().join("original");
+    let index = Connection::open(root.join("index.sqlite")).unwrap();
+    index
+        .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE derived(value INTEGER)")
+        .unwrap();
+    let additions = fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry.unwrap().file_name());
+            path.to_string_lossy()
+                .starts_with("index.sqlite")
+                .then_some(InventorySelection {
+                    disposition: if path == Path::new("index.sqlite") {
+                        Disposition::Excluded(Exclusion::RebuildableIndex)
+                    } else {
+                        Disposition::Excluded(Exclusion::SqliteRecoverySidecar)
+                    },
+                    relative: path,
+                })
+        })
+        .collect::<Vec<_>>();
+    fixture.choices.extend(additions);
+    for relative in ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm"] {
+        let mut invalid = fixture.choices.clone();
+        invalid
+            .iter_mut()
+            .find(|choice| choice.relative == Path::new(relative))
+            .unwrap()
+            .disposition = Disposition::Raw;
+        assert!(matches!(
+            fixture.coordinator.preserve(
+                &invalid,
+                &fixture.temp.path().join("wrong-index"),
+                &Limits::default(),
+                Duration::from_secs(1)
+            ),
+            Err(Error::Invalid)
+        ));
+        assert_eq!(fixture.releases.load(Ordering::SeqCst), 0);
+    }
+    for invalid in [
+        InventorySelection {
+            relative: "unregistered.sqlite".into(),
+            disposition: Disposition::Sqlite,
+        },
+        InventorySelection {
+            relative: "unknown.sqlite-wal".into(),
+            disposition: Disposition::Excluded(Exclusion::SqliteRecoverySidecar),
+        },
+    ] {
+        let mut choices = fixture.choices.clone();
+        choices.push(invalid);
+        assert!(matches!(
+            fixture.coordinator.preserve(
+                &choices,
+                &fixture.temp.path().join("unregistered"),
+                &Limits::default(),
+                Duration::from_secs(1)
+            ),
+            Err(Error::Invalid)
+        ));
+    }
+    let snapshot = fixture
+        .coordinator
+        .preserve(
+            &fixture.choices,
+            &fixture.temp.path().join("accepted"),
+            &Limits::default(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+    let derived = snapshot
+        .manifest()
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .relative
+                .restore()
+                .unwrap()
+                .starts_with("index.sqlite")
+                || entry
+                    .relative
+                    .restore()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("index.sqlite-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(derived.len(), 3);
+    assert!(derived
+        .iter()
+        .all(|entry| entry.member.is_none() && entry.sha256.is_none()));
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM derived", [], |r| r.get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
 }

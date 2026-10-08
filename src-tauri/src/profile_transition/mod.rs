@@ -4,6 +4,8 @@
 mod admission;
 pub(crate) mod persistence;
 mod registry;
+mod storage_layout;
+pub(crate) use storage_layout::{DatabaseKind, DatabaseRegistration};
 #[cfg(all(unix, not(mobile)))]
 pub(crate) mod startup;
 #[cfg(all(test, unix))]
@@ -14,7 +16,7 @@ use mdreader_profile::{
     RootBinding, VerifiedSnapshot,
 };
 pub(crate) use registry::{FreezeScope, FrozenParticipant, LiveParticipant};
-use std::{path::Path, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 pub(crate) struct NativeProfileTransition {
     registry: registry::Registry,
@@ -39,7 +41,7 @@ impl NativeProfileTransition {
     pub(crate) fn register(
         &mut self,
         owner: Arc<dyn LiveParticipant>,
-        databases: Vec<PathBuf>,
+        databases: Vec<DatabaseRegistration>,
     ) -> Result<()> {
         self.registry.register(owner, databases)
     }
@@ -56,6 +58,7 @@ impl NativeProfileTransition {
         limits: &Limits,
         timeout: Duration,
     ) -> Result<VerifiedSnapshot> {
+        self.registry.validate_choices(choices)?;
         self.registry.with_frozen(timeout, |frozen| {
             let root = frozen.binding().locator.restore()?;
             let inventory = Inventory::capture(&root, choices, limits)?;
@@ -72,6 +75,7 @@ impl NativeProfileTransition {
         limits: &Limits,
         timeout: Duration,
     ) -> Result<mdreader_profile::bundle::VerifiedBundle> {
+        self.registry.validate_choices(choices)?;
         self.registry.with_frozen(timeout, |frozen| {
             let root = frozen.binding().locator.restore()?;
             let inventory = Inventory::capture(&root, choices, limits)?;
