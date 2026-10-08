@@ -19,6 +19,7 @@ pub(super) struct State {
 pub struct SessionController {
     pub(super) binding: Arc<RwLock<Option<SyncScope>>>,
     pub(super) state: Mutex<State>,
+    pub(super) changes: tokio::sync::watch::Sender<u64>,
 }
 impl std::fmt::Debug for SessionController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,6 +34,7 @@ impl SessionController {
                 epoch: 0,
                 active: None,
             }),
+            changes: tokio::sync::watch::channel(0).0,
         })
     }
     pub fn active_scope_barrier(&self) -> Arc<RwLock<Option<SyncScope>>> {
@@ -61,6 +63,7 @@ impl SessionController {
         }
         *binding = None;
         state.epoch = state.epoch.checked_add(1).ok_or(AuthorityError::Inactive)?;
+        self.changes.send_replace(state.epoch);
         Ok(())
     }
     pub(super) fn check(&self, lease: &Lease) -> AuthorityResult<()> {
@@ -86,6 +89,7 @@ impl SessionController {
         }
         *binding = None;
         state.epoch = next;
+        self.changes.send_replace(state.epoch);
         let lease = Arc::new(Lease {
             epoch: next,
             token: uuid::Uuid::new_v4(),
@@ -105,6 +109,7 @@ impl SessionController {
             *binding = None;
             state.active = None;
             state.epoch = state.epoch.checked_add(1).ok_or(AuthorityError::Inactive)?;
+            self.changes.send_replace(state.epoch);
         }
         Ok(())
     }

@@ -8,7 +8,7 @@ repository.workspace = true
 [features]
 default = []
 transport = ["dep:reqwest", "dep:url", "dep:tokio"]
-native-authority = ["transport", "dep:ring", "dep:jsonwebtoken", "dep:keyring"]
+native-authority = ["transport", "dep:ring", "dep:jsonwebtoken", "dep:keyring", "tokio/net", "tokio/io-util", "tokio/macros"]
 
 [dependencies]
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }

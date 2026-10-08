@@ -132,7 +132,10 @@ fn random() -> AuthorityResult<Zeroizing<String>> {
     getrandom::fill(bytes.as_mut()).map_err(|_| AuthorityError::Custody)?;
     Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_ref())))
 }
-fn redirect(value: &str) -> AuthorityResult<Url> {
+pub(super) fn redirect(value: &str) -> AuthorityResult<Url> {
+    if value.len() > 2048 || value.bytes().any(|b| b.is_ascii_control()) {
+        return Err(AuthorityError::Configuration);
+    }
     let url = Url::parse(value).map_err(|_| AuthorityError::Configuration)?;
     if url.scheme() != "http"
         || url.host_str() != Some("127.0.0.1")
