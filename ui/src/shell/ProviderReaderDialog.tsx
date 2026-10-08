@@ -10,10 +10,11 @@ import {
 } from '../platform/providers';
 
 type ReaderBackend = Pick<NativeProvidersBackend, 'readDocument'> & Partial<Pick<NativeProvidersBackend, 'resolveLink' | 'readCached' | 'fetchCurrent'>>;
-export function ProviderReaderDialog({ reference, backend = nativeProvidersBackend, onClose }: {
+export function ProviderReaderDialog({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews }: {
   reference: ProviderReaderReference;
   backend?: ReaderBackend;
   onClose: () => void;
+  onArchivedReviews?: (reference: ProviderReaderReference) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const reader = useRef<MarkdownReaderHandle | null>(null);
@@ -116,6 +117,7 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
       {history.length ? <button type="button" onClick={previous}>Previous document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
       <span>Read only</span>
+      {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
     <details className="provider-reader-dialog__evidence">
       <summary>Source evidence</summary>

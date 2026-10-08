@@ -30,6 +30,7 @@ tauri-build = { version = "2", features = [] }
 serde_json = { workspace = true }
 
 [dependencies]
+mdreader-legacy-export = { path = "../crates/mdreader-legacy-export" }
 mdreader-core = { path = "../crates/mdreader-core", features = ["device-assets"] }
 mdreader-provider = { path = "../crates/mdreader-provider" }
 mdreader-credentials = { path = "../crates/mdreader-credentials" }

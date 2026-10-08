@@ -829,13 +829,13 @@ fn inspect_span_guarded(
 ) -> Result<Vec<InspectedFact>, String> {
     let epoch = current(state)?;
     let Some(store) = epoch.proposals() else {
-        // No index built yet: honestly empty rather than an error, so the
-        // Inspector renders "nothing extracted here" instead of a failure.
         gate();
-        // EPOCH-GUARDED
-        return epoch
-            .finish(state, Vec::new())
-            .map_err(|error| error.to_string());
+        // EPOCH-GUARDED: missing live extraction is unavailable, not evidence
+        // that an indexed passage has no archived claims.
+        epoch.finish(state, ()).map_err(|error| error.to_string())?;
+        return Err(
+            "Live document insights are unavailable. Select archived reviews explicitly.".into(),
+        );
     };
     let relative = relative_to_root(&epoch, &query.path);
     let (start, end) = (
@@ -1798,7 +1798,7 @@ mod tests {
     /// are still describable (they come from the registration), but there are
     /// no facts to review yet, and no counts to invent.
     #[test]
-    fn before_an_index_exists_the_inspector_is_empty_but_the_schemas_are_known() {
+    fn before_an_index_exists_the_inspector_is_unavailable_but_the_schemas_are_known() {
         let dir = TempDir::new().unwrap();
         let root = fs::canonicalize(dir.path()).unwrap();
         let state = WorkspaceState::granted(root.clone());
@@ -1807,9 +1807,10 @@ mod tests {
             start_line: 1,
             end_line: 10,
         };
-        assert!(inspect_span_guarded(&state, &query, || {})
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            inspect_span_guarded(&state, &query, || {}).unwrap_err(),
+            "Live document insights are unavailable. Select archived reviews explicitly."
+        );
         let summaries = list_schemas_guarded(&state, || {}).expect("list");
         assert_eq!(summaries.len(), 11);
         assert!(summaries.iter().all(|s| s.object_count == 0));

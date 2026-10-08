@@ -7,6 +7,7 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
+	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -513,6 +514,46 @@ export type ApprovalOutcomeDto = {
 	 */
 	promoted: string[],
 };
+
+export type ArchivedReviewComparison = {
+	review: ArchivedReviewRecord,
+	current: ReviewCurrent,
+	observation: string,
+	currentSpanHash: string,
+	currentPassage: string,
+	recordedCurrent: string,
+	reviewedCurrent: string,
+};
+
+export type ArchivedReviewRecord = {
+	recordId: string,
+	rowId: string,
+	artifactIndex: number,
+	rowSha256: string,
+	state: string,
+	reviewer: string | null,
+	recordedContentHash: string | null,
+	reviewedContentHash: string | null,
+	recordedHashComparison: string,
+	graphMembership: string,
+	chronology: string,
+	schema: string | null,
+	extractor: string | null,
+	rule: string | null,
+	qualified: string | null,
+	reading: string | null,
+	startLine: number | null,
+	endLine: number | null,
+	unavailableReason: string | null,
+};
+
+export type ArchivedReviewsError = {
+	kind: string,
+};
+
+export type ArchivedReviewsReply = { operation: "selected"; handle: string; exportId: string; manifestSha256: string; ownerScope: string } | { operation: "listed"; records: ArchivedReviewRecord[]; nextOffset: number | null } | { operation: "record"; record: ArchivedReviewRecord } | { operation: "compared"; comparison: ArchivedReviewComparison } | { operation: "current"; reference: ReviewCurrent } | { operation: "closed" } | { operation: "cancelled" };
+
+export type ArchivedReviewsRequest = { operation: "select"; exportId: string; manifestSha256: string } | { operation: "list"; handle: string; offset: number; limit: number } | { operation: "get"; handle: string; recordId: string } | { operation: "current"; path: string; generation: number } | { operation: "compare"; handle: string; recordId: string; current: ReviewCurrent; generation: number | null } | { operation: "close"; handle: string };
 
 /**  Where one source arrow goes. */
 export type ArrowMoveDto = {
@@ -2011,6 +2052,12 @@ export type RelatedOutcomeDto = {
 };
 
 export type RelatedVectorStateDto = "available" | "anchor_missing" | "no_anchor_vectors" | "zero_centroid";
+
+export type ReviewCurrent = {
+	sourceId: string,
+	path: string,
+	revision: string,
+};
 
 /**
  *  The outcome of a [`save_doc`]. A tagged struct (mirroring [`crate::engine::WikiResolution`]'s

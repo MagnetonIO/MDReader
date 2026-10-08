@@ -12,6 +12,7 @@ sync-native = ["sync-transport", "mdreader-sync/native-authority", "mdreader-cor
 local-embed = ["mdreader-core/local-embed"]
 
 [dependencies]
+mdreader-legacy-export = { path = "../mdreader-legacy-export" }
 mdreader-core = { path = "../mdreader-core" }
 mdreader-capture = { path = "../mdreader-capture" }
 mdreader-sync = { path = "../mdreader-sync" }

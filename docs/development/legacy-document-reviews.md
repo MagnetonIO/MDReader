@@ -182,20 +182,49 @@ typed errors, never a partial comparison. This is a transient observation;
 later evidence use must revalidate the exact reference again. Nothing is saved
 to either archive or owner.
 
-### Native adapter requirements still open
+### Native owner adapter and remaining migration gates
 
-A later owner adapter must borrow the **already selected concrete ReaderStore**
-and its stable authoritative library/profile UUID. It must not discover/open a
-profile. Both read and final revalidation must call the owner exact-revision
-read (`read_document(source, path, Some(revision))`) with enabled source/current
-generation, retained-root and provider-cache gates intact. Revalidation must
-reject revocation/rebind or a changed revision/body; owner scope must remain the
-same. The owner must serialize/cohere grant changes with these checks. Provider
-cache observations must remain visibly distinct from remote-current fetches.
-The portable trait defaults both operations to unsupported and supplies no
-native implementation. No app/core/service contract changes, durable source
-binding, activation, graph replay or approval migration are accepted by this
-slice.
+The desktop service now supplies the adapter in
+[`mdreader-service::reviews`](../../crates/mdreader-service/src/reviews/README.md).
+It borrows the existing selected concrete `ReaderStore`, with a durable UUID in
+a versioned namespaced owner table. It never opens a profile discovered in an
+archive. An explicit native folder picker plus export UUID and manifest SHA-256
+select one verified stage. Its opaque handle is volatile; restart requires
+reselection. The renderer receives no stage or original source locator.
+
+Both initial read and final revalidation call
+`read_document(source, path, Some(revision))`, retaining enabled-source,
+retained-root, current-generation and provider-cache gates. Profile/stage
+identity and owner UUID/version are checked before and after operations. Archive
+hashing happens outside the owner mutex; one active review operation is allowed,
+with typed `busy` on contention. Windows remains unsupported by the archival
+stage implementation. Initialization failure is reviews-only and does not block
+local reading.
+
+The desktop reader exposes **Archived reviews…** from the local inspector and
+cached provider reader. Opening the panel performs no archive selection or
+current read. The user supplies the exact export identity, chooses the stage,
+and explicitly compares a representable archival record with the open document.
+Local selection captures the expected workspace generation through the final
+response, including same-root reopen. Provider comparison uses only its exact
+admitted cached reference and does not fetch the remote head. The panel escapes
+archived assertion text and compared Markdown as plain text.
+
+Comparison displays the actual inclusive current passage and exact revision,
+with distinct recorded/current and reviewed/current results. It does not jump
+to the latest file and claim that later bytes are the compared evidence. Unknown
+interpretations and rejected tombstones remain visible. The complete raw stage
+and export remain authoritative; no review transition, graph replay, approval
+migration, durable source binding or artifact mutation occurs. See the
+[focused verification receipt](archived-review-validation-2026-10-08.md).
+
+This closes the explicit archival observation adapter gap. Actual packaged
+native picker/dialog acceptance, installed-profile writer barrier/export,
+activation/rollback, generic legacy administration migration and complete CatDB
+removal remain separate gates. Existing populated live proposal behavior is
+preserved. When the current SQLite indexing path has no live proposal store, the
+inspector now reports unavailable and points to explicit archival review
+selection instead of returning a misleading empty success.
 
 Portable comparison checkpoint: the three real-archive/injected-owner behavior
 tests failed against the unsupported stub, then passed after implementation.
