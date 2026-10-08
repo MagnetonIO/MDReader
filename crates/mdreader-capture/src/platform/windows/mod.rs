@@ -12,7 +12,10 @@ mod authority;
 mod private;
 mod security;
 pub(crate) use authority::DirectoryAuthority;
-pub use private::{same_open_file, PrivateDirectory};
+pub use private::{
+    PrivateDirectory, SelectedDirectory, WindowsFileIdentity, same_open_file,
+    selected_file_identity,
+};
 
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     authority::Chain::open(path, true, true)?.verify()
@@ -36,9 +39,22 @@ pub(super) fn open_file_with_lock(
     writable: bool,
     lock_file: bool,
 ) -> Result<File> {
+    open_file_policy(path, creation, writable, lock_file, true)
+}
+#[allow(unsafe_code)]
+fn open_file_policy(
+    path: &Path,
+    creation: u32,
+    writable: bool,
+    lock_file: bool,
+    private_parent: bool,
+) -> Result<File> {
     validate_leaf(path)?;
-    let parent =
-        authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, true)?;
+    let parent = authority::Chain::open(
+        path.parent().ok_or(CaptureError::UnsafePath)?,
+        false,
+        private_parent,
+    )?;
     let wide = authority::wide(path)?;
     let descriptor = security::Descriptor::private()?;
     let attributes = descriptor.attributes();

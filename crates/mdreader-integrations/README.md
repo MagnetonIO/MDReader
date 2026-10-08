@@ -20,10 +20,10 @@ These current contracts do not prove compatibility with an older installed clien
 | --- | --- |
 | macOS local Claude Code/Codex | Synthetic tests pass; Claude 2.1.294 isolated approval/connection and Codex 0.161.0 isolated trust/tool-call observed. User-project/hook acceptance pending. |
 | Linux local Claude Code/Codex | POSIX implementation present; runtime acceptance pending. |
-| Native Windows | `Unsupported` before filesystem mutation; private ACLs, safe replacement and capture durability remain incomplete. |
+| Native Windows | Canonical SQLite install/removal intents, protected native state, full NTFS identity and selected-root replacement implemented; actual Windows client/runtime acceptance remains pending. |
 | Cloud orchestration, remote command host, web/mobile agent UI | Unsupported for these local command integrations. No install is attempted when `local_commands` is false. |
 
-Windows GNU compilation of this crate passes; that is not Windows runtime support. Mobile readers may consume library content independently; this crate installs no mobile hooks.
+Historical Windows GNU compilation predates the installer implementation; the current Windows installer still needs target compilation and runtime acceptance. Mobile readers may consume library content independently; this crate installs no mobile hooks.
 
 ## Service-owned authority and packaged entrypoints
 

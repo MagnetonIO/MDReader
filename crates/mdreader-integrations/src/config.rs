@@ -1,5 +1,5 @@
 use crate::{
-    json, Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result,
+    Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result, json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,12 +34,33 @@ pub(crate) fn path_string(path: &Path) -> Result<&str> {
     string(path)
 }
 /// POSIX shell quoting, never used on Windows/PowerShell hosts.
+#[cfg(not(windows))]
 pub fn quote_posix(value: &str) -> Result<String> {
     if value.is_empty() || value.chars().any(char::is_control) || value.contains("${") {
         return Err(Error::Invalid);
     }
     Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
 }
+
+#[cfg(not(windows))]
+fn quote_command(value: &str) -> Result<String> {
+    quote_posix(value)
+}
+#[cfg(windows)]
+fn quote_command(value: &str) -> Result<String> {
+    // Codex's Windows command-hook runner uses cmd.exe /C. Quote each argument,
+    // refusing expansion and shell metacharacters (also with delayed expansion).
+    // Structured argv integrations do not need this restriction.
+    if value.is_empty()
+        || value.chars().any(char::is_control)
+        || value.contains(['"', '%', '!', '^', '&', '|', '<', '>', '(', ')', '$', '`'])
+    {
+        return Err(Error::Unsupported);
+    }
+    let trailing = value.len() - value.trim_end_matches('\\').len();
+    Ok(format!("\"{}{}\"", value, "\\".repeat(trailing)))
+}
+
 pub(crate) fn validate_capability(kind: IntegrationKind, cap: &Capabilities) -> Result<()> {
     if !cap.local_commands
         || cap.client_version.is_empty()
@@ -100,9 +121,9 @@ pub(crate) fn spec(
             let handler = if agent == "claude" {
                 json!({"type":"command","command":executable,"args":args,"timeout":3})
             } else {
-                let mut argv = vec![quote_posix(executable)?];
+                let mut argv = vec![quote_command(executable)?];
                 for arg in args {
-                    argv.push(quote_posix(arg)?);
+                    argv.push(quote_command(arg)?);
                 }
                 json!({"type":"command","command":argv.join(" "),"timeout":3})
             };
