@@ -14,7 +14,8 @@ five deployed browser checks, including navigation to the registered Auth0 login
 The reported hidden Connect action is fixed and deployed (`5bb05b2`, receipt
 `c09c0cb` in the web integration). Three focused deployed checks passed, including
 200% text at desktop/mobile widths, real Auth0 navigation and offline reopen.
-A separate empty-reader enlarged-text overflow fix is under Preview validation. Live credential
+The separate enlarged-text empty-panel fix (`b25bc33`, receipt `5eedd56`) is also
+deployed and merged. Four affected deployed checks pass in17.5 seconds. Live credential
 login, enrollment and authenticated transfer remain pending. These do not
 establish production release acceptance.
 

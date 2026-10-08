@@ -21,7 +21,7 @@ feature's review or acceptance receipt.
 | Coordinator | Native | `MDReader-native-oidc` | `feat/reader-native-oidc` | `c2055ea`, then `fa3f577` | Auth0 access-token contract and bounded native loopback |
 | Coordinator | Web | `MDReader-Web-reader-next` | `dev-reader-next` | `e2c86d5` | Integration only |
 | cloud_sync | Web | `MDReader-Web-public-oidc` | `feat/reader-public-oidc` | `7f352a8` | One Auth0 issuer, API audience and separate public clients |
-| Coordinator | Web | `MDReader-Web-empty-reflow` | `fix/reader-empty-reflow` | `7cee473` | Bound enlarged empty-reader text; Preview validation pending |
+| Coordinator | Web | `MDReader-Web-upgrade-acceptance` | `test/reader-deployed-upgrade` | `092623d` | Existing offline-update controls; deployed old-to-new synthetic acceptance |
 
 Completed and merged into integration: capture/platform extraction (`72ecd9b`),
 core incoming publication (`1ecf76f`), session and atomic cursor fence (`c13a6ad`),
@@ -36,6 +36,8 @@ and archived review presentation/schema hardening (`fb02b38`, `db1fc37`) are mer
 The archived-review worktree was removed cleanly; its major branch remains.
 The web Connect fix (`5bb05b2`, receipt `c09c0cb`) merged through its owning major
 branch into web integration; its clean minor worktree and branch were removed.
+The enlarged empty-reader fix (`b25bc33`, receipt `5eedd56`) also merged via the
+web major into integration `092623d`; its minor worktree and branch were removed.
 Their clean, inactive worktrees and merged minor branches were removed after
 ancestry checks. Private configuration and receipts were preserved; shared
 caches were retained. The major feature branches in the table remain intentionally
