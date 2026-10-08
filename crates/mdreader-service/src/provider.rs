@@ -5,6 +5,8 @@
 //! grants. Projection admission defaults to Unsupported until core can enforce
 //! provider binding/generation authority in the same publication transaction.
 mod coordinator;
+mod catalog_epoch;
+pub(crate) mod catalog;
 mod links;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
 mod factory;

@@ -447,6 +447,7 @@ impl ReaderStore {
         cancel.check()?;
         root.verify()?;
         self.provider_enabled(source)?;
+        catalog::schema::publish(&tx,source)?;
         tx.commit()?;
         Ok(records.len())
     }

@@ -1,0 +1,6 @@
+.reader-catalog { flex: 0 1 auto; min-width: 0; min-height: 0; max-height: 45%; overflow: auto; padding: 12px; border-bottom: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.reader-catalog header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.reader-catalog > div, .reader-catalog section > div { display: grid; gap: 4px; margin: 10px 0; min-width: 0; }
+.reader-catalog small { color: var(--color-muted); }
+.reader-catalog p { font-size: 12px; }
+.reader-catalog button { white-space: normal; }

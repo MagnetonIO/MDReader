@@ -68,7 +68,8 @@ import { watcherStampCurrent } from './watcher-guard.js';
 import { performSwitch } from './switch-workspace.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
-import { ProviderSourcesSidebar } from './ProviderSourcesSidebar.js';
+import { CatalogSidebar } from '../features/catalog/CatalogSidebar.js';
+import { catalogBackend } from '../features/catalog/backend.js';
 import { providerTarget } from './provider-reading.js';
 import { TabStrip } from './TabStrip.js';
 import { ReaderPane } from './ReaderPane.js';
@@ -2322,7 +2323,7 @@ export function AppShell() {
           loading={loading}
           listingError={listingError}
           onPickFolder={onPickFolder}
-          providerSources={isTauri() ? <ProviderSourcesSidebar selectedSources={selectedProviderSources} onSelectionChange={setSelectedProviderSources} refreshKey={providerRefreshKey} onOpen={openProviderDocument} onManage={() => setSettingsOpen(true)} /> : undefined}
+          providerSources={isTauri() ? <CatalogSidebar selectedProviderSources={selectedProviderSources} onProviderSelectionChange={setSelectedProviderSources} refreshKey={providerRefreshKey} onOpen={openProviderDocument} onManage={() => setSettingsOpen(true)} /> : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
@@ -2510,7 +2511,7 @@ export function AppShell() {
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
-      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onArchivedReviews={(reference) => { setArchivedReviewReturn(reference); setProviderDocument(null); setArchivedReviewTarget({ kind: 'exact', reference }); }} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
+      {providerDocument ? <ProviderReaderDialog reference={providerDocument} sourceKind={providerDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'} backend={providerDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend} onArchivedReviews={providerDocument.sourceId.startsWith('provider:') ? (reference) => { setArchivedReviewReturn(reference); setProviderDocument(null); setArchivedReviewTarget({ kind: 'exact', reference }); } : undefined} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
       {archivedReviewTarget ? <ArchivedReviewsPanel current={archivedReviewTarget} onClose={() => { setArchivedReviewTarget(null); if (archivedReviewReturn) setProviderDocument(archivedReviewReturn); }} /> : null}
       {lensSheetOpen ? (
         <LensSheet

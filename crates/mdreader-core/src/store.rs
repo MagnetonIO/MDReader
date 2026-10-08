@@ -15,6 +15,8 @@ pub use related::*;
 #[path = "provider_projection.rs"]
 mod projection;
 pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
+#[path = "catalog/mod.rs"]
+pub mod catalog;
 mod local_source;
 pub use local_source::publish_local_source;
 #[cfg(feature = "device-assets")]
@@ -449,6 +451,7 @@ impl ReaderStore {
         projection::initialize(&library)?;
         let index=open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
+        catalog::schema::initialize(&library,&index)?;
         Ok(Self {
             library,
             index,
@@ -563,6 +566,7 @@ impl ReaderStore {
         self.set_source_enabled(id, false)?;
         let tx = self.index.transaction()?;
         tx.execute("DELETE FROM documents WHERE source_id=?1", [id])?;
+        tx.execute("DELETE FROM reader_catalog_snapshots_v1 WHERE source_id=?1", [id])?;
         tx.commit()?;
         self.library.execute("DELETE FROM index_jobs WHERE source_id=?1", [id])?;
         Ok(())
@@ -604,6 +608,7 @@ impl ReaderStore {
         if changed { rebuild_resolved_links(&tx, id, cancel)?; }
         cancel.check()?;
         root.verify()?;
+        catalog::schema::publish(&tx,id)?;
         tx.commit()?;
         Ok(count)
     }

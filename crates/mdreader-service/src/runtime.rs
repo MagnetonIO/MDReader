@@ -14,10 +14,11 @@ use std::time::Duration;
 
 pub(super) struct Runtime {
     store: Arc<Mutex<ReaderStore>>,
-    queries: Mutex<ReaderStore>,
+    queries: Arc<Mutex<ReaderStore>>,
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    catalog: super::catalog::Coordinator,
     reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
@@ -83,7 +84,7 @@ impl Runtime {
             .parent()
             .expect("model cache is inside service directory")
             .to_path_buf();
-        let queries = Mutex::new(ReaderStore::open_readonly(&directory)?);
+        let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
         let worker_directory = directory.clone();
         std::thread::spawn(move || {
             if let Some(model) = &worker_model {
@@ -133,6 +134,7 @@ impl Runtime {
         });
         let reviews = super::reviews::Coordinator::new(store.clone(), &directory);
         Ok(Self {
+            catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()),
             reviews,
             store,
             queries,
@@ -153,6 +155,13 @@ impl Runtime {
             .map_err(|_| protocol_error("reader query worker failed"))
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::Catalog { request } = request {
+            let result = self.catalog.execute(request);
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
         if let Request::Reviews { request } = request {
             let result = self
                 .reviews

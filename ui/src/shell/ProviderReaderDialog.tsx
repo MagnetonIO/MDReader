@@ -10,8 +10,9 @@ import {
 } from '../platform/providers';
 
 type ReaderBackend = Pick<NativeProvidersBackend, 'readDocument'> & Partial<Pick<NativeProvidersBackend, 'resolveLink' | 'readCached' | 'fetchCurrent'>>;
-export function ProviderReaderDialog({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews }: {
+export function ProviderReaderDialog({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider' }: {
   reference: ProviderReaderReference;
+  sourceKind?: 'provider' | 'local';
   backend?: ReaderBackend;
   onClose: () => void;
   onArchivedReviews?: (reference: ProviderReaderReference) => void;
@@ -111,7 +112,7 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
       if (action.current === epoch) setBusy(false);
     }
   }
-  return <dialog ref={dialog} className="provider-reader-dialog" aria-label="Cloud document" onCancel={(event) => { event.preventDefault(); close(); }}>
+  return <dialog ref={dialog} className="provider-reader-dialog" aria-label={sourceKind === 'local' ? 'Catalog document' : 'Cloud document'} onCancel={(event) => { event.preventDefault(); close(); }}>
     <header className="provider-reader-dialog__bar">
       <button type="button" autoFocus onClick={close}>Back to sources</button>
       {history.length ? <button type="button" onClick={previous}>Previous document</button> : null}
@@ -122,7 +123,7 @@ export function ProviderReaderDialog({ reference, backend = nativeProvidersBacke
     <details className="provider-reader-dialog__evidence">
       <summary>Source evidence</summary>
       <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
-      <p>This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.</p>
+      <p>{sourceKind === 'local' ? 'This is the exact retained-source revision. External edits require a new index observation; this reader does not grant folder editing access.' : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}</p>
     </details>
     {error ? <p role="alert">{error}</p> : null}
     {notice ? <p role="status">{notice}</p> : null}

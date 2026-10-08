@@ -106,3 +106,13 @@ test('a newer in-document jump supersedes a pending linked-document action', asy
   expect(screen.queryByText('Opening linked document…')).toBeNull();
   expect(screen.getByRole('heading', { name: /Original/ })).toBeTruthy();
 });
+test('local catalog revision uses the shared reader without provider freshness claims or image fetches', async () => {
+  const local = { sourceId: '1'.repeat(64), path: 'plan.md', revision: 'b'.repeat(64), title: 'Local plan' };
+  const backend = { readDocument: vi.fn(async () => body(local, '# Local exact body\n\n![Selected](https://example.invalid/image.png)')) };
+  render(<ProviderReaderDialog reference={local} sourceKind="local" backend={backend} onClose={() => {}} />);
+  expect(await screen.findByRole('heading', { name: /Local exact body/ })).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Catalog document' })).toBeTruthy();
+  expect(screen.queryByText(/newer provider revision/)).toBeNull();
+  expect(screen.queryByRole('img')).toBeNull();
+  expect(backend.readDocument).toHaveBeenCalledWith(local);
+});

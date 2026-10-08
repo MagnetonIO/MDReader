@@ -8,6 +8,7 @@ export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
+	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -636,6 +637,38 @@ export type CapabilitiesDto = {
 	changes: boolean,
 	assets: boolean,
 	guardedWrite: boolean,
+};
+
+export type CatalogDocument = {
+	name: string,
+	displayPath: string,
+	modifiedAtMs: number | null,
+	/**  Decimal string preserves provider metadata without JavaScript precision loss. */
+	sizeBytes: string | null,
+	observedAtMs: number | null,
+	observation: string,
+	open: CatalogOpen,
+};
+
+export type CatalogError = {
+	kind: string,
+};
+
+export type CatalogOpen = { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
+
+export type CatalogReply = { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "complete" };
+
+export type CatalogRequest = { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+
+export type CatalogSource = {
+	catalogId: string,
+	name: string,
+	kind: string,
+	enabled: boolean,
+	coverage: string,
+	observedAtMs: number | null,
+	failure: string | null,
+	librarySourceId: string | null,
 };
 
 /**
