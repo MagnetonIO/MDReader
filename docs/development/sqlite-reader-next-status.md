@@ -476,3 +476,20 @@ failed as expected; restored source passed, together with three account cases
 and strict service feature Clippy. This uses synthetic identity/test-only keyring
 storage, not live Auth0 or OS-vault acceptance. See
 [the actor receipt](../../crates/mdreader-service/src/accounts/acceptance/README.md).
+
+## Native reader, capture and outgoing composition, 2026-10-08
+
+The primary device reader and strict preferences are composed and verified;
+the smoke harness now resolves this standalone repository from any caller CWD.
+Capture producer admission `302b0e1` and immutable outgoing graph foundation
+`e02b8c9` now compose with that reader. The combined service artifact passed
+eleven focused cases across capture admission/Runtime, device reads, account
+lifecycle, actual local HTTPS actor and real hook subprocess. Default and
+shipping service/capture strict all-target Clippy pass. See the
+[combined receipt](native-capture-outgoing-composition-2026-10-08.md).
+
+Product native document upload remains unavailable until exact selection,
+durable native association and receipt-proven same-document echo are complete.
+SQLite-open identity and read-only final publication fencing are separate
+checkpoints in progress. Installed migration/rollback, all-writer preservation,
+CatDB removal, live provider/device acceptance and packaging remain open.
