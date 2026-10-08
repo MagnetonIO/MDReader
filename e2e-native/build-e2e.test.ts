@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import {
@@ -20,6 +24,54 @@ import {
 } from './build-mobile-e2e.mjs';
 
 const SOURCE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
+
+test('standalone desktop wrapper builds from its own checkout regardless of caller directory', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mdreader-build-layout-'));
+  const repository = fileURLToPath(new URL('../', import.meta.url));
+  const script = fileURLToPath(new URL('./build-e2e.mjs', import.meta.url));
+  const report = join(directory, 'calls.jsonl');
+  const bin = join(directory, 'bin');
+  try {
+    mkdirSync(bin);
+    const probe = join(bin, 'probe.cjs');
+    writeFileSync(probe, `require('node:fs').appendFileSync(process.env.MDREADER_BUILD_PROBE, JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),commit:process.env.MDREADER_SOURCE_COMMIT})+'\\n');`);
+    writeFileSync(join(bin, 'pnpm'), `#!${process.execPath}\nrequire(${JSON.stringify(probe)});\n`, { mode: 0o700 });
+    chmodSync(join(bin, 'pnpm'), 0o700);
+    writeFileSync(join(bin, 'pnpm.cmd'), `@echo off\r\n"${process.execPath}" "${probe}" %*\r\n`);
+    const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      MDREADER_SOURCE_COMMIT: SOURCE_COMMIT, MDREADER_BUILD_PROBE: report };
+    const result = spawnSync(process.execPath, [script], { cwd: directory, env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = readFileSync(report, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(calls.map((call) => ({ cwd: resolve(call.cwd), commit: call.commit })),
+      [{ cwd: resolve(repository), commit: SOURCE_COMMIT }, { cwd: resolve(repository), commit: SOURCE_COMMIT }]);
+    assert.deepEqual(calls[0].args, ['--filter', '@mdreader/app...', 'run', 'build']);
+    assert.ok(calls[1].args.includes('src-tauri/tauri.e2e.conf.json'));
+
+    // Default provenance must come from this checkout, not the caller or an
+    // enclosing repository. This subprocess performs no build or installation.
+    const gitEnv = { ...process.env };
+    delete gitEnv.MDREADER_SOURCE_COMMIT;
+    const actual = execFileSync(process.execPath, ['--input-type=module', '-e',
+      `import {resolveSourceCommit} from ${JSON.stringify(new URL('./build-e2e.mjs', import.meta.url).href)};process.stdout.write(resolveSourceCommit());`],
+      { cwd: directory, env: gitEnv, encoding: 'utf8' });
+    const expected = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
+    assert.equal(actual, expected);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('default mobile source handoff is owned by this checkout and cleaned without overwrite', () => {
+  const expected = fileURLToPath(new URL('../src-tauri/.e2e-source-commit', import.meta.url));
+  const cleanup = stageMobileSourceCommit(SOURCE_COMMIT);
+  try {
+    assert.equal(readFileSync(expected, 'utf8'), `${SOURCE_COMMIT}\n`);
+  } finally {
+    cleanup();
+  }
+  assert.throws(() => readFileSync(expected), /ENOENT/);
+});
 
 test('E2E builds bind an explicit reviewed source commit', () => {
   assert.equal(

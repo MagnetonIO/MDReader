@@ -7,6 +7,7 @@ pub struct PreparedSnapshot {
     pub(super) manifest: String,
     pub(super) root: SourceRoot,
     pub(super) owner: Arc<()>,
+    pub(super) document_epoch: String,
 }
 pub struct VerifiedSnapshot {
     pub(super) _permit: ReadPermit,
@@ -15,6 +16,7 @@ pub struct VerifiedSnapshot {
     pub(super) manifest: String,
     pub(super) root: SourceRoot,
     pub(super) owner: Arc<()>,
+    pub(super) document_epoch: String,
 }
 impl PreparedSnapshot {
     pub fn verify(self) -> Result<VerifiedSnapshot> {
@@ -29,6 +31,7 @@ impl PreparedSnapshot {
             manifest: self.manifest,
             root: self.root,
             owner: self.owner,
+            document_epoch: self.document_epoch,
         })
     }
 }
@@ -58,6 +61,13 @@ impl Drop for ValidationPermit {
     }
 }
 impl AssetRuntime {
+    /// Native composition identity only; clones share these exact live pools.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.roots, &other.roots)
+            && Arc::ptr_eq(&self.reading, &other.reading)
+            && Arc::ptr_eq(&self.sessions, &other.sessions)
+            && Arc::ptr_eq(&self.validating, &other.validating)
+    }
     pub(in crate::device) fn archive_permit(
         &self,
         store: &mut ReaderStore,
@@ -87,6 +97,25 @@ impl AssetRuntime {
         }
         assets.verify_owner(store)?;
         Ok(assets.clone())
+    }
+    /// Reuse this owner's attachment authority without filesystem or SQL writes.
+    pub fn existing_assets(
+        &self,
+        store: &mut ReaderStore,
+        directory: &Path,
+    ) -> Result<Option<AssetStore>> {
+        let mut root = self.roots.lock().map_err(|_| unavailable())?;
+        // Re-read the exact namespace even for a cached runtime binding.
+        let Some(existing) = AssetStore::open_existing(store, directory)? else {
+            return Ok(None);
+        };
+        if let Some(current) = root.as_ref() {
+            current.same_owner_root(&existing.owner, &existing.root)?;
+        } else {
+            *root = Some(existing.clone());
+        }
+        existing.verify_owner(store)?;
+        Ok(Some(existing))
     }
     pub fn read_permit(&self, now: Instant) -> Result<ReadPermit> {
         self.sessions
@@ -125,6 +154,12 @@ impl AssetRuntime {
             return Err(unavailable());
         }
         assets.check_selection(store, &snapshot.receipt, &snapshot.manifest)?;
+        if crate::device::catalog::document_epoch(store, &snapshot.receipt.document_id)
+            .map_err(|_| unavailable())?
+            != snapshot.document_epoch
+        {
+            return Err(unavailable());
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let receipt = snapshot.receipt.clone();
         sessions.insert(
@@ -155,7 +190,17 @@ impl AssetRuntime {
         let snapshot = &session.snapshot;
         let current = assets
             .same_owner_root(&snapshot.owner, &snapshot.root)
-            .and_then(|()| assets.check_selection(store, &snapshot.receipt, &snapshot.manifest));
+            .and_then(|()| assets.check_selection(store, &snapshot.receipt, &snapshot.manifest))
+            .and_then(|()| {
+                if crate::device::catalog::document_epoch(store, &snapshot.receipt.document_id)
+                    .map_err(|_| unavailable())?
+                    == snapshot.document_epoch
+                {
+                    Ok(())
+                } else {
+                    Err(unavailable())
+                }
+            });
         if let Err(error) = current {
             sessions.remove(id);
             return Err(error);
@@ -180,5 +225,16 @@ impl AssetRuntime {
         valid_id(id)?;
         self.sessions.lock().map_err(|_| unavailable())?.remove(id);
         Ok(())
+    }
+    /// Metadata for a live lease, used by native adapters to recheck their
+    /// explicitly selected cache membership before serving another chunk.
+    pub fn selected_receipt(&self, id: &str, now: Instant) -> Result<AssetReceipt> {
+        valid_id(id)?;
+        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
+        sessions.retain(|_, session| session.expires > now);
+        sessions
+            .get(id)
+            .map(|session| session.snapshot.receipt.clone())
+            .ok_or_else(unavailable)
     }
 }

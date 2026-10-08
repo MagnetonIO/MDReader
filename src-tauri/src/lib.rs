@@ -52,17 +52,26 @@ mod mobile_assets_commands;
 mod mobile_enterprise;
 mod mobile_reader;
 #[cfg(not(mobile))]
+mod native_browser;
+#[cfg(not(mobile))]
 mod native_providers;
+#[cfg(not(mobile))]
+mod native_sync;
 mod overlay;
+mod profile_transition;
 #[cfg(not(mobile))]
 mod provider_oauth;
 mod reader;
+#[cfg(not(mobile))]
+mod reader_accounts;
 mod reader_agents;
 mod reader_backfill;
 #[cfg(not(mobile))]
-mod reader_reviews;
-#[cfg(not(mobile))]
 mod reader_catalog;
+#[cfg(not(mobile))]
+mod reader_device;
+#[cfg(not(mobile))]
+mod reader_reviews;
 mod reader_workload;
 mod search;
 mod updater;
@@ -105,8 +114,15 @@ fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
+            profile_transition::persistence::commands::native_profile_persistence_host,
+            profile_transition::persistence::commands::native_profile_persistence_load,
+            profile_transition::persistence::commands::native_profile_persistence_read,
+            profile_transition::persistence::commands::native_profile_persistence_write,
+            profile_transition::persistence::commands::native_profile_persistence_flush,
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
+            reader_accounts::reader_account,
+            reader_device::reader_device,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,
@@ -208,6 +224,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         commands::ping,
+        profile_transition::persistence::commands::native_profile_persistence_host,
         mobile_reader::mobile_reader_list,
         mobile_reader::mobile_reader_discard_import,
         mobile_reader::mobile_reader_import,
@@ -311,7 +328,6 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
 
     #[allow(unused_mut)]
     let mut tauri_builder = tauri::Builder::default()
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .manage(WorkspaceState::default())
@@ -323,6 +339,14 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
         .manage(mobile_assets::AssetRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            #[cfg(all(unix, not(mobile)))]
+            {
+                let directory = app.path().app_data_dir()?;
+                std::fs::create_dir_all(&directory)?;
+                let directory = directory.canonicalize()?;
+                profile_transition::startup::configure(app.handle(), &directory)
+                    .map_err(|_| std::io::Error::other("Native preferences owner is unavailable"))?;
+            }
             let reader_backend =
                 reader::ReaderBackend::open(app.path().app_data_dir()?.join("reader-v1"))?;
             #[cfg(not(mobile))]
@@ -348,6 +372,13 @@ fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) 
             builder.mount_events(app);
             Ok(())
         });
+
+    // These hosts retain the existing store-backed persistence. Unix desktop
+    // has one strict native JSON owner and never installs an exit-time writer.
+    #[cfg(any(not(unix), mobile))]
+    {
+        tauri_builder = tauri_builder.plugin(tauri_plugin_store::Builder::new().build());
+    }
 
     // The updater is a direct-distribution capability, not part of normal dev,
     // E2E, store, or mobile builds. Release CI is the only caller that enables

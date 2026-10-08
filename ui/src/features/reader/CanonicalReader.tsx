@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ComponentType } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle, NavigateEvent } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
@@ -10,9 +11,10 @@ import {
 } from '../../platform/providers';
 
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider' }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image }: {
   reference: ProviderReaderReference;
-  sourceKind?: 'provider' | 'local';
+  sourceKind?: 'provider' | 'local' | 'device';
+  imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
   onClose: () => void;
   onArchivedReviews?: (reference: ProviderReaderReference) => void;
@@ -115,7 +117,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (action.current === epoch) setBusy(false);
     }
   }
-  return <section className="canonical-reader" aria-label={sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
+  return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
     <header className="provider-reader-dialog__bar">
       <button type="button" autoFocus onClick={close}>Back to sources</button>
       {history.length ? <button type="button" onClick={previous}>Previous document</button> : null}
@@ -128,6 +130,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
       <p>{sourceKind === 'local'
         ? 'This is the exact retained-source revision. External edits require a new index observation; this reader does not grant folder editing access.'
+        : sourceKind === 'device' ? 'This is the exact published device copy. Sync status is separate; reading this copy does not contact another device or grant folder access.'
         : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}
       </p>
     </details>
@@ -174,7 +177,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
             }
           }}
           doc={doc}
-          components={{ img: ({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span> }}
+          components={{ img: Image ?? (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>) }}
           onNavigate={(event) => void navigate(event)} />
       </PlatformProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
     </div>

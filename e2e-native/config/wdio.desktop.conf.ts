@@ -18,8 +18,8 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { E2E_ROOT, REPO_ROOT } from '../repository.mjs';
 
 import { FLOW_CONFIG } from '../flows.ts';
 import { desktopCapabilitiesFor } from '../capabilities.ts';
@@ -31,9 +31,6 @@ import {
   seedWorkspace,
 } from '../seed.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const E2E_ROOT = resolve(HERE, '..');
-const REPO_ROOT = resolve(E2E_ROOT, '..', '..', '..');
 const CORPUS = join(REPO_ROOT, FLOW_CONFIG.corpusRelPath);
 const E2E_PROFILE = createE2EProfile();
 

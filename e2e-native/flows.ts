@@ -54,7 +54,7 @@ export interface DomSelector {
 
 /** The named selectors the flow refers to. Centralised so the two interpreters
  *  — and any future one — never drift on how an element is found. Every value
- *  here is grounded in the real shipping DOM (see `apps/mdreader/ui/src/shell`
+ *  here is grounded in the real shipping DOM (see `ui/src/shell`
  *  and `packages/ui/src`). */
 export const SELECTORS = {
   /** The sidebar file tree — proof the seeded workspace was granted + listed. */

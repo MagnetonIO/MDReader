@@ -11,7 +11,7 @@
 use crate::{ReaderStore, SourceRoot, SourceRootIdentity};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,

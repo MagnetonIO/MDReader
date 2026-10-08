@@ -3,7 +3,7 @@
 # Milestone PT — macOS GUI smoke entry point (UNIFIED Appium/mac2 harness).
 #
 # Builds (or reuses) the isolated MDReader E2E .app, then runs the macOS leg of the unified
-# harness (apps/mdreader/e2e-native/runners/macos.ts), which drives the REAL
+# harness (e2e-native/runners/macos.ts), which drives the REAL
 # window through an appium-mac2-driver (XCUITest) WebDriver session and asserts the
 # shared FLOW — including the two assertions a "process booted" check can't make:
 # a real titlebar drag moves the window (with a content-area negative control), and

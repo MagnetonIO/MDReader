@@ -57,6 +57,7 @@ const h = vi.hoisted(() => ({
   // When `drainGate` is set, drain() returns ITS (caller-controlled) promise so a
   // test can hold the drain pending / never-resolving; otherwise it resolves now.
   drainGate: null as null | { promise: Promise<void> },
+  restoreFailed: false,
   drain: vi.fn((): Promise<void> => (h.drainGate ? h.drainGate.promise : Promise.resolve())),
   // When set, saves block until it resolves (to model an in-flight save).
   gate: null as null | { promise: Promise<void>; resolve: () => void },
@@ -116,6 +117,22 @@ const h = vi.hoisted(() => ({
     return { root, generation };
   }),
 }));
+
+// These editor scenarios do not select canonical/provider documents. Isolate the
+// newly mounted read-only listing boundaries instead of manufacturing unrelated
+// service-unavailable alerts alongside the conflict being asserted below.
+vi.mock('../features/catalog/backend', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../features/catalog/backend')>();
+  return { ...actual, catalogBackend: { ...actual.catalogBackend,
+    list: vi.fn(async () => ({ operation: 'list', sources: [], providerFailure: null, localFailure: null })),
+  } };
+});
+vi.mock('../platform/providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform/providers')>();
+  return { ...actual, nativeProvidersBackend: { ...actual.nativeProvidersBackend,
+    state: vi.fn(async () => ({ availability: [], sources: [], pendingAdmissions: [], error: null })),
+  } };
+});
 
 vi.mock('../platform/fs.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/fs.js')>();
@@ -352,7 +369,7 @@ vi.mock('./persistence.js', async (importOriginal) => {
   return {
     ...actual,
     isTauri: () => true,
-    loadPersisted: vi.fn(async () => ({ session: null, settings: {} })),
+    loadPersisted: vi.fn(async () => ({ session: null, settings: {}, ...(h.restoreFailed ? { restoreFailed: true } : {}) })),
     saveSettings: vi.fn(async () => {}),
     sessionWriter: { write: vi.fn(), drain: h.drain },
   };
@@ -423,6 +440,7 @@ async function openDirtyDoc() {
 
 async function confirmActiveSourceForget() {
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
   await screen.findByText('Workspace');
   fireEvent.click(screen.getByRole('button', { name: 'Forget Workspace' }));
   fireEvent.click(screen.getByRole('button', { name: 'Forget source' }));
@@ -669,6 +687,7 @@ beforeEach(() => {
   h.closeForgetStatus = { kind: 'complete' };
   h.closed = false;
   h.drainGate = null;
+  h.restoreFailed = false;
   h.seq = 0;
   h.pickedPath = '/ws';
   vi.clearAllMocks();
@@ -1150,6 +1169,7 @@ describe('library source identity follows the committed backend epoch', () => {
     h.pickedPath = '/ws-b';
     h.listGate = deferred();
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
     await waitFor(() => expect(useSourcesStore.getState().root).toBe('/ws-b'));
@@ -1371,6 +1391,7 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     await confirmActiveSourceForget();
     await waitFor(() => expect(useSourcesStore.getState().root).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
 
@@ -1384,6 +1405,7 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     h.watch.mockClear();
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
     await screen.findByText('Second workspace');
     fireEvent.click(screen.getByRole('button', { name: 'Activate Second workspace' }));
 
@@ -1579,12 +1601,12 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
     expect(h.closed).toBe(true);
   });
 
-  it('the 2000ms timeout RELEASES the close even if the drain never resolves', async () => {
+  it('the 2000ms timeout keeps the window open and allows retry after the save settles', async () => {
     render(<App />);
     await act(async () => {});
     await waitFor(() => expect(h.onClose).not.toBeNull());
 
-    // A drain that never resolves — only the bounded-timeout branch can release it.
+    // An unknown durable outcome must not grant permission to destroy the window.
     h.drainGate = { promise: new Promise<void>(() => {}) };
 
     vi.useFakeTimers();
@@ -1598,17 +1620,47 @@ describe('unsaved-changes guard is transactional (close / quit)', () => {
       expect(h.destroy).not.toHaveBeenCalled();
       expect(h.closed).toBe(false);
 
-      // Advance past the 2s cap → the Promise.race timeout fires and releases the
-      // close, which force-closes via destroy().
+      // Bound the wait, but retain the window and display a useful save failure.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(2100);
         await handled;
       });
-      expect(h.destroy).toHaveBeenCalled();
-      expect(h.closed).toBe(true);
+      expect(h.destroy).not.toHaveBeenCalled();
+      expect(h.closed).toBe(false);
+      expect(screen.getAllByRole('status').some((node) => node.textContent?.includes('could not be saved'))).toBe(true);
+      h.drainGate = null;
+      await act(async () => { await h.onClose!({ preventDefault: vi.fn() }); });
+      expect(h.destroy).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('failed preference save keeps the native window open until a successful retry', async () => {
+    render(<App />);
+    await act(async () => {});
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+    vi.mocked(saveSettings).mockRejectedValueOnce(new Error('synthetic private storage error'));
+    await act(async () => { await h.onClose!({ preventDefault: vi.fn() }); });
+    expect(h.destroy).not.toHaveBeenCalled();
+    expect(screen.queryByText(/synthetic private storage error/)).toBeNull();
+    expect(screen.getAllByRole('status').some((node) => node.textContent?.includes('could not be saved'))).toBe(true);
+    await act(async () => { await h.onClose!({ preventDefault: vi.fn() }); });
+    expect(h.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('failed hydration never saves render defaults and still protects dirty documents on close', async () => {
+    h.restoreFailed = true;
+    const tabId = await openDirtyDoc();
+    await waitFor(() => expect(h.onClose).not.toBeNull());
+    vi.mocked(saveSettings).mockClear();
+    vi.mocked(sessionWriter.write).mockClear();
+    await act(async () => { await h.onClose!({ preventDefault: vi.fn() }); });
+    await screen.findByRole('alertdialog', { name: /unsaved changes/i });
+    expect(useEditorStore.getState().tabIsDirty(tabId)).toBe(true);
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(sessionWriter.write).not.toHaveBeenCalled();
+    expect(h.destroy).not.toHaveBeenCalled();
   });
 });
 

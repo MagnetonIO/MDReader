@@ -7,8 +7,15 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
+	nativeProfilePersistenceHost: () => __TAURI_INVOKE<PersistenceHost>("native_profile_persistence_host"),
+	nativeProfilePersistenceLoad: () => typedError<PersistedJson, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_load")),
+	nativeProfilePersistenceRead: (identity: RendererIdentity) => typedError<PersistedJson, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_read", { identity })),
+	nativeProfilePersistenceWrite: (identity: RendererIdentity, kind: JsonKind, generation: number, json: string) => typedError<WriteReceipt, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_write", { identity, kind, generation, json })),
+	nativeProfilePersistenceFlush: (submission: FlushSubmission) => typedError<[WriteReceipt, WriteReceipt], PersistenceError>(__TAURI_INVOKE("native_profile_persistence_flush", { submission })),
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
+	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
+	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -424,6 +431,35 @@ export const events = {
 };
 
 /* Types */
+export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
+
+export type AccountError = {
+	kind: string,
+};
+
+export type AccountJob = {
+	id: string,
+	state: JobState,
+};
+
+export type AccountPending = {
+	sequence: string,
+	reason: string,
+};
+
+export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
+
+export type AccountRequest = { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+
+export type AccountStatus = {
+	configured: boolean,
+	retainedLibrary: boolean,
+	recoveryAvailable: boolean,
+	connected: boolean,
+	custody: CustodyStatus | null,
+	latestJob: AccountJob | null,
+};
+
 export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: boolean; replayed: boolean } | { state: "pending"; attemptId: string; reason: NativeProviderError };
 
 export type AdmissionPhase = "vault_pending" | "admission_pending";
@@ -654,7 +690,7 @@ export type CatalogError = {
 	kind: string,
 };
 
-export type CatalogOpen = { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
+export type CatalogOpen = { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
 export type CatalogReference = {
 	sourceId: string,
@@ -916,6 +952,15 @@ export type ConstraintReport = {
 
 export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
 
+export type CustodyStatus = {
+	state: string,
+	enrollmentUncertain: boolean,
+	enrollmentExpired: boolean,
+	recoveryExportAvailable: boolean,
+	materialStaged: boolean,
+	deviceApproval: string,
+};
+
 export type DeviceDocument = {
 	id: string,
 	name: string,
@@ -925,6 +970,10 @@ export type DeviceDocument = {
 	pinned: boolean,
 	line: number,
 	indexed: boolean,
+};
+
+export type DeviceError = {
+	kind: string,
 };
 
 export type DeviceHit = {
@@ -942,6 +991,16 @@ export type DeviceRead = {
 	document: DeviceDocument,
 	markdown: string,
 };
+
+export type DeviceReceipt = {
+	documentId: string,
+	sourceId: string,
+	revision: string,
+};
+
+export type DeviceReply = { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+
+export type DeviceRequest = { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 
@@ -1401,6 +1460,19 @@ export type FilterOperator =
 /**  Glob matching over a text field. */
 "glob";
 
+export type FlushRequest = {
+	requestId: string,
+	identity: RendererIdentity,
+};
+
+export type FlushSubmission = {
+	request: FlushRequest,
+	sessionGeneration: number,
+	settingsGeneration: number,
+	sessionJson: string,
+	settingsJson: string,
+};
+
 /**
  *  Payload for the `mdreader://fs-changed` event. tauri-specta emits a typed
  *  `events.fsChanged` listener into the bindings.
@@ -1523,6 +1595,10 @@ export type InspectedFact = {
 	 */
 	source_changed_since_review: boolean,
 };
+
+export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
+
+export type JsonKind = "session" | "settings";
 
 export type LibraryAvailability = { kind: "available" } | { kind: "missing" } | { kind: "unreadable" } | { kind: "not-directory" };
 
@@ -1873,6 +1949,8 @@ export type OrderDirection =
 /**  Highest value first. */
 "descending";
 
+export type Outcome = { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+
 export type PendingAdmissionDto = {
 	attemptId: string,
 	provider: NativeProviderKind,
@@ -1886,6 +1964,21 @@ export type PendingDeviceImport = {
 	name: string,
 	bytes: number,
 };
+
+export type PersistedJson = {
+	identity: RendererIdentity,
+	/**
+	 *  Complete plugin-compatible wrappers. Unknown fields remain raw on disk;
+	 *  the renderer uses only recognized state and never rewrites this string.
+	 */
+	sessionJson: string | null,
+	settingsJson: string | null,
+};
+
+export type PersistenceError = "invalid" | "unsupported_schema" | "too_large" | "conflict" | "frozen" | "unavailable" | "storage" | "publication_uncertain";
+
+/**  Host implementation choice, not a writer-quiescence or migration proof. */
+export type PersistenceHost = "native_atomic" | "legacy_host";
 
 export type PickedLibrarySource = {
 	source: LibrarySourceDto | null,
@@ -2092,6 +2185,11 @@ export type RelatedOutcomeDto = {
 };
 
 export type RelatedVectorStateDto = "available" | "anchor_missing" | "no_anchor_vectors" | "zero_centroid";
+
+export type RendererIdentity = {
+	ownerEpoch: string,
+	rendererEpoch: string,
+};
 
 export type ReviewCurrent = {
 	sourceId: string,
@@ -2625,6 +2723,14 @@ export type WorkspaceListing = {
 	entries: FileEntry[],
 	/**  Whether `entries` came from the engine's index. */
 	from_index: boolean,
+};
+
+export type WriteReceipt = {
+	kind: JsonKind,
+	generation: number,
+	ownerEpoch: string,
+	rendererEpoch: string,
+	sha256: string,
 };
 
 /* Tauri Specta runtime */

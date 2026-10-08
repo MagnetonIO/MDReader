@@ -12,6 +12,8 @@ use std::time::Duration;
 pub mod accounts;
 pub mod capture;
 pub mod catalog;
+#[cfg(feature = "sync-native")]
+pub mod device;
 pub mod integrations;
 pub mod provider;
 pub mod reviews;
@@ -45,6 +47,10 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    #[cfg(feature = "sync-native")]
+    Account { request: accounts::rpc::AccountRequest },
+    #[cfg(feature = "sync-native")]
+    Device { request: device::DeviceRequest },
     Catalog { request: catalog::CatalogRequest },
     Reviews {
         request: reviews::ReviewRequest,
@@ -231,6 +237,10 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
+        #[cfg(feature = "sync-native")]
+        Request::Account { .. } => return Err(protocol_error("Accounts require the desktop service")),
+        #[cfg(feature = "sync-native")]
+        Request::Device { .. } => return Err(protocol_error("Device reading requires the desktop service")),
         Request::Catalog { .. } => return Err(protocol_error("Catalog requires the desktop service")),
         Request::Reviews { .. }
         | Request::Provider { .. }
@@ -392,7 +402,7 @@ pub fn serve(directory: &Path) -> Result<()> {
     serve_with_options(directory, ServiceOptions::default())
 }
 pub fn serve_with_options(directory: &Path, options: ServiceOptions) -> Result<()> {
-    serve_configured(directory, options, None)
+    serve_configured(directory, options, NativeAdapters::default())
 }
 /// Native owner supplies registration/vault/transport custody. No credential
 /// enumeration or provider I/O occurs merely because the service starts.
@@ -401,12 +411,33 @@ pub fn serve_with_provider_factory(
     options: ServiceOptions,
     factory: Arc<dyn provider::ProviderFactory>,
 ) -> Result<()> {
-    serve_configured(directory, options, Some(factory))
+    serve_configured(directory, options, NativeAdapters {
+        factory: Some(factory),
+        #[cfg(feature = "sync-native")]
+        accounts: None,
+    })
+}
+/// Trusted native registration and private cache layout, never renderer data.
+#[cfg(feature = "sync-native")]
+pub fn serve_with_native_accounts(
+    directory: &Path,
+    options: ServiceOptions,
+    factory: Option<Arc<dyn provider::ProviderFactory>>,
+    setup: accounts::Result<Option<accounts::NativeSetup>>,
+    roots: accounts::CacheRoots,
+) -> Result<()> {
+    serve_configured(directory, options, NativeAdapters { factory, accounts: Some((setup, roots)) })
+}
+#[derive(Default)]
+struct NativeAdapters {
+    factory: Option<Arc<dyn provider::ProviderFactory>>,
+    #[cfg(feature = "sync-native")]
+    accounts: Option<(accounts::Result<Option<accounts::NativeSetup>>, accounts::CacheRoots)>,
 }
 fn serve_configured(
     directory: &Path,
     options: ServiceOptions,
-    factory: Option<Arc<dyn provider::ProviderFactory>>,
+    adapters: NativeAdapters,
 ) -> Result<()> {
     std::fs::create_dir_all(directory)?;
     #[cfg(unix)]
@@ -422,11 +453,11 @@ fn serve_configured(
     sync::initialize(&mut owner)
         .map_err(|_| protocol_error("Encrypted sync storage is unavailable"))?;
     let store = Arc::new(Mutex::new(owner));
-    let runtime = Arc::new(runtime::Runtime::new_with_provider(
+    let runtime = Arc::new(runtime::Runtime::new_with_adapters(
         store,
         directory.join("models"),
         options,
-        factory,
+        adapters,
     )?);
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     let token = format!(

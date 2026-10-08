@@ -30,6 +30,7 @@ tauri-build = { version = "2", features = [] }
 serde_json = { workspace = true }
 
 [dependencies]
+mdreader-profile = { path = "../crates/mdreader-profile" }
 mdreader-legacy-export = { path = "../crates/mdreader-legacy-export" }
 mdreader-core = { path = "../crates/mdreader-core", features = ["device-assets"] }
 mdreader-provider = { path = "../crates/mdreader-provider" }
@@ -39,7 +40,7 @@ mdreader-capture = { path = "../crates/mdreader-capture" }
 mdreader-mcp = { path = "../crates/mdreader-mcp" }
 tauri = { version = "2", features = ["specta"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 specta = "=2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
@@ -93,21 +94,24 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 # `time` for the model-load deadline (a never-finishing download must surface a
 # timeout, not hang the import forever).
-tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "sync", "time", "process"] }
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
+mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
+mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["windows-native"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed"] }
+mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
+mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["sync-secret-service"] }
 catdb-sdk = { git = "file:///Users/mlong/Documents/Development/CatDB", tag = "catdb-sdk-v1.0.0", features = ["local-embed"] }
 

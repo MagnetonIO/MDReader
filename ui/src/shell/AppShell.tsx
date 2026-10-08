@@ -34,7 +34,6 @@ import {
   textScaleFactor,
   useSettingsStore,
 } from '../stores/settings.js';
-import { serializeSession } from '../stores/session.js';
 import {
   documentKey,
   isLocalDocument,
@@ -44,7 +43,8 @@ import {
 } from '../stores/types.js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import { isTauri, loadPersisted, saveSettings, sessionWriter } from './persistence.js';
+import { isTauri, loadPersisted, sessionWriter } from './persistence.js';
+import { useAppPersistence } from './use-app-persistence.js';
 import {
   closeAndForgetLibrarySource,
   grantLibrarySource,
@@ -86,6 +86,9 @@ import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
 import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
 import { CanonicalReader } from '../features/reader/CanonicalReader';
+import type { CanonicalReaderReference } from '../features/reader/contracts';
+import { DeviceReader } from '../features/device-reader/DeviceReader';
+import { isDeviceReference } from '../features/device-reader/backend';
 import { makeSemanticsAdapter } from '../platform/semantics.js';
 import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
 import { InspectorRail } from './lens/InspectorRail.js';
@@ -179,7 +182,7 @@ export function AppShell() {
     };
   }, []);
   const [cloudSaving, setCloudSaving] = useState(false);
-  const [canonicalDocument, setCanonicalDocument] = useState<ProviderReaderReference | null>(null);
+  const [canonicalDocument, setCanonicalDocument] = useState<CanonicalReaderReference | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
   const legacy = useLegacyRecords(activeTabId, semanticWorkspaceGeneration);
   const {
@@ -196,6 +199,7 @@ export function AppShell() {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [persistenceReady, setPersistenceReady] = useState(false);
   // The unsaved-changes guard: closing a dirty tab, or quitting with dirty tabs,
   // routes through this prompt before anything is discarded.
   const [closeGuard, setCloseGuard] = useState<
@@ -1698,6 +1702,12 @@ export function AppShell() {
         if (active) setHydrated(true);
         return;
       }
+      if (persisted.restoreFailed) {
+        if (active) toast('Saved preferences could not be read. Changes will not be saved until MDReader can read them.', 8000);
+        if (active) setHydrated(true);
+        return;
+      }
+      if (active) setPersistenceReady(true);
       const { session, settings } = persisted;
       if (Object.keys(settings).length > 0) useSettingsStore.getState().hydrate(settings);
       if (!startupIsCurrent()) {
@@ -1739,146 +1749,8 @@ export function AppShell() {
     applyTheme(theme);
   }, [theme]);
 
-  // --- persist session --------------------------------------------------
-  // Enqueue the current session onto the single-flight writer, reading the latest
-  // store state at call time. The writer serializes every persist (debounced, on
-  // visibility change, on close) so writes never overlap and a burst coalesces to
-  // the newest snapshot — no interleaving, no lost final state.
-  const flushSession = useCallback(() => {
-    const t = useTabsStore.getState();
-    const s = useSourcesStore.getState();
-    sessionWriter.write(
-      serializeSession({
-        root: s.root,
-        activeTabId: t.activeTabId,
-        tabs: t.tabs,
-        recent: s.recent,
-      }),
-    );
-  }, []);
-  flushSessionRef.current = flushSession;
-
-  // Persist the current settings NOW (bypassing the 1s debounce), reading the
-  // latest store state at call time. Returns the write promise so the close path
-  // can bound-await it. Settings are small and last-writer-wins, so an immediate
-  // write-through is safe; without this, a preference toggled in the last second
-  // before the app closes (theme, reading font, text size, the related rail) is
-  // lost when only the session — not settings — is flushed on the way out.
-  const flushSettings = useCallback(() => {
-    const s = useSettingsStore.getState();
-    return saveSettings({
-      theme: s.theme,
-      readingFont: s.readingFont,
-      textScaleIndex: s.textScaleIndex,
-      sidebarCollapsed: s.sidebarCollapsed,
-      outlineVisible: s.outlineVisible,
-      relatedRailOpen: s.relatedRailOpen,
-      inspectorOpen: s.inspectorOpen,
-      lensSchema: s.lensSchema,
-      reviewer: s.reviewer,
-    });
-  }, []);
-
-  // Debounced 1s on every session-shaping change.
-  useEffect(() => {
-    if (!hydrated) return;
-    const handle = window.setTimeout(flushSession, 1000);
-    return () => window.clearTimeout(handle);
-  }, [hydrated, flushSession, tabs, activeTabId, root, recent]);
-
-  // Flush synchronously when the window is going away, so quitting within the 1s
-  // debounce window can't restore a stale (pre-switch) workspace/tab set. Both
-  // signals are best-effort: `visibilitychange:hidden` is the reliable
-  // "app backgrounding/closing" cue, `beforeunload` covers a plain webview close.
-  useEffect(() => {
-    if (!hydrated) return;
-    const flushAll = () => {
-      flushSession();
-      void flushSettings();
-    };
-    const onBeforeUnload = () => flushAll();
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') flushAll();
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('beforeunload', onBeforeUnload);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [hydrated, flushSession, flushSettings]);
-
-  // Native window close (the red X). We intercept to (a) honour the persistence
-  // contract — a BOUNDED session drain before the window goes away — and (b) guard
-  // unsaved edits. Because we preventDefault to do that async work, we must then
-  // force the close ourselves, and we do so with destroy() (which requires the
-  // `core:window:allow-destroy` capability), NOT close(): a window we just vetoed
-  // will not honour a fresh close() in the real webview. The `closing` flag guards
-  // against a second close request racing in before destroy() completes:
-  //   - re-entry (`closing` already set) → do NOT preventDefault → let it through.
-  //   - first entry → preventDefault; flush + BOUNDED drain (never hang the close);
-  //     if dirty → prompt (the guard clears dirty then force-closes via destroy());
-  //     else mark `closing` and call destroy() to tear the window down.
-  // Net: the red X ALWAYS closes, after a bounded drain, via destroy().
-  useEffect(() => {
-    if (!hydrated || !isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void (async () => {
-      try {
-        const appWindow = getCurrentWindow();
-        const off = await appWindow.onCloseRequested(async (event) => {
-          if (closingRef.current) return; // re-entry: let the native close proceed
-          event.preventDefault();
-          // Persistence contract: flush the latest session AND settings, then DRAIN
-          // them, bounded so a stuck write can never wedge the close. Settings ride
-          // the same barrier as the session so a last-second preference change
-          // (theme, font, text size, related rail) survives an immediate quit.
-          flushSession();
-          const settingsWrite = flushSettings();
-          await boundedPersistenceDrain(Promise.all([sessionWriter.drain(), settingsWrite]));
-          if (useEditorStore.getState().dirtyTabIds().length > 0) {
-            setCloseGuard({ kind: 'quit' }); // guard clears dirty + re-closes
-            return;
-          }
-          closingRef.current = true;
-          // Force the close PAST our own preventDefault. `close()` only re-requests
-          // a close (re-firing onCloseRequested) and, in the real webview, does not
-          // actually shut a window we just vetoed — the mock that "re-fires" misled
-          // the unit tests; the macOS GUI smoke is the real guard. `destroy()` tears
-          // the window down unconditionally without re-firing (needs allow-destroy).
-          await appWindow.destroy();
-        });
-        if (disposed) off();
-        else unlisten = off;
-      } catch {
-        /* not a real Tauri window (mocked IPC / no window API) — no close hook */
-      }
-    })();
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [hydrated, flushSession, flushSettings]);
-
-  // --- persist settings (debounced 1s) ----------------------------------
-  useEffect(() => {
-    if (!hydrated) return;
-    const handle = window.setTimeout(() => void flushSettings(), 1000);
-    return () => window.clearTimeout(handle);
-  }, [
-    hydrated,
-    flushSettings,
-    theme,
-    readingFont,
-    textScaleIndex,
-    sidebarCollapsed,
-    outlineVisible,
-    relatedRailOpen,
-    inspectorOpen,
-    lensSchema,
-    reviewer,
-  ]);
+  const requestQuitGuard = useCallback(() => setCloseGuard({ kind: 'quit' }), []);
+  useAppPersistence({ hydrated, persistenceReady, flushSessionRef, closingRef, requestQuit: requestQuitGuard });
 
   // --- live reload from the workspace watcher ---------------------------
   // A "continuous" write burst (a long save) can fire many events for one path.
@@ -2141,7 +2013,10 @@ export function AppShell() {
             }`}
           >
             {canonicalDocument ? (
-              <CanonicalReader
+              isDeviceReference(canonicalDocument) ? <DeviceReader
+                reference={canonicalDocument}
+                onClose={() => setCanonicalDocument(null)}
+              /> : <CanonicalReader
                 reference={canonicalDocument}
                 sourceKind={canonicalDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
                 backend={canonicalDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}

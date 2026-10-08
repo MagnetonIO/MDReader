@@ -439,3 +439,57 @@ remain unavailable until their actual owners are connected. Pairing passes its
 focused authority/actual local HTTPS Worker/JOSE cases but has no shipping native
 account coordinator/UI yet. CatDB removal, live provider/device acceptance and
 release packaging remain open.
+
+## Native typed sync pump integration, 2026-10-08
+
+The typed foreground pump (`a2d17f8`) and shared owner asset-runtime constructor
+(`0c4e19f`) are composed with the current Settings integration. An explicit sync
+action hydrates authenticated dependencies and delegates contiguous revisions to
+the existing atomic SQLite publisher; it acknowledges durable applied state only.
+Cancellation drains retained blocking jobs. The native account freeze supplies
+an exact-scoped participant guard, not a profile-wide preservation proof.
+
+The combined tree passed three account cases, ten incoming SQLite/filesystem
+cases and strict service `sync-native --all-targets` Clippy, using the warm cache
+and two jobs. See [the integration receipt](native-sync-pump-integration-2026-10-08.md).
+Actual account-actor HTTPS flow/cancellation acceptance, outgoing immutable
+graphs, product document/asset discovery, all-writer preservation and release
+packaging remain separate gates. No installed data or deployment changed.
+
+## Strict native preferences startup and actual actor proof, 2026-10-08
+
+Unix desktop now composes the real strict session/settings JSON owner at startup
+and omits the plugin exit-time writer. Failed hydration cannot save defaults;
+failed or timed-out close saves keep the window open with retry. The touched
+persistence responsibility moved from AppShell into a small lifecycle hook.
+The actual Tauri crate passed seven focused native cases and two existing binding/
+command-thread gates; eighteen affected frontend cases, TypeScript and scoped
+lint pass. See [the startup receipt](native-strict-persistence-2026-10-08.md).
+Six other real participants remain missing; installed preservation and durable
+activation/rollback are still unavailable. Native unused-code warnings are
+recorded, not suppressed, and strict full native Clippy remains open.
+
+The actual local HTTPS account-actor fixture now proves recovery/PKCE through
+the real transport/vault codec and encrypted Markdown/PNG publication, pin/line
+state and deletion. A cancellation mutation removing actual blocking-job drain
+failed as expected; restored source passed, together with three account cases
+and strict service feature Clippy. This uses synthetic identity/test-only keyring
+storage, not live Auth0 or OS-vault acceptance. See
+[the actor receipt](../../crates/mdreader-service/src/accounts/acceptance/README.md).
+
+## Native reader, capture and outgoing composition, 2026-10-08
+
+The primary device reader and strict preferences are composed and verified;
+the smoke harness now resolves this standalone repository from any caller CWD.
+Capture producer admission `302b0e1` and immutable outgoing graph foundation
+`e02b8c9` now compose with that reader. The combined service artifact passed
+eleven focused cases across capture admission/Runtime, device reads, account
+lifecycle, actual local HTTPS actor and real hook subprocess. Default and
+shipping service/capture strict all-target Clippy pass. See the
+[combined receipt](native-capture-outgoing-composition-2026-10-08.md).
+
+Product native document upload remains unavailable until exact selection,
+durable native association and receipt-proven same-document echo are complete.
+SQLite-open identity and read-only final publication fencing are separate
+checkpoints in progress. Installed migration/rollback, all-writer preservation,
+CatDB removal, live provider/device acceptance and packaging remain open.

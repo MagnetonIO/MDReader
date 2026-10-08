@@ -1,6 +1,9 @@
 #[cfg_attr(not(feature = "local-embed"), allow(dead_code))]
 #[path = "model.rs"]
 mod model;
+#[cfg(all(test, unix))]
+#[path = "capture/runtime_tests.rs"]
+mod capture_admission_tests;
 use super::SearchOutcome;
 use super::{execute, protocol_error, Request, SearchMode};
 use mdreader_core::{ReaderError, ReaderStore, Result};
@@ -18,7 +21,12 @@ pub(super) struct Runtime {
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    capture_admission: super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
+    #[cfg(feature = "sync-native")]
+    accounts: super::accounts::Result<super::accounts::Coordinator>,
+    #[cfg(feature = "sync-native")]
+    device: Option<Arc<super::device::Coordinator>>,
     reviews: std::result::Result<super::reviews::Coordinator, super::reviews::ReviewError>,
     providers:
         std::result::Result<Option<super::provider::Coordinator>, mdreader_provider::ProviderError>,
@@ -38,6 +46,18 @@ impl Runtime {
         options: super::ServiceOptions,
         factory: Option<Arc<dyn super::provider::ProviderFactory>>,
     ) -> Result<Self> {
+        Self::new_with_adapters(store, cache, options, super::NativeAdapters {
+            factory,
+            #[cfg(feature = "sync-native")]
+            accounts: None,
+        })
+    }
+    pub(super) fn new_with_adapters(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
+        options: super::ServiceOptions,
+        adapters: super::NativeAdapters,
+    ) -> Result<Self> {
         // Offline mode creates neither an actor thread nor a model/download.
         #[cfg(feature = "local-embed")]
         let model = (!options.disable_model).then(|| ModelActor::new(cache.clone(), false));
@@ -47,8 +67,36 @@ impl Runtime {
             None
         };
         let owner = store.clone();
+        #[cfg(feature = "sync-native")]
+        let asset_runtime = mdreader_core::device::assets::AssetRuntime::default();
+        #[cfg(feature = "sync-native")]
+        let device_roots = adapters.accounts.as_ref().map(|(_, roots)| {
+            (roots.documents.clone(), roots.assets.clone())
+        });
+        // Initialize the borrowed account namespace before the background writer
+        // starts; a legitimate indexing turn must not become a permanent Busy.
+        #[cfg(feature = "sync-native")]
+        let accounts = match adapters.accounts {
+            Some((setup, roots)) => setup.and_then(|setup| {
+                super::accounts::Coordinator::with_asset_runtime(
+                    owner.clone(), setup, roots, asset_runtime.clone(),
+                )
+            }),
+            None => Err(super::accounts::AccountError::Unconfigured),
+        };
         let mut runtime = Self::with_model(store, cache, model)?;
-        if let Some(factory) = factory {
+        #[cfg(feature = "sync-native")]
+        {
+            runtime.accounts = accounts;
+            if let Some((documents, assets)) = device_roots {
+                let device = Arc::new(super::device::Coordinator::new(
+                    owner.clone(), runtime.queries.clone(), documents, assets, asset_runtime,
+                ));
+                runtime.catalog.enable_device_catalog(device.clone());
+                runtime.device = Some(device);
+            }
+        }
+        if let Some(factory) = adapters.factory {
             // Provider cache/host failure must not take local reading, capture,
             // or indexing offline. Retain the typed error for provider clients.
             runtime.providers = (|| {
@@ -86,6 +134,9 @@ impl Runtime {
             .to_path_buf();
         let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
         let worker_directory = directory.clone();
+        let capture_admission = super::capture::admission::Coordinator::new(store.clone(), &directory)
+            .map(Arc::new);
+        let worker_capture = capture_admission.clone();
         std::thread::spawn(move || {
             if let Some(model) = &worker_model {
                 // Persisted vectors need query inference after a service restart.
@@ -108,8 +159,15 @@ impl Runtime {
             let mut scheduler = Scheduler::default();
             loop {
                 // Admission does not wait for initialization or inference.
-                if let Ok(mut store) = worker_store.lock() {
-                    let _ = super::capture::drain(&mut store, &worker_directory);
+                if let Ok(lease) = worker_capture
+                    .as_ref()
+                    .map_err(|error| *error)
+                    .and_then(|admission| admission.enter())
+                {
+                    let _lease = lease;
+                    if let Ok(mut store) = worker_store.lock() {
+                        let _ = super::capture::drain(&mut store, &worker_directory);
+                    }
                 }
                 let activity = scheduler.tick(&worker_store, worker_model.as_ref());
                 // Continue fair progress immediately. A zero timeout still
@@ -141,7 +199,12 @@ impl Runtime {
             model,
             wake,
             directory,
+            capture_admission,
             providers: Ok(None),
+            #[cfg(feature = "sync-native")]
+            accounts: Err(super::accounts::AccountError::Unconfigured),
+            #[cfg(feature = "sync-native")]
+            device: None,
         })
     }
     fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -154,7 +217,37 @@ impl Runtime {
             .lock()
             .map_err(|_| protocol_error("reader query worker failed"))
     }
+    /// Real server-owned participant; never construct a second admission gate
+    /// to stand in for this Runtime during cross-process preservation.
+    pub(super) fn capture_participant(
+        &self,
+    ) -> super::capture::admission::Result<&Arc<super::capture::admission::Coordinator>> {
+        self.capture_admission.as_ref().map_err(|error| *error)
+    }
+    fn capture_effect(&self) -> Result<super::capture::admission::EffectLease> {
+        self.capture_participant()
+            .and_then(|admission| admission.enter())
+            .map_err(|_| protocol_error("Capture producers are paused or unavailable"))
+    }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        #[cfg(feature = "sync-native")]
+        if let Request::Device { request } = request {
+            let result = self.device.as_ref()
+                .ok_or(super::device::DeviceError::Unconfigured)
+                .and_then(|device| device.execute(request));
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
+        #[cfg(feature = "sync-native")]
+        if let Request::Account { request } = request {
+            let result = self.accounts.as_ref().map_err(|error| *error).and_then(|owner| owner.execute(request));
+            return Ok(match result {
+                Ok(reply) => serde_json::json!({"result":reply,"error":null}),
+                Err(error) => serde_json::json!({"result":null,"error":error}),
+            });
+        }
         if let Request::Catalog { request } = request {
             let result = self.catalog.execute(request);
             return Ok(match result {
@@ -201,12 +294,14 @@ impl Runtime {
                 .map_err(|_| protocol_error("invalid embedding policy"));
         }
         if let Request::ConfigureCapture { policy } = request {
+            let _lease = self.capture_effect()?;
             let path = super::capture::policy_path(&self.directory, &policy.project_id);
             super::capture::configure(&mut *self.store()?, &self.directory, policy)?;
             let _ = self.wake.try_send(());
             return Ok(serde_json::json!({"configured":true,"policyPath":path}));
         }
         if let Request::CaptureBackfill { project_id, request } = request {
+            let _lease = self.capture_effect()?;
             let mutation = request.is_mutation();
             let reply = super::capture::backfill::execute(
                 &mut *self.store()?,
@@ -221,6 +316,7 @@ impl Runtime {
                 .map_err(|_| protocol_error("invalid backfill reply"));
         }
         if matches!(request, Request::CaptureStatus) {
+            let _lease = self.capture_effect()?;
             return serde_json::to_value(super::capture::status(
                 &*self.queries()?,
                 &self.directory,
@@ -243,6 +339,7 @@ impl Runtime {
                 | Request::ApplyIntegration { .. }
                 | Request::UninstallIntegration { .. }
         ) {
+            let _lease = self.capture_effect()?;
             return super::integrations::execute(&mut *self.store()?, &self.directory, request);
         }
         if let Request::SearchRanked {
@@ -946,3 +1043,7 @@ mod tests {
         assert_eq!(result.unwrap().unwrap()[0]["path"], "note.md");
     }
 }
+
+#[cfg(all(test, feature = "sync-native"))]
+#[path = "accounts_runtime_tests.rs"]
+mod accounts_tests;
