@@ -1,6 +1,9 @@
 /** Strict native JSON persistence. Plugin stores never open these two files. */
 import { invoke } from '@tauri-apps/api/core';
-import { deserializeSession, sanitizeSettings, type RestoredSession, type SessionData } from '../stores/session.js';
+import { deserializeSession, sanitizeSettings, type RestoredSession } from '../stores/session.js';
+import { restoreReaderHistory } from '../features/reader-history/serialization';
+import type { RestoredHistory } from '../features/reader-history/model';
+import { createSessionPatchWriter, type SessionPatch } from '../features/reader-history/session-patches';
 import type { SettingsSnapshot } from '../stores/settings.js';
 
 export function isTauri(): boolean {
@@ -51,11 +54,12 @@ export interface FlushRequest { requestId: string; identity: RendererIdentity }
 interface NativeLoaded {
   identity: RendererIdentity; sessionJson: string | null; settingsJson: string | null;
 }
-export interface LatestPersistence { session: SessionData; settings: SettingsSnapshot }
+export interface LatestPersistence { session: SessionPatch; settings: SettingsSnapshot }
 export interface LoadedState {
   session: RestoredSession | null; settings: Partial<SettingsSnapshot>;
   /** Fixed diagnostic only; defaults after this failure must not be saved. */
   restoreFailed?: true;
+  readerHistory?: RestoredHistory;
 }
 
 let registration: Promise<NativeLoaded> | undefined;
@@ -122,15 +126,20 @@ export async function loadPersisted(): Promise<LoadedState> {
     if (await persistenceHost() === 'legacy_host') {
       const legacy = await import('./legacy-persistence.js');
       const state = await legacy.readLegacyPersistence();
-      return { session: deserializeSession(state.session), settings: sanitizeSettings(state.settings) };
+      return { session: deserializeSession(state.session), settings: sanitizeSettings(state.settings), readerHistory: restoreReaderHistory(undefined, false) };
     }
     const registration = await registered();
     const loaded = await invoke<NativeLoaded>('native_profile_persistence_read', { identity: registration.identity });
     if (!sameIdentity(loaded.identity, registration.identity)) throw new Error('Invalid persistence identity');
     const session: unknown = loaded.sessionJson === null ? null : JSON.parse(loaded.sessionJson);
     const settings: unknown = loaded.settingsJson === null ? null : JSON.parse(loaded.settingsJson);
+    const rawSession = isObject(session) ? session.session : undefined;
+    const reader = rawSession !== undefined && (!isObject(rawSession) || rawSession.version !== 1)
+      ? restoreReaderHistory({ version: -1 }, true)
+      : restoreReaderHistory(isObject(rawSession) ? rawSession.readerHistory : undefined, true);
     const state = {
-      session: deserializeSession(isObject(session) ? session.session : null),
+      readerHistory: reader,
+      session: deserializeSession(rawSession),
       settings: sanitizeSettings(isObject(settings) ? settings.settings : null),
     };
     if (attempt === hydrationAttempt) hydrated = { attempt, identity: { ...loaded.identity } };
@@ -140,7 +149,7 @@ export async function loadPersisted(): Promise<LoadedState> {
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-async function write(kind: 'session' | 'settings', data: SessionData | SettingsSnapshot): Promise<void> {
+async function write(kind: 'session' | 'settings', data: SessionPatch | SettingsSnapshot): Promise<void> {
   if (!isTauri()) return;
   const admission = hydrated;
   if (preservation) throw new Error('Persistence is frozen for preservation');
@@ -158,8 +167,8 @@ async function write(kind: 'session' | 'settings', data: SessionData | SettingsS
   });
   verifyReceipt(receipt, loaded.identity, kind, generation);
 }
-export async function saveSession(data: SessionData): Promise<void> { await write('session', data); }
-export const sessionWriter: SerialWriter<SessionData> = createSerialWriter(saveSession);
+export async function saveSession(data: SessionPatch): Promise<void> { await write('session', data); }
+export const sessionWriter = createSessionPatchWriter(saveSession, createSerialWriter);
 const settingsWriter = createSerialWriter<SettingsSnapshot>((data) => write('settings', data));
 export async function saveSettings(snapshot: SettingsSnapshot): Promise<void> {
   settingsWriter.write(snapshot);

@@ -32,3 +32,17 @@ test('inline local links expose exact ambiguous candidates and preserve shared p
   await screen.findByRole('heading', { name: /Origin/ });
   expect(backend.readDocument).toHaveBeenLastCalledWith(origin);
 });
+
+test('restoring a saved position waits for exact receipt verification and refuses a mismatched body', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'saved.md', revision: 'b'.repeat(64), title: 'Saved' };
+  const onPosition = vi.fn();
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async () => ({ operation: 'read_document' as const, ...reference,
+      revision: 'c'.repeat(64), markdown: '# Different revision', lineStart: 1, lineEnd: 1 })),
+  };
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}}
+    position={{ revision: reference.revision, line: 1, block: 0, offset: 10 }} onPosition={onPosition} />);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'The selected document revision is no longer available.');
+  expect(screen.queryByRole('heading', { name: /Different revision/ })).toBeNull();
+  expect(onPosition).not.toHaveBeenCalled();
+});
