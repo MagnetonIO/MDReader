@@ -173,12 +173,15 @@ describe('Settings sheet', () => {
     expect(api.diagnosticsInfo).toHaveBeenCalledOnce();
   });
 
-  it('makes offline preservation explicit without enrolling or querying a legacy account', async () => {
+  it('keeps developer migration commands out of Settings', async () => {
     const api = backend();
     render(<SettingsSheet backend={api} watcher="idle" importState={null}
       onActivateSource={async () => true} onClose={() => {}} initialSection="advanced" />);
-    expect(screen.getByText('Preserve an offline snapshot')).toBeTruthy();
-    expect(screen.getByLabelText('Offline archive commands').textContent).toContain('mdreader-legacy-export verify');
+    expect(screen.queryByText('Preserve an offline snapshot')).toBeNull();
+    expect(screen.queryByText('Migration & archived records')).toBeNull();
+    expect(screen.queryByLabelText('Offline archive commands')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Backup & storage' }));
+    expect(screen.queryByText(/Advanced → Migration/)).toBeNull();
     expect(screen.queryByRole('textbox', { name: /bearer|origin/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /Connect Dropbox|Reconnect|Enroll/i })).toBeNull();
     expect(api.listSources).toHaveBeenCalledOnce();

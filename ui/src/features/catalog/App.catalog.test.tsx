@@ -95,7 +95,7 @@ function documentElement(selector: string): Element {
   return element;
 }
 
-test('migration opens explicitly while historical Recent keeps its identity without fetching or regranting', async () => {
+test('historical Recent keeps its identity without fetching, regranting or opening developer migration tools', async () => {
   const providerRead = vi.spyOn(nativeProvidersBackend, 'readDocument');
   const fileRead = vi.spyOn(filesystem, 'readDoc');
   const reference = { kind: 'cloud' as const, sourceId: 'historical-source', recordKey: 'historical-key',
@@ -109,11 +109,9 @@ test('migration opens explicitly while historical Recent keeps its identity with
   expect(providerRead).not.toHaveBeenCalled();
   expect(fileRead).not.toHaveBeenCalled();
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
-  fireEvent.click(within(screen.getByRole('region', { name: 'Retained historical document' }))
-    .getByRole('button', { name: 'Migration & archived records' }));
-  const settings = await screen.findByRole('dialog', { name: 'Settings' });
-  expect(within(settings).getByRole('button', { name: 'Advanced' }).getAttribute('aria-current')).toBe('page');
-  expect(within(settings).getByText('Preserve an offline snapshot')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Retained historical document' }))
+    .queryByRole('button', { name: 'Migration & archived records' })).toBeNull();
+  expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
   expect(useTabsStore.getState().tabs[0]?.docRef).toEqual(reference);
 });
 
