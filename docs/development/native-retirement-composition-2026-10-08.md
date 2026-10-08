@@ -77,3 +77,20 @@ Typed durable canonical history, exact native outgoing association/self-echo,
 ReaderDaemon and remaining writer preservation, installed migration/export/
 rollback, live connectors and release packaging remain open. The actual stable
 web preview sign-in is separately verified and is not native sync acceptance.
+
+## Bounded dependency receipt composition
+
+After the native retirement commit `e1b976d`, this isolated branch also composes
+`6076cce`: each immutable ciphertext dependency receipt reads and hashes only its
+exact bounded row, while root upload/commit retains full graph validation. This
+removes repeated whole-graph allocation/hashing per chunk. No performance
+benchmark or idle-CPU improvement is claimed.
+
+The combined `mdreader-sync --features native-authority --lib
+store::graph_tests::` checkpoint passed all three affected cases (5.60 seconds
+compile, 0.55 seconds tests) with the existing warm benchmark target and two jobs.
+The feature checkpoint separately passed its meaningful old-implementation RED,
+actual local HTTPS fixture and strict Clippy; those checks were not repeated.
+Only the four committed receipt paths were merged; native association/self-echo
+work remains isolated and unaccepted. All root check processes are terminal.
+

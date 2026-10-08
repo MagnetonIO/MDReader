@@ -508,3 +508,8 @@ final-fence status. It does not establish CatDB removal or release readiness.
 Durable canonical history, selected native upload association/self-echo, remaining
 writer preservation, installed activation/rollback, live connectors and packaging
 remain open. Seven inherited Tauri warnings and strict full-native Clippy remain.
+
+The same isolated composition includes `6076cce` bounded per-dependency receipt
+validation, retaining full graph publication checks. All three affected sync
+graph cases pass on the combined tree; selected native upload remains unavailable
+until durable association and same-document echo acceptance.
