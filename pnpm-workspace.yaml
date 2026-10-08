@@ -1,7 +1,6 @@
 packages:
   - ui
   - packages/*
-  - catdb/sdk/*
 allowBuilds:
   '@swc/core': false
   esbuild: false
