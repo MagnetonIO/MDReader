@@ -167,6 +167,13 @@ portability blocker until migration removes it; do not claim fresh-clone readine
 - Keep deployment/resource changes reproducible in the companion Wrangler
   configuration. Use its local-first tests and documented migration rules.
   Provisioning infrastructure is distinct from deploying/enabling sync.
+- Vercel website delivery follows the companion web repository's `AGENTS.md`:
+  verify the exact project/root, keep Preview and Production resources/secrets
+  separate, use locked package builds and test the actual deployment URL.
+  Preserve the Vercel website / Cloudflare sync boundary. Local/browser SQLite
+  remains device-owned; do not move it into ephemeral Vercel Function storage.
+  Native packaging, web preview, production promotion and sync activation each
+  require their own evidence; share one heavy-build slot across all of them.
 
 Primary references: [Rust MSRV policy](https://doc.rust-lang.org/cargo/reference/rust-version.html),
 [Cargo CI](https://doc.rust-lang.org/cargo/guide/continuous-integration.html),
