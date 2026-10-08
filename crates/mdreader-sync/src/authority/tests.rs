@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 const ISSUER: &str = "https://native-synthetic-issuer.example.test";
 const API_AUDIENCE: &str = "https://mdreader.dev/sync";
 const REDIRECT: &str = "http://127.0.0.1:43871/mdreader-sync/callback";
-static LOGIN_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static LOGIN_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn registration(origin: &str) -> ReviewedOidcRegistration {
     ReviewedOidcRegistration::new(
         ISSUER,
@@ -360,6 +360,53 @@ struct Fixture {
     origin: String,
     cert: reqwest::Certificate,
 }
+struct LoopbackBrowser(reqwest::Client);
+impl NativeBrowser for LoopbackBrowser {
+    fn open<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AuthorityResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt;
+            let response = self
+                .0
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| AuthorityError::Interrupted)?;
+            if response.status().as_u16() != 302 {
+                return Err(AuthorityError::Identity);
+            }
+            let redirect = url::Url::parse(
+                response
+                    .headers()
+                    .get("location")
+                    .ok_or(AuthorityError::Identity)?
+                    .to_str()
+                    .map_err(|_| AuthorityError::Identity)?,
+            )
+            .map_err(|_| AuthorityError::Identity)?;
+            if redirect.host_str() != Some("127.0.0.1") || redirect.scheme() != "http" {
+                return Err(AuthorityError::Identity);
+            }
+            let port = redirect.port().ok_or(AuthorityError::Identity)?;
+            let mut stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+                .await
+                .map_err(|_| AuthorityError::Interrupted)?;
+            let request = Zeroizing::new(format!(
+                "GET {}?{} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n",
+                redirect.path(),
+                redirect.query().ok_or(AuthorityError::Identity)?
+            ));
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .map_err(|_| AuthorityError::Interrupted)?;
+            // Real OS browser launch returns immediately; callback server responds separately.
+            Ok(())
+        })
+    }
+}
 impl Fixture {
     fn start() -> Self {
         let web = std::env::var("MDREADER_SYNC_WEB_WORKTREE")
@@ -426,6 +473,22 @@ impl Fixture {
         )
     }
     async fn login(&self, factory: &NativeAuthorityFactory, nonce: Option<&str>) -> VerifiedLogin {
+        if nonce.is_none() {
+            let socket = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let redirect = format!(
+                "http://127.0.0.1:{}/mdreader-sync/callback",
+                socket.local_addr().unwrap().port()
+            );
+            drop(socket);
+            return factory
+                .login_desktop(
+                    &redirect,
+                    &LoopbackBrowser(self.http()),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .await
+                .unwrap();
+        }
         let attempt = match nonce {
             Some(nonce) => factory.test_begin_nonce(REDIRECT, nonce).unwrap(),
             None => factory.begin_login(REDIRECT).unwrap(),

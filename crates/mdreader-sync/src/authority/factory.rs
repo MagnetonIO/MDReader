@@ -8,7 +8,7 @@ use std::{
 use zeroize::Zeroizing;
 pub struct NativeLogin {
     pending: PendingLogin,
-    epoch: u64,
+    pub(super) epoch: u64,
     controller: Weak<SessionController>,
 }
 impl std::fmt::Debug for NativeLogin {

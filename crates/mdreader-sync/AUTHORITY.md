@@ -26,9 +26,9 @@ issuer, public client ID, separate API audience, authorization/token/JWKS endpoi
 sync origin. It cannot deserialize this registration from renderer JSON, discover
 an issuer from a token/callback, or use an insecure injected HTTP client. Native
 `NativeBrowser` dispatches an authorization URL to the system browser. The native
-callback owner must bind/listen on the exact `127.0.0.1` nonzero port and callback
-path **before** opening that browser; this crate does not implement that listener
-or OS browser adapter. No renderer token, raw key, provider grant or callback RPC
+callback owner binds/listens on the exact `127.0.0.1` nonzero port and callback
+path **before** opening that browser. `NativeAuthorityFactory::login_desktop` owns
+that bounded listener; the host still supplies the trusted OS browser adapter. No renderer token, raw key, provider grant or callback RPC
 is accepted here.
 
 `NativeAuthorityFactory::begin_login` captures the controller epoch and creates a
@@ -58,6 +58,32 @@ Late failures and dropping an old capability only invalidate the old lease, neve
 a replacement. Expiry, explicit logout and dropping the active capability clear
 its owner binding. Keys and offline records remain intact. No owner/database lock
 is held while awaiting OIDC, enrollment, keyring or transport work.
+
+## Desktop callback adapter (focused validation passed)
+
+`login_desktop` accepts an exact native-reviewed registered loopback URL and a
+deadline no longer than five minutes. Port collision fails before browser launch.
+One request is accepted; its HTTP headers are bounded to 16 KiB and require exact
+Host, GET, HTTP/1.1, callback path and no body framing, duplicate headers or
+pipelining. The normal single-use PKCE/state/nonce callback verification remains
+a separate mandatory step before token exchange. No callback/token RPC is added.
+
+Session-epoch watch notifications cancel browser/callback/exchange work on logout
+or replacement. The captured login epoch is used even if the controller changes
+between listener setup and launch. Deadline or dropping the future releases both
+listener and pending login guard. Callback responses never echo URL/query/token
+content and are no-store with a restrictive CSP. Mobile fails before binding;
+its system-authentication/claimed-HTTPS adapter remains separate.
+
+Observed for this adapter: three focused listener/framing/cleanup cases passed
+(0.35 s), the affected authority suite passed 14 cases with one explicit integration
+case ignored (0.51 s), and the actual local HTTPS PKCE/custody/reconnect/revocation
+fixture passed through the TCP callback listener (1.70 s). Strict native-authority
+all-target Clippy and a production library check passed. A separate read-only
+review found no blocking issue. These checks used synthetic identities and do not
+establish OS browser dispatch, real Auth0 login, mobile or packaged acceptance.
+The trusted native composition must supply the exact registered redirect; the
+development Auth0 registration uses port 43891.
 
 ## Synchronous incoming publication fence
 

@@ -8,6 +8,7 @@ mod http;
 mod identity;
 mod jwt;
 mod keyring;
+mod loopback;
 mod oidc;
 mod projection;
 mod request;
