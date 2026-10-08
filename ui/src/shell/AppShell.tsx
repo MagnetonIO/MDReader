@@ -91,6 +91,7 @@ import { isDeviceReference } from '../features/device-reader/backend';
 import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/useCatalogEditing';
 import { useProviderEditing } from '../features/provider-editing/useProviderEditing';
 import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
+import { DEVICE_READ_CHANGED } from '../features/device-reader/changed';
 import { ReadingLinkOpen } from '../features/document-transfer/ReadingLinkOpen';
 import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
@@ -188,6 +189,17 @@ export function AppShell() {
   const refreshLibrary = useCallback(() => setProviderRefreshKey((value) => value + 1), []);
   const tabCycle = useMemo(() => createTabCycle(clearLibraryDocument, canonicalTabIntent), [clearLibraryDocument, canonicalTabIntent]);
   const [reloadNonce, setReloadNonce] = useState(0);
+  useEffect(() => {
+    function changed(event: Event) {
+      refreshLibrary();
+      const receipt = (event as CustomEvent<{ documentId?: string; sourceId?: string; revision?: string }>).detail;
+      if (receipt && canonicalDocument && isDeviceReference(canonicalDocument)
+        && receipt.documentId === canonicalDocument.documentId && receipt.sourceId === canonicalDocument.sourceId
+        && receipt.revision === canonicalDocument.revision) setReloadNonce((value) => value + 1);
+    }
+    window.addEventListener(DEVICE_READ_CHANGED, changed);
+    return () => window.removeEventListener(DEVICE_READ_CHANGED, changed);
+  }, [canonicalDocument, refreshLibrary]);
   const [docWords, setDocWords] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
@@ -1684,6 +1696,7 @@ export function AppShell() {
           >
             {canonicalDocument ? (
               isDeviceReference(canonicalDocument) ? <DeviceReader
+                key={`${canonicalDocument.documentId}:${canonicalDocument.revision}:${reloadNonce}`}
                 reference={canonicalDocument}
                 position={canonicalHistory.entry?.position}
                 onPosition={canonicalHistory.savePosition}
