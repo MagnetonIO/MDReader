@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../../App';
 import { catalogBackend, type CatalogDocument, type CatalogSource } from './backend';
 import { deviceReaderBackend } from '../device-reader/backend';
+import { archivedReviewsBackend, type ArchivedReviewRecord, type ArchivedReviewComparison } from '../../reviews/adapter';
 import { nativeProvidersBackend } from '../../platform/providers';
 import { useTabsStore } from '../../stores/tabs';
 import { useSourcesStore } from '../../stores/sources';
@@ -95,6 +96,7 @@ test('published device receipts open inline through the service device reader wi
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
   expect(legacy.read).not.toHaveBeenCalled();
   expect(screen.queryByRole('dialog', { name: 'Device document' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
 });
 function documentElement(selector: string): Element {
   const element = window.document.querySelector(selector);
@@ -135,4 +137,91 @@ test('a preserved historical Recent explicitly invokes the legacy adapter with i
   });
   expect(screen.getByRole('button', { name: 'Source view' })).toBeTruthy();
   expect(catalogBackend.readDocument).not.toHaveBeenCalled();
+});
+
+const archivalRow: ArchivedReviewRecord = {
+  recordId: 'd'.repeat(64), rowId: '1', artifactIndex: 0, rowSha256: 'e'.repeat(64),
+  state: 'rejected', reviewer: null, recordedContentHash: null, reviewedContentHash: null,
+  recordedHashComparison: 'unknown', graphMembership: 'unavailable', chronology: 'unavailable',
+  schema: 'decision_overlay', extractor: 'mdreader.decision@1', rule: 'D1', qualified: 'Decision',
+  reading: 'Recorded decision', startLine: 1, endLine: 1, unavailableReason: null,
+};
+function archiveBoundary() {
+  vi.spyOn(archivedReviewsBackend, 'select').mockResolvedValue({
+    handle: 'selected-archive', exportId: 'export', manifestSha256: 'hash', ownerScope: 'profile',
+  });
+  vi.spyOn(archivedReviewsBackend, 'list').mockResolvedValue({ records: [archivalRow], nextOffset: null });
+  vi.spyOn(archivedReviewsBackend, 'current');
+  vi.spyOn(archivedReviewsBackend, 'close').mockResolvedValue(undefined);
+}
+async function openArchive() {
+  fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
+  fireEvent.change(screen.getByLabelText('Export UUID'), { target: { value: '11111111-1111-4111-8111-111111111111' } });
+  fireEvent.change(screen.getByLabelText('Manifest SHA-256'), { target: { value: 'a'.repeat(64) } });
+  fireEvent.click(screen.getByRole('button', { name: 'Choose review stage…' }));
+  await screen.findByText('rejected archival ruling');
+}
+test.each(['local', 'provider'] as const)('canonical %s archive comparison uses the navigated exact receipt and returns inline without reloading', async (kind) => {
+  archiveBoundary();
+  const selectedSourceId = kind === 'provider' ? `provider:${sourceId}` : sourceId;
+  const selectedSource = { ...source, kind };
+  const origin = { sourceId: selectedSourceId, path: kind === 'provider' ? `records/${'1'.repeat(64)}.md` : 'current.md', revision, title: 'Current note', line: 1 };
+  const linked = { ...origin, path: kind === 'provider' ? `records/${'2'.repeat(64)}.md` : 'linked.md', revision: 'f'.repeat(64), title: 'Linked note' };
+  vi.mocked(catalogBackend.page).mockResolvedValue({ operation: 'page', source: selectedSource, nextCursor: null,
+    documents: [{ ...document, open: { kind: 'exact', sourceId: selectedSourceId, path: origin.path, revision } }] });
+  vi.mocked(catalogBackend.list).mockResolvedValue({ operation: 'list', sources: [selectedSource], providerFailure: null, localFailure: null });
+  const backend = kind === 'provider' ? nativeProvidersBackend : catalogBackend;
+  const read = kind === 'provider' ? vi.spyOn(nativeProvidersBackend, 'readDocument') : vi.mocked(catalogBackend.readDocument);
+  read.mockImplementation(async (reference) => ({ operation: 'read_document', ...reference,
+    markdown: reference.path === origin.path ? '# Canonical content\n\n[Next](linked.md)' : '# Linked exact copy', lineStart: 1, lineEnd: 3 }));
+  vi.spyOn(backend, 'resolveLink').mockResolvedValue(kind === 'provider' ? {
+    state: 'resolved', projection: { jobId: 'cached-job', readerSourceId: selectedSourceId, path: linked.path, revision: linked.revision },
+    candidate: { sourceId: 'service-source', documentId: 'selected-document', title: linked.title }, line: 1, heading: null,
+  } : { state: 'local_matches', references: [linked] });
+  const exact = { sourceId: selectedSourceId, path: linked.path, revision: linked.revision };
+  vi.spyOn(archivedReviewsBackend, 'compare').mockResolvedValue({ review: archivalRow, current: exact,
+    observation: kind === 'provider' ? 'provider_cached_revision' : 'local_current_read', currentSpanHash: 'blake3:span',
+    currentPassage: 'Exact compared passage', recordedCurrent: 'unknown', reviewedCurrent: 'unknown' });
+  render(<App />);
+  await openCurrent();
+  fireEvent.click(screen.getByRole('link', { name: 'Next' }));
+  await screen.findByRole('heading', { name: /Linked exact copy/ });
+  await openArchive();
+  expect(documentElement('.shell__reader-content').hasAttribute('inert')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Compare with open document' }));
+  await screen.findByLabelText('Current revision comparison');
+  expect(archivedReviewsBackend.compare).toHaveBeenCalledWith('selected-archive', archivalRow.recordId, exact, null);
+  expect(archivedReviewsBackend.current).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Close archived reviews' }));
+  expect(screen.queryByRole('dialog', { name: 'Archived document reviews' })).toBeNull();
+  expect(within(screen.getByRole('main')).getByRole('heading', { name: /Linked exact copy/ })).toBeTruthy();
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(archivedReviewsBackend.close).toHaveBeenCalledWith('selected-archive');
+  fireEvent.click(screen.getByRole('button', { name: 'Previous document' }));
+  await screen.findByRole('heading', { name: /Canonical content/ });
+  expect(legacy.read).not.toHaveBeenCalled();
+});
+test('a new canonical selection closes its archive and a late comparison cannot restore the old reader', async () => {
+  archiveBoundary();
+  let finish!: (value: ArchivedReviewComparison) => void;
+  vi.spyOn(archivedReviewsBackend, 'compare').mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  vi.mocked(catalogBackend.page).mockResolvedValue({ operation: 'page', source, nextCursor: null,
+    documents: [document, { ...document, name: 'New selection', open: { kind: 'exact', sourceId, path: 'new.md', revision: 'f'.repeat(64) } }] });
+  vi.mocked(catalogBackend.readDocument).mockImplementation(async (reference) => ({ operation: 'read_document', ...reference,
+    markdown: reference.path === 'new.md' ? '# New exact selection' : '# Canonical content', lineStart: 1, lineEnd: 1 }));
+  render(<App />);
+  await openCurrent();
+  const replacement = screen.getByRole('button', { name: 'Read exact New selection' });
+  await openArchive();
+  fireEvent.click(screen.getByRole('button', { name: 'Compare with open document' }));
+  await waitFor(() => expect(archivedReviewsBackend.compare).toHaveBeenCalledOnce());
+  // Model a source/selection replacement while asynchronous archive work is pending.
+  fireEvent.click(replacement);
+  await screen.findByRole('heading', { name: /New exact selection/ });
+  expect(screen.queryByRole('dialog', { name: 'Archived document reviews' })).toBeNull();
+  expect(archivedReviewsBackend.close).toHaveBeenCalledWith('selected-archive');
+  await act(async () => finish({ review: archivalRow, current: { sourceId, path: 'current.md', revision },
+    observation: 'local_current_read', currentSpanHash: 'blake3:span', currentPassage: 'Old late passage', recordedCurrent: 'unknown', reviewedCurrent: 'unknown' }));
+  expect(screen.queryByText('Old late passage')).toBeNull();
+  expect(screen.getByRole('heading', { name: /New exact selection/ })).toBeTruthy();
 });
