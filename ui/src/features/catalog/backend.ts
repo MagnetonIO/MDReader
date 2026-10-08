@@ -19,7 +19,7 @@ export interface CatalogBackend {
 export function catalogErrorMessage(kind: string): string {
   if (kind === 'stale') return 'The catalog changed. Reload this source before continuing.';
   if (kind === 'unauthorized') return 'This source is disabled, removed, or its retained folder identity changed.';
-  if (kind === 'busy') return 'Close another catalog page or reload before opening more sources.';
+  if (kind === 'busy') return 'Library is temporarily busy. Refresh and try again.';
   if (kind === 'unsupported') return 'This catalog namespace requires a supported reader version.';
   if (kind === 'too_large') return 'This catalog request exceeds its supported bound.';
   return 'The catalog is unavailable. Existing grants and originals have not been changed.';
