@@ -2,6 +2,8 @@
 //! JSON owners. Other actual writers are still missing; installed preservation
 //! and selector activation remain unavailable until they are composed.
 mod admission;
+pub(crate) mod backup;
+mod backup_inventory;
 pub(crate) mod persistence;
 mod registry;
 #[cfg(all(unix, not(mobile)))]
