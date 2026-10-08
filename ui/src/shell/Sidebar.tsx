@@ -2,22 +2,11 @@
  * A quiet rail — muted surface, thin borders — that never competes with the
  * reading column. */
 
-import { useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
-import type {
-  EntityRow,
-  LibraryEntityQueryResponse_Serialize,
-  LibrarySourceExecution,
-} from '../bindings.js';
-import { DropboxIcon, FolderIcon, GoogleDriveIcon } from './icons.js';
+import { FolderIcon } from './icons.js';
 import { FileTree } from './FileTree.js';
 import { documentKey, type DocumentRef } from '../stores/types.js';
-import {
-  libraryDocumentTitle,
-  rowsForMember,
-  type LibraryAvailability,
-} from './library-documents.js';
-
 export interface SidebarProps {
   collapsed: boolean;
   root: string | null;
@@ -34,49 +23,11 @@ export interface SidebarProps {
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
-  legacyRecordsOpen?: boolean;
-  onToggleLegacyRecords?: () => void;
-  libraryEvidence?: LibraryEntityQueryResponse_Serialize[];
-  librarySearch?: string;
-  libraryLoading?: boolean;
-  libraryError?: string | null;
-  libraryAvailability?: LibraryAvailability;
-  libraryHasMore?: boolean;
-  onLibrarySearch?: (value: string) => void;
-  onOpenLibrary?: (member: LibrarySourceExecution, row: EntityRow) => void;
-  onRefreshLibrary?: () => void;
-  onLoadMoreLibrary?: (membershipId?: string) => void;
+  onMigration?: () => void;
 }
 
 function basename(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? path;
-}
-
-function sourceIcon(kind: LibrarySourceExecution['kind']) {
-  switch (kind) {
-    case 'google-drive':
-      return <GoogleDriveIcon className="library-sources__provider-icon" />;
-    case 'dropbox':
-      return <DropboxIcon className="library-sources__provider-icon" />;
-    default:
-      return null;
-  }
-}
-
-function LibraryAvailabilityBadge({ availability }: { availability: LibraryAvailability }) {
-  if (availability.kind === 'ready') return null;
-  if (availability.kind === 'failed') {
-    return <p className="library-sources__error" role="alert">{availability.message}</p>;
-  }
-  const names = availability.sourceNames.join(', ');
-  const sourceLabel = names || 'Library sources';
-  const message =
-    availability.kind === 'syncing'
-      ? `Syncing published metadata for ${sourceLabel}.`
-      : availability.kind === 'stale'
-        ? `Showing the last published snapshot; ${sourceLabel} needs refresh.`
-        : `Showing the last published snapshot; ${sourceLabel} needs attention.`;
-  return <p className="library-sources__state" role="status">{message}</p>;
 }
 
 /**
@@ -119,66 +70,11 @@ export function Sidebar({
   onOpenFile,
   onOpenRecent,
   isIgnored,
-  legacyRecordsOpen = true,
-  onToggleLegacyRecords,
-  libraryEvidence = [],
-  librarySearch = '',
-  libraryLoading = false,
-  libraryError = null,
-  libraryAvailability = { kind: 'ready' },
-  libraryHasMore = false,
-  onLibrarySearch,
-  onOpenLibrary,
-  onRefreshLibrary,
-  onLoadMoreLibrary,
+  onMigration,
 }: SidebarProps) {
-  const [libraryExpanded, setLibraryExpanded] = useState(false);
-  const [libraryCollapsed, setLibraryCollapsed] = useState(false);
-  const [collapsedLibrarySources, setCollapsedLibrarySources] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [libraryHeight, setLibraryHeight] = useState<number | null>(null);
-  const beginLibraryResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const rail = event.currentTarget.nextElementSibling as HTMLElement | null;
-    const sidebar = event.currentTarget.closest('.sidebar') as HTMLElement | null;
-    if (!rail || !sidebar) return;
-    const startY = event.clientY;
-    const startHeight = rail.getBoundingClientRect().height;
-    const minimum = 54;
-    const maximum = Math.max(minimum, sidebar.getBoundingClientRect().height * 0.6);
-    const pointerId = event.pointerId;
-    event.currentTarget.setPointerCapture(pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      setLibraryHeight(
-        Math.min(maximum, Math.max(minimum, startHeight + startY - moveEvent.clientY)),
-      );
-    };
-    const finish = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish, { once: true });
-    window.addEventListener('pointercancel', finish, { once: true });
-  };
-  const search = librarySearch.trim().toLocaleLowerCase();
-  const hasSupplementalMemberships = libraryEvidence.some((evidence) =>
-    evidence.memberships.some(
-      (member) => member.kind !== 'local-folder' || !member.active,
-    ),
-  );
-  const hasFilterableActiveWorkspace = Boolean(root && onLibrarySearch);
-  const showLibraryRail = legacyRecordsOpen && (
-    hasFilterableActiveWorkspace ||
-    hasSupplementalMemberships ||
-    libraryLoading ||
-    libraryHasMore ||
-    Boolean(libraryError) ||
-    libraryAvailability.kind !== 'ready');
   return (
     <aside
-      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}${libraryExpanded ? ' sidebar--library-expanded' : ''}${libraryCollapsed ? ' sidebar--library-collapsed' : ''}`}
+      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
       aria-hidden={collapsed}
       inert={collapsed ? true : undefined}
     >
@@ -208,7 +104,6 @@ export function Sidebar({
           root={root}
           activePath={activePath}
           onOpen={onOpenFile}
-          filter={librarySearch}
           isIgnored={isIgnored}
         />
       ) : (
@@ -220,182 +115,9 @@ export function Sidebar({
       )}
 
       {providerSources}
-      {onToggleLegacyRecords ? (
-        <div className="legacy-records-entry">
-          <button type="button" aria-expanded={legacyRecordsOpen} onClick={onToggleLegacyRecords}>
-            {legacyRecordsOpen ? 'Close legacy records' : 'Legacy records (migration)'}
-          </button>
-          {legacyRecordsOpen ? <p>Historical sources and edit recovery. This transitional area uses the preserved legacy adapter.</p> : null}
-        </div>
-      ) : null}
-      {showLibraryRail ? (
-        <>
-        {!libraryCollapsed && !libraryExpanded ? (
-          <div
-            className="library-sources__resize"
-            role="separator"
-            aria-label="Resize Library"
-            aria-orientation="horizontal"
-            onPointerDown={beginLibraryResize}
-          />
-        ) : null}
-        <nav
-          className="library-sources"
-          aria-label={onToggleLegacyRecords ? 'Legacy records' : 'Library sources'}
-          style={
-            libraryHeight === null || libraryCollapsed || libraryExpanded
-              ? undefined
-              : { height: `${libraryHeight}px`, maxHeight: 'none' }
-          }
-        >
-          <div className="library-sources__heading">
-            <span>{onToggleLegacyRecords ? 'Legacy records' : 'Library'}</span>
-            <div className="library-sources__actions">
-              <button
-                type="button"
-                className="library-sources__refresh"
-                onClick={() => {
-                  setLibraryCollapsed((value) => !value);
-                  setLibraryExpanded(false);
-                  setLibraryHeight(null);
-                }}
-                aria-expanded={!libraryCollapsed}
-              >
-                {libraryCollapsed ? 'Show' : 'Hide'}
-              </button>
-              {!libraryCollapsed ? (
-              <button
-                type="button"
-                className="library-sources__refresh"
-                onClick={() => {
-                  setLibraryExpanded((expanded) => !expanded);
-                  setLibraryHeight(null);
-                }}
-                aria-expanded={libraryExpanded}
-              >
-                {libraryExpanded ? 'Restore' : 'Expand'}
-              </button>
-              ) : null}
-              {onRefreshLibrary ? (
-              <button
-                type="button"
-                className="library-sources__refresh"
-                onClick={onRefreshLibrary}
-                disabled={libraryLoading}
-              >
-                {libraryLoading ? 'Reading…' : 'Refresh'}
-              </button>
-              ) : null}
-            </div>
-          </div>
-          {!libraryCollapsed ? (
-          <>
-          {onLibrarySearch ? (
-            <input
-              type="search"
-              value={librarySearch}
-              onChange={(event) => onLibrarySearch(event.currentTarget.value)}
-              placeholder="Filter Library documents"
-              aria-label="Filter Library documents"
-            />
-          ) : null}
-          {libraryError ? <p className="library-sources__error">{libraryError}</p> : null}
-          <LibraryAvailabilityBadge availability={libraryAvailability} />
-          {libraryEvidence.flatMap((evidence) =>
-            evidence.memberships
-              .filter((member) => member.kind !== 'local-folder' || !member.active)
-              .map((member) => {
-                const rows = rowsForMember(evidence, member).filter((row) => {
-                  if (!search) return true;
-                  return libraryDocumentTitle(row).toLocaleLowerCase().includes(search);
-                });
-                const sourceCollapsed = collapsedLibrarySources.has(member.membership_id);
-                const sourceHasMore =
-                  libraryHasMore && evidence.window_truncated && evidence.answer.next_cursor !== null;
-                return (
-                  <section className="library-sources__source" key={member.membership_id}>
-                    <div className="library-sources__source-heading">
-                      <button
-                        type="button"
-                        className="library-sources__source-toggle"
-                        aria-expanded={!sourceCollapsed}
-                        aria-label={`${sourceCollapsed ? 'Expand' : 'Collapse'} ${member.name}`}
-                        onClick={() => {
-                          setCollapsedLibrarySources((current) => {
-                            const next = new Set(current);
-                            if (next.has(member.membership_id)) {
-                              next.delete(member.membership_id);
-                            } else {
-                              next.add(member.membership_id);
-                            }
-                            return next;
-                          });
-                        }}
-                      >
-                        <span className="library-sources__disclosure" aria-hidden="true">
-                          {sourceCollapsed ? '›' : '⌄'}
-                        </span>
-                        {sourceIcon(member.kind)}
-                        <strong>{member.name}</strong>
-                      </button>
-                      <small>
-                        {member.kind === 'local-folder'
-                          ? member.editable
-                            ? member.active
-                              ? 'Local · editable'
-                              : 'Local · open to edit'
-                            : 'Read-only'
-                          : member.editable
-                            ? 'Read & write'
-                            : 'Read-only'}
-                      </small>
-                    </div>
-                    {!sourceCollapsed ? (
-                      <>
-                        {rows.length > 0 ? (
-                          <ul>
-                            {rows.map((row) => {
-                              const title = libraryDocumentTitle(row);
-                              return (
-                                <li key={row.record_key}>
-                                  <button
-                                    type="button"
-                                    className="library-sources__document"
-                                    aria-label={`Open ${title} from ${member.name}`}
-                                    onClick={() => onOpenLibrary?.(member, row)}
-                                  >
-                                    {title}
-                                  </button>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        ) : (
-                          <p>{search ? 'No Library documents match.' : 'No documents found.'}</p>
-                        )}
-                        {sourceHasMore && onLoadMoreLibrary ? (
-                          <button
-                            type="button"
-                            className="library-sources__refresh library-sources__load-more"
-                            aria-label={`Load more ${member.name}`}
-                            onClick={() => onLoadMoreLibrary(member.membership_id)}
-                            disabled={libraryLoading}
-                          >
-                            {libraryLoading ? 'Reading…' : 'Load more'}
-                          </button>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </section>
-                );
-              }),
-          )}
-          {libraryEvidence.length === 0 && libraryLoading ? <p>Reading Library…</p> : null}
-          </>
-          ) : null}
-        </nav>
-        </>
-      ) : null}
+      {onMigration ? <div className="legacy-records-entry">
+        <button type="button" onClick={onMigration}>Migration &amp; archived records</button>
+      </div> : null}
 
       {recent.length > 0 ? (
         <nav className="recent" aria-label="Recent documents">

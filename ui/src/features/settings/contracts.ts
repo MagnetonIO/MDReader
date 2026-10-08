@@ -5,7 +5,10 @@ import type { WatcherStatus } from '../../stores/sources.js';
 
 import type { DeviceReference } from '../device-reader/backend';
 
+export type SettingsSection = 'appearance' | 'library' | 'account' | 'backup' | 'advanced';
+
 export interface SettingsSheetProps {
+  initialSection?: SettingsSection;
   selectedDevice?: DeviceReference;
   localRoot?: string | null;
   backend?: SettingsBackend;

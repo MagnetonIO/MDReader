@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { settingsBackend, type CloudProvider, type CloudSourcesView, type ConnectedCatdbState, type DiagnosticInfo, type DiagnosticLevel, type LibrarySnapshot, type LibrarySourceDto } from '../../platform/settings.js';
+import { settingsBackend, type DiagnosticInfo, type DiagnosticLevel, type LibrarySnapshot, type LibrarySourceDto } from '../../platform/settings.js';
 import type { SettingsSheetProps } from './contracts.js';
 import { errorMessage } from './presentation.js';
 
@@ -27,9 +27,6 @@ export function useSettingsController({
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   const [library, setLibrary] = useState<LibrarySnapshot | null>(null);
-  const [cloudSources, setCloudSources] = useState<CloudSourcesView | null>(null);
-  const [connectedCatdb, setConnectedCatdb] = useState<ConnectedCatdbState | null>(null);
-  const [legacyRequested, setLegacyRequested] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -47,21 +44,6 @@ export function useSettingsController({
       }
     };
   }, [backend]);
-
-  useEffect(() => {
-    if (!legacyRequested || !backend.connectedCatdbState) return;
-    let live = true;
-    void backend.connectedCatdbState()
-      .then((state) => {
-        if (live) setConnectedCatdb(state);
-      })
-      .catch((cause: unknown) => {
-        if (live) setFailure(errorMessage(cause));
-      });
-    return () => {
-      live = false;
-    };
-  }, [backend, legacyRequested]);
 
   useEffect(() => {
     if (confirmClear || confirmForget) {
@@ -89,42 +71,6 @@ export function useSettingsController({
       live = false;
     };
   }, [backend]);
-
-  const cloudControls =
-    backend.listCloudSources &&
-      backend.setCloudSourceEnabled &&
-      backend.disconnectCloudSource
-      ? {
-        list: backend.listCloudSources,
-        setEnabled: backend.setCloudSourceEnabled,
-        disconnect: backend.disconnectCloudSource,
-      }
-      : null;
-  const connectedCatdbControls =
-    backend.connectedCatdbState &&
-      backend.setConnectedCatdbSourceEnabled &&
-      backend.disconnectConnectedCatdb
-      ? {
-        setEnabled: backend.setConnectedCatdbSourceEnabled,
-        disconnect: backend.disconnectConnectedCatdb,
-      }
-      : null;
-
-  useEffect(() => {
-    if (!legacyRequested || !cloudControls) return;
-    let live = true;
-    void cloudControls
-      .list()
-      .then((snapshot) => {
-        if (live) setCloudSources(snapshot);
-      })
-      .catch((cause: unknown) => {
-        if (live) setFailure(errorMessage(cause));
-      });
-    return () => {
-      live = false;
-    };
-  }, [backend, legacyRequested]);
 
   const run = useCallback(async <T,>(
     key: string,
@@ -189,60 +135,6 @@ export function useSettingsController({
     [backend, onLibraryChanged, onSourceIntent, run],
   );
 
-  const setCloudEnabled = useCallback(
-    (provider: CloudProvider, enabled: boolean) => {
-      if (!cloudControls) return;
-      void run(
-        `toggle:${provider}`,
-        () => cloudControls.setEnabled(provider, enabled),
-        setCloudSources,
-        onLibraryChanged,
-      );
-    },
-    [cloudControls, onLibraryChanged, run],
-  );
-
-  const disconnectCloud = useCallback(
-    (provider: CloudProvider) => {
-      if (!cloudControls) return;
-      void run(
-        `disconnect:${provider}`,
-        () => cloudControls.disconnect(provider),
-        (snapshot) => {
-          setCloudSources(snapshot);
-        },
-        onLibraryChanged,
-      );
-    },
-    [cloudControls, onLibraryChanged, run],
-  );
-
-  const setCatdbSourceEnabled = useCallback(
-    (connectionId: string, sourceId: string, enabled: boolean) => {
-      if (!connectedCatdbControls) return;
-      void run(
-        `connected-catdb:source:${sourceId}`,
-        () => connectedCatdbControls.setEnabled(connectionId, sourceId, enabled),
-        setConnectedCatdb,
-        onLibraryChanged,
-      );
-    },
-    [connectedCatdbControls, onLibraryChanged, run],
-  );
-
-  const disconnectCatdb = useCallback(
-    (connectionId: string) => {
-      if (!connectedCatdbControls) return;
-      void run(
-        'connected-catdb:disconnect',
-        () => connectedCatdbControls.disconnect(connectionId),
-        setConnectedCatdb,
-        onLibraryChanged,
-      );
-    },
-    [connectedCatdbControls, onLibraryChanged, run],
-  );
-
   const setLevel = useCallback(
     (level: DiagnosticLevel) => {
       void run(`level:${level}`, () => backend.setDiagnosticLevel(level), setDiagnostics);
@@ -258,8 +150,6 @@ export function useSettingsController({
     confirmCancelRef,
     confirmTriggerRef,
     library,
-    cloudSources,
-    connectedCatdb,
     diagnostics,
     busy,
     notice,
@@ -268,19 +158,12 @@ export function useSettingsController({
     confirmForget,
     setConfirmClear,
     setConfirmForget,
-    openLegacy: () => setLegacyRequested(true),
     setDiagnostics,
     setNotice,
-    cloudControls,
-    connectedCatdbControls,
     run,
     activate,
     addSource,
     forget,
-    setCloudEnabled,
-    disconnectCloud,
-    setCatdbSourceEnabled,
-    disconnectCatdb,
     setLevel,
     backend,
     localRoot,

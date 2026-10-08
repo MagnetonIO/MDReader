@@ -1,89 +1,21 @@
-import { DropboxIcon, GoogleDriveIcon } from '../../shell/icons.js';
-import type { SettingsController } from './useSettingsController.js';
-
-/** Retained migration inputs only. New enrollment belongs to native selected
- * providers and encrypted device sync, never the retired generic client. */
-export function MigrationSettings({ controller }: { controller: SettingsController }) {
-  const { cloudControls, cloudSources, failure, busy, setCloudEnabled, disconnectCloud,
-    connectedCatdb, connectedCatdbControls, library, disconnectCatdb, setCatdbSourceEnabled } = controller;
-  const retainedCloud = cloudSources?.sources.filter((source) => source.connection !== 'disconnected');
-  return <details className="settings-migration" onToggle={(event) => {
-    if (event.currentTarget.open) controller.openLegacy();
-  }}>
-    <summary>Migration / legacy connections</summary>
-    <p>Existing records and connections are retained for migration. Add new selected cloud sources in Account &amp; sync.</p>
-    <p>Keep the old profile until its document bodies, history and edit receipts have been preserved. Opening this section does not migrate or reconnect it.</p>
-    {cloudControls ? <div className="cloud-sources">
-      <h3>Retained cloud connections</h3>
-      {!cloudSources && !failure ? <p role="status">Reading retained connections…</p> : null}
-      {cloudSources && !retainedCloud?.length ? <p>No retained cloud connection.</p> : null}
-      <div className="cloud-sources__list" aria-live="polite">
-        {retainedCloud?.map((source) => <article className="cloud-source cloud-source--provider" key={source.provider}>
-          <div className="cloud-source__icon">
-            {source.provider === 'google-drive' ? <GoogleDriveIcon /> : <DropboxIcon />}
-          </div>
-          <div className="cloud-source__copy">
-            <div className="cloud-source__title">
-              <h4>{source.label}</h4>
-              <span>{source.connection === 'reauthorize' ? 'Authorization unavailable' : source.enabled ? 'Included' : 'Paused'}</span>
-            </div>
-            <p>{source.connection === 'reauthorize'
-              ? 'This legacy connection cannot be renewed here. Use a new selected source in Account & sync; retained records have not been deleted.'
-              : 'Available through the explicit Legacy records entry in the Library.'}</p>
-          </div>
-          <div className="cloud-source__actions">
-            {source.connection !== 'reauthorize' ? <button type="button" className="source-switch" role="switch"
-              aria-label={`Include ${source.label} in Library`} aria-checked={source.enabled} disabled={busy !== null}
-              onClick={() => setCloudEnabled(source.provider, !source.enabled)}><span aria-hidden="true" /></button> : null}
-            <button type="button" className="settings-button--quiet" disabled={busy !== null}
-              aria-label={`Disconnect ${source.label}`} onClick={() => disconnectCloud(source.provider)}>
-              {busy === `disconnect:${source.provider}` ? 'Disconnecting…' : 'Disconnect'}
-            </button>
-          </div>
-        </article>)}
-      </div>
-      {retainedCloud?.length ? <p className="settings-footnote">Pausing retains credentials. Disconnecting removes this connection’s saved credentials; provider originals are unchanged.</p> : null}
-    </div> : null}
-    {connectedCatdb && connectedCatdbControls ? <div className="cloud-sources">
-      <h3>Retained legacy workspace</h3>
-      {library?.connected_catdb_rediscovery_required ? <p className="settings-state--warning" role="status">
-        This connection lacks a verified schema version. It remains unavailable for current queries; nothing has been reconnected automatically.
-      </p> : null}
-      {connectedCatdb.state === 'disconnected' ? <p>No retained workspace connection. New generic database connections are retired.</p> : <>
-        <article className="cloud-source">
-          <div className="cloud-source__copy">
-            <div className="cloud-source__title"><h4>{connectedCatdb.label}</h4><span>Retained</span></div>
-            <p>Workspace {connectedCatdb.workspace_id} · catalog {connectedCatdb.catalog_revision_id}</p>
-          </div>
-          <div className="cloud-source__actions">
-            <button type="button" className="settings-button--quiet" disabled={busy !== null}
-              aria-label={`Disconnect ${connectedCatdb.label}`} onClick={() => disconnectCatdb(connectedCatdb.connection_id)}>
-              {busy === 'connected-catdb:disconnect' ? 'Disconnecting…' : 'Disconnect'}
-            </button>
-          </div>
-        </article>
-        <div className="cloud-sources__list" aria-live="polite">
-          {!connectedCatdb.sources.length ? <p>No retained permitted sources.</p> : null}
-          {connectedCatdb.sources.map((source) => {
-            const label = source.connector_id ?? source.source_id;
-            return <article className="cloud-source" key={source.source_id}>
-              <div className="cloud-source__copy">
-                <div className="cloud-source__title"><h4>{label}</h4>
-                  <span>{!source.runtime_bound ? 'Unavailable' : source.enabled ? 'Included' : 'Paused'}</span>
-                </div>
-              </div>
-              <div className="cloud-source__actions">
-                <button type="button" className="source-switch" role="switch"
-                  aria-label={`Include ${label} in Connected CatDB queries`} aria-checked={source.enabled}
-                  disabled={!source.runtime_bound || busy !== null}
-                  onClick={() => setCatdbSourceEnabled(connectedCatdb.connection_id, source.source_id, !source.enabled)}>
-                  <span aria-hidden="true" />
-                </button>
-              </div>
-            </article>;
-          })}
-        </div>
-      </>}
-    </div> : null}
+/** Migration is explicit and offline. This panel cannot reconnect old SDK
+ * accounts, enumerate private profiles, activate an archive or delete originals. */
+export function MigrationSettings() {
+  return <details className="settings-migration" open>
+    <summary>Migration &amp; archived records</summary>
+    <p>Your original profile, old session references and connection metadata are retained. The retired database client is no longer used to browse or edit them.</p>
+    <h3>Preserve an offline snapshot</h3>
+    <ol>
+      <li>Close the old reader and prepare consistent copies of the files you explicitly choose. Do not select credentials or a live database with journal sidecars.</li>
+      <li>Use the standalone <code>mdreader-legacy-export</code> tool with an explicit snapshot specification and a new private destination.</li>
+      <li>Verify the completed archive before beginning migration. Keep the old profile and archive for rollback.</li>
+    </ol>
+    <pre aria-label="Offline archive commands"><code>{'mdreader-legacy-export export ABS_SPEC_JSON ABS_NEW_ARCHIVE\nmdreader-legacy-export verify ABS_NEW_ARCHIVE'}</code></pre>
+    <p>The specification selects exact native file locators and asserts that the snapshots are offline and consistent. Nothing is discovered or uploaded by this panel. The tool must be available separately.</p>
+    <h3>Read archived reviews</h3>
+    <p>Stage reviews from a verified archive with the standalone tool. Then open a current local or selected-provider document and choose Archived reviews to select that exact stage and compare its recorded passage.</p>
+    <p>Unknown records and unsupported schemas remain in the raw archive. A historical reference is not a grant to its original source, and comparison never replaces the current document.</p>
+    <h3>Migration and rollback</h3>
+    <p>Automatic installed-profile migration and rollback activation are not available here. Keep the original profile intact. A new Library uses only folders and provider selections you explicitly authorize.</p>
   </details>;
 }

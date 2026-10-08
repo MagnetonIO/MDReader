@@ -52,14 +52,9 @@ import {
   pickAndAddLibrarySource,
   reconcileLibraryRestore,
   recordDiagnosticEventNonBlocking,
-  settingsBackend,
   watchLibrarySource,
   type LibrarySourceDto,
 } from '../platform/settings.js';
-import type {
-  EntityRow,
-  LibrarySourceExecution,
-} from '../bindings.js';
 import { events } from '../bindings.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
@@ -86,28 +81,17 @@ import { ProviderReaderDialog } from './ProviderReaderDialog.js';
 import { ArchivedReviewsPanel } from '../reviews/ArchivedReviewsPanel';
 import { useArchivedReviewSelection } from '../reviews/useArchivedReviewSelection';
 import type { ProviderReaderReference } from '../platform/providers.js';
-import { LibraryDocumentPane } from './LibraryDocumentPane.js';
+import { LegacyRecordNotice } from '../features/migration/LegacyRecordNotice';
 import type { ShortcutGroup } from './ShortcutSheet.js';
 import { UnsavedGuard } from './UnsavedGuard.js';
 import { Toasts, toast } from './toasts.js';
-import { useLegacyRecords } from '../features/legacy-records/useLegacyRecords';
 import { CanonicalReader } from '../features/reader/CanonicalReader';
 import { DeviceReader } from '../features/device-reader/DeviceReader';
 import { isDeviceReference } from '../features/device-reader/backend';
 import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/useCatalogEditing';
-import { makeSemanticsAdapter } from '../platform/semantics.js';
-import type { ExplainedHit, SourceSpan, SpanSelection } from '../platform/semantics.js';
-import { InspectorRail } from './lens/InspectorRail.js';
-import { LensBand } from './lens/LensBand.js';
-import { LensSheet } from './lens/LensSheet.js';
-import { ConstraintSheet } from './lens/ConstraintSheet.js';
-import { ExplainSheet } from './lens/ExplainSheet.js';
-import { useSchemas } from './lens/use-schemas.js';
-import { resolveSourcePath, spanFromSelection } from './lens/source-span.js';
 import './shell.css';
-import './lens/lens.css';
 
-type WorkspaceSwitchResume = { kind: 'library-edit'; member: LibrarySourceExecution; row: EntityRow } | CatalogEditResume;
+type WorkspaceSwitchResume = CatalogEditResume;
 
 function isEditable(element: Element | null): boolean {
   if (!element) return false;
@@ -152,9 +136,6 @@ export function AppShell() {
   const sidebarCollapsed = useSettingsStore((state) => state.sidebarCollapsed);
   const outlineVisible = useSettingsStore((state) => state.outlineVisible);
   const relatedRailOpen = useSettingsStore((state) => state.relatedRailOpen);
-  const inspectorOpen = useSettingsStore((state) => state.inspectorOpen);
-  const lensSchema = useSettingsStore((state) => state.lensSchema);
-  const reviewer = useSettingsStore((state) => state.reviewer);
   const focusMode = useSettingsStore((state) => state.focusMode);
 
   // --- local UI state ---------------------------------------------------
@@ -164,6 +145,11 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'appearance' | 'advanced'>('appearance');
+  const openMigration = useCallback(() => {
+    setSettingsSection('advanced');
+    setSettingsOpen(true);
+  }, []);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
   const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
@@ -187,24 +173,14 @@ export function AppShell() {
       unlisten?.();
     };
   }, []);
-  const [cloudSaving, setCloudSaving] = useState(false);
   const canonicalHistory = useCanonicalHistory();
   const { reference: canonicalDocument, setReference: setCanonicalDocument } = canonicalHistory;
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
   const archivedReviewTarget = archivedReviews.target;
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
-  const legacy = useLegacyRecords(activeTabId, semanticWorkspaceGeneration);
-  const {
-    libraryDocument, cloudDocuments, setCloudDocuments, libraryHydration,
-    libraryEvidence, librarySearch, setLibrarySearch, libraryLoading,
-    libraryAvailability, libraryError, setLibraryError, libraryDocumentLoading,
-    libraryDocumentError, refreshLibrary, loadMoreLibrary, openLibraryDocument,
-  } = legacy;
-  const clearLibraryDocument = useCallback(() => {
-    setCanonicalDocument(null);
-    legacy.clearLibraryDocument();
-  }, [legacy.clearLibraryDocument, setCanonicalDocument]);
-  const canonicalTabIntent = useCallback(() => legacy.suspend(), [legacy.suspend]);
+  const clearLibraryDocument = useCallback(() => setCanonicalDocument(null), [setCanonicalDocument]);
+  const canonicalTabIntent = useCallback(() => {}, []);
+  const refreshLibrary = useCallback(() => setProviderRefreshKey((value) => value + 1), []);
   const tabCycle = useMemo(() => createTabCycle(clearLibraryDocument, canonicalTabIntent), [clearLibraryDocument, canonicalTabIntent]);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [docWords, setDocWords] = useState<number | null>(null);
@@ -236,32 +212,18 @@ export function AppShell() {
   const [jump, setJump] = useState<JumpTarget | null>(null);
   const jumpSeq = useRef(0);
 
-  // --- the semantic surfaces -------------------------------------------
-  // Which corpus-scoped sheet is up (at most one; they are all Escape-closable).
-  const [lensSheetOpen, setLensSheetOpen] = useState(false);
-  const [constraintsOpen, setConstraintsOpen] = useState(false);
-  const [explainOpen, setExplainOpen] = useState(false);
-  // The passage the Inspector is reading claims for: a real, non-collapsed
-  // selection in the reading column. It STICKS — clicking Approve collapses the
-  // selection, and the panel must not empty itself out from under the ruling.
-  const [inspected, setInspected] = useState<SpanSelection | null>(null);
-
   const openCatalogDocument = useCallback((reference: ProviderReaderReference) => {
-    legacy.suspend();
     setCanonicalDocument(reference);
     setPaletteOpen(false);
-  }, [legacy.suspend, setCanonicalDocument]);
+  }, [setCanonicalDocument]);
 
   const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
-    legacy.suspend();
     setProviderReturnToSettings(returnToSettings);
     setProviderDocument(reference);
     setSettingsOpen(false);
     setPaletteOpen(false);
-  }, [legacy.suspend]);
+  }, []);
 
-  const activeCloudDocument =
-    activeTab?.docRef.kind === 'cloud' ? cloudDocuments[documentKey(activeTab.docRef)] ?? null : null;
   const activePathRef = useRef<string | null>(null);
   activePathRef.current = activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null;
   const activeTabIdRef = useRef<string | null>(null);
@@ -275,13 +237,6 @@ export function AppShell() {
   >(() => Promise.resolve(false));
   const commitForgetRef = useRef<
     (source: LibrarySourceDto, expectedSourceIntent: number) => Promise<void>
-  >(() => Promise.resolve());
-  const editLibraryDocumentRef = useRef<
-    (
-      member: LibrarySourceExecution,
-      row: EntityRow,
-      expectedSourceIntent?: number,
-    ) => Promise<void>
   >(() => Promise.resolve());
   const editCatalogRef = useRef<(reference: ProviderReaderReference, intent: number, selection: number) => Promise<void>>(() => Promise.resolve());
   // Native watch/grant commands commit the backend epoch before their IPC
@@ -696,7 +651,6 @@ export function AppShell() {
         watcherGenRef.current = -1;
         activeSourceIdRef.current = null;
         setSemanticWorkspaceGeneration(outcome.workspace_generation);
-        legacy.reset();
         setCanonicalDocument(null);
         useTabsStore.getState().closeAll();
         useEditorStore.getState().reset();
@@ -718,7 +672,7 @@ export function AppShell() {
       );
       return result;
     },
-    [refreshLibrary, legacy.reset],
+    [refreshLibrary],
   );
   commitForgetRef.current = commitForget;
 
@@ -798,12 +752,10 @@ export function AppShell() {
         openRef(ref);
         return;
       }
-      setCanonicalDocument(null);
-      void legacy.openRecent(ref).then((opened) => {
-        if (!opened) toast('This historical document is unavailable in Legacy records.');
-      });
+      clearLibraryDocument();
+      useTabsStore.getState().openTab(ref, { originRoot: null });
     },
-    [legacy.openRecent, openRef, setCanonicalDocument],
+    [openRef, clearLibraryDocument],
   );
 
   const openFile = useCallback(
@@ -852,68 +804,6 @@ export function AppShell() {
     }
   }, []);
 
-  const editLibraryDocument = useCallback(
-    async (
-      member: LibrarySourceExecution,
-      row: EntityRow,
-      expectedSourceIntent?: number,
-    ): Promise<void> => {
-      const editSourceIntent = expectedSourceIntent ?? beginSourceIntent();
-      const sourceIntentIsCurrent = () => sourceIntentRef.current === editSourceIntent;
-      if (!sourceIntentIsCurrent()) return;
-      if (!member.editable) return;
-      const path = typeof row.fields.path === 'string' ? row.fields.path : null;
-      if (!path) {
-        toast('This Library result has no editable local path');
-        return;
-      }
-      let snapshot;
-      try {
-        snapshot = await settingsBackend.listSources();
-      } catch {
-        if (sourceIntentIsCurrent()) toast('Could not resolve this Library source');
-        return;
-      }
-      if (!sourceIntentIsCurrent()) return;
-      const source = snapshot.sources.find((candidate) => candidate.id === member.registry_id);
-      if (!source) {
-        toast('This Library source is no longer registered');
-        return;
-      }
-      if (useSourcesStore.getState().root !== source.path) {
-        const switched = await switchWorkspace(source.path, source.id, {
-          kind: 'library-edit',
-          member,
-          row,
-        }, editSourceIntent);
-        if (!switched) return;
-      }
-      if (!sourceIntentIsCurrent()) return;
-      if (!settingsBackend.resolveLibraryDocumentEdit) {
-        toast('Local Library editing is unavailable');
-        return;
-      }
-      let documentPath;
-      try {
-        documentPath = await settingsBackend.resolveLibraryDocumentEdit(source.id, path);
-      } catch {
-        if (sourceIntentIsCurrent()) {
-          toast('This Library document is no longer available for editing');
-        }
-        return;
-      }
-      if (!sourceIntentIsCurrent()) return;
-      const title =
-        typeof row.fields.title === 'string' && row.fields.title.length > 0
-          ? row.fields.title
-          : path.split(/[\\/]+/).pop() ?? path;
-      openRef({ path: documentPath, name: title });
-      if (!sourceIntentIsCurrent()) return;
-      await setEditorMode('source', editSourceIntent);
-    },
-    [beginSourceIntent, openRef, setEditorMode, switchWorkspace],
-  );
-  editLibraryDocumentRef.current = editLibraryDocument;
   const catalogEditing = useCatalogEditing({
     beginIntent: beginSourceIntent,
     isIntentCurrent: (intent) => sourceIntentRef.current === intent,
@@ -998,125 +888,6 @@ export function AppShell() {
     }
   }, []);
 
-  // --- semantic surfaces: transport, selection, click-to-source ---------
-  const semantics = useMemo(makeSemanticsAdapter, []);
-  // The registered schemas drive the toolbar's Semantic view control and the lens
-  // band. Only read inside a Tauri shell — there is no engine on the website.
-  const { schemas, reload: reloadSchemas } = useSchemas(
-    semantics,
-    root,
-    isTauri(),
-    importState?.phase === 'done',
-  );
-  const activeLens = useMemo(
-    () => schemas.find((schema) => schema.name === lensSchema) ?? null,
-    [schemas, lensSchema],
-  );
-
-  // Open a document at an exact line range and mark it — the one landing used by
-  // every provenance affordance (a claim's citation, a projected object's
-  // citation, a located violation, an explained hit). The range is carried
-  // through unmodified, BOTH ends of it: a violation that knows its lines is the
-  // entire point of the Constraint Explorer, so this either lands on the whole
-  // range or reports that it could not, and never approximates.
-  const jumpToSpan = useCallback(
-    (absPath: string, name: string, startLine: number, endLine: number) => {
-      clearLibraryDocument();
-      const workspaceRoot = useSourcesStore.getState().root;
-      const ref = { path: absPath, name };
-      useTabsStore.getState().openTab(ref, { originRoot: workspaceRoot });
-      useSourcesStore.getState().addRecent(ref, workspaceRoot);
-      setJump({ path: absPath, startLine, endLine, nonce: (jumpSeq.current += 1) });
-    },
-    [clearLibraryDocument],
-  );
-
-  // Resolve a repo-relative file (how the engine cites provenance) to a path the
-  // reader can open, then hand over the cited range whole.
-  const openCitation = useCallback(
-    (file: string, startLine: number, endLine: number) => {
-      const sources = useSourcesStore.getState();
-      const absPath = resolveSourcePath(file, sources.root, sources.files);
-      if (absPath === null) {
-        toast(`No document in this workspace matches ${file}`);
-        return;
-      }
-      const name = absPath.split(/[\\/]+/).pop() ?? file;
-      jumpToSpan(absPath, name, startLine, endLine);
-    },
-    [jumpToSpan],
-  );
-
-  // The Inspector's and the Semantic view sheet's citation jump. Both hand over the
-  // claim's recorded first AND last line; neither is narrowed here.
-  const onCite = useCallback(
-    (file: string, startLine: number, endLine: number) => openCitation(file, startLine, endLine),
-    [openCitation],
-  );
-
-  // The Constraint Explorer's jump. The whole located span arrives; a violation
-  // with no line is not click-to-source and says so rather than opening the
-  // document at the top and pretending that was the answer.
-  const onJumpToViolation = useCallback(
-    (span: SourceSpan) => {
-      if (span.startLine === null) {
-        toast(`${span.file} has no line range recorded for this violation`);
-        return;
-      }
-      // A span with a start and NO end is a single-line location — that is what
-      // `citeSourceSpan` already renders it as (`file:41`, not `file:41–?`), so
-      // the marked extent matches the citation the reader clicked. It is not a
-      // stand-in for an end the engine failed to record.
-      openCitation(span.file, span.startLine, span.endLine ?? span.startLine);
-      setConstraintsOpen(false);
-    },
-    [openCitation],
-  );
-
-  // The Query Explanation's open. A hit is a chunk, and a chunk is a range: the
-  // reader marks the chunk that actually matched, not its opening line.
-  const onOpenExplained = useCallback(
-    (hit: ExplainedHit) => {
-      jumpToSpan(hit.absPath, hit.name, hit.startLine, hit.endLine);
-      setExplainOpen(false);
-    },
-    [jumpToSpan],
-  );
-
-  // Reading a selection in the reading column as a line range. Only a real,
-  // non-collapsed selection inside `.reader-host` counts — a bare click is not
-  // an inspection request, so the panel keeps the passage it was already on.
-  useEffect(() => {
-    if (!inspectorOpen) return;
-    const capture = () => {
-      const host = document.querySelector('.reader-host');
-      const span = spanFromSelection(window.getSelection(), host);
-      const path = activePathRef.current;
-      if (!span || !path) return;
-      setInspected((current) =>
-        current &&
-        current.path === path &&
-        current.startLine === span.startLine &&
-        current.endLine === span.endLine
-          ? current
-          : { path, startLine: span.startLine, endLine: span.endLine },
-      );
-    };
-    document.addEventListener('mouseup', capture);
-    document.addEventListener('keyup', capture);
-    return () => {
-      document.removeEventListener('mouseup', capture);
-      document.removeEventListener('keyup', capture);
-    };
-  }, [inspectorOpen]);
-
-  // A passage belongs to the document it was selected in; switching documents
-  // clears it rather than showing another file's claims under this file's lines.
-  const activeDocPath = activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null;
-  useEffect(() => {
-    setInspected((current) => (current && current.path === activeDocPath ? current : null));
-  }, [activeDocPath]);
-
   const focusOutline = useCallback(() => {
     useSettingsStore.setState({ outlineVisible: true });
     requestAnimationFrame(() => {
@@ -1184,89 +955,12 @@ export function AppShell() {
     [saveDocEntry],
   );
 
-  const beginCloudEdit = useCallback(() => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab || tab.docRef.kind !== 'cloud') return;
-    const selection = cloudDocuments[documentKey(tab.docRef)];
-    const document = selection?.cloudDocument;
-    if (!document?.edit_token) return;
-    const key = documentKey(tab.docRef);
-    const existing = useEditorStore.getState().entry(tab.id, key);
-    if (existing) {
-      useEditorStore.getState().setMode(tab.id, key, 'source');
-      return;
-    }
-    useEditorStore.getState().seed(tab.id, key, document.content, document.edit_token, 'source');
-  }, [cloudDocuments]);
-
-  const saveCloudEntry = useCallback(async (
-    tabId: string,
-    key: string,
-  ): Promise<'saved' | 'conflict' | 'error' | 'noop'> => {
-    const entry = useEditorStore.getState().entry(tabId, key);
-    if (!entry || !entry.dirty) return 'noop';
-    const save = useEditorStore.getState().beginSave(tabId, key);
-    if (!save) { toast('Editing is paused or this document is already saving.'); return 'error'; }
-    const snapshot = save.entry.buffer;
-    setCloudSaving(true);
-    try {
-      const outcome = await settingsBackend.saveCloudMarkdown?.(save.entry.baseHash, snapshot);
-      if (!outcome) throw new Error('Cloud editing is unavailable.');
-      if (outcome.kind === 'conflict') {
-        save.conflicted(save.entry.baseHash);
-        return 'conflict';
-      }
-      if (!save.saved(outcome.edit_token)) {
-        toast('Save completed for an earlier editor state. Your current buffer was kept.');
-        return 'error';
-      }
-      setCloudDocuments((current) => {
-        const selection = current[key];
-        if (!selection?.cloudDocument) return current;
-        return {
-          ...current,
-          [key]: {
-            ...selection,
-            cloudDocument: {
-              ...selection.cloudDocument,
-              content: snapshot,
-              edit_token: outcome.edit_token,
-              modified_at_ms: outcome.modified_at_ms,
-            },
-          },
-        };
-      });
-      return 'saved';
-    } catch {
-      toast('Could not save this cloud document.');
-      return 'error';
-    } finally {
-      save.finish();
-      setCloudSaving(false);
-    }
-  }, []);
-
-  const saveActiveCloud = useCallback(async () => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab || tab.docRef.kind !== 'cloud' || cloudSaving) return;
-    await saveCloudEntry(tab.id, documentKey(tab.docRef));
-  }, [cloudSaving, saveCloudEntry]);
-
-  const reloadActiveCloud = useCallback(async () => {
-    const tab = selectActiveTab(useTabsStore.getState());
-    if (!tab || tab.docRef.kind !== 'cloud') return;
-    const key = documentKey(tab.docRef);
-    try {
-      const document = await settingsBackend.readCloudMarkdown?.(tab.docRef.sourceId, tab.docRef.recordKey);
-      if (!document) throw new Error('Cloud reads are unavailable.');
-      useEditorStore.getState().seed(tab.id, key, document.content, document.edit_token ?? '', 'source');
-      setCloudDocuments((current) => {
-        const selection = current[key];
-        return selection ? { ...current, [key]: { ...selection, cloudDocument: document } } : current;
-      });
-    } catch {
-      toast('Could not reload this cloud document.');
-    }
+  // Historical cloud buffers cannot be saved through a retired runtime. Keep
+  // them dirty and available for explicit recovery instead of treating a key as
+  // a filesystem path or manufacturing a successful save.
+  const saveCloudEntry = useCallback(async (): Promise<'error'> => {
+    toast('This historical edit needs offline migration. The unsaved buffer was kept.');
+    return 'error';
   }, []);
 
   // Conflict banner "Reload": discard the local buffer and adopt the on-disk
@@ -1314,7 +1008,7 @@ export function AppShell() {
       let allClean = true;
       for (const entry of useEditorStore.getState().allDirtyEntries().filter((e) => e.tabId === tabId)) {
         const kind = entry.path.startsWith('cloud:')
-          ? await saveCloudEntry(entry.tabId, entry.path)
+          ? await saveCloudEntry()
           : await saveDocEntry(entry.tabId, entry.path, false);
         if (kind !== 'saved' && kind !== 'noop') allClean = false;
       }
@@ -1328,7 +1022,7 @@ export function AppShell() {
     let allClean = true;
     for (const entry of useEditorStore.getState().allDirtyEntries()) {
       const kind = entry.path.startsWith('cloud:')
-        ? await saveCloudEntry(entry.tabId, entry.path)
+        ? await saveCloudEntry()
         : await saveDocEntry(entry.tabId, entry.path, false);
       if (kind !== 'saved' && kind !== 'noop') allClean = false;
     }
@@ -1384,17 +1078,6 @@ export function AppShell() {
             guard.sourceId,
             guard.expectedSourceIntent,
           );
-          if (
-            committed &&
-            guard.resume?.kind === 'library-edit' &&
-            sourceIntentRef.current === guard.expectedSourceIntent
-          ) {
-            await editLibraryDocumentRef.current(
-              guard.resume.member,
-              guard.resume.row,
-              guard.expectedSourceIntent,
-            );
-          }
           if (committed && guard.resume?.kind === 'catalog-edit' && sourceIntentRef.current === guard.expectedSourceIntent) {
             await editCatalogRef.current(guard.resume.reference, guard.expectedSourceIntent, guard.resume.selection);
           }
@@ -1478,34 +1161,6 @@ export function AppShell() {
         description: 'Toggle related rail',
         group: 'Search',
         run: () => useSettingsStore.getState().toggleRelatedRail(),
-      },
-      {
-        id: 'explain',
-        keys: 'Mod+Shift+K',
-        description: 'Explain a search',
-        group: 'Search',
-        run: () => setExplainOpen((open) => !open),
-      },
-      {
-        id: 'view-as',
-        keys: 'Mod+Shift+V',
-        description: 'Semantic view…',
-        group: 'Semantics',
-        run: () => setLensSheetOpen((open) => !open),
-      },
-      {
-        id: 'inspector',
-        keys: 'Mod+Shift+I',
-        description: 'Toggle semantic inspector',
-        group: 'Semantics',
-        run: () => useSettingsStore.getState().toggleInspector(),
-      },
-      {
-        id: 'laws',
-        keys: 'Mod+Shift+L',
-        description: 'Where the laws break',
-        group: 'Semantics',
-        run: () => setConstraintsOpen((open) => !open),
       },
       {
         id: 'new-tab',
@@ -1663,15 +1318,6 @@ export function AppShell() {
           event.preventDefault();
           return;
         }
-        // The semantic sheets dismiss in the same one-at-a-time order as the
-        // rest of the overlay stack, ahead of leaving focus mode.
-        if (lensSheetOpen || constraintsOpen || explainOpen) {
-          setLensSheetOpen(false);
-          setConstraintsOpen(false);
-          setExplainOpen(false);
-          event.preventDefault();
-          return;
-        }
         if (useSettingsStore.getState().focusMode) {
           useSettingsStore.getState().setFocusMode(false);
           event.preventDefault();
@@ -1682,10 +1328,7 @@ export function AppShell() {
         isEditable(document.activeElement) ||
         paletteOpen ||
         sheetOpen ||
-        settingsOpen ||
-        lensSheetOpen ||
-        constraintsOpen ||
-        explainOpen;
+        settingsOpen;
       if (registry.dispatch(event, { inEditable })) event.preventDefault();
     }
     function onKeyUp(event: KeyboardEvent) {
@@ -1705,9 +1348,6 @@ export function AppShell() {
     settingsOpen,
     providerDocument,
     archivedReviewTarget,
-    lensSheetOpen,
-    constraintsOpen,
-    explainOpen,
   ]);
 
   // --- startup: restore session + settings ------------------------------
@@ -1964,7 +1604,7 @@ export function AppShell() {
   // streamed batches from a superseded workspace epoch are discarded.
   const adapter = useMemo(() => makeSearchAdapter(() => root ? watcherGenRef.current : 0, () => selectedProviderSources), [root, selectedProviderSources]);
   const searchScopeKey = `${root ?? ""}|${selectedProviderSources.join(",")}`;
-  const readerBlocked = Boolean(archivedReviewTarget || providerDocument || settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
+  const readerBlocked = Boolean(archivedReviewTarget || providerDocument || settingsOpen || paletteOpen || sheetOpen || closeGuard);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
@@ -2006,26 +1646,7 @@ export function AppShell() {
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
-          legacyRecordsOpen={legacy.enabled}
-          onToggleLegacyRecords={() => {
-            setCanonicalDocument(null);
-            if (legacy.enabled) legacy.suspend();
-            else legacy.enable();
-          }}
-          libraryEvidence={legacy.enabled ? libraryEvidence : []}
-          librarySearch={librarySearch}
-          libraryLoading={legacy.enabled && libraryLoading}
-          libraryError={legacy.enabled ? libraryError : null}
-          libraryAvailability={legacy.enabled ? libraryAvailability : { kind: 'ready' }}
-          libraryHasMore={legacy.enabled && Boolean(libraryHydration.continuations?.length)}
-          onLibrarySearch={legacy.enabled ? setLibrarySearch : undefined}
-          onOpenLibrary={(member, row) => {
-            setCanonicalDocument(null);
-            setLibraryError(null);
-            void openLibraryDocument(member, row);
-          }}
-          onRefreshLibrary={() => void refreshLibrary()}
-          onLoadMoreLibrary={() => void loadMoreLibrary()}
+          onMigration={openMigration}
         />
 
         <main className="shell__main">
@@ -2037,7 +1658,7 @@ export function AppShell() {
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
-            }${canonicalDocument || libraryDocument || activeCloudDocument ? ' shell__reader-row--library-open' : ''
+            }${canonicalDocument || activeTab?.docRef.kind === 'cloud' ? ' shell__reader-row--library-open' : ''
             }`}
           >
             {canonicalDocument ? (
@@ -2066,55 +1687,8 @@ export function AppShell() {
                 onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
                 onClose={closeReaderTab}
               />
-            ) : libraryDocument ? (
-              <LibraryDocumentPane
-                member={libraryDocument.member}
-                row={libraryDocument.row}
-                evidence={libraryDocument.evidence}
-                cloudDocument={libraryDocument.cloudDocument}
-                loading={libraryDocumentLoading}
-                error={libraryDocumentError}
-                onRetry={() =>
-                  void openLibraryDocument(
-                    libraryDocument.member,
-                    libraryDocument.row,
-                  )
-                }
-                onEdit={
-                  libraryDocument.member.editable
-                    ? () =>
-                        void editLibraryDocument(
-                          libraryDocument.member,
-                          libraryDocument.row,
-                        )
-                    : undefined
-                }
-              />
-            ) : activeCloudDocument ? (
-              <LibraryDocumentPane
-                member={activeCloudDocument.member}
-                row={activeCloudDocument.row}
-                evidence={activeCloudDocument.evidence}
-                cloudDocument={activeCloudDocument.cloudDocument}
-                onRetry={() =>
-                  void openLibraryDocument(
-                    activeCloudDocument.member,
-                    activeCloudDocument.row,
-                  )
-                }
-                onEdit={beginCloudEdit}
-                cloudEditor={
-                  activeTab && activeTab.docRef.kind === 'cloud'
-                    ? {
-                        tabId: activeTab.id,
-                        documentKey: documentKey(activeTab.docRef),
-                        saving: cloudSaving,
-                        onSave: () => void saveActiveCloud(),
-                        onReload: () => void reloadActiveCloud(),
-                      }
-                    : undefined
-                }
-              />
+            ) : activeTab?.docRef.kind === 'cloud' ? (
+              <LegacyRecordNotice reference={activeTab.docRef} tabId={activeTab.id} onMigration={openMigration} />
             ) : (
             <>
               <ReaderPane
@@ -2137,36 +1711,10 @@ export function AppShell() {
               onSaveActive={() => void saveActiveDoc(false)}
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
-              onViewAs={schemas.length > 0 ? () => setLensSheetOpen(true) : undefined}
-              lensSchema={activeLens?.name ?? null}
-              lensBand={
-                activeLens ? (
-                  <LensBand
-                    schema={activeLens}
-                    onOpen={() => setLensSheetOpen(true)}
-                    onClear={() => useSettingsStore.getState().setLensSchema(null)}
-                  />
-                ) : null
-              }
+              onArchivedReviews={activeTab && isLocalDocument(activeTab.docRef)
+                ? () => archivedReviews.openLocal(activeTab.docRef.path, semanticWorkspaceGeneration)
+                : undefined}
               />
-            {/* The apparatus sits nearest the text, navigation outside it. */}
-            {activeTab ? (
-              <InspectorRail
-                adapter={semantics}
-                onArchivedReviews={activeDocPath ? () => archivedReviews.openLocal(activeDocPath, semanticWorkspaceGeneration) : undefined}
-                open={inspectorOpen}
-                onToggle={() => useSettingsStore.getState().toggleInspector()}
-                selection={inspected}
-                reviewer={reviewer}
-                onSetReviewer={(name) => useSettingsStore.getState().setReviewer(name)}
-                onCite={onCite}
-                workspaceKey={root}
-                workspaceGeneration={semanticWorkspaceGeneration}
-                documentPath={isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : ''}
-                queryDocument={semantics.queryFederatedDocument}
-                cancelDocument={semantics.cancelFederatedDocument}
-              />
-            ) : null}
             {activeTab ? (
               <RelatedRail
                 activeDoc={activeDoc}
@@ -2213,6 +1761,7 @@ export function AppShell() {
       ) : null}
       {settingsOpen ? (
         <SettingsSheet
+          initialSection={settingsSection}
           selectedDevice={canonicalDocument && isDeviceReference(canonicalDocument) ? canonicalDocument : undefined}
           localRoot={root}
           watcher={watcher}
@@ -2220,7 +1769,7 @@ export function AppShell() {
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
-          onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); setProviderRefreshKey((value) => value + 1); }}
+          onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); }}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference, true)}
           onClose={() => setSettingsOpen(false)}
         />
@@ -2247,34 +1796,6 @@ export function AppShell() {
             const reference = archivedReviews.close();
             if (reference) setProviderDocument(reference);
           }}
-        />
-      ) : null}
-      {lensSheetOpen ? (
-        <LensSheet
-          adapter={semantics}
-          activeSchema={lensSchema}
-          onChoose={(schema) => {
-            useSettingsStore.getState().setLensSchema(schema);
-            // Counts move as claims are ruled on; re-read so the band never
-            // reports a total the graph no longer holds.
-            reloadSchemas();
-          }}
-          onCite={onCite}
-          onClose={() => setLensSheetOpen(false)}
-        />
-      ) : null}
-      {constraintsOpen ? (
-        <ConstraintSheet
-          adapter={semantics}
-          onJump={onJumpToViolation}
-          onClose={() => setConstraintsOpen(false)}
-        />
-      ) : null}
-      {explainOpen ? (
-        <ExplainSheet
-          adapter={semantics}
-          onOpen={onOpenExplained}
-          onClose={() => setExplainOpen(false)}
         />
       ) : null}
       {closeGuard ? (
