@@ -312,6 +312,7 @@ mod tests {
             lexical_only: false,
             explain: true,
             intent: Some("best".into()),
+            provider_sources: None,
         };
         let result =
             crate::search::search_reader(&backend, &workspace, "offline", &options, |_| {})

@@ -2,7 +2,7 @@
  * A quiet rail — muted surface, thin borders — that never competes with the
  * reading column. */
 
-import { useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type { ListingFailure, WorkspaceFile } from '../platform/fs.js';
 import type {
   EntityRow,
@@ -29,6 +29,8 @@ export interface SidebarProps {
    *  a folder we could not read must never be drawn as a folder with no files. */
   listingError?: ListingFailure | null;
   onPickFolder: () => void;
+  /** Native selected sources do not participate in local folder grants. */
+  providerSources?: ReactNode;
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
@@ -111,6 +113,7 @@ export function Sidebar({
   loading,
   listingError,
   onPickFolder,
+  providerSources,
   onOpenFile,
   onOpenRecent,
   isIgnored,
@@ -212,6 +215,7 @@ export function Sidebar({
         </div>
       )}
 
+      {providerSources}
       {showLibraryRail ? (
         <>
         {!libraryCollapsed && !libraryExpanded ? (

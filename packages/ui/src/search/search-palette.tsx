@@ -48,6 +48,9 @@ export type PaletteMode = 'search' | 'file';
 
 /** A resolved open target: the document path, its name, and a provenance range. */
 export interface HitTarget {
+  /** Canonical source and exact revision, when supplied by the transport. */
+  sourceId?: string;
+  revision?: string;
   path: string;
   name: string;
   /** 1-based source line to land on (provenance jump); omitted opens at top. */
@@ -445,13 +448,15 @@ export function SearchPalette({
       for (const { file } of fileMatches) map.set(file.path.toLowerCase(), { file });
     } else if (isRelated) {
       for (const hit of relatedShown) {
-        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.line != null ? { line: hit.line } : {}) });
+        map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) });
       }
     } else {
       for (const hit of searchHits) {
         map.set(hit.chunkId.toLowerCase(), {
           path: hit.path,
           name: hit.name,
+          ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
+          ...(hit.revision != null ? { revision: hit.revision } : {}),
           line: hit.startLine,
           endLine: hit.endLine,
         });
@@ -481,6 +486,8 @@ export function SearchPalette({
         {
           path: hit.path,
           name: hit.name,
+          ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
+          ...(hit.revision != null ? { revision: hit.revision } : {}),
           line: chunk ? hit.startLine : undefined,
           endLine: chunk ? hit.endLine : undefined,
         },

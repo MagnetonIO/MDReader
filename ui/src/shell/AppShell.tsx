@@ -68,6 +68,8 @@ import { watcherStampCurrent } from './watcher-guard.js';
 import { performSwitch } from './switch-workspace.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
+import { ProviderSourcesSidebar } from './ProviderSourcesSidebar.js';
+import { providerTarget } from './provider-reading.js';
 import { TabStrip } from './TabStrip.js';
 import { ReaderPane } from './ReaderPane.js';
 import type { JumpTarget } from './ReaderPane.js';
@@ -160,6 +162,16 @@ export function AppShell() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
+  const [providerReturnToSettings, setProviderReturnToSettings] = useState(false);
+  const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
+  const [providerRefreshKey, setProviderRefreshKey] = useState(0);
+  const openProviderDocument = useCallback((reference: ProviderReaderReference, returnToSettings = false) => {
+    setProviderReturnToSettings(returnToSettings);
+    setProviderDocument(reference);
+    setSettingsOpen(false);
+    setPaletteOpen(false);
+  }, []);
+
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -1134,6 +1146,14 @@ export function AppShell() {
   // once the doc renders); ⌘↵ opens a background tab (no jump — it isn't the
   // focused reader).
   const onOpenHit = useCallback((target: HitTarget, opts: { background: boolean }) => {
+    try {
+      const reference = providerTarget(target);
+      if (reference) {
+        if (opts.background) { toast('Cloud results currently open in the foreground. Press Enter to read this exact revision.'); return; }
+        openProviderDocument(reference);
+        return;
+      }
+    } catch (cause) { toast(cause instanceof Error ? cause.message : 'The cloud result is unavailable.'); return; }
     if (!opts.background) clearLibraryDocument();
     const root = useSourcesStore.getState().root;
     const ref = { path: target.path, name: target.name };
@@ -1150,7 +1170,7 @@ export function AppShell() {
         nonce: (jumpSeq.current += 1),
       });
     }
-  }, [clearLibraryDocument]);
+  }, [clearLibraryDocument, openProviderDocument]);
 
   const onNavigate = useCallback((ref: DocRef) => {
     clearLibraryDocument();
@@ -2266,7 +2286,8 @@ export function AppShell() {
   );
   // The search/related transport, closed over the live watcher generation so
   // streamed batches from a superseded workspace epoch are discarded.
-  const adapter = useMemo(() => makeSearchAdapter(() => watcherGenRef.current), []);
+  const adapter = useMemo(() => makeSearchAdapter(() => root ? watcherGenRef.current : 0, () => selectedProviderSources), [root, selectedProviderSources]);
+  const searchScopeKey = `${root ?? ""}|${selectedProviderSources.join(",")}`;
   const readerBlocked = Boolean(providerDocument || settingsOpen || paletteOpen || sheetOpen || lensSheetOpen || constraintsOpen || explainOpen || closeGuard);
 
   return (
@@ -2297,6 +2318,7 @@ export function AppShell() {
           loading={loading}
           listingError={listingError}
           onPickFolder={onPickFolder}
+          providerSources={isTauri() ? <ProviderSourcesSidebar selectedSources={selectedProviderSources} onSelectionChange={setSelectedProviderSources} refreshKey={providerRefreshKey} onOpen={openProviderDocument} onManage={() => setSettingsOpen(true)} /> : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}
@@ -2458,8 +2480,8 @@ export function AppShell() {
           mode={paletteMode}
           files={paletteFiles}
           activeDoc={activeDoc}
-          sourceName={sourceName}
-          workspaceKey={root}
+          sourceName={selectedProviderSources.length ? 'Selected sources' : sourceName}
+          workspaceKey={searchScopeKey}
           adapter={adapter}
           isMac={isMac}
           onOpenHit={onOpenHit}
@@ -2478,12 +2500,12 @@ export function AppShell() {
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
-          onLibraryChanged={() => void refreshLibrary()}
-          onOpenProviderDocument={async (reference) => { setProviderDocument(reference); setSettingsOpen(false); }}
+          onLibraryChanged={() => { void refreshLibrary(); setProviderRefreshKey((value) => value + 1); }}
+          onOpenProviderDocument={async (reference) => openProviderDocument(reference, true)}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
-      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onClose={() => { setProviderDocument(null); setSettingsOpen(true); }} /> : null}
+      {providerDocument ? <ProviderReaderDialog reference={providerDocument} onClose={() => { setProviderDocument(null); setSettingsOpen(providerReturnToSettings); }} /> : null}
       {lensSheetOpen ? (
         <LensSheet
           adapter={semantics}

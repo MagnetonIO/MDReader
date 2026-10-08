@@ -2209,6 +2209,8 @@ export type SearchQuery = {
 	/**  Attach the full [`HitExplain`] breakdown to every hit. */
 	explain: boolean,
 	intent?: string | null,
+	/**  Explicit enabled canonical provider sources; absence retains local-only search. */
+	provider_sources?: string[] | null,
 };
 
 /**

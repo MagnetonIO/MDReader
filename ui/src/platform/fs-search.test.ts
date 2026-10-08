@@ -54,4 +54,13 @@ describe('search intent and revision evidence over IPC', () => {
     expect(phases).not.toHaveBeenCalled();
     expect(outcome).toEqual({ hits: [], semanticUnavailable: 'model unavailable' });
   });
+  it('sends only explicitly selected canonical provider sources in the same search request', async () => {
+    const sourceId='provider:'+'a'.repeat(64);
+    const evidence=hit({source_id:sourceId,revision:'b'.repeat(64),abs_path:'records/'+'c'.repeat(64)+'.md'});
+    transport.search.mockResolvedValue({status:'ok',data:{hits:[evidence],semantic_unavailable:null}});
+    const outcome=await search('quartz',{lexicalOnly:true,explain:false,intent:'exact',providerSources:[sourceId]},vi.fn());
+    expect(transport.search).toHaveBeenCalledTimes(1);
+    expect(transport.search).toHaveBeenCalledWith('quartz',{limit:20,lexical_only:true,explain:false,intent:'exact',provider_sources:[sourceId]},expect.anything());
+    expect(outcome.hits[0]).toMatchObject({sourceId,revision:evidence.revision,path:evidence.abs_path});
+  });
 });

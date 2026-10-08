@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { RelatedHit, SearchAdapter } from '@mdreader/ui';
 
@@ -52,14 +52,16 @@ describe('RelatedRail', () => {
   });
 
   test('renders the score decomposition (tooltip + chips)', async () => {
-    const related = vi.fn(async () => [relatedHit('storage.md', { graph: 0.5, concept: 0.3, vector: 0.2 })]);
+    const hit={...relatedHit('storage.md', { graph: 0.5, concept: 0.3, vector: 0.2 }),sourceId:'provider:'+'a'.repeat(64),revision:'b'.repeat(64)};
+    const related = vi.fn(async () => [hit]);
+    const onOpen=vi.fn();
     render(
       <RelatedRail
         activeDoc={{ path: '/ws/a.md', name: 'a.md' }}
         adapter={adapterWith(related)}
         open
         onToggle={vi.fn()}
-        onOpen={vi.fn()}
+        onOpen={onOpen}
         workspaceKey="/ws"
       />,
     );
@@ -74,6 +76,8 @@ describe('RelatedRail', () => {
     expect(link.getAttribute('title')).toContain('vector 0.20');
     // All three components are non-zero, so all three chips render.
     expect(link.querySelectorAll('.related-rail__chip')).toHaveLength(3);
+    fireEvent.click(link);
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({sourceId:hit.sourceId,revision:hit.revision,path:hit.path}));
   });
 
   test('shows real shared tags and unavailable vectors without calling tags concepts', async () => {

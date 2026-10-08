@@ -67,6 +67,10 @@ pub struct SearchQuery {
     #[serde(default)]
     #[specta(optional)]
     pub intent: Option<String>,
+    /// Explicit enabled canonical provider sources; absence retains local-only search.
+    #[serde(default)]
+    #[specta(optional)]
+    pub provider_sources: Option<Vec<String>>,
 }
 
 impl SearchQuery {
@@ -468,7 +472,11 @@ pub async fn search(
     .await
 }
 
-fn reader_hit(root: &SourceRoot, hit: mdreader_core::Evidence, explain: bool) -> SearchHitDto {
+fn reader_hit(
+    root: Option<&SourceRoot>,
+    hit: mdreader_core::Evidence,
+    explain: bool,
+) -> SearchHitDto {
     let document_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
         format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),
@@ -510,7 +518,7 @@ fn reader_hit(root: &SourceRoot, hit: mdreader_core::Evidence, explain: bool) ->
             document_id: document_id.clone(),
             file_path: hit.path.clone(),
             source_id: Some(hit.source_id.clone()),
-            source_root: Some(root.path.to_string_lossy().into_owned()),
+            source_root: root.map(|root| root.path.to_string_lossy().into_owned()),
         },
     });
     SearchHitDto {
@@ -519,8 +527,15 @@ fn reader_hit(root: &SourceRoot, hit: mdreader_core::Evidence, explain: bool) ->
         chunk_id,
         document_id,
         file_path: hit.path.clone(),
-        abs_path: root.path.join(&hit.path).to_string_lossy().into_owned(),
-        name: basename(&hit.path),
+        abs_path: root.map_or_else(
+            || hit.path.clone(),
+            |root| root.path.join(&hit.path).to_string_lossy().into_owned(),
+        ),
+        name: if root.is_none() {
+            hit.title
+        } else {
+            basename(&hit.path)
+        },
         heading_path: hit.heading.split(" > ").map(String::from).collect(),
         start_line: hit.line_start,
         end_line: hit.line_end,
@@ -535,6 +550,26 @@ fn reader_hit(root: &SourceRoot, hit: mdreader_core::Evidence, explain: bool) ->
     }
 }
 
+fn canonical_provider_source(id: &str) -> bool {
+    id.strip_prefix("provider:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+fn reader_scope_current(
+    epoch: Option<&std::sync::Arc<Epoch>>,
+    workspace: &WorkspaceState,
+) -> Result<bool, String> {
+    match epoch {
+        Some(epoch) => {
+            epoch.validate_root()?;
+            Ok(workspace.is_current(epoch))
+        }
+        None => Ok(workspace.current().is_none()),
+    }
+}
 pub(crate) async fn search_reader(
     reader: &crate::reader::ReaderBackend,
     workspace: &WorkspaceState,
@@ -543,9 +578,42 @@ pub(crate) async fn search_reader(
     mut sink: impl FnMut(SearchBatch),
 ) -> Result<SearchResults, String> {
     use mdreader_service::{Request, SearchMode, SearchOutcome};
-    let epoch = workspace.current().ok_or("no workspace has been opened")?;
-    epoch.validate_root()?;
-    let source = reader.admit_async(epoch.source_root()).await?;
+    let epoch = workspace.current();
+    if let Some(epoch) = &epoch {
+        epoch.validate_root()?;
+    }
+    let selected = options.provider_sources.as_deref().unwrap_or_default();
+    let mut sources = std::collections::BTreeSet::new();
+    if selected.len() > 64
+        || selected
+            .iter()
+            .any(|id| !canonical_provider_source(id) || !sources.insert(id.clone()))
+    {
+        return Err("Invalid selected provider search scope".into());
+    }
+    if !selected.is_empty() {
+        let authoritative: Vec<mdreader_core::Source> = reader.invoke(Request::ListSources).await?;
+        if selected.iter().any(|id| {
+            !authoritative
+                .iter()
+                .any(|source| source.enabled && source.id == *id)
+        }) {
+            return Err(
+                "A selected provider source is unavailable; review the search selection".into(),
+            );
+        }
+    }
+    let local = if let Some(epoch) = &epoch {
+        let source = reader.admit_async(epoch.source_root()).await?;
+        sources.insert(source.clone());
+        Some(source)
+    } else {
+        None
+    };
+    if sources.is_empty() {
+        return Err("Open a folder or select a cloud source for search".into());
+    }
+    let sources: Vec<_> = sources.into_iter().collect();
     let mode = match options.intent.as_deref() {
         Some("semantic") => SearchMode::Semantic,
         Some("recent") => SearchMode::Recent,
@@ -559,13 +627,44 @@ pub(crate) async fn search_reader(
         }
         _ => return Err("Unknown search intent".into()),
     };
-    let limit = options.limit as usize;
+    let map_hits = |hits: Vec<mdreader_core::Evidence>| -> Result<Vec<SearchHitDto>, String> {
+        hits.into_iter()
+            .map(|hit| {
+                if !sources.contains(&hit.source_id) {
+                    return Err("Reader returned evidence outside the selected scope".into());
+                }
+                let root = if local.as_ref() == Some(&hit.source_id) {
+                    epoch.as_ref().map(|epoch| epoch.source_root())
+                } else {
+                    None
+                };
+                Ok(reader_hit(root.as_ref(), hit, options.explain))
+            })
+            .collect()
+    };
+    let mut emit =
+        |phase: &str, hits: &[SearchHitDto], reason: Option<&str>| -> Result<(), String> {
+            if let Some(epoch) = &epoch {
+                stream(epoch, workspace, &mut sink, phase, hits, reason)
+            } else if reader_scope_current(None, workspace)? {
+                sink(SearchBatch {
+                    phase: phase.into(),
+                    hits: hits.to_vec(),
+                    generation: 0,
+                    semantic_unavailable: reason.map(str::to_string),
+                });
+                Ok(())
+            } else {
+                Ok(())
+            }
+        };
+    let mut lexical_outcome = None;
     if !matches!(mode, SearchMode::Semantic) {
         let lexical: SearchOutcome = reader
             .invoke(Request::SearchRanked {
                 query: query.into(),
-                sources: vec![source.clone()],
-                limit,
+                sources: sources.clone(),
+                limit: options.limit as usize,
                 mode: if matches!(mode, SearchMode::Recent) {
                     SearchMode::Recent
                 } else {
@@ -573,47 +672,41 @@ pub(crate) async fn search_reader(
                 },
             })
             .await?;
-        let hits: Vec<_> = lexical
-            .hits
-            .into_iter()
-            .map(|h| reader_hit(&epoch.source_root(), h, options.explain))
-            .collect();
-        stream(&epoch, workspace, &mut sink, "lexical", &hits, None)?;
+        let hits = map_hits(lexical.hits.clone())?;
+        emit("lexical", &hits, None)?;
+        lexical_outcome = Some(lexical);
     }
-    if !workspace.is_current(&epoch) {
+    if !reader_scope_current(epoch.as_ref(), workspace)? {
         return Ok(SearchResults::empty());
     }
-    let outcome: SearchOutcome = reader
-        .invoke(Request::SearchRanked {
-            query: query.into(),
-            sources: vec![source],
-            limit,
-            mode,
-        })
-        .await?;
-    let hits: Vec<_> = outcome
-        .hits
-        .into_iter()
-        .map(|h| reader_hit(&epoch.source_root(), h, options.explain))
-        .collect();
-    stream(
-        &epoch,
-        workspace,
-        &mut sink,
-        "final",
-        &hits,
-        outcome.semantic_unavailable.as_deref(),
-    )?;
-    finish_discarding_superseded(
-        epoch.finish(
-            workspace,
-            SearchResults {
-                hits,
-                semantic_unavailable: outcome.semantic_unavailable,
-            },
-        ),
-        SearchResults::empty(),
-    )
+    // Each phase ranks the complete chosen scope in one service query. Exact
+    // and Recent can reuse their authoritative first pass; never merge per-source ranks.
+    let outcome = if matches!(mode, SearchMode::Exact | SearchMode::Recent) {
+        lexical_outcome.ok_or("Reader lexical phase missing")?
+    } else {
+        reader
+            .invoke(Request::SearchRanked {
+                query: query.into(),
+                sources: sources.clone(),
+                limit: options.limit as usize,
+                mode,
+            })
+            .await?
+    };
+    let hits = map_hits(outcome.hits)?;
+    emit("final", &hits, outcome.semantic_unavailable.as_deref())?;
+    if !reader_scope_current(epoch.as_ref(), workspace)? {
+        return Ok(SearchResults::empty());
+    }
+    let result = SearchResults {
+        hits,
+        semantic_unavailable: outcome.semantic_unavailable,
+    };
+    if let Some(epoch) = epoch {
+        finish_discarding_superseded(epoch.finish(workspace, result), SearchResults::empty())
+    } else {
+        Ok(result)
+    }
 }
 
 /// The search core, streaming each phase into `sink` instead of a Tauri
@@ -810,6 +903,7 @@ pub async fn explain_query(
             lexical_only: false,
             explain: true,
             intent: Some("best".into()),
+            provider_sources: None,
         },
         |_| {},
     )
@@ -957,6 +1051,7 @@ mod tests {
                     lexical_only: true,
                     explain: false,
                     intent: None,
+                    provider_sources: None,
                 },
                 |_| {},
             ))
@@ -1037,6 +1132,7 @@ mod tests {
             lexical_only: false,
             explain: true,
             intent: None,
+            provider_sources: None,
         };
         let hits = rt
             .block_on(run_phase(
@@ -1104,6 +1200,7 @@ mod tests {
             lexical_only: false,
             explain: false,
             intent: None,
+            provider_sources: None,
         };
         let err = rt
             .block_on(run_phase(
@@ -1250,6 +1347,7 @@ mod tests {
             lexical_only: false,
             explain: false,
             intent: None,
+            provider_sources: None,
         };
 
         // Control: with the model installed, the hybrid pass runs and the result
@@ -1316,6 +1414,7 @@ mod tests {
                     lexical_only: true,
                     explain: false,
                     intent: None,
+                    provider_sources: None,
                 },
                 |_| {},
             ))
@@ -1333,6 +1432,149 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    fn provider_search_fixture(
+        reader: &crate::reader::ReaderBackend,
+        directory: &Path,
+    ) -> mdreader_core::ProviderProjectionReceipt {
+        use mdreader_provider::*;
+        let binding = SourceBinding::new(
+            LibraryId::new("synthetic-search-library").unwrap(),
+            SourceId::new("selected-drive").unwrap(),
+            AccountBinding::new("private-account").unwrap(),
+            uuid::Uuid::new_v4(),
+            "1".repeat(64),
+        )
+        .unwrap();
+        let text = "# Provider plan\n\nquartz storage evidence\n";
+        let version = DocumentVersion {
+            provider_revision: OpaqueValue::new("private-remote-version").unwrap(),
+            content_hash: None,
+            conditional_write_token: None,
+        };
+        let metadata = Metadata {
+            key: RecordKey::new("private-record").unwrap(),
+            name: DisplayText::new("Plan.md").unwrap(),
+            display_path: DisplayText::new("Plan.md").unwrap(),
+            media_type: None,
+            modified_at_ms: Some(1),
+            size_bytes: Some(text.len() as u64),
+            version: version.clone(),
+        };
+        let body = DocumentBody {
+            key: metadata.key.clone(),
+            version,
+            body: MarkdownBytes::new(text.as_bytes().to_vec()).unwrap(),
+            observed_at_ms: 1,
+        };
+        let projection = mdreader_core::ProviderProjection::open(
+            &directory.join("provider-cache"),
+            binding.library_id().clone(),
+        )
+        .unwrap();
+        reader
+            .with_mobile_store(|store| {
+                let receipt = store.with_library_connection(|c| {
+                    let tx = c.transaction().unwrap();
+                    let receipt = projection.admit(&tx, &binding, &metadata, &body).unwrap();
+                    tx.commit().unwrap();
+                    receipt
+                });
+                store
+                    .index_source(&receipt.reader_source_id)
+                    .map_err(|e| e.to_string())?;
+                Ok(receipt)
+            })
+            .unwrap()
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn selected_provider_search_without_workspace_keeps_canonical_revision_and_rejects_disabled_scope(
+    ) {
+        let directory = TempDir::new().unwrap();
+        let reader = crate::reader::ReaderBackend::embedded(directory.path()).unwrap();
+        let receipt = provider_search_fixture(&reader, directory.path());
+        let workspace = WorkspaceState::default();
+        let options:SearchQuery=serde_json::from_value(serde_json::json!({"limit":20,"lexical_only":true,"explain":true,"intent":"exact","provider_sources":[receipt.reader_source_id]})).unwrap();
+        let outcome = search_reader(&reader, &workspace, "quartz", &options, |_| {})
+            .await
+            .expect("provider-only search must not require a local folder");
+        assert_eq!(outcome.hits.len(), 1);
+        let hit = &outcome.hits[0];
+        assert_eq!(
+            hit.source_id.as_deref(),
+            Some(receipt.reader_source_id.as_str())
+        );
+        assert_eq!(hit.revision.as_deref(), Some(receipt.revision.as_str()));
+        assert_eq!(
+            hit.abs_path, receipt.path,
+            "provider paths are never joined to local/cache roots"
+        );
+        assert_eq!(hit.explain.as_ref().unwrap().provenance.source_root, None);
+        reader
+            .with_mobile_store(|store| {
+                store
+                    .set_source_enabled(&receipt.reader_source_id, false)
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert!(
+            search_reader(&reader, &workspace, "quartz", &options, |_| {})
+                .await
+                .is_err()
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mixed_selected_scope_is_ranked_together_and_unselected_provider_is_excluded() {
+        let directory = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::write(
+            local.path().join("local.md"),
+            "# Local plan\n\nquartz storage evidence\n",
+        )
+        .unwrap();
+        let reader = crate::reader::ReaderBackend::embedded(directory.path()).unwrap();
+        let receipt = provider_search_fixture(&reader, directory.path());
+        let workspace = WorkspaceState::granted(local.path().canonicalize().unwrap());
+        let id = reader
+            .admit_async(workspace.current().unwrap().source_root())
+            .await
+            .unwrap();
+        reader
+            .with_mobile_store(|store| store.index_source(&id).map_err(|e| e.to_string()))
+            .unwrap();
+        let local_options: SearchQuery = serde_json::from_value(
+            serde_json::json!({"limit":20,"lexical_only":true,"explain":false,"intent":"exact"}),
+        )
+        .unwrap();
+        let local_only = search_reader(&reader, &workspace, "quartz", &local_options, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(local_only.hits.len(), 1);
+        assert_eq!(local_only.hits[0].source_id.as_deref(), Some(id.as_str()));
+        let mixed_options:SearchQuery=serde_json::from_value(serde_json::json!({"limit":20,"lexical_only":true,"explain":false,"intent":"exact","provider_sources":[receipt.reader_source_id]})).unwrap();
+        let mixed = search_reader(&reader, &workspace, "quartz", &mixed_options, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(mixed.hits.len(), 2);
+        let ranks: Vec<_> = mixed.hits.iter().map(|h| h.lex_rank.unwrap()).collect();
+        assert_eq!(
+            ranks,
+            vec![1, 2],
+            "ranks belong to one cross-source query, not merged source-local rank1 lists"
+        );
+        assert!(mixed.hits.iter().any(|h| h.abs_path
+            == workspace
+                .current()
+                .unwrap()
+                .root
+                .join("local.md")
+                .to_string_lossy()));
+        assert!(mixed.hits.iter().any(|h| h.source_id.as_deref()
+            == Some(receipt.reader_source_id.as_str())
+            && h.abs_path == receipt.path));
+    }
     /// related maps an absolute path back to the stored path and returns the
     /// unified decomposition; an unknown document yields an empty list.
     #[test]

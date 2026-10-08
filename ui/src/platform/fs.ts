@@ -408,7 +408,7 @@ function normalizeRelated(dto: RelatedDocDto): RelatedHit {
  */
 export async function search(
   query: string,
-  opts: { lexicalOnly: boolean; explain: boolean; intent?: SearchIntent },
+  opts: { lexicalOnly: boolean; explain: boolean; intent?: SearchIntent; providerSources?: readonly string[] },
   onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   currentGeneration?: () => number,
 ): Promise<SearchOutcome> {
@@ -431,6 +431,7 @@ export async function search(
       lexical_only: opts.lexicalOnly,
       explain: opts.explain,
       ...(opts.intent !== undefined ? { intent: opts.intent } : {}),
+      ...(opts.providerSources?.length ? { provider_sources: [...opts.providerSources] } : {}),
     },
     channel,
   );
@@ -464,9 +465,9 @@ export async function related(docPath: string, limit = RELATED_LIMIT): Promise<R
  * `currentGeneration` returns the generation the CURRENT watcher was armed
  * under; streamed search batches from an older generation are discarded.
  */
-export function makeSearchAdapter(currentGeneration: () => number): SearchAdapter {
+export function makeSearchAdapter(currentGeneration: () => number, providerSources: () => readonly string[] = () => []): SearchAdapter {
   return {
-    search: (query, opts, onPhase) => search(query, opts, onPhase, currentGeneration),
+    search: (query, opts, onPhase) => search(query, { ...opts, providerSources: providerSources() }, onPhase, currentGeneration),
     related: (docPath) => related(docPath),
   };
 }

@@ -134,7 +134,7 @@ export function RelatedRail({
                     type="button"
                     className="related-rail__link"
                     title={tip}
-                    onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.line != null ? { line: hit.line } : {}) })}
+                    onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) })}
                   >
                     <span className="related-rail__name">{hit.name}</span>
                     <span className="related-rail__score">{hit.score.toFixed(2)}</span>

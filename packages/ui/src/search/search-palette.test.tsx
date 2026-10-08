@@ -461,7 +461,7 @@ describe('opening hits', () => {
   test('Enter opens the hit at its provenance line; ⌘Enter opens a background tab', async () => {
     const onOpenHit = vi.fn();
     const onClose = vi.fn();
-    const h = hit({ chunkId: 'c1', name: 'deep.md', startLine: 7 });
+    const h = hit({ chunkId: 'c1', name: 'deep.md', startLine: 7, sourceId: 'provider:' + 'a'.repeat(64), revision: 'b'.repeat(64) });
     renderPalette({ adapter: staticAdapter([h]), onOpenHit, onClose });
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'x' } });
 
@@ -470,7 +470,7 @@ describe('opening hits', () => {
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', metaKey: true });
     await waitFor(() =>
       expect(onOpenHit).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/ws/c1.md', line: 7 }),
+        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision }),
         { background: true },
       ),
     );
@@ -480,11 +480,13 @@ describe('opening hits', () => {
     fireEvent.click(option);
     await waitFor(() =>
       expect(onOpenHit).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/ws/c1.md', line: 7 }),
+        expect.objectContaining({ path: '/ws/c1.md', line: 7, sourceId: h.sourceId, revision: h.revision }),
         { background: false },
       ),
     );
     expect(onClose).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'c1.md' }));
+    expect(onOpenHit).toHaveBeenLastCalledWith(expect.objectContaining({path:h.path,sourceId:h.sourceId,revision:h.revision,line:undefined}),{background:false});
   });
 });
 
