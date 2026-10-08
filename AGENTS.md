@@ -1,5 +1,15 @@
 # MDReader repository rules
 
+## Current delivery workflow
+
+Use two implementation builders, frontend and backend, plus an independent
+reviewer. Deliver usable, scoped source commits into the integration branch.
+Do not run a review, test, mutation or validation-document cycle for every
+feature; compile only when needed to unblock implementation. Run one coherent
+combined-candidate review, testing and bug-fix stage before merging into `dev`.
+This delivery timing overrides older per-feature timing below; data-loss,
+authority, privacy and source-ownership requirements still apply throughout.
+
 These rules apply to agents and human contributions in this repository.
 The approved product contract is [the SQLite plan](docs/plans/sqlite-reader-next.md).
 Use [the status ledger](docs/development/sqlite-reader-next-status.md) to distinguish
