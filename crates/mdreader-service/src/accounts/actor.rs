@@ -68,6 +68,9 @@ impl Actor {
                     let result =
                         async {
                             self.shared.require_frozen(token)?;
+                            if let Some(recovery) = &self.setup.recovery {
+                                recovery.settle(deadline).await?;
+                            }
                             self.setup
                                 .factory
                                 .settle_custody(deadline.min(

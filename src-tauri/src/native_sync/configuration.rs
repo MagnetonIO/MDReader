@@ -87,6 +87,9 @@ impl Configuration<'_> {
             transport,
             browser: Arc::new(browser),
             registered_redirect: redirect.into(),
+            #[cfg(target_os = "macos")]
+            recovery: Some(Arc::new(super::recovery::Recovery::default())),
+            #[cfg(not(target_os = "macos"))]
             recovery: None,
         }))
     }
