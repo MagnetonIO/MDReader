@@ -90,13 +90,15 @@ export function SettingsSheet(props: SettingsSheetProps) {
           </nav>
           <div ref={contentRef} className="settings-sheet__scroll settings-content">
             <div id="settings-category-appearance" hidden={category !== 'appearance'}><AppearanceSettings /></div>
-            <div id="settings-category-library" hidden={category !== 'library'}><LibrarySettings controller={controller} /></div>
+            <div id="settings-category-library" hidden={category !== 'library'}>
+              <LibrarySettings controller={controller} />
+              {onOpenProviderDocument ? (
+                <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} />
+              ) : <p>Cloud sources are unavailable in this context.</p>}
+            </div>
             <section id="settings-category-account" hidden={category !== 'account'} aria-labelledby="settings-account-title">
               <h2 id="settings-account-title">Account &amp; sync</h2>
               <AccountSyncPanel active={category === 'account'} />
-              {onOpenProviderDocument ? (
-                <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged} />
-              ) : <p>Cloud source management is unavailable in this context.</p>}
             </section>
             <section id="settings-category-backup" hidden={category !== 'backup'} aria-labelledby="settings-backup-title">
               <h2 id="settings-backup-title">Backup &amp; storage</h2>
@@ -106,7 +108,8 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <h3>Legacy records</h3>
               <p>Existing legacy records remain accessible through the Library’s migration entry. Do not delete an old profile before its document bodies, history and edit receipts have been preserved.</p>
               <h3>Manage local copies</h3>
-              <p>Use Library &amp; sources to forget a folder’s membership and private index. Forgetting a source leaves its originals untouched. Selected cloud copies are managed in Account &amp; sync.</p>
+              <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
+              <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
             </section>
             <section id="settings-category-advanced" hidden={category !== 'advanced'} aria-labelledby="settings-advanced-title">
               <h2 id="settings-advanced-title">Advanced</h2>

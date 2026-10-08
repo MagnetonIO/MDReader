@@ -10,6 +10,23 @@ const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
 });
 
 describe('native Account & sync controls', () => {
+  it('creates a first library only after an explicit setup action, with no manual UUID step', async () => {
+    const request = vi.fn<AccountBackend['request']>(async (operation) => {
+      if (operation.operation === 'begin') throw { kind: 'unavailable' };
+      return { operation: 'status', status: status({ retainedLibrary: false }) };
+    });
+    render(<AccountSyncPanel backend={{ request }} />);
+    await screen.findByText('Not connected. Select a library explicitly to enroll.');
+    fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
+    expect(screen.queryByRole('textbox', { name: 'Library ID', exact: true })).toBeNull();
+    expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create sync library' }));
+    await screen.findByRole('alert');
+    expect(request.mock.calls.filter(([operation]) => operation.operation === 'begin')).toEqual([
+      [{ operation: 'begin', intent: { action: 'bootstrap', remoteLibrary: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/) } }],
+    ]);
+  });
+
   it('inspects metadata on category activation and disables unavailable account actions', async () => {
     let configured = false;
     const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ configured }) }));
@@ -19,14 +36,15 @@ describe('native Account & sync controls', () => {
     rerender(<AccountSyncPanel backend={backend} active />);
     await screen.findByText('Encrypted sync is not configured in this build.');
     expect((screen.getByRole('button', { name: 'Sign in / reconnect' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Sync queued work' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Sync queued work' })).toBeNull();
+    expect(screen.queryByText('Set up sync')).toBeNull();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
     configured = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh account state' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
     await screen.findByText('Library retained; sign in to resume.');
     fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
     fireEvent.click(screen.getByText('Recovery', { selector: 'summary' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Library ID' }), { target: { value: JOB } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Library ID for recovery' }), { target: { value: JOB } });
     expect(screen.getByText(/Recovery dialogs are unavailable/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Recover this device' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Save recovery file' }) as HTMLButtonElement).disabled).toBe(true);
@@ -43,7 +61,7 @@ describe('native Account & sync controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in / reconnect' }));
     await screen.findByRole('alert');
     expect(screen.getByRole('alert').textContent).toContain('outcome may be unknown');
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh account state' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
     await waitFor(() => expect(request.mock.calls.filter(([r]) => r.operation === 'status')).toHaveLength(2));
     expect(request.mock.calls.filter(([r]) => r.operation === 'begin')).toEqual([[{ operation: 'begin', intent: { action: 'sign_in' } }]]);
   });

@@ -19,14 +19,15 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await expect(sheet.getByText('Local Markdown folders', { exact: true })).toBeVisible();
   await expect(sheet.getByText('Active', { exact: true })).toBeVisible();
   await expect(sheet.getByText('Index on disk', { exact: true })).toBeVisible();
-  await sheet.getByRole('button', { name: 'Account & sync', exact: true }).click();
-  await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
-  await expect(sheet.getByRole('button', { name: 'Sign in / reconnect' })).toBeDisabled();
   await sheet.getByRole('button', { name: 'Manage cloud sources' }).click();
   await expect(sheet.getByRole('button', { name: 'Choose Google Drive files' })).toBeDisabled();
   await expect(sheet.getByRole('button', { name: 'Connect Dropbox App Folder' })).toBeDisabled();
   await expect(sheet.getByText('No selected cloud sources are connected.')).toBeVisible();
   await sheet.getByRole('button', { name: 'Hide cloud sources' }).click();
+  await sheet.getByRole('button', { name: 'Account & sync', exact: true }).click();
+  await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
+  await expect(sheet.getByRole('button', { name: 'Refresh status' })).toBeVisible();
+  await expect(sheet.getByText('Set up sync', { exact: true })).toHaveCount(0);
   // The fixture cannot authenticate or enable recovery. Only status was inspected.
   await sheet.getByRole('button', { name: 'Appearance', exact: true }).click();
   await sheet.getByRole('button', { name: 'Dark' }).click();
@@ -45,6 +46,8 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await confirm.getByRole('button', { name: 'Clear diagnostic logs now' }).click();
   await expect(sheet.getByText(/^Diagnostic logs cleared\./)).toBeVisible();
 
+  await sheet.getByRole('button', { name: 'Close Settings' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.setViewportSize({ width: 320, height: 640 });
   const narrowBox = await sheet.boundingBox();
   expect(narrowBox).not.toBeNull();

@@ -19,6 +19,16 @@
 .settings-content .settings-section__intro { display: block; }
 .settings-content .settings-section__intro p { margin-top: 8px; }
 .settings-content .settings-stepper output { min-width: 50px; text-align: center; font-size: 13px; }
+.settings-content .settings-segment button { min-height: 44px; font-size: 13px; cursor: pointer; }
+.settings-content .settings-stepper button { width: 44px; height: 44px; cursor: pointer; }
+.settings-content .settings-field__hint { color: var(--color-muted); font-size: 12px; }
+.settings-content p { line-height: 1.6; }
+.settings-reading-preview { margin: 24px 0 16px; padding: 20px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-raised); }
+.settings-reading-preview figcaption { margin-bottom: 16px; color: var(--color-muted); font: 12px var(--font-ui); }
+.settings-reading-preview h3 { margin: 0 0 10px; font-size: 1.3em; font-weight: 500; }
+.settings-reading-preview p { margin: 0; }
+.settings-link-button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-raised); color: var(--color-fg); font: inherit; cursor: pointer; }
+.settings-link-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .settings-migration { margin-top: 24px; border-top: 1px solid var(--color-border); padding-top: 16px; }
 .settings-migration > summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-weight: 600; }
 .settings-migration > p { color: var(--color-muted); font-size: 13px; line-height: 1.6; }
@@ -39,7 +49,7 @@
 .settings-account-advanced input, .settings-account-advanced textarea { max-width: 100%; box-sizing: border-box; }
 .settings-account-advanced textarea { width: 100%; min-height: 100px; }
 
-#settings-category-account button {
+:is(#settings-category-account, .settings-cloud-sources) button {
   min-height: 44px;
   padding: 10px 14px;
   border: 1px solid var(--color-border-strong);
@@ -50,10 +60,10 @@
   font-size: 14px;
   cursor: pointer;
 }
-#settings-category-account button:disabled { opacity: .5; cursor: default; }
-#settings-category-account button:not(:disabled):hover { border-color: var(--color-accent); }
-#settings-category-account :is(button, input, textarea, summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-#settings-category-account :is(input, textarea) {
+:is(#settings-category-account, .settings-cloud-sources) button:disabled { opacity: .5; cursor: default; }
+:is(#settings-category-account, .settings-cloud-sources) button:not(:disabled):hover { border-color: var(--color-accent); }
+:is(#settings-category-account, .settings-cloud-sources) :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+:is(#settings-category-account, .settings-cloud-sources) :is(input, textarea, select) {
   padding: 10px;
   border: 1px solid var(--color-border-strong);
   border-radius: 6px;
@@ -61,3 +71,12 @@
   color: var(--color-fg);
   font: inherit;
 }
+.settings-sync-status { margin: 20px 0; padding: 18px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-raised); }
+.settings-sync-status__label { font-size: 14px; font-weight: 600; }
+.settings-sync-status p { color: var(--color-muted); font-size: 14px; }
+.settings-sync-status .settings-account-actions { margin-bottom: 0; }
+#settings-category-account .settings-section { padding-top: 8px; }
+#settings-category-account .settings-section > h3 { margin: 0 0 8px; font-size: 18px; }
+#settings-category-account .settings-section > p { font-size: 14px; }
+:is(#settings-category-account, .settings-cloud-sources) .settings-account-primary { border-color: var(--color-accent); font-weight: 600; }
+.settings-account-tools > details { border-top: 1px solid var(--color-border); padding-top: 8px; margin-top: 8px; }
