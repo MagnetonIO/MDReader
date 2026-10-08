@@ -18,10 +18,10 @@ pub(crate) fn metadata_line(source: &str) -> Option<&str> {
             .get("capture_is_not_approval")
             .and_then(|v| v.as_bool())
             != Some(true)
-        || !metadata
+        || metadata
             .get("occurrences")
             .and_then(|v| v.as_array())
-            .is_some_and(|v| !v.is_empty())
+            .is_none_or(|v| v.is_empty())
     {
         return None;
     }
