@@ -1,0 +1,9 @@
+.profile-import { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--color-border); }
+.profile-import__documents { max-height: 280px; overflow-y: auto; border: 1px solid var(--color-border); border-radius: 8px; }
+.profile-import__documents > label { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 10px 12px; border-bottom: 1px solid var(--color-border); cursor: pointer; }
+.profile-import__documents > label:last-child { border-bottom: 0; }
+.profile-import__documents input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--color-accent); }
+.profile-import__documents span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.profile-import__documents strong { font-size: 14px; font-weight: 500; }
+.profile-import__documents small { color: var(--color-muted); font-size: 12px; }
+.profile-import__documents > p { padding: 0 12px; }
