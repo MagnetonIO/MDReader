@@ -1,5 +1,5 @@
 #[cfg(unix)]
-mod backup;
+pub(crate) mod backup;
 use crate::{
     Disposition, Error, Inventory, Limits, Manifest, Result, RootBinding, SnapshotIdentity,
 };
@@ -113,7 +113,9 @@ pub fn stage(
                     .max_file_bytes
                     .min(limits.max_total_bytes.saturating_sub(total));
                 let result = match entry.disposition {
-                    Disposition::Raw => copy_file(input, &mut output, bound)?,
+                    Disposition::Raw => {
+                        copy_file(input.as_mut().ok_or(Error::Invalid)?, &mut output, bound)?
+                    }
                     Disposition::Sqlite => {
                         let mut invoked = false;
                         frozen.with_database(path, &mut |source| {
@@ -123,6 +125,7 @@ pub fn stage(
                             invoked = true;
                             check_database(source, &inventory.root, path, expected)?;
                             backup(source, &stage.root.path.join(&name), bound, limits)?;
+                            check_database(source, &inventory.root, path, expected)?;
                             Ok(())
                         })?;
                         if !invoked {
@@ -139,7 +142,9 @@ pub fn stage(
                     }
                     _ => return Err(Error::Invalid),
                 };
-                if entry.disposition == Disposition::Raw && hash_file(input, bound)? != result {
+                if entry.disposition == Disposition::Raw
+                    && hash_file(input.as_mut().ok_or(Error::Invalid)?, bound)? != result
+                {
                     return Err(Error::Conflict);
                 }
                 total = total.checked_add(result.0).ok_or(Error::Bounds)?;

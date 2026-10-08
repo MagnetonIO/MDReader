@@ -9,6 +9,12 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 use uuid::Uuid;
 const SQL: &str = include_str!("candidate/migrations/001-import-receipt.sql");
+#[path = "candidate/connection.rs"]
+mod connection;
+use connection::check as check_connection;
+#[cfg(all(test, unix))]
+#[path = "candidate/connection_tests.rs"]
+mod connection_tests;
 /// Prepared after expensive snapshot verification/materialization, outside the
 /// destination owner lock. It is not cloneable and never grants a source.
 pub struct CandidatePlan {
@@ -86,6 +92,7 @@ pub fn record(
         return Err(Error::Conflict);
     }
     plan.verify_root()?;
+    check_connection(tx, &plan.receipt.candidate)?;
     Ok(receipt)
 }
 impl CandidatePlan {
@@ -118,36 +125,8 @@ pub fn verify_committed(connection: &Connection, expected: &CandidateReceipt) ->
     {
         return Err(Error::Conflict);
     }
-    check_root(&expected.candidate)
-}
-fn check_connection(connection: &Connection, binding: &RootBinding) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let root = crate::platform::Root::private(
-            &binding.locator.restore().map_err(|_| Error::Invalid)?,
-        )?;
-        let name: String = connection
-            .query_row(
-                "SELECT file FROM pragma_database_list WHERE name='main'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|_| Error::Storage)?;
-        let name = Path::new(&name);
-        let relative = name.strip_prefix(&root.path).map_err(|_| Error::Conflict)?;
-        let named = std::fs::File::open(name).map_err(|_| Error::Storage)?;
-        let actual = crate::platform::stamp(&named)?;
-        let retained = crate::platform::stamp(&root.open(relative)?)?;
-        if (actual.0, actual.1) != (retained.0, retained.1) {
-            return Err(Error::Conflict);
-        }
-        root.verify()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (connection, binding);
-        Err(Error::Unsupported)
-    }
+    check_root(&expected.candidate)?;
+    check_connection(connection, &expected.candidate)
 }
 fn check_root(binding: &RootBinding) -> Result<()> {
     #[cfg(unix)]

@@ -7,6 +7,8 @@ pub mod lifecycle;
 mod model;
 #[cfg(unix)]
 mod platform;
+#[cfg(unix)]
+mod live_database;
 mod locator;
 mod snapshot;
 pub use inventory::{Inventory, InventorySelection};
@@ -39,3 +41,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, unix))]
+mod live_database_tests;

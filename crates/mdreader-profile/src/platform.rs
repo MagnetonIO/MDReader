@@ -127,6 +127,42 @@ impl Root {
         }
         Err(Error::Invalid)
     }
+    /// Inspect a named file without opening its inode. In particular, closing
+    /// a separate SQLite/SHM descriptor can release this process's live locks.
+    pub fn named_stamp(&self, path: &Path) -> Result<Stamp> {
+        relative(path)?;
+        self.verify()?;
+        let parent = Self::capture(&self.path.join(path.parent().ok_or(Error::Invalid)?))?;
+        let object = fs::statat(
+            &parent.file,
+            path.file_name().ok_or(Error::Invalid)?,
+            fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(io)?;
+        if fs::FileType::from_raw_mode(object.st_mode) != fs::FileType::RegularFile
+            || object.st_nlink != 1
+        {
+            return Err(Error::Invalid);
+        }
+        fn signed(value: impl TryInto<i64>) -> Result<i64> {
+            value.try_into().map_err(|_| Error::Bounds)
+        }
+        fn unsigned(value: impl TryInto<u64>) -> Result<u64> {
+            value.try_into().map_err(|_| Error::Bounds)
+        }
+        let stamp = (
+            unsigned(object.st_dev)?,
+            unsigned(object.st_ino)?,
+            unsigned(object.st_size)?,
+            signed(object.st_mtime)?,
+            signed(object.st_mtime_nsec)?,
+            signed(object.st_ctime)?,
+            signed(object.st_ctime_nsec)?,
+        );
+        parent.verify()?;
+        self.verify()?;
+        Ok(stamp)
+    }
 }
 pub(crate) fn hash_file(file: &mut File, bound: u64) -> Result<(u64, String)> {
     use sha2::{Digest, Sha256};
