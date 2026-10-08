@@ -2,8 +2,10 @@
 //! must supply every real owner; this cannot infer a writer from a pathname.
 use super::admission::{Admission, DeniedLease, EffectLease, MAX_FREEZE_WAIT};
 use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
+#[cfg(test)]
+use mdreader_profile::Inventory;
 use mdreader_profile::{
-    Error, FrozenProfile, Inventory, Participant, REQUIRED_PARTICIPANTS, Result, RootBinding,
+    Error, FrozenProfile, Participant, REQUIRED_PARTICIPANTS, Result, RootBinding,
 };
 use rusqlite::Connection;
 use std::{
@@ -96,6 +98,7 @@ pub(crate) struct Registry {
     participants: Vec<Option<Registered>>,
 }
 impl Registry {
+    #[cfg(test)]
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self::for_root(inventory.binding().clone())
     }
