@@ -18,6 +18,8 @@ pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 #[path = "catalog/mod.rs"]
 pub mod catalog;
 mod local_source;
+mod identity;
+pub use identity::LibraryIdentity;
 pub use local_source::publish_local_source;
 #[cfg(feature = "device-assets")]
 pub(crate) use local_source::validate_root;
@@ -121,6 +123,8 @@ pub struct Reference {
 }
 
 pub struct ReaderStore {
+    // Owner liveness expires before either SQLite connection begins teardown.
+    library_identity: Option<identity::LibraryOwner>,
     library: Connection,
     index: Connection,
     #[cfg(feature = "device-assets")]
@@ -447,13 +451,17 @@ impl ReaderStore {
     pub fn open(directory: &Path) -> Result<Self> {
         register_vectors()?;
         std::fs::create_dir_all(directory)?;
-        let library=open_database(&directory.join("library.sqlite"), LIBRARY_SCHEMA, false)?;
+        let (library, library_identity) = identity::open_library(directory, true, |path| {
+            open_database(path, LIBRARY_SCHEMA, false)
+        })?;
         projection::initialize(&library)?;
         let index=open_database(&directory.join("index.sqlite"), INDEX_SCHEMA, true)?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
         catalog::schema::initialize(&library,&index)?;
+        identity::verify_connection(&library, library_identity.as_ref())?;
         Ok(Self {
             library,
+            library_identity,
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
@@ -462,16 +470,28 @@ impl ReaderStore {
     /// Read existing owner-managed databases without creating or migrating them.
     pub fn open_readonly(directory: &Path) -> Result<Self> {
         register_vectors()?;
-        let library=open_readonly_database(&directory.join("library.sqlite"), LIBRARY_VERSION)?;
+        let (library, library_identity) = identity::open_library(directory, false, |path| {
+            open_readonly_database(path, LIBRARY_VERSION)
+        })?;
         projection::check_schema(&library)?;
         let index=open_readonly_database(&directory.join("index.sqlite"), INDEX_VERSION)?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
+        identity::verify_connection(&library, library_identity.as_ref())?;
         Ok(Self {
             library,
+            library_identity,
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
         })
+    }
+    /// Certify the actual SQLite-open library against its retained filesystem
+    /// identity. This does not drain/freeze the owner. Currently Unix-only;
+    /// ordinary owner startup remains supported without this capability elsewhere.
+    pub fn library_identity(&self) -> Result<LibraryIdentity> {
+        let identity = self.library_identity.as_ref().ok_or(ReaderError::Unavailable)?;
+        identity::verify_connection(&self.library, Some(identity))?;
+        Ok(identity::certificate(identity))
     }
     /// Ephemeral capability for this live owner; reopening needs fresh sessions.
     #[cfg(feature = "device-assets")]
