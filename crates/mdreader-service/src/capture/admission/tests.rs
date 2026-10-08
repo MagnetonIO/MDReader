@@ -8,6 +8,27 @@ fn setup() -> (tempfile::TempDir, Arc<Mutex<ReaderStore>>, Arc<Coordinator>) {
     (directory, owner, coordinator)
 }
 #[test]
+fn opened_owner_replacement_is_rejected_before_spool_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = Arc::new(Mutex::new(ReaderStore::open(directory.path()).unwrap()));
+    let named = directory.path().join("library.sqlite");
+    fs::rename(&named, directory.path().join("original.sqlite")).unwrap();
+    fs::File::create(&named).unwrap();
+    assert!(matches!(
+        Coordinator::new(owner, directory.path()),
+        Err(Error::Conflict)
+    ));
+    assert!(!directory.path().join("captures").exists());
+
+    // The same original-object proof remains live after Coordinator creation.
+    let (directory, _, coordinator) = setup();
+    let named = directory.path().join("library.sqlite");
+    fs::rename(&named, directory.path().join("original.sqlite")).unwrap();
+    fs::File::create(&named).unwrap();
+    assert!(matches!(coordinator.enter(), Err(Error::Conflict)));
+    assert!(matches!(coordinator.enter(), Err(Error::Unavailable)));
+}
+#[test]
 fn actual_issued_effect_settles_before_freeze_and_timeout_resumes_without_proof() {
     let (directory, owner, coordinator) = setup();
     let effect = coordinator.enter().unwrap();

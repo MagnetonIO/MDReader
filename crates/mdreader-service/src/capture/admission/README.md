@@ -9,18 +9,41 @@ activation, selector, session, or source grant is changed by freeze.
 by its capture worker and request dispatcher. Future preservation composition
 must use that handle in the actual service process. Constructing a second gate
 beside a running Runtime cannot freeze its effects. The constructor binds the
-actual writer Arc, the connection's selected `library.sqlite` pathname, a
-retained library file and the retained selected profile root. It does not open
-another SQLite connection. Reopening/replacing the owner requires a new native
-coordinator lifecycle.
+actual writer Arc and core's opaque `LibraryIdentity`: the selected root and
+original library identity captured from the name with SQLite's actual Unix
+VFS-open object checks bracketing capture, before owner startup succeeds.
+`ReaderStore::library_identity()` repeats that check on the actual borrowed
+connection at capture construction. It does not open another SQLite connection.
+Reopening/replacing the owner requires a new native coordinator lifecycle.
 
-Startup binding limitation: core ReaderStore currently exposes its SQLite
-connection filename, not a retained identity of the object opened by SQLite.
-The constructor compares that filename and retains the **currently named**
-library inode. It cannot prove the SQLite handle still names that inode if
-replacement raced between `ReaderStore::open` and construction. The separate
-ReaderDaemon composition must close this gap before all-eight preservation can
-be enabled; this capture capability is not a full writer/root backup proof.
+The previously documented open→constructor replacement gap is rejected rather
+than adopted. Path/stat-only checks also cannot exclude opening B between an
+A→B→A pathname substitution; the tiny audited core FFI adapter requires
+`SQLITE_FCNTL_HAS_MOVED` to return `SQLITE_OK` and exactly zero. Missing/unsupported
+VFS capability fails closed. Cloned identity capabilities retain a weak
+live-owner proof and original root/stat identity; SQLite itself holds the original DB descriptor. No extra
+DB descriptor is opened or closed for certification (POSIX close can silently
+release process-wide SQLite locks). Owner drop expires every prior certificate;
+reopen produces a fresh one. Subsequent verification uses descriptor-relative
+nofollow stat, without opening a DB descriptor; capture effects and freeze
+compare the current name to that original. The weak liveness token is never
+upgraded and is declared before both SQLite connections in ReaderStore, so it
+expires before connection teardown. Existing symlinks/multiple-link files are
+rejected by preflight before opening SQLite; fresh absent libraries are still
+created only by SQLite.
+The filesystem capability is Unix-only. Ordinary ReaderStore and capture
+Coordinator startup retain their prior behavior on other hosts, including the
+filename association check; capture freeze/certification stays Unsupported.
+SQLite's existing create/configuration/migration/permissions behavior is unchanged;
+no separate file creator or schema was introduced.
+See [SQLite's file-control contract](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlhasmoved).
+
+This closes the actual-opened-file startup binding gap; it does **not** freeze
+ReaderDaemon work or certify all profile writers. Its owner must still be the
+same actual writer Arc, and the borrowed connection API must not be used to
+replace the owner's connection. ReaderDaemon drain, all-eight participant
+composition and server-retained cross-process preservation remain separate gates.
+No selector, activation or all-eight readiness is enabled by this change.
 
 On Unix construction initializes the empty private spool if necessary, then
 retains its root, four child directories and queue-file identity for the selected
@@ -138,3 +161,50 @@ were not rerun for this bounded seam.
 Artifacts in `/Users/mlong/Library/Caches/MDReader/benchmark-target/debug`:
 `deps/mdreader_service-7217306da51abc38`,
 `deps/hook_process-64b15e6a87b99f32` and `mdreader-capture`.
+
+
+## Opened-library identity checkpoint (2026-10-08)
+
+This follow-on closes the named-file adoption gap recorded in `302b0e1` without
+changing service Runtime wiring, SQLite migrations, dependencies or lockfiles.
+The exported capability is not a ReaderDaemon drain or all-eight backup proof.
+Other hosts retain ordinary constructor behavior; no Windows certification or
+cross-host runtime acceptance is claimed here.
+
+Using the same warm target and two jobs, locked/offline:
+
+```sh
+cargo test --locked --offline -p mdreader-core --lib store::identity::tests
+cargo test --locked --offline -p mdreader-service --lib capture::admission::tests
+cargo clippy --locked --offline -p mdreader-core -p mdreader-service --all-targets -- -D warnings
+cargo clippy --locked --offline -p mdreader-service --features sync-native --all-targets -- -D warnings
+```
+
+Final core identity fixtures: 3 passed (0.01s, 0.88s compile), covering ordinary
+writer/readonly/reopen, old-certificate expiry, wrong selected root, alias
+preflight, post-open replacement and actual-open ABA. Capture admission fixtures:
+3 passed (0.17s, 4.42s compile), including replacement before construction
+(rejected before creating the spool) and afterward (quarantine). Strict default
+core/service Clippy passed (6.51s); shipping service `sync-native` Clippy passed
+(6.35s). No broad/model/native/package or installed-profile checks ran.
+
+Meaningful ABA RED: removing only the `moved != 0` refusal caused the ABA test
+to accept SQLite-open B while the original path A had been restored. The exact
+pre-mutation bytes were restored (SHA256
+`3cef83e0f7ec0e7f0d0ba0301a15aa814f84b87a71ff03e20fc6eb7d3b105731`);
+subsequent liveness/preflight refinements change that hash. Final ABA stays GREEN.
+
+Meaningful POSIX-lock RED: injecting an extra main-DB `File::open`/drop into the
+identity stat path let an independent child process acquire `BEGIN IMMEDIATE`
+while the parent transaction was still held. Exact restoration (SHA256
+`a5d769b2ad6103455d9002fb61029709284a3c5b9f705c75c97566464c7ca319`)
+then returned GREEN. The fixture uses the actual core certification helper and
+real SQLite rollback journaling, because WAL's shm lock would mask this bug.
+An initial attempt to switch a fully composed ReaderStore from WAL to DELETE
+was refused Busy by its attached authority connection; the fixture setup was
+corrected to invoke the same helper directly, with no production relaxation.
+
+Artifacts: `benchmark-target/debug/deps/mdreader_core-be42c800f520936b` and
+`benchmark-target/debug/deps/mdreader_service-7217306da51abc38` in the previously
+selected external MDReader cache. Source remains scoped to core's new identity
+module/store composition and capture admission/capability tests/docs.
