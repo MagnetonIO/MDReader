@@ -9,7 +9,10 @@ use super::{
 };
 use mdreader_core::SourceRoot;
 use std::{
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use uuid::Uuid;
@@ -42,12 +45,10 @@ pub(crate) struct Session {
     boot: Uuid,
     owners: Owners,
     state: Mutex<State>,
+    shutdown: AtomicBool,
 }
 impl Session {
-    pub(crate) fn new(
-        directory: &std::path::Path,
-        owners: Owners,
-    ) -> Result<Arc<Self>> {
+    pub(crate) fn new(directory: &std::path::Path, owners: Owners) -> Result<Arc<Self>> {
         if !cfg!(unix) {
             return Err(Error::Unsupported);
         }
@@ -58,6 +59,7 @@ impl Session {
             root,
             boot: Uuid::new_v4(),
             owners,
+            shutdown: AtomicBool::new(false),
             state: Mutex::new(State {
                 active: None,
                 completed: Vec::new(),
@@ -106,6 +108,10 @@ impl Session {
     }
     pub(crate) fn execute(&self, request: ControlRequest) -> Result<ControlReply> {
         let status = match request {
+            ControlRequest::Shutdown { scope, lease } => {
+                self.request_shutdown(&scope, lease)?;
+                return Ok(ControlReply::ShutdownRequested { boot: self.boot });
+            }
             ControlRequest::Backup {
                 scope,
                 lease,
@@ -156,8 +162,38 @@ impl Session {
         };
         Ok(ControlReply::Status { status })
     }
+    fn request_shutdown(&self, scope: &Scope, lease: Uuid) -> Result<()> {
+        self.validate_scope(scope)?;
+        let state = self.lock();
+        if state.broken {
+            return Err(Error::Quarantined);
+        }
+        let active = state.active.as_ref().ok_or(Error::NotHeld)?;
+        if &active.scope != scope
+            || active.lease != lease
+            || active.phase != Phase::Held
+            || Instant::now() >= active.deadline
+        {
+            return Err(Error::NotHeld);
+        }
+        active
+            .guards
+            .as_ref()
+            .ok_or(Error::NotHeld)?
+            .verify(&self.owners, scope)?;
+        // Serialize against explicit release: retain every acquired guard until
+        // real service teardown, including when the acknowledgement is lost.
+        self.shutdown.store(true, Ordering::Release);
+        Ok(())
+    }
+    pub(crate) fn shutdown_requested(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
     fn begin(&self, scope: Scope, duration_ms: u32) -> Result<Status> {
         self.validate_scope(&scope)?;
+        if self.shutdown_requested() {
+            return Err(Error::NotHeld);
+        }
         if duration_ms == 0 || duration_ms > MAX_DURATION_MS {
             return Err(Error::Bounds);
         }
@@ -166,6 +202,9 @@ impl Session {
             .ok_or(Error::Bounds)?;
         {
             let mut state = self.lock();
+            if self.shutdown_requested() {
+                return Err(Error::NotHeld);
+            }
             if state.broken {
                 return Err(Error::Quarantined);
             }
@@ -255,7 +294,13 @@ impl Session {
     }
     fn status(&self, scope: &Scope, lease: Option<Uuid>, release: bool) -> Result<Status> {
         self.validate_scope(scope)?;
+        if release && self.shutdown_requested() {
+            return Err(Error::NotHeld);
+        }
         let mut state = self.lock();
+        if release && self.shutdown_requested() {
+            return Err(Error::NotHeld);
+        }
         if state.broken {
             return Err(Error::Quarantined);
         }

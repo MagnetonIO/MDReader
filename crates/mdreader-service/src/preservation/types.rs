@@ -85,6 +85,12 @@ pub enum ControlRequest {
         scope: Scope,
         lease: Uuid,
     },
+    /// Native offline handoff only. Requires the exact held/drained capability;
+    /// a reply acknowledges intent, never certifies that the owner has closed.
+    Shutdown {
+        scope: Scope,
+        lease: Uuid,
+    },
     Backup {
         scope: Scope,
         lease: Uuid,
@@ -133,6 +139,7 @@ impl fmt::Debug for Status {
 pub enum ControlReply {
     Backup { status: BackupStatus },
     Hello { boot: Uuid },
+    ShutdownRequested { boot: Uuid },
     Status { status: Status },
     Failure { error: Error },
 }

@@ -11,6 +11,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
+#[path = "runtime/shutdown.rs"]
+mod shutdown;
 use model::{ModelActor, ModelError, ModelState, Ticket};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -23,6 +25,7 @@ pub(super) struct Runtime {
     model: Option<ModelActor>,
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
+    shutdown_wake: Mutex<Option<std::net::SocketAddr>>,
     capture_admission: super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
     #[cfg(feature = "sync-native")]
@@ -285,6 +288,7 @@ impl Runtime {
             model,
             wake,
             directory,
+            shutdown_wake: Mutex::new(None),
             capture_admission,
             providers: Ok(None),
             #[cfg(feature = "sync-native")]
