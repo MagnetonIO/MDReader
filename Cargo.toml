@@ -11,6 +11,7 @@ members = [
     "crates/mdreader-credentials",
     "crates/mdreader-legacy-export",
     "crates/mdreader-profile",
+    "crates/mdreader-mobile-transfer",
     "crates/mdreader-connector-dropbox",
     "crates/mdreader-connector-google-drive",
     "scripts/release/verifier",

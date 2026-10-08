@@ -46,6 +46,7 @@ mod library;
 mod mobile_assets;
 mod mobile_assets_commands;
 mod mobile_reader;
+mod mobile_transfer;
 #[cfg(not(mobile))]
 mod native_browser;
 #[cfg(not(mobile))]
@@ -140,6 +141,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_pin,
             mobile_reader::mobile_reader_position,
             mobile_assets_commands::mobile_reader_assets,
+            mobile_transfer::mobile_reader_transfer,
+            mobile_transfer::mobile_reader_transfer_capabilities,
+            mobile_transfer::mobile_reader_take_reading_links,
             commands::read_doc,
             commands::save_doc,
             commands::pick_workspace_folder,
@@ -198,6 +202,9 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_pin,
         mobile_reader::mobile_reader_position,
         mobile_assets_commands::mobile_reader_assets,
+        mobile_transfer::mobile_reader_transfer,
+        mobile_transfer::mobile_reader_transfer_capabilities,
+        mobile_transfer::mobile_reader_take_reading_links,
     ])
 }
 
@@ -279,10 +286,12 @@ fn launch_application_with_profile(
     let mut tauri_builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(mdreader_mobile_transfer::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
         .manage(LibraryState::default())
         .manage(mobile_assets::AssetRuntime::default())
+        .manage(mobile_transfer::TransferRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             reader_profile::configure(app.handle(), profile.as_deref())

@@ -21,6 +21,8 @@ import { ReadingLinkOpen } from "../features/document-transfer/ReadingLinkOpen";
 import type { CanonicalReaderReference } from "../features/reader/contracts";
 import { DeviceAssetsSection } from "./DeviceAssetsSection";
 import { DeviceAssetStorage } from "./DeviceAssetStorage";
+import { observeReadingLinks, transferCapabilities, transferDocument } from "./document-transfer";
+import type { TransferCapabilities } from "./document-transfer";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -101,7 +103,14 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setAssetRefresh((value) => value + 1);
   }, []);
   const assetManifest = assetResult && assetResult.document_id === activeId && assetResult.document_revision === activeRevision ? assetResult : null;
-  const assetImages = useDeviceAssetImages(assetManifest);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferSupport, setTransferSupport] = useState<TransferCapabilities>({ export: false, share: false, readingLinks: false });
+  const assetImages = useDeviceAssetImages(transferBusy ? null : assetManifest);
+  useEffect(() => {
+    let current = true;
+    void transferCapabilities().then((value) => { if (current) setTransferSupport(value); }).catch(() => {});
+    return () => { current = false; };
+  }, []);
   useEffect(() => {
     let current = true;
     setAssetResult(null); setAssetError(null);
@@ -277,6 +286,24 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     if (value.document.id !== reference.documentId || value.document.source_id !== reference.sourceId || value.document.revision !== reference.revision)
       throw new Error("The exact device receipt is unavailable. No newer copy was opened.");
     await open(value.document, reference.line ?? 1);
+  };
+  const readingLinkHandler = useRef(openReadingLink);
+  readingLinkHandler.current = openReadingLink;
+  useEffect(() => {
+    let current = true;
+    let stop: (() => void) | undefined;
+    void observeReadingLinks((reference) => current ? readingLinkHandler.current(reference) : Promise.resolve(), (message) => { if (current) setError(message); })
+      .then((dispose) => { if (current) stop = dispose; else dispose(); })
+      .catch(() => {});
+    return () => { current = false; stop?.(); };
+  }, []);
+  const transfer = async (reference: CanonicalReaderReference, action: 'export' | 'share') => {
+    setTransferBusy(true);
+    const images = assetImages;
+    try {
+      await images?.disposeAndDrain();
+      return await transferDocument(reference, action);
+    } finally { setTransferBusy(false); }
   };
   const close = async () => {
     const epoch = ++navigationEpoch.current;
@@ -516,6 +543,17 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 </button>
               </header>
               {transferReference ? <DocumentActions reference={transferReference} line={active.line}
+                includesSelectedImages nativeReadingLinks={transferSupport.readingLinks}
+                nativeExport={transferSupport.export ? async (reference) => {
+                  const state = await transfer(reference, 'export');
+                  if (state === 'presented') throw new Error('Export could not be confirmed.');
+                  return state;
+                } : undefined}
+                nativeShare={transferSupport.share ? async (reference) => {
+                  const state = await transfer(reference, 'share');
+                  if (state === 'exported') throw new Error('Sharing could not be confirmed.');
+                  return state;
+                } : undefined}
                 getLine={() => position.current?.id === active.document.id && position.current.revision === active.document.revision ? position.current.line : active.line}
                 read={async () => {
                   const value = await result(commands.mobileReaderRead(active.document.id, active.document.revision));

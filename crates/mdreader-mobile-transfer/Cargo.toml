@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-mdreader-transfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "tauri-plugin-mdreader-transfer"
+
+[lints]
+workspace = true
+
+[dependencies]
+tauri = "2"
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+tauri-plugin = { version = "=2.6.3", features = ["build"] }

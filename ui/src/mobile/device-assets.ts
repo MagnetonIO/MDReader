@@ -98,6 +98,17 @@ export class DeviceAssetImages {
     const cached = this.images.get(assetId);
     if (cached) { URL.revokeObjectURL(cached.url); this.images.delete(assetId); this.changed(); }
   }
+  /** Explicit transfer yields this owner's image permits before a native copy
+   * acquires one. Late opens settle and close rather than leaking a session. */
+  async disposeAndDrain(): Promise<void> {
+    const pending = [...this.inflight.values()];
+    const sessions = [...this.sessions];
+    this.dispose();
+    await Promise.allSettled([
+      ...pending,
+      ...sessions.map((session_id) => this.backend({ operation: 'close', session_id })),
+    ]);
+  }
   dispose() {
     this.disposed = true; this.epoch++;
     for (const pending of this.queue) pending.reject(new Error('The document selection changed.'));
