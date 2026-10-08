@@ -39,9 +39,14 @@ pub(super) struct Shared {
     pub view: Mutex<View>,
     pub controller: Option<Arc<SessionController>>,
     pub changes: tokio::sync::watch::Sender<u64>,
+    recovery_available: bool,
 }
 impl Shared {
-    pub fn new(controller: Option<Arc<SessionController>>, retained: bool) -> Self {
+    pub fn new(
+        controller: Option<Arc<SessionController>>,
+        retained: bool,
+        recovery_available: bool,
+    ) -> Self {
         Self {
             view: Mutex::new(View {
                 epoch: 0,
@@ -53,12 +58,14 @@ impl Shared {
             }),
             controller,
             changes: tokio::sync::watch::channel(0).0,
+            recovery_available,
         }
     }
     pub fn status(&self) -> Result<AccountStatus> {
         let state = self.view.lock().map_err(|_| AccountError::Interrupted)?;
         Ok(AccountStatus {
             configured: self.controller.is_some(),
+            recovery_available: self.recovery_available,
             retained_library: state.retained,
             connected: state
                 .active

@@ -58,7 +58,12 @@ impl Coordinator {
             storage::load(&mut store)?
         };
         let controller = setup.as_ref().map(|s| s.factory.session_controller());
-        let shared = Arc::new(state::Shared::new(controller, binding.is_some()));
+        let recovery_available = setup.as_ref().is_some_and(|s| s.recovery.is_some());
+        let shared = Arc::new(state::Shared::new(
+            controller,
+            binding.is_some(),
+            recovery_available,
+        ));
         let sender = if let Some(setup) = setup {
             // Build before publishing the coordinator; failure cannot leave a running job.
             let runtime = tokio::runtime::Builder::new_current_thread()
