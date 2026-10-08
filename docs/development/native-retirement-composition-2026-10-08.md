@@ -93,4 +93,3 @@ The feature checkpoint separately passed its meaningful old-implementation RED,
 actual local HTTPS fixture and strict Clippy; those checks were not repeated.
 Only the four committed receipt paths were merged; native association/self-echo
 work remains isolated and unaccepted. All root check processes are terminal.
-
