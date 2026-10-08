@@ -255,7 +255,7 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
     }
     // A genuine v4 fixture has vectors and chunks, but no v5 metadata table.
     let old = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
-    old.execute_batch("DROP TABLE embedding_memberships; PRAGMA user_version=4;")
+    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE embedding_memberships; PRAGMA user_version=4;")
         .unwrap();
     drop(old);
     assert!(
@@ -268,7 +268,7 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
         index
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(
         index
