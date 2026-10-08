@@ -132,3 +132,5 @@ no deployment or product activation.
 Primary references: [RFC 7518 Concat KDF](https://www.rfc-editor.org/rfc/rfc7518.html#section-4.6.2),
 [p256 0.14.0 ECDH](https://docs.rs/p256/0.14.0/p256/ecdh/),
 [aes-kw 0.3.1](https://docs.rs/aes-kw/0.3.1/aes_kw/).
+
+Checkpoint (b) was subsequently implemented and checked against the synthetic local HTTPS Worker; see [NATIVE-ENROLLMENT.md](NATIVE-ENROLLMENT.md). The remaining-gates section above records the boundary at checkpoint (a), not a claim that the later native-only API is absent.

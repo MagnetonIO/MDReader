@@ -24,6 +24,27 @@ impl NativeAuthorityFactory {
         browser: &dyn NativeBrowser,
         deadline: Instant,
     ) -> AuthorityResult<VerifiedLogin> {
+        self.login_desktop_for(registered_redirect, browser, deadline, None)
+            .await
+    }
+    /// Same native callback ownership, using a persisted enrollment challenge nonce.
+    pub async fn login_enrollment_desktop(
+        &self,
+        enrollment: &EnrollmentLogin,
+        registered_redirect: &str,
+        browser: &dyn NativeBrowser,
+        deadline: Instant,
+    ) -> AuthorityResult<VerifiedLogin> {
+        self.login_desktop_for(registered_redirect, browser, deadline, Some(enrollment))
+            .await
+    }
+    async fn login_desktop_for(
+        &self,
+        registered_redirect: &str,
+        browser: &dyn NativeBrowser,
+        deadline: Instant,
+        enrollment: Option<&EnrollmentLogin>,
+    ) -> AuthorityResult<VerifiedLogin> {
         if cfg!(any(target_os = "ios", target_os = "android")) {
             return Err(AuthorityError::Unsupported);
         }
@@ -45,7 +66,10 @@ impl NativeAuthorityFactory {
             }
         })?;
         let changes = self.controller.changes.subscribe();
-        let pending = self.begin_login(registered_redirect)?;
+        let pending = match enrollment {
+            Some(binding) => self.begin_enrollment_login(binding, registered_redirect)?,
+            None => self.begin_login(registered_redirect)?,
+        };
         let epoch = pending.epoch;
         tokio::select! {
             biased;

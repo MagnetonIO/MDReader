@@ -13,13 +13,13 @@ pub enum CandidateKind {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
-pub(super) enum Phase {
+pub(in super::super) enum Phase {
     BootstrapPending,
     CandidatePending(CandidateKind),
     Enrolled,
 }
 #[derive(Clone)]
-pub(super) enum Lifecycle {
+pub(in super::super) enum Lifecycle {
     /// Original bytes are retained, including whitespace/member order. Never upgraded implicitly.
     Legacy(Zeroizing<Vec<u8>>),
     V2 {
