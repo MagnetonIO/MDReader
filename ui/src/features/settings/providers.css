@@ -1,0 +1,33 @@
+.settings-cloud-sources {
+  font: 14px/1.5 var(--font-ui);
+}
+.settings-cloud-sources .settings-section__intro h2 { margin: 0; font: 600 18px/1.4 var(--font-ui); }
+.settings-cloud-sources .settings-section__intro p { max-width: 64ch; font-size: 14px; color: var(--color-muted); }
+.provider-panel__toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.provider-connections { margin-top: 20px; border-top: 1px solid var(--color-border); }
+.provider-connection { padding: 20px 0; border-bottom: 1px solid var(--color-border); }
+.provider-connection__heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.provider-connection__heading h3 { margin: 0; font: 600 16px/1.5 var(--font-ui); }
+.provider-connection__heading span { font-size: 12px; color: var(--color-muted); }
+.provider-connection p { max-width: 64ch; margin: 8px 0 14px; font-size: 14px; color: var(--color-muted); }
+.provider-connection__unavailable { margin-top: 10px; }
+.provider-connection__unavailable p { margin: 8px 0; font-size: 13px; }
+.provider-connection details { margin-top: 8px; }
+.provider-connection summary { width: fit-content; min-height: 44px; display: list-item; align-content: center; cursor: pointer; font-size: 13px; }
+.provider-connection details p { font-size: 13px; margin: 0 0 12px; }
+.provider-connection__options { min-width: 0; margin: 16px 0 12px; padding: 0; border: 0; }
+.provider-connection__legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.provider-connection__field { display: block; margin: 0 0 6px; font-weight: 500; }
+.settings-cloud-sources .provider-connection__options > input { box-sizing: border-box; width: 100%; max-width: 360px; min-height: 44px; font-size: 14px; }
+.settings-cloud-sources .provider-connection__check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 10px 0; box-sizing: border-box; cursor: pointer; }
+.settings-cloud-sources .provider-connection__check input[type="checkbox"] { flex: 0 0 18px; width: 18px; height: 18px; margin: 2px 0 0; padding: 0; accent-color: var(--color-accent); }
+.provider-connection .provider-connection__hint { margin: 6px 0 12px; font-size: 12px; }
+.provider-source-list { list-style: none; margin: 0; padding: 0; }
+.provider-source-list > li { padding: 20px 0; border-bottom: 1px solid var(--color-border); }
+.provider-source-list h3 { margin: 0 0 8px; font-size: 16px; }
+.provider-source-list p { font-size: 13px; color: var(--color-muted); }
+.provider-panel__empty { padding: 12px 0; color: var(--color-muted); font-size: 13px; }
+@media (max-width: 480px) {
+  .provider-panel__toolbar > button { flex: 1 1 auto; }
+  .provider-connection > button { width: 100%; }
+}
