@@ -21,6 +21,19 @@ mod outgoing;
 mod vault;
 struct Recovery(Vec<u8>);
 impl NativeRecovery for Recovery {
+    fn settle<'a>(
+        &'a self,
+        deadline: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        // This existing synthetic adapter owns immutable memory, no IO jobs.
+        Box::pin(async move {
+            if std::time::Instant::now() < deadline {
+                Ok(())
+            } else {
+                Err(AccountError::Interrupted)
+            }
+        })
+    }
     fn import<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<RecoveryInput>> + Send + 'a>> {
         // Published synthetic test secret: 32 bytes of 91, base64url, not native keys.
         Box::pin(async move {

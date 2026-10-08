@@ -1,5 +1,7 @@
 //! Native service composition. Public metadata stays compiled; custody stays native.
 mod configuration;
+#[cfg(target_os = "macos")]
+mod recovery;
 use mdreader_service::accounts::{AccountError, CacheRoots, NativeSetup};
 use mdreader_sync::authority::{AuthorityError, AuthorityResult, NativeBrowser};
 use std::{future::Future, path::Path, pin::Pin};
