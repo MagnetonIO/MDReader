@@ -14,8 +14,8 @@ use mdreader_provider::{
     ProviderKind, Result as ProviderResult, SourceId,
 };
 use mdreader_service::provider::{
-    NativeFactory, ProjectionReceipt, ProviderFactory, ProviderRequest, SelectionSummary,
-    SourceConfiguration, SourceSummary,
+    NativeFactory, ProjectionReceipt, ProviderFactory, ProviderLinkKind, ProviderLinkResolution,
+    ProviderRequest, SelectionSummary, SourceConfiguration, SourceSummary,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -240,6 +240,46 @@ pub enum AdmissionOutcome {
         reason: NativeProviderError,
     },
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeLinkKind {
+    Relative,
+    Wikilink,
+}
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeLinkCandidate {
+    pub source_id: String,
+    pub document_id: String,
+    pub title: String,
+}
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum NativeLinkResolution {
+    Resolved {
+        candidate: NativeLinkCandidate,
+        projection: ProjectionDto,
+        line: u32,
+        heading: Option<String>,
+    },
+    SelectedUncached {
+        candidate: NativeLinkCandidate,
+        heading: Option<String>,
+    },
+    Ambiguous {
+        candidates: Vec<NativeLinkCandidate>,
+        heading: Option<String>,
+    },
+    Missing,
+    HeadingMissing {
+        candidate: NativeLinkCandidate,
+        heading: String,
+    },
+}
 #[derive(Debug, Deserialize, specta::Type)]
 #[serde(
     tag = "operation",
@@ -248,6 +288,13 @@ pub enum AdmissionOutcome {
     deny_unknown_fields
 )]
 pub enum NativeProviderRequest {
+    ResolveLink {
+        source_id: String,
+        path: String,
+        revision: String,
+        kind: NativeLinkKind,
+        target: String,
+    },
     Documents {
         source_id: String,
         offset: u32,
@@ -318,6 +365,9 @@ pub struct MutationDto {
     rename_all_fields = "camelCase"
 )]
 pub enum NativeProviderResult {
+    ResolveLink {
+        resolution: NativeLinkResolution,
+    },
     Documents {
         documents: Vec<ProviderDocumentDto>,
         offset: u32,
@@ -1445,6 +1495,89 @@ fn mutation_state(state: mdreader_provider::journal::MutationState) -> MutationS
         S::Conflict => MutationStateDto::Conflict,
     }
 }
+fn link_candidate(
+    value: mdreader_service::provider::ProviderLinkCandidate,
+    expected_source: &str,
+) -> Result<NativeLinkCandidate> {
+    valid_source(value.source_id.as_str())?;
+    valid_uuid(&value.document_id.to_string())?;
+    if value.source_id.as_str() != expected_source {
+        return Err(NativeProviderError::InvalidResponse);
+    }
+    Ok(NativeLinkCandidate {
+        source_id: value.source_id.as_str().into(),
+        document_id: value.document_id.to_string(),
+        title: value.title.as_str().into(),
+    })
+}
+fn link_resolution(
+    value: ProviderLinkResolution,
+    reader_source: &str,
+    expected_source: &str,
+) -> Result<NativeLinkResolution> {
+    use NativeLinkResolution as O;
+    use ProviderLinkResolution as I;
+    let heading = match &value {
+        I::Resolved { heading, .. }
+        | I::SelectedUncached { heading, .. }
+        | I::Ambiguous { heading, .. } => heading.as_deref(),
+        I::HeadingMissing { heading, .. } => Some(heading.as_str()),
+        I::Missing => None,
+    };
+    if heading.is_some_and(|h| h.len() > 4096 || h.chars().any(char::is_control)) {
+        return Err(NativeProviderError::InvalidResponse);
+    }
+    Ok(match value {
+        I::Resolved {
+            candidate,
+            projection,
+            line,
+            heading,
+        } => {
+            let projection = projection_dto(projection)?;
+            if projection.reader_source_id != reader_source || line == 0 {
+                return Err(NativeProviderError::InvalidResponse);
+            }
+            O::Resolved {
+                candidate: link_candidate(candidate, expected_source)?,
+                projection,
+                line,
+                heading,
+            }
+        }
+        I::SelectedUncached { candidate, heading } => O::SelectedUncached {
+            candidate: link_candidate(candidate, expected_source)?,
+            heading,
+        },
+        I::Ambiguous {
+            candidates,
+            heading,
+        } => {
+            if candidates.len() < 2 || candidates.len() > 16 {
+                return Err(NativeProviderError::InvalidResponse);
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            let candidates = candidates
+                .into_iter()
+                .map(|candidate| {
+                    if !ids.insert(candidate.document_id) {
+                        return Err(NativeProviderError::InvalidResponse);
+                    }
+                    link_candidate(candidate, expected_source)
+                })
+                .collect::<Result<_>>()?;
+            O::Ambiguous {
+                candidates,
+                heading,
+            }
+        }
+        I::Missing => O::Missing,
+        I::HeadingMissing { candidate, heading } => O::HeadingMissing {
+            candidate: link_candidate(candidate, expected_source)?,
+            heading,
+        },
+    })
+}
 impl NativeProviders {
     async fn source_projection(&self, source: &SourceId, projection: &ProjectionDto) -> Result<()> {
         let rows: Vec<SourceSummary> = decode(self.rpc.provider(ProviderRequest::List).await?)?;
@@ -1466,6 +1599,60 @@ impl NativeProviders {
         let cached_request = matches!(&request, R::ReadCached { .. });
         let forget_request = matches!(&request, R::Forget { .. });
         match request {
+            R::ResolveLink {
+                source_id,
+                path,
+                revision,
+                kind,
+                target,
+            } => {
+                validate_projection(&ProjectionDto {
+                    job_id: String::new(),
+                    reader_source_id: source_id.clone(),
+                    path: path.clone(),
+                    revision: revision.clone(),
+                })?;
+                if target.len() > 4096 {
+                    return Err(NativeProviderError::TooLarge);
+                }
+                let kind = match kind {
+                    NativeLinkKind::Relative => ProviderLinkKind::Relative,
+                    NativeLinkKind::Wikilink => ProviderLinkKind::Wikilink,
+                };
+                let resolution: ProviderLinkResolution = decode(
+                    self.rpc
+                        .provider(ProviderRequest::ResolveLink {
+                            reader_source_id: SourceId::new(source_id.clone())
+                                .map_err(NativeProviderError::from)?,
+                            path: mdreader_provider::RecordKey::new(path)
+                                .map_err(NativeProviderError::from)?,
+                            revision: mdreader_provider::OpaqueValue::new(revision)
+                                .map_err(NativeProviderError::from)?,
+                            kind,
+                            target,
+                        })
+                        .await?,
+                )?;
+                let sources: Vec<SourceSummary> =
+                    decode(self.rpc.provider(ProviderRequest::List).await?)?;
+                let expected = sources
+                    .iter()
+                    .find(|row| {
+                        row.enabled
+                            && row
+                                .reader_source_id
+                                .as_ref()
+                                .is_some_and(|id| id.as_str() == source_id)
+                    })
+                    .ok_or(NativeProviderError::Unauthorized)?;
+                Ok(O::ResolveLink {
+                    resolution: link_resolution(
+                        resolution,
+                        &source_id,
+                        expected.source_id.as_str(),
+                    )?,
+                })
+            }
             R::Documents {
                 source_id,
                 offset,
@@ -1951,6 +2138,9 @@ mod tests {
                     self.disabled.store(true, Ordering::SeqCst);
                     Ok(json!({"disabled":true}))
                 }
+                ProviderRequest::ResolveLink { .. } => Ok(
+                    json!({"state":"resolved","candidate":{"source_id":SOURCE,"document_id":DOC,"title":"Synthetic target"},"projection":self.projection(),"line":3,"heading":"decision"}),
+                ),
                 ProviderRequest::CachedOpen { .. } | ProviderRequest::Open { .. } => {
                     Ok(self.projection())
                 }
@@ -2130,6 +2320,52 @@ mod tests {
         assert_eq!(value["lineEnd"], 2);
         assert_eq!(value["revision"], "d".repeat(64));
         assert_eq!(value["markdown"], "# Synthetic\nExact cached evidence.\n");
+    }
+    #[tokio::test]
+    async fn linked_resolution_preserves_exact_evidence_and_rejects_wrong_binding_receipts() {
+        let directory = tempfile::tempdir().unwrap();
+        let events = Arc::new(Mutex::new(vec![]));
+        let rpc = Arc::new(SyntheticRpc::new(events.clone()));
+        let owner = owner(
+            directory.path(),
+            rpc.clone(),
+            VaultClient::new(Arc::new(MemoryVault::default())).unwrap(),
+            Arc::new(SyntheticAuth {
+                calls: AtomicUsize::new(0),
+                events,
+            }),
+        );
+        let request = || NativeProviderRequest::ResolveLink {
+            source_id: format!("provider:{}", "a".repeat(64)),
+            path: format!("records/{}.md", "b".repeat(64)),
+            revision: "c".repeat(64),
+            kind: NativeLinkKind::Wikilink,
+            target: "Plan#decision".into(),
+        };
+        let result = owner.request(request()).await.unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["resolution"]["state"], "resolved");
+        assert_eq!(value["resolution"]["line"], 3);
+        assert_eq!(value["resolution"]["candidate"]["documentId"], DOC);
+        assert_eq!(
+            value["resolution"]["projection"]["revision"],
+            "d".repeat(64)
+        );
+        rpc.wrong_projection.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            owner.request(request()).await,
+            Err(NativeProviderError::InvalidResponse)
+        ));
+        let before = rpc.calls.lock().unwrap().len();
+        let mut too_large = request();
+        if let NativeProviderRequest::ResolveLink { target, .. } = &mut too_large {
+            *target = "x".repeat(4097)
+        };
+        assert!(matches!(
+            owner.request(too_large).await,
+            Err(NativeProviderError::TooLarge)
+        ));
+        assert_eq!(rpc.calls.lock().unwrap().len(), before);
     }
     #[tokio::test]
     async fn save_timeout_is_unknown_and_prepare_body_is_bounded_without_hidden_dispatch() {

@@ -30,6 +30,13 @@ pub enum ProviderRequest {
         offset: usize,
         limit: usize,
     },
+    ResolveLink {
+        reader_source_id: SourceId,
+        path: RecordKey,
+        revision: OpaqueValue,
+        kind: ProviderLinkKind,
+        target: String,
+    },
     Refresh {
         source_id: SourceId,
     },
@@ -71,6 +78,9 @@ impl ProviderRequest {
     fn scope(&self) -> String {
         match self {
             Self::List | Self::Admit { .. } => "registry".into(),
+            Self::ResolveLink {
+                reader_source_id, ..
+            } => reader_source_id.as_str().into(),
             Self::Reconnect { source_id, .. }
             | Self::Documents { source_id, .. }
             | Self::Refresh { source_id }
@@ -121,6 +131,24 @@ impl Coordinator {
                     return serde_json::to_value(list(c, &library)?)
                         .map_err(|_| ProviderError::Protocol);
                 }
+                if let ProviderRequest::ResolveLink {
+                    reader_source_id,
+                    path,
+                    revision,
+                    kind,
+                    target,
+                } = request
+                {
+                    return serde_json::to_value(links::resolve_link(
+                        c,
+                        &reader_source_id,
+                        &path,
+                        &revision,
+                        kind,
+                        &target,
+                    )?)
+                    .map_err(|_| ProviderError::Protocol);
+                }
                 let source = SourceId::new(request.scope())?;
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
@@ -159,6 +187,7 @@ impl Coordinator {
         if matches!(
             request,
             ProviderRequest::List
+                | ProviderRequest::ResolveLink { .. }
                 | ProviderRequest::CachedOpen { .. }
                 | ProviderRequest::Documents { .. }
                 | ProviderRequest::Disable { .. }
@@ -347,6 +376,36 @@ fn cached_open(c: &mut Connection, b: &SourceBinding, id: Uuid) -> Result<Value>
         .ok_or(ProviderError::Unavailable)?;
     serde_json::to_value(projection).map_err(|_| ProviderError::Protocol)
 }
+pub(super) fn handle_for(c: &mut Connection, b: &SourceBinding, key: &RecordKey) -> Result<Uuid> {
+    let existing: Option<String> = registry::db(
+        c.query_row(
+            "SELECT id FROM mdreader_provider_client_handles WHERE binding=?1 AND key=?2",
+            params![b.digest().as_slice(), key.as_str()],
+            |r| r.get(0),
+        )
+        .optional(),
+    )?;
+    let id = match existing {
+        Some(id) => id,
+        None => {
+            let count: u64 = registry::db(c.query_row(
+                "SELECT count(*) FROM mdreader_provider_client_handles",
+                [],
+                |r| r.get(0),
+            ))?;
+            if count >= 16384 {
+                return Err(ProviderError::TooLarge);
+            }
+            let id = Uuid::new_v4().to_string();
+            registry::db(c.execute(
+                "INSERT INTO mdreader_provider_client_handles VALUES(?1,?2,?3)",
+                params![id, b.digest().as_slice(), key.as_str()],
+            ))?;
+            id
+        }
+    };
+    Uuid::parse_str(&id).map_err(|_| ProviderError::Persistence)
+}
 fn documents(c: &mut Connection, b: &SourceBinding, offset: usize, limit: usize) -> Result<Value> {
     if limit == 0 || limit > 256 {
         return Err(ProviderError::Invalid);
@@ -356,33 +415,7 @@ fn documents(c: &mut Connection, b: &SourceBinding, offset: usize, limit: usize)
     // Handles belonging to disabled/replaced bindings no longer authorize access.
     registry::db(c.execute("DELETE FROM mdreader_provider_client_handles WHERE binding NOT IN (SELECT binding FROM mdreader_provider_registry_sources WHERE enabled=1)",[]))?;
     for m in rows {
-        let existing: Option<String> = registry::db(
-            c.query_row(
-                "SELECT id FROM mdreader_provider_client_handles WHERE binding=?1 AND key=?2",
-                params![b.digest().as_slice(), m.key.as_str()],
-                |r| r.get(0),
-            )
-            .optional(),
-        )?;
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                let count: u64 = registry::db(c.query_row(
-                    "SELECT count(*) FROM mdreader_provider_client_handles",
-                    [],
-                    |r| r.get(0),
-                ))?;
-                if count >= 16384 {
-                    return Err(ProviderError::TooLarge);
-                }
-                let id = Uuid::new_v4().to_string();
-                registry::db(c.execute(
-                    "INSERT INTO mdreader_provider_client_handles VALUES(?1,?2,?3)",
-                    params![id, b.digest().as_slice(), m.key.as_str()],
-                ))?;
-                id
-            }
-        };
+        let id = handle_for(c, b, &m.key)?;
         let cache = cached(c, b, &m.key)?;
         result.push(json!({"document_id":id,"name":m.name,"display_path":m.display_path,"modified_at_ms":m.modified_at_ms,"size_bytes":m.size_bytes,"cached":cache.is_some(),"cached_observed_at_ms":cache.as_ref().map(|d|d.document.observed_at_ms),"admitted":cache.as_ref().is_some_and(|d|d.projection.is_some()),"projection":cache.as_ref().and_then(|d|d.projection.as_ref())}));
     }
