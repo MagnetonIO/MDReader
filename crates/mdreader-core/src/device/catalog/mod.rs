@@ -3,9 +3,9 @@
 mod model;
 pub use model::*;
 mod membership;
-use super::{DeviceDocument, DeviceRead, Error, ReaderStore, Result, schema::readonly};
-pub use membership::{document_in, page_in, read_in};
-use rusqlite::{OptionalExtension, params};
+use super::{schema::readonly, DeviceDocument, DeviceRead, Error, ReaderStore, Result};
+pub use membership::{document_in, page_in, read_in, state_in};
+use rusqlite::{params, OptionalExtension};
 
 fn snapshot(store: &ReaderStore) -> Result<Option<Snapshot>> {
     let db = store.device_connection();

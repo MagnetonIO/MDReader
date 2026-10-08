@@ -1,11 +1,12 @@
 //! Native membership adapter. Catalog reads never admit or regrant a folder.
+mod edit;
 mod model;
 mod resolve;
 use crate::{
     library::{LibraryStore, LocalFolderSource},
     reader::ReaderBackend,
 };
-use mdreader_service::{Request, catalog as service};
+use mdreader_service::{catalog as service, Request};
 pub use model::*;
 use model::{error_kind, failure};
 use std::path::Path;
@@ -120,6 +121,7 @@ fn execute(
             catalog_id.strip_prefix("local:").map(str::to_owned)
         }
         CatalogRequest::Read { source_id, .. }
+        | CatalogRequest::EditLocal { source_id, .. }
         | CatalogRequest::Resolve { source_id, .. }
             if !source_id.starts_with("provider:") =>
         {
@@ -141,8 +143,26 @@ fn execute(
         .as_deref()
         .map(|id| local_member(backend, &all, id))
         .transpose()?;
+    if let CatalogRequest::EditLocal {
+        source_id,
+        path,
+        revision,
+    } = &request
+    {
+        return edit::local(
+            app,
+            backend,
+            selected.as_ref().ok_or_else(|| failure("unauthorized"))?,
+            source_id,
+            path,
+            revision,
+        );
+    }
     if let CatalogRequest::Resolve {
-        source_id, path, revision, target,
+        source_id,
+        path,
+        revision,
+        target,
     } = &request
     {
         let references = resolve::local(backend, source_id, path, revision, target)?;
@@ -233,7 +253,9 @@ fn execute(
             limit,
         },
         CatalogRequest::Close { cursor } => service::CatalogRequest::Close { cursor },
-        CatalogRequest::Read { .. } | CatalogRequest::Resolve { .. } => {
+        CatalogRequest::Read { .. }
+        | CatalogRequest::Resolve { .. }
+        | CatalogRequest::EditLocal { .. } => {
             return Err(failure("invalid"));
         }
     };

@@ -1,6 +1,7 @@
 //! Independent additive graph namespace. Applied SQL is immutable.
 use super::*;
 const SQL: &str = include_str!("migrations/001-graphs.sql");
+const ROOT_ONLY: &str = include_str!("migrations/002-root-only.sql");
 
 pub(super) fn present(db: &Connection) -> Result<bool> {
     let count: u64 = db.query_row(
@@ -17,6 +18,20 @@ pub(super) fn present(db: &Connection) -> Result<bool> {
 pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     if !present(tx)? {
         tx.execute_batch(SQL)?;
+    }
+    require(tx)?;
+    let version: i64 = tx.query_row(
+        "SELECT version FROM mdreader_sync_graph_schema WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if version == 1 {
+        // Rebuilding only our exact table must not silently discard extensions.
+        let extensions:u64 = tx.query_row("SELECT count(*) FROM sqlite_master WHERE tbl_name='mdreader_sync_graph_roots' AND (type='trigger' OR (type='index' AND sql IS NOT NULL))", [], |r|r.get(0))?;
+        if extensions != 0 {
+            return Err(SyncError::Schema);
+        }
+        tx.execute_batch(ROOT_ONLY)?;
     }
     require(tx)
 }
@@ -35,7 +50,7 @@ pub(super) fn require(db: &Connection) -> Result<()> {
     let count: u64 = db.query_row("SELECT count(*) FROM mdreader_sync_graph_schema", [], |r| {
         r.get(0)
     })?;
-    if version != Some(1) || count != 1 {
+    if !matches!(version, Some(1 | 2)) || count != 1 {
         return Err(SyncError::Schema);
     }
     for name in [
@@ -43,7 +58,12 @@ pub(super) fn require(db: &Connection) -> Result<()> {
         "mdreader_sync_graph_roots",
         "mdreader_sync_graph_dependencies",
     ] {
-        let expected = SQL
+        let definition = if version == Some(2) && name == "mdreader_sync_graph_roots" {
+            ROOT_ONLY
+        } else {
+            SQL
+        };
+        let expected = definition
             .split(';')
             .find(|s| s.trim_start().starts_with(&format!("CREATE TABLE {name}(")))
             .ok_or(SyncError::Schema)?;

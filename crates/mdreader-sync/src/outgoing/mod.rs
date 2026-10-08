@@ -53,3 +53,24 @@ impl SealedGraph {
         Ok(())
     }
 }
+
+/// Standard user-state root using the unchanged payload and envelope/AAD.
+pub fn seal_user_state(
+    scope: &crate::SyncScope,
+    key: &crate::LibraryKey,
+    context: &crate::EncryptionContext,
+    state: &crate::codec::UserStatePayload,
+) -> Result<SealedGraph> {
+    context.validate()?;
+    if context.library_id != scope.library_id() || context.key_id != key.key_id() {
+        return Err(SyncError::Scope);
+    }
+    let plaintext = zeroize::Zeroizing::new(crate::codec::encode_user_state(state)?);
+    let graph = SealedGraph {
+        root: crate::encrypt(key, context, &plaintext)?,
+        resources: Vec::new(),
+        key_fingerprint: key.fingerprint(),
+    };
+    graph.validate()?;
+    Ok(graph)
+}

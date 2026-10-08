@@ -6,6 +6,7 @@ impl Actor {
         &mut self,
         command: &Command,
         selection: SelectedOperation,
+        purpose: SelectedPurpose,
     ) -> Result<Outcome> {
         self.shared.check(command)?;
         self.shared.phase(command, Phase::Syncing)?;
@@ -15,12 +16,20 @@ impl Actor {
         selection.require_scope(&active.authority.scope()?)?;
         self.blocking(move || {
             let _lease = lease;
-            active.incoming.queue_selected_document(
-                &active.selected,
-                &active.authority,
-                &selection.receipt,
-                selection.operation_id,
-            )?;
+            match purpose {
+                SelectedPurpose::Content => active.incoming.queue_selected_document(
+                    &active.selected,
+                    &active.authority,
+                    &selection.receipt,
+                    selection.operation_id,
+                )?,
+                SelectedPurpose::UserState => active.incoming.queue_selected_state(
+                    &active.selected,
+                    &active.authority,
+                    &selection.receipt,
+                    selection.operation_id,
+                )?,
+            };
             Ok(())
         })
         .await
@@ -34,6 +43,7 @@ impl Actor {
         &mut self,
         command: &Command,
         selection: SelectedOperation,
+        purpose: SelectedPurpose,
     ) -> Result<Outcome> {
         self.shared.check(command)?;
         let (active, lease) = self.shared.projection_lease()?;
@@ -46,6 +56,7 @@ impl Actor {
                     &active.selected,
                     &inspect.receipt,
                     inspect.operation_id,
+                    purpose == SelectedPurpose::UserState,
                 )?)
             })
             .await
@@ -53,6 +64,7 @@ impl Actor {
         self.shared.check(command)?;
         Ok(Outcome::SelectedStatus {
             selection,
+            purpose,
             disposition,
         })
     }

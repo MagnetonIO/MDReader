@@ -32,6 +32,8 @@ pub(in crate::sync) struct Intent {
     pub assets_sha256: String,
     pub origin: IncomingOrigin,
     pub head: Option<super::incoming::Head>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<SelectedState>,
 }
 impl Intent {
     pub fn validate(&self, scope: &SyncScope) -> Result<()> {
@@ -63,11 +65,20 @@ impl Intent {
                 return Err(Error::Scope);
             }
         }
+        if let Some(state) = &self.state {
+            state.validate(self)?;
+        }
         if let Some(head) = &self.head {
             if head.document != self.native_document
                 || head.item != self.operation.item_id
-                || head.kind != "content"
-                || head.target.is_some()
+                || head.kind
+                    != if self.state.is_some() {
+                        "user_state"
+                    } else {
+                        "content"
+                    }
+                || head.target.as_deref()
+                    != self.state.as_ref().map(|state| state.target.item.as_str())
                 || head.tombstone.is_some()
                 || head.generation.is_none_or(|n| n > 9_007_199_254_740_991)
                 || self.operation.parents != [head.revision.clone()]
@@ -104,4 +115,42 @@ pub(in crate::sync) fn scope_digest(scope: &SyncScope) -> Result<[u8; 32]> {
         *b = u8::from_str_radix(&key[i * 2..i * 2 + 2], 16).map_err(|_| Error::Scope)?;
     }
     Ok(digest)
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::sync) struct SelectedState {
+    pub target: super::incoming::Head,
+    pub pinned: bool,
+    pub line: u32,
+}
+impl SelectedState {
+    pub fn payload(&self) -> mdreader_sync::codec::UserStatePayload {
+        mdreader_sync::codec::UserStatePayload {
+            v: 1,
+            kind: "mdreader-user-state".into(),
+            document_id: self.target.item.clone(),
+            pinned: self.pinned,
+            position: Some(mdreader_sync::codec::ReadingPosition::Line {
+                revision_id: self.target.revision.clone(),
+                line: self.line,
+            }),
+        }
+    }
+    fn validate(&self, intent: &Intent) -> Result<()> {
+        self.payload().validate()?;
+        if self.target.kind != "content"
+            || self.target.target.is_some()
+            || self.target.tombstone.is_some()
+            || self
+                .target
+                .generation
+                .is_none_or(|generation| generation > intent.generation)
+            || self.target.document != intent.native_document
+            || self.target.item == intent.operation.item_id
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
 }

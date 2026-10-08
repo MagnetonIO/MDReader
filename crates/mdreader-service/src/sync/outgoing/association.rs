@@ -129,7 +129,7 @@ pub(in crate::sync) fn verify_existing_head(
     }
     schema::require(tx)?;
     let key = super::super::incoming::scope_key(scope)?;
-    let mismatch:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_outgoing_intents_v1 WHERE scope=?1 AND native_document=?2 AND state='applied' AND (?3 IS NULL OR wire_item!=?3))",params![key,document,head.map(|h|h.item.as_str())],|r|r.get(0))?;
+    let mismatch:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_outgoing_intents_v1 WHERE scope=?1 AND native_document=?2 AND state='applied' AND json_type(intent,'$.state') IS NULL AND (?3 IS NULL OR wire_item!=?3))",params![key,document,head.map(|h|h.item.as_str())],|r|r.get(0))?;
     if mismatch {
         return Err(Error::Conflict);
     }

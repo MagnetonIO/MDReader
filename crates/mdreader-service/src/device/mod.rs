@@ -2,10 +2,11 @@
 //! This adapter never initializes a namespace or creates a cache directory.
 mod lifecycle;
 mod model;
+mod state;
 pub use lifecycle::FrozenDevices;
 use mdreader_core::{
-    ReaderStore,
     device::{assets::AssetRuntime, catalog},
+    ReaderStore,
 };
 pub use model::*;
 use model::{asset_error, document_error};
@@ -68,6 +69,13 @@ impl Coordinator {
             Some(self.admission.begin()?)
         };
         match request {
+            DeviceRequest::State { receipt } => self.state(receipt),
+            DeviceRequest::SetState {
+                receipt,
+                expected_generation,
+                pinned,
+                line,
+            } => self.set_state(receipt, expected_generation, pinned, line),
             DeviceRequest::Close { session_id } => {
                 // Release permits even after source/schema/directory revocation.
                 if self

@@ -14,6 +14,25 @@ impl IncomingCoordinator {
         expected: &mdreader_core::device::catalog::Receipt,
         operation: Uuid,
     ) -> Result<QueuedDocument> {
+        self.queue_selected(selected, authority, expected, operation, false)
+    }
+    pub fn queue_selected_state(
+        &self,
+        selected: &SelectedIncoming,
+        authority: &NativeAuthority,
+        expected: &mdreader_core::device::catalog::Receipt,
+        operation: Uuid,
+    ) -> Result<QueuedDocument> {
+        self.queue_selected(selected, authority, expected, operation, true)
+    }
+    fn queue_selected(
+        &self,
+        selected: &SelectedIncoming,
+        authority: &NativeAuthority,
+        expected: &mdreader_core::device::catalog::Receipt,
+        operation: Uuid,
+        user_state: bool,
+    ) -> Result<QueuedDocument> {
         let _operation = self.operation.try_lock().map_err(|_| Error::Busy)?;
         outgoing::validate_selected(expected)?;
         let document = Uuid::parse_str(&expected.document_id).map_err(|_| Error::Scope)?;
@@ -45,7 +64,9 @@ impl IncomingCoordinator {
                 let stored = association::get(&tx, scope, &operation.to_string())?;
                 if let Some(stored) = &stored {
                     let intent = &stored.intent;
-                    if intent.native_document != document.to_string() {
+                    if intent.native_document != document.to_string()
+                        || intent.state.is_some() != user_state
+                    {
                         return Err(Error::Conflict);
                     }
                     if intent.origin.session_epoch != selected.permit.session_token()
@@ -65,8 +86,8 @@ impl IncomingCoordinator {
         })? {
             return existing.intent.result();
         }
-        let (plan, archive, head) = self.short(selected, |owner, _| {
-            let head = owner.with_library_connection(|db| -> Result<_> {
+        let (plan, archive, head, target) = self.short(selected, |owner, _| {
+            let (head, target) = owner.with_library_connection(|db| -> Result<_> {
                 let tx = db.transaction()?;
                 association::require_unqueued(&tx, scope, &document.to_string())?;
                 let head = heads::for_document(&tx, &key, &document.to_string())?;
@@ -81,8 +102,17 @@ impl IncomingCoordinator {
                 }) {
                     return Err(Error::Conflict);
                 }
+                let result = if user_state {
+                    let target = head.ok_or(Error::Conflict)?;
+                    let receipt = heads::receipt(&tx, &key, &target)?;
+                    if !outgoing::matches_selected(expected, &receipt.document) { return Err(Error::Conflict); }
+                    let items = tx.prepare("SELECT wire_item FROM native_incoming_heads_v2 WHERE scope=?1 AND kind='user_state' AND target_item=?2 LIMIT 2")?.query_map(rusqlite::params![key,target.item], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let head = match items.as_slice() { [] => None, [id] => heads::get(&tx,&key,id)?, _ => return Err(Error::Conflict) };
+                    if head.as_ref().is_some_and(|h| h.tombstone.is_some() || h.document != expected.document_id) { return Err(Error::Conflict); }
+                    (head,Some(target))
+                } else { (head,None) };
                 tx.commit()?;
-                Ok(head)
+                Ok(result)
             })?;
             // Strict absent detection precedes controlled creation. Partial/future
             // asset namespaces never fall back to initialization.
@@ -118,23 +148,40 @@ impl IncomingCoordinator {
                 publication::prepare_current(owner, &document.to_string(), &assets, &origin)?;
             let archive =
                 publication::prepare_archive(owner, &document.to_string(), &assets, &self.runtime)?;
-            Ok(((plan, origin), archive, head))
+            Ok(((plan, origin), archive, head, target))
         })?;
         let (plan, origin) = plan;
         // All original/asset reads, hashes and encryption occur off owner/session locks.
         let current = plan.verify()?;
         let snapshot = Snapshot::new(archive.read()?, &current)?;
         let asset_inputs = snapshot.asset_inputs()?;
-        let graph = authority.seal_selected_content(
-            &origin.item_id.to_string(),
-            &origin.wire_revision.to_string(),
-            OutgoingContent {
-                title: &current.state().document.name,
-                markdown: snapshot.archive.markdown(),
-                assets: &asset_inputs,
-            },
-        )?;
+        let state = target.map(|target| outgoing::SelectedState {
+            target,
+            pinned: current.state().document.pinned,
+            line: current.state().document.line,
+        });
+        let graph = if let Some(state) = &state {
+            if state.line == 0 || state.line > current.max_line() {
+                return Err(Error::Conflict);
+            }
+            authority.seal_selected_state(
+                &origin.item_id.to_string(),
+                &origin.wire_revision.to_string(),
+                &state.payload(),
+            )?
+        } else {
+            authority.seal_selected_content(
+                &origin.item_id.to_string(),
+                &origin.wire_revision.to_string(),
+                OutgoingContent {
+                    title: &current.state().document.name,
+                    markdown: snapshot.archive.markdown(),
+                    assets: &asset_inputs,
+                },
+            )?
+        };
         let intent = Intent {
+            state,
             operation: CommitOperation {
                 operation_id: operation.to_string(),
                 item_id: origin.item_id.to_string(),
@@ -234,10 +281,18 @@ pub(super) fn verify_head(
     key: &str,
     intent: &Intent,
 ) -> Result<()> {
+    let content = intent
+        .state
+        .as_ref()
+        .map(|state| &state.target)
+        .or(intent.head.as_ref());
     if heads::get(tx, key, &intent.operation.item_id)?.as_ref() != intent.head.as_ref()
-        || heads::for_document(tx, key, &intent.native_document)?.as_ref() != intent.head.as_ref()
+        || heads::for_document(tx, key, &intent.native_document)?.as_ref() != content
     {
         return Err(Error::Conflict);
+    }
+    if let Some(state) = &intent.state {
+        heads::verify(tx, key, &state.target)?;
     }
     Ok(())
 }

@@ -9,11 +9,15 @@ impl Actor {
     pub async fn execute(&mut self, command: &Command) -> Result<Outcome> {
         let intent = match &command.action {
             actor::Action::Account(intent) => intent,
-            actor::Action::SelectedSync(selection) => {
-                return self.selected_sync(command, selection.clone()).await;
+            actor::Action::SelectedSync(selection, purpose) => {
+                return self
+                    .selected_sync(command, selection.clone(), *purpose)
+                    .await;
             }
-            actor::Action::InspectSelected(selection) => {
-                return self.inspect_selected(command, selection.clone()).await;
+            actor::Action::InspectSelected(selection, purpose) => {
+                return self
+                    .inspect_selected(command, selection.clone(), *purpose)
+                    .await;
             }
         };
         match intent {

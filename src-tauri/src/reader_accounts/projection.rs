@@ -12,6 +12,16 @@ impl AccountRequest {
     pub(super) fn service(self) -> Result<service::rpc::AccountRequest, AccountError> {
         Ok(match self {
             Self::Status {} => service::rpc::AccountRequest::Status {},
+            Self::SyncSelectedState { selection } => {
+                service::rpc::AccountRequest::SyncSelectedState {
+                    selection: selection.service()?,
+                }
+            }
+            Self::InspectSelectedState { selection } => {
+                service::rpc::AccountRequest::InspectSelectedState {
+                    selection: selection.service()?,
+                }
+            }
             Self::SyncSelected { selection } => service::rpc::AccountRequest::SyncSelected {
                 selection: selection.service()?,
             },
@@ -101,6 +111,7 @@ impl From<service::Job> for AccountJob {
         Self {
             id: value.id.to_string(),
             selected_sync: value.selected_sync.map(Into::into),
+            selected_purpose: value.selected_purpose.map(Into::into),
             state: match value.state {
                 service::JobState::Running { phase } => JobState::Running {
                     phase: label(phase),
@@ -119,8 +130,9 @@ impl From<service::Job> for AccountJob {
 impl From<service::Outcome> for Outcome {
     fn from(value: service::Outcome) -> Self {
         match value {
-            service::Outcome::SelectedStatus { selection, disposition } => Self::SelectedStatus {
+            service::Outcome::SelectedStatus { selection, purpose, disposition } => Self::SelectedStatus {
                 selection: selection.into(),
+                purpose:purpose.into(),
                 disposition: match disposition {
                     mdreader_service::sync::outgoing::SelectedDisposition::Absent => SelectedDisposition::Absent,
                     mdreader_service::sync::outgoing::SelectedDisposition::Queued => SelectedDisposition::Queued,

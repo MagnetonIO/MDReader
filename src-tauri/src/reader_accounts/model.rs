@@ -34,6 +34,8 @@ pub enum AccountAction {
     deny_unknown_fields
 )]
 pub enum AccountRequest {
+    SyncSelectedState { selection: SelectedOperation },
+    InspectSelectedState { selection: SelectedOperation },
     SyncSelected { selection: SelectedOperation },
     InspectSelected { selection: SelectedOperation },
     Status {},
@@ -102,6 +104,7 @@ pub struct AccountJob {
     pub id: String,
     #[serde(rename = "selectedSync")]
     pub selected_sync: Option<SelectedOperation>,
+    pub selected_purpose: Option<SelectedPurpose>,
     pub state: JobState,
 }
 #[derive(Serialize, Type)]
@@ -121,6 +124,7 @@ pub enum JobState {
 pub enum Outcome {
     SelectedStatus {
         selection: SelectedOperation,
+        purpose: SelectedPurpose,
         disposition: SelectedDisposition,
     },
     Connected,
@@ -183,5 +187,20 @@ impl From<service::AccountError> for AccountError {
             service::AccountError::Limit => "limit",
         };
         error(kind)
+    }
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedPurpose {
+    Content,
+    UserState,
+}
+impl From<service::SelectedPurpose> for SelectedPurpose {
+    fn from(value: service::SelectedPurpose) -> Self {
+        match value {
+            service::SelectedPurpose::Content => Self::Content,
+            service::SelectedPurpose::UserState => Self::UserState,
+        }
     }
 }
