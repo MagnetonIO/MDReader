@@ -9,7 +9,6 @@ import { AppearanceSettings } from '../features/settings/AppearanceSettings.js';
 import { LibrarySettings } from '../features/settings/LibrarySettings.js';
 import { DiagnosticSettings } from '../features/settings/DiagnosticSettings.js';
 import { ReadingLinkOpen } from '../features/document-transfer/ReadingLinkOpen.js';
-import { MigrationSettings } from '../features/settings/MigrationSettings.js';
 import { SettingsConfirmations } from '../features/settings/SettingsConfirmations.js';
 import { useSettingsController } from '../features/settings/useSettingsController.js';
 import { visibleSettingsControls } from '../features/settings/focus.js';
@@ -108,8 +107,6 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <p>Local Markdown originals stay in the folders you selected. Private indexes can be rebuilt; they are not document backups.</p>
               <h3>Preserve your documents</h3>
               <p>Back up your original Markdown folders with a tool you control. A complete native Library backup and restore workflow is not available in this panel.</p>
-              <h3>Legacy records</h3>
-              <p>Use Advanced → Migration to preserve selected offline legacy snapshots. Do not delete an old profile before its document bodies, history and edit receipts have been preserved.</p>
               <h3>Manage local copies</h3>
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
@@ -119,7 +116,6 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <IndexingPanel />
               <AgentCapturePanel root={localRoot} />
               <DiagnosticSettings controller={controller} />
-              <MigrationSettings />
             </section>
           </div>
         </div>

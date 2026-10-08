@@ -151,10 +151,6 @@ export function AppShell() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<'appearance' | 'library' | 'advanced'>('appearance');
-  const openMigration = useCallback(() => {
-    setSettingsSection('advanced');
-    setSettingsOpen(true);
-  }, []);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
@@ -1729,7 +1725,7 @@ export function AppShell() {
                 onClose={() => { if (canonicalHistory.tab) requestCloseTab(`reader:${canonicalHistory.tab.id}`); }}
               />
             ) : activeTab?.docRef.kind === 'cloud' ? (
-              <LegacyRecordNotice reference={activeTab.docRef} tabId={activeTab.id} onMigration={openMigration} />
+              <LegacyRecordNotice reference={activeTab.docRef} tabId={activeTab.id} />
             ) : (
             <>
               <ReaderPane
