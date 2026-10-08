@@ -32,6 +32,8 @@ use uuid::Uuid;
 
 const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
+mod editing;
+
 const MAX_MARKDOWN: usize = 2 * 1024 * 1024;
 const RPC_BUDGET: Duration = Duration::from_secs(35);
 
@@ -321,6 +323,15 @@ pub enum NativeProviderRequest {
     Forget {
         source_id: String,
     },
+    BeginEditExact {
+        source_id: String,
+        path: String,
+        revision: String,
+    },
+    InspectSave {
+        source_id: String,
+        operation_id: String,
+    },
     BeginEdit {
         source_id: String,
         document_id: String,
@@ -341,9 +352,10 @@ pub enum NativeProviderRequest {
         source_id: String,
     },
 }
-#[derive(Debug, Serialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationStateDto {
+    Absent,
     Prepared,
     Dispatched,
     Unknown,
@@ -397,6 +409,18 @@ pub enum NativeProviderResult {
     Forget {
         disabled: bool,
         forgotten: bool,
+    },
+    BeginEditExact {
+        write_source_id: String,
+        edit_id: String,
+        markdown: String,
+        expires_at_ms: f64,
+        projection: ProjectionDto,
+    },
+    InspectSave {
+        operation_id: String,
+        state: MutationStateDto,
+        projection: Option<ProjectionDto>,
     },
     BeginEdit {
         edit_id: String,
@@ -1811,6 +1835,15 @@ impl NativeProviders {
                     }
                 })
             }
+            R::BeginEditExact {
+                source_id,
+                path,
+                revision,
+            } => self.begin_edit_exact(source_id, path, revision).await,
+            R::InspectSave {
+                source_id,
+                operation_id,
+            } => self.inspect_save(source_id, operation_id).await,
             R::BeginEdit {
                 source_id,
                 document_id,
