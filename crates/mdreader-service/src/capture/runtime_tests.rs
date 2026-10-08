@@ -33,6 +33,61 @@ fn actual_runtime_capture_and_integration_paths_are_denied_while_frozen() {
             policy: policy.clone(),
         })
         .unwrap();
+    let scope: crate::catalog::ReaderOwnedSources =
+        serde_json::from_value(runtime.execute(Request::ReaderOwnedSources).unwrap()).unwrap();
+    assert_eq!(scope.captures.len(), 1);
+    let source_id = scope.captures[0].id.clone();
+    let spool = mdreader_capture::Spool::open(
+        directory.path().join("captures"),
+        mdreader_capture::Limits::default(),
+    )
+    .unwrap();
+    let event=serde_json::to_vec(&serde_json::json!({"hook_event_name":"Stop","session_id":"reader-scope","cwd":policy.project_root,"last_assistant_message":"# Captured plan\nquartz scope evidence"})).unwrap();
+    spool
+        .enqueue(
+            mdreader_capture::Adapter::ClaudeCode,
+            &event,
+            &policy,
+            mdreader_capture::CaptureOrigin::Live,
+        )
+        .unwrap();
+    {
+        let mut store = owner.lock().unwrap();
+        crate::capture::drain(&mut store, directory.path()).unwrap();
+        assert_eq!(store.capture_count().unwrap(), 1);
+        store.index_source(&source_id).unwrap();
+    }
+    let listed = runtime
+        .execute(Request::Catalog {
+            request: crate::catalog::CatalogRequest::List {
+                local_sources: vec![],
+            },
+        })
+        .unwrap();
+    assert!(listed["result"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["kind"] == "capture"));
+    let page = runtime
+        .execute(Request::Catalog {
+            request: crate::catalog::CatalogRequest::Page {
+                catalog_id: format!("capture:{source_id}"),
+                cursor: None,
+                limit: 100,
+            },
+        })
+        .unwrap();
+    assert_eq!(page["result"]["documents"].as_array().unwrap().len(), 1);
+    let found = runtime
+        .execute(Request::SearchRanked {
+            query: "quartz".into(),
+            sources: vec![source_id.clone()],
+            limit: 10,
+            mode: crate::SearchMode::Exact,
+        })
+        .unwrap();
+    assert_eq!(found["hits"].as_array().unwrap().len(), 1);
     let admission = runtime.capture_participant().unwrap();
     let operation = Uuid::new_v4();
     let epoch = Uuid::new_v4();
@@ -70,6 +125,26 @@ fn actual_runtime_capture_and_integration_paths_are_denied_while_frozen() {
         .unwrap();
     drop(frozen);
     runtime
-        .execute(Request::ConfigureCapture { policy })
+        .execute(Request::ConfigureCapture {
+            policy: policy.clone(),
+        })
         .unwrap();
+    let mut disabled = policy;
+    disabled.enabled = false;
+    runtime
+        .execute(Request::ConfigureCapture { policy: disabled })
+        .unwrap();
+    let scope: crate::catalog::ReaderOwnedSources =
+        serde_json::from_value(runtime.execute(Request::ReaderOwnedSources).unwrap()).unwrap();
+    assert!(scope.captures.is_empty());
+    let page = runtime
+        .execute(Request::Catalog {
+            request: crate::catalog::CatalogRequest::Page {
+                catalog_id: format!("capture:{source_id}"),
+                cursor: None,
+                limit: 100,
+            },
+        })
+        .unwrap();
+    assert_eq!(page["error"], "unauthorized");
 }

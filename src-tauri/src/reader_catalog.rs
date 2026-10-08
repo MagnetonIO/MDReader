@@ -116,6 +116,21 @@ pub(crate) fn execute(
     backend: &ReaderBackend,
     request: CatalogRequest,
 ) -> Result<CatalogReply, CatalogError> {
+    let capture = match &request {
+        CatalogRequest::Read { source_id, .. }
+        | CatalogRequest::Resolve { source_id, .. }
+        | CatalogRequest::EditLocal { source_id, .. }
+            if !source_id.starts_with("provider:") =>
+        {
+            crate::reader_owned::capture_selected(backend, source_id)
+                .unwrap_or(false)
+                .then(|| source_id.clone())
+        }
+        _ => None,
+    };
+    if capture.is_some() && matches!(&request, CatalogRequest::EditLocal { .. }) {
+        return Err(failure("unsupported"));
+    }
     let selected_source = match &request {
         CatalogRequest::Page { catalog_id, .. } => {
             catalog_id.strip_prefix("local:").map(str::to_owned)
@@ -123,7 +138,7 @@ pub(crate) fn execute(
         CatalogRequest::Read { source_id, .. }
         | CatalogRequest::EditLocal { source_id, .. }
         | CatalogRequest::Resolve { source_id, .. }
-            if !source_id.starts_with("provider:") =>
+            if !source_id.starts_with("provider:") && capture.is_none() =>
         {
             Some(source_id.clone())
         }
@@ -167,6 +182,11 @@ pub(crate) fn execute(
     {
         let references = resolve::local(backend, source_id, path, revision, target)?;
         revalidate(app, backend, selected.as_ref(), selected_source.as_deref())?;
+        if let Some(id) = &capture {
+            if !crate::reader_owned::capture_selected(backend, id).map_err(|_| failure("stale"))? {
+                return Err(failure("stale"));
+            }
+        }
         return Ok(CatalogReply::Resolved { references });
     }
     if let CatalogRequest::Read {
@@ -200,9 +220,22 @@ pub(crate) fn execute(
             return Err(failure("stale"));
         }
         revalidate(app, backend, selected.as_ref(), selected_source.as_deref())?;
+        if let Some(id) = &capture {
+            if !crate::reader_owned::capture_selected(backend, id).map_err(|_| failure("stale"))? {
+                return Err(failure("stale"));
+            }
+        }
         let line_end = u32::try_from(document.markdown.lines().count().max(1))
             .map_err(|_| failure("too_large"))?;
         return Ok(CatalogReply::ReadDocument {
+            source_kind: if capture.is_some() {
+                "capture"
+            } else if selected.is_some() {
+                "local"
+            } else {
+                "provider"
+            }
+            .into(),
             source_id: document.source_id,
             path: document.path,
             revision: document.revision,

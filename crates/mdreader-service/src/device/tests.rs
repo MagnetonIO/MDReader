@@ -99,6 +99,8 @@ impl Fixture {
 fn actual_publication_is_discoverable_readable_and_uses_the_same_bounded_image_runtime() {
     let f = Fixture::new();
     let device = Arc::new(f.coordinator());
+    let selected = device.search_sources().unwrap();
+    assert!(selected == [f.receipt.clone()]);
     let catalog = f.catalog(device.clone());
     let CatalogReply::List { sources, .. } = catalog
         .execute(CatalogRequest::List {
@@ -108,11 +110,9 @@ fn actual_publication_is_discoverable_readable_and_uses_the_same_bounded_image_r
     else {
         panic!()
     };
-    assert!(
-        sources
-            .iter()
-            .any(|s| s.catalog_id == "device:library" && s.kind == "device")
-    );
+    assert!(sources
+        .iter()
+        .any(|s| s.catalog_id == "device:library" && s.kind == "device"));
     let CatalogReply::Page { documents, .. } = catalog
         .execute(CatalogRequest::Page {
             catalog_id: "device:library".into(),
@@ -239,19 +239,15 @@ fn actual_publication_is_discoverable_readable_and_uses_the_same_bounded_image_r
         f.runtime.read_permit(Instant::now()).is_err(),
         "freezing this participant must preserve unrelated shared-runtime permits"
     );
-    assert!(
-        frozen
-            .revalidate(&f.coordinator(), operation, epoch)
-            .is_err()
-    );
+    assert!(frozen
+        .revalidate(&f.coordinator(), operation, epoch)
+        .is_err());
     drop((frozen, outside, freed));
-    assert!(
-        device
-            .execute(DeviceRequest::Read {
-                receipt: f.receipt.clone()
-            })
-            .is_ok()
-    );
+    assert!(device
+        .execute(DeviceRequest::Read {
+            receipt: f.receipt.clone()
+        })
+        .is_ok());
     let active = device.admission.begin().unwrap();
     assert!(matches!(
         device.freeze(
@@ -300,13 +296,11 @@ fn runtime_routes_device_catalog_and_read_without_requiring_configured_cloud_cre
             },
         })
         .unwrap();
-    assert!(
-        list["result"]["sources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["catalogId"] == "device:library")
-    );
+    assert!(list["result"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["catalogId"] == "device:library"));
     let body = runtime
         .execute(crate::Request::Device {
             request: DeviceRequest::Read { receipt: f.receipt },
@@ -345,11 +339,9 @@ fn readonly_device_reads_work_during_writer_contention_and_fail_closed_on_schema
     else {
         panic!()
     };
-    assert!(
-        sources
-            .iter()
-            .any(|s| s.kind == "device" && s.failure.is_none())
-    );
+    assert!(sources
+        .iter()
+        .any(|s| s.kind == "device" && s.failure.is_none()));
     assert!(matches!(
         device.execute(DeviceRequest::Manifest {
             receipt: f.receipt.clone()
@@ -365,13 +357,11 @@ fn readonly_device_reads_work_during_writer_contention_and_fail_closed_on_schema
         f.assets.clone(),
         AssetRuntime::default(),
     );
-    assert!(
-        wrong_scope
-            .execute(DeviceRequest::Read {
-                receipt: f.receipt.clone()
-            })
-            .is_err()
-    );
+    assert!(wrong_scope
+        .execute(DeviceRequest::Read {
+            receipt: f.receipt.clone()
+        })
+        .is_err());
     owner = f.owner.lock().unwrap();
     assert_eq!(
         owner.with_library_connection(|db| db.total_changes()),
@@ -389,24 +379,18 @@ fn readonly_device_reads_work_during_writer_contention_and_fail_closed_on_schema
         }),
         Err(DeviceError::Unsupported)
     ));
-    assert!(
-        AssetStore::open_existing(
-            &mut ReaderStore::open_readonly(&f.profile).unwrap(),
-            &f.assets
-        )
-        .unwrap()
-        .is_some()
-    );
-    assert!(
-        serde_json::from_value::<DeviceRequest>(
-            serde_json::json!({"operation":"read","receipt":f.receipt,"path":"/private"})
-        )
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<DeviceRequest>(
-            serde_json::json!({"operation":"manifest","receipt":f.receipt,"token":"secret"})
-        )
-        .is_err()
-    );
+    assert!(AssetStore::open_existing(
+        &mut ReaderStore::open_readonly(&f.profile).unwrap(),
+        &f.assets
+    )
+    .unwrap()
+    .is_some());
+    assert!(serde_json::from_value::<DeviceRequest>(
+        serde_json::json!({"operation":"read","receipt":f.receipt,"path":"/private"})
+    )
+    .is_err());
+    assert!(serde_json::from_value::<DeviceRequest>(
+        serde_json::json!({"operation":"manifest","receipt":f.receipt,"token":"secret"})
+    )
+    .is_err());
 }
