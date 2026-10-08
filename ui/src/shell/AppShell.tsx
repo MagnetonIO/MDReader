@@ -26,6 +26,7 @@ import { KeymapRegistry, detectMac } from '../keymap/registry.js';
 import type { Binding } from '../keymap/registry.js';
 import { selectActiveTab, useTabsStore } from '../stores/tabs.js';
 import { useEditorStore } from '../stores/editor.js';
+import { editorAdmission } from '../features/editor-preservation/admission';
 import type { EditorMode } from '../stores/editor.js';
 import { classifyExternalChange, runSave } from './edit-save.js';
 import { useSourcesStore } from '../stores/sources.js';
@@ -1007,6 +1008,7 @@ export function AppShell() {
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
   const closeTabAndBuffer = useCallback((tabId: string) => {
+    if (editorAdmission.denied()) { toast('Preparation is in progress. Your tab and buffers were kept.'); return; }
     if (providerTabSaving(tabId)) { toast('This cloud save is still running. Wait for its outcome before closing.'); return; }
     useEditorStore.getState().removeTab(tabId);
     if (Object.values(useEditorStore.getState().entries).some((entry) => entry.tabId === tabId)) {
@@ -1063,6 +1065,7 @@ export function AppShell() {
   // `close()` merely re-requests a close the webview won't honour; `destroy()`
   // tears it down unconditionally.
   const performQuit = useCallback(async () => {
+    if (editorAdmission.denied()) { toast('Preparation is in progress. Keep this window open.'); return; }
     useEditorStore.getState().reset(); // discard-all: no dirty documents remain
     closingRef.current = true;
     try {
@@ -1093,6 +1096,7 @@ export function AppShell() {
             expectedSourceIntent: number;
           },
     ) => {
+      if (editorAdmission.denied()) { toast('Preparation is in progress. Your buffers were kept.'); return; }
       if (guard.kind === 'tab') closeTabAndBuffer(guard.tabId);
       else if (guard.kind === 'quit') void performQuit();
       else if (guard.kind === 'forget') {
