@@ -5,6 +5,7 @@ pub(crate) mod bridge;
 #[cfg(all(test, unix))]
 mod bridge_tests;
 pub(crate) mod commands;
+pub(crate) mod editor;
 mod files;
 mod json;
 #[cfg(all(test, unix))]

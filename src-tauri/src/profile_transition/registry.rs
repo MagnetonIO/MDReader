@@ -58,7 +58,7 @@ pub(crate) trait FrozenParticipant {
         Ok(())
     }
     /// Output-only archival evidence, not files to be restored into the current
-    /// installed profile. Only the two real JSON participants supply entries.
+    /// installed profile. Real JSON and editor participants supply their separate archival entries.
     fn preflush_json(&mut self) -> Result<Vec<mdreader_profile::bundle::PreflushArtifact>> {
         Ok(Vec::new())
     }
@@ -273,7 +273,7 @@ impl FrozenProfile for Frozen<'_, '_> {
                     .checked_add(artifact.bytes.as_ref().map_or(0, Vec::len))
                     .ok_or(Error::Bounds)?;
                 artifacts.push(artifact);
-                if artifacts.len() > 2 || bytes > 2 * 1024 * 1024 {
+                if artifacts.len() > 3 || bytes > 18 * 1024 * 1024 {
                     return Err(Error::Bounds);
                 }
             }
