@@ -22,7 +22,11 @@ pub(crate) fn configure(app: &tauri::AppHandle, directory: &Path) -> Result<(), 
         directory,
         Arc::new(TauriFlushChannel(app.clone())),
         providers,
+        Some(app.clone()),
     )?;
+    app.state::<crate::reader::ReaderBackend>()
+        .bind_profile_admission(&state.transition)
+        .map_err(|_| PersistenceError::Conflict)?;
     if !app.manage(state) {
         return Err(PersistenceError::Conflict);
     }
@@ -33,6 +37,7 @@ fn compose(
     directory: &Path,
     channel: Arc<dyn FlushChannel>,
     providers: Option<Arc<crate::native_providers::NativeProviders>>,
+    app: Option<tauri::AppHandle>,
 ) -> Result<PersistenceState, PersistenceError> {
     let root = SourceRoot::capture(directory.to_owned()).map_err(|_| PersistenceError::Conflict)?;
     let SourceRootIdentity::Unix { device, inode } = &root.identity else {
@@ -88,10 +93,27 @@ fn compose(
             )
             .map_err(|_| PersistenceError::Conflict)?;
     }
+    let editor = app.as_ref().map(|app| {
+        super::persistence::editor::EditorOwner::new(owner.clone(), binding.clone(), app.clone())
+    });
+    if let Some(editor) = &editor {
+        transition
+            .register(editor.participant(), Vec::new())
+            .map_err(|_| PersistenceError::Conflict)?;
+    }
+    if let Some(app) = app {
+        transition
+            .register(
+                Arc::new(super::workspace::ParticipantOwner::new(binding, app)),
+                Vec::new(),
+            )
+            .map_err(|_| PersistenceError::Conflict)?;
+    }
     Ok(PersistenceState {
         owner,
         transition: Arc::new(transition),
         flush,
+        editor,
     })
 }
 
@@ -127,10 +149,10 @@ mod tests {
         std::fs::write(root.join("unclassified.bin"), b"retained original").unwrap();
         let original = br#"{"settings":{"theme":"dark","unknown":1e999999}}"#;
         std::fs::write(root.join("settings.json"), original).unwrap();
-        let state = compose(&root, Arc::new(NoFreeze), None).unwrap();
+        let state = compose(&root, Arc::new(NoFreeze), None, None).unwrap();
         assert_eq!(state.transition.missing_participants().len(), 3);
         assert!(matches!(
-            compose(&root, Arc::new(NoFreeze), None),
+            compose(&root, Arc::new(NoFreeze), None, None),
             Err(PersistenceError::Unavailable)
         ));
         let loaded = state.owner.load("main").unwrap();

@@ -207,7 +207,7 @@ pub(crate) struct PickedLibrarySource {
 }
 
 #[derive(Default)]
-pub(crate) struct LibraryState(Mutex<()>);
+pub(crate) struct LibraryState(pub(crate) Mutex<()>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LibrarySourceState {
@@ -2679,6 +2679,8 @@ pub(crate) fn list_library_sources(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<LibrarySnapshot, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
@@ -2780,6 +2782,8 @@ pub(crate) async fn pick_and_add_library_source(
 
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
+        let _effect = crate::profile_transition::workspace::effect(&app)
+            .map_err(|_| LibraryError::PersistFailed)?;
         let _guard = lock_library(&state)?;
         let (path, app_data) = registry_path(&app)?;
         let active = active_root(&workspace);
@@ -2822,6 +2826,8 @@ pub(crate) fn reconcile_library_restore(
     session_root: Option<String>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<Option<LibrarySourceDto>, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     reconcile_library_restore_at(path, app_data, session_root)
@@ -2848,6 +2854,8 @@ pub(crate) fn watch_library_source(
     watcher: tauri::State<'_, crate::commands::WatcherState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<crate::commands::WorkspaceGrant, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
@@ -2881,6 +2889,8 @@ pub(crate) fn grant_library_source(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<String, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
@@ -2913,6 +2923,8 @@ pub(crate) fn resolve_library_document_edit(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<String, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, _) = registry_path(&app)?;
     let active = active_root(&workspace);
@@ -2936,6 +2948,8 @@ pub(crate) fn mark_library_source_active(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<LibrarySnapshot, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
@@ -2955,6 +2969,8 @@ pub(crate) fn forget_library_source(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<LibrarySnapshot, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let active = active_root(&workspace);
@@ -2984,6 +3000,8 @@ pub(crate) fn close_and_forget_library_source(
     watcher: tauri::State<'_, crate::commands::WatcherState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<CloseAndForgetLibrarySourceOutcome, LibraryError> {
+    let _effect = crate::profile_transition::workspace::effect(&app)
+        .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(&state)?;
     let (path, app_data) = registry_path(&app)?;
     let epoch = workspace.current().ok_or(LibraryError::GrantMismatch)?;

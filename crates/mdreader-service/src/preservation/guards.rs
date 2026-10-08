@@ -24,7 +24,7 @@ pub(super) struct Guards {
     daemon: Option<daemon::FrozenReaderDaemon>,
 }
 impl Owners {
-    pub fn acquire(
+    pub(super) fn acquire(
         &self,
         scope: &Scope,
         deadline: Instant,

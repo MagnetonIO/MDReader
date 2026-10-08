@@ -7,6 +7,7 @@ mod registry;
 #[cfg(all(unix, not(mobile)))]
 mod service;
 mod storage_layout;
+pub(crate) mod workspace;
 pub(crate) use storage_layout::DatabaseKind;
 pub(crate) use storage_layout::DatabaseRegistration;
 #[cfg(all(unix, not(mobile)))]

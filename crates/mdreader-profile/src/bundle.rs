@@ -17,12 +17,20 @@ mod tests;
 pub enum PreflushKind {
     Session,
     Settings,
+    EditorBuffers,
 }
 impl PreflushKind {
+    fn max_bytes(self) -> usize {
+        match self {
+            Self::EditorBuffers => 16 * 1024 * 1024,
+            _ => MAX_PREFLUSH_BYTES,
+        }
+    }
     fn member(self) -> &'static str {
         match self {
             Self::Session => "session.preflush",
             Self::Settings => "settings.preflush",
+            Self::EditorBuffers => "editor-buffers.archive",
         }
     }
 }
@@ -124,23 +132,31 @@ pub fn stage_bundle(
             frozen.revalidate()?;
             let mut artifacts = frozen.preflush_json()?;
             artifacts.sort_by_key(|a| a.kind);
-            if artifacts.len() != 2
-                || artifacts[0].kind != PreflushKind::Session
-                || artifacts[1].kind != PreflushKind::Settings
+            let version = match artifacts
+                .iter()
+                .map(|a| a.kind)
+                .collect::<Vec<_>>()
+                .as_slice()
             {
-                return Err(Error::NotQuiescent);
-            }
+                [PreflushKind::Session, PreflushKind::Settings] => 1,
+                [
+                    PreflushKind::Session,
+                    PreflushKind::Settings,
+                    PreflushKind::EditorBuffers,
+                ] if artifacts[2].bytes.is_some() => 2,
+                _ => return Err(Error::NotQuiescent),
+            };
             let mut total = 0u64;
             for artifact in &artifacts {
                 let bytes = artifact.bytes.as_ref().map_or(0, Vec::len);
-                if bytes > MAX_PREFLUSH_BYTES {
+                if bytes > artifact.kind.max_bytes() {
                     return Err(Error::Bounds);
                 }
                 total = total.checked_add(bytes as u64).ok_or(Error::Bounds)?;
             }
             let current_limits = remaining_limits(limits, total)?;
             let stage = Stage::create(destination)?;
-            let mut entries = Vec::with_capacity(2);
+            let mut entries = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
                 let (member, bytes, digest) = match artifact.bytes {
                     Some(bytes) => {
@@ -169,7 +185,7 @@ pub fn stage_bundle(
                 &current_limits,
             )?;
             let manifest = BundleManifest {
-                version: 1,
+                version,
                 id: Uuid::new_v4(),
                 current: current.identity().clone(),
                 preflush: entries,
@@ -236,7 +252,7 @@ pub fn verify_bundle(
     }
     #[cfg(unix)]
     {
-        use crate::platform::{hash_file, stamp, Root};
+        use crate::platform::{Root, hash_file, stamp};
         use std::{collections::BTreeSet, io::Read, os::unix::fs::PermissionsExt};
         let root = Root::private(path)?;
         let mut file = root.open(Path::new("bundle.json"))?;
@@ -263,7 +279,16 @@ pub fn verify_bundle(
         }
         let manifest: BundleManifest =
             serde_json::from_slice(&bytes).map_err(|_| Error::Integrity)?;
-        if manifest.version != 1 || manifest.id != expected.id || manifest.preflush.len() != 2 {
+        let expected_kinds = match manifest.version {
+            1 => vec![PreflushKind::Session, PreflushKind::Settings],
+            2 => vec![
+                PreflushKind::Session,
+                PreflushKind::Settings,
+                PreflushKind::EditorBuffers,
+            ],
+            _ => return Err(Error::Integrity),
+        };
+        if manifest.id != expected.id || manifest.preflush.len() != expected_kinds.len() {
             return Err(Error::Integrity);
         }
         let mut members = BTreeSet::from(["bundle.json".to_owned(), "current".to_owned()]);
@@ -271,10 +296,13 @@ pub fn verify_bundle(
         let mut total = 0u64;
         let mut evidence = Vec::new();
         for entry in &manifest.preflush {
-            if !kinds.insert(entry.kind) || entry.bytes > MAX_PREFLUSH_BYTES as u64 {
+            if !kinds.insert(entry.kind) || entry.bytes > entry.kind.max_bytes() as u64 {
                 return Err(Error::Integrity);
             }
             if !entry.present {
+                if entry.kind == PreflushKind::EditorBuffers {
+                    return Err(Error::Integrity);
+                }
                 if entry.member.is_some() || entry.bytes != 0 || entry.sha256.is_some() {
                     return Err(Error::Integrity);
                 }
@@ -301,7 +329,7 @@ pub fn verify_bundle(
             {
                 return Err(Error::Integrity);
             }
-            let (bytes, digest) = hash_file(&mut file, MAX_PREFLUSH_BYTES as u64)?;
+            let (bytes, digest) = hash_file(&mut file, entry.kind.max_bytes() as u64)?;
             if bytes != entry.bytes
                 || Some(&digest) != entry.sha256.as_ref()
                 || before != stamp(&file)?
@@ -312,6 +340,9 @@ pub fn verify_bundle(
             evidence.push((name, file, before));
             members.insert(name.to_owned());
         }
+        if kinds != expected_kinds.into_iter().collect() {
+            return Err(Error::Integrity);
+        }
         let current = crate::verify(
             &root.path.join("current"),
             &manifest.current,
@@ -319,7 +350,7 @@ pub fn verify_bundle(
         )?;
         let actual = std::fs::read_dir(&root.path)
             .map_err(|_| Error::Storage)?
-            .take(5)
+            .take(6)
             .map(|entry| {
                 entry
                     .map_err(|_| Error::Storage)
