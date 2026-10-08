@@ -1,0 +1,6 @@
+.document-actions, .reading-link-open { padding: .75rem; border-bottom: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.document-actions summary, .reading-link-open summary { cursor: pointer; padding-block: .5rem; }
+.document-actions label, .reading-link-open label { display: block; }
+.document-actions input, .reading-link-open input { width: 100%; min-width: 0; box-sizing: border-box; }
+.document-actions__buttons { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.document-actions button, .reading-link-open button { min-height: 44px; }

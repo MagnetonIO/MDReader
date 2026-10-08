@@ -12,6 +12,7 @@ import {
 
 import type { ReaderPosition } from '../reader-history/model';
 import { savedAnchor, restoreAnchor } from '../reader-history/positions';
+import { DocumentActions } from '../document-transfer/DocumentActions';
 import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
   reference: ProviderReaderReference;
@@ -146,6 +147,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
       {onArchivedReviews ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
+    {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Source evidence</summary>
