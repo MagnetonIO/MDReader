@@ -7,3 +7,5 @@
 .profile-import__documents strong { font-size: 14px; font-weight: 500; }
 .profile-import__documents small { color: var(--color-muted); font-size: 12px; }
 .profile-import__documents > p { padding: 0 12px; }
+.profile-import__confirmation { margin: 16px 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+.profile-import__confirmation legend { padding: 0 6px; font-size: 14px; font-weight: 600; }
