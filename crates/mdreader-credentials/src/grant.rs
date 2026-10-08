@@ -1,4 +1,7 @@
+#[path = "grant/scopes.rs"]
+mod scopes;
 use mdreader_provider::*;
+pub use scopes::{DRIVE_FILE_SCOPE, DROPBOX_EDIT_SCOPES, DROPBOX_READ_SCOPES};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -302,6 +305,8 @@ pub struct ProviderGrant {
     account: AccountBinding,
     selection: NativeSelection,
     secret: SecretBundle,
+    // None preserves the exact legacy v3 read contract/digest.
+    verified_scopes: Option<String>,
 }
 impl ProviderGrant {
     pub fn new(
@@ -319,6 +324,7 @@ impl ProviderGrant {
             account,
             selection,
             secret,
+            verified_scopes: None,
         })
     }
     pub fn registration(&self) -> &Registration {
@@ -334,6 +340,12 @@ impl ProviderGrant {
         &self.secret
     }
     pub fn configuration_digest(&self) -> Result<[u8; 32]> {
+        if let Some(scopes) = self.verified_scopes() {
+            return Ok(body_hash(
+                &serde_json::to_vec(&(&self.registration, &self.account, &self.selection, scopes))
+                    .map_err(|_| ProviderError::Invalid)?,
+            ));
+        }
         Ok(body_hash(
             &serde_json::to_vec(&(&self.registration, &self.account, &self.selection))
                 .map_err(|_| ProviderError::Invalid)?,
@@ -351,12 +363,14 @@ impl ProviderGrant {
             .generation
             .checked_add(1)
             .ok_or(ProviderError::TooLarge)?;
-        Self::new(
+        let mut updated = Self::new(
             &self.registration,
             self.account.clone(),
             self.selection.clone(),
             secret,
-        )
+        )?;
+        updated.verified_scopes = self.verified_scopes.clone();
+        Ok(updated)
     }
 }
 impl fmt::Debug for ProviderGrant {

@@ -124,10 +124,12 @@ struct Wire {
     expires: u64,
     #[zeroize(skip)]
     generation: u64,
+    #[serde(default)]
+    verified_scopes: Option<String>,
 }
 fn encode(g: &ProviderGrant) -> Result<Zeroizing<String>> {
     let wire = Wire {
-        v: 3,
+        v: 4,
         registration: g.registration().clone(),
         account: g.account().clone(),
         selection: g.selection().clone(),
@@ -136,6 +138,7 @@ fn encode(g: &ProviderGrant) -> Result<Zeroizing<String>> {
         cursor: g.secret().cursor_key(),
         expires: g.secret().expires_at_unix_seconds(),
         generation: g.secret().generation(),
+        verified_scopes: g.verified_scopes().map(str::to_owned),
     };
     let text = Zeroizing::new(
         serde_json::to_string(&wire).map_err(|_| ProviderError::CredentialUnavailable)?,
@@ -151,7 +154,7 @@ fn decode(text: Zeroizing<String>) -> Result<ProviderGrant> {
     }
     let mut wire: Wire =
         serde_json::from_str(&text).map_err(|_| ProviderError::CredentialUnavailable)?;
-    if wire.v != 3 {
+    if !matches!(wire.v, 3 | 4) || wire.v == 3 && wire.verified_scopes.is_some() {
         return Err(ProviderError::CredentialUnavailable);
     }
     let secret = SecretBundle::new(
@@ -161,12 +164,16 @@ fn decode(text: Zeroizing<String>) -> Result<ProviderGrant> {
         wire.cursor,
     )?
     .restore_generation(wire.generation)?;
-    ProviderGrant::new(
+    let grant = ProviderGrant::new(
         &wire.registration,
         wire.account.clone(),
         wire.selection.clone(),
         secret,
-    )
+    )?;
+    match wire.verified_scopes.as_deref() {
+        Some(scopes) => grant.with_verified_scopes(scopes),
+        None => Ok(grant),
+    }
 }
 /// Fresh namespace only. Construction never reads or writes the OS keychain.
 pub struct KeyringVault {

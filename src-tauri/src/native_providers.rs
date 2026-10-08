@@ -708,6 +708,7 @@ trait Authorizer: Send + Sync {
         &self,
         registration: Registration,
         selection: Option<NativeSelection>,
+        allow_editing: bool,
     ) -> Result<CompletedAuthorization>;
 }
 struct Browser;
@@ -735,6 +736,7 @@ impl Authorizer for NativeAuthorizer {
         &self,
         registration: Registration,
         selection: Option<NativeSelection>,
+        allow_editing: bool,
     ) -> Result<CompletedAuthorization> {
         let context = IoContext::new(
             Uuid::new_v4(),
@@ -744,9 +746,10 @@ impl Authorizer for NativeAuthorizer {
             Default::default(),
         )
         .map_err(NativeProviderError::from)?;
-        provider_oauth::authorize(
+        provider_oauth::authorize_with_permissions(
             registration,
             selection,
+            allow_editing,
             &self.config,
             &Browser,
             &*self.transport,
@@ -1091,12 +1094,26 @@ impl NativeProviders {
             error,
         })
     }
+    #[cfg(test)]
     async fn connect(
         &self,
         kind: NativeProviderKind,
         selection: Option<DropboxSelection>,
         source: Option<String>,
     ) -> Result<AdmissionOutcome> {
+        self.connect_with_permissions(kind, selection, source, false)
+            .await
+    }
+    async fn connect_with_permissions(
+        &self,
+        kind: NativeProviderKind,
+        selection: Option<DropboxSelection>,
+        source: Option<String>,
+        allow_editing: bool,
+    ) -> Result<AdmissionOutcome> {
+        if allow_editing && kind != NativeProviderKind::Dropbox {
+            return Err(NativeProviderError::Invalid);
+        }
         if !cfg!(all(unix, not(mobile))) {
             return Err(NativeProviderError::Unsupported);
         }
@@ -1156,7 +1173,7 @@ impl NativeProviders {
             .authorizer
             .as_ref()
             .ok_or(NativeProviderError::Unconfigured)?
-            .authorize(registration.clone(), selected)
+            .authorize(registration.clone(), selected, allow_editing)
             .await?;
         let reference = CredentialReference::fresh();
         let pending = PendingAdmission {
@@ -1277,10 +1294,20 @@ impl NativeProviders {
         // Reuse the exact native reference/request; no OAuth/create/overwrite.
         self.publish(pending).await
     }
+    #[cfg(test)]
     async fn reconnect(
         &self,
         source: &str,
         selection: Option<DropboxSelection>,
+    ) -> Result<AdmissionOutcome> {
+        self.reconnect_with_permissions(source, selection, false)
+            .await
+    }
+    async fn reconnect_with_permissions(
+        &self,
+        source: &str,
+        selection: Option<DropboxSelection>,
+        allow_editing: bool,
     ) -> Result<AdmissionOutcome> {
         let id = valid_source(source)?;
         let sources: Vec<SourceSummary> = decode(self.rpc.provider(ProviderRequest::List).await?)?;
@@ -1289,7 +1316,8 @@ impl NativeProviders {
             .find(|s| s.source_id == id)
             .map(|s| NativeProviderKind::from(s.kind))
             .ok_or(NativeProviderError::Invalid)?;
-        self.connect(kind, selection, Some(source.into())).await
+        self.connect_with_permissions(kind, selection, Some(source.into()), allow_editing)
+            .await
     }
 }
 fn vault_context() -> Result<IoContext> {
@@ -1976,8 +2004,11 @@ pub async fn native_provider_connect(
     owner: tauri::State<'_, NativeProviders>,
     provider: NativeProviderKind,
     selection: Option<DropboxSelection>,
+    allow_editing: Option<bool>,
 ) -> Result<AdmissionOutcome> {
-    owner.connect(provider, selection, None).await
+    owner
+        .connect_with_permissions(provider, selection, None, allow_editing.unwrap_or(false))
+        .await
 }
 #[tauri::command]
 #[specta::specta]
@@ -1985,8 +2016,11 @@ pub async fn native_provider_reconnect(
     owner: tauri::State<'_, NativeProviders>,
     source_id: String,
     selection: Option<DropboxSelection>,
+    allow_editing: Option<bool>,
 ) -> Result<AdmissionOutcome> {
-    owner.reconnect(&source_id, selection).await
+    owner
+        .reconnect_with_permissions(&source_id, selection, allow_editing.unwrap_or(false))
+        .await
 }
 #[tauri::command]
 #[specta::specta]
@@ -2089,6 +2123,7 @@ mod tests {
             &self,
             _: Registration,
             selection: Option<NativeSelection>,
+            _allow_editing: bool,
         ) -> Result<CompletedAuthorization> {
             assert!(selection.is_none());
             self.calls.fetch_add(1, Ordering::SeqCst);

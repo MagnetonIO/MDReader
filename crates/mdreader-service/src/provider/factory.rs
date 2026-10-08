@@ -101,7 +101,7 @@ impl ProviderFactory for NativeFactory {
                 NativeSelection::DriveFiles { .. } | NativeSelection::DropboxRoot { .. }
             ),
             assets: false,
-            guarded_write: grant.registration().provider() == ProviderKind::GoogleDrive,
+            guarded_write: grant.permits_guarded_write(),
         };
         Ok(SourceConfiguration {
             descriptor: SourceDescriptor::new(
@@ -201,6 +201,7 @@ fn validate(grant: &ProviderGrant, c: &SourceConfiguration) -> Result<()> {
         || grant.account() != c.descriptor.binding().account()
         || grant.selection().scope()? != *c.descriptor.scope()
         || grant.registration().provider() != c.descriptor.kind()
+        || grant.permits_guarded_write() != c.descriptor.capabilities().guarded_write
     {
         return Err(ProviderError::IdentityMismatch);
     }
@@ -296,22 +297,7 @@ impl Resolver {
             return Err(ProviderError::Protocol);
         }
         if let Some(scope) = token.scope {
-            let valid = match self.registration.provider() {
-                ProviderKind::GoogleDrive => scope == drive::SELECTED_FILE_SCOPE,
-                ProviderKind::Dropbox => {
-                    let scopes = scope
-                        .split_whitespace()
-                        .collect::<std::collections::BTreeSet<_>>();
-                    scopes
-                        == [
-                            "account_info.read",
-                            "files.metadata.read",
-                            "files.content.read",
-                        ]
-                        .into_iter()
-                        .collect()
-                }
-            };
+            let valid = prior.matches_verified_scopes(&scope);
             if !valid {
                 return Err(ProviderError::Unauthorized);
             }

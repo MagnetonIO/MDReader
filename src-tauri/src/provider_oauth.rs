@@ -29,8 +29,8 @@ use tokio::{
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
-const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
-const DROPBOX_SCOPES: &str = "account_info.read files.metadata.read files.content.read";
+const DRIVE_SCOPE: &str = mdreader_credentials::DRIVE_FILE_SCOPE;
+const DROPBOX_SCOPES: &str = mdreader_credentials::DROPBOX_READ_SCOPES;
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 // A renderer cannot accumulate pending listeners/browser flows in this process.
@@ -69,6 +69,7 @@ struct PendingAuthorization {
     state: Zeroizing<String>,
     verifier: Zeroizing<String>,
     dropbox_selection: Option<NativeSelection>,
+    allow_editing: bool,
 }
 struct VerifiedCallback {
     code: Zeroizing<String>,
@@ -97,11 +98,23 @@ fn validate_redirect(value: &str) -> Result<Url> {
 }
 
 impl PendingAuthorization {
+    #[cfg(test)]
     fn new(
         registration: Registration,
         redirect: &str,
         selection: Option<NativeSelection>,
     ) -> Result<Self> {
+        Self::with_permissions(registration, redirect, selection, false)
+    }
+    fn with_permissions(
+        registration: Registration,
+        redirect: &str,
+        selection: Option<NativeSelection>,
+        allow_editing: bool,
+    ) -> Result<Self> {
+        if allow_editing && registration.provider() != ProviderKind::Dropbox {
+            return Err(ProviderError::Invalid);
+        }
         match registration.provider() {
             ProviderKind::GoogleDrive if selection.is_some() => return Err(ProviderError::Invalid),
             ProviderKind::Dropbox => {
@@ -119,14 +132,27 @@ impl PendingAuthorization {
             state: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
             verifier: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
             dropbox_selection: selection,
+            allow_editing,
         })
+    }
+    fn expected_scopes(&self) -> &'static str {
+        match self.registration.provider() {
+            ProviderKind::GoogleDrive => DRIVE_SCOPE,
+            ProviderKind::Dropbox if self.allow_editing => {
+                mdreader_credentials::DROPBOX_EDIT_SCOPES
+            }
+            ProviderKind::Dropbox => DROPBOX_SCOPES,
+        }
     }
     fn authorization_url(&self) -> Result<Url> {
         let (base, scope) = match self.registration.provider() {
             ProviderKind::GoogleDrive => {
                 ("https://accounts.google.com/o/oauth2/v2/auth", DRIVE_SCOPE)
             }
-            ProviderKind::Dropbox => ("https://www.dropbox.com/oauth2/authorize", DROPBOX_SCOPES),
+            ProviderKind::Dropbox => (
+                "https://www.dropbox.com/oauth2/authorize",
+                self.expected_scopes(),
+            ),
         };
         let mut url = Url::parse(base).map_err(|_| ProviderError::Invalid)?;
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(self.verifier.as_bytes()));
@@ -232,7 +258,7 @@ impl PendingAuthorization {
                     return Err(ProviderError::Protocol);
                 }
                 if let Some(scope) = pairs.get("scope") {
-                    if !exact_scopes(scope, DROPBOX_SCOPES) {
+                    if !exact_scopes(scope, self.expected_scopes()) {
                         return Err(ProviderError::Unauthorized);
                     }
                 }
@@ -273,10 +299,7 @@ impl PendingAuthorization {
         let body = oauth_response(transport, request, context).await?;
         let mut token: TokenResponse =
             serde_json::from_slice(&body).map_err(|_| ProviderError::Protocol)?;
-        let expected = match self.registration.provider() {
-            ProviderKind::GoogleDrive => DRIVE_SCOPE,
-            ProviderKind::Dropbox => DROPBOX_SCOPES,
-        };
+        let expected = self.expected_scopes();
         if !token.token_type.eq_ignore_ascii_case("Bearer")
             || !exact_scopes(&token.scope, expected)
             || token.expires_in == 0
@@ -347,7 +370,8 @@ impl PendingAuthorization {
             }
         };
         Ok(CompletedAuthorization {
-            grant: ProviderGrant::new(&self.registration, account, callback.selection, secret)?,
+            grant: ProviderGrant::new(&self.registration, account, callback.selection, secret)?
+                .with_verified_scopes(&token.scope)?,
             name,
         })
     }
@@ -541,9 +565,30 @@ async fn send_browser_response(stream: &mut TcpStream, success: bool) {
 
 /// One deadline/cancellation bounds browser dispatch, callback and provider I/O.
 /// Mobile fails before opening a browser/listener until system auth SDK support.
+#[cfg(test)]
 pub(crate) async fn authorize(
     registration: Registration,
     selection: Option<NativeSelection>,
+    config: &OAuthConfig,
+    browser: &dyn SystemBrowser,
+    transport: &dyn Transport,
+    context: &IoContext,
+) -> Result<CompletedAuthorization> {
+    authorize_with_permissions(
+        registration,
+        selection,
+        false,
+        config,
+        browser,
+        transport,
+        context,
+    )
+    .await
+}
+pub(crate) async fn authorize_with_permissions(
+    registration: Registration,
+    selection: Option<NativeSelection>,
+    allow_editing: bool,
     config: &OAuthConfig,
     browser: &dyn SystemBrowser,
     transport: &dyn Transport,
@@ -589,7 +634,8 @@ pub(crate) async fn authorize(
             (listener, redirect.clone())
         }
     };
-    let pending = PendingAuthorization::new(registration, &redirect, selection)?;
+    let pending =
+        PendingAuthorization::with_permissions(registration, &redirect, selection, allow_editing)?;
     let url = pending.authorization_url()?;
     bounded(context, browser.open(&url)).await?;
     let verified = receive_callback(&listener, &pending, context).await?;
